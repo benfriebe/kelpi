@@ -2,9 +2,11 @@
   "name": "new-nex",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "typecheck": "tsc -b packages/protocol packages/core packages/daemon",
+    "typecheck": "tsc -b packages/protocol packages/core packages/daemon && tsc -p packages/client/tsconfig.json",
     "test": "vitest run",
     "check": "pnpm typecheck && pnpm test"
   },

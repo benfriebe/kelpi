@@ -18,7 +18,20 @@
  *    `currentLayoutIndex`.
  */
 
-import { basename, dirname } from 'node:path';
+// POSIX-only path splitting, kept dependency-free: this module must stay importable in the
+// browser (the client replays store reducers/events), so node:path is off limits.
+const basename = (p: string): string => {
+    const trimmed = p.replace(/\/+$/, '');
+    const idx = trimmed.lastIndexOf('/');
+    return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+};
+const dirname = (p: string): string => {
+    const trimmed = p.replace(/\/+$/, '');
+    const idx = trimmed.lastIndexOf('/');
+    if (idx === -1) return '.';
+    if (idx === 0) return '/';
+    return trimmed.slice(0, idx);
+};
 import {
     allPaneIDs,
     leaf,

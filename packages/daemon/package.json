@@ -3,10 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "types": "./src/index.ts",
   "dependencies": {
+    "@hono/node-server": "^2.1.1",
     "@nex/core": "workspace:*",
-    "@nex/protocol": "workspace:*"
+    "@nex/protocol": "workspace:*",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "hono": "^4.13.3",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2"
   }
 }

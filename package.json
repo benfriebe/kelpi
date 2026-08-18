@@ -1,0 +1,16 @@
+{
+  "name": "new-nex",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "typecheck": "tsc -b packages/protocol packages/core packages/daemon",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

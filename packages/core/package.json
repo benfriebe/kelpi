@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "types": "./src/index.ts"
+  "exports": {
+    "./layout": "./src/layout/index.ts",
+    "./codec": "./src/codec/index.ts",
+    "./resolve": "./src/resolve/index.ts",
+    "./agent": "./src/agent/index.ts",
+    "./env": "./src/env/index.ts",
+    "./config": "./src/config/index.ts"
+  }
 }

@@ -13,7 +13,9 @@ export {
     authorizeUpgrade,
     contentTypeFor,
     createHttpApp,
+    createPaneAssetsRoute,
     extractRequestToken,
+    parsePaneAssetPath,
     requestPathname,
     resolveClientDistDir,
     resolveStaticPath,
@@ -22,6 +24,7 @@ export {
     writeUpgradeRejection,
     type DaemonVersionInfo,
     type HttpAppOptions,
+    type PaneAssetRequest,
     type RunDirTokenOptions,
     type UpgradeAuthOptions,
     type UpgradeDecision
@@ -54,8 +57,13 @@ export {
 } from './streams.js';
 
 export {
+    CONTENT_COMMANDS,
+    CONTENT_UPDATED_MESSAGE,
     WS_CLOSE_CODES,
     createSyncHub,
+    isContentCommand,
+    type ContentChannel,
+    type ContentCommand,
     type NexDomainStore,
     type SyncHub,
     type SyncHubOptions,

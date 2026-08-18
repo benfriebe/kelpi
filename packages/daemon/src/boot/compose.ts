@@ -26,6 +26,7 @@ import { homedir } from 'node:os';
 import { newUUID } from '@nex/core/codec';
 import type { ResumeTuple } from '@nex/core/agent';
 
+import { createContentService, type ContentService } from '../content/index.js';
 import {
     createControlServer,
     resolveControlEndpoints,
@@ -54,7 +55,12 @@ import {
     type NexStore
 } from '../store/index.js';
 import { createTerminalStateService, type TerminalStateServiceImpl } from '../term/index.js';
-import { createWsServer, resolveClientDistDir, type WsServer } from '../ws/index.js';
+import {
+    createPaneAssetsRoute,
+    createWsServer,
+    resolveClientDistDir,
+    type WsServer
+} from '../ws/index.js';
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
 import { readPortFile, writePortFile } from './port.js';
@@ -131,6 +137,8 @@ export interface Daemon {
     readonly term: TerminalStateServiceImpl;
     readonly input: TerminalInput;
     readonly persistence: SqlitePersistence;
+    /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
+    readonly content: ContentService;
     readonly dispatcher: ControlDispatcher;
     readonly ctx: PaneHandlerContext;
     readonly paths: RunPaths;
@@ -214,6 +222,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
     const term = createTerminalStateService();
     const input = createTerminalInput({ pty, modes: (paneID) => term.modes(paneID) });
+    // M5: content panes. It owns its own git service (diff panes) and file watchers, and its
+    // edit buffers are flushed by `stop()` below before the persist gate closes.
+    const content = createContentService({
+        store,
+        ...(onError !== undefined ? { onError } : {}),
+        ...(options.now !== undefined ? { now: options.now } : {})
+    });
 
     let ws: WsServer | undefined;
     let runControl: ControlServer | undefined;
@@ -353,6 +368,15 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     const stop = async (): Promise<void> => {
         if (stopped !== undefined) return stopped;
+        // Editor buffers flush FIRST, while `persist()` is still live: a markdown pane's pending
+        // write goes to disk, and a scratchpad's goes into the store — where it must land before
+        // the persist gate closes, or the debounced snapshot below would not contain it.
+        // (content-panes.md §4.2 quit flush + §7's "port may want to close that gap".)
+        try {
+            content.flushSync();
+        } catch (error) {
+            report(error, 'content flush');
+        }
         stopping = true;
         running = false;
         stopped = (async () => {
@@ -363,6 +387,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             unsubscribe();
             offData();
             offExit();
+            content.dispose();
             // SIGTERM contract: write the debounced snapshot before anything else changes.
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).
@@ -412,6 +437,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 host: httpHost,
                 token,
                 daemonInfo: { pid: process.pid },
+                content,
+                // `/pane-assets/<paneID>/<relpath>` — sibling files of an open markdown file, so
+                // relative `<img src>` resolves (content-panes.md port note 4).
+                routes: createPaneAssetsRoute((paneID, relativePath) =>
+                    content.assetPath(paneID, relativePath)
+                ),
                 ...(distDir !== undefined ? { distDir } : {}),
                 ...(onError !== undefined ? { onError } : {})
             });
@@ -534,6 +565,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         term,
         input,
         persistence,
+        content,
         dispatcher,
         ctx,
         paths,

@@ -15,19 +15,21 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
+import { contentState } from './content/testing';
 import { createNexRuntime, createNexStore, type NexRuntime } from './state';
 import { createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const PANE_C = 'DDDDDDDD-0000-4000-8000-000000000003';
 const NOW = 1_755_500_000_000;
 
 /**
  * A snapshot payload built by the DAEMON's own store, so the fixture is whatever the daemon
  * would actually send rather than a hand-written guess at the shape.
  */
-function snapshotState(options: { markdown?: boolean } = {}): JsonObject {
+function snapshotState(options: { markdown?: boolean; diff?: boolean } = {}): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({
         type: 'create-workspace',
@@ -46,6 +48,15 @@ function snapshotState(options: { markdown?: boolean } = {}): JsonObject {
             now: NOW
         });
     }
+    if (options.diff === true) {
+        store.dispatch({
+            type: 'open-diff-pane',
+            workspaceID: W1,
+            paneID: PANE_C,
+            repoPath: '/repo',
+            now: NOW
+        });
+    }
     return store.getState() as unknown as JsonObject;
 }
 
@@ -60,7 +71,7 @@ interface Harness {
     lastOfType(type: string): Record<string, unknown> | undefined;
 }
 
-function setup(options: { markdown?: boolean; snapshot?: boolean } = {}): Harness {
+function setup(options: { markdown?: boolean; diff?: boolean; snapshot?: boolean } = {}): Harness {
     const sockets = createFakeSocketFactory();
     const store = createNexStore();
     const runtime = createNexRuntime({
@@ -79,10 +90,11 @@ function setup(options: { markdown?: boolean; snapshot?: boolean } = {}): Harnes
     render(<App runtime={runtime} createRenderer={renderers.factory} />);
 
     if (options.snapshot !== false) {
+        const fixture: { markdown?: boolean; diff?: boolean } = {};
+        if (options.markdown === true) fixture.markdown = true;
+        if (options.diff === true) fixture.diff = true;
         act(() => {
-            completeHandshake(sockets.last(), {
-                state: snapshotState(options.markdown === true ? { markdown: true } : {})
-            });
+            completeHandshake(sockets.last(), { state: snapshotState(fixture) });
         });
     }
 
@@ -166,15 +178,118 @@ describe('pane bodies', () => {
         expect(h.lastOfType('attach-pane')).toMatchObject({ paneID: PANE_A });
     });
 
-    it('renders an honest placeholder for a pane type that lands in a later milestone', () => {
-        setup({ markdown: true });
+    it('subscribes a markdown pane to the daemon’s content and renders what comes back', async () => {
+        const h = setup({ markdown: true });
 
-        const placeholder = screen.getByTestId(`pane-placeholder-${PANE_B}`);
-        expect(placeholder.textContent).toContain('Markdown preview');
-        expect(placeholder.textContent).toContain('/repo/README.md');
-        expect(placeholder.textContent).toContain('renders in M5');
+        const subscribe = h
+            .sent()
+            .find(
+                (message) =>
+                    message['type'] === 'command' &&
+                    (message['payload'] as Record<string, unknown>)['command'] === 'content-subscribe'
+            );
+        expect(subscribe).toBeDefined();
+        expect(subscribe?.['payload']).toMatchObject({ pane_id: PANE_B });
+
+        await act(async () => {
+            h.socket().emit({
+                type: 'command-reply',
+                id: subscribe?.['id'] as string,
+                reply: {
+                    ok: true,
+                    pane_id: PANE_B,
+                    state: contentState({
+                        paneID: PANE_B,
+                        html: '<html><head></head><body><h1>Readme</h1></body></html>'
+                    })
+                }
+            });
+            await Promise.resolve();
+        });
+
+        // Untrusted document, so: sandboxed, scripts only, never the app's origin.
+        const frame = screen.getByTestId(`content-iframe-${PANE_B}`);
+        expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
+        expect(frame.getAttribute('srcdoc')).toContain('<h1>Readme</h1>');
         // …and the shell pane beside it still gets a real engine.
         expect(screen.getByTestId(`pane-${PANE_A}`)).toBeTruthy();
+    });
+
+    it('still renders an honest placeholder for a pane type that lands in a later milestone', () => {
+        const h = setup();
+        const fixture = snapshotState() as unknown as {
+            workspaces: { panes: Record<string, unknown>[] }[];
+        };
+
+        act(() => {
+            h.socket().emit({
+                type: 'delta',
+                seq: 1,
+                events: [
+                    {
+                        kind: 'pane-upserted',
+                        workspaceID: W1,
+                        paneID: PANE_C,
+                        lane: 'visible',
+                        index: 1,
+                        pane: {
+                            ...(fixture.workspaces[0]?.panes[0] ?? {}),
+                            id: PANE_C,
+                            type: 'web',
+                            title: 'example.com'
+                        }
+                    }
+                ]
+            });
+        });
+
+        const placeholder = screen.getByTestId(`pane-placeholder-${PANE_C}`);
+        expect(placeholder.textContent).toContain('Web page');
+        expect(placeholder.textContent).toContain('renders in M6');
+    });
+});
+
+describe('content pane commands', () => {
+    it('toggles markdown edit mode from the header button', async () => {
+        const h = setup({ markdown: true });
+
+        fireEvent.click(screen.getByTestId(`pane-edit-toggle-${PANE_B}`));
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'markdown-set-mode',
+                pane_id: PANE_B,
+                mode: 'edit'
+            });
+        });
+    });
+
+    it('toggles markdown edit mode on ⌘E, and only for a markdown pane', async () => {
+        const h = setup({ markdown: true });
+
+        // Opening the markdown pane focused it, so the binding's condition holds.
+        fireEvent.keyDown(window, { code: 'KeyE', key: 'e', metaKey: true });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'markdown-set-mode', pane_id: PANE_B });
+        });
+
+        // A shell pane declines the action, so the keystroke falls through untouched.
+        const before = h.commands().length;
+        act(() => {
+            h.runtime.focusPane(W1, PANE_A);
+        });
+        fireEvent.keyDown(window, { code: 'KeyE', key: 'e', metaKey: true });
+        expect(h.commands()).toHaveLength(before);
+    });
+
+    it('refreshes a diff pane from the header button', async () => {
+        const h = setup({ diff: true });
+
+        fireEvent.click(screen.getByTestId(`pane-refresh-${PANE_C}`));
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'diff-refresh', pane_id: PANE_C });
+        });
     });
 });
 

@@ -477,6 +477,121 @@ async function main() {
             ws.send({ type: 'command', id: 'ws-zoom', payload: { command: 'toggle-zoom', pane_id: paneID } });
             const zoom = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-zoom', 'zoom reply');
             check('the WS-only toggle-zoom verb works', zoom.reply?.ok === true, JSON.stringify(zoom.reply));
+
+            // 6. content panes (M5): open a markdown file the way a user does, mirror it the way
+            //    the client does, and prove the daemon-side watcher pushes a disk write back out.
+            //    A unit test can fake any of those three; only a live run proves they meet.
+            const docPath = path.join(daemon.home, 'smoke-doc.md');
+            const assetPath = path.join(daemon.home, 'smoke-asset.txt');
+            fs.writeFileSync(docPath, '# Smoke\n\nhello from the smoke test\n', 'utf8');
+            fs.writeFileSync(assetPath, 'sibling asset\n', 'utf8');
+
+            if (cliAvailable) {
+                // The real Swift CLI's `nex md` → the frozen `open` wire command.
+                const opened = await run(SWIFT_CLI, ['md', docPath], {
+                    cwd: daemon.home,
+                    env: {
+                        HOME: daemon.home,
+                        NEX_SOCKET: `tcp:127.0.0.1:${daemon.controlPort}`,
+                        NEX_PANE_ID: paneID
+                    }
+                });
+                check('the Swift CLI opens a markdown pane', opened.code === 0, opened.stderr.trim());
+            } else {
+                ws.send({
+                    type: 'command',
+                    id: 'ws-open',
+                    payload: { command: 'open', path: docPath, pane_id: paneID }
+                });
+                const openReply = await ws.waitJson(
+                    (m) => m.type === 'command-reply' && m.id === 'ws-open',
+                    'the open reply'
+                );
+                check('the open wire command is accepted', openReply.reply?.ok === true, JSON.stringify(openReply.reply));
+            }
+
+            // `open` is fire-and-forget, so the new pane's identity comes from the delta stream —
+            // exactly how the browser learns about it.
+            const paneDelta = await ws.waitJson(
+                (m) =>
+                    m.type === 'delta' &&
+                    m.events?.some(
+                        (event) =>
+                            event.kind === 'pane-upserted' &&
+                            event.pane?.type === 'markdown' &&
+                            event.pane?.filePath === docPath
+                    ),
+                'the markdown pane delta'
+            );
+            const markdownPaneID = paneDelta.events.find(
+                (event) => event.kind === 'pane-upserted' && event.pane?.type === 'markdown'
+            ).pane.id;
+            check(
+                'opening a file reaches the client as a markdown pane',
+                typeof markdownPaneID === 'string',
+                `${markdownPaneID} → ${docPath}`
+            );
+
+            ws.send({
+                type: 'command',
+                id: 'content-sub',
+                payload: { command: 'content-subscribe', pane_id: markdownPaneID }
+            });
+            const subscribed = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'content-sub',
+                'the content-subscribe reply'
+            );
+            const contentState = subscribed.reply?.state ?? {};
+            check(
+                'a subscribed client gets the rendered markdown',
+                subscribed.reply?.ok === true &&
+                    typeof contentState.html === 'string' &&
+                    contentState.html.includes('hello from the smoke test'),
+                `${String(contentState.html ?? '').length} bytes of HTML, mode ${contentState.mode}`
+            );
+            check(
+                'the document carries the sibling-asset base',
+                contentState.assetBase === `/pane-assets/${markdownPaneID}/` &&
+                    String(contentState.html ?? '').includes(`<base href="/pane-assets/${markdownPaneID}/">`),
+                String(contentState.assetBase)
+            );
+
+            // The base only works if the route behind it does: a relative `<img src>` in a note
+            // is fetched from here.
+            const assetResponse = await fetch(`${daemon.base}/pane-assets/${markdownPaneID}/smoke-asset.txt`);
+            const assetBody = assetResponse.ok ? await assetResponse.text() : '';
+            check(
+                'the pane-assets route serves a file beside the markdown',
+                assetResponse.ok && assetBody.includes('sibling asset'),
+                `status ${assetResponse.status}`
+            );
+            // Percent-encoded so `fetch` cannot normalize the traversal away before it is sent:
+            // the daemon has to be the one that refuses it.
+            const escaped = await fetch(
+                `${daemon.base}/pane-assets/${markdownPaneID}/%2E%2E%2F%2E%2E%2Fetc%2Fhosts`
+            );
+            check(
+                'the pane-assets route refuses to escape the file’s directory',
+                escaped.status === 404,
+                `status ${escaped.status}`
+            );
+
+            // The watcher: a write on disk (an agent editing the file, a save from vim) has to
+            // reach every subscribed client without anyone asking.
+            fs.appendFileSync(docPath, '\nappended by the watcher check\n', 'utf8');
+            const updated = await ws.waitJson(
+                (m) =>
+                    m.type === 'content-updated' &&
+                    m.paneID === markdownPaneID &&
+                    String(m.state?.html ?? '').includes('appended by the watcher check'),
+                'the content-updated event',
+                20_000
+            );
+            check(
+                'a write on disk arrives as a content-updated event',
+                updated !== undefined,
+                `revision ${updated.state?.revision}`
+            );
         }
     } catch (error) {
         fail('smoke run', error instanceof Error ? error.message : String(error));

@@ -36,6 +36,7 @@ import {
     type WsRejectionCode
 } from '@nex/protocol';
 
+import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
 import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import { groupByID, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
@@ -87,6 +88,8 @@ export interface SyncHubOptions {
     readonly daemon: { readonly version: string; readonly build: string; readonly pid?: number | undefined };
     /** Defaults to the protocol's compiled-in version. */
     readonly protocolVersion?: number | undefined;
+    /** M5 content panes; absent = the `content-*` verbs answer "not available". */
+    readonly content?: ContentChannel | undefined;
     /** Second token check, after the HTTP upgrade gate. Absent = accept whatever upgraded. */
     readonly validateToken?: ((token: string) => boolean) | undefined;
     readonly now?: (() => number) | undefined;
@@ -222,6 +225,52 @@ export function handleWsOnlyCommand(
     return { ok: true, workspace_id: workspaceID, name };
 }
 
+// ── content-pane commands (M5) ──────────────────────────────────────────────────────
+
+/**
+ * The content-pane verbs. Same reasoning as `WS_ONLY_COMMANDS` (no CLI equivalent, so they are
+ * matched before `decodeWireObject`), with one difference: they are **asynchronous** — reading a
+ * file or running `git diff` cannot answer inside the message handler — so they answer through
+ * `command-reply` when the promise settles rather than returning a reply object.
+ *
+ *   content-subscribe    `pane_id`          → `{ok, pane_id, state}` + `content-updated` events
+ *   content-unsubscribe  `pane_id`          → `{ok, pane_id}` (stops this client's events)
+ *   markdown-set-mode    `pane_id`, `mode`  → `{ok, pane_id, state}` ("view" | "edit")
+ *   content-set-text     `pane_id`, `text`  → `{ok, pane_id, state}` (the edit buffer)
+ *   diff-refresh         `pane_id`          → `{ok, pane_id, state}` (re-runs git)
+ *   markdown-save        `pane_id`          → `{ok, pane_id, state}` (flush the debounce)
+ *
+ * `content-updated` (`{type, paneID, state}`) goes ONLY to sessions subscribed to that pane.
+ */
+export const CONTENT_COMMANDS = [
+    'content-subscribe',
+    'content-unsubscribe',
+    'markdown-set-mode',
+    'content-set-text',
+    'diff-refresh',
+    'markdown-save'
+] as const;
+export type ContentCommand = (typeof CONTENT_COMMANDS)[number];
+
+export function isContentCommand(command: string): command is ContentCommand {
+    return (CONTENT_COMMANDS as readonly string[]).includes(command);
+}
+
+/** The message type carrying a content change to a subscribed client. */
+export const CONTENT_UPDATED_MESSAGE = 'content-updated';
+
+/** The slice of `ContentService` the sync hub uses (so tests can stub it). */
+export interface ContentChannel {
+    subscribe(
+        paneID: string,
+        listener: (state: ContentPaneState) => void
+    ): Promise<ContentSubscription>;
+    setMode(paneID: string, mode: ContentMode): Promise<ContentPaneState>;
+    setText(paneID: string, text: string): Promise<ContentPaneState>;
+    save(paneID: string): Promise<ContentPaneState>;
+    refresh(paneID: string): Promise<ContentPaneState>;
+}
+
 /** A `ReplyHandle` whose lines ride the WS channel as `command-reply` messages. */
 class WsReplyHandle implements ReplyHandle {
     private sends = 0;
@@ -302,6 +351,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         documentVisible = false;
         private disposed = false;
         private readonly handles = new Set<WsReplyHandle>();
+        /** paneID → this connection's content subscription (events go nowhere else). */
+        private readonly contentSubs = new Map<string, ContentSubscription>();
+        /** Bumped on every subscribe/unsubscribe so an in-flight subscribe can be voided. */
+        private readonly contentEpoch = new Map<string, number>();
 
         constructor(
             private readonly transport: SyncTransport,
@@ -377,6 +430,16 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.ready = false;
             for (const handle of [...this.handles]) handle.peerGone();
             this.handles.clear();
+            // A dropped connection must not leave the daemon watching a file for nobody.
+            for (const subscription of this.contentSubs.values()) {
+                try {
+                    subscription.unsubscribe();
+                } catch (error) {
+                    report(error, 'content-unsubscribe');
+                }
+            }
+            this.contentSubs.clear();
+            this.contentEpoch.clear();
             this.panes?.close();
             sessions.delete(this);
         }
@@ -504,6 +567,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // unknown commands (they are deliberately not part of the CLI's vocabulary).
             if (isRecord(payload)) {
                 const name = text(payload['command']);
+                if (name !== undefined && isContentCommand(name)) {
+                    this.contentCommand(id, name, payload);
+                    return;
+                }
                 if (name !== undefined && isWsOnlyCommand(name)) {
                     let reply: JsonObject;
                     try {
@@ -548,6 +615,116 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
             // Fire-and-forget verbs get an acknowledgement so the client's promise settles.
             if (!answered) this.send({ type: 'command-reply', id, reply: { ok: true } });
+        }
+
+        // ── content panes (M5) ──────────────────────────────────────────────────────
+
+        private contentReply(id: string, reply: JsonObject): void {
+            this.send({ type: 'command-reply', id, reply });
+        }
+
+        /** Release this pane's subscription (if any) and return the new epoch. */
+        private dropContentSub(paneID: string): number {
+            this.contentSubs.get(paneID)?.unsubscribe();
+            this.contentSubs.delete(paneID);
+            const epoch = (this.contentEpoch.get(paneID) ?? 0) + 1;
+            this.contentEpoch.set(paneID, epoch);
+            return epoch;
+        }
+
+        private contentCommand(id: string, command: ContentCommand, payload: Record<string, unknown>): void {
+            const content = options.content;
+            if (content === undefined) {
+                this.contentReply(id, failure('content panes are not available'));
+                return;
+            }
+            const paneID = text(payload['pane_id']);
+            if (paneID === undefined) {
+                this.contentReply(id, failure(`${command} requires pane_id`));
+                return;
+            }
+
+            if (command === 'content-unsubscribe') {
+                this.dropContentSub(paneID);
+                this.contentReply(id, { ok: true, pane_id: paneID });
+                return;
+            }
+
+            const settle = (promise: Promise<ContentPaneState>): void => {
+                promise.then(
+                    (state) => {
+                        this.contentReply(id, {
+                            ok: true,
+                            pane_id: paneID,
+                            state: state as unknown as JsonObject
+                        });
+                    },
+                    (error: unknown) => {
+                        this.contentReply(id, failure(toError(error).message));
+                    }
+                );
+            };
+
+            switch (command) {
+                case 'content-subscribe': {
+                    // Re-subscribing replaces the old handle so a client that lost track of its
+                    // subscription cannot end up with two event streams for one pane.
+                    const epoch = this.dropContentSub(paneID);
+                    content
+                        .subscribe(paneID, (state) => {
+                            this.send({
+                                type: CONTENT_UPDATED_MESSAGE,
+                                paneID,
+                                state: state as unknown as JsonObject
+                            });
+                        })
+                        .then(
+                            (subscription) => {
+                                // Voided while the load was in flight (closed, unsubscribed, or
+                                // superseded by a newer subscribe): release it, answer honestly.
+                                if (this.disposed || this.contentEpoch.get(paneID) !== epoch) {
+                                    subscription.unsubscribe();
+                                    this.contentReply(id, failure('subscription was cancelled'));
+                                    return;
+                                }
+                                this.contentSubs.set(paneID, subscription);
+                                this.contentReply(id, {
+                                    ok: true,
+                                    pane_id: paneID,
+                                    state: subscription.state as unknown as JsonObject
+                                });
+                            },
+                            (error: unknown) => {
+                                this.contentReply(id, failure(toError(error).message));
+                            }
+                        );
+                    return;
+                }
+                case 'markdown-set-mode': {
+                    const mode = text(payload['mode']);
+                    if (mode !== 'view' && mode !== 'edit') {
+                        this.contentReply(id, failure("markdown-set-mode requires mode 'view' or 'edit'"));
+                        return;
+                    }
+                    settle(content.setMode(paneID, mode));
+                    return;
+                }
+                case 'content-set-text': {
+                    const value = payload['text'];
+                    if (typeof value !== 'string') {
+                        this.contentReply(id, failure('content-set-text requires text'));
+                        return;
+                    }
+                    settle(content.setText(paneID, value));
+                    return;
+                }
+                case 'diff-refresh':
+                    settle(content.refresh(paneID));
+                    return;
+                default:
+                    settle(content.save(paneID));
+                    return;
+            }
         }
 
         // ── output ──────────────────────────────────────────────────────────────────

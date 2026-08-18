@@ -25,6 +25,7 @@ import path from 'node:path';
 
 import { Hono } from 'hono';
 
+import { PANE_ASSETS_PREFIX } from '../content/index.js';
 import { ensureToken, readToken, resolveRunPaths } from '../lifecycle/rundir.js';
 
 /** The single WS endpoint; everything else on the listener is plain HTTP. */
@@ -159,6 +160,63 @@ function fileResponse(file: ResolvedFile, options: { immutable: boolean }): Resp
 /** Hashed bundle output lives under /assets/ — safe to cache forever. */
 function isImmutableAsset(requestPath: string): boolean {
     return requestPath.startsWith('/assets/');
+}
+
+// ── content-pane assets (M5) ────────────────────────────────────────────────────────
+
+export interface PaneAssetRequest {
+    readonly paneID: string;
+    /** Path relative to the pane's open file, still un-normalized. */
+    readonly relativePath: string;
+}
+
+/**
+ * `/pane-assets/<paneID>/<relpath>` → its two parts, or null when the shape is wrong.
+ * Percent-decoding happens here (hono keeps the pathname encoded), so an encoded separator
+ * cannot smuggle a second path segment past the parse.
+ */
+export function parsePaneAssetPath(pathname: string): PaneAssetRequest | null {
+    const prefix = `${PANE_ASSETS_PREFIX}/`;
+    if (!pathname.startsWith(prefix)) return null;
+    const rest = pathname.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0 || slash === rest.length - 1) return null;
+    let paneID: string;
+    let relativePath: string;
+    try {
+        paneID = decodeURIComponent(rest.slice(0, slash));
+        relativePath = decodeURIComponent(rest.slice(slash + 1));
+    } catch {
+        return null;
+    }
+    if (paneID === '' || relativePath === '') return null;
+    if (paneID.includes('\0') || relativePath.includes('\0')) return null;
+    if (paneID.includes('/') || paneID.includes('\\')) return null;
+    return { paneID, relativePath };
+}
+
+/**
+ * The sibling-asset route (content-panes.md port note 4): a markdown preview is loaded with
+ * `<base href="/pane-assets/<paneID>/">`, so `![](diagram.png)` next to the file resolves.
+ *
+ * The route itself only parses and serves; `resolve` (the `ContentService`) decides what the
+ * pane may expose and rejects anything that escapes the file's directory — this route can
+ * therefore never reach a file the service did not hand back.
+ */
+export function createPaneAssetsRoute(
+    resolve: (paneID: string, relativePath: string) => string | null
+): (app: Hono) => void {
+    return (app) => {
+        app.on(['GET', 'HEAD'], `${PANE_ASSETS_PREFIX}/*`, (c) => {
+            const request = parsePaneAssetPath(new URL(c.req.url).pathname);
+            if (request === null) return c.text('not found\n', 404);
+            const resolved = resolve(request.paneID, request.relativePath);
+            if (resolved === null) return c.text('not found\n', 404);
+            const file = statFile(resolved);
+            if (file === undefined) return c.text('not found\n', 404);
+            return fileResponse(file, { immutable: false });
+        });
+    };
 }
 
 export function createHttpApp(options: HttpAppOptions): Hono {

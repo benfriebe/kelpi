@@ -10,8 +10,9 @@ src/
 ├─ state/        the zustand mirror of DaemonState (+ this client's UI state) and the bridge
 ├─ terminal/     TerminalRenderer (ghostty-web | xterm.js), mount policy, TerminalPane
 ├─ grid/         the pane grid: frames, dividers, zoom, headers, focus ring
+├─ content/      markdown / diff / scratchpad panes: the sandboxed frame, editor, subscriptions
 ├─ chrome/       sidebar, top bar, status footer, command palette, theme, keybindings
-├─ app/          assembly helpers: daemon-target resolution, the content-pane placeholder
+├─ app/          assembly helpers: daemon-target resolution, the web-pane placeholder
 ├─ App.tsx       the assembly: everything above, wired to a NexRuntime
 └─ main.tsx      entrypoint: resolve target → build runtime → render
 ```

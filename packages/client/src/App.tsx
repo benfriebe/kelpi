@@ -19,8 +19,9 @@
  *     (key dispatch, palette, menus) resolves the active workspace through `store.getState()`,
  *     which is why the handler set can be built once instead of on every render.
  *
- * Panes whose renderer is a later milestone (markdown/diff/scratchpad → M5, web → M6) render an
- * honest placeholder card rather than an empty box: the pane is real daemon state either way.
+ * Content panes (markdown/diff/scratchpad) are M5's bodies and subscribe through one shared
+ * `ContentClient`; a web pane still renders an honest placeholder card rather than an empty box
+ * (its renderer is M6), because the pane is real daemon state either way.
  */
 
 import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@nex/core/layout';
@@ -57,12 +58,14 @@ import {
     type StatusBarItem
 } from './chrome';
 import { isOkReply, replyError, type CommandReply } from './connection';
+import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient } from './content';
 import { PaneGrid, type PaneModel, type RenderPane } from './grid';
 import {
     selectActiveWorkspace,
     selectAgentSummary,
     selectFilteredSidebarEntries,
     selectFocusedPaneID,
+    selectPane,
     selectVisibleWorkspaceIDs,
     type NexRuntime,
     type Toast
@@ -212,6 +215,41 @@ function Shell(props: AppProps): ReactElement {
         [notifyFailure]
     );
 
+    /** `run` for anything that is not a raw command reply (the content verbs resolve to void). */
+    const runTask = useCallback(
+        (label: string, task: Promise<unknown>): true => {
+            void task.catch((error: unknown) => {
+                notifyFailure(label, error instanceof Error ? error.message : String(error));
+            });
+            return true;
+        },
+        [notifyFailure]
+    );
+
+    /**
+     * One content client for the whole window (M5). It multiplexes the per-pane subscriptions
+     * the bodies open, re-subscribes after a reconnect, and owns the typing debounce — so a
+     * closing tab still owes the daemon whatever the editor is holding, which is why it is
+     * disposed rather than garbage-collected.
+     */
+    const content = useMemo(
+        () =>
+            createContentClient({
+                connection: runtime.connection,
+                commands,
+                // A content verb resolves rather than rejects (the pane reads its own error
+                // state), so the toast is raised here or a failed refresh is silent. A drop
+                // fails every in-flight command at once and the banner already says why, so
+                // those are left to it.
+                onError: (message, context) => {
+                    if (runtime.connection.status !== 'connected') return;
+                    notifyFailure(`Content pane (${context})`, message);
+                }
+            }),
+        [runtime, commands, notifyFailure]
+    );
+    useEffect(() => () => content.dispose(), [content]);
+
     /**
      * Every intent the UI can raise, bound once. Each reads the CURRENT mirror through
      * `store.getState()` rather than closing over a render's values, so the object is stable
@@ -221,6 +259,11 @@ function Shell(props: AppProps): ReactElement {
         const activeWorkspace = (): WorkspaceState | null => selectActiveWorkspace(store.getState());
         const activeWorkspaceID = (): string | null => activeWorkspace()?.id ?? null;
         const focused = (): string | null => selectFocusedPaneID(store.getState());
+        const toggleMarkdownEdit = (paneID: string): boolean => {
+            const pane = selectPane(store.getState(), paneID);
+            if (pane === null || pane.type !== 'markdown') return false;
+            return runTask('Toggle markdown edit', content.setMode(paneID, pane.isEditing ? 'view' : 'edit'));
+        };
 
         return {
             focusPane(paneID: string | null): boolean {
@@ -343,6 +386,24 @@ function Shell(props: AppProps): ReactElement {
                 return run('Synchronise input', commands.setSyncInput({ action: 'toggle', workspace: id }));
             },
 
+            /**
+             * ⌘E / the header's pencil-eye button (content-panes.md §4.1). The mode lives in the
+             * daemon, so the toggle reads the pane's current `isEditing` and asks for the other
+             * one; a non-markdown pane declines, which lets the keystroke fall through.
+             */
+            toggleMarkdownEdit,
+
+            toggleMarkdownEditFocused(): boolean {
+                const paneID = focused();
+                if (paneID === null) return false;
+                return toggleMarkdownEdit(paneID);
+            },
+
+            /** The diff header's refresh button (§5.2 trigger 2) — re-runs `git diff`. */
+            refreshDiff(paneID: string): boolean {
+                return runTask('Refresh diff', content.refresh(paneID));
+            },
+
             newWorkspace(): boolean {
                 return run('New workspace', commands.createWorkspace({}));
             },
@@ -423,7 +484,7 @@ function Shell(props: AppProps): ReactElement {
                 return true;
             }
         };
-    }, [commands, run, runtime, store]);
+    }, [commands, content, run, runTask, runtime, store]);
 
     // ── terminal mounting ───────────────────────────────────────────────────────────
 
@@ -529,6 +590,9 @@ function Shell(props: AppProps): ReactElement {
             move_pane_down: () => act.movePaneDirection('down'),
             toggle_zoom: () => act.toggleZoomFocused(),
             cycle_layout: () => act.cycleLayout(),
+            // Conditional binding (§4.1): only a focused markdown pane consumes ⌘E — anything
+            // else returns false and the keystroke falls through to the pane.
+            toggle_markdown_edit: () => act.toggleMarkdownEditFocused(),
             toggle_sync_input: () => act.toggleSyncInput(),
             command_palette: () => act.togglePalette(),
             toggle_sidebar: () => act.toggleSidebar(),
@@ -635,6 +699,43 @@ function Shell(props: AppProps): ReactElement {
         (paneID, _frame, focused, renderState) => {
             const pane = paneByID.get(paneID);
             if (pane === undefined) return null;
+
+            // Content bodies subscribe on mount and unsubscribe on unmount, so the daemon only
+            // reads and watches files somebody is actually looking at (M5).
+            if (pane.type === 'markdown') {
+                return (
+                    <MarkdownPane
+                        paneID={paneID}
+                        content={content}
+                        focused={focused}
+                        visible={renderState.visible}
+                        onFocusRequest={onTerminalFocus}
+                        onToggleEdit={act.toggleMarkdownEdit}
+                    />
+                );
+            }
+            if (pane.type === 'diff') {
+                return (
+                    <DiffPane
+                        paneID={paneID}
+                        content={content}
+                        focused={focused}
+                        visible={renderState.visible}
+                        onFocusRequest={onTerminalFocus}
+                    />
+                );
+            }
+            if (pane.type === 'scratchpad') {
+                return (
+                    <ScratchpadPane
+                        paneID={paneID}
+                        content={content}
+                        focused={focused}
+                        visible={renderState.visible}
+                        onFocusRequest={onTerminalFocus}
+                    />
+                );
+            }
             if (pane.type !== 'shell') {
                 return <ContentPanePlaceholder pane={pane} url={webPaneURL(workspace, paneID)} />;
             }
@@ -654,7 +755,18 @@ function Shell(props: AppProps): ReactElement {
                 />
             );
         },
-        [paneByID, workspace, mountedSet, runtime, terminalTheme, onTerminalFocus, onDimensionsChange, createRenderer]
+        [
+            act,
+            content,
+            paneByID,
+            workspace,
+            mountedSet,
+            runtime,
+            terminalTheme,
+            onTerminalFocus,
+            onDimensionsChange,
+            createRenderer
+        ]
     );
 
     // ── render ──────────────────────────────────────────────────────────────────────
@@ -725,6 +837,8 @@ function Shell(props: AppProps): ReactElement {
                         onRenamePane={act.renamePane}
                         onSplitPane={act.splitPane}
                         onToggleZoom={act.toggleZoom}
+                        onToggleMarkdownEdit={act.toggleMarkdownEdit}
+                        onRefreshDiff={act.refreshDiff}
                         onMovePane={act.movePaneAdjacent}
                         onCreatePane={act.createPane}
                         onSetRatio={(_splitPath, _ratio, commit) => {

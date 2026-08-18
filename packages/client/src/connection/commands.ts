@@ -20,7 +20,11 @@
  * `renameWorkspace`): they are direct-manipulation gestures the CLI has no way to send, so
  * WP3.6 added them to the daemon's WS command dispatch rather than to `WIRE_COMMANDS` — a new
  * CLI verb would be a compatibility surface owed to the Swift CLI forever. They are documented
- * where they are declared, at the bottom of the class.
+ * where they are declared, at the bottom of the class. The M5 content-pane family
+ * (`content-subscribe` … `markdown-save`) is WS-only for the same reason and additionally
+ * **asynchronous** daemon-side — reading a file or running `git diff` cannot answer inside the
+ * message handler — so those replies arrive when the daemon's promise settles, which changes
+ * nothing here: every command already settles through `command-reply`.
  *
  * Still unwired for want of any daemon action name: pane status override and
  * reopen-closed-pane. `raw()` is deliberately public so either can be sent the moment the
@@ -44,6 +48,13 @@ import type {
 import type { ConnectionStatus, NexConnection } from './socket';
 
 export type CommandReply = JsonObject;
+
+/**
+ * The mode `markdown-set-mode` accepts. Restated (not imported from `content/`) so the
+ * transport layer keeps its one-way dependency: features import the connection, never the
+ * reverse.
+ */
+export type ContentPaneMode = 'view' | 'edit';
 
 export class CommandError extends Error {
     constructor(
@@ -653,6 +664,52 @@ export class CommandClient {
             wirePayload('rename-workspace', { workspace_id: input.workspaceID, name: input.name }),
             options ?? {}
         );
+    }
+
+    // ── content-pane verbs (M5) ────────────────────────────────────────────────────
+    //
+    // The daemon's `ContentService` behind `daemon/src/ws/sync.ts` `CONTENT_COMMANDS`. A
+    // subscription is **per connection**: the daemon fans `content-updated` out to the sessions
+    // that asked for that pane and to nobody else, and drops every subscription when the socket
+    // closes — so a reconnect must re-subscribe (`content/client.ts` does).
+
+    /** Start mirroring a content pane. The reply carries the current state. */
+    subscribeContent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('content-subscribe', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Stop this connection's event stream for the pane (the pane itself is untouched). */
+    unsubscribeContent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('content-unsubscribe', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Markdown view ⇄ edit (§4.1). Also flips the pane's `isEditing` in daemon state. */
+    setMarkdownMode(
+        input: { paneID: string; mode: ContentPaneMode },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('markdown-set-mode', { pane_id: input.paneID, mode: input.mode }),
+            options ?? {}
+        );
+    }
+
+    /** Push the editor buffer to the daemon, which owns the debounced write to disk (§4.2). */
+    setContentText(input: { paneID: string; text: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('content-set-text', { pane_id: input.paneID, text: input.text }),
+            options ?? {}
+        );
+    }
+
+    /** Diff: re-run `git diff`. Markdown: re-read the file. Scratchpad: no-op (§5.2). */
+    refreshContent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('diff-refresh', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Flush the daemon's pending debounced save now (quit flush, mode switch). */
+    saveContent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('markdown-save', { pane_id: input.paneID }), options ?? {});
     }
 
     // ── internals ──────────────────────────────────────────────────────────────────

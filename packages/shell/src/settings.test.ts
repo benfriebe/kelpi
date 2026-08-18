@@ -1,0 +1,80 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { AgentModel, type AgentCounts } from './agents.js';
+import {
+    DEFAULT_SHELL_SETTINGS,
+    quitDialogSpec,
+    readShellSettings,
+    settingsFile,
+    shouldConfirmQuit,
+    writeShellSettings
+} from './settings.js';
+
+const dirs: string[] = [];
+
+function tempDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-settings-'));
+    dirs.push(dir);
+    return dir;
+}
+
+afterEach(() => {
+    while (dirs.length > 0) fs.rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
+
+function counts(active: number): AgentCounts {
+    const model = new AgentModel();
+    const panes = Array.from({ length: active }, (_value, index) => ({
+        id: `p${String(index)}`,
+        status: 'waitingForInput'
+    }));
+    model.applySnapshot({ workspaces: [{ id: 'w1', name: 'alpha', panes }] } as never);
+    return model.counts();
+}
+
+describe('shell settings', () => {
+    it('defaults confirmQuitWhenActive to true when the file is missing', () => {
+        expect(readShellSettings(settingsFile(tempDir()))).toEqual(DEFAULT_SHELL_SETTINGS);
+    });
+
+    it('round-trips the suppression flag', () => {
+        const file = settingsFile(tempDir());
+        writeShellSettings(file, { confirmQuitWhenActive: false });
+        expect(readShellSettings(file).confirmQuitWhenActive).toBe(false);
+    });
+
+    it('treats any non-false value (including garbage) as true', () => {
+        const file = path.join(tempDir(), 'settings.json');
+        fs.writeFileSync(file, JSON.stringify({ confirmQuitWhenActive: 'no' }));
+        expect(readShellSettings(file).confirmQuitWhenActive).toBe(true);
+        fs.writeFileSync(file, 'not json at all');
+        expect(readShellSettings(file).confirmQuitWhenActive).toBe(true);
+    });
+});
+
+describe('shouldConfirmQuit', () => {
+    it('asks only when agents are active', () => {
+        expect(shouldConfirmQuit({ confirmQuitWhenActive: true }, counts(0))).toBe(false);
+        expect(shouldConfirmQuit({ confirmQuitWhenActive: true }, counts(2))).toBe(true);
+    });
+
+    it('never asks once the user suppressed it', () => {
+        expect(shouldConfirmQuit({ confirmQuitWhenActive: false }, counts(3))).toBe(false);
+    });
+});
+
+describe('quitDialogSpec', () => {
+    it('defaults to Cancel and offers the suppression checkbox', () => {
+        const spec = quitDialogSpec(counts(1));
+        expect(spec.buttons).toEqual(['Quit', 'Cancel']);
+        expect(spec.defaultId).toBe(1);
+        expect(spec.cancelId).toBe(1);
+        expect(spec.checkboxLabel).toBe("Don't ask again");
+        expect(spec.message).toBe('Quit Nex?');
+        expect(spec.detail).toContain('keep running in the background');
+    });
+});

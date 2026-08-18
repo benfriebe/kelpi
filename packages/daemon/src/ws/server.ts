@@ -27,10 +27,17 @@ import {
     createHttpApp,
     tokensMatch,
     writeUpgradeRejection,
-    type DaemonVersionInfo
+    type DaemonVersionInfo,
+    type HttpAppOptions
 } from './http.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
-import { createSyncHub, type NexDomainStore, type SyncHub, type SyncPresence } from './sync.js';
+import {
+    createSyncHub,
+    type ContentChannel,
+    type NexDomainStore,
+    type SyncHub,
+    type SyncPresence
+} from './sync.js';
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1';
 
@@ -57,6 +64,10 @@ export interface WsServerOptions {
     readonly allowAnonymous?: boolean | undefined;
     /** Built web client; absent → the "client not built" page. */
     readonly distDir?: string | undefined;
+    /** M5 content panes: the `content-*` WS verbs (absent = they answer "not available"). */
+    readonly content?: ContentChannel | undefined;
+    /** Extra HTTP routes registered before the static catch-all (the pane-asset route). */
+    readonly routes?: HttpAppOptions['routes'] | undefined;
     readonly daemonInfo?: { readonly pid?: number | undefined } | undefined;
     /** Flow control overrides (tests). */
     readonly windowBytes?: number | undefined;
@@ -129,7 +140,8 @@ export function createWsServer(options: WsServerOptions): WsServer {
     const app = createHttpApp({
         version: options.version,
         distDir: options.distDir,
-        onError: options.onError
+        onError: options.onError,
+        routes: options.routes
     });
     const requestListener = getRequestListener(app.fetch);
 
@@ -154,6 +166,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
             pid: options.daemonInfo?.pid
         },
         protocolVersion: options.version.protocol,
+        content: options.content,
         // The upgrade already checked the token; hello re-checks it so a socket that
         // upgraded anonymously (dev) cannot present a bogus one and look authenticated.
         ...(options.token !== undefined && options.token.length > 0

@@ -45,6 +45,11 @@ export interface WorktreeAddRequest {
 export interface GitService {
     /** `git rev-parse --abbrev-ref HEAD`; trimmed, empty → null, `"HEAD"` = detached. */
     getCurrentBranch(repoPath: string): Promise<string | null>;
+    /**
+     * `git diff --no-color [-- <targetPath>]` in `repoPath` (content-panes.md §5.1). Throws a
+     * `GitCommandError` on a non-zero exit — the diff pane renders the failure as text.
+     */
+    getDiff(repoPath: string, targetPath?: string | null): Promise<string>;
     /** `git remote get-url origin`; trimmed, empty → null. Never throws. */
     getRemoteURL(repoPath: string): Promise<string | null>;
     /** ls-remote symref → local `origin/HEAD` symref → `"main"`. Never throws. */
@@ -134,6 +139,13 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             } catch {
                 return null;
             }
+        },
+
+        async getDiff(repoPath, targetPath) {
+            const scope = targetPath ?? '';
+            const args =
+                scope === '' ? ['diff', '--no-color'] : ['diff', '--no-color', '--', scope];
+            return readGit(args, repoPath);
         },
 
         async getRemoteURL(repoPath) {

@@ -14,6 +14,7 @@ const G1 = id('cccccccc', 1);
 function stubGit(overrides: Partial<GitService> = {}): GitService {
     const base: GitService = {
         getCurrentBranch: async () => 'main',
+        getDiff: async () => '',
         getRemoteURL: async () => null,
         defaultBranch: async () => 'main',
         fetch: async () => {},

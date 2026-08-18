@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./store": "./src/store/index.ts"
+    "./store": "./src/store/index.ts",
+    "./lifecycle": "./src/lifecycle/index.ts",
+    "./boot/port": "./src/boot/port.ts"
   },
   "types": "./src/index.ts",
   "bin": {
@@ -24,8 +26,10 @@
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "hono": "^4.13.3",
+    "markdown-it": "^15.0.0",
     "node-pty": "^1.1.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

@@ -8,6 +8,9 @@
  * rewrite, and the exec wrapper's statement-vs-expression rule.
  */
 
+import { fileURLToPath } from 'node:url';
+
+import * as esbuild from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -51,6 +54,54 @@ describe('injection', () => {
         expect(inspectorScript()).toContain('__nexInspectorInstalled');
         expect(bridgeScript()).toContain('__nexBridgeInstalled');
         expect(findScript()).toContain('__nexWebFind');
+    });
+
+    it('is self-contained: no bundler helper reaches the page unresolved', () => {
+        // The scripts are serialised with `Function.prototype.toString()`, so whatever the
+        // bundler emitted travels with them. esbuild's `keepNames` wraps functions in a
+        // module-scope `__name(...)` helper — the wrapper defines an identity `__name` for
+        // exactly that, but any OTHER `__helper(` in the output would reach a real page as a
+        // `ReferenceError` at install time, taking the actuator/picker/find with it. This test
+        // is the cheap early warning; the live smoke is the expensive one.
+        for (const source of injectedScriptSources()) {
+            expect(source).toContain('var __name=function(target){return target;}');
+            const helpers = source.match(/\b__(?!name\b|nex)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
+            expect(helpers).toEqual([]);
+        }
+    });
+
+    it('stays self-contained through the REAL bundler settings, not just under vitest', async () => {
+        // The bug this guards against only exists in the shipped artefact: `scripts/bundle.mjs`
+        // runs esbuild with `keepNames`, which rewrote every page function as `__name(fn,"fn")`
+        // and made all four scripts throw at install time in a real page. Running the same
+        // bundle here, then reading the sources out of the bundled module, catches a repeat
+        // without waiting for the live smoke.
+        const built = await esbuild.build({
+            entryPoints: [fileURLToPath(new URL('./scripts.ts', import.meta.url))],
+            bundle: true,
+            format: 'esm',
+            platform: 'node',
+            target: 'node24',
+            keepNames: true,
+            write: false
+        });
+        const code = built.outputFiles[0]?.text ?? '';
+        expect(code).toContain('__name');
+        const bundled = (await import(
+            `data:text/javascript;base64,${Buffer.from(code, 'utf8').toString('base64')}`
+        )) as { injectedScriptSources(): readonly string[] };
+        for (const source of bundled.injectedScriptSources()) {
+            const helpers = source.match(/\b__(?!name\b|nex)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
+            expect(helpers).toEqual([]);
+            // …and the helper the bundler DID emit resolves inside the wrapper's scope. The
+            // fake `window` is not `window.top`, so the main-frame guard returns immediately —
+            // this proves the source installs, not what it does (that is the smoke's job).
+            const installed = new Function('window', 'document', `${source}; return true;`) as (
+                windowStub: unknown,
+                documentStub: unknown
+            ) => boolean;
+            expect(installed({ top: {} }, {})).toBe(true);
+        }
     });
 
     it('rewrites the binding placeholder to the real Runtime.addBinding name', () => {

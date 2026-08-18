@@ -41,9 +41,9 @@ import type { JsonObject } from '@nex/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
-import { screenshotFileName } from './caps.js';
+import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
-import { createVerbDispatcher } from './dispatch.js';
+import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
 import { createPaneSessions } from './sessions.js';
 import { DEFAULT_VIEWPORT, createTabHooks, type HostTab } from './tab.js';
@@ -72,7 +72,14 @@ export interface WebPaneHost {
  */
 async function spillScreenshot(paneID: string, png: Uint8Array): Promise<string> {
     const file = path.join(os.tmpdir(), screenshotFileName(paneID, Date.now()));
-    await writeFile(file, png);
+    try {
+        await writeFile(file, png);
+    } catch (error) {
+        // The path is the whole point of the failure message: it is what the agent (or the
+        // user) has to go look at. `./dispatch.ts` passes a `failed to write screenshot…`
+        // message through to the CLI verbatim.
+        throw new Error(`${SCREENSHOT_WRITE_ERROR} to ${file}`, { cause: error });
+    }
     return file;
 }
 
@@ -127,10 +134,11 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 });
             },
             inspect: (paneID, tabID, payload) => {
-                // Forwarded verbatim: the daemon re-validates the nonce and re-sanitises every
-                // field before it can reach a PTY (§11.6), so the host must not "helpfully"
-                // reshape a payload it did not author.
-                client?.sendEvent('inspect', paneID, tabID, payload as JsonObject);
+                // Clamped, not reshaped: the nonce and the `cancelled` flag travel untouched (the
+                // daemon compares the nonce for equality and re-sanitises every other field before
+                // it can reach a PTY, §11.6) — this pass only stops a page's multi-megabyte
+                // `outerHTML` from crossing the socket to be clamped at the other end.
+                client?.sendEvent('inspect', paneID, tabID, clampInspectPayload(payload) as JsonObject);
             },
             tabClosed: (paneID, tabID) => {
                 // The daemon drops the tab and re-activates the left neighbour; our registry

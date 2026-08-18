@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
     INSPECT_LIMITS,
     clampField,
+    clampInspectPayload,
     clampUtf8,
     screenshotFileName,
     stripUnsafeControlCharacters,
@@ -79,5 +80,51 @@ describe('clampField', () => {
 describe('screenshotFileName', () => {
     it('uses the spec name shape with unix SECONDS', () => {
         expect(screenshotFileName('PANE-1', 1_766_000_000_123)).toBe('nex-web-capture-PANE-1-1766000000.png');
+    });
+});
+
+describe('clampInspectPayload', () => {
+    const payload = {
+        nonce: 'a'.repeat(32),
+        selector: '#login',
+        xpath: '/html[1]/body[1]/button[1]',
+        tag: 'button',
+        element_id: 'login',
+        outer_html: `<button>${'x'.repeat(40_000)}</button>`,
+        attributes: { class: 'y'.repeat(4_000), ['data-\u001b[31mevil']: 'ok' },
+        rect: { x: 1.5, y: 2, w: 3, h: 4 },
+        text: 'Sign in',
+        context_html: 'z'.repeat(9_000),
+        url: 'https://example.com/login',
+        captured_at: '2026-08-18T05:12:03.123Z'
+    };
+
+    it('clamps every budgeted field to §11.6, markers included', () => {
+        const clamped = clampInspectPayload(payload);
+        expect(utf8Length(clamped['outer_html'] as string)).toBeLessThanOrEqual(INSPECT_LIMITS.outerHTML);
+        expect(clamped['outer_html'] as string).toContain('... [truncated]');
+        expect(utf8Length(clamped['context_html'] as string)).toBeLessThanOrEqual(INSPECT_LIMITS.contextHTML);
+        const attributes = clamped['attributes'] as Record<string, string>;
+        expect(utf8Length(attributes['class'] ?? '')).toBeLessThanOrEqual(INSPECT_LIMITS.attributeValue);
+        // The ANSI escape in the attribute NAME is stripped: the payload can end up in a PTY.
+        expect(Object.keys(attributes)).toEqual(['class', 'data-evil']);
+        expect(clamped['selector']).toBe('#login');
+    });
+
+    it('passes the nonce through byte-for-byte (it is compared for equality)', () => {
+        expect(clampInspectPayload(payload)['nonce']).toBe(payload.nonce);
+        expect(clampInspectPayload({ nonce: 'n1', cancelled: true })).toMatchObject({
+            nonce: 'n1',
+            cancelled: true
+        });
+    });
+
+    it('keeps the shape the daemon decodes even from a hostile payload', () => {
+        const clamped = clampInspectPayload({ selector: 42, rect: 'nope', attributes: ['x'] });
+        expect(clamped['selector']).toBe('42');
+        expect(clamped['rect']).toEqual({ x: 0, y: 0, w: 0, h: 0 });
+        expect(clamped['attributes']).toEqual({});
+        expect('nonce' in clamped).toBe(false);
+        expect('cancelled' in clamped).toBe(false);
     });
 });

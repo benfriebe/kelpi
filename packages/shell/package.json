@@ -9,7 +9,8 @@
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:web": "node scripts/web-smoke.mjs"
   },
   "dependencies": {
     "@nex/core": "workspace:*",

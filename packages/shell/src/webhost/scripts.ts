@@ -35,8 +35,23 @@ const BINDING_PLACEHOLDER = '__NEX_BINDING__';
 
 type PageGlobal = Record<string, any>;
 
+/**
+ * One script function → the source string CDP injects.
+ *
+ * The authoring rule (module header) is that a script may only reference what it defines itself,
+ * because module scope does not exist in the page. **The bundler can break that rule for us**:
+ * esbuild's `keepNames` (on in `scripts/bundle.mjs`, for readable stack traces) rewrites every
+ * function it emits as `__name(fn, "fn")`, and `Function.prototype.toString()` carries those
+ * calls into the page while the module-scope `__name` helper stays behind — every injected script
+ * then dies at install time with `ReferenceError: __name is not defined` (measured against a real
+ * Chromium, and invisible to a unit test that only reads the string).
+ *
+ * So the wrapper defines an identity `__name` in the scope the source is evaluated in. That is
+ * bundler-agnostic: unbundled (vitest, tsx) the shim is simply unused. `./scripts.test.ts` guards
+ * the rule by rejecting any *other* helper identifier that reaches the page.
+ */
 function serialize(fn: () => void): string {
-    return `(${fn.toString()})();`;
+    return `(function(){var __name=function(target){return target;};return (${fn.toString()});})()();`;
 }
 
 // ── the host↔page bridge ────────────────────────────────────────────────────────────

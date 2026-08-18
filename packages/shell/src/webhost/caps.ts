@@ -129,6 +129,51 @@ export function clampField(raw: string, limit: number): string {
     return clampUtf8(stripped, budget, INSPECT_TRUNCATION_MARKER).text;
 }
 
+/**
+ * §11.6 applied to a whole picker payload, before it leaves the host.
+ *
+ * The daemon re-sanitises everything it receives (`daemon/src/webpane/inspect.ts` is the source
+ * of truth — it is the last gate before a PTY), so this pass is not what makes the payload safe.
+ * It is what keeps the *wire* honest: a page can hand the picker a multi-megabyte `outerHTML`,
+ * and shipping that through the WS only to have the daemon clamp it to 16 KB is pure waste.
+ * Clamping is idempotent, so the daemon's pass over an already-clamped field is a no-op.
+ *
+ * `nonce` and `cancelled` pass through untouched: the nonce is compared for equality against the
+ * arm, so a "cleaned" one would silently stop matching, and the cancel flag is a boolean.
+ */
+export function clampInspectPayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const str = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value));
+    const attributes: Record<string, string> = {};
+    const rawAttributes = payload['attributes'];
+    if (typeof rawAttributes === 'object' && rawAttributes !== null && !Array.isArray(rawAttributes)) {
+        for (const [key, value] of Object.entries(rawAttributes as Record<string, unknown>)) {
+            attributes[clampField(key, INSPECT_LIMITS.attributeKey)] = clampField(
+                str(value),
+                INSPECT_LIMITS.attributeValue
+            );
+        }
+    }
+    const rawRect = payload['rect'];
+    const rect = typeof rawRect === 'object' && rawRect !== null ? (rawRect as Record<string, unknown>) : {};
+    const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+
+    return {
+        ...(typeof payload['nonce'] === 'string' ? { nonce: payload['nonce'] } : {}),
+        ...(payload['cancelled'] === true ? { cancelled: true } : {}),
+        selector: clampField(str(payload['selector']), INSPECT_LIMITS.selector),
+        xpath: clampField(str(payload['xpath']), INSPECT_LIMITS.xpath),
+        tag: clampField(str(payload['tag']), INSPECT_LIMITS.tag),
+        element_id: clampField(str(payload['element_id']), INSPECT_LIMITS.elementID),
+        outer_html: clampField(str(payload['outer_html']), INSPECT_LIMITS.outerHTML),
+        attributes,
+        rect: { x: number(rect['x']), y: number(rect['y']), w: number(rect['w']), h: number(rect['h']) },
+        text: clampField(str(payload['text']), INSPECT_LIMITS.text),
+        context_html: clampField(str(payload['context_html']), INSPECT_LIMITS.contextHTML),
+        url: clampField(str(payload['url']), INSPECT_LIMITS.url),
+        captured_at: str(payload['captured_at'])
+    };
+}
+
 /** §8.4 screenshot spill file: `nex-web-capture-<paneID>-<unixts>.png` in the OS temp dir. */
 export function screenshotFileName(paneID: string, atEpochMs: number): string {
     return `nex-web-capture-${paneID}-${String(Math.floor(atEpochMs / 1000))}.png`;

@@ -73,7 +73,12 @@ class FakeTab implements TabController {
     }
 }
 
-function harness(options: { cookies?: readonly CookieRecord[] } = {}) {
+function harness(
+    options: {
+        cookies?: readonly CookieRecord[];
+        writeScreenshot?: (paneID: string, png: Uint8Array) => Promise<string>;
+    } = {}
+) {
     const tabs: FakeTab[] = [];
     const registry: TabRegistry<FakeTab> = createTabRegistry<FakeTab>({
         create(input) {
@@ -98,7 +103,9 @@ function harness(options: { cookies?: readonly CookieRecord[] } = {}) {
             return Promise.resolve(2);
         }
     };
-    const writeScreenshot = vi.fn(() => Promise.resolve('/tmp/nex-web-capture-P1-1.png'));
+    const writeScreenshot = vi.fn(
+        options.writeScreenshot ?? ((): Promise<string> => Promise.resolve('/tmp/nex-web-capture-P1-1.png'))
+    );
     const dispatcher = createVerbDispatcher<FakeTab>({ registry, storage, writeScreenshot });
     dispatcher.notify('pane-open', {
         paneID: 'P1',
@@ -247,6 +254,26 @@ describe('capture (§8.4)', () => {
         expect(reply['path']).toBe('/tmp/nex-web-capture-P1-1.png');
         expect(reply['byte_count']).toBe(1_000_001);
         expect(writeScreenshot).toHaveBeenCalledOnce();
+    });
+
+    it('reports a spill failure with the path the writer tried', async () => {
+        const { dispatcher, tab } = harness({
+            writeScreenshot: () => Promise.reject(new Error('failed to write screenshot to /tmp/x.png'))
+        });
+        tab.png = new Uint8Array(1_000_001);
+        await expect(dispatcher.call('capture', { ...scope, mode: 'screenshot' })).resolves.toEqual({
+            ok: false,
+            error: 'failed to write screenshot to /tmp/x.png'
+        });
+    });
+
+    it('falls back to the bare write-failure string for an unrelated error', async () => {
+        const { dispatcher, tab } = harness({ writeScreenshot: () => Promise.reject(new Error('EACCES')) });
+        tab.png = new Uint8Array(1_000_001);
+        await expect(dispatcher.call('capture', { ...scope, mode: 'screenshot' })).resolves.toEqual({
+            ok: false,
+            error: 'failed to write screenshot'
+        });
     });
 
     it('fails the whole reply when a screenshot-only capture cannot be taken', async () => {

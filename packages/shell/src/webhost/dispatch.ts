@@ -60,6 +60,8 @@ export const CAPTURE_MODES = ['meta', 'text', 'screenshot', 'dom', 'all'] as con
 export type CaptureMode = (typeof CAPTURE_MODES)[number];
 
 export const SCREENSHOT_FAILED_ERROR = 'screenshot capture failed';
+/** §8.4's other failure: the PNG was taken but could not be spilled to the temp dir. */
+export const SCREENSHOT_WRITE_ERROR = 'failed to write screenshot';
 
 /** The verbs answered with a `host-rpc-reply` (HOST_PROTOCOL §3.2–§3.4). */
 export const RPC_VERBS = [
@@ -307,7 +309,13 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
             return { ok: true, fields: { path, bytes: png.byteLength } };
         } catch (error) {
             report(error, 'screenshot-write');
-            return { ok: false, error: 'failed to write screenshot' };
+            // The writer names the path it tried (§8.4's `failed to write screenshot to <path>`),
+            // which is the only actionable detail — a full disk, an unwritable temp dir.
+            const detail = error instanceof Error ? error.message : String(error);
+            return {
+                ok: false,
+                error: detail.startsWith(SCREENSHOT_WRITE_ERROR) ? detail : SCREENSHOT_WRITE_ERROR
+            };
         }
     };
 

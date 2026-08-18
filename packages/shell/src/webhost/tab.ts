@@ -31,10 +31,11 @@
  * main window at the pane's rect — is the documented follow-up and touches nothing below except
  * `setBounds` / which window owns the view.
  *
- * The holder window exists because a `WebContentsView` with no parent has no compositor surface:
- * layout (and therefore `innerText`, `getBoundingClientRect` and `Page.captureScreenshot`) would
- * be undefined. `Emulation.setDeviceMetricsOverride` pins the viewport on top of that so a
- * capture does not depend on the holder's size.
+ * The holder window is what gives the views a place to live; `Emulation.setDeviceMetricsOverride`
+ * then pins their viewport, so layout (`innerText`, `getBoundingClientRect`) and screenshots are
+ * the same 1280×800 regardless of the holder. Measured on Electron 43/macOS: a view in a window
+ * that is never shown still lays out and still screenshots, including while it is the hidden
+ * background tab of a pane — which is the whole premise of the headless surface.
  *
  * ## `webSecurity` stays ON
  *
@@ -131,7 +132,6 @@ class ElectronTab implements HostTab {
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
     private readonly requests = new Map<string, NetworkRequestInfo & { frameId?: string }>();
-    private readonly viewport: { readonly width: number; readonly height: number };
 
     constructor(input: CreateTabInput, options: TabFactoryOptions) {
         this.paneID = input.paneID;
@@ -141,7 +141,6 @@ class ElectronTab implements HostTab {
         this.lastAttemptedURL = input.url;
 
         const viewport = options.viewport ?? DEFAULT_VIEWPORT;
-        this.viewport = viewport;
         this.view = new WebContentsView({
             webPreferences: {
                 session: options.sessionFor(input.paneID, input.isPrivate),
@@ -165,9 +164,11 @@ class ElectronTab implements HostTab {
         options.holder().contentView.addChildView(this.view);
 
         this.wireContentsEvents();
-        this.ready = this.attach(viewport).catch((error: unknown) => {
+        this.ready = this.bootstrap(viewport).catch((error: unknown) => {
             this.report(error, 'cdp-attach');
         });
+        // `navigate` awaits `ready`, so the real page is only loaded once the scripts are
+        // installed — which is what makes them run at document start.
         if (input.url !== '') this.navigate(input.url);
     }
 
@@ -184,7 +185,21 @@ class ElectronTab implements HostTab {
         return this.contents.debugger.sendCommand(method, params ?? {}) as Promise<unknown>;
     }
 
-    private async attach(viewport: { width: number; height: number }): Promise<void> {
+    /**
+     * Attach CDP and install the injected scripts, in the one order that works.
+     *
+     * **A fresh `WebContentsView` has no renderer process**, and every CDP command that needs one
+     * (`Page.enable`, `Runtime.enable`, `Page.addScriptToEvaluateOnNewDocument`, …) simply never
+     * answers until it exists — `debugger.sendCommand` neither resolves nor rejects. Loading
+     * `about:blank` first is what brings the renderer up, so the sequence is:
+     *
+     *     attach → load about:blank → enable domains + addBinding + inject → (caller loads the URL)
+     *
+     * Doing the setup before the real navigation is also what keeps
+     * `addScriptToEvaluateOnNewDocument` meaningful: the scripts are registered before the target
+     * document exists, so they run at document start exactly as the `WKUserScript`s did.
+     */
+    private async bootstrap(viewport: { width: number; height: number }): Promise<void> {
         try {
             this.contents.debugger.attach('1.3');
         } catch (error) {
@@ -203,6 +218,13 @@ class ElectronTab implements HostTab {
             } catch (error) {
                 this.report(error, `cdp ${method}`);
             }
+        });
+
+        // The renderer-raising load. It is a navigation the daemon must not see as a page state
+        // change (`about:blank` is the placeholder §4.4 exists to ignore), which is why the
+        // `did-navigate` handler drops it.
+        await this.contents.loadURL('about:blank').catch((error: unknown) => {
+            this.report(error, 'bootstrap-blank');
         });
 
         await this.send('Page.enable');
@@ -228,7 +250,10 @@ class ElectronTab implements HostTab {
         await this.send('Emulation.setDeviceMetricsOverride', {
             width: viewport.width,
             height: viewport.height,
-            deviceScaleFactor: 0,
+            // 1, not 0 ("system default"): on a retina Mac the default would double every
+            // screenshot's byte count for no extra information, and push captures over §8.4's
+            // 1 MB inline budget for pages that have no business spilling to a temp file.
+            deviceScaleFactor: 1,
             mobile: false
         }).catch((error: unknown) => {
             // Non-fatal: the holder window's size then decides layout.
@@ -249,8 +274,12 @@ class ElectronTab implements HostTab {
 
         contents.on('did-navigate', (_event, url) => {
             this.failedLoad = false;
-            this.events.pageState(this.paneID, this.tabID, { url, title: contents.getTitle() });
             this.applyZoom();
+            // The bootstrap `about:blank` load (see `bootstrap`) is not a page state change: the
+            // daemon ignores placeholder URLs (§4.4) but would still take the empty title with it,
+            // blanking a restored tab's header for the moment before the real load lands.
+            if (url === '' || url === 'about:blank') return;
+            this.events.pageState(this.paneID, this.tabID, { url, title: contents.getTitle() });
         });
         contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
             if (!isMainFrame) return;
@@ -516,28 +545,22 @@ class ElectronTab implements HostTab {
         return { ok: true, value };
     }
 
+    /**
+     * §8.4's visible-viewport PNG.
+     *
+     * A plain `Page.captureScreenshot` works for a view in the never-shown holder window, and for
+     * a *hidden* (background-tab) view too — Chromium renders it without a compositor frame. What
+     * does NOT work is `captureBeyondViewport`/`clip`: on a hidden view that request never answers
+     * at all (measured, Electron 43/macOS), which would burn the daemon's whole 20 s capture
+     * budget. The viewport is pinned by `Emulation.setDeviceMetricsOverride` instead, so the image
+     * is deterministic without asking Chromium to render past the viewport.
+     */
     async screenshot(): Promise<Uint8Array> {
         await this.ready;
-        const shoot = async (params: Record<string, unknown>): Promise<Uint8Array> => {
-            const result = await this.send('Page.captureScreenshot', params);
-            const data = isRecord(result) ? text(result['data']) : undefined;
-            if (data === undefined) throw new Error('no screenshot data');
-            return Buffer.from(data, 'base64');
-        };
-        try {
-            // `captureBeyondViewport` renders into an off-screen surface instead of reading back
-            // the on-screen one, which is what lets a view in the never-shown holder window
-            // produce a real frame at all. The plain call is the fallback for a Chromium that
-            // rejects the parameter.
-            return await shoot({
-                format: 'png',
-                captureBeyondViewport: true,
-                clip: { x: 0, y: 0, width: this.viewport.width, height: this.viewport.height, scale: 1 }
-            });
-        } catch (error) {
-            this.report(error, 'screenshot-beyond-viewport');
-            return await shoot({ format: 'png' });
-        }
+        const result = await this.send('Page.captureScreenshot', { format: 'png' });
+        const data = isRecord(result) ? text(result['data']) : undefined;
+        if (data === undefined) throw new Error('no screenshot data');
+        return Buffer.from(data, 'base64');
     }
 
     private applyZoom(): void {

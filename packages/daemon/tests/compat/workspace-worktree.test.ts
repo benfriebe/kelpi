@@ -1,9 +1,11 @@
 /**
  * The two git-backed workspace flows, against the REAL Swift CLI and REAL repos (M7).
  *
- *   - `nex workspace create --worktree <name> [--branch] [--repo] [--group]` — the daemon runs
- *     `git worktree add`, registers the repo, mints the repo ASSOCIATION graft later consumes,
- *     and opens the workspace's first pane inside the new worktree;
+ *   - `nex workspace create --worktree <name> [--branch] [--repo] [--update-main] [--group]` —
+ *     the daemon runs `git worktree add`, registers the repo, mints the repo ASSOCIATION graft
+ *     later consumes, and opens the workspace's first pane inside the new worktree.
+ *     `--update-main` adds a real remote round trip: resolve `origin`'s default branch, fetch,
+ *     branch off `origin/<default>` — pinned with a bare repo the local checkout is behind;
  *   - `nex workspace delete --prune-worktree` — best-effort, **CLI-side** cleanup driven by the
  *     `path` the delete reply carries: `git worktree remove` is deliberately non-forcing, so a
  *     dirty worktree degrades to a `Warning:` and never changes the exit code.
@@ -134,6 +136,56 @@ describe.skipIf(!RUNNABLE)('compat: workspace worktrees', () => {
         const worktree = path.join(worktreeBase(), 'fix-pane-crash');
         expect(fs.existsSync(worktree)).toBe(true);
         expect(currentBranch(worktree)).toBe('bugfix/pane-crash');
+    }, 120_000);
+
+    it('branches off origin/<default> after a fetch with --update-main', async () => {
+        // A REAL remote: a bare repo `repo` pushes to, plus a second clone that moves it ahead.
+        // `--update-main` must resolve the default branch (`ls-remote --symref origin HEAD`),
+        // `git fetch`, then branch off `origin/<default>` — so the new worktree carries a commit
+        // the LOCAL checkout has never seen.
+        const origin = path.join(nex.root, 'origin.git');
+        git(nex.root, 'init', '--bare', '--initial-branch=main', origin);
+        git(repo, 'remote', 'add', 'origin', origin);
+        git(repo, 'push', '-u', 'origin', 'main');
+
+        const pusher = path.join(nex.root, 'pusher');
+        git(nex.root, 'clone', origin, pusher);
+        git(pusher, 'config', 'user.name', 'nex');
+        git(pusher, 'config', 'user.email', 'nex@example.com');
+        git(pusher, 'config', 'commit.gpgsign', 'false');
+        fs.writeFileSync(path.join(pusher, 'ahead.txt'), 'landed on main\n');
+        git(pusher, 'add', '.');
+        git(pusher, 'commit', '-m', 'ahead of the local checkout');
+        git(pusher, 'push', 'origin', 'main');
+        expect(fs.existsSync(path.join(repo, 'ahead.txt'))).toBe(false);
+
+        const reply = await create([
+            '--name',
+            'Fresh',
+            '--worktree',
+            'fresh',
+            '--repo',
+            repo,
+            '--update-main'
+        ]);
+        expect(reply.ok, JSON.stringify(reply)).toBe(true);
+        const worktree = reply.worktree_path as string;
+        expect(currentBranch(worktree)).toBe('fresh');
+        expect(fs.readFileSync(path.join(worktree, 'ahead.txt'), 'utf8')).toBe('landed on main\n');
+        // The local `main` was NOT moved — only the new branch is based on the remote tip.
+        expect(fs.existsSync(path.join(repo, 'ahead.txt'))).toBe(false);
+    }, 180_000);
+
+    it('fails --update-main when the repo has no origin to fetch', async () => {
+        const result = await nex.run(
+            ['workspace', 'create', '--worktree', 'no-remote', '--repo', repo, '--update-main'],
+            { timeoutMs: 60_000 }
+        );
+        expect(result.code).toBe(1);
+        // `worktreeErrorMessage` keeps git's LAST `fatal:` line — for a missing remote that is
+        // the summary, not the "'origin' does not appear to be a git repository" line above it.
+        expect(result.stderr).toContain('fatal: Could not read from remote repository.');
+        expect(fs.existsSync(path.join(worktreeBase(), 'no-remote'))).toBe(false);
     }, 120_000);
 
     it('sanitizes the worktree name into a path component and a branch', async () => {
@@ -280,6 +332,39 @@ describe.skipIf(!RUNNABLE)('compat: workspace worktrees', () => {
         const record = (JSON.parse(deleted.stdout) as DeleteRecord[])[0] as DeleteRecord;
         expect(record.ok).toBe(true);
         expect(record.worktree_pruned).toBeUndefined();
+        expect(fs.existsSync(worktree)).toBe(true);
+    }, 120_000);
+
+    it('cannot prune a workspace whose panes were closed first', async () => {
+        // The documented Swift limitation: the prune keys off the `path` in the delete reply,
+        // which is a shell pane's CURRENT cwd. Close the panes and the path is gone with them,
+        // so the worktree survives its workspace (and `git worktree remove` is left to the user).
+        const reply = await create(['--name', 'Emptied', '--worktree', 'emptied', '--repo', repo]);
+        expect(reply.ok).toBe(true);
+        const worktree = reply.worktree_path as string;
+
+        const panes = await nex.json<PaneListEntryJSON[]>([
+            'pane',
+            'list',
+            '--workspace',
+            'Emptied',
+            '--json'
+        ]);
+        const closed = await nex.run(['pane', 'close', '--target', panes[0]?.id as string], {
+            timeoutMs: 30_000
+        });
+        expect(closed.code, closed.stderr).toBe(0);
+
+        const deleted = await nex.run(
+            ['workspace', 'delete', 'Emptied', '--prune-worktree', '--json'],
+            { timeoutMs: 60_000 }
+        );
+        expect(deleted.code).toBe(0);
+        const record = (JSON.parse(deleted.stdout) as DeleteRecord[])[0] as DeleteRecord;
+        expect(record.ok).toBe(true);
+        expect(record.path).toBeUndefined();
+        expect(record.worktree_pruned).toBe(false);
+        expect(record.worktree_error).toBe('workspace Emptied had no panes; no directory to prune');
         expect(fs.existsSync(worktree)).toBe(true);
     }, 120_000);
 

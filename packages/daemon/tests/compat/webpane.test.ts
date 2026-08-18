@@ -1,10 +1,10 @@
 /**
- * Web panes against the REAL Swift `nex` CLI (M6).
+ * Web panes against the REAL Swift `nex` CLI (M6) — the **actuator + console** half.
  *
  * `ping.test.ts` covers the headless half (a pane exists, its tabs list, browser-bound verbs
- * fail honestly). This suite adds the other half: a **fake Electron shell** registers as the
- * web-pane host over the daemon's WS channel, and the shipped CLI drives it end to end. What
- * that proves, and nothing else can:
+ * fail honestly) and `web.test.ts` covers open / tabs / navigate / capture / exec / close. This
+ * suite adds the exit-code contract of the query verbs, with a fake host (`./fakehost.ts`)
+ * answering the daemon's RPCs. What it proves, and nothing else can:
  *
  *   - the CLI's exit-code semantics survive the daemon's envelope merge — `exists` exits 0/1
  *     on `found`, `attr` exits 1 when `present:false`, a `wait` timeout exits 1;
@@ -12,104 +12,19 @@
  *     the shipped CLI's own `--since` / `--level` handling.
  */
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import WebSocket from 'ws';
 
+import { connectFakeHost, type FakeWebHost } from './fakehost.js';
 import { startCompatDaemon, swiftCLIAvailable, type CompatDaemon } from './harness.js';
-
-type Json = Record<string, unknown>;
-
-interface FakeShell {
-    readonly calls: Json[];
-    answer(reply: Json, verb?: string, timeoutMs?: number): Promise<Json>;
-    emit(event: string, paneID: string, payload: Json, tabID?: string): void;
-    waitForNotify(verb: string, timeoutMs?: number): Promise<Json>;
-    close(): void;
-}
-
-async function connectShell(url: string, token: string): Promise<FakeShell> {
-    const socket = new WebSocket(`${url.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
-    const calls: Json[] = [];
-    const notifies: Json[] = [];
-    const answered = new Set<string>();
-    let registered = false;
-
-    await new Promise<void>((resolve, reject) => {
-        socket.once('open', () => resolve());
-        socket.once('error', reject);
-    });
-    socket.on('message', (raw: Buffer) => {
-        const message = JSON.parse(raw.toString('utf8')) as Json;
-        if (message['type'] === 'host-rpc') calls.push(message);
-        else if (message['type'] === 'host-notify') notifies.push(message);
-        else if (message['type'] === 'host-registered') registered = true;
-    });
-    socket.send(
-        JSON.stringify({
-            type: 'hello',
-            protocolVersion: WS_PROTOCOL_VERSION,
-            token,
-            client: { kind: 'electron', name: 'compat-shell', capabilities: ['web-pane-host'] }
-        })
-    );
-
-    const waitFor = async <T>(read: () => T | undefined, what: string, timeoutMs: number): Promise<T> => {
-        const deadline = Date.now() + timeoutMs;
-        for (;;) {
-            const value = read();
-            if (value !== undefined) return value;
-            if (Date.now() > deadline) throw new Error(`no ${what} within budget`);
-            await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        }
-    };
-    await waitFor(() => (registered ? true : undefined), 'host-registered', 5_000);
-
-    return {
-        calls,
-        async answer(reply, verb, timeoutMs = 10_000) {
-            const call = await waitFor(
-                () =>
-                    calls.find(
-                        (candidate) =>
-                            !answered.has(String(candidate['id'])) &&
-                            (verb === undefined || candidate['verb'] === verb)
-                    ),
-                `host-rpc${verb === undefined ? '' : ` ${verb}`}`,
-                timeoutMs
-            );
-            answered.add(String(call['id']));
-            socket.send(JSON.stringify({ type: 'host-rpc-reply', id: call['id'], reply }));
-            return call;
-        },
-        emit(event, paneID, payload, tabID) {
-            socket.send(
-                JSON.stringify({
-                    type: 'host-event',
-                    event,
-                    paneID,
-                    ...(tabID === undefined ? {} : { tabID }),
-                    payload
-                })
-            );
-        },
-        waitForNotify(verb, timeoutMs = 10_000) {
-            return waitFor(() => notifies.find((entry) => entry['verb'] === verb), `notify ${verb}`, timeoutMs);
-        },
-        close() {
-            socket.close();
-        }
-    };
-}
 
 describe.skipIf(!swiftCLIAvailable())('compat: web panes with a live host', () => {
     let nex: CompatDaemon;
-    let shell: FakeShell;
+    let shell: FakeWebHost;
     let paneID: string;
 
     beforeEach(async () => {
         nex = await startCompatDaemon();
-        shell = await connectShell(nex.info.url, nex.info.token);
+        shell = await connectFakeHost(nex.info);
         const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
         expect(opened.code).toBe(0);
         paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1] as string;
@@ -125,7 +40,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a live host', () =
     it('round-trips an actuator verb and prints the host result', async () => {
         const running = nex.run(['web', 'text', '--target', paneID, 'css:body'], { timeoutMs: 15_000 });
         const call = await shell.answer({ ok: true, text: 'hello world', truncated: false }, 'actuate');
-        expect((call['args'] as Json)['method']).toBe('text');
+        expect(call.args['method']).toBe('text');
         const result = await running;
         expect(result.code).toBe(0);
         expect(result.stdout.trim()).toBe('hello world');

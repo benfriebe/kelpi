@@ -15,7 +15,11 @@
  *     `NEX_PANE_ID` default scope;
  *   - the sync itself: an edit in the worktree reaches the parent's working tree while the
  *     session watches, and `graft stop` restores the parent (HEAD, tracked files, auto-stash);
- *   - the error contracts: no scope, unknown workspace, unmatched repo, double start.
+ *   - the error contracts: no scope, unknown workspace, unmatched repo, no association, double
+ *     start — plus the *partial* success (`started` + `Partial failure:` on stderr, exit 0) when
+ *     one scope holds two associations of the same parent;
+ *   - the quit flush: stopping the daemon unwinds every live session, so a clean shutdown never
+ *     leaves a repo grafted, stashed or breadcrumbed.
  *
  * Timing: sync passes are driven by a real watcher (500 ms trailing debounce), so every
  * disk-state assertion polls instead of sleeping a fixed amount.
@@ -60,6 +64,27 @@ interface SessionJSON {
     readonly last_sync?: string;
 }
 
+/** `workspace create --worktree` is the only CLI path that mints a repo ASSOCIATION. */
+async function createWorktreeWorkspace(
+    nex: CompatDaemon,
+    name: string,
+    repo: string
+): Promise<CreateReply> {
+    const created = await nex.run(
+        ['workspace', 'create', '--name', name, '--worktree', name, '--repo', repo, '--json'],
+        { timeoutMs: 60_000 }
+    );
+    expect(created.code, created.stderr).toBe(0);
+    return JSON.parse(created.stdout) as CreateReply;
+}
+
+/** `graft status --json` — the session list, straight from the engine. */
+async function graftSessions(nex: CompatDaemon): Promise<readonly SessionJSON[]> {
+    const listed = await nex.run(['graft', 'status', '--json']);
+    expect(listed.code, listed.stderr).toBe(0);
+    return JSON.parse(listed.stdout) as SessionJSON[];
+}
+
 describe.skipIf(!RUNNABLE)('compat: graft', () => {
     let nex: CompatDaemon;
     /** The main checkout (realpath — the daemon canonicalizes every parent root). */
@@ -68,27 +93,13 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
     let worktree: string;
     let paneID: string;
 
-    /** `workspace create --worktree` is the only CLI path that mints a repo association. */
-    async function createWorktreeWorkspace(name: string, repo: string): Promise<CreateReply> {
-        const created = await nex.run(
-            ['workspace', 'create', '--name', name, '--worktree', name, '--repo', repo, '--json'],
-            { timeoutMs: 60_000 }
-        );
-        expect(created.code, created.stderr).toBe(0);
-        return JSON.parse(created.stdout) as CreateReply;
-    }
-
-    async function sessions(): Promise<readonly SessionJSON[]> {
-        const listed = await nex.run(['graft', 'status', '--json']);
-        expect(listed.code, listed.stderr).toBe(0);
-        return JSON.parse(listed.stdout) as SessionJSON[];
-    }
+    const sessions = async (): Promise<readonly SessionJSON[]> => graftSessions(nex);
 
     beforeEach(async () => {
         nex = await startCompatDaemon();
         parent = initRepo(path.join(nex.root, 'repo'), { 'keep.txt': 'original\n' });
         workspaceName = 'feature';
-        const reply = await createWorktreeWorkspace(workspaceName, parent);
+        const reply = await createWorktreeWorkspace(nex, workspaceName, parent);
         expect(reply.ok).toBe(true);
         worktree = reply.worktree_path as string;
         expect(fs.existsSync(worktree)).toBe(true);
@@ -262,6 +273,31 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
 
     // ── scope forms ─────────────────────────────────────────────────────────
 
+    it('composes --workspace with --repo (the repo filter narrows the workspace scope)', async () => {
+        // §9.1 precedence: workspace wins as the SCOPE, then `--repo` filters inside it. A repo
+        // filter that matches nothing in that workspace is "no associations", not "wrong repo".
+        const both = await nex.run(
+            ['graft', 'start', '--workspace', workspaceName, '--repo', path.basename(parent)],
+            { timeoutMs: 60_000 }
+        );
+        expect(both.code, both.stderr).toBe(0);
+        expect(await sessions()).toHaveLength(1);
+
+        const stopped = await nex.run(
+            ['graft', 'stop', '--workspace', workspaceName, '--repo', path.basename(parent)],
+            { timeoutMs: 60_000 }
+        );
+        expect(stopped.code, stopped.stderr).toBe(0);
+        expect(await sessions()).toEqual([]);
+
+        const mismatched = await nex.run(
+            ['graft', 'start', '--workspace', workspaceName, '--repo', 'some-other-repo'],
+            { timeoutMs: 60_000 }
+        );
+        expect(mismatched.code).toBe(1);
+        expect(mismatched.stderr).toContain('no repo associations matched the requested scope');
+    }, 180_000);
+
     it('scopes by --repo name and by the calling pane', async () => {
         // `--repo` matches the association's worktree path, its last component, or the repo's
         // registry name — here, the repo directory's name.
@@ -340,4 +376,135 @@ describe.skipIf(!RUNNABLE)('compat: graft', () => {
         expect(clobbered, 'the untracked parent file was neither replaced nor reported').toBe(true);
         expect((await sessions())[0]?.status).toBe('watching');
     }, 120_000);
+});
+
+/**
+ * Scopes that span more than one association, and the shutdown path.
+ *
+ * The suite above drives a single worktree; these cases need two, so they build their own
+ * fixtures per test rather than sharing a `beforeEach` worktree.
+ */
+describe.skipIf(!RUNNABLE)('compat: graft across several associations', () => {
+    let nex: CompatDaemon;
+
+    beforeEach(async () => {
+        nex = await startCompatDaemon();
+    }, 60_000);
+
+    afterEach(async () => {
+        try {
+            // Unwind whatever a test left running before the tmp tree disappears underneath it.
+            await nex?.daemon.stop();
+        } catch {
+            // Already stopped by the test itself.
+        }
+        await nex?.stop();
+    }, 60_000);
+
+    it('refuses a workspace that has no repo association', async () => {
+        const plain = await nex.run(['workspace', 'create', '--name', 'Plain', '--json'], {
+            timeoutMs: 30_000
+        });
+        expect(plain.code, plain.stderr).toBe(0);
+
+        const started = await nex.run(['graft', 'start', '--workspace', 'Plain'], {
+            timeoutMs: 30_000
+        });
+        expect(started.code).toBe(1);
+        expect(started.stderr).toContain('no repo associations matched the requested scope');
+        expect(await graftSessions(nex)).toEqual([]);
+    }, 120_000);
+
+    it('starts what it can and reports the rest as a partial failure', async () => {
+        // Two worktrees of the SAME parent: `--repo <name>` matches both associations, but a
+        // parent can host only one graft, so the second start loses and the reply carries
+        // `started` AND `partial_error` — the CLI prints both and still exits 0.
+        const parent = initRepo(path.join(nex.root, 'shared'), { 'keep.txt': 'original\n' });
+        const first = await createWorktreeWorkspace(nex, 'alpha', parent);
+        const second = await createWorktreeWorkspace(nex, 'beta', parent);
+        expect(first.ok && second.ok).toBe(true);
+
+        const started = await nex.run(['graft', 'start', '--repo', path.basename(parent)], {
+            timeoutMs: 60_000
+        });
+        expect(started.code, started.stderr).toBe(0);
+        expect(started.stdout).toContain('started ');
+        expect(started.stderr).toContain('Partial failure:');
+        expect(started.stderr).toContain('another graft is already active for');
+        expect(started.stderr).toContain(parent);
+
+        // Exactly one session exists — the loser started nothing.
+        const listed = await graftSessions(nex);
+        expect(listed).toHaveLength(1);
+        expect(['alpha', 'beta']).toContain(listed[0]?.branch);
+
+        // …and the repo-wide stop takes it down again (one `stopped <id>` line).
+        const stopped = await nex.run(['graft', 'stop', '--repo', path.basename(parent)], {
+            timeoutMs: 60_000
+        });
+        expect(stopped.code, stopped.stderr).toBe(0);
+        expect(stopped.stdout.trim().split('\n')).toHaveLength(1);
+        expect(await graftSessions(nex)).toEqual([]);
+    }, 180_000);
+
+    it('keeps sessions in different repos independent, and stops only the scope asked for', async () => {
+        const one = initRepo(path.join(nex.root, 'one'), { 'keep.txt': 'one original\n' });
+        const two = initRepo(path.join(nex.root, 'two'), { 'keep.txt': 'two original\n' });
+        const wsOne = await createWorktreeWorkspace(nex, 'ws-one', one);
+        const wsTwo = await createWorktreeWorkspace(nex, 'ws-two', two);
+
+        // Distinguishable uncommitted content in each worktree, so "which parent got grafted"
+        // is answerable from disk alone.
+        fs.writeFileSync(path.join(wsOne.worktree_path as string, 'mark.txt'), 'from one\n');
+        fs.writeFileSync(path.join(wsTwo.worktree_path as string, 'mark.txt'), 'from two\n');
+
+        for (const name of ['ws-one', 'ws-two']) {
+            const started = await nex.run(['graft', 'start', '--workspace', name], {
+                timeoutMs: 60_000
+            });
+            expect(started.code, started.stderr).toBe(0);
+        }
+
+        const listed = await graftSessions(nex);
+        expect(listed.map((session) => session.branch).sort()).toEqual(['ws-one', 'ws-two']);
+        expect(readIfPresent(path.join(one, 'mark.txt'))).toBe('from one\n');
+        expect(readIfPresent(path.join(two, 'mark.txt'))).toBe('from two\n');
+
+        const stopped = await nex.run(['graft', 'stop', '--workspace', 'ws-one'], {
+            timeoutMs: 60_000
+        });
+        expect(stopped.code, stopped.stderr).toBe(0);
+
+        const remaining = await graftSessions(nex);
+        expect(remaining.map((session) => session.branch)).toEqual(['ws-two']);
+        // Only the scoped parent was restored; the other is still mirroring its worktree.
+        expect(readIfPresent(path.join(one, 'mark.txt'))).toBe(null);
+        expect(readIfPresent(path.join(two, 'mark.txt'))).toBe('from two\n');
+        expect(fs.existsSync(path.join(one, '.git', BREADCRUMB_FILENAME))).toBe(false);
+        expect(fs.existsSync(path.join(two, '.git', BREADCRUMB_FILENAME))).toBe(true);
+    }, 180_000);
+
+    it('unwinds every live session when the daemon shuts down', async () => {
+        // The quit flush (graft-git.md §5): a clean daemon stop must never leave a user's repo
+        // grafted, stashed or breadcrumbed — the breadcrumb is the crash path, not this one.
+        const parent = initRepo(path.join(nex.root, 'quit'), { 'keep.txt': 'original\n' });
+        const created = await createWorktreeWorkspace(nex, 'quitting', parent);
+        fs.writeFileSync(path.join(parent, 'keep.txt'), 'parent work in progress\n');
+        fs.writeFileSync(path.join(created.worktree_path as string, 'from-worktree.txt'), 'grafted\n');
+
+        const started = await nex.run(['graft', 'start', '--workspace', 'quitting'], {
+            timeoutMs: 60_000
+        });
+        expect(started.code, started.stderr).toBe(0);
+        expect(readIfPresent(path.join(parent, 'from-worktree.txt'))).toBe('grafted\n');
+        expect(fs.existsSync(path.join(parent, '.git', BREADCRUMB_FILENAME))).toBe(true);
+
+        await nex.daemon.stop();
+
+        expect(readIfPresent(path.join(parent, 'keep.txt'))).toBe('parent work in progress\n');
+        expect(readIfPresent(path.join(parent, 'from-worktree.txt'))).toBe(null);
+        expect(currentBranch(parent)).toBe('main');
+        expect(fs.existsSync(path.join(parent, '.git', BREADCRUMB_FILENAME))).toBe(false);
+        expect(git(parent, 'stash', 'list').trim()).toBe('');
+    }, 180_000);
 });

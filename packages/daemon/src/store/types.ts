@@ -435,6 +435,50 @@ export type DomainAction =
           readonly sourcePaneID?: string | undefined;
           readonly direction?: SplitDirection | undefined;
       }
+    // ── web panes (tabs live in the sidecar; the browser itself is the shell's) ─
+    | {
+          readonly type: 'web-tab-open';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          /** Pre-minted by the caller so a CLI reply can echo it (web-pane.md §17.1). */
+          readonly tabID: string;
+          readonly url: string;
+          readonly makeActive?: boolean | undefined;
+      }
+    | {
+          readonly type: 'web-tab-close';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+      }
+    | {
+          readonly type: 'web-tab-select';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+      }
+    | {
+          /** Optimistic URL write on the ACTIVE tab (web-pane.md §4.2). */
+          readonly type: 'web-navigate';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly url: string;
+      }
+    | {
+          readonly type: 'web-set-private';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly isPrivate: boolean;
+      }
+    | {
+          /** Host mirror of a live URL/title change (web-pane.md §4.4). */
+          readonly type: 'web-tab-state';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly tabID: string;
+          readonly url?: string | undefined;
+          readonly title?: string | undefined;
+      }
     | {
           readonly type: 'scratchpad-content-changed';
           readonly workspaceID: string;

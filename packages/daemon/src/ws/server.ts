@@ -36,7 +36,8 @@ import {
     type ContentChannel,
     type NexDomainStore,
     type SyncHub,
-    type SyncPresence
+    type SyncPresence,
+    type WebPaneChannel
 } from './sync.js';
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1';
@@ -66,6 +67,11 @@ export interface WsServerOptions {
     readonly distDir?: string | undefined;
     /** M5 content panes: the `content-*` WS verbs (absent = they answer "not available"). */
     readonly content?: ContentChannel | undefined;
+    /**
+     * M6 web panes: where the Electron shell registers as the web-pane host. Pass the same
+     * service instance the `web-*` command handlers got, or the CLI and the host cannot meet.
+     */
+    readonly webPanes?: WebPaneChannel | undefined;
     /** Extra HTTP routes registered before the static catch-all (the pane-asset route). */
     readonly routes?: HttpAppOptions['routes'] | undefined;
     readonly daemonInfo?: { readonly pid?: number | undefined } | undefined;
@@ -167,6 +173,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         },
         protocolVersion: options.version.protocol,
         content: options.content,
+        webPanes: options.webPanes,
         // The upgrade already checked the token; hello re-checks it so a socket that
         // upgraded anonymously (dev) cannot present a bogus one and look authenticated.
         ...(options.token !== undefined && options.token.length > 0

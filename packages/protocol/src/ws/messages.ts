@@ -20,6 +20,11 @@ export interface WsClientInfo {
     readonly kind: WsClientKind;
     readonly name?: string;
     readonly version?: string;
+    /**
+     * Optional capability tokens (M6). `web-pane-host` claims the web-pane host slot at
+     * handshake time — the same effect as sending `host-register` right after `hello`.
+     */
+    readonly capabilities?: readonly string[];
 }
 
 // ── client → server ─────────────────────────────────────────────────────────────────
@@ -90,6 +95,56 @@ export interface WsPingMessage {
     readonly id: string;
 }
 
+// ── host channel (M6 web panes) ─────────────────────────────────────────────────────
+
+/**
+ * The daemon is headless: browser views live in the Electron shell, so every web-pane verb
+ * that needs a real page is forwarded to a **host** — the one WS client that claimed the
+ * `web-pane` role. Exactly one host is active at a time; a second registration takes over and
+ * the previous host is told with `host-revoked` (`reason: 'superseded'`).
+ *
+ * Full contract, including the RPC verb table the host must implement:
+ * `packages/daemon/src/webpane/HOST_PROTOCOL.md`.
+ */
+export const WS_HOST_ROLES = ['web-pane'] as const;
+export type WsHostRole = (typeof WS_HOST_ROLES)[number];
+
+/** Claim the role. Sent after `hello`; re-sending re-claims (last registration wins). */
+export interface WsHostRegisterMessage {
+    readonly type: 'host-register';
+    readonly role: WsHostRole;
+    /** Diagnostics only (shows up in daemon logs). */
+    readonly name?: string;
+}
+
+/** Give the role up without dropping the connection. */
+export interface WsHostUnregisterMessage {
+    readonly type: 'host-unregister';
+    readonly role?: WsHostRole;
+}
+
+/** The answer to one `host-rpc`. `reply` is the `{ok:…}` envelope the CLI will see. */
+export interface WsHostRpcReplyMessage {
+    readonly type: 'host-rpc-reply';
+    readonly id: string;
+    readonly reply: JsonObject;
+}
+
+/**
+ * Unsolicited host → daemon traffic: console lines (ring-buffered + streamed), URL/title
+ * mirroring, element-picker payloads, and tab teardown the host performed on its own.
+ */
+export const WS_HOST_EVENTS = ['console', 'page-state', 'inspect', 'tab-closed'] as const;
+export type WsHostEventKind = (typeof WS_HOST_EVENTS)[number];
+
+export interface WsHostEventMessage {
+    readonly type: 'host-event';
+    readonly event: WsHostEventKind;
+    readonly paneID: string;
+    readonly tabID?: string;
+    readonly payload: JsonObject;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -98,7 +153,11 @@ export type WsClientMessage =
     | WsFocusReportMessage
     | WsVisibilityReportMessage
     | WsCommandMessage
-    | WsPingMessage;
+    | WsPingMessage
+    | WsHostRegisterMessage
+    | WsHostUnregisterMessage
+    | WsHostRpcReplyMessage
+    | WsHostEventMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -273,6 +332,54 @@ export interface WsPongMessage {
     readonly id: string;
 }
 
+// ── host channel, server → host ─────────────────────────────────────────────────────
+
+export interface WsHostRegisteredMessage {
+    readonly type: 'host-registered';
+    readonly role: WsHostRole;
+    readonly hostID: string;
+    /** True when this registration displaced a previously connected host. */
+    readonly superseded: boolean;
+}
+
+export const WS_HOST_REVOKE_REASONS = ['superseded', 'unregistered', 'shutdown'] as const;
+export type WsHostRevokeReason = (typeof WS_HOST_REVOKE_REASONS)[number];
+
+/** The role is no longer this connection's; it must stop answering `host-rpc`. */
+export interface WsHostRevokedMessage {
+    readonly type: 'host-revoked';
+    readonly role: WsHostRole;
+    readonly hostID: string;
+    readonly reason: WsHostRevokeReason;
+}
+
+/** One request to the host. Answered with `host-rpc-reply` carrying the same `id`. */
+export interface WsHostRpcMessage {
+    readonly type: 'host-rpc';
+    readonly id: string;
+    readonly verb: string;
+    readonly args: JsonObject;
+    /** After this the daemon answers the CLI itself; a late reply is discarded. */
+    readonly timeoutMs: number;
+}
+
+/**
+ * Fire-and-forget host traffic: daemon-owned state (a tab opened, the private flag flipped)
+ * mirrored to the host. No reply is expected and none is read.
+ */
+export interface WsHostNotifyMessage {
+    readonly type: 'host-notify';
+    readonly verb: string;
+    readonly args: JsonObject;
+}
+
+/** One console line pushed to a client subscribed with `web-console-subscribe`. */
+export interface WsWebConsoleLineMessage {
+    readonly type: 'web-console-line';
+    readonly paneID: string;
+    readonly line: JsonObject;
+}
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
@@ -282,6 +389,11 @@ export type WsServerMessage =
     | WsNotificationMessage
     | WsPaneExitMessage
     | WsResyncRequiredMessage
-    | WsPongMessage;
+    | WsPongMessage
+    | WsHostRegisteredMessage
+    | WsHostRevokedMessage
+    | WsHostRpcMessage
+    | WsHostNotifyMessage
+    | WsWebConsoleLineMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

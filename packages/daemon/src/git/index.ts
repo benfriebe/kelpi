@@ -29,9 +29,21 @@ export {
     createGitService,
     DETACHED_HEAD,
     FALLBACK_DEFAULT_BRANCH,
+    GRAFT_TEMP_INDEX_PREFIX,
     parseSymrefLine,
-    stripRemotePrefix
+    stripRemotePrefix,
+    sweepGraftTempIndexes
 } from './service.js';
+
+export {
+    describeRepoState,
+    NOTHING_TO_STASH,
+    parseShortstat,
+    parseStashList,
+    parseWorktreeList,
+    porcelainLines
+} from './status.js';
+export type { RepoGitStatus, RepoState, ShortstatCounts, WorktreeInfo } from './status.js';
 export type {
     CreateGitServiceOptions,
     GitService,

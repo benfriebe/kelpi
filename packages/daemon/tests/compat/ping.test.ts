@@ -76,7 +76,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: ping / doctor', () => {
     }, 60_000);
 });
 
-describe.skipIf(!swiftCLIAvailable())('compat: deliberately stubbed families', () => {
+describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
     let nex: CompatDaemon;
 
     beforeEach(async () => {
@@ -87,18 +87,118 @@ describe.skipIf(!swiftCLIAvailable())('compat: deliberately stubbed families', (
         await nex?.stop();
     });
 
-    // PLAN.md WP2.5: graft-* and web-* answer honestly instead of hanging the caller. The
-    // CLI must see a structured `ok:false` (exit 1 + one stderr line), never a read timeout.
+    // The daemon owns web-pane STATE, so opening a pane and reading its tabs works with no
+    // Electron shell attached at all — which is the headless half of M6.
     it.each([
-        ['graft status', ['graft', 'status', '--json']],
-        ['graft start', ['graft', 'start']],
         ['web open', ['web', 'open', 'https://example.com']],
         // `nex open <url>` routes CLI-side to the same web-open verb.
         ['open <url>', ['open', 'https://example.com']]
-    ])('%s fails fast with "not supported yet"', async (_label, args) => {
+    ])('%s creates a pane and prints its id', async (_label, args) => {
         const result = await nex.run(args, { timeoutMs: 15_000 });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('open ok:');
+        expect(result.stdout).toContain('https://example.com');
+    }, 60_000);
+
+    it('lists the new pane as type web, with its tab', async () => {
+        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1];
+        expect(paneID).toBeDefined();
+
+        const panes = await nex.json<{ id: string; type: string }[]>(['pane', 'list', '--json']);
+        expect(panes.find((pane) => pane.id === paneID)?.type).toBe('web');
+
+        const tabs = await nex.json<{ url: string; active: boolean; index: number }[]>([
+            'web',
+            'tabs',
+            '--target',
+            paneID as string,
+            '--json'
+        ]);
+        expect(tabs).toHaveLength(1);
+        expect(tabs[0]).toMatchObject({ url: 'https://example.com', active: true, index: 0 });
+    }, 60_000);
+
+    // Anything that needs a real browser fails with a stable, greppable string instead of
+    // hanging the CLI on a read timeout.
+    it('fails browser-bound verbs with "no web pane host connected"', async () => {
+        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1] as string;
+
+        for (const args of [
+            ['web', 'click', '--target', paneID, 'css:#login'],
+            ['web', 'text', '--target', paneID, 'css:body'],
+            ['web', 'reload', '--target', paneID]
+        ]) {
+            const result = await nex.run(args, { timeoutMs: 15_000 });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain('no web pane host connected');
+        }
+    }, 60_000);
+
+    it('reads an empty console buffer and refuses to close the only tab', async () => {
+        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1] as string;
+
+        const console_ = await nex.run(['web', 'console', '--target', paneID, '--json'], {
+            timeoutMs: 15_000
+        });
+        expect(console_.code).toBe(0);
+        // `--json` prints the whole reply object (the CLI does not unwrap `lines` here).
+        expect(JSON.parse(console_.stdout)).toMatchObject({
+            ok: true,
+            pane_id: paneID,
+            lines: [],
+            next_since: 0,
+            dropped: 0,
+            follow: false
+        });
+
+        const tabs = await nex.json<{ id: string }[]>([
+            'web',
+            'tabs',
+            '--target',
+            paneID,
+            '--json'
+        ]);
+        const closing = await nex.run(
+            ['web', 'tab-close', '--target', paneID, (tabs[0] as { id: string }).id],
+            { timeoutMs: 15_000 }
+        );
+        expect(closing.code).toBe(1);
+        expect(closing.stderr).toContain('cannot close the only tab in a web pane');
+    }, 60_000);
+});
+
+describe.skipIf(!swiftCLIAvailable())('compat: graft (M7)', () => {
+    let nex: CompatDaemon;
+
+    beforeEach(async () => {
+        nex = await startCompatDaemon();
+    }, 60_000);
+
+    afterEach(async () => {
+        await nex?.stop();
+    });
+
+    it('renders an empty `graft status --json` as an empty array, exit 0', async () => {
+        const result = await nex.run(['graft', 'status', '--json'], { timeoutMs: 15_000 });
+        expect(result.code).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual([]);
+    }, 60_000);
+
+    it('reports the scope error verbatim when called with no scope at all', async () => {
+        // No `--workspace`, no `--repo` and no NEX_PANE_ID: the daemon's error string is what
+        // the shipped CLI prints, so it is contract.
+        const result = await nex.run(['graft', 'start'], { timeoutMs: 15_000 });
         expect(result.code).toBe(1);
-        expect(result.stderr).toContain('not supported yet');
-        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('graft requires --workspace, --repo, or NEX_PANE_ID');
+    }, 60_000);
+
+    it('answers `graft stop --repo <unknown>` with "no active sessions"', async () => {
+        // A repo filter that matches nothing is NOT an error (issue #231's orphan path).
+        const result = await nex.run(['graft', 'stop', '--repo', '/nope'], { timeoutMs: 15_000 });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('No active sessions in scope.');
     }, 60_000);
 });

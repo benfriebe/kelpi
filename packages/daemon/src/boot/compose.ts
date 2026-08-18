@@ -33,6 +33,16 @@ import {
     type ControlServer
 } from '../control/index.js';
 import { createPersistence, resolveDatabasePath, type SqlitePersistence } from '../db/index.js';
+import { createGitService, sweepGraftTempIndexes, type GitService } from '../git/index.js';
+import {
+    createGraftService,
+    createRepoAssociationWatch,
+    graftChangedEvent,
+    graftOrphansEvent,
+    type GraftOrphan,
+    type GraftService,
+    type RepoAssociationWatchService
+} from '../graft/index.js';
 import { createAppHandlers } from '../handlers/app/index.js';
 import { paneHandlers, spawnEnvVars, spawnPaneIfShell, type PaneHandlerContext, type PaneSpawnDefaults } from '../handlers/pane/index.js';
 import {
@@ -61,6 +71,7 @@ import {
     resolveClientDistDir,
     type WsServer
 } from '../ws/index.js';
+import { createWebPaneService, type WebPaneService } from '../webpane/index.js';
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
 import { readPortFile, writePortFile } from './port.js';
@@ -139,6 +150,14 @@ export interface Daemon {
     readonly persistence: SqlitePersistence;
     /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
     readonly content: ContentService;
+    /** M6: the web-pane runtime (host RPC seam, console buffers, picker arms). */
+    readonly webPanes: WebPaneService;
+    /** M7: the graft engine (sessions, sync, breadcrumbs). */
+    readonly graft: GraftService;
+    /** M7: HEAD watchers + the git-status poll behind the sidebar badges. */
+    readonly repoWatch: RepoAssociationWatchService;
+    /** M7: breadcrumbs a crashed daemon left behind, detected once at start. */
+    readonly graftOrphans: readonly GraftOrphan[];
     readonly dispatcher: ControlDispatcher;
     readonly ctx: PaneHandlerContext;
     readonly paths: RunPaths;
@@ -229,11 +248,35 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(onError !== undefined ? { onError } : {}),
         ...(options.now !== undefined ? { now: options.now } : {})
     });
+    // M7: one git service shared by the handlers, the graft engine and the HEAD watchers, so
+    // every git spawn resolves the same executable and honours the same timeouts.
+    const git: GitService = createGitService();
+    const graft = createGraftService({
+        git,
+        ...(options.now !== undefined ? { now: options.now } : {}),
+        ...(options.uuid !== undefined ? { uuid: options.uuid } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
+    // M6: web panes. The daemon owns tabs/console/picker state; the Electron shell registers
+    // as the HOST over the WS channel and executes anything that needs a real browser. One
+    // instance is shared by the `web-*` handlers and the sync hub — two would mean the CLI
+    // talking to a registry no shell ever joined.
+    const webPanes = createWebPaneService({
+        store,
+        paste: (paneID, text, pasteOptions) => {
+            // `nex web inspect --send-to`: a picked element lands in a shell pane's PTY, bare
+            // unless the arm asked for `--submit` (web-pane.md §11.3).
+            input.sendText(paneID, text, { bare: !pasteOptions.submit });
+        },
+        ...(options.now !== undefined ? { now: options.now } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
 
     let ws: WsServer | undefined;
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
     let info: DaemonInfo | undefined;
+    let graftOrphans: readonly GraftOrphan[] = [];
     let running = false;
     let stopping = false;
     let stopped: Promise<void> | undefined;
@@ -285,7 +328,26 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(options.uuid !== undefined ? { mintPaneID: options.uuid, mintWorkspaceID: options.uuid } : {})
     };
 
+    // Session lifecycle → clients (they render the per-association status dot from this).
+    const offGraft = graft.updates(() => {
+        ws?.broadcast(graftChangedEvent(graft.activeSessions()));
+    });
+
+    // Every association-removal path (workspace delete, group cascade, repo removal,
+    // auto-unlink) funnels through the store, so the reconciler is where §8.8's unconditional
+    // graft force-stop + HEAD-watcher stop live.
+    const repoWatch = createRepoAssociationWatch({
+        store,
+        git,
+        graft,
+        persist,
+        ...(onError !== undefined ? { onError } : {})
+    });
+
     const appHandlers = createAppHandlers({
+        git,
+        graft,
+        webPanes,
         persist,
         persistNow,
         spawnPane: (request) => {
@@ -388,6 +450,19 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             offData();
             offExit();
             content.dispose();
+            // Releases the host slot (the shell sees `host-revoked`) and ends every console
+            // follow stream; nothing here can block the shutdown.
+            webPanes.close();
+            repoWatch.dispose();
+            // §5 quit flush: unwind every graft session (2 s cap) so a clean quit never leaves
+            // a `nex-graft-active` breadcrumb behind — anything slower falls back to the
+            // orphan-recovery banner on the next launch.
+            try {
+                await graft.shutdown();
+            } catch (error) {
+                report(error, 'graft shutdown');
+            }
+            offGraft();
             // SIGTERM contract: write the debounced snapshot before anything else changes.
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).
@@ -438,6 +513,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 token,
                 daemonInfo: { pid: process.pid },
                 content,
+                webPanes,
                 // `/pane-assets/<paneID>/<relpath>` — sibling files of an open markdown file, so
                 // relative `<img src>` resolves (content-panes.md port note 4).
                 routes: createPaneAssetsRoute((paneID, relativePath) =>
@@ -526,6 +602,30 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             version: version.version
         });
 
+        // HEAD watchers for every persisted association + the 30 s dirtiness poll (§9.2/§9.3).
+        repoWatch.start();
+        // A crashed sync leaks a throw-away index into the temp dir (port note 18); only
+        // day-old files are swept, so a concurrent daemon's in-flight sync is never robbed.
+        try {
+            sweepGraftTempIndexes();
+        } catch (error) {
+            report(error, 'graft temp sweep');
+        }
+        // §4.10 / §10: a breadcrumb inside a registered repo's `.git` means a previous daemon
+        // died mid-graft. Detection runs here over the deduped registry roots (exactly the
+        // Swift app's `onAppLaunched`); recovery itself is user-driven and lands with M8's UI.
+        try {
+            graftOrphans = graft.detectOrphans([
+                ...new Set(store.getState().repos.map((repo) => repo.path))
+            ]);
+            if (graftOrphans.length > 0) {
+                log(`graft: ${String(graftOrphans.length)} interrupted session(s) need recovery`);
+                ws?.broadcast(graftOrphansEvent(graftOrphans));
+            }
+        } catch (error) {
+            report(error, 'graft orphan detection');
+        }
+
         // Steps 4–5 run in the background: the 2 s settle must not delay the listeners.
         runRestore(spawned);
 
@@ -566,6 +666,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         input,
         persistence,
         content,
+        webPanes,
+        graft,
+        repoWatch,
+        get graftOrphans() {
+            return graftOrphans;
+        },
         dispatcher,
         ctx,
         paths,

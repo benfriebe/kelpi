@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
     WS_DELTA_KINDS,
+    WS_HOST_EVENTS,
+    WS_HOST_REVOKE_REASONS,
+    WS_HOST_ROLES,
     WS_PROTOCOL_VERSION,
     WS_REJECTION_CODES,
     type WsClientMessage,
@@ -102,5 +105,45 @@ describe('client-sync protocol envelope', () => {
 
     it('enumerates the handshake rejection codes', () => {
         expect([...WS_REJECTION_CODES]).toEqual(['protocol-mismatch', 'unauthorized', 'server-error']);
+    });
+});
+
+
+describe('web-pane host channel (M6)', () => {
+    it('round-trips every host frame in both directions', () => {
+        const messages: (WsClientMessage | WsServerMessage)[] = [
+            { type: 'host-register', role: 'web-pane', name: 'nex-shell' },
+            { type: 'host-unregister', role: 'web-pane' },
+            { type: 'host-rpc-reply', id: 'r1', reply: { ok: true, matched: true } },
+            {
+                type: 'host-event',
+                event: 'console',
+                paneID: 'P',
+                tabID: 'T',
+                payload: { level: 'warn', message: 'careful' }
+            },
+            { type: 'host-registered', role: 'web-pane', hostID: 'H', superseded: false },
+            { type: 'host-revoked', role: 'web-pane', hostID: 'H', reason: 'superseded' },
+            { type: 'host-rpc', id: 'r1', verb: 'actuate', args: { method: 'click' }, timeoutMs: 5000 },
+            { type: 'host-notify', verb: 'tab-open', args: { paneID: 'P', tabID: 'T' } },
+            { type: 'web-console-line', paneID: 'P', line: { seq: 1, level: 'log', message: 'x' } }
+        ];
+        for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
+    });
+
+    it('pins the role, event and revoke vocabularies the shell codes against', () => {
+        expect([...WS_HOST_ROLES]).toEqual(['web-pane']);
+        expect([...WS_HOST_EVENTS]).toEqual(['console', 'page-state', 'inspect', 'tab-closed']);
+        expect([...WS_HOST_REVOKE_REASONS]).toEqual(['superseded', 'unregistered', 'shutdown']);
+    });
+
+    it('lets a client claim the host role in its hello capabilities', () => {
+        const hello: WsClientMessage = {
+            type: 'hello',
+            protocolVersion: WS_PROTOCOL_VERSION,
+            token: 'tok',
+            client: { kind: 'electron', name: 'nex-shell', capabilities: ['web-pane-host'] }
+        };
+        expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
     });
 });

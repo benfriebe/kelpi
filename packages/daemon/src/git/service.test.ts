@@ -10,7 +10,16 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { GitCommandError, createGitRunner, resolveGitExecutable, longGitTimeout, MIN_LONG_GIT_TIMEOUT_MS } from './exec.js';
-import { createGitService, DETACHED_HEAD, FALLBACK_DEFAULT_BRANCH, parseSymrefLine, stripRemotePrefix } from './service.js';
+import {
+    createGitService,
+    DETACHED_HEAD,
+    FALLBACK_DEFAULT_BRANCH,
+    GRAFT_TEMP_INDEX_PREFIX,
+    parseSymrefLine,
+    stripRemotePrefix,
+    sweepGraftTempIndexes
+} from './service.js';
+import { describeRepoState, parseShortstat, parseWorktreeList } from './status.js';
 
 const GIT = resolveGitExecutable();
 
@@ -266,5 +275,224 @@ describe.skipIf(!HAS_GIT)('GitService', () => {
         });
         await service.fetch('/repo');
         expect(seen).toEqual([MIN_LONG_GIT_TIMEOUT_MS]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// M7 primitives (graft-git.md §3.2): status, in-flight ops, stash, tree sync
+// ---------------------------------------------------------------------------
+
+describe('status parsers', () => {
+    it('parses every shortstat shape the sidebar can see', () => {
+        expect(parseShortstat(' 3 files changed, 27 insertions(+), 12 deletions(-)')).toEqual({
+            additions: 27,
+            deletions: 12
+        });
+        expect(parseShortstat(' 1 file changed, 5 insertions(+)')).toEqual({
+            additions: 5,
+            deletions: 0
+        });
+        expect(parseShortstat(' 1 file changed, 2 deletions(-)')).toEqual({
+            additions: 0,
+            deletions: 2
+        });
+        expect(parseShortstat('')).toEqual({ additions: 0, deletions: 0 });
+        expect(parseShortstat('garbage')).toEqual({ additions: 0, deletions: 0 });
+    });
+
+    it('names each in-flight operation the way repoBusy reports it', () => {
+        expect(describeRepoState('merge')).toBe('merge in progress');
+        expect(describeRepoState('rebase')).toBe('rebase in progress');
+        expect(describeRepoState('cherryPick')).toBe('cherry-pick in progress');
+        expect(describeRepoState('revert')).toBe('revert in progress');
+        expect(describeRepoState('bisect')).toBe('bisect in progress');
+        expect(describeRepoState('clean')).toBe('clean');
+    });
+
+    it('parses `worktree list --porcelain`, force-marking the first entry main', () => {
+        const parsed = parseWorktreeList(
+            [
+                'worktree /repo',
+                'HEAD abc',
+                'branch refs/heads/main',
+                '',
+                'worktree /wt/feature',
+                'HEAD def',
+                'branch refs/heads/feature/x',
+                '',
+                'worktree /wt/detached',
+                'HEAD 123',
+                'detached',
+                ''
+            ].join('\n')
+        );
+        expect(parsed).toEqual([
+            { path: '/repo', branch: 'main', isMain: true },
+            { path: '/wt/feature', branch: 'feature/x', isMain: false },
+            { path: '/wt/detached', branch: null, isMain: false }
+        ]);
+        expect(parseWorktreeList('')).toEqual([]);
+    });
+});
+
+describe.skipIf(!HAS_GIT)('GitService — graft primitives', () => {
+    it('counts untracked files in changedFiles but never in additions/deletions', async () => {
+        const repo = initRepo('status');
+        const service = createGitService();
+        expect(await service.getStatus(repo)).toEqual({ kind: 'clean' });
+
+        fs.writeFileSync(path.join(repo, 'README.md'), '# hi\nmore\n');
+        fs.writeFileSync(path.join(repo, 'untracked.txt'), 'a\nb\n');
+        const status = await service.getStatus(repo);
+        expect(status.kind).toBe('dirty');
+        if (status.kind !== 'dirty') throw new Error('unreachable');
+        // Two porcelain lines (one modified, one untracked)…
+        expect(status.changedFiles).toBe(2);
+        // …but only the TRACKED edit contributes to the line counts.
+        expect(status.additions).toBe(1);
+        expect(status.deletions).toBe(0);
+    });
+
+    it('counts STAGED edits too (diff --shortstat HEAD, not plain --shortstat)', async () => {
+        const repo = initRepo('staged');
+        const service = createGitService();
+        fs.writeFileSync(path.join(repo, 'README.md'), '# hi\nstaged line\n');
+        git(repo, 'add', '.');
+        const status = await service.getStatus(repo);
+        if (status.kind !== 'dirty') throw new Error('expected dirty');
+        expect(status.additions).toBe(1);
+    });
+
+    it('swallows the shortstat failure in a repo with no HEAD', async () => {
+        const repo = tmpDir('unborn');
+        git(repo, 'init', '--initial-branch=main');
+        fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+        const status = await createGitService().getStatus(repo);
+        expect(status).toEqual({ kind: 'dirty', changedFiles: 1, additions: 0, deletions: 0 });
+    });
+
+    it('detects an in-flight operation from the RESOLVED git dir (worktrees included)', async () => {
+        const repo = initRepo('state');
+        const service = createGitService();
+        expect(await service.repoState(repo)).toBe('clean');
+
+        const worktree = path.join(tmpDir('state-wt'), 'wt-state');
+        git(repo, 'worktree', 'add', '-b', 'wtstate', worktree);
+        const worktreeGitDir = git(worktree, 'rev-parse', '--absolute-git-dir').trim();
+        fs.writeFileSync(path.join(worktreeGitDir, 'REVERT_HEAD'), 'abc\n');
+        // The worktree is busy; the parent is not.
+        expect(await service.repoState(worktree)).toBe('revert');
+        expect(await service.repoState(repo)).toBe('clean');
+
+        fs.writeFileSync(path.join(repo, '.git', 'MERGE_HEAD'), 'abc\n');
+        expect(await service.repoState(repo)).toBe('merge');
+    });
+
+    it('stashes by SHA, pops by SHA, and treats a dropped stash as success', async () => {
+        const repo = initRepo('stash');
+        const service = createGitService();
+        expect(await service.stashPushIncludeUntracked(repo, 'nex-graft:none')).toBeNull();
+
+        fs.writeFileSync(path.join(repo, 'README.md'), '# edited\n');
+        fs.writeFileSync(path.join(repo, 'untracked.txt'), 'new\n');
+        const ref = await service.stashPushIncludeUntracked(repo, 'nex-graft:test');
+        expect(ref).toMatch(/^[0-9a-f]{40}$/);
+        // Untracked files ride along, so the tree is clean afterwards.
+        expect(await service.getStatus(repo)).toEqual({ kind: 'clean' });
+        expect(git(repo, 'stash', 'list')).toContain('nex-graft:test');
+
+        await service.stashPopRef(repo, ref as string);
+        expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('# edited\n');
+        expect(fs.existsSync(path.join(repo, 'untracked.txt'))).toBe(true);
+        // The ref is gone now: popping again is a silent no-op, not a failure.
+        await expect(service.stashPopRef(repo, ref as string)).resolves.toBeUndefined();
+    });
+
+    it('write-tree/read-tree move content without touching the source index', async () => {
+        const repo = initRepo('tree');
+        const service = createGitService();
+        const worktree = path.join(tmpDir('tree-wt'), 'wt-tree');
+        git(repo, 'worktree', 'add', '-b', 'wttree', worktree);
+
+        fs.writeFileSync(path.join(worktree, 'README.md'), '# from worktree\n');
+        fs.writeFileSync(path.join(worktree, 'extra.txt'), 'untracked but mirrored\n');
+        const tree = await service.writeTreeForWorktree(worktree);
+        expect(tree).toMatch(/^[0-9a-f]{40}$/);
+        // The worktree's REAL index never saw an `add`.
+        expect(git(worktree, 'diff', '--name-only', '--cached').trim()).toBe('');
+
+        await service.readTreeInto(repo, tree);
+        expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('# from worktree\n');
+        expect(fs.readFileSync(path.join(repo, 'extra.txt'), 'utf8')).toBe(
+            'untracked but mirrored\n'
+        );
+        // The throw-away index is cleaned up (the name is unguessable from here; the sweep
+        // test below covers the leftovers a crashed pass would leave).
+        expect(tree).toBe(await service.writeTreeForWorktree(worktree));
+    });
+
+    it('resolves the HEAD path for the main checkout and for a linked worktree', async () => {
+        const repo = initRepo('head');
+        const service = createGitService();
+        expect(await service.resolveHeadPath(repo)).toBe(path.join(repo, '.git', 'HEAD'));
+
+        const worktree = path.join(tmpDir('head-wt'), 'wt-head');
+        git(repo, 'worktree', 'add', '-b', 'wthead', worktree);
+        const headPath = await service.resolveHeadPath(worktree);
+        expect(headPath.endsWith(path.join('.git', 'worktrees', 'wt-head', 'HEAD'))).toBe(true);
+        expect(path.isAbsolute(headPath)).toBe(true);
+    });
+
+    it('restores a working tree with checkout -f / reset', async () => {
+        const repo = initRepo('restore');
+        const service = createGitService();
+        const first = git(repo, 'rev-parse', 'HEAD').trim();
+        fs.writeFileSync(path.join(repo, 'README.md'), '# drift\n');
+        await service.checkoutHeadForce(repo);
+        expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('# hi\n');
+
+        git(repo, 'checkout', '-q', '-b', 'side');
+        fs.writeFileSync(path.join(repo, 'side.txt'), 'side\n');
+        git(repo, 'add', '.');
+        git(repo, 'commit', '-m', 'side');
+        await service.checkoutBranchForce(repo, 'main');
+        expect(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
+        await service.resetHard(repo, first);
+        expect(git(repo, 'rev-parse', 'HEAD').trim()).toBe(first);
+    });
+
+    it('lists and removes worktrees', async () => {
+        const repo = initRepo('worktrees');
+        const service = createGitService();
+        const worktree = path.join(tmpDir('list-wt'), 'wt-list');
+        git(repo, 'worktree', 'add', '-b', 'wtlist', worktree);
+
+        const list = await service.listWorktrees(repo);
+        expect(list[0]?.isMain).toBe(true);
+        expect(list.map((entry) => entry.branch)).toContain('wtlist');
+
+        await service.removeWorktree(repo, worktree);
+        expect(fs.existsSync(worktree)).toBe(false);
+        await service.pruneWorktrees(repo);
+        expect(await service.listWorktrees(repo)).toHaveLength(1);
+    });
+});
+
+describe('sweepGraftTempIndexes', () => {
+    it('removes only day-old temp indexes, so a live sync is never robbed', () => {
+        const dir = tmpDir('sweep');
+        const stale = path.join(dir, `${GRAFT_TEMP_INDEX_PREFIX}stale`);
+        const fresh = path.join(dir, `${GRAFT_TEMP_INDEX_PREFIX}fresh`);
+        const other = path.join(dir, 'unrelated.tmp');
+        for (const file of [stale, fresh, other]) fs.writeFileSync(file, 'x');
+        const now = Date.now();
+        fs.utimesSync(stale, new Date(now - 48 * 3600_000), new Date(now - 48 * 3600_000));
+
+        expect(sweepGraftTempIndexes(dir, now)).toBe(1);
+        expect(fs.existsSync(stale)).toBe(false);
+        expect(fs.existsSync(fresh)).toBe(true);
+        expect(fs.existsSync(other)).toBe(true);
+        // A missing directory is not an error.
+        expect(sweepGraftTempIndexes(path.join(dir, 'nope'), now)).toBe(0);
     });
 });

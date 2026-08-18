@@ -59,9 +59,13 @@ export {
 export {
     CONTENT_COMMANDS,
     CONTENT_UPDATED_MESSAGE,
+    WEB_COMMANDS,
+    WEB_CONSOLE_LINE_MESSAGE,
+    WEB_HOST_CAPABILITY,
     WS_CLOSE_CODES,
     createSyncHub,
     isContentCommand,
+    isWebCommand,
     type ContentChannel,
     type ContentCommand,
     type NexDomainStore,
@@ -70,7 +74,9 @@ export {
     type SyncPaneBridge,
     type SyncPresence,
     type SyncSession,
-    type SyncTransport
+    type SyncTransport,
+    type WebCommand,
+    type WebPaneChannel
 } from './sync.js';
 
 export {

@@ -41,6 +41,8 @@ import { dualFireMessage } from '../control/server.js';
 import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import { groupByID, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../store/types.js';
+import type { HostRegistration } from '../webpane/host.js';
+import type { WebPaneService } from '../webpane/service.js';
 import { serializeDomainEvents, serializeState } from './serialize.js';
 
 export type NexDomainStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
@@ -90,6 +92,12 @@ export interface SyncHubOptions {
     readonly protocolVersion?: number | undefined;
     /** M5 content panes; absent = the `content-*` verbs answer "not available". */
     readonly content?: ContentChannel | undefined;
+    /**
+     * M6 web panes. This is where the Electron shell claims the host role and where its RPC
+     * replies + console/page events arrive, so it MUST be the same service instance the
+     * `web-*` command handlers got. Absent = no connection can become a host.
+     */
+    readonly webPanes?: WebPaneChannel | undefined;
     /** Second token check, after the HTTP upgrade gate. Absent = accept whatever upgraded. */
     readonly validateToken?: ((token: string) => boolean) | undefined;
     readonly now?: (() => number) | undefined;
@@ -140,10 +148,15 @@ function parseClientInfo(value: unknown): WsClientInfo {
     const known = WS_CLIENT_KINDS.includes(kind as WsClientKind) ? (kind as WsClientKind) : 'browser';
     const name = text(value['name']);
     const version = text(value['version']);
+    const rawCapabilities = value['capabilities'];
+    const capabilities = Array.isArray(rawCapabilities)
+        ? rawCapabilities.filter((entry): entry is string => typeof entry === 'string')
+        : undefined;
     return {
         kind: known,
         ...(name !== undefined ? { name } : {}),
-        ...(version !== undefined ? { version } : {})
+        ...(version !== undefined ? { version } : {}),
+        ...(capabilities !== undefined ? { capabilities } : {})
     };
 }
 
@@ -271,6 +284,40 @@ export interface ContentChannel {
     refresh(paneID: string): Promise<ContentPaneState>;
 }
 
+// ── web panes (M6) ──────────────────────────────────────────────────────────────────
+
+/**
+ * The web-pane host channel and the client-side console subscription.
+ *
+ * Two different roles share this socket type:
+ *   - a **host** (the Electron shell) sends `host-register`, then answers `host-rpc` with
+ *     `host-rpc-reply` and pushes `host-event`s (console lines, URL/title changes, picked
+ *     elements). Exactly one host is active; a second registration takes over and the previous
+ *     host is told with `host-revoked`. Dropping the connection releases the slot.
+ *   - any **client** (the web UI) can subscribe to a pane's console with
+ *     `web-console-subscribe` and receive `web-console-line` messages — the WS twin of the
+ *     control socket's `nex web console --follow`, reading the same daemon ring buffer.
+ *
+ * Contract for the host side: `daemon/src/webpane/HOST_PROTOCOL.md`.
+ */
+export type WebPaneChannel = Pick<
+    WebPaneService,
+    'registerHost' | 'settleHostReply' | 'handleHostEvent' | 'subscribeConsole' | 'console'
+>;
+
+export const WEB_COMMANDS = ['web-console-subscribe', 'web-console-unsubscribe'] as const;
+export type WebCommand = (typeof WEB_COMMANDS)[number];
+
+export function isWebCommand(command: string): command is WebCommand {
+    return (WEB_COMMANDS as readonly string[]).includes(command);
+}
+
+/** The message type carrying one streamed console line to a subscribed client. */
+export const WEB_CONSOLE_LINE_MESSAGE = 'web-console-line';
+
+/** Capability token a `hello` can carry to claim the host role without a second message. */
+export const WEB_HOST_CAPABILITY = 'web-pane-host';
+
 /** A `ReplyHandle` whose lines ride the WS channel as `command-reply` messages. */
 class WsReplyHandle implements ReplyHandle {
     private sends = 0;
@@ -355,6 +402,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private readonly contentSubs = new Map<string, ContentSubscription>();
         /** Bumped on every subscribe/unsubscribe so an in-flight subscribe can be voided. */
         private readonly contentEpoch = new Map<string, number>();
+        /** Set while THIS connection holds the web-pane host role (M6). */
+        private hostRegistration: HostRegistration | null = null;
+        /** paneID → unsubscribe for this connection's console streams. */
+        private readonly consoleSubs = new Map<string, () => void>();
 
         constructor(
             private readonly transport: SyncTransport,
@@ -418,6 +469,35 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.send({ type: 'pong', id: id ?? '' });
                     return;
                 }
+                case 'host-register':
+                    this.registerHost(text(parsed['name']));
+                    return;
+                case 'host-unregister':
+                    this.releaseHost();
+                    return;
+                case 'host-rpc-reply': {
+                    const id = text(parsed['id']);
+                    const payload = parsed['reply'];
+                    // Only the connection that currently holds the role may answer RPCs; a
+                    // superseded host's late reply must not settle its successor's call.
+                    if (id === undefined || !isRecord(payload) || this.hostRegistration === null) return;
+                    options.webPanes?.settleHostReply(id, payload as JsonObject);
+                    return;
+                }
+                case 'host-event': {
+                    if (this.hostRegistration === null) return;
+                    const event = text(parsed['event']);
+                    const paneID = text(parsed['paneID']);
+                    const payload = parsed['payload'];
+                    if (event === undefined || paneID === undefined) return;
+                    options.webPanes?.handleHostEvent({
+                        event,
+                        paneID,
+                        ...(text(parsed['tabID']) !== undefined ? { tabID: text(parsed['tabID']) } : {}),
+                        payload: isRecord(payload) ? payload : {}
+                    });
+                    return;
+                }
                 default:
                     // Forward compatibility: unknown message types are ignored, not fatal.
                     return;
@@ -440,8 +520,61 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
             this.contentSubs.clear();
             this.contentEpoch.clear();
+            // A dropped host must free the slot (a later shell can then take over) and every
+            // console follower must stop writing into a socket that is gone.
+            this.releaseHost();
+            for (const unsubscribe of this.consoleSubs.values()) {
+                try {
+                    unsubscribe();
+                } catch (error) {
+                    report(error, 'web-console-unsubscribe');
+                }
+            }
+            this.consoleSubs.clear();
             this.panes?.close();
             sessions.delete(this);
+        }
+
+        // ── web-pane host (M6) ──────────────────────────────────────────────
+
+        private registerHost(name: string | undefined): void {
+            const channel = options.webPanes;
+            if (channel === undefined) return;
+            // Re-registering on the same connection is idempotent from the caller's side: the
+            // old registration is released first, so the registry never leaks a stale slot.
+            this.releaseHost();
+            try {
+                this.hostRegistration = channel.registerHost(
+                    {
+                        sendJson: (message) => {
+                            // The registry revokes by writing to the OUTGOING host's transport;
+                            // seeing that frame is how this session learns it lost the role and
+                            // must stop being trusted for replies and events.
+                            if (message['type'] === 'host-revoked') this.hostRegistration = null;
+                            this.send(message);
+                        }
+                    },
+                    name === undefined ? {} : { name }
+                );
+            } catch (error) {
+                report(error, 'host-register');
+            }
+        }
+
+        private releaseHost(): void {
+            const registration = this.hostRegistration;
+            this.hostRegistration = null;
+            if (registration === null) return;
+            try {
+                registration.release('unregistered');
+            } catch (error) {
+                report(error, 'host-unregister');
+            }
+        }
+
+        /** True while this connection holds the host role (tests / diagnostics). */
+        get isWebPaneHost(): boolean {
+            return this.hostRegistration !== null;
         }
 
         // ── handshake ───────────────────────────────────────────────────────────────
@@ -486,6 +619,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // Deltas only start flowing once the snapshot they extend has been written, so
             // the client can never see delta N before the snapshot anchored at N.
             this.ready = true;
+
+            // Sugar for the Electron shell: claiming the host role in the handshake saves a
+            // round-trip and removes the window where the daemon has a client but no host.
+            if (this.client?.capabilities?.includes(WEB_HOST_CAPABILITY) === true) {
+                this.registerHost(this.client.name);
+            }
         }
 
         private snapshot(): void {
@@ -569,6 +708,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 const name = text(payload['command']);
                 if (name !== undefined && isContentCommand(name)) {
                     this.contentCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isWebCommand(name)) {
+                    this.webCommand(id, name, payload);
                     return;
                 }
                 if (name !== undefined && isWsOnlyCommand(name)) {
@@ -725,6 +868,74 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     settle(content.save(paneID));
                     return;
             }
+        }
+
+        // ── web-pane console subscriptions (M6) ─────────────────────────────
+
+        /**
+         * `web-console-subscribe` is the WS twin of `nex web console --follow`: the reply is
+         * the same catch-up drain object, and every later line arrives as its own
+         * `web-console-line` message. Both readers share one ring buffer per pane, so a drop
+         * notice is delivered to whoever consumes it first (web-pane.md §9.3).
+         */
+        private webCommand(id: string, command: WebCommand, payload: Record<string, unknown>): void {
+            const channel = options.webPanes;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('web panes are not available') });
+                return;
+            }
+            const paneID = text(payload['pane_id']);
+            if (paneID === undefined) {
+                this.send({
+                    type: 'command-reply',
+                    id,
+                    reply: failure(`${command} requires pane_id`)
+                });
+                return;
+            }
+
+            const drop = (): void => {
+                this.consoleSubs.get(paneID)?.();
+                this.consoleSubs.delete(paneID);
+            };
+
+            if (command === 'web-console-unsubscribe') {
+                drop();
+                this.send({ type: 'command-reply', id, reply: { ok: true, pane_id: paneID } });
+                return;
+            }
+
+            // Re-subscribing replaces the old handle so a client that lost track of its
+            // subscription cannot end up with two streams for one pane.
+            drop();
+            const since = count(payload['since']);
+            const level = text(payload['level']);
+            const drain = channel.console.drain(paneID, {
+                ...(since !== undefined ? { since } : {}),
+                ...(level !== undefined ? { level } : {}),
+                ...(payload['clear'] === true ? { clear: true } : {})
+            });
+            const unsubscribe = channel.subscribeConsole(paneID, {
+                push: (line) => {
+                    this.send({ type: WEB_CONSOLE_LINE_MESSAGE, paneID, line });
+                },
+                end: () => {
+                    drop();
+                }
+            });
+            this.consoleSubs.set(paneID, unsubscribe);
+            this.send({
+                type: 'command-reply',
+                id,
+                reply: {
+                    ok: true,
+                    pane_id: paneID,
+                    lines: drain.lines,
+                    next_since: drain.next_since,
+                    dropped: drain.dropped,
+                    follow: true
+                }
+            });
         }
 
         // ── output ──────────────────────────────────────────────────────────────────

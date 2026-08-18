@@ -24,6 +24,8 @@ import type {
     NewWorkspacePlacement
 } from '../../store/index.js';
 import { createGitService, DEFAULT_WORKTREE_BASE_PATH, type GitService } from '../../git/index.js';
+import { createGraftService, type GraftService } from '../../graft/index.js';
+import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
 
 export type AppContext = HandlerContext<DaemonState, DomainAction, DomainEvent>;
 export type AppHandler = CommandHandler<AppContext>;
@@ -40,6 +42,14 @@ export interface SpawnPaneRequest {
 
 export interface AppHandlerOptions {
     readonly git?: GitService | undefined;
+    /** M7 graft engine (`graft-*` verbs). Defaults to one bound to this table's git service. */
+    readonly graft?: GraftService | undefined;
+    /**
+     * M6 web panes (`web-*` verbs). Must be the SAME instance the WS sync hub got, since that
+     * is where the Electron host registers; the default is a host-less service, so every verb
+     * that needs a real browser answers `no web pane host connected`.
+     */
+    readonly webPanes?: WebPaneService | undefined;
     /** Mints workspace / pane / group / association ids. Uppercase canonical UUIDs. */
     readonly uuid?: (() => string) | undefined;
     /** Epoch MILLISECONDS (actions convert to the persisted seconds themselves). */
@@ -74,6 +84,8 @@ export interface AppHandlerOptions {
 
 export interface AppDeps {
     readonly git: GitService;
+    readonly graft: GraftService;
+    readonly webPanes: WebPaneService;
     readonly uuid: () => string;
     readonly now: () => number;
     readonly random: () => number;
@@ -94,8 +106,15 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
     const persist = options.persist ?? noop;
     const cols = options.defaultCols ?? 80;
     const rows = options.defaultRows ?? 24;
+    const git = options.git ?? createGitService();
     return {
-        git: options.git ?? createGitService(),
+        git,
+        // Nothing spawns or watches until a `graft-start` actually runs, so the default is
+        // free for the handler families that never touch it.
+        graft: options.graft ?? createGraftService({ git }),
+        // Same idea: a host-less web-pane service is inert (no timers, no sockets) and answers
+        // every browser-bound verb honestly.
+        webPanes: options.webPanes ?? createWebPaneService(),
         uuid: options.uuid ?? (() => newUUID()),
         now: options.now ?? (() => Date.now()),
         random: options.random ?? (() => Math.random()),

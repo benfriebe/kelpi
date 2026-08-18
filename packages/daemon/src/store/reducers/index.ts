@@ -10,9 +10,10 @@ import { reduceAgentAction } from './agent.js';
 import { reduceGroupAction } from './groups.js';
 import { reduceLayoutAction } from './layout.js';
 import { reducePaneAction } from './panes.js';
+import { reduceWebAction } from './web.js';
 import { reduceWorkspaceAction } from './workspaces.js';
 
-type ActionFamily = 'root' | 'workspace' | 'group' | 'pane' | 'layout' | 'agent';
+type ActionFamily = 'root' | 'workspace' | 'group' | 'pane' | 'layout' | 'agent' | 'web';
 
 const ROUTES = {
     'replace-state': 'root',
@@ -74,6 +75,12 @@ const ROUTES = {
     'open-diff-pane': 'pane',
     'create-scratchpad': 'pane',
     'open-web-pane': 'pane',
+    'web-tab-open': 'web',
+    'web-tab-close': 'web',
+    'web-tab-select': 'web',
+    'web-navigate': 'web',
+    'web-set-private': 'web',
+    'web-tab-state': 'web',
     'scratchpad-content-changed': 'pane',
     'set-markdown-editing': 'pane',
     'set-markdown-font-size': 'pane',
@@ -112,9 +119,12 @@ export function reduce(state: DaemonState, action: DomainAction): DaemonState {
             return reduceLayoutAction(state, action);
         case 'agent':
             return reduceAgentAction(state, action);
+        case 'web':
+            return reduceWebAction(state, action);
     }
 }
 
 export { previewAgentEvent } from './agent.js';
 export { closePaneInWorkspace } from './panes.js';
 export { normalizeURLInput } from './url.js';
+export { resolvedActiveTab, tabDisplayLabel } from './web.js';

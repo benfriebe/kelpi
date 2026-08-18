@@ -17,11 +17,13 @@
 
 import { eventHandlerEntries } from './events.js';
 import { fileHandlerEntries } from './files.js';
+import { graftHandlerEntries } from './graft.js';
 import { groupHandlerEntries } from './groups.js';
 import { layoutHandlerEntries } from './layout.js';
 import { pingHandlerEntries } from './ping.js';
 import { stubHandlerEntries } from './stubs.js';
 import { workspaceHandlerEntries } from './workspaces.js';
+import { webHandlerEntries } from '../../webpane/handlers.js';
 import {
     handlerTable,
     resolveAppDeps,
@@ -37,6 +39,8 @@ export function createAppHandlers(options: AppHandlerOptions = {}): AppHandlerTa
         ...layoutHandlerEntries(deps),
         ...fileHandlerEntries(deps),
         ...eventHandlerEntries(deps),
+        ...graftHandlerEntries(deps),
+        ...webHandlerEntries(deps),
         ...pingHandlerEntries(),
         ...stubHandlerEntries()
     ]);
@@ -56,6 +60,14 @@ export { applyAgentEvent, ATTENTION_EVENT, notificationDedupeKey } from './event
 export { NOT_SUPPORTED_ERROR, STUBBED_COMMANDS } from './stubs.js';
 export { eventHandlerEntries } from './events.js';
 export { fileHandlerEntries } from './files.js';
+export {
+    graftHandlerEntries,
+    GRAFT_NO_MATCH_ERROR,
+    GRAFT_NO_PANE_WORKSPACE_ERROR,
+    GRAFT_SCOPE_REQUIRED_ERROR,
+    GRAFT_START_FALLBACK_ERROR,
+    resolveGraftAssociations
+} from './graft.js';
 export { groupHandlerEntries } from './groups.js';
 export { layoutHandlerEntries } from './layout.js';
 export { pingHandlerEntries } from './ping.js';

@@ -13,5 +13,12 @@ export * from './types.js';
 export * from './derived.js';
 export { applyDomainEvent, applyDomainEvents, deriveEvents } from './events.js';
 export { createStore, type NexStore } from './store.js';
-export { closePaneInWorkspace, normalizeURLInput, previewAgentEvent, reduce } from './reducers/index.js';
+export {
+    closePaneInWorkspace,
+    normalizeURLInput,
+    previewAgentEvent,
+    reduce,
+    resolvedActiveTab,
+    tabDisplayLabel
+} from './reducers/index.js';
 export { isLocalOrInternalHost } from './reducers/url.js';

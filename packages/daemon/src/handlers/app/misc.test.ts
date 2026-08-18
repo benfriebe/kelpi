@@ -165,19 +165,15 @@ describe('ping', () => {
 // stubs + table coverage
 // ---------------------------------------------------------------------------
 
-describe('graft / web stubs', () => {
-    it('answers every stubbed verb with an honest failure', () => {
+describe('stubs + table coverage', () => {
+    it('answers every REMAINING stubbed verb with an honest failure', () => {
         const h = harness({ initial: seeded(1) });
-        expect(h.reply({ command: 'graft-status' })).toEqual({
-            ok: false,
-            error: NOT_SUPPORTED_ERROR
-        });
-        expect(h.reply({ command: 'web-open', url: 'https://example.com' })).toEqual({
-            ok: false,
-            error: NOT_SUPPORTED_ERROR
-        });
-        expect(STUBBED_COMMANDS).toContain('graft-start');
-        expect(STUBBED_COMMANDS.length).toBeGreaterThan(30);
+        for (const command of STUBBED_COMMANDS) {
+            expect(h.table.get(command)).toBeDefined();
+        }
+        // M7 moved the graft family out of the stub list into `handlers/app/graft.ts`.
+        expect(STUBBED_COMMANDS).not.toContain('graft-start');
+        expect(NOT_SUPPORTED_ERROR).toBe('not supported yet');
     });
 
     it('stays silent on the fire-and-forget path', () => {

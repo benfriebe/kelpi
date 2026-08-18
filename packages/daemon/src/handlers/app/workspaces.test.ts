@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { GitCommandError, type GitService, type WorktreeAddRequest } from '../../git/index.js';
+import { stubGitService } from '../../git/testing.js';
 import { createStore, emptyDaemonState, makeWorkspaceState, type DaemonState } from '../../store/index.js';
 import { flush, harness, HOME, id, NOW, seeded } from './testing.js';
 
@@ -12,19 +13,7 @@ const P2 = id('dddddddd', 2);
 const G1 = id('cccccccc', 1);
 
 function stubGit(overrides: Partial<GitService> = {}): GitService {
-    const base: GitService = {
-        getCurrentBranch: async () => 'main',
-        getDiff: async () => '',
-        getRemoteURL: async () => null,
-        defaultBranch: async () => 'main',
-        fetch: async () => {},
-        createWorktree: async () => {},
-        createWorktreeFromBase: async () => {},
-        worktreeAdd: async () => {},
-        toplevel: async () => null,
-        resolveRepoRoot: async () => null
-    };
-    return { ...base, ...overrides };
+    return stubGitService(overrides);
 }
 
 // ---------------------------------------------------------------------------

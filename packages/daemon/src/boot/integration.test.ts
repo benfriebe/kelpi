@@ -270,11 +270,12 @@ describe('nexd end to end', () => {
         await second.daemon.stop();
     }, 60_000);
 
-    it('rejects an unknown allowlisted command instead of hanging the caller', async () => {
+    it('answers every allowlisted command instead of hanging the caller', async () => {
         const paths = scratch();
         await boot(paths);
-        // `graft-status` is allowlisted and stubbed: an honest failure, never a read timeout.
+        // `graft-status` is allowlisted and, since M7, real: a fresh daemon holds no sessions
+        // and must still answer — a read timeout would wedge the CLI.
         const reply = await request(paths.socketPath, { command: 'graft-status' });
-        expect(reply).toEqual({ ok: false, error: 'not supported yet' });
+        expect(reply).toEqual({ ok: true, sessions: [] });
     }, 30_000);
 });

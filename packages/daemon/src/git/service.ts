@@ -1,16 +1,17 @@
 /**
- * The minimal git primitive layer the daemon's handlers need (graft-git.md §3.2).
+ * The git primitive layer the daemon's handlers and the graft engine drive (graft-git.md §3.2).
  *
- * Only the operations WP2.5b actually drives are implemented: branch reads, default-branch
- * resolution, the worktree-add family (including the `--update-main` flow) and repo-root
- * resolution. The rest of §3.2 (status, stash, tree sync) lands with graft in M7 — this
- * interface is meant to be widened, not rewritten.
+ * Branch reads, default-branch resolution, the worktree family (including `--update-main`),
+ * repo-root resolution — and, since M7, everything graft needs: status/dirtiness, in-flight
+ * operation detection, the stash pair, the tree-level sync primitives and the restore verbs.
  *
- * Every call is async, runs with `cwd` = the repo/worktree path, and never carries a timeout
- * shorter than `MIN_LONG_GIT_TIMEOUT_MS` on the worktree/fetch family.
+ * Every call is async, runs with `cwd` = the repo/worktree path (**never `-C`**), and never
+ * carries a timeout shorter than `MIN_LONG_GIT_TIMEOUT_MS` on the worktree/fetch family.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -19,6 +20,16 @@ import {
     type CreateGitRunnerOptions,
     type GitRunner
 } from './exec.js';
+import {
+    NOTHING_TO_STASH,
+    parseShortstat,
+    parseStashList,
+    parseWorktreeList,
+    porcelainLines,
+    type RepoGitStatus,
+    type RepoState,
+    type WorktreeInfo
+} from './status.js';
 
 /** `git rev-parse --abbrev-ref HEAD` prints this literal when HEAD is detached. */
 export const DETACHED_HEAD = 'HEAD';
@@ -70,6 +81,50 @@ export interface GitService {
     toplevel(directory: string): Promise<string | null>;
     /** `--show-toplevel --git-common-dir` in one spawn; null when not a checkout. */
     resolveRepoRoot(directory: string): Promise<RepoRootInfo | null>;
+
+    // ── graft + sidebar primitives (M7) ──────────────────────────────────────────────
+
+    /**
+     * `git status --porcelain` (+ `git diff --shortstat HEAD` when dirty). Untracked files
+     * count towards `changedFiles` but NOT towards additions/deletions, and a failing
+     * shortstat (fresh repo, no HEAD) is swallowed → 0/0. Throws only when the porcelain
+     * read itself fails (callers that want a badge fall back to `unknown`).
+     */
+    getStatus(repoPath: string): Promise<RepoGitStatus>;
+    /** Marker files in the RESOLVED git dir (per-worktree for a linked worktree). */
+    repoState(repoPath: string): Promise<RepoState>;
+    /** `git rev-parse HEAD`, trimmed. */
+    getHeadSha(repoPath: string): Promise<string>;
+    /** `git rev-parse --git-path HEAD`, resolved against `worktreePath` and normalized. */
+    resolveHeadPath(worktreePath: string): Promise<string>;
+    /**
+     * `git stash push --include-untracked -m <message>` → the stash **SHA** (not `stash@{N}`,
+     * which shifts as stashes land). `null` when there was nothing to stash.
+     */
+    stashPushIncludeUntracked(repoPath: string, message: string): Promise<string | null>;
+    /**
+     * Pop the stash whose SHA is `stashRef`. A ref that is no longer in `git stash list`
+     * **succeeds silently** (the user dropped it; the rest of the stop sequence must run).
+     */
+    stashPopRef(repoPath: string, stashRef: string): Promise<void>;
+    /**
+     * The worktree-side sync primitive: seed a THROW-AWAY index from HEAD, `add -A` into it,
+     * `write-tree` — the worktree's real index and staging state are never touched.
+     */
+    writeTreeForWorktree(worktreePath: string): Promise<string>;
+    /** The parent-side sync primitive: `git read-tree --reset -u <tree>`. */
+    readTreeInto(repoPath: string, treeSha: string): Promise<void>;
+    /** `git checkout -f <branchOrSha> --`. */
+    checkoutBranchForce(repoPath: string, branchOrSha: string): Promise<void>;
+    /** `git checkout -f HEAD --` — discard working-tree drift without moving HEAD. */
+    checkoutHeadForce(repoPath: string): Promise<void>;
+    resetHard(repoPath: string, sha: string): Promise<void>;
+    resetMixed(repoPath: string, sha: string): Promise<void>;
+    /** `git worktree list --porcelain`; the first entry is always the main worktree. */
+    listWorktrees(repoPath: string): Promise<WorktreeInfo[]>;
+    /** `git worktree remove <path>` — NON-forcing (git refuses dirty/locked worktrees). */
+    removeWorktree(repoPath: string, worktreePath: string): Promise<void>;
+    pruneWorktrees(repoPath: string): Promise<void>;
 }
 
 export interface CreateGitServiceOptions extends CreateGitRunnerOptions {
@@ -113,6 +168,62 @@ function isDirectory(candidate: string): boolean {
     } catch {
         return false;
     }
+}
+
+function pathExists(candidate: string): boolean {
+    try {
+        fs.statSync(candidate);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Marker files checked, in order, inside the resolved git dir (§3.2 `repoState`). */
+const REPO_STATE_MARKERS: readonly (readonly [string, RepoState])[] = [
+    ['MERGE_HEAD', 'merge'],
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+    ['CHERRY_PICK_HEAD', 'cherryPick'],
+    ['REVERT_HEAD', 'revert'],
+    ['BISECT_LOG', 'bisect']
+];
+
+/** Prefix of the throw-away index files `writeTreeForWorktree` creates (port note 18). */
+export const GRAFT_TEMP_INDEX_PREFIX = 'nex-graft-index-';
+
+/** A day: only temp indexes older than this are swept, so a live sync is never robbed. */
+const TEMP_INDEX_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Best-effort startup sweep of abandoned `nex-graft-index-*` files (a crashed sync leaks one).
+ * Only files older than a day are removed — another daemon may be mid-`write-tree` right now.
+ * Returns the number of files deleted; never throws.
+ */
+export function sweepGraftTempIndexes(
+    directory: string = os.tmpdir(),
+    now: number = Date.now(),
+    maxAgeMs: number = TEMP_INDEX_SWEEP_AGE_MS
+): number {
+    let removed = 0;
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(directory);
+    } catch {
+        return 0;
+    }
+    for (const entry of entries) {
+        if (!entry.startsWith(GRAFT_TEMP_INDEX_PREFIX)) continue;
+        const full = path.join(directory, entry);
+        try {
+            if (now - fs.statSync(full).mtimeMs < maxAgeMs) continue;
+            fs.rmSync(full, { force: true });
+            removed += 1;
+        } catch {
+            // Someone else's file, or already gone. Nothing to do.
+        }
+    }
+    return removed;
 }
 
 export function createGitService(options: CreateGitServiceOptions = {}): GitService {
@@ -250,6 +361,128 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             const parentRepoRoot =
                 path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir;
             return { worktreeRoot, parentRepoRoot };
+        },
+
+        // ── graft + sidebar primitives ───────────────────────────────────────────────
+
+        async getStatus(repoPath) {
+            const porcelain = await readGit(['status', '--porcelain'], repoPath);
+            const lines = porcelainLines(porcelain);
+            if (lines.length === 0) return { kind: 'clean' };
+            let additions = 0;
+            let deletions = 0;
+            try {
+                // Against HEAD so STAGED edits count too; a repo without a HEAD throws here
+                // and the counts stay 0 (the file count is still right).
+                const shortstat = await readGit(['diff', '--shortstat', 'HEAD'], repoPath);
+                const counts = parseShortstat(shortstat);
+                additions = counts.additions;
+                deletions = counts.deletions;
+            } catch {
+                // Swallowed by contract (port note 16).
+            }
+            return { kind: 'dirty', changedFiles: lines.length, additions, deletions };
+        },
+
+        async repoState(repoPath) {
+            const raw = (await readGit(['rev-parse', '--git-dir'], repoPath)).trim();
+            if (raw === '') return 'clean';
+            const gitDir = path.isAbsolute(raw) ? raw : path.join(repoPath, raw);
+            for (const [marker, state] of REPO_STATE_MARKERS) {
+                if (pathExists(path.join(gitDir, marker))) return state;
+            }
+            return 'clean';
+        },
+
+        async getHeadSha(repoPath) {
+            return (await readGit(['rev-parse', 'HEAD'], repoPath)).trim();
+        },
+
+        async resolveHeadPath(worktreePath) {
+            const raw = (await readGit(['rev-parse', '--git-path', 'HEAD'], worktreePath)).trim();
+            if (raw === '') return path.join(worktreePath, '.git', 'HEAD');
+            return path.normalize(path.isAbsolute(raw) ? raw : path.join(worktreePath, raw));
+        },
+
+        async stashPushIncludeUntracked(repoPath, message) {
+            const out = await readGit(
+                ['stash', 'push', '--include-untracked', '-m', message],
+                repoPath
+            );
+            // Exit code is 0 either way; stdout is the only discriminator.
+            if (out.includes(NOTHING_TO_STASH)) return null;
+            const sha = (await readGit(['rev-parse', 'refs/stash'], repoPath)).trim();
+            return sha === '' ? null : sha;
+        },
+
+        async stashPopRef(repoPath, stashRef) {
+            const list = parseStashList(await readGit(['stash', 'list', '--format=%H'], repoPath));
+            const index = list.indexOf(stashRef);
+            // Dropped by the user between start and stop: nothing to pop, and refusing here
+            // would strand the rest of the stop sequence.
+            if (index < 0) return;
+            await readGit(['stash', 'pop', `stash@{${String(index)}}`], repoPath);
+        },
+
+        async writeTreeForWorktree(worktreePath) {
+            const tempIndex = path.join(
+                os.tmpdir(),
+                `${GRAFT_TEMP_INDEX_PREFIX}${crypto.randomUUID()}`
+            );
+            const env = { GIT_INDEX_FILE: tempIndex };
+            const withIndex = async (args: readonly string[]): Promise<string> =>
+                run(args, {
+                    cwd: worktreePath,
+                    env,
+                    ...(short !== undefined ? { timeoutMs: short } : {})
+                });
+            try {
+                await withIndex(['read-tree', 'HEAD']);
+                // `add -A` against the TEMP index: untracked (non-ignored) files join the
+                // snapshot and the user's real staging state is untouched.
+                await withIndex(['add', '-A']);
+                return (await withIndex(['write-tree'])).trim();
+            } finally {
+                for (const leftover of [tempIndex, `${tempIndex}.lock`]) {
+                    try {
+                        fs.rmSync(leftover, { force: true });
+                    } catch {
+                        // Best-effort: the startup sweep collects anything left behind.
+                    }
+                }
+            }
+        },
+
+        async readTreeInto(repoPath, treeSha) {
+            await readGit(['read-tree', '--reset', '-u', treeSha], repoPath);
+        },
+
+        async checkoutBranchForce(repoPath, branchOrSha) {
+            await readGit(['checkout', '-f', branchOrSha, '--'], repoPath);
+        },
+
+        async checkoutHeadForce(repoPath) {
+            await readGit(['checkout', '-f', 'HEAD', '--'], repoPath);
+        },
+
+        async resetHard(repoPath, sha) {
+            await readGit(['reset', '--hard', sha], repoPath);
+        },
+
+        async resetMixed(repoPath, sha) {
+            await readGit(['reset', '--mixed', sha], repoPath);
+        },
+
+        async listWorktrees(repoPath) {
+            return parseWorktreeList(await readGit(['worktree', 'list', '--porcelain'], repoPath));
+        },
+
+        async removeWorktree(repoPath, worktreePath) {
+            await longGit(['worktree', 'remove', worktreePath], repoPath);
+        },
+
+        async pruneWorktrees(repoPath) {
+            await longGit(['worktree', 'prune'], repoPath);
         }
     };
 

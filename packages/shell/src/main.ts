@@ -36,6 +36,7 @@ import { readGlobalHotkeySettings, swapGlobalHotkey, type HotkeyRegistrar } from
 import { log, logError, warn } from './log.js';
 import { createStatusController, type StatusController } from './status.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
+import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
 import {
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -54,6 +55,8 @@ const MAX_LOAD_RETRIES = 5;
 let daemon: DaemonLocation | null = null;
 let mainWindow: BrowserWindow | null = null;
 let status: StatusController | null = null;
+/** M6: the web-pane host — a third daemon connection that owns the browser views. */
+let webHost: WebPaneHost | null = null;
 let quitGate: QuitGate | null = null;
 let hotkeyAccelerator: string | null = null;
 let hotkeyHideOnRepress = true;
@@ -384,6 +387,16 @@ async function startDaemonAndConnect(): Promise<void> {
     } else {
         status.setLocation(daemon);
     }
+
+    // The web-pane host claims the daemon's `web-pane` role and owns one WebContentsView per
+    // tab (`./webhost/`). It is a separate connection from the status socket on purpose: losing
+    // one role must not disturb the other, and both work while the window is closed.
+    if (webHost === null) {
+        webHost = createWebPaneHost({ location: daemon, version: app.getVersion() });
+        webHost.start();
+    } else {
+        webHost.setLocation(daemon);
+    }
     drainPendingOpens();
 }
 
@@ -411,6 +424,7 @@ async function boot(): Promise<void> {
         onQuit: () => {
             globalShortcut.unregisterAll();
             status?.stop();
+            webHost?.stop();
         }
     });
 }
@@ -462,6 +476,9 @@ if (!app.requestSingleInstanceLock()) {
     app.on('will-quit', () => {
         globalShortcut.unregisterAll();
         status?.stop();
+        // Releases the host role explicitly, then destroys every browser view and the off-screen
+        // holder window. The daemon keeps the panes; only the views die with the app.
+        webHost?.stop();
         quitGate?.dispose();
         // Deliberately absent: anything that would signal, kill or stop the daemon.
     });

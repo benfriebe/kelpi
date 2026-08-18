@@ -13,8 +13,11 @@ behaviour the whole thing exists to preserve is `docs/current/web-pane.md` (refe
 
 ## 1. Transport
 
-The host is an ordinary WS client of the daemon (`/ws?token=…`, same token gate as the web UI).
-It completes the normal handshake first:
+The host is an ordinary WS client of the daemon (`/ws?token=…`, or an `Authorization: Bearer`
+header — the same token gate as the web UI). That gate lives in the **handshake**: an upgrade
+carrying a missing or wrong token still succeeds, and the `hello` below is what gets accepted
+or refused (`{"type":"rejected","code":"unauthorized","reason":"bad-token",…}` then a 4003
+close). It completes the normal handshake first:
 
 ```jsonc
 // host → daemon

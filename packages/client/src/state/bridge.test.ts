@@ -1,8 +1,9 @@
 import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
 import { NexConnection, completeHandshake, createFakeSocketFactory } from '../connection';
-import { connectStore, createNexRuntime } from './bridge';
+import { connectStore, createNexRuntime, isTokenRejection } from './bridge';
 import { createNotificationManager } from './notifications';
 import { createNexStore, type NexStoreApi } from './store';
 
@@ -30,7 +31,22 @@ function snapshotState(): unknown {
     );
 }
 
-function harness(store: NexStoreApi = createNexStore()) {
+/** A `localStorage` stand-in, so a test never reaches jsdom's real one. */
+function memoryStorage(initial: Record<string, string> = {}): StorageLike & { readonly data: Map<string, string> } {
+    const data = new Map(Object.entries(initial));
+    return {
+        data,
+        getItem: (key) => data.get(key) ?? null,
+        setItem: (key, value) => {
+            data.set(key, value);
+        },
+        removeItem: (key) => {
+            data.delete(key);
+        }
+    };
+}
+
+function harness(store: NexStoreApi = createNexStore(), tokenStorage: StorageLike | null = null) {
     const sockets = createFakeSocketFactory();
     const connection = new NexConnection({
         url: 'ws://daemon.test/ws',
@@ -44,6 +60,7 @@ function harness(store: NexStoreApi = createNexStore()) {
     const dispose = connectStore({
         store,
         connection,
+        tokenStorage,
         notifications: createNotificationManager({
             api: undefined,
             onToast: (toast) => toasts.push(toast.id),
@@ -119,6 +136,91 @@ describe('store bridge', () => {
         });
 
         expect(h.toasts).toEqual([`nex-${P1}`]);
+    });
+
+    it('makes a token rejection terminal, explains it, and forgets the stored token', () => {
+        const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
+        const h = harness(createNexStore(), storage);
+        h.connection.connect();
+        h.sockets.last().open();
+
+        // Exactly what the daemon now sends when a hello cannot authenticate.
+        h.sockets.last().emit({
+            type: 'rejected',
+            code: 'unauthorized',
+            reason: 'bad-token',
+            message: "invalid or missing daemon token — open the client via 'nexd url'",
+            protocolVersion: 1
+        });
+        h.sockets.last().serverClose(4003, 'bad-token');
+
+        const state = h.store.getState();
+        expect(state.ui.connection).toBe('rejected');
+        // The daemon's own sentence reaches the UI, repair instructions included.
+        expect(state.ui.connectionError).toContain('nexd url');
+        // No retry loop: this is the defect — a browser cannot see an upgrade's 401, so a
+        // refusal that keeps redialling is both invisible and endless.
+        vi.advanceTimersByTime(60_000);
+        expect(h.sockets.sockets).toHaveLength(1);
+        // And the remembered credential is gone, so the next visit is not wedged by it.
+        expect(storage.data.has(TOKEN_STORAGE_KEY)).toBe(false);
+    });
+
+    it('connects again once a good token arrives', () => {
+        const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
+        const h = harness(createNexStore(), storage);
+        h.connection.connect();
+        h.sockets.last().open();
+        h.sockets.last().emit({
+            type: 'rejected',
+            code: 'unauthorized',
+            reason: 'bad-token',
+            message: 'invalid or missing daemon token',
+            protocolVersion: 1
+        });
+        h.sockets.last().serverClose(4003, 'bad-token');
+
+        // What opening a fresh `nexd url` link does.
+        h.connection.connect(undefined, 'fresh');
+        expect(h.sockets.sockets).toHaveLength(2);
+        expect(h.sockets.last().url).toContain('token=fresh');
+        completeHandshake(h.sockets.last(), { state: snapshotState() as never });
+        expect(h.store.getState().ui.connection).toBe('connected');
+        expect(h.store.getState().ui.connectionError).toBeNull();
+    });
+
+    it('keeps retrying a transient server-error rejection and keeps the token', () => {
+        const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'keep-me' });
+        const h = harness(createNexStore(), storage);
+        h.connection.connect();
+        h.sockets.last().open();
+        h.sockets.last().emit({
+            type: 'rejected',
+            code: 'server-error',
+            reason: 'hello-timeout',
+            message: 'no hello within 10000ms',
+            protocolVersion: 1
+        });
+        h.sockets.last().serverClose(4500, 'hello-timeout');
+
+        vi.advanceTimersByTime(50);
+        expect(h.sockets.sockets).toHaveLength(2);
+        expect(storage.data.get(TOKEN_STORAGE_KEY)).toBe('keep-me');
+        // It never claimed to be terminal on the way there (the retry owns the status, and
+        // the close that follows owns the error text).
+        expect(h.store.getState().ui.connection).toBe('reconnecting');
+    });
+
+    it('classifies rejections the same way for old and new daemons', () => {
+        expect(
+            isTokenRejection({ type: 'rejected', code: 'unauthorized', reason: 'bad-token', message: '', protocolVersion: 1 })
+        ).toBe(true);
+        // A daemon that predates `reason` still says `unauthorized`.
+        expect(isTokenRejection({ type: 'rejected', code: 'unauthorized', message: '', protocolVersion: 1 })).toBe(true);
+        expect(
+            isTokenRejection({ type: 'rejected', code: 'protocol-mismatch', reason: 'protocol-mismatch', message: '', protocolVersion: 1 })
+        ).toBe(false);
+        expect(isTokenRejection({ type: 'rejected', code: 'server-error', message: '', protocolVersion: 1 })).toBe(false);
     });
 
     it('records socket errors as the connection error and stops on dispose', () => {

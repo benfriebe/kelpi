@@ -20,9 +20,10 @@
 
 import { WebSocket } from 'ws';
 
-import { WS_PROTOCOL_VERSION, type JsonObject } from '@nex/protocol';
+import { type JsonObject } from '@nex/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
+import { shellHello } from '../hello.js';
 import { log, logError, warn } from '../log.js';
 
 const RECONNECT_INITIAL_MS = 500;
@@ -204,19 +205,16 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
         next.on('open', () => {
             if (socket !== next) return;
             next.send(
-                JSON.stringify({
-                    type: 'hello',
-                    protocolVersion: WS_PROTOCOL_VERSION,
-                    token: location.token,
-                    client: {
-                        kind: 'electron',
+                JSON.stringify(
+                    shellHello({
+                        token: location.token,
                         name: options.name,
                         version: options.version,
                         // Claims the role at handshake time — no second round trip, and no
                         // window where the daemon has a client but no host.
                         capabilities: ['web-pane-host']
-                    }
-                })
+                    })
+                )
             );
         });
 

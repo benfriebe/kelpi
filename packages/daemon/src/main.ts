@@ -4,6 +4,12 @@
  *   nexd start [--foreground]   spawn (or become) the daemon
  *   nexd stop                   ask the running daemon to shut down cleanly
  *   nexd status [--json]        ping it over the control socket
+ *   nexd url                    print the URL a browser should open (token included)
+ *
+ * `url` exists because the WS handshake is token-gated: opening a bare
+ * `http://127.0.0.1:<port>` loads the client, which then fails to authenticate and shows a
+ * rejection. Every path that prints a port therefore prints the ready-to-open URL beside it,
+ * and `nexd url` prints that one line alone so it can be piped into `open`.
  *
  * The daemon is started on demand and **detached** (ARCHITECTURE.md "Daemon lifecycle"): it
  * outlives its spawner, so closing the terminal that ran `nexd start` — or quitting the app —
@@ -29,6 +35,7 @@ import {
     isProcessAlive,
     probeDaemon,
     readPidRecord,
+    readToken,
     resolveRunPaths,
     spawnDetached,
     type RunPaths
@@ -42,7 +49,7 @@ export const START_TIMEOUT_MS = 15_000;
 /** How long `nexd stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type NexdCommand = 'start' | 'stop' | 'status' | 'help' | 'version';
+export type NexdCommand = 'start' | 'stop' | 'status' | 'url' | 'help' | 'version';
 
 export interface ParsedArgs {
     readonly command: NexdCommand;
@@ -59,8 +66,13 @@ Usage:
   nexd start [--foreground]   Start the daemon (detached unless --foreground)
   nexd stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
   nexd status [--json]        Ping the daemon and report version, pid and ports
+  nexd url                    Print the client URL (with the token) and nothing else
   nexd --version              Print the daemon version
   nexd --help                 This message
+
+Open the web client (the token is required — a bare http://127.0.0.1:<port> cannot
+authenticate and the client will say so):
+  open "$(nexd url)"
 
 Environment:
   NEXD_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
@@ -130,7 +142,7 @@ export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
                 break;
             }
             default:
-                if (arg === 'start' || arg === 'stop' || arg === 'status') {
+                if (arg === 'start' || arg === 'stop' || arg === 'status' || arg === 'url') {
                     if (command === undefined || command === 'version') command = arg;
                     break;
                 }
@@ -196,6 +208,25 @@ function httpURL(env: NodeJS.ProcessEnv, port: number): string {
     return `http://${bind.includes(':') ? `[${bind}]` : bind}:${String(port)}`;
 }
 
+/**
+ * The URL a human should actually open. The `?token=` half is not decoration: the `/ws`
+ * handshake refuses a client that cannot present the run dir's token, so a bare origin loads
+ * the bundle and then sits in a rejection. The client remembers the token and strips it from
+ * the address bar on arrival (`client/src/app/config.ts`).
+ */
+export function clientURL(env: NodeJS.ProcessEnv, port: number, token: string): string {
+    return `${httpURL(env, port)}/?token=${encodeURIComponent(token)}`;
+}
+
+/** `clientURL` from whatever the run dir knows; undefined when the port or token is missing. */
+function runDirClientURL(env: NodeJS.ProcessEnv, paths: RunPaths): string | undefined {
+    const record = readPidRecord(paths);
+    const port = record?.http_port ?? readPortFile(paths);
+    const token = readToken(paths);
+    if (port === undefined || token === undefined) return undefined;
+    return clientURL(env, port, token);
+}
+
 function runPathsFor(env: NodeJS.ProcessEnv): RunPaths {
     return resolveRunPaths({ env, protocol: resolveDaemonVersion(env).protocol });
 }
@@ -219,6 +250,10 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
         io.out(
             `nexd already running (pid ${existing.pid === undefined ? 'unknown' : String(existing.pid)}) on ${paths.socket}`
         );
+        // The point of `start` is usually "give me something to open", whether or not this
+        // invocation is the one that started it.
+        const url = runDirClientURL(env, paths);
+        if (url !== undefined) io.out(`  url: ${url}`);
         return 0;
     }
 
@@ -271,6 +306,8 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
     io.out(`  discovery: ${paths.socket}`);
     if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
+    const url = runDirClientURL(env, paths);
+    if (url !== undefined) io.out(`  url: ${url}`);
     return 0;
 }
 
@@ -357,7 +394,35 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
     io.out(`  discovery: ${paths.socket}`);
     if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
+    const url = runDirClientURL(env, paths);
+    if (url !== undefined) io.out(`  url: ${url}`);
     io.out(`  run dir: ${paths.dir}`);
+    return 0;
+}
+
+/**
+ * `nexd url` — stdout is exactly the URL and nothing else, so `open "$(nexd url)"` works and
+ * anything diagnostic goes to stderr.
+ */
+async function commandUrl(io: CliIO): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 1000 });
+
+    if (!probe.alive) {
+        io.err(`nexd is not running (${probe.reason ?? 'no socket'})`);
+        io.err('Repair: start it with `nexd start`, then run `nexd url` again.');
+        return 1;
+    }
+
+    const url = runDirClientURL(env, paths);
+    if (url === undefined) {
+        io.err(`nexd is running but ${paths.dir} has no HTTP port or token to build a URL from`);
+        io.err('Repair: restart it (`nexd stop` then `nexd start`) so it rewrites the run dir.');
+        return 1;
+    }
+
+    io.out(url);
     return 0;
 }
 
@@ -367,6 +432,8 @@ function printInfo(io: CliIO, info: DaemonInfo): void {
     io.out(`  discovery: ${info.runSocketPath}`);
     if (info.tcpPort !== undefined) io.out(`  control tcp: 127.0.0.1:${String(info.tcpPort)}`);
     io.out(`  http: ${info.url}`);
+    // The one line a person actually needs: `http:` alone loads a client that cannot log in.
+    io.out(`  url: ${info.url}/?token=${encodeURIComponent(info.token)}`);
     io.out(`  db: ${info.dbPath}`);
     io.out(`  workspaces: ${String(info.workspaces)} (resuming ${String(info.resumeTuples)} session(s))`);
 }
@@ -392,6 +459,8 @@ export async function runNexd(argv: readonly string[], io: CliIO = defaultIO()):
             return commandStop(io, args);
         case 'status':
             return commandStatus(io, args);
+        case 'url':
+            return commandUrl(io);
     }
 }
 

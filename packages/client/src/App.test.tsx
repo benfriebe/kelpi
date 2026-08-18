@@ -82,6 +82,8 @@ function setup(options: { markdown?: boolean; diff?: boolean; snapshot?: boolean
         // The browser Notification API does not exist in jsdom, and the toast fallback is
         // covered by `state/notifications.test.ts`.
         notifications: null,
+        // A rejection forgets the remembered token; keep that out of jsdom's shared storage.
+        tokenStorage: null,
         heartbeatIntervalMs: 0,
         backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
     });
@@ -127,6 +129,31 @@ describe('connection states', () => {
             completeHandshake(h.socket(), { state: snapshotState() });
         });
         expect(screen.queryByTestId('connection-splash')).toBeNull();
+    });
+
+    it('shows the daemon’s refusal, and what to do about it, instead of a spinner', () => {
+        const h = setup({ snapshot: false });
+        act(() => {
+            h.socket().open();
+            h.socket().emit({
+                type: 'rejected',
+                code: 'unauthorized',
+                reason: 'bad-token',
+                message: "invalid or missing daemon token — open the client via 'nexd url'",
+                protocolVersion: 1
+            });
+            h.socket().serverClose(4003, 'bad-token');
+        });
+
+        const splash = screen.getByTestId('connection-splash');
+        expect(splash.dataset['status']).toBe('rejected');
+        // The daemon's sentence is on screen verbatim, at body size rather than as a footnote.
+        const error = screen.getByTestId('connection-error');
+        expect(error.textContent).toContain('invalid or missing daemon token');
+        expect(error.className).toContain('text-[13px]');
+        // And the splash names the one command that produces a working link.
+        expect(splash.textContent).toContain('nexd url');
+        expect(screen.getByTestId('connection-retry')).toBeTruthy();
     });
 
     it('keeps the mirror on screen behind a banner when the socket drops', () => {

@@ -57,8 +57,10 @@ export {
 } from './streams.js';
 
 export {
+    BAD_TOKEN_MESSAGE,
     CONTENT_COMMANDS,
     CONTENT_UPDATED_MESSAGE,
+    DEFAULT_HELLO_TIMEOUT_MS,
     WEB_COMMANDS,
     WEB_CONSOLE_LINE_MESSAGE,
     WEB_HOST_CAPABILITY,
@@ -69,6 +71,7 @@ export {
     type ContentChannel,
     type ContentCommand,
     type NexDomainStore,
+    type SessionOptions,
     type SyncHub,
     type SyncHubOptions,
     type SyncPaneBridge,

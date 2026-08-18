@@ -145,25 +145,32 @@ describe('content types', () => {
 describe('upgrade authentication', () => {
     it('accepts the token as a query parameter', () => {
         const decision = authorizeUpgrade(upgradeRequest('/ws?token=s3cret'), { token: 's3cret' });
-        expect(decision.ok).toBe(true);
+        expect(decision).toMatchObject({ ok: true, authenticated: true, token: 's3cret' });
     });
 
     it('accepts the token as a bearer header', () => {
         const decision = authorizeUpgrade(upgradeRequest('/ws', { authorization: 'Bearer s3cret' }), {
             token: 's3cret'
         });
-        expect(decision.ok).toBe(true);
+        expect(decision).toMatchObject({ ok: true, authenticated: true });
     });
 
-    it('rejects a missing token with 401 and a wrong one with 403', () => {
+    it('upgrades a missing or wrong token as UNAUTHENTICATED instead of refusing it', () => {
+        // The whole point: a browser cannot see a 401/403 on an upgrade — it sees close 1006
+        // and retries forever. The socket opens so the handshake can say what is wrong.
         expect(authorizeUpgrade(upgradeRequest('/ws'), { token: 's3cret' })).toMatchObject({
-            ok: false,
-            status: 401
+            ok: true,
+            authenticated: false,
+            token: undefined
         });
         expect(authorizeUpgrade(upgradeRequest('/ws?token=nope'), { token: 's3cret' })).toMatchObject({
-            ok: false,
-            status: 403
+            ok: true,
+            authenticated: false,
+            token: 'nope'
         });
+        expect(
+            authorizeUpgrade(upgradeRequest('/ws', { authorization: 'Bearer nope' }), { token: 's3cret' })
+        ).toMatchObject({ ok: true, authenticated: false });
     });
 
     it('rejects unknown upgrade paths before looking at the token', () => {
@@ -171,11 +178,26 @@ describe('upgrade authentication', () => {
             ok: false,
             status: 404
         });
+        // Still 404 for an unknown path with no token at all — the relaxation is about
+        // authentication, not about answering on paths nothing serves.
+        expect(authorizeUpgrade(upgradeRequest('/socket'), { token: 's3cret' })).toMatchObject({
+            ok: false,
+            status: 404
+        });
     });
 
     it('refuses every upgrade when no token is configured unless anonymous access is explicit', () => {
+        // Nothing a hello could present would help: there is no secret to check against, so
+        // upgrading would mean accepting everyone.
         expect(authorizeUpgrade(upgradeRequest('/ws'), {})).toMatchObject({ ok: false, status: 401 });
-        expect(authorizeUpgrade(upgradeRequest('/ws'), { allowAnonymous: true }).ok).toBe(true);
+        expect(authorizeUpgrade(upgradeRequest('/ws?token=anything'), {})).toMatchObject({
+            ok: false,
+            status: 401
+        });
+        expect(authorizeUpgrade(upgradeRequest('/ws'), { allowAnonymous: true })).toMatchObject({
+            ok: true,
+            authenticated: true
+        });
     });
 
     it('extracts tokens and compares them in constant time', () => {

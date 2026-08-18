@@ -103,6 +103,19 @@ function resolveValue(
     return { value: raw, fromQuery: true };
 }
 
+/**
+ * Forget the remembered token.
+ *
+ * Called when the daemon rejects the handshake for a token reason: the value we remembered is
+ * provably wrong (the daemon restarted with a new run dir, the URL was copied from another
+ * machine, the token was truncated), and remembering it would poison **every future visit** —
+ * an opened `?token=…` link would work once and then the stale value would win again on the
+ * next plain reload. Clearing it makes the next `nexd url` link the source of truth.
+ */
+export function forgetStoredToken(storage: StorageLike | null = defaultStorage()): void {
+    write(storage, TOKEN_STORAGE_KEY, undefined);
+}
+
 export function resolveDaemonTarget(options: ResolveTargetOptions = {}): DaemonTarget {
     const search = options.search ?? currentSearch();
     const storage = options.storage === undefined ? defaultStorage() : options.storage;

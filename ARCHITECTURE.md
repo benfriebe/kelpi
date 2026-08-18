@@ -63,7 +63,11 @@ session ends, and on demand via `nexd stop`).
 - The daemon code ships inside the app bundle (and as a standalone package for headless hosts),
   so there is no separate installer.
 - A `.token` file (0600) next to the socket authenticates local WS clients; tailnet clients are
-  authenticated by being on the tailnet (same trust model as the current TCP transport).
+  authenticated by being on the tailnet (same trust model as the current TCP transport). The
+  check happens in the WS **handshake**, not the HTTP upgrade: a browser cannot see why an
+  upgrade was refused (every refusal reaches it as close 1006, indistinguishable from a network
+  drop), so an unauthenticated socket is upgraded and then told `rejected` with a reason it can
+  show a human. `nexd url` prints the URL that carries the token.
 
 ## Protocols
 

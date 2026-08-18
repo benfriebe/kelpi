@@ -13,9 +13,14 @@
  *                    page (a dev daemon running against `vite dev` is a normal state).
  *
  * Auth: the run dir's 0600 `.token` (`lifecycle/rundir.ts`) authenticates local WS clients;
- * tailnet clients are authenticated by being on the tailnet. Only the `/ws` upgrade is
- * gated — the static bundle has to load before a client can present a token, and the HTTP
- * listener is loopback + explicitly configured binds only.
+ * tailnet clients are authenticated by being on the tailnet. The static bundle is ungated —
+ * it has to load before a client can present a token — and the HTTP listener is loopback +
+ * explicitly configured binds only.
+ *
+ * The `/ws` upgrade **classifies** rather than refuses (`authorizeUpgrade`): a valid token
+ * upgrades authenticated, a missing/wrong one upgrades anonymous, and the handshake in
+ * `ws/sync.ts` is what refuses — a browser can read a `rejected` frame, but it can never see
+ * why an upgrade returned 401.
  */
 
 import { timingSafeEqual } from 'node:crypto';
@@ -280,7 +285,15 @@ export interface UpgradeAuthOptions {
 }
 
 export type UpgradeDecision =
-    | { readonly ok: true; readonly token: string | undefined }
+    | {
+          readonly ok: true;
+          /**
+           * False when the upgrade carried no token, or the wrong one. The socket is still
+           * upgraded (see `authorizeUpgrade`), but its `hello` MUST present a valid token.
+           */
+          readonly authenticated: boolean;
+          readonly token: string | undefined;
+      }
     | { readonly ok: false; readonly status: number; readonly reason: string };
 
 /** Constant-time string compare that never leaks length through an early return. */
@@ -313,7 +326,21 @@ export function requestPathname(request: IncomingMessage): string {
     return new URL(request.url ?? '/', 'http://localhost').pathname;
 }
 
-/** The whole upgrade policy, transport-free so it is unit-testable without a socket. */
+/**
+ * The whole upgrade policy, transport-free so it is unit-testable without a socket.
+ *
+ * **A bad token does not refuse the upgrade.** A browser cannot see WHY a WebSocket upgrade
+ * failed — every refusal surfaces as `onerror` + close code 1006, indistinguishable from a
+ * network drop — so a 401 here turned a wrong/missing `?token=` into an infinite reconnect
+ * loop with no diagnosis anywhere. The upgrade therefore succeeds *unauthenticated* and the
+ * handshake refuses instead (`ws/sync.ts`), which can say what went wrong in a `rejected`
+ * message the client can read and act on before a clean, coded close.
+ *
+ * Two refusals remain, because neither is an authentication answer a hello could improve:
+ *   - an unknown path (404) — nothing there speaks this protocol;
+ *   - a daemon with no token configured and no explicit `allowAnonymous` (401) — there is no
+ *     secret for a hello to present, so upgrading would mean accepting everyone.
+ */
 export function authorizeUpgrade(request: IncomingMessage, options: UpgradeAuthOptions): UpgradeDecision {
     const wsPath = options.path ?? WS_PATH;
     const pathname = requestPathname(request);
@@ -323,12 +350,15 @@ export function authorizeUpgrade(request: IncomingMessage, options: UpgradeAuthO
 
     const presented = extractRequestToken(request);
     if (options.token === undefined || options.token.length === 0) {
-        if (options.allowAnonymous === true) return { ok: true, token: presented };
+        if (options.allowAnonymous === true) return { ok: true, authenticated: true, token: presented };
         return { ok: false, status: 401, reason: 'daemon has no token configured' };
     }
-    if (presented === undefined) return { ok: false, status: 401, reason: 'missing token' };
-    if (!tokensMatch(options.token, presented)) return { ok: false, status: 403, reason: 'invalid token' };
-    return { ok: true, token: presented };
+    if (presented !== undefined && tokensMatch(options.token, presented)) {
+        return { ok: true, authenticated: true, token: presented };
+    }
+    // Missing or wrong: upgrade anyway, but the connection stays anonymous until its hello
+    // presents the real token.
+    return { ok: true, authenticated: false, token: presented };
 }
 
 export interface RunDirTokenOptions {

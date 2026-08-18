@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
 import { G1, harness as storeHarness, seededState, W1 } from '../store/testing.js';
 import {
+    BAD_TOKEN_MESSAGE,
     createSyncHub,
     isWsOnlyCommand,
     WS_CLOSE_CODES,
@@ -103,28 +104,104 @@ describe('handshake', () => {
         expect(f.hub.sessions).toHaveLength(0);
     });
 
-    it('rejects a bad token', () => {
-        const store = storeHarness(seededState());
-        const hub = createSyncHub({
-            store: store.store,
+    /** A hub whose token is `good` — the shape the daemon builds when a run-dir token exists. */
+    function tokenHub(): SyncHub {
+        return createSyncHub({
+            store: storeHarness(seededState()).store,
             dispatcher: () => {},
             daemon: DAEMON,
             validateToken: (token) => token === 'good'
         });
+    }
+
+    it('rejects a bad token with an actionable reason and a coded close', () => {
+        const hub = tokenHub();
         const transport = recordingTransport();
         const session = hub.createSession(transport);
         session.handleMessage(hello({ token: 'bad' }));
-        expect(transport.json[0]).toMatchObject({ type: 'rejected', code: 'unauthorized' });
+        expect(transport.json[0]).toMatchObject({
+            type: 'rejected',
+            code: 'unauthorized',
+            reason: 'bad-token',
+            message: BAD_TOKEN_MESSAGE
+        });
+        // The message has to tell a person what to do, not just what failed.
+        expect(BAD_TOKEN_MESSAGE).toContain('nexd url');
         expect(transport.closes[0]?.code).toBe(WS_CLOSE_CODES.unauthorized);
         expect(session.ready).toBe(false);
+    });
+
+    it('rejects a hello with no token at all (the tokenless browser case)', () => {
+        const hub = tokenHub();
+        const transport = recordingTransport();
+        const session = hub.createSession(transport);
+        // No `token` key whatsoever — what a client built from a bare origin sends.
+        session.handleMessage(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, client: {} }));
+        expect(transport.json[0]).toMatchObject({ type: 'rejected', reason: 'bad-token' });
+        expect(session.ready).toBe(false);
+    });
+
+    it('exempts an upgrade-authenticated connection that omits the hello token', () => {
+        const hub = tokenHub();
+        const transport = recordingTransport();
+        // The Electron shell's bearer-header path (`shell/src/hello.ts` documents the rule).
+        const session = hub.createSession(transport, undefined, { authenticated: true });
+        session.handleMessage(JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, client: {} }));
+        expect(transport.json.map((m) => m['type'])).toEqual(['welcome', 'snapshot']);
+        expect(session.ready).toBe(true);
+    });
+
+    it('still checks a hello token that an upgrade-authenticated connection does present', () => {
+        const hub = tokenHub();
+        const transport = recordingTransport();
+        const session = hub.createSession(transport, undefined, { authenticated: true });
+        session.handleMessage(hello({ token: 'bad' }));
+        expect(transport.json[0]).toMatchObject({ type: 'rejected', reason: 'bad-token' });
+        expect(session.ready).toBe(false);
+    });
+
+    it('accepts anything when the daemon has no token (allowAnonymous / dev)', () => {
+        const f = fixture();
+        const { session, transport } = f.connect();
+        session.handleMessage(hello({ token: '' }));
+        expect(transport.json.map((m) => m['type'])).toEqual(['welcome', 'snapshot']);
+        expect(session.ready).toBe(true);
     });
 
     it('refuses anything before the handshake', () => {
         const f = fixture();
         const { session, transport } = f.connect();
         session.handleMessage(JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID }));
-        expect(transport.json[0]).toMatchObject({ type: 'rejected', code: 'server-error' });
+        expect(transport.json[0]).toMatchObject({
+            type: 'rejected',
+            code: 'server-error',
+            reason: 'expected-hello'
+        });
         expect(session.ready).toBe(false);
+    });
+
+    it('closes a connection that never says hello, and lets one that does live', async () => {
+        const store = storeHarness(seededState());
+        const hub = createSyncHub({
+            store: store.store,
+            dispatcher: () => {},
+            daemon: DAEMON,
+            helloTimeoutMs: 20
+        });
+
+        const idle = recordingTransport();
+        const idleSession = hub.createSession(idle);
+        const helloed = recordingTransport();
+        hub.createSession(helloed).handleMessage(hello());
+
+        await new Promise((resolve) => setTimeout(resolve, 60));
+
+        expect(idle.json[0]).toMatchObject({ type: 'rejected', reason: 'hello-timeout' });
+        expect(idle.closes[0]?.code).toBe(WS_CLOSE_CODES.serverError);
+        expect(idleSession.ready).toBe(false);
+        // The deadline is disarmed by a successful handshake, not merely by time passing.
+        expect(helloed.ofType('rejected')).toHaveLength(0);
+        expect(helloed.closes).toHaveLength(0);
     });
 
     it('tells a resuming client to resync until instance ids exist', () => {

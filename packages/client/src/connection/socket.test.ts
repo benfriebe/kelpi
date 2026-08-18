@@ -189,6 +189,43 @@ describe('NexConnection reconnection', () => {
         expect(harness.sockets).toHaveLength(1);
     });
 
+    it('surfaces the typed bad-token rejection verbatim and reports no socket error', () => {
+        const { connection, harness } = connectionWith();
+        const reasons: (string | undefined)[] = [];
+        const errors: string[] = [];
+        connection.on('rejected', (message) => reasons.push(message.reason));
+        connection.on('error', (error) => errors.push(error.message));
+
+        connection.connect();
+        harness.last().open();
+        harness.last().emit({
+            type: 'rejected',
+            code: 'unauthorized',
+            reason: 'bad-token',
+            message: "invalid or missing daemon token — open the client via 'nexd url'",
+            protocolVersion: 1
+        });
+        // A coded close in the app range, NOT the 1006 an aborted upgrade produced.
+        harness.last().serverClose(4003, 'bad-token');
+
+        expect(reasons).toEqual(['bad-token']);
+        // The daemon's own words reach the UI unprefixed, and the clean close does not add a
+        // spurious "socket closed (1006)" on top of the real explanation.
+        expect(errors).toEqual(["invalid or missing daemon token — open the client via 'nexd url'"]);
+        expect(connection.status).toBe('rejected');
+    });
+
+    it('dials with no token at all, so a tokenless daemon can answer (and a gated one explain)', () => {
+        const { connection, harness } = connectionWith({ token: undefined });
+        connection.connect();
+
+        // No `?token=` in the URL, and the hello carries an empty one — the connection is
+        // attempted either way; the handshake is what decides.
+        expect(harness.last().url).toBe('ws://daemon.test:19470/ws');
+        harness.last().open();
+        expect(harness.last().messages()[0]).toMatchObject({ type: 'hello', token: '' });
+    });
+
     it('resync() drops the socket and redials immediately', () => {
         const { connection, harness } = connectionWith();
         connection.connect();

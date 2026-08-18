@@ -175,12 +175,37 @@ export interface WsWelcomeMessage {
 export const WS_REJECTION_CODES = ['protocol-mismatch', 'unauthorized', 'server-error'] as const;
 export type WsRejectionCode = (typeof WS_REJECTION_CODES)[number];
 
+/**
+ * The machine-readable half of a rejection, one level finer than `code`.
+ *
+ * It exists because the WS upgrade itself can no longer say why it refused: a browser sees
+ * every failed upgrade as `onerror` + close 1006 and retries forever, so token checking moved
+ * into the handshake (`daemon/src/ws/sync.ts`). A client that gets `bad-token` knows to stop
+ * retrying AND to forget whatever token it remembered, which `code: 'unauthorized'` alone
+ * cannot tell it apart from, say, a tailnet policy refusal.
+ *
+ * Additive by design: an unknown reason must be treated as "no reason given".
+ */
+export const WS_REJECTION_REASONS = [
+    /** No token, or one that does not match the daemon's run-dir token. */
+    'bad-token',
+    /** The client speaks a different client-protocol generation. */
+    'protocol-mismatch',
+    /** Something other than `hello` arrived first. */
+    'expected-hello',
+    /** The connection sat open without completing a handshake. */
+    'hello-timeout'
+] as const;
+export type WsRejectionReason = (typeof WS_REJECTION_REASONS)[number];
+
 /** Sent instead of `welcome`; the socket closes right after. */
 export interface WsRejectedMessage {
     readonly type: 'rejected';
     readonly code: WsRejectionCode;
     readonly message: string;
     readonly protocolVersion: number;
+    /** Finer-grained cause; absent on older daemons. */
+    readonly reason?: WsRejectionReason;
 }
 
 /** Full state, sent on attach and after any resync. `seq` anchors the delta stream. */

@@ -3,8 +3,9 @@
  *
  * One `node:http` server per bind address (loopback always, plus whatever tailnet address
  * the caller passes), all sharing one hono request listener and one `ws` server in
- * `noServer` mode: the upgrade is authenticated against the run dir's token
- * (`lifecycle/rundir.ts`) before a socket is ever handed to `ws`.
+ * `noServer` mode: the upgrade classifies the request against the run dir's token
+ * (`lifecycle/rundir.ts`) and hands the verdict to the connection's handshake, which is what
+ * accepts or refuses it (`ws/http.ts` explains why the check moved).
  *
  * Per connection the server wires the two channels together:
  *   - text frames → `SyncSession` (handshake, snapshot/deltas, commands, reports),
@@ -60,9 +61,15 @@ export interface WsServerOptions {
     readonly host?: string | undefined;
     /** Additional binds (tailnet interface). Best effort: a failure is reported, not fatal. */
     readonly extraHosts?: readonly string[] | undefined;
-    /** Run-dir token. Without it, upgrades are refused unless `allowAnonymous` is set. */
+    /**
+     * Run-dir token. A connection that cannot present it is refused at the HANDSHAKE (the
+     * upgrade only classifies); without a token configured, upgrades are refused outright
+     * unless `allowAnonymous` is set.
+     */
     readonly token?: string | undefined;
     readonly allowAnonymous?: boolean | undefined;
+    /** How long a connection may hold a socket without saying hello (`ws/sync.ts` default). */
+    readonly helloTimeoutMs?: number | undefined;
     /** Built web client; absent → the "client not built" page. */
     readonly distDir?: string | undefined;
     /** M5 content panes: the `content-*` WS verbs (absent = they answer "not available"). */
@@ -174,11 +181,12 @@ export function createWsServer(options: WsServerOptions): WsServer {
         protocolVersion: options.version.protocol,
         content: options.content,
         webPanes: options.webPanes,
-        // The upgrade already checked the token; hello re-checks it so a socket that
-        // upgraded anonymously (dev) cannot present a bogus one and look authenticated.
+        // THE token gate: an upgrade with a missing or wrong token still becomes a socket, and
+        // this is what turns it away — with a reason the client can show a human.
         ...(options.token !== undefined && options.token.length > 0
             ? { validateToken: (token: string) => tokensMatch(options.token as string, token) }
             : {}),
+        ...(options.helloTimeoutMs !== undefined ? { helloTimeoutMs: options.helloTimeoutMs } : {}),
         onError: options.onError
     });
 
@@ -190,7 +198,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
     let started = false;
     let stopped = false;
 
-    const handleConnection = (socket: WebSocket): void => {
+    const handleConnection = (socket: WebSocket, authenticated: boolean): void => {
         sockets.add(socket);
         const transport = {
             sendJson(message: Record<string, unknown>): void {
@@ -211,12 +219,19 @@ export function createWsServer(options: WsServerOptions): WsServer {
         };
 
         const paneSession = streams.createSession(transport);
-        const syncSession = sync.createSession(transport, paneSession);
+        const syncSession = sync.createSession(transport, paneSession, { authenticated });
 
         socket.on('message', (data: RawData, isBinary: boolean) => {
             try {
-                if (isBinary) paneSession.handleFrame(rawToBytes(data));
-                else syncSession.handleMessage(rawToText(data));
+                if (isBinary) {
+                    // Same rule as the JSON channel: nothing before `welcome`. It matters more
+                    // here — an upgrade can now be anonymous, and a PTY `input` frame writes
+                    // straight into a shell. Silently dropped rather than rejected: a client
+                    // that races its own handshake is confused, not hostile, and the JSON
+                    // channel is where a refusal can be explained.
+                    if (!syncSession.ready) return;
+                    paneSession.handleFrame(rawToBytes(data));
+                } else syncSession.handleMessage(rawToText(data));
             } catch (error) {
                 report(error, 'ws-message');
             }
@@ -231,7 +246,9 @@ export function createWsServer(options: WsServerOptions): WsServer {
         });
     };
 
-    wss.on('connection', handleConnection);
+    wss.on('connection', (socket: WebSocket, _request: IncomingMessage, authenticated?: boolean) => {
+        handleConnection(socket, authenticated === true);
+    });
 
     const handleUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
         if (stopped) {
@@ -244,11 +261,14 @@ export function createWsServer(options: WsServerOptions): WsServer {
             path: WS_PATH
         });
         if (!decision.ok) {
+            // Only "there is nothing here" (404) and "this daemon has no secret to check
+            // against" (401) still refuse; a bad token is now the handshake's business, so it
+            // can be explained rather than looking like a network drop (`ws/http.ts`).
             writeUpgradeRejection(socket, decision);
             return;
         }
         wss.handleUpgrade(request, socket, head, (client) => {
-            wss.emit('connection', client, request);
+            wss.emit('connection', client, request, decision.authenticated);
         });
     };
 

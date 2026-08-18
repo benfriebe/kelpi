@@ -25,7 +25,7 @@
 import { Menu, Notification, Tray, app, nativeImage } from 'electron';
 import { WebSocket } from 'ws';
 
-import { WS_PROTOCOL_VERSION, type JsonObject, type WsDeltaEvent } from '@nex/protocol';
+import { type JsonObject, type WsDeltaEvent } from '@nex/protocol';
 
 import {
     AgentModel,
@@ -38,6 +38,7 @@ import {
     type AgentCounts
 } from './agents.js';
 import type { DaemonLocation } from './daemon.js';
+import { shellHello } from './hello.js';
 import { trayIconDataUrl, type IconIndicator } from './icon.js';
 import { log, logError, warn } from './log.js';
 
@@ -250,13 +251,10 @@ export function createStatusController(options: StatusOptions): StatusController
 
         next.on('open', () => {
             if (socket !== next) return;
+            // The token rides in the hello as well as the bearer header — see `./hello.ts` for
+            // why both halves matter now that the upgrade no longer refuses a bad token.
             next.send(
-                JSON.stringify({
-                    type: 'hello',
-                    protocolVersion: WS_PROTOCOL_VERSION,
-                    token: location.token,
-                    client: { kind: 'electron', name: 'nex-shell', version: app.getVersion() }
-                })
+                JSON.stringify(shellHello({ token: location.token, name: 'nex-shell', version: app.getVersion() }))
             );
         });
 

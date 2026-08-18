@@ -20,6 +20,12 @@
  *     false, so headless operation still notifies).
  *   - **Commands** ride the same decode path as the control socket, dual-fire included, so
  *     a WS client and the `nex` CLI cannot drift.
+ *   - **This is where authentication happens.** The `/ws` upgrade classifies a connection
+ *     (authenticated / anonymous) but no longer refuses one, because a refused upgrade reaches
+ *     a browser as an anonymous close 1006 that it can only retry. The handshake can instead
+ *     answer `rejected` with a reason the user can act on, then close with a coded frame. An
+ *     un-helloed connection is closed after `DEFAULT_HELLO_TIMEOUT_MS`, and nothing at all —
+ *     JSON or binary — is accepted before `welcome`.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -33,7 +39,8 @@ import {
     type JsonObject,
     type WsClientInfo,
     type WsClientKind,
-    type WsRejectionCode
+    type WsRejectionCode,
+    type WsRejectionReason
 } from '@nex/protocol';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
@@ -53,6 +60,16 @@ export const WS_CLOSE_CODES = {
     unauthorized: 4003,
     serverError: 4500
 } as const;
+
+/**
+ * How long a connection may sit open without completing a handshake before the daemon closes
+ * it. The upgrade no longer authenticates (`ws/http.ts` `authorizeUpgrade`), so this bounds
+ * what an anonymous socket can hold: a real client sends `hello` in the same tick it opens.
+ */
+export const DEFAULT_HELLO_TIMEOUT_MS = 10_000;
+
+/** The message a client sees when its hello carries no usable token. */
+export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token — open the client via 'nexd url'";
 
 export interface SyncTransport {
     sendJson(message: JsonObject): void;
@@ -98,8 +115,14 @@ export interface SyncHubOptions {
      * `web-*` command handlers got. Absent = no connection can become a host.
      */
     readonly webPanes?: WebPaneChannel | undefined;
-    /** Second token check, after the HTTP upgrade gate. Absent = accept whatever upgraded. */
+    /**
+     * The token check. The upgrade no longer refuses a bad token (it cannot say why to a
+     * browser), so for an anonymous connection this IS the gate. Absent = accept whatever
+     * upgraded (a tokenless / `allowAnonymous` daemon).
+     */
     readonly validateToken?: ((token: string) => boolean) | undefined;
+    /** Handshake deadline; defaults to `DEFAULT_HELLO_TIMEOUT_MS`. `0` disables it. */
+    readonly helloTimeoutMs?: number | undefined;
     readonly now?: (() => number) | undefined;
     readonly newClientID?: (() => string) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
@@ -112,8 +135,22 @@ export interface SyncPresence {
     readonly anyVisible: boolean;
 }
 
+export interface SessionOptions {
+    /**
+     * True when the HTTP upgrade already presented a valid token (`?token=` or a bearer
+     * header). Such a connection may omit the token from its `hello` — which is what the
+     * Electron shell's status and web-host sockets would do if they ever stopped sending one.
+     * Default false: the hello must authenticate itself.
+     */
+    readonly authenticated?: boolean | undefined;
+}
+
 export interface SyncHub {
-    createSession(transport: SyncTransport, panes?: SyncPaneBridge | undefined): SyncSession;
+    createSession(
+        transport: SyncTransport,
+        panes?: SyncPaneBridge | undefined,
+        options?: SessionOptions | undefined
+    ): SyncSession;
     /** The `HandlerContext.broadcast` seam: fan a daemon event out to attached clients. */
     broadcast(event: Record<string, unknown>): void;
     readonly sessions: readonly SyncSession[];
@@ -378,6 +415,7 @@ class WsReplyHandle implements ReplyHandle {
 export function createSyncHub(options: SyncHubOptions): SyncHub {
     const { store, dispatcher } = options;
     const protocolVersion = options.protocolVersion ?? WS_PROTOCOL_VERSION;
+    const helloTimeoutMs = options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS;
     const now = options.now ?? (() => Date.now());
     const newClientID = options.newClientID ?? (() => randomUUID());
     const sessions = new Set<SessionImpl>();
@@ -406,11 +444,35 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private hostRegistration: HostRegistration | null = null;
         /** paneID → unsubscribe for this connection's console streams. */
         private readonly consoleSubs = new Map<string, () => void>();
+        /** Fires when the connection has held a socket open without ever saying hello. */
+        private helloTimer: ReturnType<typeof setTimeout> | null = null;
 
         constructor(
             private readonly transport: SyncTransport,
-            private readonly panes: SyncPaneBridge | undefined
-        ) {}
+            private readonly panes: SyncPaneBridge | undefined,
+            /** The upgrade presented a valid token; see `SessionOptions`. */
+            private readonly upgradeAuthenticated: boolean
+        ) {
+            if (helloTimeoutMs > 0) {
+                this.helloTimer = setTimeout(() => {
+                    this.helloTimer = null;
+                    if (this.disposed || this.ready) return;
+                    this.reject(
+                        'server-error',
+                        `no hello within ${String(helloTimeoutMs)}ms`,
+                        'hello-timeout'
+                    );
+                }, helloTimeoutMs);
+                // Never hold the daemon's event loop open for an idle stranger.
+                this.helloTimer.unref?.();
+            }
+        }
+
+        private clearHelloTimer(): void {
+            if (this.helloTimer === null) return;
+            clearTimeout(this.helloTimer);
+            this.helloTimer = null;
+        }
 
         handleMessage(raw: string): void {
             if (this.disposed) return;
@@ -426,9 +488,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (typeof type !== 'string') return;
 
             if (!this.ready) {
-                // Nothing is accepted before the handshake (protocol `ws/messages.ts`).
+                // Nothing is accepted before the handshake (protocol `ws/messages.ts`) — and
+                // since the upgrade may have let an anonymous socket through, "nothing" is
+                // now load-bearing rather than merely tidy. Binary frames are refused by the
+                // same rule, gated where they arrive (`ws/server.ts`).
                 if (type !== 'hello') {
-                    this.reject('server-error', 'expected hello as the first message');
+                    this.reject('server-error', 'expected hello as the first message', 'expected-hello');
                     return;
                 }
                 this.hello(parsed);
@@ -508,6 +573,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (this.disposed) return;
             this.disposed = true;
             this.ready = false;
+            this.clearHelloTimer();
             for (const handle of [...this.handles]) handle.peerGone();
             this.handles.clear();
             // A dropped connection must not leave the daemon watching a file for nobody.
@@ -584,17 +650,28 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (version !== protocolVersion) {
                 this.reject(
                     'protocol-mismatch',
-                    `daemon speaks client protocol v${protocolVersion}, client speaks v${version ?? 'unknown'}`
+                    `daemon speaks client protocol v${protocolVersion}, client speaks v${version ?? 'unknown'}`,
+                    'protocol-mismatch'
                 );
                 return;
             }
 
+            // Where authentication actually happens now. Three cases:
+            //   - no `validateToken`: the daemon has no token (dev / `allowAnonymous`);
+            //   - the hello carries a token: it must be the right one, whatever the upgrade
+            //     said — an authenticated upgrade must not launder a bogus hello token;
+            //   - the hello carries none: allowed only when the UPGRADE authenticated, which
+            //     is the bearer-header path both Electron shell sockets use.
             const token = typeof message['token'] === 'string' ? message['token'] : '';
-            if (options.validateToken !== undefined && !options.validateToken(token)) {
-                this.reject('unauthorized', 'token rejected');
-                return;
+            if (options.validateToken !== undefined) {
+                const exempt = this.upgradeAuthenticated && token.length === 0;
+                if (!exempt && !options.validateToken(token)) {
+                    this.reject('unauthorized', BAD_TOKEN_MESSAGE, 'bad-token');
+                    return;
+                }
             }
 
+            this.clearHelloTimer();
             this.client = parseClientInfo(message['client']);
 
             this.send({
@@ -631,15 +708,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             this.send({ type: 'snapshot', seq, state: serializeState(store.getState()) });
         }
 
-        private reject(code: WsRejectionCode, message: string): void {
-            this.send({ type: 'rejected', code, message, protocolVersion });
+        /**
+         * Say no, in words, then close cleanly. Both halves matter: the `rejected` frame is the
+         * only channel that can explain a refusal to a browser, and the coded close (4000-4999,
+         * the app-defined range) is what stops the client reading the drop as an abnormal 1006
+         * and retrying forever.
+         */
+        private reject(code: WsRejectionCode, message: string, reason?: WsRejectionReason): void {
+            this.send({
+                type: 'rejected',
+                code,
+                message,
+                protocolVersion,
+                ...(reason !== undefined ? { reason } : {})
+            });
             const closeCode =
                 code === 'protocol-mismatch'
                     ? WS_CLOSE_CODES.protocolMismatch
                     : code === 'unauthorized'
                       ? WS_CLOSE_CODES.unauthorized
                       : WS_CLOSE_CODES.serverError;
-            this.transport.close(closeCode, code);
+            this.transport.close(closeCode, reason ?? code);
             this.close();
         }
 
@@ -980,10 +1069,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     });
 
     return {
-        createSession(transport, panes) {
-            const session = new SessionImpl(transport, panes);
+        createSession(transport, panes, sessionOptions) {
+            const session = new SessionImpl(transport, panes, sessionOptions?.authenticated === true);
             if (closed) {
                 transport.close(WS_CLOSE_CODES.serverError, 'shutting down');
+                // Disposes the handshake deadline too: a session nobody registered must not
+                // keep a timer alive waiting for a hello it will never accept.
+                session.close();
                 return session;
             }
             sessions.add(session);

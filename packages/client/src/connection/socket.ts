@@ -17,8 +17,10 @@
  *     with `resync-required` and a fresh snapshot anyway (`ws/sync.ts` `hello`). We therefore
  *     always take the snapshot, and a reconnect REPLACES the mirror rather than splicing.
  *   - **Rejections are terminal for auth/version.** `protocol-mismatch` / `unauthorized` stop
- *     the reconnect loop (retrying a bad token is a hot loop against a 403); `server-error`
- *     keeps retrying.
+ *     the reconnect loop (retrying a bad token is a hot loop against a refusal); `server-error`
+ *     keeps retrying. The daemon upgrades an unauthenticated socket on purpose so this path is
+ *     reachable at all: a refused UPGRADE reaches a browser as `onerror` + close 1006, which is
+ *     indistinguishable from a dropped network and gets retried forever.
  *   - **Heartbeat** rides the protocol's own `ping`/`pong` pair, not a WS control frame, so a
  *     wedged daemon reader (not just a dead socket) is detected too.
  */
@@ -557,7 +559,9 @@ export class NexConnection {
         // transient server error is worth another dial.
         this.fatal = message.code !== 'server-error';
         this.emit('rejected', message);
-        this.emitError('ws-rejected', new Error(`${message.code}: ${message.message}`));
+        // The daemon's sentence, unadorned: it is written to be shown to a person (e.g. "open
+        // the client via 'nexd url'"), and a `code:` prefix only gets in the way of that.
+        this.emitError('ws-rejected', new Error(message.message));
         if (this.fatal) {
             this.stopped = true;
             this.setStatus('rejected');

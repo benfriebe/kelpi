@@ -4,6 +4,7 @@ import {
     DAEMON_STORAGE_KEY,
     TOKEN_STORAGE_KEY,
     describeTarget,
+    forgetStoredToken,
     resolveDaemonTarget,
     sanitizedSearch,
     type StorageLike
@@ -80,6 +81,37 @@ describe('resolveDaemonTarget', () => {
             token: 'abc',
             fromQuery: true
         });
+    });
+});
+
+describe('forgetStoredToken', () => {
+    it('drops the remembered token and leaves the daemon override alone', () => {
+        const storage = memoryStorage({ [DAEMON_STORAGE_KEY]: 'http://127.0.0.1:19470', [TOKEN_STORAGE_KEY]: 'stale' });
+        forgetStoredToken(storage);
+        expect(storage.data.has(TOKEN_STORAGE_KEY)).toBe(false);
+        // Which daemon to talk to is still right; only the credential was wrong.
+        expect(storage.data.get(DAEMON_STORAGE_KEY)).toBe('http://127.0.0.1:19470');
+    });
+
+    it('lets the next visit with a good ?token= win', () => {
+        const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
+        forgetStoredToken(storage);
+        expect(resolveDaemonTarget({ search: '', storage }).token).toBeUndefined();
+        expect(resolveDaemonTarget({ search: '?token=fresh', storage }).token).toBe('fresh');
+        expect(storage.data.get(TOKEN_STORAGE_KEY)).toBe('fresh');
+    });
+
+    it('is a no-op without storage, and survives one that throws', () => {
+        expect(() => forgetStoredToken(null)).not.toThrow();
+        expect(() =>
+            forgetStoredToken({
+                getItem: () => null,
+                setItem: () => {},
+                removeItem: () => {
+                    throw new Error('denied');
+                }
+            })
+        ).not.toThrow();
     });
 });
 

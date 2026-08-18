@@ -14,6 +14,7 @@ import WebSocket from 'ws';
 import type { ControlDispatcher } from '../seams.js';
 import { harness as storeHarness, seededState, W1 } from '../store/testing.js';
 import { createWsServer, type WsServer } from './server.js';
+import { WS_CLOSE_CODES } from './sync.js';
 import { PANE_A, bytes, stubPty, stubTerm, textOf, type StubPty, type StubTerm } from './testing.js';
 
 const TOKEN = 'test-token-abcdef';
@@ -43,7 +44,9 @@ afterEach(async () => {
     }
 });
 
-async function startServer(options: { distDir?: string; token?: string } = {}): Promise<Fixture> {
+async function startServer(
+    options: { distDir?: string; token?: string; helloTimeoutMs?: number } = {}
+): Promise<Fixture> {
     const store = storeHarness(seededState(W1, PANE_A));
     const pty = stubPty();
     const term = stubTerm();
@@ -63,7 +66,8 @@ async function startServer(options: { distDir?: string; token?: string } = {}): 
         host: '127.0.0.1',
         port: 0,
         token: options.token ?? TOKEN,
-        ...(options.distDir !== undefined ? { distDir: options.distDir } : {})
+        ...(options.distDir !== undefined ? { distDir: options.distDir } : {}),
+        ...(options.helloTimeoutMs !== undefined ? { helloTimeoutMs: options.helloTimeoutMs } : {})
     });
     running.push(server);
     const addresses = await server.start();
@@ -86,9 +90,9 @@ interface Client {
     close(): void;
 }
 
-function connect(base: string, query = `?token=${TOKEN}`): Promise<Client> {
+function connect(base: string, query = `?token=${TOKEN}`, headers?: Record<string, string>): Promise<Client> {
     const url = `${base.replace('http://', 'ws://')}/ws${query}`;
-    const socket = new WebSocket(url);
+    const socket = headers === undefined ? new WebSocket(url) : new WebSocket(url, { headers });
     openSockets.push(socket);
     const json: Record<string, unknown>[] = [];
     const frames: { type: number; paneID: string; text: string }[] = [];
@@ -184,14 +188,60 @@ describe('http surface', () => {
 });
 
 describe('upgrade auth', () => {
-    it('refuses an upgrade without a token', async () => {
+    /** Open a socket, send `hello`, and report what came back — welcome or rejection. */
+    async function helloWith(
+        base: string,
+        query: string,
+        token: string | undefined,
+        headers?: Record<string, string>
+    ): Promise<{ client: Client; first: Record<string, unknown>; closeCode: number }> {
+        const client = await connect(base, query, headers);
+        const closed = new Promise<number>((resolve) => client.socket.once('close', (code) => resolve(code)));
+        client.send({
+            type: 'hello',
+            protocolVersion: WS_PROTOCOL_VERSION,
+            ...(token === undefined ? {} : { token }),
+            client: { kind: 'browser', name: 'nex-web' }
+        });
+        const first = await client.waitForJson(
+            (message) => message['type'] === 'rejected' || message['type'] === 'welcome',
+            'welcome or rejection'
+        );
+        // A rejection closes; a welcome does not, so only wait for the close when refused.
+        const closeCode = first['type'] === 'rejected' ? await closed : 0;
+        return { client, first, closeCode };
+    }
+
+    it('upgrades a tokenless browser, then rejects its hello with a reason and a clean close', async () => {
         const f = await startServer();
-        await expect(connect(f.base, '')).rejects.toThrow(/401/);
+        // The bug this replaces: the upgrade 401'd, the browser saw only close 1006, and the
+        // client retried with backoff forever with nothing to show the user.
+        const { first, closeCode } = await helloWith(f.base, '', '');
+        expect(first).toMatchObject({ type: 'rejected', code: 'unauthorized', reason: 'bad-token' });
+        expect(String(first['message'])).toContain('nexd url');
+        expect(closeCode).toBe(WS_CLOSE_CODES.unauthorized);
+        expect(closeCode).not.toBe(1006);
     });
 
-    it('refuses an upgrade with the wrong token', async () => {
+    it('upgrades a wrong-token browser, then rejects its hello the same way', async () => {
         const f = await startServer();
-        await expect(connect(f.base, '?token=wrong')).rejects.toThrow(/403/);
+        const { first, closeCode } = await helloWith(f.base, '?token=wrong', 'wrong');
+        expect(first).toMatchObject({ type: 'rejected', code: 'unauthorized', reason: 'bad-token' });
+        expect(closeCode).toBe(WS_CLOSE_CODES.unauthorized);
+    });
+
+    it('lets a valid query token through unchanged', async () => {
+        const f = await startServer();
+        const { first } = await helloWith(f.base, `?token=${TOKEN}`, TOKEN);
+        expect(first).toMatchObject({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION });
+    });
+
+    it('refuses a hello whose token is wrong even when the upgrade was authenticated', async () => {
+        const f = await startServer();
+        // An authenticated upgrade must not launder a bogus hello token.
+        const { first, closeCode } = await helloWith(f.base, `?token=${TOKEN}`, 'wrong');
+        expect(first).toMatchObject({ type: 'rejected', reason: 'bad-token' });
+        expect(closeCode).toBe(WS_CLOSE_CODES.unauthorized);
     });
 
     it('refuses an upgrade on an unknown path', async () => {
@@ -217,6 +267,44 @@ describe('upgrade auth', () => {
             socket.once('error', reject);
         });
         expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    // ── Electron shell compatibility (packages/shell) ───────────────────────────────
+    //
+    // Both shell sockets (`shell/src/status.ts`, `shell/src/webhost/client.ts`) authenticate
+    // the UPGRADE with a bearer header and also repeat the token in their hello. Case 1 is
+    // what they actually do; case 2 pins the exemption they would fall back on if one of them
+    // ever stopped sending it, which is why the hello gate cannot simply demand a token.
+
+    it('welcomes a bearer-authenticated shell whose hello carries the token', async () => {
+        const f = await startServer();
+        const { first } = await helloWith(f.base, '', TOKEN, { authorization: `Bearer ${TOKEN}` });
+        expect(first).toMatchObject({ type: 'welcome' });
+    });
+
+    it('welcomes a bearer-authenticated shell whose hello omits the token', async () => {
+        const f = await startServer();
+        const { first } = await helloWith(f.base, '', undefined, { authorization: `Bearer ${TOKEN}` });
+        expect(first).toMatchObject({ type: 'welcome' });
+    });
+
+    it('closes a connection that never says hello', async () => {
+        const f = await startServer({ helloTimeoutMs: 120 });
+        const client = await connect(f.base, '');
+        const closed = new Promise<number>((resolve) => client.socket.once('close', (code) => resolve(code)));
+        const rejection = await client.waitForJson((message) => message['type'] === 'rejected', 'timeout rejection');
+        expect(rejection).toMatchObject({ reason: 'hello-timeout' });
+        expect(await closed).toBe(WS_CLOSE_CODES.serverError);
+    });
+
+    it('ignores binary frames from a connection that has not helloed', async () => {
+        const f = await startServer();
+        const client = await connect(f.base, '');
+        // An anonymous socket must not reach a PTY: the input frame is dropped, and the
+        // JSON channel answers the hello-first rule instead.
+        client.sendFrame(encodePtyFrame(PTY_FRAME_TYPES.input, PANE_A, bytes('rm -rf /\r')) as Uint8Array);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(f.pty.writes).toEqual([]);
     });
 });
 

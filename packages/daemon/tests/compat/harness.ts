@@ -127,6 +127,11 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
                 stderr += chunk;
             });
             // `nex event` reads stdin (the hook payload); an unclosed stdin would hang it.
+            // Most verbs never read it, so a fast CLI can exit before the write lands and the
+            // pipe closes under us. EPIPE there says "the child was done", not "the test
+            // failed" — unhandled it becomes an uncaught exception that fails whichever file
+            // happens to be running.
+            child.stdin.on('error', () => {});
             child.stdin.end(options.stdin ?? '');
             const timer = setTimeout(() => child.kill('SIGKILL'), options.timeoutMs ?? 20_000);
             child.on('error', (error) => {

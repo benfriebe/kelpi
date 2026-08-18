@@ -49,15 +49,19 @@ so one of these has to be true:
 - **`?daemon=`**: open `http://localhost:5173/?daemon=http://127.0.0.1:19470`, which bypasses
   the proxy entirely.
 
-Either way the daemon's WS upgrade is token-gated, so add the token once:
+Either way the daemon's handshake is token-gated, so add the token once. `nexd url` prints that
+daemon's ready-to-open URL; on :5173 you want its token plus a `?daemon=`:
 
 ```bash
-open "http://localhost:5173/?daemon=http://127.0.0.1:19470&token=$(cat /tmp/nexd-dev-run/daemon-v1.token)"
+TOKEN=$(NEXD_RUN_DIR=/tmp/nexd-dev-run node packages/daemon/dist/nexd.js url | sed 's/.*token=//')
+open "http://localhost:5173/?daemon=http://127.0.0.1:19470&token=$TOKEN"
 ```
 
 `?daemon=` and `?token=` are remembered in `localStorage` and then **stripped from the address
 bar** (a token in the URL ends up in history and screenshots). Clear a stale value with an empty
-parameter: `?daemon=&token=`.
+parameter: `?daemon=&token=`. A token the daemon refuses is forgotten automatically, so a stale
+one cannot wedge every later visit — the client shows the daemon's refusal and stops retrying
+instead of looping on "Reconnecting…".
 
 ### 2. daemon-served (what ships)
 
@@ -66,7 +70,7 @@ pnpm --filter @nex/client build                    # → packages/client/dist
 NEXD_CLIENT_DIR=$PWD/packages/client/dist \
 NEXD_HTTP_PORT=19470 \
 node packages/daemon/dist/nexd.js start --foreground
-open "http://127.0.0.1:19470/?token=$(cat ~/Library/Application\ Support/nexd/run/daemon-v1.token)"
+open "$(node packages/daemon/dist/nexd.js url)"
 ```
 
 `NEXD_CLIENT_DIR` is the static-dir mechanism (`daemon/src/ws/http.ts`); with it unset the

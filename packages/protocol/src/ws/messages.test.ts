@@ -7,8 +7,10 @@ import {
     WS_HOST_ROLES,
     WS_PROTOCOL_VERSION,
     WS_REJECTION_CODES,
+    WS_REJECTION_REASONS,
     type WsClientMessage,
     type WsDeltaEvent,
+    type WsRejectedMessage,
     type WsServerMessage
 } from './messages.js';
 
@@ -105,6 +107,32 @@ describe('client-sync protocol envelope', () => {
 
     it('enumerates the handshake rejection codes', () => {
         expect([...WS_REJECTION_CODES]).toEqual(['protocol-mismatch', 'unauthorized', 'server-error']);
+    });
+
+    it('carries a machine-readable reason beside the code, and survives the wire', () => {
+        expect([...WS_REJECTION_REASONS]).toEqual([
+            'bad-token',
+            'protocol-mismatch',
+            'expected-hello',
+            'hello-timeout'
+        ]);
+        // `bad-token` is the one a client acts on: stop retrying, and forget the stored token.
+        const rejection: WsRejectedMessage = {
+            type: 'rejected',
+            code: 'unauthorized',
+            reason: 'bad-token',
+            message: 'invalid or missing daemon token',
+            protocolVersion: WS_PROTOCOL_VERSION
+        };
+        expect(JSON.parse(JSON.stringify(rejection))).toEqual(rejection);
+        // Additive: a daemon that predates `reason` still sends a valid rejection.
+        const older: WsRejectedMessage = {
+            type: 'rejected',
+            code: 'unauthorized',
+            message: 'token rejected',
+            protocolVersion: WS_PROTOCOL_VERSION
+        };
+        expect(older.reason).toBeUndefined();
     });
 });
 

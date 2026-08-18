@@ -898,7 +898,9 @@ const SPLASH_HINT: Readonly<Record<string, string>> = {
     connected: 'the daemon accepted the handshake; waiting for the first state snapshot',
     reconnecting: 'the socket dropped — retrying with backoff',
     closed: 'nothing is listening; start it with `nexd start`',
-    rejected: 'check the token (?token=…) and that the client and daemon speak the same protocol version'
+    // A rejection is almost always a missing/stale token, and there is exactly one command that
+    // produces a working link — so name it rather than describing the problem in the abstract.
+    rejected: 'open this page from `nexd url`, which includes the daemon token'
 };
 
 interface ConnectionSplashProps {
@@ -910,7 +912,8 @@ interface ConnectionSplashProps {
 /** Full-cover state for a client that has never had a snapshot: there is nothing to show yet. */
 function ConnectionSplash({ runtime, state, target }: ConnectionSplashProps): ReactElement {
     const status = state.ui.connection;
-    const retryable = status === 'closed' || status === 'rejected';
+    const rejected = status === 'rejected';
+    const retryable = status === 'closed' || rejected;
     return (
         <div
             data-testid="connection-splash"
@@ -929,7 +932,14 @@ function ConnectionSplash({ runtime, state, target }: ConnectionSplashProps): Re
                     {describeTarget(target)}
                 </span>
                 {state.ui.connectionError === null ? null : (
-                    <span data-testid="connection-error" className="text-[11px]" style={{ color: '#E0655C' }}>
+                    <span
+                        data-testid="connection-error"
+                        /* A refusal is the whole message when the daemon has said why: it gets
+                           the body text, not a footnote's size, so "invalid or missing daemon
+                           token" is the first thing read rather than something to squint at. */
+                        className={rejected ? 'text-[13px] font-medium' : 'text-[11px]'}
+                        style={{ color: '#E0655C' }}
+                    >
                         {state.ui.connectionError}
                     </span>
                 )}
@@ -964,7 +974,8 @@ interface ConnectionBannerProps {
 
 /** The mirror is still on screen (and still true as of the drop); this says it may be stale. */
 function ConnectionBanner({ status, error, runtime }: ConnectionBannerProps): ReactElement {
-    const dead = status === 'closed' || status === 'rejected';
+    const rejected = status === 'rejected';
+    const dead = status === 'closed' || rejected;
     return (
         <div
             data-testid="connection-banner"
@@ -983,8 +994,20 @@ function ConnectionBanner({ status, error, runtime }: ConnectionBannerProps): Re
                 className="h-[7px] w-[7px] rounded-full"
                 style={{ background: dead ? '#E0655C' : chromeTokens.activeAgent }}
             />
-            <span>{dead ? 'Disconnected — the view may be stale' : 'Reconnecting…'}</span>
-            {error === null ? null : <span style={{ color: chromeTokens.textTertiary }}>{error}</span>}
+            <span>
+                {rejected
+                    ? 'The daemon refused this connection'
+                    : dead
+                      ? 'Disconnected — the view may be stale'
+                      : 'Reconnecting…'}
+            </span>
+            {error === null ? null : (
+                // A refusal's text is the actionable part ("open the client via `nexd url`"),
+                // so it is not dimmed into a footnote the way a transient socket error is.
+                <span data-testid="connection-banner-error" style={{ color: rejected ? '#E0655C' : chromeTokens.textTertiary }}>
+                    {error}
+                </span>
+            )}
             {dead ? (
                 <button
                     type="button"

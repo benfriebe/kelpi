@@ -42,7 +42,22 @@ nexd is running (pid 77182)
   control: /tmp/nex.sock
   discovery: ~/Library/Application Support/nexd/run/daemon-v1.sock
   http: http://127.0.0.1:59329
+  url: http://127.0.0.1:59329/?token=8f3c…
+  run dir: ~/Library/Application Support/nexd/run
 ```
+
+Open the client with the `url` line, never the bare `http:` one — the WebSocket handshake is
+gated on the run dir's token, so an origin without `?token=` loads the page and is then refused
+(the client says so and stops, rather than retrying). `nexd url` prints exactly that line and
+nothing else, so it pipes:
+
+```bash
+open "$(packages/daemon/dist/nexd.js url)"
+```
+
+The token is remembered in `localStorage` and stripped from the address bar on arrival, so
+later visits to the bare origin work — until the daemon's run dir is recreated, at which point
+open a fresh `nexd url` again.
 
 `--foreground` runs it in the current process instead (what a supervisor or a container wants),
 and `nexd stop` shuts it down cleanly — pending state is flushed to SQLite before the PTYs are
@@ -90,6 +105,13 @@ how the shipped CLI reaches a development daemon:
 
 ```bash
 NEX_SOCKET=tcp:127.0.0.1:19400 nex workspace list
+```
+
+A development daemon has its own run dir, and therefore its own token — so ask that daemon for
+its URL rather than reusing one from another instance:
+
+```bash
+NEXD_RUN_DIR=~/.local/state/nexd-dev open "$(packages/daemon/dist/nexd.js url)"
 ```
 
 `nexd --help` lists every environment override (run dir, control socket, TCP port, HTTP

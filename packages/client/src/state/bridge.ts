@@ -15,9 +15,20 @@
  * ordering the port requires, and is what assembly should call.
  */
 
+import type { WsRejectedMessage } from '@nex/protocol';
+
+import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, NexConnection, PtyClient, type NexConnectionOptions } from '../connection';
 import { createNotificationManager, type NotificationManager } from './notifications';
 import { useNexStore, type NexStoreApi } from './store';
+
+/**
+ * A rejection that says "your token is wrong", in either dialect: the typed `reason` a current
+ * daemon sends, or the bare `unauthorized` code an older one does.
+ */
+export function isTokenRejection(message: WsRejectedMessage): boolean {
+    return message.reason === 'bad-token' || message.code === 'unauthorized';
+}
 
 export interface StoreBridgeOptions {
     readonly store: NexStoreApi;
@@ -26,6 +37,11 @@ export interface StoreBridgeOptions {
     readonly notifications?: NotificationManager | null | undefined;
     /** Dock-bounce equivalent (WP3.6 owns the favicon/title treatment). */
     readonly onAttention?: ((target: { paneID: string; workspaceID: string }) => void) | undefined;
+    /**
+     * Where the remembered `?token=` lives. Defaults to `localStorage`; pass `null` to keep the
+     * bridge out of storage entirely (tests, private mode).
+     */
+    readonly tokenStorage?: StorageLike | null | undefined;
 }
 
 /** Subscribe the store to a connection. Returns the unsubscribe. */
@@ -80,6 +96,20 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        connection.on('rejected', (message) => {
+            // `socket.ts` treats anything but a server error as fatal and stops retrying, so
+            // only those get the terminal status here — a retryable refusal would otherwise
+            // flash "rejected" before the reconnect flips it back. Either way the daemon's own
+            // words become the connection error, and a token it refuses is forgotten so a
+            // stale one cannot wedge the NEXT visit as well.
+            const state = store.getState();
+            const terminal = message.code !== 'server-error';
+            state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message);
+            if (isTokenRejection(message)) forgetStoredToken(options.tokenStorage);
+        })
+    );
+
+    offs.push(
         connection.on('error', (error) => {
             const state = store.getState();
             state.setConnectionStatus(state.ui.connection, error.message);
@@ -99,6 +129,8 @@ export interface NexRuntimeOptions extends NexConnectionOptions {
     readonly store?: NexStoreApi | undefined;
     readonly notifications?: NotificationManager | null | undefined;
     readonly onAttention?: ((target: { paneID: string; workspaceID: string }) => void) | undefined;
+    /** Where the remembered token lives (see `StoreBridgeOptions.tokenStorage`). */
+    readonly tokenStorage?: StorageLike | null | undefined;
 }
 
 export interface NexRuntime {
@@ -150,7 +182,8 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
         store,
         connection,
         notifications,
-        ...(options.onAttention !== undefined ? { onAttention: options.onAttention } : {})
+        ...(options.onAttention !== undefined ? { onAttention: options.onAttention } : {}),
+        ...(options.tokenStorage !== undefined ? { tokenStorage: options.tokenStorage } : {})
     });
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {

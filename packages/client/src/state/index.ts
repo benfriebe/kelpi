@@ -71,6 +71,7 @@ export {
 export {
     connectStore,
     createNexRuntime,
+    isTokenRejection,
     type NexRuntime,
     type NexRuntimeOptions,
     type StoreBridgeOptions

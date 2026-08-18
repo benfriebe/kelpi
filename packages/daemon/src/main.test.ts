@@ -64,6 +64,7 @@ describe('parseNexdArgs', () => {
         expect(parseNexdArgs(['start']).command).toBe('start');
         expect(parseNexdArgs(['stop']).command).toBe('stop');
         expect(parseNexdArgs(['status']).command).toBe('status');
+        expect(parseNexdArgs(['url']).command).toBe('url');
         expect(parseNexdArgs(['--help']).command).toBe('help');
         expect(parseNexdArgs(['--version']).command).toBe('version');
     });
@@ -100,6 +101,9 @@ describe('parseNexdArgs', () => {
             expect(helpText()).toContain(key);
         }
         expect(captured.stdout.join('\n')).toContain('nexd start');
+        // The URL verb is only useful if it is discoverable from --help.
+        expect(helpText()).toContain('nexd url');
+        expect(helpText()).toContain('open "$(nexd url)"');
     });
 
     it('exits 2 on a usage error, printing the reason and the usage', async () => {
@@ -138,6 +142,16 @@ describe('with no daemon running', () => {
         const stop = io(env);
         expect(await runNexd(['stop'], stop)).toBe(0);
         expect(stop.stdout).toEqual(['nexd is not running']);
+    });
+
+    it('fails `url` with a hint on stderr and nothing on stdout', async () => {
+        const paths = scratch();
+        const url = io({ NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath });
+        expect(await runNexd(['url'], url)).toBe(1);
+        // `open "$(nexd url)"` must never be handed a diagnostic string.
+        expect(url.stdout).toEqual([]);
+        expect(url.stderr.join('\n')).toContain('nexd is not running');
+        expect(url.stderr.join('\n')).toContain('nexd start');
     });
 });
 
@@ -179,5 +193,17 @@ describe('with a daemon running', () => {
         const start = io(env);
         expect(await runNexd(['start'], start)).toBe(0);
         expect(start.stdout[0]).toContain('already running');
+
+        // The whole point of the fix: every path that mentions a port also hands over a URL
+        // that can actually connect. A bare origin loads the client and then fails the
+        // handshake, which is the loop the user hit.
+        const expected = `http://127.0.0.1:${String(info.httpPort)}/?token=${info.token}`;
+        expect(status.stdout).toContain(`  url: ${expected}`);
+        expect(start.stdout).toContain(`  url: ${expected}`);
+
+        const url = io(env);
+        expect(await runNexd(['url'], url)).toBe(0);
+        expect(url.stdout).toEqual([expected]);
+        expect(url.stderr).toEqual([]);
     }, 30_000);
 });

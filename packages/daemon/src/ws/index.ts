@@ -1,0 +1,74 @@
+/**
+ * WP2.7 — the client-facing HTTP + WebSocket server.
+ *
+ * `createWsServer` is what boot wires: it serves the web client, answers `/healthz`,
+ * authenticates `/ws` upgrades against the run-dir token, and gives every connection both
+ * channels — JSON state sync (`./sync.ts`) and binary PTY streams (`./streams.ts`).
+ * Its `broadcast` member is the `HandlerContext.broadcast` seam.
+ */
+
+export {
+    CLIENT_DIR_ENV,
+    WS_PATH,
+    authorizeUpgrade,
+    contentTypeFor,
+    createHttpApp,
+    extractRequestToken,
+    requestPathname,
+    resolveClientDistDir,
+    resolveStaticPath,
+    runDirToken,
+    tokensMatch,
+    writeUpgradeRejection,
+    type DaemonVersionInfo,
+    type HttpAppOptions,
+    type RunDirTokenOptions,
+    type UpgradeAuthOptions,
+    type UpgradeDecision
+} from './http.js';
+
+export {
+    SERVER_ONLY_APP_FIELDS,
+    SERVER_ONLY_WORKSPACE_FIELDS,
+    serializeDomainEvent,
+    serializeDomainEvents,
+    serializeGroup,
+    serializeLabelPreset,
+    serializePane,
+    serializeRepo,
+    serializeState,
+    serializeWorkspace,
+    serializeWorkspaceEnvelope
+} from './serialize.js';
+
+export {
+    DEFAULT_CLIENT_QUEUE_BYTES,
+    PTY_RESYNC_MESSAGE_TYPE,
+    createPaneStreamHub,
+    type PaneGeometry,
+    type PaneStreamHub,
+    type PaneStreamHubOptions,
+    type PaneStreamSession,
+    type PaneStreamStats,
+    type PaneStreamTransport
+} from './streams.js';
+
+export {
+    WS_CLOSE_CODES,
+    createSyncHub,
+    type NexDomainStore,
+    type SyncHub,
+    type SyncHubOptions,
+    type SyncPaneBridge,
+    type SyncPresence,
+    type SyncSession,
+    type SyncTransport
+} from './sync.js';
+
+export {
+    DEFAULT_HTTP_HOST,
+    createWsServer,
+    type WsServer,
+    type WsServerAddress,
+    type WsServerOptions
+} from './server.js';

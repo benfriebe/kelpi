@@ -1,0 +1,338 @@
+/**
+ * The control transport: the newline-JSON `{"command":…}` protocol the existing `nex` CLI
+ * and the agent hooks speak (wire-protocol.md §1–§4).
+ *
+ * Per connection: buffer bytes until `\n` (port note 2 — the Swift server reads 4096-byte
+ * chunks without buffering and drops any line split across reads; we keep the framing and
+ * fix the drop), decode each line independently, dispatch in wire order.
+ *
+ * Dispatch policy (§2.5, §3.1, PLAN "deliberate fixes"):
+ *   - decoded + allowlisted command → real `ReplyHandle` (exactly one line, then EOF);
+ *   - decoded + fire-and-forget → `dispatcher(msg, null)`, and the server never writes a
+ *     byte on that connection;
+ *   - rejected line whose `command` was readable AND allowlisted → `{"ok":false,"error":…}`
+ *     + close (better than the Swift silent drop, and the CLI already handles it);
+ *   - anything else (undecodable, unknown command, malformed fire-and-forget) → silent
+ *     drop, connection left open.
+ * The `session_id` dual-fire rides on `dispatchSequence`: the synthesized session-start is
+ * dispatched **after** its primary message and never gets a reply handle (port note 7).
+ */
+
+import fs from 'node:fs';
+import net, { type AddressInfo, type ListenOptions, type Server, type Socket } from 'node:net';
+import path from 'node:path';
+
+import { createLineBuffer, dispatchSequence, errorReply, isReplyCommand, parseWireLine, type SynthesizedSessionStart, type WireMessage } from '@nex/protocol';
+
+import type { ControlDispatcher, ReplyHandle } from '../seams.js';
+import { probeControlPing } from './probe.js';
+import { createReplyHandle, type TransportReplyHandle } from './reply.js';
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Mode for the unix socket file: same-UID only (port note 9 invites tightening it). */
+const SOCKET_MODE = 0o600;
+
+export interface ControlServerOptions {
+    /** Unix domain socket path (production: `/tmp/nex.sock`, hardcoded in the CLI). */
+    readonly socketPath: string;
+    /** Optional TCP listener; `0` binds an ephemeral port (tests). */
+    readonly tcpPort?: number | undefined;
+    /** Loopback only — `127.0.0.1` by default; anything non-loopback is refused. */
+    readonly tcpHost?: string | undefined;
+    readonly dispatcher: ControlDispatcher;
+    /** Per-line cap; keep it several MB (`web-exec --file`, big `pane-send`). */
+    readonly maxLineLength?: number | undefined;
+    /** Budget for the stale-socket `ping` probe before binding. */
+    readonly staleProbeTimeoutMs?: number | undefined;
+    /** Unix socket file mode; pass `null`-ish (undefined) to keep the default. */
+    readonly socketMode?: number | undefined;
+    /** Non-fatal transport problems (client EPIPE, handler throw, …). */
+    readonly onError?: ((error: Error, context: string) => void) | undefined;
+}
+
+export interface ControlServer {
+    /** Bind both listeners. Rejects if a live daemon already owns the socket path. */
+    start(): Promise<void>;
+    /** Close listeners, drop connections, unlink the socket if we bound it. */
+    stop(): Promise<void>;
+    /** Alias of `start()`. */
+    listen(): Promise<void>;
+    /** Alias of `stop()`. */
+    close(): Promise<void>;
+    readonly socketPath: string;
+    /** The port the TCP listener actually bound (undefined when TCP is off). */
+    readonly tcpPort: number | undefined;
+    readonly connections: number;
+    readonly running: boolean;
+}
+
+/** A live daemon answered `ping` on the socket path; starting would steal its socket. */
+export class ControlSocketBusyError extends Error {
+    readonly code = 'ECONTROLBUSY';
+    readonly socketPath: string;
+    readonly pid: number | undefined;
+
+    constructor(socketPath: string, pid?: number | undefined) {
+        super(
+            `control socket ${socketPath} is already owned by a live daemon${pid !== undefined ? ` (pid ${pid})` : ''}`
+        );
+        this.name = 'ControlSocketBusyError';
+        this.socketPath = socketPath;
+        this.pid = pid;
+    }
+}
+
+function toError(value: unknown): Error {
+    return value instanceof Error ? value : new Error(String(value));
+}
+
+/** The synthesized dual-fire event as the `session-start` message the core already handles. */
+export function dualFireMessage(event: SynthesizedSessionStart): WireMessage {
+    return {
+        command: 'session-start',
+        pane_id: event.pane_id,
+        session_id: event.session_id,
+        agent: event.agent
+    };
+}
+
+export interface WireLineDispatch {
+    readonly dispatcher: ControlDispatcher;
+    /** Allocates a reply handle bound to the requesting connection. */
+    readonly allocateReply: () => ReplyHandle;
+    readonly onError?: ((error: Error, context: string) => void) | undefined;
+}
+
+/**
+ * The whole per-line policy, transport-free so it can be tested (and reused by a future
+ * transport) without a socket.
+ */
+export function dispatchWireLine(line: string, deps: WireLineDispatch): void {
+    const decoded = parseWireLine(line);
+
+    if (!decoded.ok) {
+        // Never answer an undecodable line (we cannot know whether the sender is reading)
+        // and never answer a fire-and-forget command (§9 port note 3).
+        if (decoded.command === undefined || !isReplyCommand(decoded.command)) return;
+        const handle = deps.allocateReply();
+        handle.send({ ...errorReply(decoded.detail) });
+        handle.close();
+        return;
+    }
+
+    for (const item of dispatchSequence(decoded)) {
+        const message = item.kind === 'message' ? item.message : dualFireMessage(item.event);
+        const reply = item.reply ? deps.allocateReply() : null;
+        try {
+            deps.dispatcher(message, reply);
+        } catch (error) {
+            deps.onError?.(toError(error), `dispatch ${message.command}`);
+        }
+    }
+}
+
+interface ControlConnection {
+    readonly socket: Socket;
+    readonly handles: Set<TransportReplyHandle>;
+}
+
+function listenAsync(server: Server, options: ListenOptions): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => {
+            server.removeListener('listening', onListening);
+            reject(error);
+        };
+        const onListening = (): void => {
+            server.removeListener('error', onError);
+            resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(options);
+    });
+}
+
+function closeAsync(server: Server | undefined): Promise<void> {
+    if (server === undefined || !server.listening) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+    });
+}
+
+export function createControlServer(options: ControlServerOptions): ControlServer {
+    const { socketPath, dispatcher } = options;
+    const tcpHost = options.tcpHost ?? '127.0.0.1';
+    if (!LOOPBACK_HOSTS.has(tcpHost)) {
+        throw new Error(`control TCP listener is loopback-only; refusing host '${tcpHost}'`);
+    }
+
+    const connections = new Set<ControlConnection>();
+    let unixServer: Server | undefined;
+    let tcpServer: Server | undefined;
+    let boundUnixPath: string | undefined;
+    let boundTcpPort: number | undefined;
+    let running = false;
+    let starting: Promise<void> | undefined;
+
+    const report = (error: unknown, context: string): void => {
+        options.onError?.(toError(error), context);
+    };
+
+    const handleConnection = (socket: Socket): void => {
+        socket.setNoDelay(true);
+        const buffer = createLineBuffer(options.maxLineLength !== undefined ? { maxLineLength: options.maxLineLength } : {});
+        const connection: ControlConnection = { socket, handles: new Set<TransportReplyHandle>() };
+        connections.add(connection);
+
+        const allocateReply = (): ReplyHandle => {
+            const handle = createReplyHandle(socket, {
+                onWriteError: (error) => report(error, 'reply-write')
+            });
+            connection.handles.add(handle);
+            return handle;
+        };
+
+        socket.on('data', (chunk: Buffer) => {
+            let lines: string[];
+            try {
+                lines = buffer.push(chunk);
+            } catch (error) {
+                report(error, 'line-buffer');
+                return;
+            }
+            for (const line of lines) {
+                dispatchWireLine(line, {
+                    dispatcher,
+                    allocateReply,
+                    onError: (error, context) => report(error, context)
+                });
+            }
+        });
+
+        // EPIPE on a vanished client, ECONNRESET on a ^C — never fatal (§2.1, port note 13).
+        socket.on('error', (error) => report(error, 'connection'));
+
+        socket.on('close', () => {
+            connections.delete(connection);
+            buffer.reset();
+            for (const handle of connection.handles) handle.peerGone();
+            connection.handles.clear();
+        });
+    };
+
+    const prepareUnixPath = async (): Promise<void> => {
+        const directory = path.dirname(socketPath);
+        if (directory.length > 0) fs.mkdirSync(directory, { recursive: true });
+
+        let exists = true;
+        try {
+            fs.lstatSync(socketPath);
+        } catch {
+            exists = false;
+        }
+        if (!exists) return;
+
+        const probe = await probeControlPing(
+            { socketPath },
+            options.staleProbeTimeoutMs !== undefined ? { timeoutMs: options.staleProbeTimeoutMs } : {}
+        );
+        if (probe.alive) throw new ControlSocketBusyError(socketPath, probe.pid);
+
+        try {
+            fs.unlinkSync(socketPath);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT') throw error;
+        }
+    };
+
+    const start = async (): Promise<void> => {
+        if (running) return;
+        if (starting !== undefined) return starting;
+
+        starting = (async () => {
+            await prepareUnixPath();
+
+            const unix = net.createServer(handleConnection);
+            unix.on('error', (error) => report(error, 'unix-listener'));
+            await listenAsync(unix, { path: socketPath });
+            unixServer = unix;
+            boundUnixPath = socketPath;
+            try {
+                fs.chmodSync(socketPath, options.socketMode ?? SOCKET_MODE);
+            } catch (error) {
+                report(error, 'socket-chmod');
+            }
+
+            if (options.tcpPort !== undefined) {
+                const tcp = net.createServer(handleConnection);
+                tcp.on('error', (error) => report(error, 'tcp-listener'));
+                try {
+                    await listenAsync(tcp, { host: tcpHost, port: options.tcpPort });
+                } catch (error) {
+                    await closeAsync(unix);
+                    unixServer = undefined;
+                    if (boundUnixPath !== undefined) {
+                        try {
+                            fs.unlinkSync(boundUnixPath);
+                        } catch {
+                            // best effort
+                        }
+                        boundUnixPath = undefined;
+                    }
+                    throw error;
+                }
+                tcpServer = tcp;
+                const address = tcp.address();
+                boundTcpPort = typeof address === 'object' && address !== null ? (address as AddressInfo).port : options.tcpPort;
+            }
+
+            running = true;
+        })();
+
+        try {
+            await starting;
+        } finally {
+            starting = undefined;
+        }
+    };
+
+    const stop = async (): Promise<void> => {
+        running = false;
+        for (const connection of [...connections]) connection.socket.destroy();
+        connections.clear();
+        await closeAsync(unixServer);
+        await closeAsync(tcpServer);
+        unixServer = undefined;
+        tcpServer = undefined;
+        boundTcpPort = undefined;
+        // Only unlink a socket file this instance actually bound (§1.1).
+        if (boundUnixPath !== undefined) {
+            try {
+                fs.unlinkSync(boundUnixPath);
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code;
+                if (code !== 'ENOENT') report(error, 'socket-unlink');
+            }
+            boundUnixPath = undefined;
+        }
+    };
+
+    return {
+        start,
+        stop,
+        listen: start,
+        close: stop,
+        socketPath,
+        get tcpPort() {
+            return boundTcpPort;
+        },
+        get connections() {
+            return connections.size;
+        },
+        get running() {
+            return running;
+        }
+    };
+}

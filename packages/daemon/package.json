@@ -4,9 +4,19 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./store": "./src/store/index.ts"
   },
   "types": "./src/index.ts",
+  "bin": {
+    "nexd": "./dist/nexd.js"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "watch": "node scripts/bundle.mjs --watch",
+    "start": "node scripts/bundle.mjs && node dist/nexd.js start --foreground",
+    "nexd": "node scripts/bundle.mjs && node dist/nexd.js"
+  },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
     "@nex/core": "workspace:*",

@@ -1,0 +1,224 @@
+import { WIRE_COMMANDS } from '@nex/protocol';
+import { describe, expect, it } from 'vitest';
+
+import type { DaemonState } from '../../store/index.js';
+import { NOT_SUPPORTED_ERROR, STUBBED_COMMANDS } from './stubs.js';
+import { harness, id, NOW, seeded } from './testing.js';
+
+const W1 = id('aaaaaaaa', 1);
+const W2 = id('aaaaaaaa', 2);
+const P1 = id('dddddddd', 1);
+const P2 = id('dddddddd', 2);
+const PNEW = id('ffffffff', 1);
+
+// ---------------------------------------------------------------------------
+// layout-cycle / layout-select
+// ---------------------------------------------------------------------------
+
+describe('layout commands', () => {
+    function twoPanes() {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW });
+        return h;
+    }
+
+    it('cycles the predefined layout of the workspace holding the caller pane', () => {
+        const h = twoPanes();
+        expect(h.state().workspaces[0]?.currentLayoutIndex).toBeNull();
+        expect(h.send({ command: 'layout-cycle', pane_id: P1 })).toEqual([]);
+        expect(h.state().workspaces[0]?.currentLayoutIndex).toBe(0);
+        h.send({ command: 'layout-cycle', pane_id: P1 });
+        expect(h.state().workspaces[0]?.currentLayoutIndex).toBe(1);
+    });
+
+    it('selects a named layout and silently drops an unknown one', () => {
+        const h = twoPanes();
+        h.send({ command: 'layout-select', pane_id: P1, name: 'main-vertical' });
+        expect(h.state().workspaces[0]?.currentLayoutIndex).toBe(3);
+        h.send({ command: 'layout-select', pane_id: P1, name: 'diagonal' });
+        expect(h.state().workspaces[0]?.currentLayoutIndex).toBe(3);
+    });
+
+    it('drops the message when no workspace holds the pane', () => {
+        const h = twoPanes();
+        const before = h.state();
+        h.send({ command: 'layout-cycle', pane_id: id('9999aaaa', 1) });
+        expect(h.state()).toBe(before);
+    });
+
+    it('does not address a PARKED pane', () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch(
+            {
+                type: 'open-markdown-pane',
+                workspaceID: W1,
+                paneID: P2,
+                filePath: '/docs/a.md',
+                reusePaneID: P1,
+                now: NOW
+            },
+            { type: 'split-pane', workspaceID: W1, paneID: id('dddddddd', 5), direction: 'horizontal', now: NOW }
+        );
+        const before = h.state();
+        h.send({ command: 'layout-cycle', pane_id: P1 });
+        expect(h.state()).toBe(before);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// open / diff
+// ---------------------------------------------------------------------------
+
+describe('open', () => {
+    it('focuses the caller pane and opens a markdown pane in its workspace', () => {
+        const h = harness({ initial: seeded(2), ids: [PNEW] });
+        expect(h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1 })).toEqual([]);
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes.map((pane) => pane.id)).toEqual([P1, PNEW]);
+        expect(workspace?.panes[1]).toMatchObject({
+            type: 'markdown',
+            filePath: '/docs/readme.md',
+            label: 'readme.md',
+            workingDirectory: '/docs'
+        });
+        expect(workspace?.focusedPaneID).toBe(PNEW);
+        expect(workspace?.parkedPanes).toEqual([]);
+    });
+
+    it('reuses (parks) the caller pane with --here', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1, reuse: true });
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes.map((pane) => pane.id)).toEqual([PNEW]);
+        expect(workspace?.parkedPanes.map((pane) => pane.id)).toEqual([P1]);
+    });
+
+    it('falls back to the active workspace (never reusing) without a known pane', () => {
+        const h = harness({ initial: seeded(2), ids: [PNEW] });
+        h.send({ command: 'open', path: '/docs/readme.md', reuse: true });
+        expect(h.state().lastActiveWorkspaceID).toBe(W2);
+        expect(h.state().workspaces[1]?.panes.map((pane) => pane.id)).toEqual([P2, PNEW]);
+        expect(h.state().workspaces[1]?.parkedPanes).toEqual([]);
+    });
+
+    it('falls back to the active workspace when the pane id is unknown', () => {
+        const h = harness({ initial: seeded(2), ids: [PNEW] });
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: id('9999aaaa', 1) });
+        expect(h.state().workspaces[1]?.panes).toHaveLength(2);
+    });
+
+    it('drops the message when there is no active workspace', () => {
+        const empty: DaemonState = { ...seeded(0) };
+        const h = harness({ initial: empty });
+        const before = h.state();
+        h.send({ command: 'open', path: '/docs/readme.md' });
+        expect(h.state()).toBe(before);
+    });
+});
+
+describe('diff', () => {
+    it('opens a diff pane scoped to the target path and never reuses', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        expect(
+            h.send({ command: 'diff', repo_path: '/code/nex', target_path: 'src/app.ts', pane_id: P1 })
+        ).toEqual([]);
+        const workspace = h.state().workspaces[0];
+        expect(workspace?.panes.map((pane) => pane.id)).toEqual([P1, PNEW]);
+        expect(workspace?.panes[1]).toMatchObject({
+            type: 'diff',
+            workingDirectory: '/code/nex',
+            filePath: 'src/app.ts',
+            label: 'app.ts'
+        });
+    });
+
+    it('scopes to the repo when no target path is given', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.send({ command: 'diff', repo_path: '/code/nex' });
+        expect(h.state().workspaces[0]?.panes[1]).toMatchObject({
+            filePath: null,
+            label: 'nex',
+            title: 'diff: nex'
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// ping
+// ---------------------------------------------------------------------------
+
+describe('ping', () => {
+    it('always succeeds with the doctor fields plus the additive protocol version', () => {
+        const h = harness();
+        expect(h.reply({ command: 'ping' })).toEqual({
+            ok: true,
+            version: '9.9.9',
+            build: '4242',
+            pid: process.pid,
+            protocol: 1
+        });
+        expect(h.replies[0]?.closed).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// stubs + table coverage
+// ---------------------------------------------------------------------------
+
+describe('graft / web stubs', () => {
+    it('answers every stubbed verb with an honest failure', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'graft-status' })).toEqual({
+            ok: false,
+            error: NOT_SUPPORTED_ERROR
+        });
+        expect(h.reply({ command: 'web-open', url: 'https://example.com' })).toEqual({
+            ok: false,
+            error: NOT_SUPPORTED_ERROR
+        });
+        expect(STUBBED_COMMANDS).toContain('graft-start');
+        expect(STUBBED_COMMANDS.length).toBeGreaterThan(30);
+    });
+
+    it('stays silent on the fire-and-forget path', () => {
+        const h = harness({ initial: seeded(1) });
+        const handler = h.table.get('graft-status');
+        expect(handler).toBeDefined();
+        handler?.({ command: 'graft-status' }, h.ctx, null);
+        expect(h.replies).toEqual([]);
+    });
+});
+
+describe('sync-group bookkeeping', () => {
+    it('shrinks the broadcast group when `open --here` parks a synced shell', () => {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW },
+            { type: 'set-sync-input-active', workspaceID: W1, active: true }
+        );
+        h.send({ command: 'open', path: '/docs/a.md', pane_id: P1, reuse: true });
+        expect(h.syncGroups.at(-1)).toEqual({ workspaceID: W1, paneIDs: [] });
+    });
+
+    it('clears the deleted workspace’s group', () => {
+        const h = harness({ initial: seeded(2) });
+        h.reply({ command: 'workspace-delete', name: 'w1' });
+        expect(h.syncGroups.at(-1)).toEqual({ workspaceID: W1, paneIDs: [] });
+    });
+});
+
+describe('handler table', () => {
+    it('covers every non-pane wire command', () => {
+        const table = harness().table;
+        const missing = WIRE_COMMANDS.filter(
+            (command) => !command.startsWith('pane-') && !table.has(command)
+        );
+        expect(missing).toEqual([]);
+    });
+
+    it('deliberately leaves the pane-* family to its own handler module', () => {
+        const table = harness().table;
+        const claimed = [...table.keys()].filter((command) => command.startsWith('pane-'));
+        expect(claimed).toEqual([]);
+    });
+});

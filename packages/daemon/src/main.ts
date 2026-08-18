@@ -1,0 +1,419 @@
+/**
+ * `nexd` — the New Nex daemon entrypoint.
+ *
+ *   nexd start [--foreground]   spawn (or become) the daemon
+ *   nexd stop                   ask the running daemon to shut down cleanly
+ *   nexd status [--json]        ping it over the control socket
+ *
+ * The daemon is started on demand and **detached** (ARCHITECTURE.md "Daemon lifecycle"): it
+ * outlives its spawner, so closing the terminal that ran `nexd start` — or quitting the app —
+ * never kills an agent. `--foreground` is the same daemon in this process, which is what the
+ * detached child itself runs, and what you want under a supervisor or in a container.
+ *
+ * Everything here is thin: `boot/compose.ts` owns the daemon, `lifecycle/` owns the run dir,
+ * detach and probing. This file parses arguments and prints.
+ */
+
+import { realpathSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import {
+    createDaemon,
+    HTTP_HOST_ENV,
+    readPortFile,
+    resolveDaemonVersion,
+    type DaemonInfo
+} from './boot/index.js';
+import { resolveControlEndpoints } from './control/index.js';
+import {
+    isProcessAlive,
+    probeDaemon,
+    readPidRecord,
+    resolveRunPaths,
+    spawnDetached,
+    type RunPaths
+} from './lifecycle/index.js';
+
+export const ENTRY_ENV = 'NEXD_ENTRY';
+export const LOG_FILE_ENV = 'NEXD_LOG_FILE';
+
+/** How long `nexd start` waits for the detached child to answer `ping`. */
+export const START_TIMEOUT_MS = 15_000;
+/** How long `nexd stop` waits for the daemon to disappear after SIGTERM. */
+export const STOP_TIMEOUT_MS = 10_000;
+
+export type NexdCommand = 'start' | 'stop' | 'status' | 'help' | 'version';
+
+export interface ParsedArgs {
+    readonly command: NexdCommand;
+    readonly foreground: boolean;
+    readonly json: boolean;
+    readonly timeoutMs: number | undefined;
+    /** Set when parsing failed; `runNexd` prints it and exits 2. */
+    readonly error: string | undefined;
+}
+
+const USAGE = `nexd — the New Nex daemon
+
+Usage:
+  nexd start [--foreground]   Start the daemon (detached unless --foreground)
+  nexd stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
+  nexd status [--json]        Ping the daemon and report version, pid and ports
+  nexd --version              Print the daemon version
+  nexd --help                 This message
+
+Environment:
+  NEXD_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
+                     (default: ~/Library/Application Support/nexd/run, or
+                      $XDG_RUNTIME_DIR/nexd on Linux)
+  NEXD_SOCKET_PATH   CLI-compat control socket (default: /tmp/nex.sock)
+  NEXD_TCP_PORT      Control TCP listener on 127.0.0.1 (overrides config tcp-port)
+  NEXD_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
+  NEXD_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
+  NEXD_DB_PATH       SQLite database file (default: ~/Library/Application Support/nexd/nex.db)
+  NEXD_CONFIG_PATH   Config file (default: ~/.config/nex/config)
+  NEXD_CLIENT_DIR    Directory holding the built web client
+  NEXD_LOG_FILE      Append the detached daemon's stdout/stderr here
+  NEXD_VERSION       Override the reported version (packaging)
+  NEXD_BUILD         Override the reported build (packaging)
+  NEXD_ENTRY         Executable/script re-spawned by \`nexd start\` when detaching
+
+The \`nex\` CLI reaches the daemon over NEX_SOCKET:
+  NEX_SOCKET=tcp:127.0.0.1:19400 nex pane list
+`;
+
+export function helpText(): string {
+    return USAGE;
+}
+
+function parseTimeout(raw: string | undefined): number | undefined {
+    if (raw === undefined) return undefined;
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) return undefined;
+    return Number.parseInt(trimmed, 10);
+}
+
+export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
+    let command: NexdCommand | undefined;
+    let foreground = false;
+    let json = false;
+    let timeoutMs: number | undefined;
+    let error: string | undefined;
+
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index] as string;
+        switch (arg) {
+            case '--help':
+            case '-h':
+                command = 'help';
+                break;
+            case '--version':
+            case '-V':
+                if (command === undefined) command = 'version';
+                break;
+            case '--foreground':
+            case '-f':
+            case '--no-detach':
+                foreground = true;
+                break;
+            case '--json':
+                json = true;
+                break;
+            case '--timeout': {
+                const value = parseTimeout(argv[index + 1]);
+                if (value === undefined) {
+                    error ??= '--timeout needs a millisecond value';
+                    break;
+                }
+                timeoutMs = value;
+                index += 1;
+                break;
+            }
+            default:
+                if (arg === 'start' || arg === 'stop' || arg === 'status') {
+                    if (command === undefined || command === 'version') command = arg;
+                    break;
+                }
+                error ??= `unknown argument: ${arg}`;
+                break;
+        }
+    }
+
+    return {
+        command: command ?? 'help',
+        foreground,
+        json,
+        timeoutMs,
+        error
+    };
+}
+
+export interface CliIO {
+    readonly out: (line: string) => void;
+    readonly err: (line: string) => void;
+    readonly env?: NodeJS.ProcessEnv | undefined;
+    /** Injected for tests; production waits on real signals. */
+    readonly waitForever?: (() => Promise<void>) | undefined;
+}
+
+function defaultIO(): CliIO {
+    return {
+        out: (line) => process.stdout.write(`${line}\n`),
+        err: (line) => process.stderr.write(`${line}\n`)
+    };
+}
+
+/**
+ * Deliberately NOT unref'd: these sleeps are the CLI waiting for a daemon to appear or to
+ * exit, and an unref'd timer lets node drain the loop and exit mid-poll — silently, with the
+ * exit code of a success.
+ */
+function sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+/**
+ * The script/binary `nexd start` re-spawns when it detaches. In the shipped bundle that is
+ * `dist/nexd.js` (this very file); `NEXD_ENTRY` overrides it for packaging layouts where the
+ * daemon is launched through a wrapper.
+ */
+export function resolveEntry(env: NodeJS.ProcessEnv): string {
+    const override = env[ENTRY_ENV]?.trim();
+    if (override !== undefined && override.length > 0) return override;
+    try {
+        return fileURLToPath(import.meta.url);
+    } catch {
+        return process.argv[1] ?? process.execPath;
+    }
+}
+
+/** The URL a client would use — honouring the daemon's own bind-host override. */
+function httpURL(env: NodeJS.ProcessEnv, port: number): string {
+    const host = env[HTTP_HOST_ENV]?.trim();
+    const bind = host === undefined || host.length === 0 ? '127.0.0.1' : host;
+    return `http://${bind.includes(':') ? `[${bind}]` : bind}:${String(port)}`;
+}
+
+function runPathsFor(env: NodeJS.ProcessEnv): RunPaths {
+    return resolveRunPaths({ env, protocol: resolveDaemonVersion(env).protocol });
+}
+
+async function waitForDaemon(paths: RunPaths, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const probe = await probeDaemon(paths, { timeoutMs: 500 });
+        if (probe.alive) return true;
+        if (Date.now() >= deadline) return false;
+        await sleep(100);
+    }
+}
+
+async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+
+    const existing = await probeDaemon(paths, { timeoutMs: 500 });
+    if (existing.alive) {
+        io.out(
+            `nexd already running (pid ${existing.pid === undefined ? 'unknown' : String(existing.pid)}) on ${paths.socket}`
+        );
+        return 0;
+    }
+
+    if (args.foreground) {
+        const daemon = createDaemon({
+            env,
+            installSignalHandlers: true,
+            onError: (error, context) => io.err(`nexd error [${context}]: ${error.message}`),
+            onLog: (message) => io.out(message)
+        });
+        let info;
+        try {
+            info = await daemon.start();
+        } catch (error) {
+            const failure = error as NodeJS.ErrnoException;
+            io.err(`nexd failed to start: ${failure.message}`);
+            if (failure.code === 'ECONTROLBUSY') {
+                // The most likely one during the port: the Swift app owns /tmp/nex.sock.
+                io.err(
+                    `Repair: another process owns that control socket. Set NEXD_SOCKET_PATH (and NEXD_TCP_PORT for the CLI) to give this daemon its own endpoints.`
+                );
+            }
+            await daemon.stop();
+            return 1;
+        }
+        printInfo(io, info);
+        // The listeners keep the loop alive; SIGTERM/SIGINT run the daemon's own shutdown
+        // and exit the process, so this never resolves in production.
+        await (io.waitForever ?? (() => new Promise<void>(() => {})))();
+        return 0;
+    }
+
+    const entry = resolveEntry(env);
+    const logFile = env[LOG_FILE_ENV]?.trim();
+    const child = spawnDetached(entry, ['start', '--foreground'], {
+        env,
+        ...(logFile !== undefined && logFile.length > 0 ? { logFile } : {})
+    });
+    const alive = await waitForDaemon(paths, args.timeoutMs ?? START_TIMEOUT_MS);
+    if (!alive) {
+        io.err(
+            `nexd did not answer on ${paths.socket} within ${String(args.timeoutMs ?? START_TIMEOUT_MS)}ms (spawned pid ${String(child.pid)})`
+        );
+        io.err(`Repair: run \`nexd start --foreground\` to see why, or set ${LOG_FILE_ENV} and retry.`);
+        return 1;
+    }
+    const record = readPidRecord(paths);
+    const port = record?.http_port ?? readPortFile(paths);
+    io.out(`nexd started (pid ${String(record?.pid ?? child.pid)})`);
+    io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
+    io.out(`  discovery: ${paths.socket}`);
+    if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
+    return 0;
+}
+
+async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 500 });
+    const pid = probe.pid ?? probe.record?.pid;
+
+    if (!probe.alive) {
+        if (pid !== undefined && isProcessAlive(pid)) {
+            io.err(`nexd (pid ${String(pid)}) is not answering on ${paths.socket}; sending SIGTERM anyway`);
+        } else {
+            io.out('nexd is not running');
+            return 0;
+        }
+    }
+    if (pid === undefined) {
+        io.err(`nexd is running on ${paths.socket} but its pid is unknown; cannot stop it`);
+        return 1;
+    }
+
+    try {
+        process.kill(pid, 'SIGTERM');
+    } catch (error) {
+        io.err(`failed to signal nexd (pid ${String(pid)}): ${(error as Error).message}`);
+        return 1;
+    }
+
+    const timeoutMs = args.timeoutMs ?? STOP_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (!isProcessAlive(pid)) {
+            io.out(`nexd stopped (pid ${String(pid)})`);
+            return 0;
+        }
+        await sleep(100);
+    }
+
+    try {
+        process.kill(pid, 'SIGKILL');
+    } catch {
+        // It exited between the check and the signal — that is the outcome we wanted.
+    }
+    io.err(`nexd (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
+    return 1;
+}
+
+async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 1000 });
+    const record = readPidRecord(paths);
+    const port = record?.http_port ?? readPortFile(paths);
+
+    if (args.json) {
+        io.out(
+            JSON.stringify({
+                running: probe.alive,
+                pid: probe.pid ?? null,
+                version: probe.version ?? null,
+                build: probe.build ?? null,
+                protocol: paths.protocol,
+                socket: paths.socket,
+                control_socket: resolveControlEndpoints(env).socketPath,
+                http_port: port ?? null,
+                run_dir: paths.dir,
+                ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
+            })
+        );
+        return probe.alive ? 0 : 1;
+    }
+
+    if (!probe.alive) {
+        io.out(`nexd is not running (${probe.reason ?? 'no socket'})`);
+        if (probe.stalePidRecord) io.out(`  stale pid record: ${paths.pid}`);
+        io.out(`  run dir: ${paths.dir}`);
+        return 1;
+    }
+
+    io.out(`nexd is running (pid ${probe.pid === undefined ? 'unknown' : String(probe.pid)})`);
+    io.out(`  version: ${probe.version ?? 'unknown'} (build ${probe.build ?? 'unknown'})`);
+    io.out(`  protocol: ${String(paths.protocol)}`);
+    io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
+    io.out(`  discovery: ${paths.socket}`);
+    if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
+    io.out(`  run dir: ${paths.dir}`);
+    return 0;
+}
+
+function printInfo(io: CliIO, info: DaemonInfo): void {
+    io.out(`nexd running (pid ${String(info.pid)})`);
+    io.out(`  control: ${info.socketPath}`);
+    io.out(`  discovery: ${info.runSocketPath}`);
+    if (info.tcpPort !== undefined) io.out(`  control tcp: 127.0.0.1:${String(info.tcpPort)}`);
+    io.out(`  http: ${info.url}`);
+    io.out(`  db: ${info.dbPath}`);
+    io.out(`  workspaces: ${String(info.workspaces)} (resuming ${String(info.resumeTuples)} session(s))`);
+}
+
+/** The whole CLI as a function: returns the process exit code. */
+export async function runNexd(argv: readonly string[], io: CliIO = defaultIO()): Promise<number> {
+    const args = parseNexdArgs(argv);
+    if (args.error !== undefined) {
+        io.err(args.error);
+        io.err(USAGE);
+        return 2;
+    }
+    switch (args.command) {
+        case 'help':
+            io.out(USAGE);
+            return 0;
+        case 'version':
+            io.out(resolveDaemonVersion(io.env ?? process.env).version);
+            return 0;
+        case 'start':
+            return commandStart(io, args);
+        case 'stop':
+            return commandStop(io, args);
+        case 'status':
+            return commandStatus(io, args);
+    }
+}
+
+/** True when this module is what node was asked to run (not an import from a test). */
+function isEntrypoint(): boolean {
+    const entry = process.argv[1];
+    if (entry === undefined) return false;
+    try {
+        return pathToFileURL(realpathSync(entry)).href === import.meta.url;
+    } catch {
+        return false;
+    }
+}
+
+if (isEntrypoint()) {
+    void runNexd(process.argv.slice(2)).then(
+        (code) => {
+            if (code !== 0) process.exitCode = code;
+        },
+        (error: unknown) => {
+            process.stderr.write(`nexd: ${error instanceof Error ? error.message : String(error)}\n`);
+            process.exitCode = 1;
+        }
+    );
+}

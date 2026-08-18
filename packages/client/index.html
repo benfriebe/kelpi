@@ -2,7 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The client is a fixed application shell, not a document: no zoom-on-double-tap, and
+         the safe-area insets matter on a phone attached over a tailnet. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Nex — terminal workspaces served by the nexd daemon" />
+    <!-- `chrome/favicon.ts` replaces this href with a canvas-drawn badge as agents change
+         state; it needs a `link[rel~="icon"]` to exist, and an inline SVG avoids a 404 for a
+         file the daemon would otherwise have to serve. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230A0A0C'/%3E%3Cpath d='M9 11l5 5-5 5M17 21h7' stroke='%23E6E6EA' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
     <title>Nex</title>
   </head>
   <body>

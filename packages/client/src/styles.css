@@ -1,1 +1,249 @@
 @import "tailwindcss";
+
+/**
+ * The app's design tokens (WP3.6 assembly).
+ *
+ * Three modules define token FALLBACKS of their own — `chrome/tokens.ts`, `grid/tokens.ts` and
+ * `terminal/renderer.ts` — precisely so each renders correctly when mounted alone (unit tests,
+ * a storybook, the Electron shell embedding one surface). This file is where they become one
+ * palette: every `--nex-*` name any of them reads is defined here, in both appearances, so a
+ * surface can never be half-themed.
+ *
+ * The chrome half is also written at runtime: `ThemeProvider applyToDocument` sets the resolved
+ * `--nex-*` values (plus the `--nex-surface-bg` / `--nex-agent` aliases the grid uses) on
+ * `documentElement` and stamps `data-nex-theme`. These blocks are therefore the *pre-hydration*
+ * state and the source of truth for the terminal tokens, which the provider does not own —
+ * `terminal/renderer.ts` reads those off the DOM with `getComputedStyle`.
+ *
+ * Values are the shell-ui.md §2 preset table (dark + light columns) verbatim; the terminal
+ * palette is `DEFAULT_TERMINAL_THEME` in dark, and its light counterpart is derived from the
+ * same light-bucket colors so the two halves of the window agree.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* chrome — shell-ui.md §2, dark column */
+  --nex-bg: #0a0a0c;
+  --nex-sidebar-bg: #0c0c10;
+  --nex-surface: #101013;
+  --nex-surface-bg: #101013; /* grid/tokens.ts spelling */
+  --nex-header-bg: #13131a;
+  --nex-footer-bg: #0c0c10;
+  --nex-fg: #e6e6ea;
+  --nex-fg-secondary: #9a9aa0;
+  --nex-fg-tertiary: #6a6a72;
+  --nex-border: #24242b;
+  --nex-selection-fill: rgba(82, 118, 184, 0.24);
+  --nex-selection-stroke: #5276b8;
+  --nex-accent: #6f9bd8;
+  --nex-pane-focus: #6f9bd8;
+  --nex-status-running: #5fbe89;
+  --nex-status-waiting: #6f9bd8;
+  --nex-status-inactive: #8a8a92;
+  --nex-active-agent: #d3a329;
+  --nex-agent: #d3a329; /* grid/tokens.ts spelling */
+  --nex-group-band-opacity: 0.22;
+
+  /* terminal — terminal/renderer.ts DEFAULT_TERMINAL_THEME */
+  --nex-term-bg: #0a0a0c;
+  --nex-term-fg: #e6e6ea;
+  --nex-term-cursor: #e6e6ea;
+  --nex-term-cursor-accent: #0a0a0c;
+  --nex-term-selection-bg: #2a3550;
+  --nex-term-selection-fg: #e6e6ea;
+  --nex-term-black: #15151a;
+  --nex-term-red: #d9707a;
+  --nex-term-green: #5fbe89;
+  --nex-term-yellow: #d3a329;
+  --nex-term-blue: #6f9bd8;
+  --nex-term-magenta: #b18ad1;
+  --nex-term-cyan: #5fb3b3;
+  --nex-term-white: #c9c9d1;
+  --nex-term-bright-black: #4a4a55;
+  --nex-term-bright-red: #e88e96;
+  --nex-term-bright-green: #7fd4a3;
+  --nex-term-bright-yellow: #e5be55;
+  --nex-term-bright-blue: #8fb5e6;
+  --nex-term-bright-magenta: #c7a6e0;
+  --nex-term-bright-cyan: #7fcaca;
+  --nex-term-bright-white: #f2f2f6;
+
+  /* type */
+  --nex-font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --nex-font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+}
+
+/* The light column, twice: the media query is the pre-hydration answer, the attribute is what
+   `ThemeProvider` stamps once it has resolved the appearance (and what an explicit "light"
+   preference must win with, even on a dark OS). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-nex-theme="dark"]) {
+    color-scheme: light;
+
+    --nex-bg: #eae8e2;
+    --nex-sidebar-bg: #efeee9;
+    --nex-surface: #ffffff;
+    --nex-surface-bg: #ffffff;
+    --nex-header-bg: #f7f6f2;
+    --nex-footer-bg: #efeee9;
+    --nex-fg: #2b2b2e;
+    --nex-fg-secondary: #6b6c70;
+    --nex-fg-tertiary: #9a9a96;
+    --nex-border: #dedcd5;
+    --nex-selection-fill: rgba(94, 138, 196, 0.16);
+    --nex-selection-stroke: #5e8ac4;
+    --nex-accent: #5e8ac4;
+    --nex-pane-focus: #5e8ac4;
+    --nex-status-running: #4fa46b;
+    --nex-status-waiting: #5e8ac4;
+    --nex-status-inactive: #9a9a96;
+    --nex-active-agent: #a97c17;
+    --nex-agent: #a97c17;
+    --nex-group-band-opacity: 0.3;
+
+    --nex-term-bg: #ffffff;
+    --nex-term-fg: #2b2b2e;
+    --nex-term-cursor: #2b2b2e;
+    --nex-term-cursor-accent: #ffffff;
+    --nex-term-selection-bg: #cfe0f5;
+    --nex-term-selection-fg: #2b2b2e;
+    --nex-term-black: #2b2b2e;
+    --nex-term-red: #d0453c;
+    --nex-term-green: #3f9457;
+    --nex-term-yellow: #b99413;
+    --nex-term-blue: #3d74c0;
+    --nex-term-magenta: #8158c8;
+    --nex-term-cyan: #3f8f8f;
+    --nex-term-white: #d8d6d0;
+    --nex-term-bright-black: #6b6c70;
+    --nex-term-bright-red: #e0655c;
+    --nex-term-bright-green: #4fa46b;
+    --nex-term-bright-yellow: #c8a52a;
+    --nex-term-bright-blue: #5e8ac4;
+    --nex-term-bright-magenta: #9a72dd;
+    --nex-term-bright-cyan: #4fa8a8;
+    --nex-term-bright-white: #ffffff;
+  }
+}
+
+:root[data-nex-theme="light"] {
+  color-scheme: light;
+
+  --nex-bg: #eae8e2;
+  --nex-sidebar-bg: #efeee9;
+  --nex-surface: #ffffff;
+  --nex-surface-bg: #ffffff;
+  --nex-header-bg: #f7f6f2;
+  --nex-footer-bg: #efeee9;
+  --nex-fg: #2b2b2e;
+  --nex-fg-secondary: #6b6c70;
+  --nex-fg-tertiary: #9a9a96;
+  --nex-border: #dedcd5;
+  --nex-selection-fill: rgba(94, 138, 196, 0.16);
+  --nex-selection-stroke: #5e8ac4;
+  --nex-accent: #5e8ac4;
+  --nex-pane-focus: #5e8ac4;
+  --nex-status-running: #4fa46b;
+  --nex-status-waiting: #5e8ac4;
+  --nex-status-inactive: #9a9a96;
+  --nex-active-agent: #a97c17;
+  --nex-agent: #a97c17;
+  --nex-group-band-opacity: 0.3;
+
+  --nex-term-bg: #ffffff;
+  --nex-term-fg: #2b2b2e;
+  --nex-term-cursor: #2b2b2e;
+  --nex-term-cursor-accent: #ffffff;
+  --nex-term-selection-bg: #cfe0f5;
+  --nex-term-selection-fg: #2b2b2e;
+  --nex-term-black: #2b2b2e;
+  --nex-term-red: #d0453c;
+  --nex-term-green: #3f9457;
+  --nex-term-yellow: #b99413;
+  --nex-term-blue: #3d74c0;
+  --nex-term-magenta: #8158c8;
+  --nex-term-cyan: #3f8f8f;
+  --nex-term-white: #d8d6d0;
+  --nex-term-bright-black: #6b6c70;
+  --nex-term-bright-red: #e0655c;
+  --nex-term-bright-green: #4fa46b;
+  --nex-term-bright-yellow: #c8a52a;
+  --nex-term-bright-blue: #5e8ac4;
+  --nex-term-bright-magenta: #9a72dd;
+  --nex-term-bright-cyan: #4fa8a8;
+  --nex-term-bright-white: #ffffff;
+}
+
+/* ── base ──────────────────────────────────────────────────────────────────────── */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--nex-bg);
+  color: var(--nex-fg);
+  font-family: var(--nex-font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* The window is a fixed shell; only the sidebar and popovers scroll. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Every chrome surface styles its own controls; make sure none of them inherit a text cursor,
+   a user-agent border, or a focus ring the design does not use. */
+button {
+  cursor: default;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--nex-selection-fill);
+}
+
+:focus-visible {
+  outline: 1px solid var(--nex-accent);
+  outline-offset: 1px;
+}
+
+/* Thin, theme-aware scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nex-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--nex-border);
+  border-radius: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The terminal host fills its pane; both engines size their canvas to it. */
+[data-terminal-host] > * {
+  height: 100%;
+  width: 100%;
+}

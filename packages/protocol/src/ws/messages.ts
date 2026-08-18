@@ -8,6 +8,7 @@
  */
 
 import type { JsonObject, JsonValue } from '../json.js';
+import type { AgentKind, PaneStatus } from '../wire/vocab.js';
 
 /** Bumped only on a breaking change; the daemon serves `daemon-v<version>` run files. */
 export const WS_PROTOCOL_VERSION = 1;
@@ -130,27 +131,97 @@ export interface WsSnapshotMessage {
     readonly state: JsonObject;
 }
 
+/**
+ * The delta vocabulary is the daemon store's own `DomainEvent` union — the daemon serializes
+ * its events verbatim (`daemon/src/ws/serialize.ts`) and clients replay them with the daemon's
+ * `applyDomainEvents`, so anything declared here that the store does not emit is a lie. The
+ * shapes below are therefore transcribed from `daemon/src/store/types.ts` `DomainEvent`, with
+ * the domain records (workspace envelope, pane, group, layout tree, …) left as JSON: the
+ * protocol package is deliberately dependency-free and must not import the daemon.
+ *
+ * Two fields differ from the in-daemon shape because `serialize.ts` rewrites them:
+ * `workspace-upserted.workspace` carries `recentlyClosedCount` instead of the undo stack, and
+ * the snapshot's app-level `homeDirectory` is dropped entirely.
+ */
 export const WS_DELTA_KINDS = [
-    'app-patch',
     'workspace-upserted',
     'workspace-removed',
-    'group-upserted',
-    'group-removed',
     'pane-upserted',
     'pane-removed',
-    'layout-changed'
+    'layout-changed',
+    'focus-changed',
+    'sync-changed',
+    'agent-status-changed',
+    'group-upserted',
+    'group-removed',
+    'order-changed',
+    'active-workspace-changed',
+    'label-presets-changed',
+    'repos-changed'
 ] as const;
 export type WsDeltaKind = (typeof WS_DELTA_KINDS)[number];
 
+/** `pane-upserted` names which lane of the workspace the pane lives in. */
+export const WS_PANE_LANES = ['visible', 'parked'] as const;
+export type WsPaneLane = (typeof WS_PANE_LANES)[number];
+
 export type WsDeltaEvent =
-    | { readonly kind: 'app-patch'; readonly value: JsonObject }
-    | { readonly kind: 'workspace-upserted'; readonly id: string; readonly value: JsonObject }
+    | { readonly kind: 'workspace-upserted'; readonly id: string; readonly workspace: JsonObject }
     | { readonly kind: 'workspace-removed'; readonly id: string }
-    | { readonly kind: 'group-upserted'; readonly id: string; readonly value: JsonObject }
+    | {
+          readonly kind: 'pane-upserted';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly lane: WsPaneLane;
+          readonly index: number;
+          readonly pane: JsonObject;
+      }
+    | { readonly kind: 'pane-removed'; readonly workspaceID: string; readonly paneID: string }
+    | {
+          readonly kind: 'layout-changed';
+          readonly workspaceID: string;
+          readonly layout: JsonValue;
+          readonly zoomedPaneID: string | null;
+          readonly savedLayout: JsonValue;
+          readonly currentLayoutIndex: number | null;
+      }
+    | {
+          readonly kind: 'focus-changed';
+          readonly workspaceID: string;
+          readonly focusedPaneID: string | null;
+          readonly focusHistory: readonly string[];
+      }
+    | {
+          readonly kind: 'sync-changed';
+          readonly workspaceID: string;
+          readonly isSyncInputActive: boolean;
+          readonly syncInputExcluded: readonly string[];
+          /** The derived broadcast group after the change. */
+          readonly syncedPaneIDs: readonly string[];
+      }
+    | {
+          readonly kind: 'agent-status-changed';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly status: PaneStatus;
+          readonly agentSessionID: string | null;
+          readonly agentKind: AgentKind | null;
+          /** Epoch MILLISECONDS. */
+          readonly agentStartedAt: number | null;
+          readonly backgroundTaskCount: number;
+      }
+    | { readonly kind: 'group-upserted'; readonly id: string; readonly index: number; readonly group: JsonObject }
     | { readonly kind: 'group-removed'; readonly id: string }
-    | { readonly kind: 'pane-upserted'; readonly id: string; readonly value: JsonObject }
-    | { readonly kind: 'pane-removed'; readonly id: string }
-    | { readonly kind: 'layout-changed'; readonly workspaceID: string; readonly layout: JsonValue };
+    | {
+          readonly kind: 'order-changed';
+          readonly workspaceOrder: readonly string[];
+          readonly groupOrder: readonly string[];
+          /** `SidebarID`s: `{kind:'workspace'|'group', id}`. */
+          readonly topLevelOrder: readonly JsonObject[];
+      }
+    | { readonly kind: 'active-workspace-changed'; readonly workspaceID: string | null }
+    | { readonly kind: 'label-presets-changed'; readonly presets: readonly JsonObject[] }
+    | { readonly kind: 'repos-changed'; readonly repos: readonly JsonObject[] };
 
 /** Ordered; a gap in `seq` means the client must resync. */
 export interface WsDeltaMessage {

@@ -16,10 +16,15 @@
  * Field names are the wire's snake_case ones; the helpers below are the only place the UI
  * should have to know that.
  *
- * Verbs the UI wants that the wire does NOT have yet (they are daemon store actions with no
- * command name — see `WIRE_COMMANDS`): pane zoom toggle, group collapse/expand, workspace
- * rename, pane status override, and reopen-closed-pane. `raw()` is deliberately available so
- * they can be wired the moment the daemon grows the verb, without a new client release.
+ * Three verbs the UI needs are **WS-only** (`toggleZoom`, `setGroupCollapsed`,
+ * `renameWorkspace`): they are direct-manipulation gestures the CLI has no way to send, so
+ * WP3.6 added them to the daemon's WS command dispatch rather than to `WIRE_COMMANDS` — a new
+ * CLI verb would be a compatibility surface owed to the Swift CLI forever. They are documented
+ * where they are declared, at the bottom of the class.
+ *
+ * Still unwired for want of any daemon action name: pane status override and
+ * reopen-closed-pane. `raw()` is deliberately public so either can be sent the moment the
+ * daemon grows the verb, without a new client release.
  */
 
 import type {
@@ -617,6 +622,37 @@ export class CommandClient {
 
     ping(options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('ping'), options ?? {});
+    }
+
+    // ── WS-only verbs ──────────────────────────────────────────────────────────────
+    //
+    // Direct-manipulation gestures the control protocol has no verb for (the CLI cannot send
+    // them and never grew one). The daemon matches them on the WS channel BEFORE the wire
+    // decode — `daemon/src/ws/sync.ts` `WS_ONLY_COMMANDS` — and dispatches the store action
+    // that already exists, so they produce the same deltas a GUI change would.
+
+    /** Zoom/un-zoom a pane (the daemon focuses it first when zooming). */
+    toggleZoom(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('toggle-zoom', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Sidebar disclosure triangle; the collapsed flag is daemon state, not client-local. */
+    setGroupCollapsed(
+        input: { groupID: string; collapsed: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-group-collapsed', { group_id: input.groupID, collapsed: input.collapsed }),
+            options ?? {}
+        );
+    }
+
+    /** Inline sidebar rename. The daemon recomputes the workspace slug. */
+    renameWorkspace(input: { workspaceID: string; name: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('rename-workspace', { workspace_id: input.workspaceID, name: input.name }),
+            options ?? {}
+        );
     }
 
     // ── internals ──────────────────────────────────────────────────────────────────

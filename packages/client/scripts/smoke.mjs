@@ -1,0 +1,507 @@
+#!/usr/bin/env node
+/**
+ * Live smoke test for the assembled client (WP3.6's acceptance gate).
+ *
+ * Unit tests prove the pieces; this proves the SYSTEM. It builds the client, boots a real
+ * `nexd` on private paths, and then behaves like the browser does — an HTTP GET of the page,
+ * a WebSocket handshake, a state snapshot, a delta caused by the REAL Swift CLI, a PTY attach
+ * with its replay, and keystrokes that come back as terminal output.
+ *
+ * Everything it asserts is something a unit test cannot: that the daemon serves the built
+ * bundle, that the protocol versions agree end to end, that the token gate accepts the token
+ * the run dir wrote, that a CLI-driven mutation reaches an attached browser as a delta, and
+ * that bytes make the full round trip client → PTY → VT → client.
+ *
+ * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
+ * machine): every path is inside a fresh `mkdtemp` directory, the control socket is
+ * `<tmp>/nexd.sock` and NEVER `/tmp/nex.sock`, the DB, run dir, config and HOME are all
+ * throwaway, and the control TCP port is one the OS just handed us.
+ *
+ *   node packages/client/scripts/smoke.mjs [--no-build] [--keep] [--verbose]
+ *
+ *     --no-build  trust the existing dist/ output instead of rebuilding both packages
+ *     --keep      leave the daemon running and print how to reach it
+ *     --verbose   stream the daemon's log to stderr as it runs
+ *
+ * Exit code 0 = every check passed. Any failure prints the daemon log and exits 1.
+ */
+
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const clientRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = path.resolve(clientRoot, '..', '..');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const clientDist = path.join(clientRoot, 'dist');
+
+const SWIFT_CLI = process.env['NEX_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
+
+/** Frame layout from `@nex/protocol` `ws/pty.ts` (kept in sync by `smoke.test.ts`). */
+const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
+const FRAME_HEADER_BYTES = 17;
+const PROTOCOL_VERSION = 1;
+
+const argv = new Set(process.argv.slice(2));
+const options = {
+    // Rebuilding is the default: a stale `dist/nexd.js` silently tests LAST commit's daemon,
+    // which is exactly the confusion a live smoke exists to prevent.
+    build: !argv.has('--no-build'),
+    keep: argv.has('--keep'),
+    verbose: argv.has('--verbose')
+};
+
+// ── tiny test harness ───────────────────────────────────────────────────────────────
+
+const results = [];
+
+function pass(name, detail = '') {
+    results.push({ name, ok: true, detail });
+    process.stdout.write(`  ✓ ${name}${detail === '' ? '' : `  ${detail}`}\n`);
+}
+
+function fail(name, detail) {
+    results.push({ name, ok: false, detail });
+    process.stdout.write(`  ✗ ${name}\n      ${detail}\n`);
+}
+
+function check(name, condition, detail = '') {
+    if (condition) pass(name, detail);
+    else fail(name, detail === '' ? 'assertion failed' : detail);
+    return condition;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(label, predicate, timeoutMs = 15_000, intervalMs = 100) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const value = await predicate();
+        if (value) return value;
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+        await sleep(intervalMs);
+    }
+}
+
+function run(command, args, opts = {}) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, { cwd: opts.cwd ?? repoRoot, env: { ...process.env, ...opts.env } });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => (stdout += chunk));
+        child.stderr.on('data', (chunk) => (stderr += chunk));
+        child.on('error', reject);
+        child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    });
+}
+
+async function freePort() {
+    return await new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const address = server.address();
+            const port = typeof address === 'object' && address !== null ? address.port : 0;
+            server.close(() => resolve(port));
+        });
+    });
+}
+
+// ── build ───────────────────────────────────────────────────────────────────────────
+
+async function ensureBuilds() {
+    if (options.build || !fs.existsSync(daemonEntry)) {
+        process.stdout.write('building the daemon bundle…\n');
+        const result = await run('pnpm', ['--filter', '@nex/daemon', 'build']);
+        if (result.code !== 0) throw new Error(`daemon build failed:\n${result.stdout}${result.stderr}`);
+    }
+    if (options.build || !fs.existsSync(path.join(clientDist, 'index.html'))) {
+        process.stdout.write('building the client…\n');
+        const result = await run('pnpm', ['--filter', '@nex/client', 'build']);
+        if (result.code !== 0) throw new Error(`client build failed:\n${result.stdout}${result.stderr}`);
+    }
+}
+
+// ── daemon ──────────────────────────────────────────────────────────────────────────
+
+async function startDaemon() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexs-'));
+    const home = path.join(root, 'home');
+    const runDir = path.join(root, 'run');
+    fs.mkdirSync(home, { recursive: true });
+
+    const controlPort = await freePort();
+    const httpPort = await freePort();
+    const socketPath = path.join(root, 'nexd.sock');
+    if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
+
+    const log = [];
+    const child = spawn(process.execPath, [daemonEntry, 'start', '--foreground'], {
+        cwd: repoRoot,
+        env: {
+            PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+            HOME: home,
+            NEXD_RUN_DIR: runDir,
+            NEXD_SOCKET_PATH: socketPath,
+            NEXD_TCP_PORT: String(controlPort),
+            NEXD_DB_PATH: path.join(root, 'nex.db'),
+            NEXD_CONFIG_PATH: path.join(root, 'config'),
+            NEXD_HTTP_PORT: String(httpPort),
+            NEXD_HTTP_HOST: '127.0.0.1',
+            // The static-dir mechanism already exists: `ws/http.ts` `resolveClientDistDir`.
+            NEXD_CLIENT_DIR: clientDist
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const collect = (chunk) => {
+        log.push(chunk);
+        if (options.verbose) process.stderr.write(chunk);
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+
+    let exited = false;
+    child.on('exit', () => {
+        exited = true;
+    });
+
+    const base = `http://127.0.0.1:${httpPort}`;
+    await waitFor('the daemon to answer /healthz', async () => {
+        if (exited) throw new Error(`the daemon exited early:\n${log.join('')}`);
+        try {
+            const response = await fetch(`${base}/healthz`);
+            return response.ok;
+        } catch {
+            return false;
+        }
+    });
+
+    const token = fs.readFileSync(path.join(runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8').trim();
+
+    return {
+        root,
+        home,
+        base,
+        token,
+        controlPort,
+        pid: child.pid ?? 0,
+        log: () => log.join(''),
+        /** `--keep`: stop holding the event loop open on a daemon we are leaving running. */
+        detach() {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            child.unref();
+        },
+        async stop() {
+            if (exited) return;
+            child.kill('SIGTERM');
+            await Promise.race([new Promise((resolve) => child.on('exit', resolve)), sleep(8000)]);
+            if (!exited) child.kill('SIGKILL');
+        },
+        cleanup() {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    };
+}
+
+// ── the WS client (the browser's half, by hand) ─────────────────────────────────────
+
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+
+function uuidToBytes(uuid) {
+    const hex = uuid.replace(/-/g, '');
+    const bytes = new Uint8Array(16);
+    for (let index = 0; index < 16; index += 1) {
+        bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    }
+    return bytes;
+}
+
+function uuidFromBytes(bytes, offset = 0) {
+    let hex = '';
+    for (let index = 0; index < 16; index += 1) hex += bytes[offset + index].toString(16).padStart(2, '0');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`.toUpperCase();
+}
+
+function encodeFrame(type, paneID, payload = new Uint8Array(0)) {
+    const frame = new Uint8Array(FRAME_HEADER_BYTES + payload.length);
+    frame[0] = type;
+    frame.set(uuidToBytes(paneID), 1);
+    frame.set(payload, FRAME_HEADER_BYTES);
+    return frame;
+}
+
+async function connectWs(base, token) {
+    const url = `${base.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`;
+    const socket = new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
+
+    const messages = [];
+    const frames = [];
+    const waiters = [];
+
+    const settle = () => {
+        for (let index = waiters.length - 1; index >= 0; index -= 1) {
+            const waiter = waiters[index];
+            const hit = waiter.kind === 'json' ? messages.find(waiter.match) : frames.find(waiter.match);
+            if (hit !== undefined) {
+                waiters.splice(index, 1);
+                waiter.resolve(hit);
+            }
+        }
+    };
+
+    socket.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+            messages.push(JSON.parse(event.data));
+        } else {
+            const bytes = new Uint8Array(event.data);
+            if (bytes.length >= FRAME_HEADER_BYTES) {
+                frames.push({
+                    type: bytes[0],
+                    paneID: uuidFromBytes(bytes, 1),
+                    payload: bytes.subarray(FRAME_HEADER_BYTES)
+                });
+            }
+        }
+        settle();
+    };
+
+    await new Promise((resolve, reject) => {
+        socket.onopen = resolve;
+        socket.onerror = () => reject(new Error('the WebSocket failed to open'));
+    });
+
+    const wait = (kind, match, label, timeoutMs = 15_000) =>
+        new Promise((resolve, reject) => {
+            const existing = kind === 'json' ? messages.find(match) : frames.find(match);
+            if (existing !== undefined) {
+                resolve(existing);
+                return;
+            }
+            const waiter = { kind, match, resolve };
+            waiters.push(waiter);
+            setTimeout(() => {
+                const at = waiters.indexOf(waiter);
+                if (at < 0) return;
+                waiters.splice(at, 1);
+                reject(new Error(`timed out waiting for ${label}`));
+            }, timeoutMs);
+        });
+
+    return {
+        socket,
+        messages,
+        frames,
+        send: (message) => socket.send(JSON.stringify(message)),
+        sendFrame: (frame) => socket.send(frame),
+        waitJson: (match, label, timeoutMs) => wait('json', match, label, timeoutMs),
+        waitFrame: (match, label, timeoutMs) => wait('frame', match, label, timeoutMs),
+        close: () => socket.close()
+    };
+}
+
+// ── the checks ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+    await ensureBuilds();
+
+    process.stdout.write('booting a throwaway daemon…\n');
+    const daemon = await startDaemon();
+    process.stdout.write(`  http ${daemon.base}   control tcp:127.0.0.1:${daemon.controlPort}\n\n`);
+
+    let ws;
+    try {
+        // 1. the page the daemon serves
+        const page = await fetch(`${daemon.base}/`);
+        const html = await page.text();
+        check('serves the client build', page.ok && html.includes('id="root"'), `status ${page.status}`);
+        const asset = /src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+        check('the page references a hashed module bundle', asset !== undefined, String(asset));
+        if (asset !== undefined) {
+            const bundle = await fetch(`${daemon.base}${asset}`);
+            const body = await bundle.text();
+            check(
+                'serves the bundle itself',
+                bundle.ok && body.length > 1000,
+                `${asset} → ${bundle.status}, ${body.length} bytes`
+            );
+        }
+
+        const health = await (await fetch(`${daemon.base}/healthz`)).json();
+        check('healthz reports the protocol version', health.ok === true && health.protocol === PROTOCOL_VERSION);
+
+        // 2. the handshake
+        ws = await connectWs(daemon.base, daemon.token);
+        ws.send({
+            type: 'hello',
+            protocolVersion: PROTOCOL_VERSION,
+            token: daemon.token,
+            client: { kind: 'browser', name: 'nex-smoke' }
+        });
+        const welcome = await ws.waitJson((m) => m.type === 'welcome', 'welcome');
+        check(
+            'the WS handshake completes',
+            welcome.protocolVersion === PROTOCOL_VERSION && typeof welcome.clientID === 'string',
+            `daemon ${welcome.daemon?.version} pid ${welcome.daemon?.pid}`
+        );
+
+        const snapshot = await ws.waitJson((m) => m.type === 'snapshot', 'snapshot');
+        check(
+            'a state snapshot arrives',
+            Array.isArray(snapshot.state?.workspaces) && snapshot.state.workspaces.length >= 1,
+            `${snapshot.state?.workspaces?.length ?? 0} workspace(s), seq ${snapshot.seq}`
+        );
+        check(
+            'the snapshot strips the server-only home directory',
+            snapshot.state.homeDirectory === undefined
+        );
+
+        // 3. a mutation from the REAL Swift CLI arrives as a delta
+        const cliAvailable = fs.existsSync(SWIFT_CLI);
+        if (!cliAvailable) {
+            process.stdout.write(`  · skipping the CLI checks (${SWIFT_CLI} not installed)\n`);
+        }
+
+        const cli = (args) =>
+            run(SWIFT_CLI, args, {
+                cwd: daemon.home,
+                env: {
+                    HOME: daemon.home,
+                    NEX_SOCKET: `tcp:127.0.0.1:${daemon.controlPort}`
+                }
+            });
+
+        let paneID;
+        if (cliAvailable) {
+            const created = await cli(['workspace', 'create', '--name', 'smoke', '--json']);
+            const reply = created.code === 0 ? JSON.parse(created.stdout) : {};
+            check(
+                'the Swift CLI creates a workspace',
+                created.code === 0 && reply.ok === true,
+                `${reply.workspace_name ?? ''} ${reply.workspace_id ?? created.stderr}`
+            );
+
+            const delta = await ws.waitJson(
+                (m) =>
+                    m.type === 'delta' &&
+                    m.events?.some((event) => event.kind === 'workspace-upserted' && event.id === reply.workspace_id),
+                'the workspace delta'
+            );
+            check(
+                'the CLI mutation reaches the attached client as a delta',
+                delta.seq >= 1,
+                `seq ${delta.seq}, kinds: ${[...new Set(delta.events.map((event) => event.kind))].join(', ')}`
+            );
+
+            const pane = await cli(['pane', 'create', '--workspace', 'smoke', '--name', 'smoke-pane', '--json']);
+            const paneReply = pane.code === 0 ? JSON.parse(pane.stdout) : {};
+            paneID = paneReply.pane_id;
+            check('the CLI creates a pane', pane.code === 0 && typeof paneID === 'string', String(paneID ?? pane.stderr));
+        } else {
+            // Without the Swift CLI the same verbs still have to work over the WS command
+            // channel — that is the path the browser itself uses.
+            ws.send({
+                type: 'command',
+                id: 'ws-create',
+                payload: { command: 'workspace-create', name: 'smoke' }
+            });
+            const reply = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-create', 'create reply');
+            check('a WS command creates a workspace', reply.reply?.ok === true, JSON.stringify(reply.reply));
+
+            ws.send({
+                type: 'command',
+                id: 'ws-pane',
+                payload: { command: 'pane-create', workspace: 'smoke', name: 'smoke-pane' }
+            });
+            const paneReply = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-pane', 'pane reply');
+            paneID = paneReply.reply?.pane_id;
+            check('a WS command creates a pane', typeof paneID === 'string', String(paneID));
+        }
+
+        // 4. PTY: attach → replay, input → output
+        if (typeof paneID === 'string') {
+            ws.send({ type: 'attach-pane', paneID, cols: 80, rows: 24 });
+            const replay = await ws.waitFrame(
+                (frame) => frame.type === FRAME.replay && frame.paneID === paneID.toUpperCase(),
+                'the attach replay'
+            );
+            // A pane created a moment ago may not have drawn its prompt yet, so the snapshot
+            // is allowed to be empty — what matters is that the daemon replays BEFORE going
+            // live, which is the ordering the ingest layer depends on.
+            check(
+                'attaching a pane replays its screen first',
+                replay !== undefined && ws.frames.indexOf(replay) === 0,
+                `${replay.payload.length} bytes of VT snapshot, ${JSON.stringify(decoder.decode(replay.payload).slice(0, 40))}`
+            );
+
+            const marker = `nex-smoke-${Date.now()}`;
+            ws.sendFrame(encodeFrame(FRAME.input, paneID, encoder.encode(`echo ${marker}\n`)));
+            const seen = [];
+            const output = await ws.waitFrame((frame) => {
+                if (frame.type !== FRAME.output || frame.paneID !== paneID.toUpperCase()) return false;
+                seen.push(decoder.decode(frame.payload));
+                // The echo of the command line arrives first; wait for the shell's own output.
+                return seen.join('').split(marker).length > 2;
+            }, 'the command output', 20_000);
+            check(
+                'input round-trips to terminal output',
+                output !== undefined,
+                `echoed ${marker} back through the PTY`
+            );
+
+            // Re-attaching is the reattach-from-another-device path: the daemon's own VT holds
+            // the screen, so the replay must now carry what the pane printed a moment ago.
+            ws.send({ type: 'detach-pane', paneID });
+            const before = ws.frames.length;
+            ws.send({ type: 'attach-pane', paneID, cols: 80, rows: 24 });
+            const second = await ws.waitFrame(
+                (frame) => frame.type === FRAME.replay && ws.frames.indexOf(frame) >= before,
+                'the re-attach replay'
+            );
+            check(
+                're-attaching replays the daemon-side screen',
+                decoder.decode(second.payload).includes(marker),
+                `${second.payload.length} bytes, contains the echoed marker`
+            );
+
+            // 5. the WS-only verbs WP3.6 added to the daemon
+            ws.send({ type: 'command', id: 'ws-zoom', payload: { command: 'toggle-zoom', pane_id: paneID } });
+            const zoom = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-zoom', 'zoom reply');
+            check('the WS-only toggle-zoom verb works', zoom.reply?.ok === true, JSON.stringify(zoom.reply));
+        }
+    } catch (error) {
+        fail('smoke run', error instanceof Error ? error.message : String(error));
+    } finally {
+        ws?.close();
+        if (options.keep) {
+            process.stdout.write(
+                `\nleaving the daemon up:\n  open ${daemon.base}/?token=${daemon.token}\n  NEX_SOCKET=tcp:127.0.0.1:${daemon.controlPort} nex pane list\n  stop it with: kill ${daemon.pid}   (state lives in ${daemon.root})\n`
+            );
+            // The child keeps this process's event loop alive through its stdio pipes; detach
+            // from it so `--keep` returns to the shell instead of hanging on a daemon that is
+            // supposed to outlive the run.
+            daemon.detach();
+        } else {
+            await daemon.stop();
+            daemon.cleanup();
+        }
+    }
+
+    const failed = results.filter((result) => !result.ok);
+    process.stdout.write(`\n${results.length - failed.length}/${results.length} checks passed\n`);
+    if (failed.length > 0) {
+        process.stdout.write(`\n── daemon log ──\n${daemon.log()}\n`);
+        process.exitCode = 1;
+    }
+}
+
+await main();

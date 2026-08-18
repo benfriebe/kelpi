@@ -35,6 +35,13 @@ export const DEFAULT_MARKDOWN_FONT_SIZE = 14;
 /** Unix seconds (float) — the persistence encoding for pane timestamps. */
 export type EpochSeconds = number;
 
+/**
+ * Unix milliseconds — the JS-native clock the transient agent fields use (@nex/core/agent's
+ * state machine stamps them with `Date.now()`). Named apart from `EpochSeconds` because
+ * confusing the two silently renders a "0s" elapsed clock rather than failing.
+ */
+export type EpochMilliseconds = number;
+
 export interface Pane {
     /** Keys the layout leaf, the PTY surface, `--target`, `NEX_PANE_ID`. */
     id: PaneID;
@@ -61,8 +68,8 @@ export interface Pane {
     markdownFontSize: number;
     /** Transient: `nex open --here` parked source pane. */
     parkedSourcePaneID: PaneID | null;
-    /** Transient: set only on a non-running → running transition. */
-    agentStartedAt: EpochSeconds | null;
+    /** Transient: set only on a non-running → running transition. Epoch MILLISECONDS. */
+    agentStartedAt: EpochMilliseconds | null;
     /** Transient: in-flight Claude Code background units; non-zero keeps status running. */
     backgroundTaskCount: number;
     createdAt: EpochSeconds;

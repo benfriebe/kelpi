@@ -1,0 +1,269 @@
+import type { NexAction } from '@nex/core/config';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+    CODE_TO_KEY_CODE,
+    createKeyDispatcher,
+    installKeyDispatcher,
+    isEditableTarget,
+    keyBindingsFromOverrideLines,
+    modifiersFromEvent,
+    triggerFromEvent,
+    workspaceSwitchHandlers,
+    workspaceSwitchIndex,
+    type KeyActionRegistry,
+    type KeyEventLike
+} from './index';
+
+interface FakeEvent extends KeyEventLike {
+    readonly prevented: () => number;
+}
+
+function keyEvent(
+    code: string,
+    modifiers: { meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean } = {},
+    target: unknown = null
+): FakeEvent {
+    let prevented = 0;
+    return {
+        code,
+        metaKey: modifiers.meta ?? false,
+        ctrlKey: modifiers.ctrl ?? false,
+        altKey: modifiers.alt ?? false,
+        shiftKey: modifiers.shift ?? false,
+        target,
+        preventDefault: () => {
+            prevented += 1;
+        },
+        stopPropagation: () => undefined,
+        prevented: () => prevented
+    };
+}
+
+/** A registry that records which action fired. */
+function recorder(): { registry: KeyActionRegistry; fired: NexAction[] } {
+    const fired: NexAction[] = [];
+    const actions: NexAction[] = [
+        'split_right',
+        'split_down',
+        'close_pane',
+        'focus_next_pane',
+        'focus_previous_pane',
+        'move_pane_left',
+        'toggle_zoom',
+        'cycle_layout',
+        'command_palette',
+        'toggle_sidebar',
+        'next_workspace',
+        'previous_workspace',
+        'increase_markdown_font_size',
+        'close_search',
+        'new_workspace'
+    ];
+    const registry: KeyActionRegistry = {};
+    for (const action of actions) {
+        registry[action] = () => {
+            fired.push(action);
+        };
+    }
+    return { registry, fired };
+}
+
+describe('code → keyCode identity', () => {
+    it('maps physical codes onto the config file key codes', () => {
+        expect(CODE_TO_KEY_CODE.get('KeyD')).toBe(2);
+        expect(CODE_TO_KEY_CODE.get('Digit3')).toBe(20);
+        expect(CODE_TO_KEY_CODE.get('BracketRight')).toBe(30);
+        expect(CODE_TO_KEY_CODE.get('Escape')).toBe(53);
+        // `code` is PHYSICAL: a shifted `=` is still Equal, so ⌘⇧= finds the ⌘= binding's key.
+        expect(CODE_TO_KEY_CODE.get('Equal')).toBe(24);
+        expect(CODE_TO_KEY_CODE.get('F13')).toBeUndefined();
+    });
+
+    it('reads modifiers in the canonical order', () => {
+        expect(modifiersFromEvent(keyEvent('KeyD', { meta: true, shift: true }))).toEqual(['shift', 'super']);
+        expect(triggerFromEvent(keyEvent('KeyD', { meta: true }))).toEqual({
+            keyCode: 2,
+            modifiers: ['super']
+        });
+        expect(triggerFromEvent(keyEvent('F13', { meta: true }))).toBeNull();
+    });
+});
+
+describe('the default binding matrix', () => {
+    const cases: ReadonlyArray<readonly [string, Parameters<typeof keyEvent>[1], NexAction]> = [
+        ['KeyD', { meta: true }, 'split_right'],
+        ['KeyD', { meta: true, shift: true }, 'split_down'],
+        ['KeyW', { meta: true }, 'close_pane'],
+        ['BracketRight', { meta: true }, 'focus_next_pane'],
+        ['BracketLeft', { meta: true }, 'focus_previous_pane'],
+        ['ArrowRight', { meta: true, alt: true }, 'focus_next_pane'],
+        ['ArrowDown', { meta: true, alt: true }, 'next_workspace'],
+        ['ArrowUp', { meta: true, alt: true }, 'previous_workspace'],
+        ['ArrowLeft', { ctrl: true, shift: true }, 'move_pane_left'],
+        ['Enter', { meta: true, shift: true }, 'toggle_zoom'],
+        ['Space', { meta: true, shift: true }, 'cycle_layout'],
+        ['KeyP', { meta: true }, 'command_palette'],
+        ['KeyS', { meta: true, shift: true }, 'toggle_sidebar'],
+        ['Equal', { meta: true }, 'increase_markdown_font_size'],
+        ['Escape', {}, 'close_search']
+    ];
+
+    for (const [code, modifiers, action] of cases) {
+        it(`${code} ${JSON.stringify(modifiers)} → ${action}`, () => {
+            const { registry, fired } = recorder();
+            const dispatch = createKeyDispatcher({ actions: registry });
+            const event = keyEvent(code, modifiers);
+            expect(dispatch(event)).toBe(true);
+            expect(fired).toEqual([action]);
+            expect(event.prevented()).toBe(1);
+        });
+    }
+
+    it('switch_to_workspace_N indexes visibleWorkspaceOrder 0-based', () => {
+        const indices: number[] = [];
+        const dispatch = createKeyDispatcher({
+            actions: workspaceSwitchHandlers((index) => {
+                indices.push(index);
+            })
+        });
+        expect(dispatch(keyEvent('Digit1', { meta: true }))).toBe(true);
+        expect(dispatch(keyEvent('Digit9', { meta: true }))).toBe(true);
+        expect(indices).toEqual([0, 8]);
+        expect(workspaceSwitchIndex('switch_to_workspace_5')).toBe(4);
+        expect(workspaceSwitchIndex('split_right')).toBeNull();
+    });
+
+    it('falls through for an unbound trigger, an unknown key and an unwired action', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        expect(dispatch(keyEvent('KeyD'))).toBe(false); // no modifiers: goes to the PTY
+        expect(dispatch(keyEvent('F13', { meta: true }))).toBe(false);
+        // `super+e` = toggle_markdown_edit, which this registry does not wire.
+        expect(dispatch(keyEvent('KeyE', { meta: true }))).toBe(false);
+        expect(fired).toEqual([]);
+    });
+
+    it('a handler returning false declines its condition and the event falls through', () => {
+        const dispatch = createKeyDispatcher({ actions: { split_right: () => false } });
+        const event = keyEvent('KeyD', { meta: true });
+        expect(dispatch(event)).toBe(false);
+        expect(event.prevented()).toBe(0);
+    });
+});
+
+describe('conditional rules', () => {
+    it('dispatches nothing while the palette is open', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, isPaletteOpen: () => true });
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+        expect(fired).toEqual([]);
+    });
+
+    it('suppresses pane bindings while a text field is focused, but keeps menu-bar ones', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+        const input = { tagName: 'INPUT' };
+        expect(dispatch(keyEvent('KeyD', { meta: true }, input))).toBe(false);
+        expect(dispatch(keyEvent('KeyW', { meta: true }, input))).toBe(false);
+        expect(dispatch(keyEvent('KeyP', { meta: true }, input))).toBe(true);
+        expect(dispatch(keyEvent('KeyS', { meta: true, shift: true }, input))).toBe(true);
+        expect(fired).toEqual(['command_palette', 'toggle_sidebar']);
+    });
+
+    it('recognises the editable surfaces, and NOT a terminal canvas', () => {
+        expect(isEditableTarget({ tagName: 'INPUT' })).toBe(true);
+        expect(isEditableTarget({ tagName: 'TEXTAREA' })).toBe(true);
+        expect(isEditableTarget({ isContentEditable: true })).toBe(true);
+        expect(isEditableTarget({ tagName: 'CANVAS' })).toBe(false);
+        expect(isEditableTarget(null)).toBe(false);
+    });
+
+    it('Escape clears a multi-selection before any binding lookup', () => {
+        const { registry, fired } = recorder();
+        let hasSelection = true;
+        const dispatch = createKeyDispatcher({
+            actions: registry,
+            onEscape: () => {
+                if (!hasSelection) return false;
+                hasSelection = false;
+                return true;
+            }
+        });
+        expect(dispatch(keyEvent('Escape'))).toBe(true);
+        expect(fired).toEqual([]); // close_search never ran
+        expect(dispatch(keyEvent('Escape'))).toBe(true);
+        expect(fired).toEqual(['close_search']);
+    });
+
+    it('needs an active workspace', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, hasActiveWorkspace: () => false });
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+        expect(fired).toEqual([]);
+    });
+
+    it('never shadows the configured global hotkey', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({
+            actions: registry,
+            globalHotkey: () => ({ keyCode: 2, modifiers: ['super'] })
+        });
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+        expect(fired).toEqual([]);
+    });
+
+    it('honours the web-pane priority layer as a tri-state', () => {
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({
+            actions: registry,
+            webPanePriority: (trigger) => {
+                if (trigger.keyCode === 13) return true; // ⌘W consumed as "close tab"
+                if (trigger.keyCode === 2) return false; // deliberately not consumed
+                return null; // not applicable → normal map
+            }
+        });
+        expect(dispatch(keyEvent('KeyW', { meta: true }))).toBe(true);
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+        expect(dispatch(keyEvent('KeyP', { meta: true }))).toBe(true);
+        expect(fired).toEqual(['command_palette']);
+    });
+});
+
+describe('config overrides', () => {
+    it('rebinds from `keybind` values and drops unparseable lines', () => {
+        const bindings = keyBindingsFromOverrideLines(['super+d=toggle_zoom', 'nonsense', 'super+w=unbind']);
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, bindings });
+        expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(true);
+        expect(dispatch(keyEvent('KeyW', { meta: true }))).toBe(false);
+        expect(fired).toEqual(['toggle_zoom']);
+    });
+});
+
+describe('installKeyDispatcher', () => {
+    it('intercepts real keydown events in capture phase and detaches cleanly', () => {
+        const fired: string[] = [];
+        const dispatch = createKeyDispatcher({
+            actions: {
+                split_right: () => {
+                    fired.push('split_right');
+                }
+            }
+        });
+        const dispose = installKeyDispatcher(globalThis.window, dispatch);
+        const bubbled = vi.fn();
+        globalThis.window.addEventListener('keydown', bubbled);
+
+        globalThis.window.dispatchEvent(
+            new KeyboardEvent('keydown', { code: 'KeyD', metaKey: true, bubbles: true, cancelable: true })
+        );
+        expect(fired).toEqual(['split_right']);
+        expect(bubbled).not.toHaveBeenCalled(); // stopPropagation on a consumed event
+
+        dispose();
+        globalThis.window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', metaKey: true }));
+        expect(fired).toEqual(['split_right']);
+        globalThis.window.removeEventListener('keydown', bubbled);
+    });
+});

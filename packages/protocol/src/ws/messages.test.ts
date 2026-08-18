@@ -34,7 +34,7 @@ describe('client-sync protocol envelope', () => {
             { type: 'visibility-report', workspaceID: 'W', visiblePaneIDs: ['A'], documentVisible: true },
             { type: 'command', id: '1', payload: { command: 'pane-list' } },
             { type: 'snapshot', seq: 7, state: { workspaces: [] } },
-            { type: 'delta', seq: 8, events: [{ kind: 'pane-removed', id: 'A' }] },
+            { type: 'delta', seq: 8, events: [{ kind: 'pane-removed', workspaceID: 'W', paneID: 'A' }] },
             { type: 'command-reply', id: '1', reply: { ok: true } },
             {
                 type: 'notification',
@@ -51,18 +51,53 @@ describe('client-sync protocol envelope', () => {
         for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
     });
 
-    it('names every delta event kind it can carry', () => {
+    it('names every delta event kind the daemon store emits', () => {
         const events: WsDeltaEvent[] = [
-            { kind: 'app-patch', value: { activeWorkspaceID: 'W' } },
-            { kind: 'workspace-upserted', id: 'W', value: { name: 'main' } },
+            { kind: 'workspace-upserted', id: 'W', workspace: { name: 'main', recentlyClosedCount: 0 } },
             { kind: 'workspace-removed', id: 'W' },
-            { kind: 'group-upserted', id: 'G', value: { name: 'projects' } },
+            { kind: 'pane-upserted', workspaceID: 'W', paneID: 'A', lane: 'visible', index: 0, pane: { type: 'shell' } },
+            { kind: 'pane-removed', workspaceID: 'W', paneID: 'A' },
+            {
+                kind: 'layout-changed',
+                workspaceID: 'W',
+                layout: { kind: 'leaf', paneID: 'A' },
+                zoomedPaneID: null,
+                savedLayout: null,
+                currentLayoutIndex: null
+            },
+            { kind: 'focus-changed', workspaceID: 'W', focusedPaneID: 'A', focusHistory: ['A'] },
+            {
+                kind: 'sync-changed',
+                workspaceID: 'W',
+                isSyncInputActive: true,
+                syncInputExcluded: [],
+                syncedPaneIDs: ['A', 'B']
+            },
+            {
+                kind: 'agent-status-changed',
+                workspaceID: 'W',
+                paneID: 'A',
+                status: 'running',
+                agentSessionID: null,
+                agentKind: 'claude',
+                agentStartedAt: 1_700_000_000_000,
+                backgroundTaskCount: 0
+            },
+            { kind: 'group-upserted', id: 'G', index: 0, group: { name: 'projects' } },
             { kind: 'group-removed', id: 'G' },
-            { kind: 'pane-upserted', id: 'A', value: { type: 'shell' } },
-            { kind: 'pane-removed', id: 'A' },
-            { kind: 'layout-changed', workspaceID: 'W', layout: { leaf: 'A' } }
+            {
+                kind: 'order-changed',
+                workspaceOrder: ['W'],
+                groupOrder: ['G'],
+                topLevelOrder: [{ kind: 'workspace', id: 'W' }]
+            },
+            { kind: 'active-workspace-changed', workspaceID: 'W' },
+            { kind: 'label-presets-changed', presets: [{ name: 'ship', color: { kind: 'named', color: 'gray' } }] },
+            { kind: 'repos-changed', repos: [{ id: 'R', path: '/tmp/repo' }] }
         ];
         expect(events.map((event) => event.kind).sort()).toEqual([...WS_DELTA_KINDS].sort());
+        // JSON round-trip: every declared shape must survive the wire unchanged.
+        for (const event of events) expect(JSON.parse(JSON.stringify(event))).toEqual(event);
     });
 
     it('enumerates the handshake rejection codes', () => {

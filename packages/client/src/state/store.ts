@@ -20,7 +20,7 @@
  */
 
 import { applyDomainEvents, type DaemonState, type DomainEvent } from '@nex/daemon/store';
-import type { WsNotificationKind } from '@nex/protocol';
+import { WS_DELTA_KINDS, type WsNotificationKind } from '@nex/protocol';
 import { create } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
@@ -29,28 +29,15 @@ import type { ConnectionStatus } from '../connection';
 // ── wire → mirror hydration ─────────────────────────────────────────────────────────
 
 /**
- * Delta kinds the daemon actually emits (`store/types.ts` `DomainEvent`). Deliberately NOT
- * `@nex/protocol`'s `WS_DELTA_KINDS`, which predates the store's event vocabulary and lists
- * shapes (`app-patch`, …) the daemon never sends; `ws/serialize.ts` is the ground truth.
- * Anything not in this set is dropped rather than replayed — `applyDomainEvent`'s switch is
+ * Delta kinds the daemon actually emits. `@nex/protocol`'s `WS_DELTA_KINDS` is now a
+ * transcription of the store's own `DomainEvent` union (reconciled in WP3.6 — it used to
+ * predate the store and list shapes like `app-patch` that the daemon never sends), so the set
+ * is imported rather than restated and the two cannot drift.
+ *
+ * Anything not in this set is dropped rather than replayed: `applyDomainEvent`'s switch is
  * exhaustive over the union, so an unknown kind would fall through and blank the mirror.
  */
-export const DOMAIN_EVENT_KINDS: ReadonlySet<string> = new Set([
-    'workspace-upserted',
-    'workspace-removed',
-    'pane-upserted',
-    'pane-removed',
-    'layout-changed',
-    'focus-changed',
-    'sync-changed',
-    'agent-status-changed',
-    'group-upserted',
-    'group-removed',
-    'order-changed',
-    'active-workspace-changed',
-    'label-presets-changed',
-    'repos-changed'
-]);
+export const DOMAIN_EVENT_KINDS: ReadonlySet<string> = new Set<string>(WS_DELTA_KINDS);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

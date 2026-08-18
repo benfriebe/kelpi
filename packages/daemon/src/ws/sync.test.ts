@@ -1,10 +1,17 @@
-import { WS_PROTOCOL_VERSION, type WireMessage } from '@nex/protocol';
+import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@nex/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
-import { harness as storeHarness, seededState, W1 } from '../store/testing.js';
-import { createSyncHub, WS_CLOSE_CODES, type SyncHub, type SyncSession } from './sync.js';
-import { PANE_A, recordingTransport, type RecordedTransport } from './testing.js';
+import { G1, harness as storeHarness, seededState, W1 } from '../store/testing.js';
+import {
+    createSyncHub,
+    isWsOnlyCommand,
+    WS_CLOSE_CODES,
+    WS_ONLY_COMMANDS,
+    type SyncHub,
+    type SyncSession
+} from './sync.js';
+import { PANE_A, PANE_B, recordingTransport, type RecordedTransport } from './testing.js';
 
 const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
 
@@ -320,6 +327,98 @@ describe('commands', () => {
         expect(disconnected).toBe(false);
         session.close();
         expect(disconnected).toBe(true);
+    });
+});
+
+describe('WS-only commands', () => {
+    /** Sends one WS-only command and returns its reply object. */
+    function send(f: Fixture, payload: Record<string, unknown>): Record<string, unknown> {
+        const { session, transport } = f.connect();
+        session.handleMessage(hello());
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'ws1', payload }));
+        // Never reaches the CLI dispatcher: these verbs are not wire commands.
+        expect(f.calls).toHaveLength(0);
+        return transport.ofType('command-reply')[0]?.['reply'] as Record<string, unknown>;
+    }
+
+    it('zooms the named pane, focusing it first', () => {
+        const f = fixture();
+        f.store.dispatch({
+            type: 'split-pane',
+            workspaceID: W1,
+            paneID: PANE_B,
+            direction: 'horizontal',
+            now: 1
+        });
+        f.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: PANE_B });
+
+        const reply = send(f, { command: 'toggle-zoom', pane_id: f.paneID });
+        expect(reply).toMatchObject({ ok: true, pane_id: f.paneID, zoomed_pane_id: f.paneID });
+        const workspace = f.store.state().workspaces[0];
+        expect(workspace?.zoomedPaneID).toBe(f.paneID);
+        expect(workspace?.focusedPaneID).toBe(f.paneID);
+        expect(workspace?.layout).toEqual({ kind: 'leaf', paneID: f.paneID });
+    });
+
+    it('un-zooms on a second toggle and restores the saved layout', () => {
+        const f = fixture();
+        f.store.dispatch({
+            type: 'split-pane',
+            workspaceID: W1,
+            paneID: PANE_B,
+            direction: 'horizontal',
+            now: 1
+        });
+        const before = f.store.state().workspaces[0]?.layout;
+
+        send(f, { command: 'toggle-zoom', pane_id: f.paneID });
+        send(f, { command: 'toggle-zoom', pane_id: f.paneID });
+
+        const workspace = f.store.state().workspaces[0];
+        expect(workspace?.zoomedPaneID).toBeNull();
+        expect(workspace?.layout).toEqual(before);
+    });
+
+    it('rejects a zoom for an unknown pane', () => {
+        const f = fixture();
+        const reply = send(f, { command: 'toggle-zoom', pane_id: 'nope' });
+        expect(reply['ok']).toBe(false);
+        expect(reply['error']).toContain('nope');
+    });
+
+    it('collapses and expands a group', () => {
+        const f = fixture();
+        f.store.dispatch({ type: 'create-group', id: G1, name: 'projects', now: 1 });
+
+        expect(send(f, { command: 'set-group-collapsed', group_id: G1, collapsed: true })).toEqual({
+            ok: true,
+            group_id: G1,
+            collapsed: true
+        });
+        expect(f.store.state().groups[0]?.isCollapsed).toBe(true);
+
+        send(f, { command: 'set-group-collapsed', group_id: G1, collapsed: false });
+        expect(f.store.state().groups[0]?.isCollapsed).toBe(false);
+    });
+
+    it('renames a workspace', () => {
+        const f = fixture();
+        const reply = send(f, { command: 'rename-workspace', workspace_id: W1, name: '  renamed  ' });
+        expect(reply).toEqual({ ok: true, workspace_id: W1, name: 'renamed' });
+        expect(f.store.state().workspaces[0]?.name).toBe('renamed');
+    });
+
+    it('refuses an empty rename and an unknown workspace', () => {
+        const f = fixture();
+        expect(send(f, { command: 'rename-workspace', workspace_id: W1, name: '   ' })['ok']).toBe(false);
+        expect(send(f, { command: 'rename-workspace', workspace_id: 'nope', name: 'x' })['ok']).toBe(false);
+        expect(f.store.state().workspaces[0]?.name).toBe('dev');
+    });
+
+    it('keeps its vocabulary out of the CLI wire vocabulary', () => {
+        expect([...WS_ONLY_COMMANDS].every((command) => isWsOnlyCommand(command))).toBe(true);
+        expect(isWsOnlyCommand('pane-list')).toBe(false);
+        for (const command of WS_ONLY_COMMANDS) expect(isWireCommand(command)).toBe(false);
     });
 });
 

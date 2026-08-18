@@ -90,6 +90,25 @@ describe('CommandClient RPC', () => {
         expect(replyText(reply, 'pane_id')).toBe('NEW');
     });
 
+    it('sends the WS-only verbs with snake_case fields', async () => {
+        const h = harness();
+
+        const zoom = h.client.toggleZoom({ paneID: PANE });
+        expect(h.lastCommand()).toEqual({ command: 'toggle-zoom', pane_id: PANE });
+        h.answer({ ok: true, pane_id: PANE, zoomed_pane_id: PANE });
+        expect(isOkReply(await zoom)).toBe(true);
+
+        const collapse = h.client.setGroupCollapsed({ groupID: 'G', collapsed: true });
+        expect(h.lastCommand()).toEqual({ command: 'set-group-collapsed', group_id: 'G', collapsed: true });
+        h.answer({ ok: true, group_id: 'G', collapsed: true });
+        expect(isOkReply(await collapse)).toBe(true);
+
+        const rename = h.client.renameWorkspace({ workspaceID: 'W', name: 'dev' });
+        expect(h.lastCommand()).toEqual({ command: 'rename-workspace', workspace_id: 'W', name: 'dev' });
+        h.answer({ ok: true, workspace_id: 'W', name: 'dev' });
+        expect(isOkReply(await rename)).toBe(true);
+    });
+
     it('routes replies by id, not arrival order', async () => {
         const h = harness();
         const first = h.client.listPanes();

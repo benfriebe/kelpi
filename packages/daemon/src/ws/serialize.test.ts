@@ -1,6 +1,13 @@
+import { WS_DELTA_KINDS } from '@nex/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { emptyDaemonState, makeWorkspaceState, type DaemonState, type DomainEvent } from '../store/types.js';
+import {
+    emptyDaemonState,
+    makeWorkspaceState,
+    type DaemonState,
+    type DomainEvent,
+    type DomainEventKind
+} from '../store/types.js';
 import { HOME, NOW, W1, seededState } from '../store/testing.js';
 import { serializeDomainEvent, serializeState, serializeWorkspace } from './serialize.js';
 
@@ -124,5 +131,37 @@ describe('serializeDomainEvent', () => {
             savedLayout: null,
             currentLayoutIndex: 2
         });
+    });
+});
+
+describe('protocol conformance', () => {
+    /**
+     * This list must match `@nex/protocol`'s `WS_DELTA_KINDS`: clients replay these events with
+     * the daemon's own `applyDomainEvents`, so a kind the protocol does not declare (or declares
+     * and the store never emits) is a client that silently drops or mis-applies a delta. The
+     * `satisfies` fails the build if a new `DomainEvent` kind appears without being listed.
+     */
+    const EMITTED_KINDS = [
+        'workspace-upserted',
+        'workspace-removed',
+        'pane-upserted',
+        'pane-removed',
+        'layout-changed',
+        'focus-changed',
+        'sync-changed',
+        'agent-status-changed',
+        'group-upserted',
+        'group-removed',
+        'order-changed',
+        'active-workspace-changed',
+        'label-presets-changed',
+        'repos-changed'
+    ] as const satisfies readonly DomainEventKind[];
+
+    it('declares exactly the delta kinds the protocol package names', () => {
+        // Exhaustive the other way too: an unlisted kind makes this array type non-empty.
+        const unlisted: Exclude<DomainEventKind, (typeof EMITTED_KINDS)[number]>[] = [];
+        expect(unlisted).toEqual([]);
+        expect([...EMITTED_KINDS].sort()).toEqual([...WS_DELTA_KINDS].sort());
     });
 });

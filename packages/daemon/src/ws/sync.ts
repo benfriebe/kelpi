@@ -38,7 +38,7 @@ import {
 
 import { dualFireMessage } from '../control/server.js';
 import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
-import { workspaceByID } from '../store/derived.js';
+import { groupByID, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../store/types.js';
 import { serializeDomainEvents, serializeState } from './serialize.js';
 
@@ -142,6 +142,84 @@ function parseClientInfo(value: unknown): WsClientInfo {
         ...(name !== undefined ? { name } : {}),
         ...(version !== undefined ? { version } : {})
     };
+}
+
+// ── WS-only commands (WP3.6) ────────────────────────────────────────────────────────
+
+/**
+ * Store mutations the GUI needs that the **control protocol has no verb for** — the CLI never
+ * grew one because they are direct-manipulation gestures (a zoom button, a disclosure triangle,
+ * an inline rename field).
+ *
+ * They are deliberately NOT added to `@nex/protocol`'s `WIRE_COMMANDS`: a new CLI verb is a
+ * compatibility surface we would owe the Swift CLI forever, and `nex` has no way to send these.
+ * So they are handled here, *before* `decodeWireObject` (which would reject an unknown command),
+ * and each one simply dispatches the store action that already exists. Field names follow the
+ * wire's snake_case convention so a client speaks one dialect for both kinds of command.
+ *
+ *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
+ *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
+ *   rename-workspace     `workspace_id`, `name`          → rename-workspace
+ */
+export const WS_ONLY_COMMANDS = ['toggle-zoom', 'set-group-collapsed', 'rename-workspace'] as const;
+export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
+
+export function isWsOnlyCommand(command: string): command is WsOnlyCommand {
+    return (WS_ONLY_COMMANDS as readonly string[]).includes(command);
+}
+
+function failure(error: string): JsonObject {
+    return { ok: false, error };
+}
+
+/**
+ * Executes one WS-only command against the store and returns the reply object. Pure routing +
+ * dispatch: every mutation is an existing `DomainAction`, so the delta stream, persistence and
+ * the CLI's view of the world all stay identical to a GUI-driven change.
+ */
+export function handleWsOnlyCommand(
+    store: NexDomainStore,
+    command: WsOnlyCommand,
+    payload: Record<string, unknown>
+): JsonObject {
+    const state = store.getState();
+
+    if (command === 'toggle-zoom') {
+        const paneID = text(payload['pane_id']);
+        if (paneID === undefined) return failure('toggle-zoom requires pane_id');
+        const workspace = workspaceContainingVisiblePane(state, paneID);
+        if (workspace === null) return failure(`no pane matches '${paneID}'`);
+        // The reducer zooms the workspace's FOCUSED pane, so a zoom raised on another pane has
+        // to move focus first — which is what clicking that pane's zoom button does anyway.
+        if (workspace.zoomedPaneID === null && workspace.focusedPaneID !== paneID) {
+            store.dispatch({ type: 'focus-pane', workspaceID: workspace.id, paneID });
+        }
+        store.dispatch({ type: 'toggle-zoom', workspaceID: workspace.id });
+        const after = workspaceByID(store.getState(), workspace.id);
+        return {
+            ok: true,
+            pane_id: paneID,
+            workspace_id: workspace.id,
+            zoomed_pane_id: after?.zoomedPaneID ?? null
+        };
+    }
+
+    if (command === 'set-group-collapsed') {
+        const groupID = text(payload['group_id']);
+        if (groupID === undefined) return failure('set-group-collapsed requires group_id');
+        if (groupByID(state, groupID) === null) return failure(`no group matches '${groupID}'`);
+        const collapsed = payload['collapsed'] === true;
+        store.dispatch({ type: 'set-group-collapsed', id: groupID, collapsed });
+        return { ok: true, group_id: groupID, collapsed };
+    }
+
+    const workspaceID = text(payload['workspace_id']);
+    if (workspaceID === undefined) return failure('rename-workspace requires workspace_id');
+    const name = typeof payload['name'] === 'string' ? payload['name'].trim() : '';
+    if (name.length === 0) return failure('rename-workspace requires a non-empty name');
+    if (workspaceByID(state, workspaceID) === null) return failure(`no workspace matches '${workspaceID}'`);
+    store.dispatch({ type: 'rename-workspace', id: workspaceID, name });
+    return { ok: true, workspace_id: workspaceID, name };
 }
 
 /** A `ReplyHandle` whose lines ride the WS channel as `command-reply` messages. */
@@ -421,6 +499,24 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             const id = text(message['id']);
             if (id === undefined) return;
             const payload = message['payload'];
+
+            // WS-only verbs are matched before the wire decode, which would reject them as
+            // unknown commands (they are deliberately not part of the CLI's vocabulary).
+            if (isRecord(payload)) {
+                const name = text(payload['command']);
+                if (name !== undefined && isWsOnlyCommand(name)) {
+                    let reply: JsonObject;
+                    try {
+                        reply = handleWsOnlyCommand(store, name, payload);
+                    } catch (error) {
+                        report(error, `ws-command ${name}`);
+                        reply = { ...errorReply('handler failed') };
+                    }
+                    this.send({ type: 'command-reply', id, reply });
+                    return;
+                }
+            }
+
             const decoded = decodeWireObject(payload);
 
             if (!decoded.ok) {

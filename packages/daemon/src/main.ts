@@ -42,6 +42,7 @@ import {
     readToken,
     resolveRunPaths,
     spawnDetached,
+    type DaemonProbe,
     type RunPaths
 } from './lifecycle/index.js';
 
@@ -114,6 +115,11 @@ Environment:
   NEXD_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
   NEXD_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
   NEXD_DB_PATH       SQLite database file (default: ~/Library/Application Support/nexd/nex.db)
+  NEXD_ALLOW_EPHEMERAL_STATE=1
+                     Start even when that database cannot be opened. Nothing is
+                     saved and every boot says so. Without it, an unusable
+                     database is a hard startup failure — by design: a daemon
+                     that silently stops persisting loses a day of work.
   NEXD_CONFIG_PATH   Config file (default: ~/.config/nex/config)
   NEXD_CLIENT_DIR    Directory holding the built web client
   NEXD_LOG_FILE      Append the detached daemon's stdout/stderr here
@@ -320,6 +326,29 @@ async function waitForDaemon(paths: RunPaths, timeoutMs: number): Promise<boolea
     }
 }
 
+/**
+ * The one warning that must never be swallowed: this daemon is running but nothing it does is
+ * being written down. Printed by `status`, by `stop` (before the process goes away with the
+ * state still in RAM) and by `start` when it adopts a running instance.
+ */
+function warnIfDegraded(io: CliIO, probe: DaemonProbe, headline?: string, repair?: string): boolean {
+    const health = probe.persistence;
+    if (health === undefined || !health.degraded) return false;
+    io.err(
+        headline ??
+            'Warning: nexd is running WITHOUT working persistence — state is NOT being saved.'
+    );
+    if (health.path !== undefined) io.err(`  db: ${health.path}`);
+    if (health.error !== undefined) io.err(`  error: ${health.error}`);
+    if (health.failedSaves !== undefined && health.failedSaves > 0) {
+        io.err(`  failed saves: ${String(health.failedSaves)}`);
+    }
+    io.err(
+        `  Repair: ${repair ?? 'fix the database path, then `nexd stop && nexd start`. Restarting NOW loses everything created since it started.'}`
+    );
+    return true;
+}
+
 async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     const env = io.env ?? process.env;
     const paths = runPathsFor(env);
@@ -333,7 +362,8 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
         // invocation is the one that started it.
         const url = runDirClientURL(env, paths);
         if (url !== undefined) io.out(`  url: ${url}`);
-        return 0;
+        // Adopting a daemon that cannot save is not success.
+        return warnIfDegraded(io, existing) ? 1 : 0;
     }
 
     if (args.foreground) {
@@ -347,8 +377,16 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
         try {
             info = await daemon.start();
         } catch (error) {
-            const failure = error as NodeJS.ErrnoException;
+            const failure = error as NodeJS.ErrnoException & { repair?: string };
             io.err(`nexd failed to start: ${failure.message}`);
+            if (failure.code === 'ENEXDPERSIST') {
+                // Refusing to start beats running memory-only: the repair text names the file,
+                // the errno and the way out (including the opt-in for a throw-away daemon).
+                io.err(`Repair: ${failure.repair ?? 'point NEXD_DB_PATH at a writable file.'}`);
+                io.err(
+                    'To run anyway, without saving anything, set NEXD_ALLOW_EPHEMERAL_STATE=1.'
+                );
+            }
             if (failure.code === 'ECONTROLBUSY') {
                 // The most likely one during the port: the Swift app owns /tmp/nex.sock.
                 io.err(
@@ -409,6 +447,11 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
         return 1;
     }
 
+    // Asked BEFORE the SIGTERM, because after it there is nobody left to ask — and a daemon
+    // that never managed to write is exactly the one whose "stopped cleanly" is a lie. This is
+    // the observed P0: `nexd stop` printed a clean stop over a database of zero bytes.
+    const degraded = probe.persistence?.degraded === true;
+
     try {
         process.kill(pid, 'SIGTERM');
     } catch (error) {
@@ -420,6 +463,15 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         if (!isProcessAlive(pid)) {
+            if (degraded) {
+                warnIfDegraded(
+                    io,
+                    probe,
+                    `nexd (pid ${String(pid)}) exited, but it was NOT saving state — everything from that session is gone.`,
+                    'fix the database path (the errno above says why), then `nexd start`.'
+                );
+                return 1;
+            }
             io.out(`nexd stopped (pid ${String(pid)})`);
             return 0;
         }
@@ -442,6 +494,8 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     const record = readPidRecord(paths);
     const port = record?.http_port ?? readPortFile(paths);
 
+    const health = probe.persistence;
+
     if (args.json) {
         io.out(
             JSON.stringify({
@@ -454,10 +508,24 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
                 control_socket: resolveControlEndpoints(env).socketPath,
                 http_port: port ?? null,
                 run_dir: paths.dir,
+                // null = the daemon did not report (an older one); absent health is not health.
+                // Snake_case to match every other key in this object and `ping`'s own block.
+                persistence:
+                    health === undefined
+                        ? null
+                        : {
+                              ok: health.ok,
+                              degraded: health.degraded,
+                              path: health.path ?? null,
+                              error: health.error ?? null,
+                              errno: health.errno ?? null,
+                              failed_saves: health.failedSaves ?? 0
+                          },
                 ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
             })
         );
-        return probe.alive ? 0 : 1;
+        // Running-but-not-saving is a failed health check, not a passing one.
+        return probe.alive && health?.degraded !== true ? 0 : 1;
     }
 
     if (!probe.alive) {
@@ -476,7 +544,10 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     const url = runDirClientURL(env, paths);
     if (url !== undefined) io.out(`  url: ${url}`);
     io.out(`  run dir: ${paths.dir}`);
-    return 0;
+    io.out(
+        `  persistence: ${health === undefined ? 'unknown (daemon did not report)' : health.degraded ? `DEGRADED — ${health.path ?? 'unknown path'}` : `ok (${health.path ?? 'unknown path'})`}`
+    );
+    return warnIfDegraded(io, probe) ? 1 : 0;
 }
 
 /**
@@ -604,7 +675,9 @@ function printInfo(io: CliIO, info: DaemonInfo): void {
     io.out(`  http: ${info.url}`);
     // The one line a person actually needs: `http:` alone loads a client that cannot log in.
     io.out(`  url: ${info.url}/?token=${encodeURIComponent(info.token)}`);
-    io.out(`  db: ${info.dbPath}`);
+    io.out(
+        `  db: ${info.dbPath}${info.persistence.degraded ? ` — DEGRADED: ${info.persistence.error ?? 'not saving'}` : ''}`
+    );
     io.out(`  workspaces: ${String(info.workspaces)} (resuming ${String(info.resumeTuples)} session(s))`);
 }
 

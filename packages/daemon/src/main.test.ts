@@ -13,6 +13,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from './boot/index.js';
+import { openSqliteDatabase } from './db/index.js';
 import { helpText, parseNexdArgs, resolveEntry, runNexd, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -205,5 +206,66 @@ describe('with a daemon running', () => {
         expect(await runNexd(['url'], url)).toBe(0);
         expect(url.stdout).toEqual([expected]);
         expect(url.stderr).toEqual([]);
+
+        // The health line every verb now carries (P0): "running" alone was never enough.
+        expect(status.stdout.join('\n')).toContain(`  persistence: ok (${paths.dbPath})`);
+    }, 30_000);
+
+    /**
+     * The P0's CLI half. A daemon that could not save answered `nexd status` with a clean bill
+     * of health and `nexd stop` with "stopped", over a database of zero bytes. Both must fail.
+     */
+    it('reports a degraded daemon as unhealthy rather than pretending', async () => {
+        const paths = scratch();
+        const daemon = createDaemon({
+            env: {},
+            home: paths.home,
+            runDir: paths.runDir,
+            controlSocketPath: paths.socketPath,
+            dbPath: paths.dbPath,
+            configPath: paths.configPath,
+            httpPort: 0,
+            settleMs: 0
+        });
+        cleanups.push(() => daemon.stop());
+        await daemon.start();
+        await daemon.restored;
+        const env = { NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath };
+
+        // Break the file under the running daemon (a second connection drops a table the save
+        // writes into — a chmod cannot do it, SQLite holds the descriptor), then run the real
+        // save path.
+        const handle = openSqliteDatabase(paths.dbPath);
+        handle.exec('DROP TABLE "pane"');
+        handle.close();
+        daemon.store.dispatch({
+            type: 'create-workspace',
+            id: 'AAAAAAAA-0000-4000-8000-0000000000AA',
+            paneID: 'BBBBBBBB-0000-4000-8000-0000000000BB',
+            name: 'unsaveable',
+            now: Date.now()
+        });
+        daemon.persistence.flush();
+        expect(daemon.persistenceHealth().degraded).toBe(true);
+
+        const status = io(env);
+        expect(await runNexd(['status'], status)).toBe(1);
+        expect(status.stdout.join('\n')).toContain('nexd is running');
+        expect(status.stdout.join('\n')).toContain('persistence: DEGRADED');
+        expect(status.stderr.join('\n')).toContain('state is NOT being saved');
+        expect(status.stderr.join('\n')).toContain(paths.dbPath);
+
+        const json = io(env);
+        expect(await runNexd(['status', '--json'], json)).toBe(1);
+        expect(JSON.parse(json.stdout[0] as string)).toMatchObject({
+            // Snake_case, like every other key in this object.
+            running: true,
+            persistence: { ok: false, degraded: true, path: paths.dbPath, failed_saves: 1 }
+        });
+
+        // Adopting a broken daemon is not a successful `start` either.
+        const start = io(env);
+        expect(await runNexd(['start'], start)).toBe(1);
+        expect(start.stderr.join('\n')).toContain('state is NOT being saved');
     }, 30_000);
 });

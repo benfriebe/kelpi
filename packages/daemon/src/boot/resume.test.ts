@@ -194,6 +194,41 @@ describe('spawnRestoredPanes', () => {
         expect(pty.spawns).toHaveLength(1);
     });
 
+    it('spawns a restored pane at its LAST-KNOWN grid, not at 80×24', () => {
+        // Boot happens seconds before a window exists: the shell prints its first prompt at
+        // whatever the PTY was born with, and `@xterm/headless` never reflows it. Starting at
+        // the size the pane was last rendered at is what keeps a reattach to one clean prompt
+        // history instead of a stack of half-width copies.
+        const { state } = restored(snapshotOf(workspace([pane({ id: P1 })], leaf(P1))));
+        const pty = fakePty();
+        const sizes: Record<string, { cols: number; rows: number }> = { [P1]: { cols: 213, rows: 56 } };
+
+        spawnRestoredPanes(state, {
+            pty,
+            term: fakeTerm(),
+            profiles: [],
+            spawn: { cols: 80, rows: 24, sizeFor: (paneID) => sizes[paneID] ?? null }
+        });
+
+        expect(pty.spawns[0]?.cols).toBe(213);
+        expect(pty.spawns[0]?.rows).toBe(56);
+    });
+
+    it('falls back to the fixed grid for a pane nothing has ever rendered', () => {
+        const { state } = restored(snapshotOf(workspace([pane({ id: P1 })], leaf(P1))));
+        const pty = fakePty();
+
+        spawnRestoredPanes(state, {
+            pty,
+            term: fakeTerm(),
+            profiles: [],
+            spawn: { cols: 100, rows: 30, sizeFor: () => null }
+        });
+
+        expect(pty.spawns[0]?.cols).toBe(100);
+        expect(pty.spawns[0]?.rows).toBe(30);
+    });
+
     it('reports a failing pane and keeps restoring the rest', () => {
         const { state } = restored(
             snapshotOf(workspace([pane({ id: P1 }), pane({ id: P2 })], split('horizontal', 0.5, leaf(P1), leaf(P2))))

@@ -179,8 +179,11 @@ export function spawnPaneIfShell(
     const pane = visiblePane(workspace, paneID);
     if (pane === null || pane.type !== 'shell') return;
     if (ctx.pty.has(paneID)) return;
-    const cols = ctx.spawn?.cols ?? DEFAULT_COLS;
-    const rows = ctx.spawn?.rows ?? DEFAULT_ROWS;
+    // Last-known geometry first: a split's child that starts at 80×24 prints its first prompt
+    // at a width nothing will ever render it at, and that line never reflows (`pty/geometry.ts`).
+    const remembered = ctx.spawn?.sizeFor?.(paneID) ?? null;
+    const cols = remembered?.cols ?? ctx.spawn?.cols ?? DEFAULT_COLS;
+    const rows = remembered?.rows ?? ctx.spawn?.rows ?? DEFAULT_ROWS;
     ctx.pty.spawn({
         paneID,
         cwd: pane.workingDirectory,

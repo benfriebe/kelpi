@@ -109,8 +109,8 @@ function restoreEnvVars(
  * created by a CLI command racing this pass keeps the PTY it already got.
  */
 export function spawnRestoredPanes(state: DaemonState, deps: RestoreDeps): string[] {
-    const cols = deps.spawn?.cols ?? DEFAULT_COLS;
-    const rows = deps.spawn?.rows ?? DEFAULT_ROWS;
+    const defaultCols = deps.spawn?.cols ?? DEFAULT_COLS;
+    const defaultRows = deps.spawn?.rows ?? DEFAULT_ROWS;
     const envFor = deps.envFor ?? ((paneID, workspace) => restoreEnvVars(paneID, workspace, deps));
     const spawned: string[] = [];
 
@@ -119,6 +119,13 @@ export function spawnRestoredPanes(state: DaemonState, deps: RestoreDeps): strin
             if (pane.type !== 'shell') continue; // markdown/scratchpad/diff/web have no PTY
             if (deps.pty.has(pane.id)) continue;
             const env = envFor(pane.id, workspace);
+            // Boot is the worst case for a fixed grid: the shell prints its prompt seconds
+            // before a window exists, so without the pane's remembered size that prompt is
+            // 80 columns wide in a 200-column pane — forever, because the headless emulator
+            // never reflows it (`pty/geometry.ts`).
+            const remembered = deps.spawn?.sizeFor?.(pane.id) ?? null;
+            const cols = remembered?.cols ?? defaultCols;
+            const rows = remembered?.rows ?? defaultRows;
             try {
                 deps.pty.spawn({
                     paneID: pane.id,

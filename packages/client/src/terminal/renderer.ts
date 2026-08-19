@@ -35,6 +35,8 @@
  *      alternate screen.
  */
 
+import { loadTerminalFonts, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
+
 export type TerminalEngine = 'ghostty' | 'xterm';
 
 export const TERMINAL_ENGINES: readonly TerminalEngine[] = ['ghostty', 'xterm'];
@@ -125,6 +127,13 @@ export interface TerminalRenderer {
     cellSize(): CellSize;
     /** Best-effort full repaint (visibility regain). No-op where the engine has no hook. */
     repaint(): void;
+    /**
+     * Re-measure the cell after a font has loaded. Optional because a fake or a third engine
+     * may have nothing to re-measure; the pane calls it when the bundled face settles AFTER
+     * the engine was built (a slow link), which is the only way to correct metrics that were
+     * taken against the fallback.
+     */
+    remeasure?(): void;
     dispose(): void;
 }
 
@@ -163,6 +172,11 @@ export interface EngineHandle {
     cellSize?(): CellSize | undefined;
     /** Live theming; without it the adapter falls back to nothing (theme is init-only). */
     setTheme?(theme: TerminalTheme): void;
+    /**
+     * Re-measure the font after it has loaded. The engines measure their cell once, at
+     * construction; a face that arrives later leaves them drawing at fallback metrics.
+     */
+    remeasure?(): void;
     /** Force a full redraw. */
     repaint?(): void;
     /** Extra teardown beyond `terminal.dispose()`. */
@@ -186,7 +200,11 @@ export interface ResolvedRendererOptions {
 
 // ── defaults ────────────────────────────────────────────────────────────────────────
 
-export const DEFAULT_FONT_FAMILY = 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace';
+/**
+ * The bundled Nerd Font first (see `fonts.ts`): without it a powerlevel10k prompt is a row of
+ * tofu boxes, because no system monospace on macOS carries Powerline or Nerd Font glyphs.
+ */
+export const DEFAULT_FONT_FAMILY = TERMINAL_FONT_FALLBACKS;
 export const DEFAULT_FONT_SIZE = 13;
 /** xterm counts lines. */
 export const DEFAULT_SCROLLBACK_LINES = 10_000;
@@ -317,36 +335,18 @@ export function configuredTerminalEngine(): TerminalEngine {
 // ── cell metrics ────────────────────────────────────────────────────────────────────
 
 /**
- * Font-derived cell estimate for the window before the engine reports real metrics (and for
- * jsdom, where there is no 2D context at all). Canvas `measureText` when available, else the
- * usual monospace ratios — good enough for the first attach geometry, which the first real
- * measurement corrects.
+ * Cell estimate for the geometry a pane needs BEFORE its engine exists (and for jsdom, where
+ * there is no 2D context at all).
+ *
+ * It measures the way the engine does — `fonts.ts` `measureCellSize` mirrors ghostty-web's
+ * `ceil(measureText('M').width)` — so the columns a pane attaches with are the columns the
+ * engine will report afterwards. Measuring differently is not a harmless approximation: a
+ * fractional advance yields one column too many, whose canvas is then wider than the pane and
+ * clipped on the right (the p10k filler that runs off the edge). Accuracy also depends on the
+ * font being LOADED, which is why every caller awaits `loadTerminalFonts()` first.
  */
-const cellEstimates = new Map<string, CellSize>();
-
 export function estimateCellSize(fontSize: number, fontFamily: string): CellSize {
-    const key = `${fontSize}|${fontFamily}`;
-    const cached = cellEstimates.get(key);
-    if (cached !== undefined) return cached;
-    const estimate = measureCellEstimate(fontSize, fontFamily);
-    cellEstimates.set(key, estimate);
-    return estimate;
-}
-
-function measureCellEstimate(fontSize: number, fontFamily: string): CellSize {
-    const fallback = { width: Math.max(1, fontSize * 0.6), height: Math.max(1, Math.round(fontSize * 1.2)) };
-    if (typeof document === 'undefined') return fallback;
-    try {
-        // jsdom's `getContext` returns undefined (and logs), so this is `== null`, not `=== null`.
-        const context = document.createElement('canvas').getContext('2d');
-        if (context === null || context === undefined) return fallback;
-        context.font = `${fontSize}px ${fontFamily}`;
-        const width = context.measureText('W').width;
-        if (!Number.isFinite(width) || width <= 0) return fallback;
-        return { width, height: Math.max(1, Math.round(fontSize * 1.2)) };
-    } catch {
-        return fallback;
-    }
+    return measureCellSize(fontSize, fontFamily);
 }
 
 // ── the adapter ─────────────────────────────────────────────────────────────────────
@@ -502,6 +502,15 @@ class AdapterRenderer implements TerminalRenderer {
         this.handle?.repaint?.();
     }
 
+    remeasure(): void {
+        if (this.disposed) return;
+        try {
+            this.handle?.remeasure?.();
+        } catch {
+            /* an engine that cannot re-measure keeps its construction metrics */
+        }
+    }
+
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
@@ -588,6 +597,14 @@ class AdapterRenderer implements TerminalRenderer {
         });
         if (title !== undefined) this.engineDisposables.push(title);
 
+        // Metrics first, then geometry, then the bytes. A replay written before the resize
+        // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
+        // stacks duplicate prompt copies on re-attach (terminal-surface.md §4).
+        try {
+            handle.remeasure?.();
+        } catch {
+            /* an engine without a remeasure hook keeps its construction metrics */
+        }
         if (terminal.cols !== this.requestedCols || terminal.rows !== this.requestedRows) {
             terminal.resize(this.requestedCols, this.requestedRows);
         }
@@ -621,7 +638,9 @@ export function createRendererFromLoader(
  */
 export const loadGhosttyEngine: EngineLoader = async (options) => {
     const mod = await import('ghostty-web');
-    await mod.init();
+    // The WASM and the font in parallel; the Terminal must not be constructed before the font
+    // is usable, because its renderer measures the cell in its constructor (fonts.ts §2).
+    const [, ] = await Promise.all([mod.init(), loadTerminalFonts(options.fontSize)]);
     const terminal = new mod.Terminal({
         cols: options.cols,
         rows: options.rows,
@@ -650,6 +669,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             // takes effect (it re-derives the 16-color palette).
             terminal.renderer?.setTheme(compactTheme(theme));
         },
+        remeasure: (): void => {
+            // Belt and braces: the loader already awaited the font, but a face that landed
+            // during `open()` would otherwise leave the cell at fallback metrics forever.
+            terminal.renderer?.remeasureFont();
+        },
         repaint: (): void => {
             const renderer = terminal.renderer;
             const wasmTerm = terminal.wasmTerm;
@@ -665,7 +689,7 @@ interface XtermRenderDimensions {
 
 /** `@xterm/xterm`. The host page must also load `@xterm/xterm/css/xterm.css`. */
 export const loadXtermEngine: EngineLoader = async (options) => {
-    const mod = await import('@xterm/xterm');
+    const [mod] = await Promise.all([import('@xterm/xterm'), loadTerminalFonts(options.fontSize)]);
     const terminal = new mod.Terminal({
         cols: options.cols,
         rows: options.rows,
@@ -694,6 +718,15 @@ export const loadXtermEngine: EngineLoader = async (options) => {
         },
         setTheme: (theme): void => {
             terminal.options.theme = compactTheme(theme);
+        },
+        remeasure: (): void => {
+            // xterm re-measures its cell when the font option CHANGES — and its setter compares
+            // before firing (`rawOptions[key] !== value`), so re-assigning the same stack is a
+            // no-op. A round trip through a different-but-equivalent value is what makes it
+            // measure again after a late-arriving face.
+            const family = terminal.options.fontFamily ?? options.fontFamily;
+            terminal.options.fontFamily = `${family}, monospace`;
+            terminal.options.fontFamily = family;
         },
         repaint: (): void => {
             terminal.refresh(0, Math.max(0, terminal.rows - 1));

@@ -20,8 +20,14 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
 import { createNexRuntime } from './state';
-import { configuredTerminalEngine } from './terminal';
+import { configuredTerminalEngine, loadTerminalFonts } from './terminal';
 import './styles.css';
+
+// Start the bundled terminal font before anything renders. `@font-face` is lazy, and a pane
+// that measures its cell against the fallback face computes columns the engine cannot draw —
+// so every pane awaits this same promise (`terminal/fonts.ts`). Kicking it off here means the
+// first pane usually finds it already settled instead of waiting a frame for the fetch.
+void loadTerminalFonts();
 
 const target = resolveDaemonTarget();
 

@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { probeControlPing, type ControlPingProbe } from '../control/probe.js';
+import { probeControlPing, type ControlPingPersistence, type ControlPingProbe } from '../control/probe.js';
 import { isProcessAlive, readPidRecord, type PidRecord, type RunPaths } from './rundir.js';
 
 /** Entries with these extensions are run through the Node binary, not exec'd directly. */
@@ -79,6 +79,11 @@ export interface DaemonProbe {
     readonly record?: PidRecord | undefined;
     /** True when a record names a process that no longer exists. */
     readonly stalePidRecord: boolean;
+    /**
+     * The daemon's own answer to "is my state reaching disk?". Undefined when it did not say
+     * (an older daemon) — which is not the same as healthy, and must never be printed as such.
+     */
+    readonly persistence?: ControlPingPersistence | undefined;
     readonly reason?: string | undefined;
 }
 
@@ -100,6 +105,7 @@ export async function probeDaemon(paths: RunPaths, options: DaemonProbeOptions =
         ...(ping.build !== undefined ? { build: ping.build } : {}),
         ...(record !== undefined ? { record } : {}),
         stalePidRecord: record !== undefined && !isProcessAlive(record.pid),
+        ...(ping.persistence !== undefined ? { persistence: ping.persistence } : {}),
         ...(ping.reason !== undefined ? { reason: ping.reason } : {})
     };
 }

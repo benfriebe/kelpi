@@ -15,18 +15,25 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**The port is complete.** The daemon, the web client, the Electron shell, content panes, web
-panes, graft, the `nex` CLI rewrite and the legacy `nex.db` importer are all built and green, and
-the app packages into a `Nex.app` (unsigned — see [Install and run](#install-and-run)).
+**Wire parity, plus an audited UI with an open defect ledger.** The daemon, the web client, the
+Electron shell, content panes, web panes, graft, the `nex` CLI rewrite and the legacy `nex.db`
+importer are all built and green against the shipped Swift binary, and the app packages into a
+`Nex.app` (unsigned — see [Install and run](#install-and-run)). The window itself has now been
+driven end to end and photographed: **17 defects a person can see are still open, two of them
+blockers.**
 
-- [`docs/PARITY.md`](docs/PARITY.md) — the honest end-state ledger: what is at parity and how it
-  was proven, where the port deliberately differs from the macOS app, and the eight remaining gaps.
+- [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
+  **what a person actually sees** (the UI audit and its severity-ordered defect list), where the
+  port deliberately differs from the macOS app, and the remaining functional gaps.
+- [`docs/audit/`](docs/audit/) — the visual audit runs: a PNG per step plus a `FINDINGS.md`.
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Closeout gates: `pnpm check` 3038 passed; the compat suite 103/103 against **both** the shipped
-Swift CLI and the TypeScript one; four live smokes (client 33, shell 29, web 46, packaged 47).
+Gates (2026-08-19): `pnpm check` 3110 passed; the compat suite 103/103 against **both** the shipped
+Swift CLI and the TypeScript one; five live smokes (client 33, shell 29, web 46, terminal 19,
+packaged 47); the UI audit's 150 assertions with 2 failing (both the same workspace-activation
+defect). Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart
 
@@ -141,6 +148,12 @@ NEXD_RUN_DIR=~/.local/state/nexd-dev open "$(packages/daemon/dist/nexd.js url)"
 
 `nexd --help` lists every environment override (run dir, control socket, TCP port, HTTP
 host/port, database, config file, client build directory, log file).
+
+Beside the database the daemon keeps `pane-geometry.json`: the last grid (cols × rows) each
+pane was actually rendered at. It is a cache, not state — but it is what lets a restored pane's
+shell be **born** at the size it will be shown at instead of at 80×24. The emulator does not
+reflow, so a prompt printed at the wrong width stays wrong in every snapshot after it; deleting
+the file costs one badly-wrapped first prompt per pane and nothing else.
 
 ## Importing from the macOS app
 

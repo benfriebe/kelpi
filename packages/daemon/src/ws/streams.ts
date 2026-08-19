@@ -90,6 +90,11 @@ export interface PaneStreamHubOptions {
     readonly windowBytes?: number | undefined;
     /** Queue bound before the drop-oldest + resync path kicks in. */
     readonly maxQueuedBytes?: number | undefined;
+    /**
+     * Every client-reported grid, as it is applied. Boot uses it to remember what a pane was
+     * last rendered at so the next spawn starts there instead of at 80×24 (`pty/geometry.ts`).
+     */
+    readonly onGeometry?: ((paneID: string, cols: number, rows: number) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -220,6 +225,11 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
                 term.resize(paneID, safeCols, safeRows);
             } catch (error) {
                 report(error, `term-resize ${paneID}`);
+            }
+            try {
+                options.onGeometry?.(paneID, safeCols, safeRows);
+            } catch (error) {
+                report(error, `geometry ${paneID}`);
             }
         }
 

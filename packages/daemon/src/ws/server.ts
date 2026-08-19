@@ -94,6 +94,8 @@ export interface WsServerOptions {
     /** Flow control overrides (tests). */
     readonly windowBytes?: number | undefined;
     readonly maxQueuedBytes?: number | undefined;
+    /** Client-reported pane grids, forwarded to boot's geometry cache (`pty/geometry.ts`). */
+    readonly onGeometry?: ((paneID: string, cols: number, rows: number) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -176,6 +178,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         term: options.term,
         windowBytes: options.windowBytes,
         maxQueuedBytes: options.maxQueuedBytes,
+        onGeometry: options.onGeometry,
         onError: options.onError
     });
 

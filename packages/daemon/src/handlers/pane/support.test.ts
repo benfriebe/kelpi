@@ -4,7 +4,7 @@ import type { HandlerContext } from '../../seams.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../../store/index.js';
 import type { PaneHandlerContext } from './context.js';
 import { paneHandlers } from './index.js';
-import { spawnEnvVars, tailLines, wireTimestamp } from './support.js';
+import { spawnEnvVars, spawnPaneIfShell, tailLines, wireTimestamp } from './support.js';
 import { NOW, W1, harness, seedWorkspace, testID } from './testing.js';
 
 const P1 = testID('1', 1);
@@ -77,6 +77,35 @@ describe('spawnEnvVars', () => {
             { key: 'CLAUDE_CONFIG_DIR', value: '/w' },
             { key: 'NEX_PROFILE', value: 'work' }
         ]);
+    });
+});
+
+describe('spawnPaneIfShell', () => {
+    it('spawns a new pane at the last-known grid rather than 80×24', () => {
+        // A split's child has no history of its own, so the geometry cache answers with the
+        // grid the window was last rendered at — anything beats a shell that draws its first
+        // prompt 80 columns wide into a 200-column pane, because it never reflows.
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const ctx: PaneHandlerContext = {
+            ...h.ctx,
+            spawn: { ...h.ctx.spawn, sizeFor: () => ({ cols: 169, rows: 47 }) }
+        };
+
+        spawnPaneIfShell(ctx, W1, P1);
+
+        expect(h.pty.spawns[0]?.cols).toBe(169);
+        expect(h.pty.spawns[0]?.rows).toBe(47);
+    });
+
+    it('keeps the configured default when nothing is remembered', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+
+        spawnPaneIfShell({ ...h.ctx, spawn: { ...h.ctx.spawn, sizeFor: () => null } }, W1, P1);
+
+        expect(h.pty.spawns[0]?.cols).toBe(80);
+        expect(h.pty.spawns[0]?.rows).toBe(24);
     });
 });
 

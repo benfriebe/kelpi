@@ -78,12 +78,18 @@ export {
     expandTilde,
     legacyMacAppDatabasePath,
     MEMORY_DATABASE_PATH,
+    prepareDatabaseFile,
     resolveDatabasePath,
     resolveDataDir
 } from './location.js';
 export type { DatabaseLocationLookup } from './location.js';
 
-export { createPersistence, SAVE_DEBOUNCE_MS } from './persistence.js';
+export {
+    assertPersistenceUsable,
+    createPersistence,
+    PersistenceUnavailableError,
+    SAVE_DEBOUNCE_MS
+} from './persistence.js';
 export type {
     LoadOutcome,
     LoadStatus,

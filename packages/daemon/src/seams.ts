@@ -112,6 +112,33 @@ export interface Persistence<Snapshot> {
   close(): void;
 }
 
+/**
+ * "Is my state actually being written?" — one answer, surfaced by `ping`, `nexd status` and the
+ * shutdown message.
+ *
+ * This exists because the alternative was observed in production: a daemon whose database could
+ * not be opened ran all day, answered every health check cheerfully, and lost every workspace on
+ * restart. Anything that reports daemon health MUST report this beside it.
+ */
+export interface PersistenceHealth {
+  /** The database file, or `:memory:`. */
+  readonly path: string;
+  /** A usable handle is open. */
+  readonly available: boolean;
+  /** Something has failed: what is on disk does not match memory. */
+  readonly degraded: boolean;
+  /** Which phase broke it, when one did. */
+  readonly phase: 'open' | 'load' | 'save' | null;
+  /** Human-readable failure text (the fs/sqlite message), when degraded. */
+  readonly error: string | null;
+  /** `EACCES` / `EPERM` / `EROFS` / `ERR_SQLITE_ERROR` …, when the failure carried one. */
+  readonly errno: string | null;
+  /** Writes that threw since boot. */
+  readonly failedSaves: number;
+  /** Epoch ms of the last write that reached the file; null when none ever did. */
+  readonly lastSaveAt: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers (socket-handlers.md)
 // ---------------------------------------------------------------------------
@@ -126,6 +153,11 @@ export interface HandlerContext<State, Action, Event> {
   readonly version: { version: string; build: string; protocol: number };
   /** Broadcast a daemon-level event to attached WS clients (notifications etc). */
   readonly broadcast: (event: Record<string, unknown>) => void;
+  /**
+   * Persistence health for `ping`. Optional so handler-level tests need not compose a database;
+   * boot always supplies it, and `ping` reports "unknown" rather than "fine" without it.
+   */
+  readonly persistenceHealth?: (() => PersistenceHealth) | undefined;
 }
 
 export type CommandHandler<Ctx> = (msg: WireMessage, ctx: Ctx, reply: ReplyHandle | null) => void;

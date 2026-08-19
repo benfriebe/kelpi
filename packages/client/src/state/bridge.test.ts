@@ -138,6 +138,46 @@ describe('store bridge', () => {
         expect(h.toasts).toEqual([`nex-${P1}`]);
     });
 
+    /**
+     * P0: a daemon whose database could not be written kept serving happily and lost everything
+     * on restart. The daemon now broadcasts it; the user has to be able to SEE it.
+     */
+    it('surfaces a persistence-degraded broadcast as a standing warning', () => {
+        const h = harness();
+        h.connection.connect();
+        completeHandshake(h.sockets.last(), { state: snapshotState() as never });
+
+        h.sockets.last().emit({
+            type: 'persistence-degraded',
+            path: '/tmp/nexd-dev.db',
+            phase: 'open',
+            error: "EPERM: operation not permitted, chmod '/tmp'",
+            errno: 'EPERM',
+            failedSaves: 0,
+            lastSaveAt: null
+        } as never);
+
+        const toasts = h.store.getState().ui.toasts;
+        expect(toasts).toHaveLength(1);
+        expect(toasts[0]?.id).toBe('persistence-degraded');
+        expect(toasts[0]?.title).toContain('not being saved');
+        // Both the path and the reason reach the screen — that is what makes it actionable.
+        expect(toasts[0]?.body).toContain('/tmp/nexd-dev.db');
+        expect(toasts[0]?.body).toContain('EPERM');
+
+        // A repeat broadcast replaces rather than stacks.
+        h.sockets.last().emit({
+            type: 'persistence-degraded',
+            path: '/tmp/nexd-dev.db',
+            phase: 'save',
+            error: 'attempt to write a readonly database',
+            errno: null,
+            failedSaves: 2,
+            lastSaveAt: null
+        } as never);
+        expect(h.store.getState().ui.toasts).toHaveLength(1);
+    });
+
     it('makes a token rejection terminal, explains it, and forgets the stored token', () => {
         const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
         const h = harness(createNexStore(), storage);

@@ -109,6 +109,31 @@ only the selected one is downloaded. The xterm build additionally pulls in
 `@xterm/xterm/css/xterm.css`, which `main.tsx` imports **only** for that engine. Known
 ghostty-web gaps are catalogued in `docs/research/ghostty-web-spike.md`.
 
+## Terminal font
+
+The client **bundles** `JetBrainsMono Nerd Font` (regular + bold WOFF2, SIL OFL 1.1) in
+`src/assets/fonts/`, declared as `@font-face` in `styles.css`. This is not a style choice: it
+is the same family libghostty bundles and falls back to for missing glyphs, which is why
+powerlevel10k / starship prompts rendered correctly in the Swift app. No system monospace on
+macOS carries Powerline separators or Nerd Font private-use icons, so without it every such
+prompt is a row of tofu boxes.
+
+`src/terminal/fonts.ts` owns three things that have to agree:
+
+- **the stack** — `[the user's ghostty font-family] → JetBrainsMono Nerd Font → ui-monospace /
+  Menlo → monospace`, so a user font that lacks the icons still renders them;
+- **the load gate** — both engines measure their cell exactly once, at construction, and
+  `canvas.measureText` before the face loads silently measures the fallback. Every pane awaits
+  `loadTerminalFonts()` first (bounded by `TERMINAL_FONT_WAIT_MS`, so a slow link costs a late
+  correction via `onTerminalFontsReady` rather than a blank pane);
+- **the measuring rule** — `measureCellSize` mirrors ghostty-web's own
+  `ceil(measureText('M').width)`, so the columns a pane attaches with are the columns the
+  engine can actually draw. Measure any other way and the canvas ends up wider than the pane,
+  which is the clipped-right-edge / overrunning-filler bug.
+
+Regenerate the WOFF2 files with `node scripts/build-fonts.mjs --ttf-dir <ghostty>/src/font/res`
+(provenance and licence: `src/assets/fonts/README.md`).
+
 ## Theming
 
 `chrome/theme.ts` resolves the palette (shell-ui.md §2) and `ThemeProvider` writes it to

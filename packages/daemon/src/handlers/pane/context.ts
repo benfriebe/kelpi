@@ -43,6 +43,15 @@ export interface PaneSpawnDefaults {
     readonly shell?: string | undefined;
     readonly cols?: number | undefined;
     readonly rows?: number | undefined;
+    /**
+     * Last-known grid for a pane (`pty/geometry.ts`), consulted before `cols`/`rows`.
+     *
+     * A shell that starts at 80×24 and is only resized once a client attaches leaves its
+     * first, wrongly-wrapped prompt in the scrollback forever — `@xterm/headless` does not
+     * reflow. Spawning at the size the pane was last rendered at is what keeps a reattached
+     * workspace looking like one clean prompt history instead of a stack of half-width copies.
+     */
+    readonly sizeFor?: ((paneID: string) => { cols: number; rows: number } | null | undefined) | undefined;
 }
 
 export interface PaneHandlerContext

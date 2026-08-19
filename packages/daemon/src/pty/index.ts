@@ -27,5 +27,13 @@ export {
 } from './input.js';
 export type { TerminalInputOptions, VtModesLookup } from './input.js';
 
+export {
+    DEFAULT_GEOMETRY_LIMIT,
+    DEFAULT_GEOMETRY_WRITE_DELAY_MS,
+    GEOMETRY_FILE_NAME,
+    createPaneGeometryStore
+} from './geometry.js';
+export type { GridSize, PaneGeometryStore, PaneGeometryStoreOptions } from './geometry.js';
+
 export { loadNodePty, nodePtySpawner } from './spawner.js';
 export type { PtyProcessHandle, PtySpawnRequest, PtySpawner } from './types.js';

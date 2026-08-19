@@ -1,7 +1,13 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_RESIZE_DEBOUNCE_MS, TerminalPane, measureGeometry, shouldGrabFocus } from './TerminalPane';
+import {
+    DEFAULT_RESIZE_DEBOUNCE_MS,
+    TERMINAL_EDGE_PADDING,
+    TerminalPane,
+    measureGeometry,
+    shouldGrabFocus
+} from './TerminalPane';
 import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from './testing';
 
 /**
@@ -136,6 +142,73 @@ describe('TerminalPane — replay before live', () => {
         await settle();
 
         expect(renderers.last().writes).toEqual(['SNAPSHOT', 'live']);
+    });
+});
+
+describe('TerminalPane — mount ordering', () => {
+    /**
+     * The reattach-duplication bug in one assertion.
+     *
+     * The engines take their grid at construction and default to 80×24. If the pane attaches
+     * at its measured 120 columns but leaves the engine at 80, the daemon's replay —
+     * serialized for 120 columns — is PARSED at 80, wraps, and is then reflowed by the first
+     * resize: the stacked half-width prompt copies a re-attach used to paint. The engine must
+     * therefore hold the measured grid before a single replay byte reaches it.
+     */
+    it('sizes the engine to the measured grid before the stream can replay', async () => {
+        const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(1200, 480)}
+            />
+        );
+
+        const renderer = renderers.last();
+        // Sized at mount, synchronously — before `subscribe`, therefore before any replay.
+        expect(renderer.cols).toBe(120);
+        expect(renderer.rows).toBe(24);
+        expect(pty.streams.length).toBe(1);
+        expect(pty.last().subscription.cols).toBe(120);
+
+        await settle();
+        pty.last().replay('SNAPSHOT');
+        expect(renderer.writes).toEqual(['SNAPSHOT']);
+        // Nothing re-wrapped the replay afterwards.
+        expect(renderer.resizes.filter((size) => size.cols !== 120)).toEqual([]);
+    });
+
+    it('attaches at the same grid it hands the engine', async () => {
+        const renderers = createFakeRendererFactory({ cell: { width: 8, height: 17 } });
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(1354, 810)}
+            />
+        );
+        await settle();
+
+        const renderer = renderers.last();
+        const subscription = pty.last().subscription;
+        // One grid, three places: the engine, the attach, and therefore the daemon's snapshot.
+        expect({ cols: renderer.cols, rows: renderer.rows }).toEqual({
+            cols: subscription.cols,
+            rows: subscription.rows
+        });
+        expect(subscription.cols).toBe(169);
+        expect(subscription.rows).toBe(47);
     });
 });
 
@@ -462,6 +535,35 @@ describe('TerminalPane — helpers', () => {
         expect(measureGeometry(element, renderer, box(801, 340))).toEqual({ cols: 100, rows: 20 });
         expect(measureGeometry(element, renderer, box(0, 340))).toBeNull();
         expect(measureGeometry(element, renderer, box(4, 4))).toEqual({ cols: 1, rows: 1 });
+    });
+
+    /**
+     * The audit's residual "column 1 is clipped": the focused pane's 2px ring is an `inset-0`
+     * overlay painted over this element, so the pane root has to inset the grid by the same
+     * amount — and it has to be the ROOT, because the host's `clientWidth` IS the column
+     * arithmetic and padding there would inflate the cols the PTY is told about.
+     */
+    it('insets the grid from the pane edge so the focus ring cannot clip column 1', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory();
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        const host = root.querySelector('[data-terminal-host]') as HTMLElement;
+        expect(root.style.paddingLeft).toBe(`${String(TERMINAL_EDGE_PADDING)}px`);
+        expect(root.style.paddingRight).toBe(`${String(TERMINAL_EDGE_PADDING)}px`);
+        // The inset belongs to the root, never to the element the geometry is measured from.
+        expect(host.style.paddingLeft).toBe('');
     });
 
     it('never steals the caret from a text field outside the pane', () => {

@@ -25,6 +25,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import type { PtyStreamHandle, PtySubscription } from '../connection';
+import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
     createTerminalRenderer,
@@ -36,6 +37,16 @@ import {
 
 /** Coalescing window for interactive resizes (terminal-surface.md §5, §15.4). */
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 100;
+
+/**
+ * Horizontal breathing room between the pane edge and column 1, in CSS pixels.
+ *
+ * Two jobs: it keeps the focus ring off the first and last columns (see the pane root's style),
+ * and it is the same `window-padding-x = 2` ghostty applies by default, so a terminal here is
+ * spaced like a terminal in the Swift app. Applied to the pane root, NOT to the host the
+ * geometry is measured from, so cols stay honest.
+ */
+export const TERMINAL_EDGE_PADDING = 2;
 
 export interface TerminalGeometry {
     readonly cols: number;
@@ -167,65 +178,99 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     }, [clearResizeTimer, syncGeometry]);
 
     // ── engine + stream lifecycle ───────────────────────────────────────────────────
+    //
+    // Mount is one ordered chain, and the FONT is its first link (`fonts.ts`):
+    //
+    //   font ready → measure the box → construct the engine AT that grid → attach at the same
+    //   grid → the daemon sizes the PTY + its VT, snapshots, and replays → paint.
+    //
+    // Two links used to be missing, and both are visible defects. Measuring before the bundled
+    // face has loaded measures the FALLBACK metrics, so the pane attaches with columns the
+    // engine cannot draw (the p10k filler runs past the right edge, the timestamp is clipped).
+    // Constructing the engine without the measured grid leaves it at its 80×24 default, so the
+    // replay is parsed at 80 columns and then REFLOWED by the first resize — the stack of
+    // half-width prompt copies a re-attach used to paint.
     useEffect(() => {
         const host = hostRef.current;
         if (host === null) return;
-        const current = latest.current;
-        const factory = current.createRenderer ?? createTerminalRenderer;
-        const renderer = factory({
-            ...(current.fontFamily !== undefined ? { fontFamily: current.fontFamily } : {}),
-            ...(current.fontSize !== undefined ? { fontSize: current.fontSize } : {}),
-            theme: current.theme ?? resolveTerminalTheme(host)
-        });
-        rendererRef.current = renderer;
-        setStatus('loading');
-
-        const ingest = createTerminalIngest(renderer);
-        const initial = measureGeometry(host, renderer, current.measure);
-        if (initial !== null) geometryRef.current = initial;
-
-        const subscription: PtySubscription = {
-            // The daemon replays the server-side VT snapshot before going live; ingest keeps
-            // that ordering true across engine load, reconnect and flow-control resync.
-            onReplay: (data) => ingest.replay(data),
-            onData: (data) => ingest.live(data),
-            onResync: () => ingest.expectReplay(),
-            onExit: (exitCode, signal) => latest.current.onExit?.(paneID, exitCode, signal),
-            ...(initial !== null ? { cols: initial.cols, rows: initial.rows } : {})
-        };
-        const stream = ptyApi.subscribe(paneID, subscription);
-        streamRef.current = stream;
-
-        const offData = renderer.onData((data) => stream.write(data));
-        const offBell = renderer.onBell(() => latest.current.onBell?.(paneID));
-        const offTitle = renderer.onTitleChange((title) => latest.current.onTitleChange?.(paneID, title));
-
         let cancelled = false;
-        void renderer.open(host).then(
-            () => {
-                if (cancelled) return;
-                setStatus('live');
-                // Real cell metrics exist only now: first non-zero pass forces a size sync.
-                syncGeometry(true);
-                if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
-            },
-            () => {
-                if (cancelled) return;
-                setStatus('error');
-            }
-        );
+        let teardown: (() => void) | null = null;
+
+        const start = (): void => {
+            if (cancelled || hostRef.current === null) return;
+            const current = latest.current;
+            const factory = current.createRenderer ?? createTerminalRenderer;
+            const renderer = factory({
+                ...(current.fontFamily !== undefined ? { fontFamily: current.fontFamily } : {}),
+                ...(current.fontSize !== undefined ? { fontSize: current.fontSize } : {}),
+                theme: current.theme ?? resolveTerminalTheme(host)
+            });
+            // Measured through the renderer's own cell metrics, which before `open()` are the
+            // font-derived estimate — now accurate, because the face has loaded.
+            const initial = measureGeometry(host, renderer, current.measure);
+            if (initial !== null) renderer.resize(initial.cols, initial.rows);
+            rendererRef.current = renderer;
+            setStatus('loading');
+
+            const ingest = createTerminalIngest(renderer);
+            if (initial !== null) geometryRef.current = initial;
+
+            const subscription: PtySubscription = {
+                // The daemon replays the server-side VT snapshot before going live; ingest keeps
+                // that ordering true across engine load, reconnect and flow-control resync.
+                onReplay: (data) => ingest.replay(data),
+                onData: (data) => ingest.live(data),
+                onResync: () => ingest.expectReplay(),
+                onExit: (exitCode, signal) => latest.current.onExit?.(paneID, exitCode, signal),
+                ...(initial !== null ? { cols: initial.cols, rows: initial.rows } : {})
+            };
+            const stream = ptyApi.subscribe(paneID, subscription);
+            streamRef.current = stream;
+
+            const offData = renderer.onData((data) => stream.write(data));
+            const offBell = renderer.onBell(() => latest.current.onBell?.(paneID));
+            const offTitle = renderer.onTitleChange((title) => latest.current.onTitleChange?.(paneID, title));
+
+            void renderer.open(host).then(
+                () => {
+                    if (cancelled) return;
+                    setStatus('live');
+                    // The engine's real metrics exist only now; a disagreement with the
+                    // estimate is corrected here, before anything else can measure.
+                    syncGeometry(true);
+                    if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
+                },
+                () => {
+                    if (cancelled) return;
+                    setStatus('error');
+                }
+            );
+
+            teardown = () => {
+                clearResizeTimer();
+                offData();
+                offBell();
+                offTitle();
+                stream.unsubscribe();
+                renderer.dispose();
+                rendererRef.current = null;
+                streamRef.current = null;
+                geometryRef.current = null;
+            };
+        };
+
+        // Kick the load (idempotent), THEN ask whether it settled synchronously — it does
+        // wherever there is no FontFaceSet to wait on (jsdom, an old browser), and it does for
+        // every pane after the first. Only a genuinely pending fetch costs a microtask hop, so
+        // mounting stays synchronous everywhere it can be.
+        const fonts = loadTerminalFonts(latest.current.fontSize);
+        if (terminalFontsReady()) start();
+        else void fonts.then(start, start);
 
         return () => {
             cancelled = true;
-            clearResizeTimer();
-            offData();
-            offBell();
-            offTitle();
-            stream.unsubscribe();
-            renderer.dispose();
-            rendererRef.current = null;
-            streamRef.current = null;
-            geometryRef.current = null;
+            teardown?.();
+            teardown = null;
         };
         // `fontFamily` / `fontSize` are in the deps on purpose: the engines take a font at
         // construction and the adapter's xterm-compatible subset has no live setter, so a
@@ -234,6 +279,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         // eviction takes). Settings arrive on `welcome`, BEFORE the first snapshot renders a
         // pane, so connecting never costs a rebuild.
     }, [paneID, ptyApi, clearResizeTimer, syncGeometry, props.fontFamily, props.fontSize]);
+
+    // ── late font arrival ───────────────────────────────────────────────────────────
+    //
+    // A pane that had to open before the bundled face arrived (a slow link — the wait is
+    // bounded, `fonts.ts`) measured its cell against the FALLBACK, so its columns are wrong by
+    // however much the two fonts' advances differ. When the real face settles, the engine
+    // re-measures and the grid is recomputed, rather than staying wrong for the pane's life.
+    useEffect(() => {
+        return onTerminalFontsReady(() => {
+            const renderer = rendererRef.current;
+            if (renderer === null) return;
+            renderer.remeasure?.();
+            syncGeometry(true);
+            renderer.repaint();
+        });
+    }, [syncGeometry]);
 
     // ── resize observation ──────────────────────────────────────────────────────────
     useEffect(() => {
@@ -311,7 +372,20 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             data-terminal-status={status}
             data-terminal-visible={visible ? 'true' : 'false'}
             className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
-            style={{ backgroundColor: background, visibility: visible ? 'visible' : 'hidden' }}
+            style={{
+                backgroundColor: background,
+                visibility: visible ? 'visible' : 'hidden',
+                // The focused pane's 2px ring (`grid/FocusRing.tsx`) is an `inset-0` overlay
+                // drawn ON TOP of this element, so without an inset of its own the grid's first
+                // and last columns are painted underneath it — at 6× zoom the `s` of `sh-3.2$`
+                // is visibly missing its left stroke. Padding here (never on the host, whose
+                // `clientWidth` IS the column arithmetic) shrinks the measured box first, so the
+                // cols the PTY is told about stay exactly the cols the canvas can paint. It also
+                // restores ghostty's own `window-padding-x = 2` default, which is the spacing
+                // the Swift app had.
+                paddingLeft: TERMINAL_EDGE_PADDING,
+                paddingRight: TERMINAL_EDGE_PADDING
+            }}
             onMouseDownCapture={requestFocus}
             onTouchStartCapture={requestFocus}
         >

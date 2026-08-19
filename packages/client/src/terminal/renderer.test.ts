@@ -40,6 +40,9 @@ class StubTerminal implements XtermLikeTerminal {
     focuses = 0;
     blurs = 0;
     disposals = 0;
+    /** Ordering probes: mount has to size the engine before any byte reaches it. */
+    onWriteRecorded: (() => void) | undefined;
+    onResizeRecorded: (() => void) | undefined;
 
     private dataListener: ((data: string) => void) | undefined;
     private bellListener: (() => void) | undefined;
@@ -55,6 +58,7 @@ class StubTerminal implements XtermLikeTerminal {
     write(data: string | Uint8Array): void {
         this.assertOpen();
         this.writes.push(text(data));
+        this.onWriteRecorded?.();
     }
 
     reset(): void {
@@ -75,6 +79,7 @@ class StubTerminal implements XtermLikeTerminal {
         this.cols = cols;
         this.rows = rows;
         this.resizes.push({ cols, rows });
+        this.onResizeRecorded?.();
     }
 
     dispose(): void {
@@ -112,6 +117,8 @@ class StubEngine {
     readonly terminal = new StubTerminal();
     readonly themes: TerminalTheme[] = [];
     repaints = 0;
+    remeasures = 0;
+    onRemeasure: (() => void) | undefined;
     cell: CellSize | undefined;
 
     private release: (() => void) | undefined;
@@ -139,6 +146,10 @@ class StubEngine {
             },
             repaint: (): void => {
                 this.repaints += 1;
+            },
+            remeasure: (): void => {
+                this.remeasures += 1;
+                this.onRemeasure?.();
             }
         };
     };
@@ -227,6 +238,43 @@ describe('TerminalRenderer adapter', () => {
 
         renderer.write('three');
         expect(engine.terminal.writes).toEqual(['one', 'two', 'three']);
+        renderer.dispose();
+    });
+
+    it('sizes the engine and re-measures the font BEFORE flushing the queued replay', async () => {
+        // Order is the whole fix: a replay serialized for 120 columns, written into an engine
+        // still holding its 80×24 construction grid, wraps — and the resize that follows
+        // reflows it into the stacked half-width prompt copies a re-attach used to paint.
+        const engine = stubEngine();
+        const order: string[] = [];
+        engine.onRemeasure = () => order.push('remeasure');
+        engine.terminal.onResizeRecorded = () => order.push('resize');
+        engine.terminal.onWriteRecorded = () => order.push('write');
+
+        const renderer = createRendererFromLoader('ghostty', engine.loader, { cols: 120, rows: 40 });
+        const opening = renderer.open(host());
+        renderer.write('REPLAY');
+        engine.settle();
+        await opening;
+
+        expect(order).toEqual(['remeasure', 'resize', 'write']);
+        expect(engine.terminal.cols).toBe(120);
+        expect(engine.terminal.rows).toBe(40);
+        renderer.dispose();
+    });
+
+    it('applies a grid requested before the engine finished loading', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        const opening = renderer.open(host());
+        renderer.resize(169, 47);
+        expect(renderer.cols).toBe(169); // the requested grid answers until the engine is up
+        engine.settle();
+        await opening;
+
+        expect(engine.terminal.cols).toBe(169);
+        expect(engine.terminal.rows).toBe(47);
         renderer.dispose();
     });
 

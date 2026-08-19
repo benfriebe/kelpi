@@ -76,6 +76,28 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // `persistence-degraded`: the daemon is running, but its state is NOT reaching disk.
+        // This is the one warning that must not live only in a log file — the failure it
+        // reports stays invisible until a restart throws a day of workspaces away. The toast
+        // has no timer (it stays until dismissed) and a fixed id, so a repeat broadcast
+        // replaces it rather than stacking.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'persistence-degraded') return;
+            const target = typeof message['path'] === 'string' ? message['path'] : 'the database';
+            const detail = typeof message['error'] === 'string' ? message['error'] : 'unknown error';
+            store.getState().pushToast({
+                id: 'persistence-degraded',
+                kind: 'agent-error',
+                title: 'Changes are not being saved',
+                body: `${target}: ${detail}. Anything created now is lost on restart.`,
+                paneID: null,
+                workspaceID: null,
+                createdAt: Date.now()
+            });
+        })
+    );
+
+    offs.push(
         connection.on('snapshot', (message) => {
             store.getState().applySnapshot(message.seq, message.state);
         })

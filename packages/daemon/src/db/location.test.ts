@@ -13,6 +13,7 @@ import {
     expandTilde,
     legacyMacAppDatabasePath,
     MEMORY_DATABASE_PATH,
+    prepareDatabaseFile,
     resolveDatabasePath,
     resolveDataDir
 } from './location.js';
@@ -107,5 +108,113 @@ describe('ensureDatabaseDir', () => {
         const target = path.join(root, 'c', DATABASE_FILENAME);
         ensureDatabaseDir(target);
         expect(() => ensureDatabaseDir(target)).not.toThrow();
+    });
+
+    // ── the P0 ──────────────────────────────────────────────────────────────
+    //
+    // `NEXD_DB_PATH=/tmp/nexd-dev.db` used to make this function chmod('/tmp', 0700). /tmp is
+    // root-owned and mode 1777, so a normal user gets EPERM, which was thrown out of
+    // `createPersistence`'s open path, caught, and turned into a daemon that ran all day with
+    // persistence quietly disabled. Nothing here may touch a directory it did not create.
+
+    it('uses an existing shared parent as-is — no chmod, no throw (the /tmp case)', () => {
+        const before = fs.statSync('/tmp').mode & 0o7777;
+        expect(() => ensureDatabaseDir('/tmp/nexd-location-test.db')).not.toThrow();
+        expect(ensureDatabaseDir('/tmp/nexd-location-test.db')).toBe('/tmp');
+        // Unchanged, and specifically NOT 0700.
+        expect(fs.statSync('/tmp').mode & 0o7777).toBe(before);
+        expect(fs.existsSync('/tmp/nexd-location-test.db')).toBe(false);
+    });
+
+    it('leaves the permissions of any pre-existing parent alone', () => {
+        const shared = path.join(root, 'shared');
+        fs.mkdirSync(shared, { recursive: true });
+        fs.chmodSync(shared, 0o755);
+
+        ensureDatabaseDir(path.join(shared, DATABASE_FILENAME));
+
+        expect(fs.statSync(shared).mode & 0o777).toBe(0o755);
+    });
+
+    it('still locks down every level it creates itself', () => {
+        const target = path.join(root, 'deep', 'nested', 'tree', DATABASE_FILENAME);
+        ensureDatabaseDir(target);
+        for (const dir of [
+            path.join(root, 'deep'),
+            path.join(root, 'deep', 'nested'),
+            path.join(root, 'deep', 'nested', 'tree')
+        ]) {
+            expect(fs.statSync(dir).mode & 0o777).toBe(DB_DIR_MODE);
+        }
+    });
+
+    it('creates a 0700 directory under a world-writable shared parent', () => {
+        // The fixture for "a directory several tools share", e.g. /tmp itself.
+        const shared = path.join(root, 'shared-1777');
+        fs.mkdirSync(shared);
+        fs.chmodSync(shared, 0o1777);
+
+        const dir = ensureDatabaseDir(path.join(shared, 'nexd', DATABASE_FILENAME));
+
+        expect(fs.statSync(dir).mode & 0o777).toBe(DB_DIR_MODE);
+        expect(fs.statSync(shared).mode & 0o7777).toBe(0o1777);
+    });
+});
+
+describe('prepareDatabaseFile', () => {
+    let root = '';
+
+    beforeEach(() => {
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-prep-'));
+    });
+
+    afterEach(() => {
+        // Restore anything the tests locked down, or the rm fails.
+        for (const entry of fs.readdirSync(root)) {
+            try {
+                fs.chmodSync(path.join(root, entry), 0o700);
+            } catch {
+                // not a directory we changed
+            }
+        }
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('returns the resolved path for a usable location', () => {
+        const target = path.join(root, 'a', DATABASE_FILENAME);
+        expect(prepareDatabaseFile(target)).toBe(target);
+        expect(fs.existsSync(path.join(root, 'a'))).toBe(true);
+    });
+
+    it('fails with the real errno and the real path when the parent is unwritable', () => {
+        const locked = path.join(root, 'locked');
+        fs.mkdirSync(locked);
+        fs.chmodSync(locked, 0o500);
+
+        // node:sqlite would have said only "unable to open database file" — no code, no path.
+        expect(() => prepareDatabaseFile(path.join(locked, DATABASE_FILENAME))).toThrow(
+            expect.objectContaining({ code: 'EACCES' }) as Error
+        );
+        expect(() => prepareDatabaseFile(path.join(locked, DATABASE_FILENAME))).toThrow(locked);
+    });
+
+    it('fails when the file itself is not writable', () => {
+        const target = path.join(root, DATABASE_FILENAME);
+        fs.writeFileSync(target, '');
+        fs.chmodSync(target, 0o444);
+
+        expect(() => prepareDatabaseFile(target)).toThrow(
+            expect.objectContaining({ code: 'EACCES' }) as Error
+        );
+        fs.chmodSync(target, 0o600);
+    });
+
+    it('fails when a path component is a file', () => {
+        const file = path.join(root, 'not-a-dir');
+        fs.writeFileSync(file, 'x');
+
+        expect(() => prepareDatabaseFile(path.join(file, DATABASE_FILENAME))).toThrow(
+            expect.objectContaining({ code: expect.stringMatching(/ENOTDIR|EEXIST/) as unknown as string }) as Error
+        );
     });
 });

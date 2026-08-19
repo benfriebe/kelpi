@@ -6,6 +6,7 @@ import {
     createKeyDispatcher,
     installKeyDispatcher,
     isEditableTarget,
+    isTerminalSurface,
     keyBindingsFromOverrideLines,
     modifiersFromEvent,
     triggerFromEvent,
@@ -38,6 +39,17 @@ function keyEvent(
         stopPropagation: () => undefined,
         prevented: () => prevented
     };
+}
+
+/**
+ * A `contenteditable` div that reports `isContentEditable` — the flag the dispatcher reads.
+ * jsdom implements the attribute but not the computed property, so it is defined explicitly.
+ */
+function contentEditableElement(): HTMLDivElement {
+    const element = document.createElement('div');
+    element.contentEditable = 'true';
+    Object.defineProperty(element, 'isContentEditable', { value: true, configurable: true });
+    return element;
 }
 
 /** A registry that records which action fired. */
@@ -177,6 +189,67 @@ describe('conditional rules', () => {
         expect(isEditableTarget({ isContentEditable: true })).toBe(true);
         expect(isEditableTarget({ tagName: 'CANVAS' })).toBe(false);
         expect(isEditableTarget(null)).toBe(false);
+    });
+
+    /**
+     * The UI audit's blocker B1. ghostty-web marks its host `contenteditable`, so the plain
+     * flag test read every terminal as "the user is typing into chrome" and skipped the whole
+     * pane keymap — in the state the app boots in and returns to after every split.
+     */
+    it('does not read a terminal surface as chrome text, whatever the engine focuses', () => {
+        const host = document.createElement('div');
+        host.setAttribute('data-terminal-host', '');
+
+        // ghostty-web: a contenteditable host element. jsdom parses the attribute but never
+        // computes `isContentEditable`, so it is stamped on directly — otherwise this test
+        // would pass for the wrong reason (the flag the predicate reads being absent).
+        const ghostty = contentEditableElement();
+        host.append(ghostty);
+        // xterm.js fallback: a hidden helper textarea inside the same host.
+        const xtermHelper = document.createElement('textarea');
+        host.append(xtermHelper);
+        document.body.append(host);
+
+        expect(isTerminalSurface(ghostty)).toBe(true);
+        expect(isEditableTarget(ghostty)).toBe(false);
+        expect(isEditableTarget(xtermHelper)).toBe(false);
+        expect(isEditableTarget(host)).toBe(false);
+
+        // …and chrome's own fields, which live outside any terminal host, are unaffected.
+        const filter = document.createElement('input');
+        const rename = contentEditableElement();
+        document.body.append(filter, rename);
+        expect(isTerminalSurface(filter)).toBe(false);
+        expect(isEditableTarget(filter)).toBe(true);
+        expect(isEditableTarget(rename)).toBe(true);
+
+        host.remove();
+        filter.remove();
+        rename.remove();
+    });
+
+    it('dispatches pane actions while a terminal holds focus, and still suppresses them in a field', () => {
+        const host = document.createElement('div');
+        host.setAttribute('data-terminal-host', '');
+        const terminal = contentEditableElement();
+        host.append(terminal);
+        document.body.append(host);
+
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+
+        // ⌘D (split_right) and ⌘W (close_pane) are pane actions: dead before this fix.
+        expect(dispatch(keyEvent('KeyD', { meta: true }, terminal))).toBe(true);
+        expect(dispatch(keyEvent('KeyW', { meta: true }, terminal))).toBe(true);
+        expect(fired).toEqual(['split_right', 'close_pane']);
+
+        const input = document.createElement('input');
+        document.body.append(input);
+        expect(dispatch(keyEvent('KeyD', { meta: true }, input))).toBe(false);
+        expect(fired).toEqual(['split_right', 'close_pane']);
+
+        host.remove();
+        input.remove();
     });
 
     it('Escape clears a multi-selection before any binding lookup', () => {

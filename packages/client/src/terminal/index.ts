@@ -4,6 +4,8 @@
  *   `renderer.ts`     — `TerminalRenderer`, the engine seam: ghostty-web (default) or
  *                       `@xterm/xterm` (`VITE_TERMINAL_ENGINE=xterm`), both behind the same
  *                       xterm-compatible subset
+ *   `fonts.ts`        — the bundled Nerd Font, its load gate and the engines' own cell
+ *                       measuring rule (glyph coverage + correct cols depend on both)
  *   `ingest.ts`       — replay-then-live byte ordering for one pane
  *   `TerminalPane.tsx`— the React component: engine + PTY stream + resize/focus/visibility
  *   `mount-policy.ts` — which panes may hold a live renderer (cap + LRU eviction)
@@ -25,6 +27,20 @@ export {
 } from './TerminalPane';
 
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
+
+export {
+    BUNDLED_TERMINAL_FONT_FAMILY,
+    BUNDLED_TERMINAL_FONT_WEIGHTS,
+    TERMINAL_FONT_FALLBACKS,
+    TERMINAL_FONT_WAIT_MS,
+    loadTerminalFonts,
+    measureCellSize,
+    onTerminalFontsReady,
+    resetTerminalFontsForTests,
+    terminalFontStack,
+    terminalFontsReady,
+    type MeasuredCell
+} from './fonts';
 
 export {
     DEFAULT_MOUNT_LIMIT,

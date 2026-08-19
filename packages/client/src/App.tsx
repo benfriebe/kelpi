@@ -92,6 +92,7 @@ import {
     TerminalPane,
     createMountPolicy,
     resolveTerminalTheme,
+    terminalFontStack,
     visiblePaneIDs,
     type TerminalGeometry,
     type TerminalRendererFactory,
@@ -802,8 +803,16 @@ function Shell(props: AppProps): ReactElement {
 
     // Memoized so `renderPane`'s dependency list only changes when the FONT changes: the
     // engines take a font at construction, so a new object here would rebuild every engine.
+    //
+    // The user's ghostty `font-family` is the HEAD of a stack, never the whole of it: whatever
+    // it is missing — Powerline separators, Nerd Font icons — has to come from the bundled
+    // face rather than from tofu, which is exactly what libghostty did for the Swift app
+    // (`terminal/fonts.ts`).
     const terminalFont = useMemo(
-        () => ({ fontFamily: settings.appearance.fontFamily, fontSize: settings.appearance.fontSize }),
+        () => ({
+            fontFamily: terminalFontStack(settings.appearance.fontFamily),
+            fontSize: settings.appearance.fontSize
+        }),
         [settings.appearance.fontFamily, settings.appearance.fontSize]
     );
 
@@ -1509,7 +1518,13 @@ function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null
                     <span className="block text-[12px] font-medium" style={{ color: chromeTokens.textPrimary }}>
                         {toast.title}
                     </span>
-                    <span className="block text-[11px]" style={{ color: chromeTokens.textSecondary }}>
+                    {/* `break-words`: a body carrying a filesystem path or a URL is one
+                        unbreakable token whose min-content width blows straight through
+                        `max-w-[320px]`, pushing the toast off the right edge of the window. */}
+                    <span
+                        className="block break-words text-[11px]"
+                        style={{ color: chromeTokens.textSecondary }}
+                    >
                         {toast.body}
                     </span>
                 </button>

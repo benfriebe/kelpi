@@ -130,6 +130,7 @@ run* section carries the gap and the release checklist. `NEX_MACOS_IDENTITY` opt
 pnpm --filter @nex/shell test           # vitest, this package's own project
 pnpm --filter @nex/shell smoke          # the real thing: Electron + a private daemon
 pnpm --filter @nex/shell smoke:web      # the web-pane host, driven by the shipped Swift CLI
+pnpm --filter @nex/shell smoke:terminal # terminal fidelity: glyphs, columns, re-attach
 pnpm --filter @nex/shell smoke:packaged # electron-forge package, then launch the .app itself
 ```
 
@@ -153,6 +154,16 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   releases the role (`no web pane host connected`) and that a fresh shell gets the daemon's
   `pane-open` replay.
   With no Swift CLI installed it skips (exit 0); `NEX_COMPAT_CLI` points it at another copy.
+- `scripts/terminal-smoke.mjs` is the one that would have caught what 3000 structural tests did
+  not: how the terminal LOOKS. It gives a sandbox `$HOME` a powerlevel10k-shaped zsh prompt
+  (Nerd Font private-use glyphs, a `$COLUMNS`-wide dotted filler, a right-aligned timestamp),
+  opens the app at three real window sizes, and checks that the bundled Nerd Font is loaded in
+  the window (no tofu), that the canvas fits inside its pane, and that a `$COLUMNS`-wide ruler
+  and the prompt each occupy exactly `$COLUMNS` — a renderer that disagrees with the PTY by one
+  column overruns the edge and clips the timestamp. Then it quits and relaunches: the replayed
+  history must come back ONCE, at the width it was serialized for, and a daemon restart must
+  spawn the shell at the remembered grid rather than 80×24. Screenshots every step with
+  `--out <dir>` so a human can look, which is the real acceptance.
 - `scripts/packaged-smoke.mjs` covers everything that is only true inside `Nex.app`: it runs
   `electron-forge package`, reads the asar header back to prove the allowlist held, reads the
   fuses out of the binary, then launches the **packaged** app with a private environment that

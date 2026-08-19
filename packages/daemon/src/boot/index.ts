@@ -7,10 +7,13 @@
  */
 
 export {
+    ALLOW_EPHEMERAL_STATE_ENV,
     createDaemon,
     DEFAULT_WORKSPACE_NAME,
     HTTP_HOST_ENV,
     HTTP_PORT_ENV,
+    PERSISTENCE_DEGRADED_EVENT,
+    persistenceDegradedEvent,
     type Daemon,
     type DaemonInfo,
     type DaemonOptions

@@ -16,6 +16,21 @@ import { createLineBuffer } from '@nex/protocol';
 
 export type ControlProbeTarget = { readonly socketPath: string } | { readonly port: number; readonly host?: string | undefined };
 
+/**
+ * The `persistence` block of a `ping` reply, decoded.
+ *
+ * Absent from an older daemon (and from the Swift app), which is why `degraded` is only ever
+ * true when the daemon actually said so — "no information" must not read as "broken".
+ */
+export interface ControlPingPersistence {
+    readonly ok: boolean;
+    readonly degraded: boolean;
+    readonly path?: string | undefined;
+    readonly error?: string | undefined;
+    readonly errno?: string | undefined;
+    readonly failedSaves?: number | undefined;
+}
+
 export interface ControlPingProbe {
     /** Something is listening and answered the ping with a JSON object. */
     readonly alive: boolean;
@@ -24,8 +39,29 @@ export interface ControlPingProbe {
     readonly pid?: number | undefined;
     readonly version?: string | undefined;
     readonly build?: string | undefined;
+    /** Is the daemon's state actually reaching disk? Undefined = it did not say. */
+    readonly persistence?: ControlPingPersistence | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
+}
+
+/** Decode `ping`'s additive `persistence` block; undefined when absent or malformed. */
+export function readPersistenceHealth(reply: Record<string, unknown>): ControlPingPersistence | undefined {
+    const raw = reply['persistence'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+    const source = raw as Record<string, unknown>;
+    const degraded = source['degraded'] === true;
+    const okField = source['ok'];
+    return {
+        ok: typeof okField === 'boolean' ? okField : !degraded,
+        degraded,
+        ...(readString(source, 'path') !== undefined ? { path: readString(source, 'path') } : {}),
+        ...(readString(source, 'error') !== undefined ? { error: readString(source, 'error') } : {}),
+        ...(readString(source, 'errno') !== undefined ? { errno: readString(source, 'errno') } : {}),
+        ...(readNumber(source, 'failed_saves') !== undefined
+            ? { failedSaves: readNumber(source, 'failed_saves') }
+            : {})
+    };
 }
 
 export interface ControlProbeOptions {
@@ -95,12 +131,14 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const pid = readNumber(reply, 'pid');
                 const version = readString(reply, 'version');
                 const build = readString(reply, 'build');
+                const persistence = readPersistenceHealth(reply);
                 finish({
                     alive: true,
                     reply,
                     ...(pid !== undefined ? { pid } : {}),
                     ...(version !== undefined ? { version } : {}),
-                    ...(build !== undefined ? { build } : {})
+                    ...(build !== undefined ? { build } : {}),
+                    ...(persistence !== undefined ? { persistence } : {})
                 });
                 return;
             }

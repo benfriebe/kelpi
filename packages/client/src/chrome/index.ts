@@ -176,6 +176,7 @@ export {
     createKeyDispatcher,
     installKeyDispatcher,
     isEditableTarget,
+    isTerminalSurface,
     keyBindingsFromOverrideLines,
     modifiersFromEvent,
     shortcutForAction,

@@ -10,6 +10,8 @@ interface Harness {
     readonly term: StubTerm;
     readonly transport: RecordedTransport;
     readonly session: PaneStreamSession;
+    /** Every grid reported to boot's geometry cache, in order. */
+    readonly geometry: { paneID: string; cols: number; rows: number }[];
     /** Decoded frames the client would have received, in order. */
     frames(): { type: number; paneID: string; text: string }[];
 }
@@ -18,9 +20,11 @@ function harness(options: { windowBytes?: number; maxQueuedBytes?: number } = {}
     const pty = stubPty();
     const term = stubTerm();
     const transport = recordingTransport();
+    const geometry: { paneID: string; cols: number; rows: number }[] = [];
     const hub = createPaneStreamHub({
         pty: pty.manager,
         term: term.service,
+        onGeometry: (paneID, cols, rows) => geometry.push({ paneID, cols, rows }),
         ...(options.windowBytes !== undefined ? { windowBytes: options.windowBytes } : {}),
         ...(options.maxQueuedBytes !== undefined ? { maxQueuedBytes: options.maxQueuedBytes } : {})
     });
@@ -31,6 +35,7 @@ function harness(options: { windowBytes?: number; maxQueuedBytes?: number } = {}
         term,
         transport,
         session,
+        geometry,
         frames: () =>
             transport.frames.map((frame) => {
                 const decoded = decodePtyFrame(frame);
@@ -61,6 +66,27 @@ describe('attach → replay → live', () => {
         await h.session.attach(PANE_A, { cols: 120, rows: 40 });
         expect(h.pty.resizes).toEqual([{ paneID: PANE_A, cols: 120, rows: 40 }]);
         expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 120, rows: 40 }]);
+    });
+
+    it('reports every applied grid so the NEXT spawn of the pane starts there', async () => {
+        // Without this the pane is re-born at 80×24 on the next daemon boot and prints its
+        // first prompt at a width nothing will ever render it at (`pty/geometry.ts`).
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 120, rows: 40 });
+        h.session.resize(PANE_A, 169, 47);
+
+        expect(h.geometry).toEqual([
+            { paneID: PANE_A, cols: 120, rows: 40 },
+            { paneID: PANE_A, cols: 169, rows: 47 }
+        ]);
+    });
+
+    it('never reports a zero-size layout pass', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A, { cols: 0, rows: 0 });
+        h.session.resize(PANE_A, Number.NaN, 40);
+
+        expect(h.geometry).toEqual([]);
     });
 
     it('never duplicates bytes that land while the snapshot is settling', async () => {

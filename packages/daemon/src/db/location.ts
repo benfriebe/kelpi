@@ -13,7 +13,9 @@
  * port without either corrupting the other's state. Importing the legacy DB is a later utility
  * (PLAN.md M8) — `legacyMacAppDatabasePath()` is exported for it, and nothing here reads it.
  *
- * The directory is created 0700: the DB holds working directories, labels and agent session ids.
+ * Directories the daemon CREATES are made 0700 (the DB holds working directories, labels and
+ * agent session ids). Directories that already exist are used exactly as they are — see
+ * `ensureDatabaseDir`, and the P0 that motivated it.
  */
 
 import fs from 'node:fs';
@@ -67,13 +69,63 @@ export function resolveDatabasePath(lookup: DatabaseLocationLookup = {}): string
     return path.join(resolveDataDir(lookup), DATABASE_FILENAME);
 }
 
-/** Create the database's parent directory (0700) if missing. Returns the directory. */
+/** Every directory in `first…leaf`, leaf-first. `first` is assumed to be a prefix of `leaf`. */
+function createdChain(first: string, leaf: string): string[] {
+    const chain: string[] = [];
+    let current = leaf;
+    for (;;) {
+        chain.push(current);
+        if (current === first) break;
+        const parent = path.dirname(current);
+        // Defensive: `first` should always be a prefix of `leaf`, but a symlinked or
+        // rewritten path must not spin forever, and must never walk up past the root.
+        if (parent === current) break;
+        current = parent;
+    }
+    return chain;
+}
+
+/**
+ * Create the database's parent directory if it is missing. Returns the directory.
+ *
+ * **Only directories this call creates are chmod'ed to 0700.** A parent that already exists
+ * belongs to whoever made it — `/tmp` (root-owned, mode 1777), a home directory, a mount point,
+ * a dir the user made for several tools to share — and chmod'ing it is either impossible or
+ * rude. Doing it unconditionally is what silently disabled persistence for a whole day:
+ * `NEXD_DB_PATH=/tmp/nexd-dev.db` → `chmod('/tmp', 0700)` → EPERM → thrown out of
+ * `createPersistence`'s open path → the daemon ran memory-only while reporting itself healthy.
+ */
 export function ensureDatabaseDir(databasePath: string): string {
     const dir = path.dirname(path.resolve(databasePath));
-    fs.mkdirSync(dir, { recursive: true, mode: DB_DIR_MODE });
-    // mkdir's mode is umask-masked; be explicit (matches lifecycle/rundir.ts).
-    fs.chmodSync(dir, DB_DIR_MODE);
+    // `recursive` returns the FIRST directory this call created, or undefined when the whole
+    // chain was already there — the only reliable "did I make this?" signal fs gives us.
+    const firstCreated = fs.mkdirSync(dir, { recursive: true, mode: DB_DIR_MODE });
+    if (firstCreated === undefined) return dir;
+    // mkdir's mode is umask-masked; be explicit for every level we just made (matches
+    // lifecycle/rundir.ts). Nothing else on the machine can have opened these yet.
+    for (const created of createdChain(path.resolve(firstCreated), dir)) {
+        fs.chmodSync(created, DB_DIR_MODE);
+    }
     return dir;
+}
+
+/**
+ * Ensure the parent directory and prove the file is actually usable. Returns the resolved path.
+ *
+ * The preflight exists because `node:sqlite` reports every open failure as a bare
+ * `unable to open database file` with no errno and no path — unactionable in a log. Asking the
+ * filesystem first turns that into `EACCES: permission denied, access '<dir>'`, which names both
+ * the reason and the place. Errors propagate: a database the daemon cannot write is fatal
+ * (see `assertPersistenceUsable`), never a silent downgrade to memory-only.
+ */
+export function prepareDatabaseFile(databasePath: string): string {
+    const resolved = path.resolve(databasePath);
+    const dir = ensureDatabaseDir(resolved);
+    // Writing needs both: X_OK to traverse into the directory, W_OK to create the `-wal` /
+    // `-shm` siblings SQLite makes beside the file.
+    fs.accessSync(dir, fs.constants.W_OK | fs.constants.X_OK);
+    if (fs.existsSync(resolved)) fs.accessSync(resolved, fs.constants.R_OK | fs.constants.W_OK);
+    return resolved;
 }
 
 /** The Swift app's database — the source for the M8 legacy import. Never opened by the daemon. */

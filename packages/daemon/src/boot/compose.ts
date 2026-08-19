@@ -22,6 +22,7 @@
  */
 
 import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { newUUID } from '@nex/core/codec';
 import type { ResumeTuple } from '@nex/core/agent';
@@ -37,7 +38,13 @@ import {
     resolveControlEndpoints,
     type ControlServer
 } from '../control/index.js';
-import { createPersistence, resolveDatabasePath, type SqlitePersistence } from '../db/index.js';
+import {
+    assertPersistenceUsable,
+    createPersistence,
+    PersistenceUnavailableError,
+    resolveDatabasePath,
+    type SqlitePersistence
+} from '../db/index.js';
 import { createGitService, sweepGraftTempIndexes, type GitService } from '../git/index.js';
 import {
     createGraftService,
@@ -58,8 +65,14 @@ import {
     writePidRecord,
     type RunPaths
 } from '../lifecycle/index.js';
-import { createPtyManager, createTerminalInput, type NexPtyManager } from '../pty/index.js';
-import type { ControlDispatcher, TerminalInput } from '../seams.js';
+import {
+    GEOMETRY_FILE_NAME,
+    createPaneGeometryStore,
+    createPtyManager,
+    createTerminalInput,
+    type NexPtyManager
+} from '../pty/index.js';
+import type { ControlDispatcher, PersistenceHealth, TerminalInput } from '../seams.js';
 import {
     applyLoadReset,
     createStore,
@@ -87,8 +100,41 @@ import { resolveDaemonVersion, type DaemonVersion } from './version.js';
 export const HTTP_PORT_ENV = 'NEXD_HTTP_PORT';
 export const HTTP_HOST_ENV = 'NEXD_HTTP_HOST';
 
+/**
+ * Opt in to running WITHOUT persistence (`1` / `true` / `yes`).
+ *
+ * Default behaviour is a hard refusal to start when the database cannot be opened, because the
+ * alternative is what shipped: a daemon that ran all day against an unopenable
+ * `NEXD_DB_PATH=/tmp/nexd-dev.db`, reported itself healthy, and lost every workspace. Anyone who
+ * genuinely wants a throw-away daemon (a read-only container, a scratch instance) says so here
+ * and gets a loud warning on every boot instead.
+ */
+export const ALLOW_EPHEMERAL_STATE_ENV = 'NEXD_ALLOW_EPHEMERAL_STATE';
+
+/** Broadcast to every attached client when the daemon stops being able to save (P0). */
+export const PERSISTENCE_DEGRADED_EVENT = 'persistence-degraded';
+
 /** Name of the workspace created on a fresh install (app-state-core.md §12.2). */
 export const DEFAULT_WORKSPACE_NAME = 'Default';
+
+function isTruthyEnv(raw: string | undefined): boolean {
+    if (raw === undefined) return false;
+    const value = raw.trim().toLowerCase();
+    return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+/** The client-visible warning. Untyped like `graft-changed`: additive, ignored by old clients. */
+export function persistenceDegradedEvent(health: PersistenceHealth): Record<string, unknown> {
+    return {
+        type: PERSISTENCE_DEGRADED_EVENT,
+        path: health.path,
+        phase: health.phase,
+        error: health.error,
+        errno: health.errno,
+        failedSaves: health.failedSaves,
+        lastSaveAt: health.lastSaveAt
+    };
+}
 
 export interface DaemonOptions {
     readonly env?: NodeJS.ProcessEnv | undefined;
@@ -139,6 +185,8 @@ export interface DaemonInfo {
     readonly runDir: string;
     /** How the persisted state came back (`ok` / `empty` / `unreadable`). */
     readonly loadStatus: 'ok' | 'empty' | 'unreadable';
+    /** Is state actually reaching the disk? Printed by `nexd start --foreground`. */
+    readonly persistence: PersistenceHealth;
     readonly workspaces: number;
     readonly resumeTuples: number;
 }
@@ -154,6 +202,8 @@ export interface Daemon {
     readonly term: TerminalStateServiceImpl;
     readonly input: TerminalInput;
     readonly persistence: SqlitePersistence;
+    /** Live "is state reaching the disk?" — what `ping` reports and `stop()` checks. */
+    persistenceHealth(): PersistenceHealth;
     /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
     readonly content: ContentService;
     /** M8: the config-file settings authority (nex + ghostty), watched and write-through. */
@@ -238,14 +288,54 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     });
 
     // ── the layers ──────────────────────────────────────────────────────────
+    // Declared before persistence: an open failure fires `onDegraded` synchronously from
+    // `createPersistence`, and a `let` in the temporal dead zone would throw there instead.
+    let ws: WsServer | undefined;
+    // Every persistence failure is surfaced twice: `onError` for the log, `onDegraded` for the
+    // things that must not be missed — a loud line, a client-visible event, and the flag `ping`
+    // and `nexd status` report. Silence here is the P0 this whole path exists to prevent.
     const persistence = createPersistence({
         path: dbPath,
-        onError: (error, phase) => report(error, `persistence ${phase}`)
+        onError: (error, phase) => report(error, `persistence ${phase}`),
+        onDegraded: (health) => {
+            log(
+                `WARNING: nexd cannot save state — ${health.path}: ${health.error ?? 'unknown error'} (phase ${health.phase ?? 'open'}, ${String(health.failedSaves)} failed save(s)). Workspaces, panes and agent sessions created from here on will NOT survive a restart.`
+            );
+            // `ws` may not exist yet (an open failure happens before the server is built); the
+            // start-time gate below covers that window by refusing to start at all.
+            ws?.broadcast(persistenceDegradedEvent(health));
+        }
     });
     const loaded = initialState(persistence, home);
+    /** Set when boot must refuse to start (P0: never run memory-only by accident). */
+    let persistenceFatal: PersistenceUnavailableError | undefined;
+    if (!persistence.isAvailable && persistence.path !== ':memory:') {
+        if (isTruthyEnv(env[ALLOW_EPHEMERAL_STATE_ENV])) {
+            log(
+                `WARNING: ${ALLOW_EPHEMERAL_STATE_ENV} is set — starting WITHOUT persistence. Nothing in this session will be saved.`
+            );
+        } else {
+            try {
+                assertPersistenceUsable(persistence);
+            } catch (error) {
+                // Thrown from `start()`, not from here: a constructor that throws would leave a
+                // half-built daemon nobody can `stop()`.
+                persistenceFatal = error as PersistenceUnavailableError;
+            }
+        }
+    }
     const store = createStore(loaded.state);
     const pty = createPtyManager({
         onError: (paneID, error) => report(error, `pty ${paneID}`)
+    });
+    // What each pane was last rendered at, so a shell is BORN at that size instead of at
+    // 80×24 and then resized once a client attaches — the headless emulator never reflows,
+    // so a prompt printed at the wrong width stays wrong in every later snapshot
+    // (`pty/geometry.ts`). It lives beside the database, which is the daemon's state
+    // directory; a `:memory:` daemon keeps it in memory too.
+    const geometry = createPaneGeometryStore({
+        path: dbPath === ':memory:' ? null : join(dirname(dbPath), GEOMETRY_FILE_NAME),
+        onError: (error, context) => report(error, context)
     });
     const term = createTerminalStateService();
     const input = createTerminalInput({ pty, modes: (paneID) => term.modes(paneID) });
@@ -300,7 +390,6 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(onError !== undefined ? { onError } : {})
     });
 
-    let ws: WsServer | undefined;
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
     let info: DaemonInfo | undefined;
@@ -316,8 +405,24 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const snapshotNow = (): void => {
         persistence.scheduleSave(toSnapshot(store.getState()));
     };
+    /**
+     * A client that attached AFTER the failed open missed the one-shot announcement (there was
+     * no WS server yet). Re-announce whenever the attached-client count changes while degraded,
+     * so opening the UI on a broken daemon shows the warning rather than a serene, unsaveable
+     * workspace.
+     */
+    let announcedToClients = -1;
+    const announceDegraded = (): void => {
+        const health = persistence.health();
+        if (!health.degraded) return;
+        const clients = ws?.clients ?? 0;
+        if (clients === 0 || clients === announcedToClients) return;
+        announcedToClients = clients;
+        ws?.broadcast(persistenceDegradedEvent(health));
+    };
     const persist = (): void => {
         if (stopping || !persistReady) return;
+        announceDegraded();
         snapshotNow();
     };
     /** `session-end` only (issue #178): the cleared id must survive an immediate crash. */
@@ -340,7 +445,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         store.dispatch({ type: 'pane-process-terminated', paneID });
     });
 
-    const spawnDefaults: PaneSpawnDefaults = options.spawn ?? {};
+    // Every spawn path (boot restore, `pane-split`, `pane create`) asks the geometry cache
+    // first and only falls back to the fixed grid for a pane nothing has ever rendered.
+    const spawnDefaults: PaneSpawnDefaults = {
+        ...(options.spawn ?? {}),
+        sizeFor: (paneID: string) => geometry.sizeFor(paneID)
+    };
     const ctx: PaneHandlerContext = {
         store,
         pty,
@@ -350,6 +460,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         broadcast: (event) => {
             ws?.broadcast(event);
         },
+        // `ping` reports this: a daemon that cannot save must never answer a health check as if
+        // it could.
+        persistenceHealth: () => persistence.health(),
         profiles: readProfiles,
         spawn: spawnDefaults,
         ...(options.now !== undefined ? { clock: options.now } : {}),
@@ -496,8 +609,24 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // SIGTERM contract: write the debounced snapshot before anything else changes.
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).
-            persistence.flush();
+            //
+            // The result matters: `nexd stop` used to print a clean stop over a database that
+            // had never been written. A failed final flush is the LAST chance to say so.
+            const flushed = persistence.flush();
+            // Only meaningful for a daemon that actually served: a `start()` that REFUSED
+            // (`ENEXDPERSIST`) tears down through here too, and "everything is lost" would be a
+            // lie about a session that never existed.
+            const served = info !== undefined;
+            if (!flushed && served) {
+                const health = persistence.health();
+                log(
+                    `ERROR: nexd shut down WITHOUT saving state — ${health.path}: ${health.error ?? 'the database was never opened'}. Everything created in this session is lost.`
+                );
+            }
             await pty.killAll();
+            // The last-known pane grids are what the NEXT boot spawns at, so they have to
+            // survive this one (`pty/geometry.ts`); the write is debounced and may be pending.
+            geometry.close();
             await Promise.all([
                 runControl?.stop() ?? Promise.resolve(),
                 compatControl?.stop() ?? Promise.resolve(),
@@ -506,7 +635,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             persistence.close();
             // The token and the port file stay: both are stable across restarts by design.
             clearRunFiles(paths);
-            log('nexd stopped');
+            log(served && persistence.health().degraded ? 'nexd stopped (state NOT saved)' : 'nexd stopped');
         })();
         return stopped;
     };
@@ -520,7 +649,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     process.exit(1);
                 }
                 void stop().then(
-                    () => process.exit(0),
+                    // A shutdown that could not write state is a failed shutdown, and the exit
+                    // code is the only thing a supervisor (or a `nexd start --foreground` in a
+                    // terminal) ever reads.
+                    () => process.exit(persistence.health().degraded ? 1 : 0),
                     () => process.exit(1)
                 );
             };
@@ -553,6 +685,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 routes: createPaneAssetsRoute((paneID, relativePath) =>
                     content.assetPath(paneID, relativePath)
                 ),
+                // Remember what each pane is actually rendered at, so the next spawn of it
+                // (a restart, the next daemon boot) starts there (`pty/geometry.ts`).
+                onGeometry: (paneID, cols, rows) => {
+                    geometry.record(paneID, cols, rows);
+                },
                 ...(distDir !== undefined ? { distDir } : {}),
                 ...(onError !== undefined ? { onError } : {})
             });
@@ -574,6 +711,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     const start = async (): Promise<DaemonInfo> => {
         if (info !== undefined) return info;
+
+        // Before ANY side effect — no run dir, no sockets, no PTYs. A daemon that cannot write
+        // its database does not come up; it says which file, which errno, and how to fix it.
+        if (persistenceFatal !== undefined) throw persistenceFatal;
 
         ensureRunDir(paths);
         const token = ensureToken(paths);
@@ -680,6 +821,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             configPath: config.path,
             runDir: paths.dir,
             loadStatus: loaded.status,
+            persistence: persistence.health(),
             workspaces: store.getState().workspaces.length,
             resumeTuples: loaded.tuples.length
         };
@@ -699,6 +841,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         term,
         input,
         persistence,
+        persistenceHealth: () => persistence.health(),
         content,
         settings,
         webPanes,

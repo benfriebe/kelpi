@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { App } from './App';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { TERMINAL_FONT_FALLBACKS } from './terminal';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -211,17 +212,19 @@ describe('appearance follows the ghostty config', () => {
         expect(renderer?.options?.theme?.background).toBe('#1A1B26');
     });
 
-    it('passes the ghostty font through to the engine', () => {
+    it('heads the engine font stack with the ghostty font, backed by the bundled Nerd Font', () => {
         const h = setup({ fontFamily: 'Menlo', fontSize: 15 });
         const renderer = h.renderers.instances[0];
-        expect(renderer?.options?.fontFamily).toBe('Menlo');
+        // The user's family wins for the glyphs it has; the Powerline separators and Nerd Font
+        // icons it lacks come from the bundled face instead of rendering as tofu.
+        expect(renderer?.options?.fontFamily).toBe(`Menlo, ${TERMINAL_FONT_FALLBACKS}`);
         expect(renderer?.options?.fontSize).toBe(15);
     });
 
-    it('leaves the engine on its own defaults when ghostty sets no font', () => {
+    it('falls back to the bundled Nerd Font stack when ghostty sets no font', () => {
         const h = setup();
         const renderer = h.renderers.instances[0];
-        expect(renderer?.options?.fontFamily).toBeUndefined();
+        expect(renderer?.options?.fontFamily).toBe(TERMINAL_FONT_FALLBACKS);
         expect(renderer?.options?.fontSize).toBeUndefined();
     });
 });

@@ -178,13 +178,39 @@ export type KeyDispatcher = (event: KeyEventLike) => boolean;
 
 const EDITABLE_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
+/** The marker `TerminalPane` puts on the element an engine mounts into. */
+export const TERMINAL_HOST_SELECTOR = '[data-terminal-host]';
+
+/**
+ * Is this event target part of a terminal surface?
+ *
+ * It has to be asked structurally, because the *engine* decides what kind of element it uses
+ * to collect keys and neither answer is "a canvas": ghostty-web marks its host
+ * `contenteditable`, and the xterm.js fallback focuses a hidden `<textarea>`. Both live inside
+ * the `[data-terminal-host]` div `TerminalPane` renders, and nothing else in the client does —
+ * chrome's own fields (sidebar filter, inline rename, palette, editor) are all outside it.
+ */
+export function isTerminalSurface(target: unknown): boolean {
+    if (target === null || typeof target !== 'object') return false;
+    const element = target as { closest?: unknown; getAttribute?: unknown };
+    if (typeof element.closest !== 'function') return false;
+    return (element.closest as (selector: string) => unknown)(TERMINAL_HOST_SELECTOR) !== null;
+}
+
 /**
  * "The user is typing into chrome": the sidebar filter, an inline rename, the palette field.
- * Terminal surfaces are NOT editable elements — they are canvases — so pane bindings keep
- * working while a terminal has focus, which is the whole point of the monitor.
+ *
+ * A **terminal is not chrome text**, and answering otherwise kills the entire pane keymap: the
+ * terminal holds focus on boot and after every split, so `⌘D`/`⌘W`/`⌘]`/`⇧⌘Space` would never
+ * fire in practice — and worse, the unconsumed chord falls through to the PTY, typing a stray
+ * `d` onto the user's command line. The Swift app never had the problem (an `NSView` is not a
+ * text field); this engine's `contenteditable` host is what makes the plain tag/flag test wrong,
+ * so terminal surfaces are excluded before the flag is consulted. See the UI audit's
+ * `split-keybinding` / `keybinding-blast-radius` steps, which exist to keep it fixed.
  */
 export function isEditableTarget(target: unknown): boolean {
     if (target === null || typeof target !== 'object') return false;
+    if (isTerminalSurface(target)) return false;
     const element = target as { tagName?: unknown; isContentEditable?: unknown };
     if (element.isContentEditable === true) return true;
     return typeof element.tagName === 'string' && EDITABLE_TAGS.has(element.tagName);

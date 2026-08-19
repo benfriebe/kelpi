@@ -169,10 +169,11 @@ interface CreateInput {
 
 function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): void {
     const state = ctx.store.getState();
+    const paneID = deps.uuid();
     ctx.store.dispatch({
         type: 'create-workspace',
         id: input.workspaceID,
-        paneID: deps.uuid(),
+        paneID,
         name: input.name,
         now: deps.now(),
         color: input.color ?? nextRandomColor(state, deps.random),
@@ -186,6 +187,29 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
     spawnFirstPane(ctx, deps, input.workspaceID);
     refreshSyncGroup(ctx, input.workspaceID);
     deps.persist();
+    revealCreatedWorkspace(ctx, input.workspaceID, paneID);
+}
+
+/**
+ * "Creating a workspace switches to it" — the Swift app's behaviour, made to work for a
+ * client that did not issue the command (run-B L3).
+ *
+ * The port's active workspace is **per client** (PLAN.md), so the reducer marking the new
+ * workspace `lastActiveWorkspaceID` moves what `nex workspace list` calls ACTIVE and nothing
+ * else: a `nex workspace create` from a terminal used to leave the daemon and every open
+ * window disagreeing for the rest of the session, and an agent's follow-up `nex pane create`
+ * then landed in a workspace the user could not see. A create is a deliberate act with an
+ * obvious destination, so it is broadcast as a REVEAL — the same `reveal-pane` fan-out a
+ * clicked notification uses (`ws/sync.ts`), which clients already implement as "activate the
+ * workspace, then focus the pane". The client that issued the create reveals itself from the
+ * reply as well; arriving twice is idempotent.
+ */
+function revealCreatedWorkspace(ctx: AppContext, workspaceID: string, paneID: string): void {
+    const workspace = workspaceByID(ctx.store.getState(), workspaceID);
+    if (workspace === null) return;
+    const target = workspace.panes.some((pane) => pane.id === paneID) ? paneID : workspace.panes[0]?.id;
+    if (target === undefined) return;
+    ctx.broadcast({ type: 'reveal-pane', workspaceID, paneID: target });
 }
 
 function ambiguousGroupError(name: string): string {

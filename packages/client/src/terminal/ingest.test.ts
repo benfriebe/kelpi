@@ -29,7 +29,9 @@ describe('terminal ingest', () => {
         ingest.live(encoder.encode('live-2'));
 
         expect(target.writes).toEqual(['SNAPSHOT', 'live-1', 'live-2']);
-        expect(target.resets).toBe(0);
+        // Even the first replay resets: a "fresh" engine can arrive with another pane's screen
+        // on it (ghostty-web shares one WASM instance), and the snapshot has no leading clear.
+        expect(target.resets).toBe(1);
         expect(ingest.replays).toBe(1);
     });
 
@@ -47,7 +49,7 @@ describe('terminal ingest', () => {
         expect(target.writes).toEqual(['SNAPSHOT', 'early', 'after']);
     });
 
-    it('resets the engine before a second replay so the stale screen cannot linger', () => {
+    it('resets the engine before every replay so a stale screen cannot linger', () => {
         const target = recorder();
         const ingest = createTerminalIngest(target);
 
@@ -58,7 +60,7 @@ describe('terminal ingest', () => {
         ingest.live(encoder.encode('stale'));
         ingest.replay(encoder.encode('SECOND'));
 
-        expect(target.resets).toBe(1);
+        expect(target.resets).toBe(2);
         expect(target.writes).toEqual(['FIRST', 'output', 'SECOND', 'stale']);
         expect(ingest.replays).toBe(2);
     });

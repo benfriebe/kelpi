@@ -298,11 +298,21 @@ export class CommandClient {
      */
     setActiveWorkspaceReport(
         workspaceID: string,
-        options: { visiblePaneIDs?: readonly string[]; documentVisible?: boolean } = {}
+        options: {
+            visiblePaneIDs?: readonly string[];
+            documentVisible?: boolean;
+            /** Send even when the payload matches the last one — an idempotent re-assert. */
+            force?: boolean;
+        } = {}
     ): void {
         const visible = options.visiblePaneIDs ?? this.lastVisibility?.visiblePaneIDs ?? [];
         const documentVisible = options.documentVisible ?? this.lastVisibility?.documentVisible ?? true;
-        this.reportVisibility(workspaceID, visible, documentVisible);
+        this.reportVisibility(
+            workspaceID,
+            visible,
+            documentVisible,
+            options.force === undefined ? {} : { force: options.force }
+        );
     }
 
     // ── pane verbs ─────────────────────────────────────────────────────────────────

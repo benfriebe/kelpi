@@ -199,6 +199,38 @@ describe('ui slice', () => {
         expect(client.getState().ui.activeWorkspaceID).toBe(W2);
     });
 
+    it('drops the focus echo when the daemon moves focus itself (a ⌘D split)', () => {
+        // run-B L7: `selectFocusedPaneID` prefers the echo for the active workspace, and the
+        // echo used to outlive everything — so after a split the daemon focused the NEW pane
+        // and the client kept drawing the ring (and holding the caret) on the old one.
+        const { store: daemon, batches } = seededDaemon();
+        const client = createNexStore();
+        client.getState().applySnapshot(0, serializeState(daemon.getState()));
+        client.getState().setFocusEcho(W1, P1);
+
+        daemon.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW + 1 });
+        batches.forEach((batch, index) => {
+            client.getState().applyDelta(index + 1, serializeEvents(batch));
+        });
+
+        expect(client.getState().daemon.state.workspaces[0]?.focusedPaneID).toBe(P2);
+        expect(client.getState().ui.focusEcho).toBeNull();
+    });
+
+    it('keeps the focus echo while the daemon says nothing about focus', () => {
+        const { store: daemon, batches } = seededDaemon();
+        const client = createNexStore();
+        client.getState().applySnapshot(0, serializeState(daemon.getState()));
+        client.getState().setFocusEcho(W1, P1);
+
+        daemon.dispatch({ type: 'rename-workspace', id: W1, name: 'renamed' });
+        batches.forEach((batch, index) => {
+            client.getState().applyDelta(index + 1, serializeEvents(batch));
+        });
+
+        expect(client.getState().ui.focusEcho).toEqual({ workspaceID: W1, paneID: P1 });
+    });
+
     it('tracks connection status, palette, filter and focus echo', () => {
         const client = createNexStore();
         const state = () => client.getState().ui;

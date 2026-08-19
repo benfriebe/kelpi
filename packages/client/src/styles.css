@@ -74,10 +74,12 @@
   --nex-agent: #d3a329; /* grid/tokens.ts spelling */
   --nex-group-band-opacity: 0.22;
 
-  /* terminal — terminal/renderer.ts DEFAULT_TERMINAL_THEME */
+  /* terminal — terminal/renderer.ts DEFAULT_TERMINAL_THEME.
+     The foreground is ghostty's own default (#ffffff, src/config/Config.zig), not --nex-fg:
+     the terminal body must not read dimmer than the pane header framing it (run-B L4). */
   --nex-term-bg: #0a0a0c;
-  --nex-term-fg: #e6e6ea;
-  --nex-term-cursor: #e6e6ea;
+  --nex-term-fg: #ffffff;
+  --nex-term-cursor: #ffffff;
   --nex-term-cursor-accent: #0a0a0c;
   --nex-term-selection-bg: #2a3550;
   --nex-term-selection-fg: #e6e6ea;

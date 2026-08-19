@@ -13,6 +13,7 @@ import {
     createContext,
     useContext,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useState,
     type CSSProperties,
@@ -101,7 +102,19 @@ export function ThemeProvider(props: ThemeProviderProps): ReactElement {
 
     const vars = useMemo(() => chromeThemeCssVars(value.theme), [value.theme]);
 
-    useEffect(() => {
+    /**
+     * A LAYOUT effect, and that is load-bearing rather than a micro-optimisation.
+     *
+     * React flushes every layout effect in a commit (children, then parents) before any passive
+     * effect of that same commit. Descendants that must READ this stamp back off the DOM — the
+     * terminal palette in `App.tsx` reads `--nex-term-*` off `:root`, because the engines want
+     * concrete colors — run in passive effects, so writing here is what guarantees they see the
+     * bucket this commit resolved. As a plain `useEffect` the parent wrote AFTER the child read,
+     * so the very first light→dark transition left the terminal painted with the light palette
+     * (a `#2B2B2E` foreground on a `#0A0A0C` background) for the whole session (run-B L4). It
+     * also removes a frame of light chrome before paint.
+     */
+    useLayoutEffect(() => {
         if (props.applyToDocument !== true) return;
         const root = globalThis.document?.documentElement;
         if (root === undefined || root === null) return;

@@ -322,6 +322,30 @@ function reconcileActiveWorkspace(state: DaemonState, current: string | null): s
     return firstWorkspaceID(state);
 }
 
+function focusedPaneOf(state: DaemonState, workspaceID: string): string | null | undefined {
+    return state.workspaces.find((workspace) => workspace.id === workspaceID)?.focusedPaneID;
+}
+
+/**
+ * Is the local focus echo still the newest thing said about that workspace?
+ *
+ * The echo exists to cover the round trip of a click (`selectFocusedPaneID` prefers it), and
+ * it used to survive forever — so when the DAEMON moved focus on its own the client kept
+ * drawing the ring on the pane the user last touched. ⌘D was the visible case: the daemon
+ * focuses the pane the split created (`store/reducers/panes.ts` ends in `setFocus`), the
+ * client stayed on the original, and "split, then type" typed into the wrong pane (run-B L7).
+ *
+ * The rule: a delta that CHANGES the echoed workspace's focus supersedes the echo. A delta
+ * that merely confirms it (the round trip landing) changes nothing, so the echo is left alone
+ * and no render is wasted.
+ */
+function echoSurvives(echo: FocusEcho, previous: DaemonState, next: DaemonState): boolean {
+    const before = focusedPaneOf(previous, echo.workspaceID);
+    const after = focusedPaneOf(next, echo.workspaceID);
+    if (after === undefined) return true; // the workspace is gone; nothing to defer to
+    return before === after;
+}
+
 export type NexStoreApi = StoreApi<NexState>;
 
 type SetState = NexStoreApi['setState'];
@@ -365,9 +389,12 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
             const state = events.length === 0 ? daemon.state : applyDomainEvents(daemon.state, events);
             const ui = get().ui;
             const activeWorkspaceID = reconcileActiveWorkspace(state, ui.activeWorkspaceID);
+            const focusEcho =
+                ui.focusEcho !== null && !echoSurvives(ui.focusEcho, daemon.state, state) ? null : ui.focusEcho;
+            const uiChanged = activeWorkspaceID !== ui.activeWorkspaceID || focusEcho !== ui.focusEcho;
             set({
                 daemon: { ...daemon, state, seq },
-                ...(activeWorkspaceID === ui.activeWorkspaceID ? {} : { ui: { ...ui, activeWorkspaceID } })
+                ...(uiChanged ? { ui: { ...ui, activeWorkspaceID, focusEcho } } : {})
             });
             return true;
         },

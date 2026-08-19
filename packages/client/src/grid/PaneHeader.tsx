@@ -44,6 +44,33 @@ export function basename(path: string): string {
     return parts.length === 0 ? path : (parts[parts.length - 1] as string);
 }
 
+/**
+ * Split a header title so CSS can truncate it in the MIDDLE (§4.2 item 3).
+ *
+ * `text-overflow: ellipsis` only ever cuts the tail, which for a path throws away the only
+ * informative part — the audit's `/var/folders/5x/k7q6qbys3p35wb8dcn0dl…` names a temp
+ * directory and nothing else (run-B m9), while the status footer, describing the same pane,
+ * middle-truncates. A character budget cannot be used here: the pane header's width is whatever
+ * the split left it. So the string is split into a head that may ellipsize and a tail that
+ * never does — the last path segment (with its separator), capped so a single monstrous segment
+ * cannot eat the whole line. Titles with no separator, and short ones, keep the plain behaviour.
+ */
+export interface TruncatedTitle {
+    readonly head: string;
+    readonly tail: string;
+}
+
+export const HEADER_TAIL_MAX = 24;
+
+export function splitHeaderTitle(title: string, tailMax = HEADER_TAIL_MAX): TruncatedTitle {
+    const cut = title.lastIndexOf('/');
+    // Nothing to protect: no separator, or the separator is the very first/last character.
+    if (cut <= 0 || cut === title.length - 1) return { head: title, tail: '' };
+    const tail = title.slice(cut);
+    if (tail.length > tailMax) return { head: title, tail: '' };
+    return { head: title.slice(0, cut), tail };
+}
+
 /** The header's path/title string, by pane type (shell-ui.md §4.2 item 3). */
 export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
     switch (pane.type) {
@@ -261,6 +288,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
 
     const badge = agentBadge(pane, now);
     const title = paneDisplayTitle(pane, homeDirectory);
+    const titleParts = splitHeaderTitle(title);
 
     return (
         <div
@@ -329,11 +357,12 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             ) : (
                 <span
                     data-testid={`pane-title-${pane.id}`}
-                    className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none"
+                    className="flex min-w-0 flex-1 font-mono text-[11px] leading-none"
                     style={{ color: focused ? tokens.textPrimary : tokens.textSecondary }}
                     title={title}
                 >
-                    {title}
+                    <span className="min-w-0 truncate">{titleParts.head}</span>
+                    {titleParts.tail === '' ? null : <span className="shrink-0">{titleParts.tail}</span>}
                 </span>
             )}
 

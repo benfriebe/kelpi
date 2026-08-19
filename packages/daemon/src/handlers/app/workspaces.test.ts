@@ -179,6 +179,17 @@ describe('workspace-create (top level)', () => {
         expect(h2.state().workspaces[0]?.profileName).toBe('work');
     });
 
+    it('reveals the new workspace to every attached client', () => {
+        // run-B L3: the port's active workspace is per client, so the reducer marking the new
+        // workspace last-active only moved what `nex workspace list` calls ACTIVE — a
+        // `nex workspace create` from a terminal left every open window on the old workspace
+        // indefinitely, and the agent's next `nex pane create` landed somewhere invisible.
+        // A create is broadcast as a reveal, which clients already act on (ws/sync.ts).
+        const h = harness({ ids: [W1, P1] });
+        h.reply({ command: 'workspace-create', name: 'dev' });
+        expect(h.broadcasts).toContainEqual({ type: 'reveal-pane', workspaceID: W1, paneID: P1 });
+    });
+
     it('keeps an unrecognized color out of the reply path and picks a random one', () => {
         const h = harness({ ids: [W1, P1], random: () => 0 });
         h.reply({ command: 'workspace-create', color: 'chartreuse' });

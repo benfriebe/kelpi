@@ -150,10 +150,20 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                         }
                                     }}
                                 />
+                                {/* The built-in baseline cannot be removed (§9.5) — and a 40%
+                                    opacity red button does not say that, which is why the audit
+                                    read it as an offer (run-B m5). Still disabled, now in the
+                                    tone of an unavailable control rather than a destructive one,
+                                    and with a tooltip that gives the reason. */}
                                 <SettingsButton
-                                    tone="danger"
+                                    tone={index === 0 ? 'default' : 'danger'}
                                     testID="profile-remove"
                                     disabled={index === 0}
+                                    title={
+                                        index === 0
+                                            ? `The built-in "${DEFAULT_PROFILE_NAME}" profile can't be removed`
+                                            : 'Remove this profile'
+                                    }
                                     onClick={() => {
                                         const next = drafts.filter((_, at) => at !== index);
                                         setSelected(Math.max(index - 1, 0));

@@ -99,6 +99,18 @@ export const AUTO_SCROLL_INTERVAL_MS = 15;
 
 // ── small pieces ────────────────────────────────────────────────────────────────────
 
+/**
+ * The bounds of the row a context-menu event was raised on — what `menuAnchorFromEvent` needs
+ * in order to keep the menu off it (run-B m7). Degrades to `null` where there is no layout
+ * (jsdom has no box model), which puts the menu back at the pointer.
+ */
+function rowRect(event: React.MouseEvent): { top: number; bottom: number } | null {
+    const element = event.currentTarget;
+    const rect = element instanceof Element ? element.getBoundingClientRect() : undefined;
+    if (rect === undefined || (rect.top === 0 && rect.bottom === 0)) return null;
+    return { top: rect.top, bottom: rect.bottom };
+}
+
 interface AgentCounts {
     readonly running: number;
     readonly waiting: number;
@@ -1251,17 +1263,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return backgroundMenuItems();
     }, [backgroundMenuItems, groupMenuItems, menu, workspaceMenuItems]);
 
+    /**
+     * The row itself is what the menu must not cover (run-B m7): `currentTarget` is the row
+     * element the handler is bound to, so its rect is the thing to dodge.
+     */
     const onWorkspaceContextMenu = useCallback((workspaceID: string, event: React.MouseEvent): void => {
         event.preventDefault();
         event.stopPropagation();
-        const anchor = menuAnchorFromEvent(event);
+        const anchor = menuAnchorFromEvent(event, rowRect(event));
         setMenu({ kind: 'workspace', id: workspaceID, x: anchor.x, y: anchor.y });
     }, []);
 
     const onGroupContextMenu = useCallback((groupID: string, event: React.MouseEvent): void => {
         event.preventDefault();
         event.stopPropagation();
-        const anchor = menuAnchorFromEvent(event);
+        const anchor = menuAnchorFromEvent(event, rowRect(event));
         setMenu({ kind: 'group', id: groupID, x: anchor.x, y: anchor.y });
     }, []);
 

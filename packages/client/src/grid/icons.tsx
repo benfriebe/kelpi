@@ -125,9 +125,18 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M2.2 1.6v2.6h2.6" />
         </>
     ),
+    /**
+     * Rename: a pencil over the line it writes on.
+     *
+     * It used to be a bare serif "I" — the shape every OS uses for a TEXT CURSOR rather than for
+     * an action — so the audit read it as an unexplained I-beam sitting in the pane header
+     * (run-B m1). Same tooltip and accessible name ("Rename pane"); a glyph that says what the
+     * button does. Distinct from `pencil` (markdown's edit toggle) by its baseline.
+     */
     rename: (
         <>
-            <path d="M4 2.5h4M6 2.5v7M4 9.5h4" />
+            <path d="m2.4 7.6 1-2.4 4.1-4.1 1.4 1.4-4.1 4.1z" />
+            <path d="M2.2 10.4h7.6" />
         </>
     ),
     terminal: (

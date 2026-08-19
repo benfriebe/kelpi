@@ -180,6 +180,19 @@ describe('context menus (portal-based)', () => {
         expect(screen.getByTestId('context-submenu')).toBeDefined();
     });
 
+    it('opens clear of the row it acts on (run-B m7)', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const row = screen.getAllByTestId('workspace-row')[0] as HTMLElement;
+        // jsdom has no box model, so the row is given one: 44px tall, 120px down the sidebar.
+        row.getBoundingClientRect = () =>
+            ({ top: 120, bottom: 164, left: 0, right: 240, width: 240, height: 44, x: 0, y: 120 }) as DOMRect;
+
+        fireEvent.contextMenu(row, { clientX: 40, clientY: 140 });
+
+        const menu = screen.getByTestId('context-menu');
+        expect(Number.parseInt(menu.style.top, 10)).toBeGreaterThanOrEqual(164);
+    });
+
     it('closes on an outside mousedown', () => {
         render(<Sidebar {...noopProps()} entries={entries()} />);
         fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);

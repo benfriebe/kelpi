@@ -216,11 +216,17 @@ export const PENDING_WRITE_LIMIT_BYTES = 4 * 1024 * 1024;
 /**
  * Dark palette matching the chrome tokens (`--nex-bg` / `--nex-fg`). Hex only — see
  * `TerminalTheme`.
+ *
+ * The foreground is **ghostty's own default** (`#FFFFFF`, `src/config/Config.zig`), not the
+ * chrome's `textPrimary`. The terminal is ghostty's surface, and a body dimmer than the pane
+ * header that frames it is precisely the "ordinary output reads like SGR dim" the audit found
+ * (run-B L4): against `#0A0A0C` the chrome grey is 17.7:1 while ghostty's white is 20.4:1, and
+ * the difference is exactly the gap a user reads as "this text is faint".
  */
 export const DEFAULT_TERMINAL_THEME: TerminalTheme = {
     background: '#0A0A0C',
-    foreground: '#E6E6EA',
-    cursor: '#E6E6EA',
+    foreground: '#FFFFFF',
+    cursor: '#FFFFFF',
     cursorAccent: '#0A0A0C',
     selectionBackground: '#2A3550',
     selectionForeground: '#E6E6EA',
@@ -241,6 +247,45 @@ export const DEFAULT_TERMINAL_THEME: TerminalTheme = {
     brightCyan: '#7FCACA',
     brightWhite: '#F2F2F6'
 };
+
+/**
+ * The light column of the same palette — the values `styles.css` defines under
+ * `prefers-color-scheme: light` / `[data-nex-theme="light"]`, as data.
+ *
+ * It exists so the palette can be chosen from the RESOLVED chrome bucket instead of by reading
+ * the DOM at a moment nobody controls. Reading CSS variables one commit too early is how the
+ * light foreground (`#2B2B2E`) ended up painted on the dark background for a whole session
+ * (run-B L4): the values were never wrong, the *timing* was.
+ */
+export const LIGHT_TERMINAL_THEME: TerminalTheme = {
+    background: '#FFFFFF',
+    foreground: '#2B2B2E',
+    cursor: '#2B2B2E',
+    cursorAccent: '#FFFFFF',
+    selectionBackground: '#CFE0F5',
+    selectionForeground: '#2B2B2E',
+    black: '#2B2B2E',
+    red: '#D0453C',
+    green: '#3F9457',
+    yellow: '#B99413',
+    blue: '#3D74C0',
+    magenta: '#8158C8',
+    cyan: '#3F8F8F',
+    white: '#D8D6D0',
+    brightBlack: '#6B6C70',
+    brightRed: '#E0655C',
+    brightGreen: '#4FA46B',
+    brightYellow: '#C8A52A',
+    brightBlue: '#5E8AC4',
+    brightMagenta: '#9A72DD',
+    brightCyan: '#4FA8A8',
+    brightWhite: '#FFFFFF'
+};
+
+/** The palette for a resolved chrome bucket (`chrome/theme.ts` `ChromeBucket`). */
+export function terminalThemePreset(bucket: 'light' | 'dark'): TerminalTheme {
+    return bucket === 'light' ? LIGHT_TERMINAL_THEME : DEFAULT_TERMINAL_THEME;
+}
 
 /**
  * CSS custom properties the terminal reads, with the dark preset as the fallback — same
@@ -299,24 +344,29 @@ export function compactTheme(theme: TerminalTheme): Record<string, string> {
 }
 
 /**
- * Resolve the palette from CSS custom properties on `element` (or `:root`), keeping the dark
- * preset for anything unset or in a color format the engines cannot parse.
+ * Resolve the palette from CSS custom properties on `element` (or `:root`), keeping `base`
+ * (the dark preset unless the caller knows better) for anything unset or in a color format the
+ * engines cannot parse.
+ *
+ * Pass the bucket's preset as `base` when the caller knows which appearance it is rendering:
+ * the DOM read is only as current as the last theme stamp, and the preset is the answer that
+ * cannot be stale.
  */
-export function resolveTerminalTheme(element?: Element | null): TerminalTheme {
+export function resolveTerminalTheme(element?: Element | null, base: TerminalTheme = DEFAULT_TERMINAL_THEME): TerminalTheme {
     const scope = element ?? (typeof document === 'undefined' ? null : document.documentElement);
-    if (scope === null || typeof getComputedStyle !== 'function') return DEFAULT_TERMINAL_THEME;
+    if (scope === null || typeof getComputedStyle !== 'function') return base;
     let styles: CSSStyleDeclaration;
     try {
         styles = getComputedStyle(scope);
     } catch {
-        return DEFAULT_TERMINAL_THEME;
+        return base;
     }
     const resolved: Record<string, string> = {};
     for (const [key, token] of Object.entries(TERMINAL_TOKEN_NAMES)) {
         const raw = styles.getPropertyValue(token).trim();
         if (isEngineColor(raw)) resolved[key] = raw;
     }
-    return { ...DEFAULT_TERMINAL_THEME, ...resolved };
+    return { ...base, ...resolved };
 }
 
 // ── engine selection ────────────────────────────────────────────────────────────────

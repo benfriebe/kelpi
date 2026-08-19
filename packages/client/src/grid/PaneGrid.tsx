@@ -54,6 +54,7 @@ import {
 } from '@nex/core/layout';
 
 import {
+    dividerAtPoint,
     dividerCommit,
     dividerDragActivated,
     ratioForDividerDrag,
@@ -206,6 +207,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const framesRef = useRef<ReadonlyMap<string, Rect>>(new Map());
+    const dividersRef = useRef<readonly SplitDividerInfo[]>([]);
     const lastFramesRef = useRef<Map<string, Rect>>(new Map());
 
     // ── measurement ─────────────────────────────────────────────────────────────────
@@ -300,6 +302,12 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         for (const [paneID, rect] of frames) lastFramesRef.current.set(paneID, rect);
     }, [frames]);
 
+    // Same reason: the press handler re-resolves which divider a grab means (see
+    // `startDividerDrag`) and must not be rebuilt every time the layout moves.
+    useEffect(() => {
+        dividersRef.current = dividers;
+    }, [dividers]);
+
     // Layout-independent DOM order: the wrapper for a given pane keeps its position in the
     // child list no matter how the tree is rearranged, so React never even moves the node.
     const orderedPanes = useMemo(
@@ -372,10 +380,21 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
     );
 
     const startDividerDrag = useCallback(
-        (info: SplitDividerInfo, event: ReactPointerEvent<HTMLDivElement>): void => {
+        (pressed: SplitDividerInfo, event: ReactPointerEvent<HTMLDivElement>): void => {
             if (event.button !== 0) return;
             event.preventDefault();
             event.stopPropagation();
+            /**
+             * The DOM says which divider ELEMENT was pressed; geometry says which divider was
+             * MEANT. At a T-junction the two 10px grab strips overlap and the element that wins
+             * is arbitrary, so the press is re-resolved against every divider's bar (run-B m8).
+             */
+            const info = dividerAtPoint(
+                dividersRef.current,
+                toLocal(event.clientX, event.clientY),
+                pressed,
+                DIVIDER_HIT_INSET + 1
+            );
             const snapshot = dividerDragSnapshot(info);
             const commit = throttleTrailing((ratio: number) => {
                 const current = latest.current;
@@ -397,7 +416,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             }
             attachListeners(onDividerPointerMove, endDividerDrag);
         },
-        [attachListeners, onDividerPointerMove, endDividerDrag, ratioCommitIntervalMs]
+        [attachListeners, onDividerPointerMove, endDividerDrag, ratioCommitIntervalMs, toLocal]
     );
 
     // ── pane move drag (shell-ui.md §4.3, pane-layout.md §7.5) ──────────────────────

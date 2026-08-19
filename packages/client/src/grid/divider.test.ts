@@ -9,6 +9,8 @@ import {
 } from '@nex/core/layout';
 
 import {
+    dividerAtPoint,
+    dividerAxisDistance,
     dividerCommit,
     dividerDragActivated,
     dividerPaneTarget,
@@ -184,5 +186,52 @@ describe('throttleTrailing', () => {
         throttled(2);
         throttled(3);
         expect(seen).toEqual([1, 2, 3]);
+    });
+});
+
+describe('dividerAtPoint — the T-junction (run-B m8)', () => {
+    /**
+     * The layout the audit drags in: one full-height divider down the middle, and a
+     * horizontal one splitting the right column. Their 10 px grab strips overlap where they
+     * meet, and the DOM resolves that square to whichever element paints last.
+     */
+    const layout = split('horizontal', 0.5, leaf('a'), split('vertical', 0.5, leaf('b'), leaf('c')));
+    const dividers = splitDividers(layout, BOUNDS);
+    const vertical = dividers.find((info) => info.direction === 'horizontal');
+    const horizontal = dividers.find((info) => info.direction === 'vertical');
+
+    it('has a junction to be confused by', () => {
+        expect(vertical).toBeDefined();
+        expect(horizontal).toBeDefined();
+        // They cross: the full-height bar passes through the other bar's row.
+        expect(horizontal?.rect.y).toBeGreaterThan(vertical!.rect.y);
+        expect(horizontal?.rect.y).toBeLessThan(vertical!.rect.y + vertical!.rect.height);
+    });
+
+    it('picks the bar the press is actually on, whatever element received it', () => {
+        const onTheFullHeightBar = {
+            x: vertical!.rect.x + vertical!.rect.width / 2,
+            y: horizontal!.rect.y + horizontal!.rect.height / 2
+        };
+        // The DOM handed us the perpendicular divider; geometry says otherwise.
+        expect(dividerAtPoint(dividers, onTheFullHeightBar, horizontal!, 5).id).toBe(vertical!.id);
+    });
+
+    it('still resolves a press that is only on the horizontal bar', () => {
+        const onTheHorizontalBar = {
+            x: horizontal!.rect.x + horizontal!.rect.width * 0.75,
+            y: horizontal!.rect.y + horizontal!.rect.height / 2
+        };
+        expect(dividerAtPoint(dividers, onTheHorizontalBar, vertical!, 5).id).toBe(horizontal!.id);
+    });
+
+    it('keeps the element the DOM chose when the point is on no band at all', () => {
+        const nowhere = { x: 10, y: 10 };
+        expect(dividerAtPoint(dividers, nowhere, horizontal!, 5).id).toBe(horizontal!.id);
+    });
+
+    it('measures distance across the bar, which is the axis it can move on', () => {
+        expect(dividerAxisDistance(vertical!, { x: vertical!.rect.x + vertical!.rect.width / 2, y: 0 })).toBe(0);
+        expect(dividerAxisDistance(horizontal!, { x: 0, y: horizontal!.rect.y + horizontal!.rect.height / 2 })).toBe(0);
     });
 });

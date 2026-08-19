@@ -238,11 +238,22 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
             connection.connect();
         },
 
+        /**
+         * Activation is an ASSERTION, not a diff: the report goes out even when this client
+         * was already showing that workspace.
+         *
+         * Clicking the row you are already on used to be a total no-op — the store
+         * short-circuits an unchanged id and the visibility report deduped against its own
+         * last payload — so there was no way to tell the daemon "no, THIS one" after
+         * something else (a CLI `workspace create`) moved its answer. `force` is what makes
+         * the click an idempotent re-assert (run-B L3).
+         */
         activateWorkspace(workspaceID, visiblePaneIDs): void {
             store.getState().setActiveWorkspace(workspaceID);
             commands.setActiveWorkspaceReport(workspaceID, {
                 visiblePaneIDs: visiblePaneIDs ?? visiblePanesFor(workspaceID),
-                documentVisible: store.getState().ui.documentVisible
+                documentVisible: store.getState().ui.documentVisible,
+                force: true
             });
         },
 

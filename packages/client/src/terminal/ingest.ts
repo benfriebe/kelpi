@@ -63,9 +63,20 @@ export function createTerminalIngest(target: IngestTarget): TerminalIngest {
 
     return {
         replay(data: Uint8Array | string): void {
-            // The first replay paints into a fresh engine; every later one supersedes a screen
-            // that is already there.
-            if (replays > 0) target.reset();
+            /**
+             * ALWAYS reset first — including the first replay, into what ought to be a fresh
+             * engine.
+             *
+             * The snapshot carries no leading clear (see the header note), so it describes the
+             * cells it mentions and says nothing about the rest. "A fresh engine starts blank"
+             * turned out to be an assumption rather than a fact: ghostty-web runs every
+             * terminal through one shared WASM instance, and a pane mounted where another had
+             * just been torn down came up showing the PREVIOUS pane's screen with its own
+             * prompt painted over row 1. Revealing a newly created workspace (run-B L3) is what
+             * exposed it — until then nothing ever put a brand-new pane on screen a moment
+             * after another pane left it. One RIS per attach makes the replay the whole truth.
+             */
+            target.reset();
             replays += 1;
             awaiting = false;
             target.write(data);

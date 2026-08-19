@@ -11,6 +11,8 @@ import {
     isEngineColor,
     resolveTerminalEngine,
     resolveTerminalTheme,
+    terminalThemePreset,
+    LIGHT_TERMINAL_THEME,
     type CellSize,
     type EngineDisposable,
     type EngineHandle,
@@ -216,6 +218,30 @@ describe('theme resolution', () => {
         // jsdom does not compute custom properties; assert the invariant that holds either way.
         expect([DEFAULT_TERMINAL_THEME.background, '#123456']).toContain(theme.background);
         expect(theme.foreground).toBe(DEFAULT_TERMINAL_THEME.foreground);
+    });
+});
+
+describe('terminal palette presets (run-B L4)', () => {
+    it('has a light column, so the palette can follow the RESOLVED bucket', () => {
+        // The light foreground painted on the dark background is what "the terminal reads like
+        // SGR dim" actually was: the DOM was read one commit before the theme stamp landed, and
+        // nothing ever re-read it. A preset per bucket is the answer that cannot be stale.
+        expect(terminalThemePreset('dark')).toBe(DEFAULT_TERMINAL_THEME);
+        expect(terminalThemePreset('light')).toBe(LIGHT_TERMINAL_THEME);
+        expect(LIGHT_TERMINAL_THEME.foreground).not.toBe(DEFAULT_TERMINAL_THEME.foreground);
+    });
+
+    it('defaults the terminal foreground to ghostty’s own white, not the chrome grey', () => {
+        // ghostty `src/config/Config.zig`: background #282c34, foreground #ffffff. The pane
+        // header beside it paints chrome `textPrimary` (#E6E6EA); a terminal body dimmer than
+        // its own header is the defect.
+        expect(DEFAULT_TERMINAL_THEME.foreground).toBe('#FFFFFF');
+        expect(DEFAULT_TERMINAL_THEME.cursor).toBe('#FFFFFF');
+    });
+
+    it('falls back to the base the caller passes, not always to dark', () => {
+        expect(resolveTerminalTheme(host(), LIGHT_TERMINAL_THEME)).toEqual(LIGHT_TERMINAL_THEME);
+        expect(resolveTerminalTheme(null, LIGHT_TERMINAL_THEME)).toEqual(LIGHT_TERMINAL_THEME);
     });
 });
 

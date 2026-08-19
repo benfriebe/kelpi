@@ -39,6 +39,18 @@ import {
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 100;
 
 /**
+ * The longest a CONTINUOUS resize may go without a sync — the debounce's ceiling.
+ *
+ * A pure trailing debounce starves under a gesture that never stops: dragging a divider fires a
+ * `ResizeObserver` callback every frame, each one pushing the timer out again, so the engine,
+ * the PTY and the grid's `cols × rows` overlay all kept the pre-drag numbers until the mouse
+ * came to rest (run-B L5 — the one piece of feedback the overlay exists to give was wrong for
+ * the whole gesture). With a ceiling the geometry is republished ~10×/s while the drag runs,
+ * which is what a native terminal does, and a settled resize still coalesces exactly as before.
+ */
+export const RESIZE_MAX_WAIT_MS = 100;
+
+/**
  * Horizontal breathing room between the pane edge and column 1, in CSS pixels.
  *
  * Two jobs: it keeps the focus ring off the first and last columns (see the pane root's style),
@@ -86,6 +98,8 @@ export interface TerminalPaneProps {
     /** Engine override (tests inject a fake; the app uses `VITE_TERMINAL_ENGINE`). */
     readonly createRenderer?: TerminalRendererFactory | undefined;
     readonly resizeDebounceMs?: number | undefined;
+    /** Ceiling on the debounce during a continuous gesture; defaults to `RESIZE_MAX_WAIT_MS`. */
+    readonly resizeMaxWaitMs?: number | undefined;
     /** Measured grid, for the resize badge (`grid/types.ts` `PaneDimensions`). */
     readonly onDimensionsChange?: ((paneID: string, geometry: TerminalGeometry) => void) | undefined;
     readonly onExit?: ((paneID: string, exitCode: number | null, signal?: string) => void) | undefined;
@@ -142,6 +156,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     const streamRef = useRef<PtyStreamHandle | null>(null);
     const geometryRef = useRef<TerminalGeometry | null>(null);
     const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    /** When the current run of coalesced resizes started (null = nothing pending). */
+    const pendingResizeSince = useRef<number | null>(null);
     const [status, setStatus] = useState<PaneStatus>('loading');
 
     const clearResizeTimer = useCallback((): void => {
@@ -168,11 +184,25 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (!unchanged || force) current.onDimensionsChange?.(current.paneID, next);
     }, []);
 
+    /**
+     * Trailing debounce with a ceiling: a burst coalesces, but a gesture that never stops still
+     * publishes its geometry every `RESIZE_MAX_WAIT_MS` (see the constant — run-B L5).
+     */
     const scheduleGeometrySync = useCallback((): void => {
-        clearResizeTimer();
         const delay = latest.current.resizeDebounceMs ?? DEFAULT_RESIZE_DEBOUNCE_MS;
+        const maxWait = latest.current.resizeMaxWaitMs ?? Math.max(delay, RESIZE_MAX_WAIT_MS);
+        const now = Date.now();
+        if (pendingResizeSince.current === null) pendingResizeSince.current = now;
+        if (now - pendingResizeSince.current >= maxWait) {
+            clearResizeTimer();
+            pendingResizeSince.current = null;
+            syncGeometry();
+            return;
+        }
+        clearResizeTimer();
         resizeTimer.current = setTimeout(() => {
             resizeTimer.current = null;
+            pendingResizeSince.current = null;
             syncGeometry();
         }, delay);
     }, [clearResizeTimer, syncGeometry]);

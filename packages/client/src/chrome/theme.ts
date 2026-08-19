@@ -161,6 +161,27 @@ export function withAlpha(color: string, alpha: number): string {
 }
 
 /**
+ * `color` at `alpha`, composited over an opaque `base`, as an opaque `#RRGGBB`.
+ *
+ * The caller that needs this is the content pane's sandboxed frame (content-panes.md §3.8 +
+ * `content/ContentFrame.tsx`): the pane container paints `rgba(ghostty-bg, opacity)` over the
+ * window, but a sandboxed out-of-process iframe cannot composite through to it — it paints its
+ * own surface over Chromium's white base. Flattening the same two colors the container uses
+ * gives the FRAME a background pixel-identical to the composite it can no longer join. An
+ * unparseable input degrades to whichever half parses, then to the base string itself.
+ */
+export function flattenOver(color: string, alpha: number, base: string): string {
+    const top = parseHexColor(color);
+    const bottom = parseHexColor(base);
+    if (top === null) return normalizeHexColor(base) ?? base;
+    if (bottom === null) return normalizeHexColor(color) ?? color;
+    const a = Math.min(1, Math.max(0, Number.isFinite(alpha) ? alpha : 1));
+    const mix = (over: number, under: number): number => Math.round(over * a + under * (1 - a));
+    const part = (component: number): string => component.toString(16).padStart(2, '0').toUpperCase();
+    return `#${part(mix(top.r, bottom.r))}${part(mix(top.g, bottom.g))}${part(mix(top.b, bottom.b))}`;
+}
+
+/**
  * Perceived luminance, `0.299r + 0.587g + 0.114b` over sRGB in 0..1 — the exact formula the
  * app uses for both the content-pane dark-mode rule (content-panes.md §3.1) and label chip
  * text color (app-state-core.md §6.3).

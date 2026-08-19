@@ -93,6 +93,7 @@ import {
     createMountPolicy,
     resolveTerminalTheme,
     terminalFontStack,
+    terminalThemePreset,
     visiblePaneIDs,
     type TerminalGeometry,
     type TerminalRendererFactory,
@@ -420,9 +421,16 @@ function Shell(props: AppProps): ReactElement {
         };
 
         /**
-         * §15's one-shot "scroll the new entry into view". The reply carries the id, so this
-         * client knows the row is ITS doing — a `workspace-created` delta caused by another
-         * client (or by the CLI) must not move this one's viewport.
+         * §15's one-shot "scroll the new entry into view", plus the switch to it.
+         *
+         * The reply carries the id, so this client knows the row is ITS doing — a
+         * `workspace-created` delta caused by another client must not move this one's
+         * viewport. **Creating a workspace switches to it** (the Swift app's behaviour,
+         * app-state-core.md §3 `createWorkspace` → `activeWorkspaceID = new`), which is what
+         * makes "New Workspace, then type" work; without it the row appeared and the window
+         * stayed on the old workspace forever (run-B L3). The daemon reveals a create to every
+         * attached client as well (`handlers/app/workspaces.ts`) — this is the local, instant
+         * half, and the two are idempotent.
          */
         const runCreateWorkspace = (promise: Promise<CommandReply>): true => {
             void promise.then(
@@ -432,7 +440,10 @@ function Shell(props: AppProps): ReactElement {
                         return;
                     }
                     const created = replyText(reply, 'workspace_id');
-                    if (created !== undefined) setScrollToWorkspaceID(created);
+                    if (created !== undefined) {
+                        setScrollToWorkspaceID(created);
+                        runtime.activateWorkspace(created);
+                    }
                 },
                 (error: unknown) => {
                     notifyFailure('New workspace', error instanceof Error ? error.message : String(error));
@@ -780,10 +791,20 @@ function Shell(props: AppProps): ReactElement {
         if (current !== null) runtime.focusPane(current.id, current.focusedPaneID);
     }, [workspaceID, runtime, store]);
 
-    // The engines want concrete colors, and the palette only exists on the DOM after the theme
-    // provider's effect has run — so it is read one commit later, per bucket.
+    /**
+     * The engines want concrete colors, so the palette is read off the DOM — but the answer is
+     * anchored to the bucket THIS render resolved, never to whatever the stylesheet currently
+     * says.
+     *
+     * Two things make that safe now (run-B L4). `ThemeProvider` stamps `data-nex-theme` in a
+     * LAYOUT effect, which React flushes before this passive one, so the read sees this
+     * commit's bucket rather than the previous one's; and the bucket's own preset is the
+     * fallback, so a host that defines no `--nex-term-*` variables still gets the right column
+     * instead of the dark one. Before both, the first light→dark transition left the terminal
+     * painting a `#2B2B2E` foreground on a `#0A0A0C` background — text that reads as SGR-dim.
+     */
     useEffect(() => {
-        setTerminalTheme(resolveTerminalTheme());
+        setTerminalTheme(resolveTerminalTheme(null, terminalThemePreset(bucket)));
     }, [bucket]);
 
     // The ghostty background overrides whatever the chrome palette says, and it must stay an

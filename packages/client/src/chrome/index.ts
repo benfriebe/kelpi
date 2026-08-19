@@ -130,6 +130,7 @@ export {
     chromeThemeCssVars,
     clockLabel,
     effectiveOpacity,
+    flattenOver,
     ghosttyBucket,
     homeAbbreviated,
     isDarkBackground,

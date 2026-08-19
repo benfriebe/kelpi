@@ -382,6 +382,39 @@ describe('gestures and keys become wire commands', () => {
         });
     });
 
+    it('switches to a workspace it created (⌘N), once the daemon names it', async () => {
+        // run-B L3: the row appeared and the window stayed where it was — for the rest of the
+        // session, because a per-client active workspace only moves when the client moves it.
+        // Creating one is a deliberate act with an obvious destination (Swift's
+        // `createWorkspace` sets `activeWorkspaceID`), so the reply is what switches.
+        const h = setup();
+        const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
+
+        fireEvent.keyDown(window, { code: 'KeyN', key: 'n', metaKey: true });
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'workspace-create' });
+        });
+        const create = h
+            .sent()
+            .filter((message) => message['type'] === 'command')
+            .find(
+                (message) =>
+                    (message['payload'] as Record<string, unknown>)['command'] === 'workspace-create'
+            );
+
+        await act(async () => {
+            h.socket().emit({
+                type: 'command-reply',
+                id: create?.['id'] as string,
+                reply: { ok: true, workspace_id: W2, workspace_name: 'Workspace' }
+            });
+            await Promise.resolve();
+        });
+
+        expect(h.runtime.store.getState().ui.activeWorkspaceID).toBe(W2);
+        expect(h.lastOfType('visibility-report')).toMatchObject({ workspaceID: W2 });
+    });
+
     it('closes the focused pane on ⌘W', async () => {
         const h = setup();
 

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PaneHeader, agentBadge, homeAbbreviated, paneDisplayTitle } from './PaneHeader';
+import { PaneHeader, agentBadge, homeAbbreviated, paneDisplayTitle, splitHeaderTitle } from './PaneHeader';
 import { firePointer, testPane } from './testing';
 import type { PaneModel } from './types';
 
@@ -47,6 +47,29 @@ describe('paneDisplayTitle', () => {
         expect(homeAbbreviated('/Users/ben/x', '/Users/ben/')).toBe('~/x');
         expect(homeAbbreviated('/Users/benjamin/x', '/Users/ben')).toBe('/Users/benjamin/x');
         expect(homeAbbreviated('/etc', '')).toBe('/etc');
+    });
+});
+
+describe('splitHeaderTitle (§4.2 middle truncation)', () => {
+    it('keeps the last path segment out of the ellipsizing half', () => {
+        // run-B m9: `text-overflow: ellipsis` only cuts the tail, so a long temp path showed
+        // `/var/folders/5x/k7q6qbys3p35wb8dcn0dl…` — every character of it uninformative.
+        expect(splitHeaderTitle('/var/folders/5x/k7q6qbys3p35wb8dcn0dlfmh0000gn/T/nexaudit/home')).toEqual({
+            head: '/var/folders/5x/k7q6qbys3p35wb8dcn0dlfmh0000gn/T/nexaudit',
+            tail: '/home'
+        });
+        expect(splitHeaderTitle('~/code/nex')).toEqual({ head: '~/code', tail: '/nex' });
+    });
+
+    it('leaves titles with nothing to protect alone', () => {
+        expect(splitHeaderTitle('Scratchpad')).toEqual({ head: 'Scratchpad', tail: '' });
+        expect(splitHeaderTitle('/home')).toEqual({ head: '/home', tail: '' });
+        expect(splitHeaderTitle('/repo/')).toEqual({ head: '/repo/', tail: '' });
+    });
+
+    it('refuses a tail that would eat the whole header', () => {
+        const monster = `/repo/${'x'.repeat(80)}`;
+        expect(splitHeaderTitle(monster)).toEqual({ head: monster, tail: '' });
     });
 });
 

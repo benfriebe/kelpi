@@ -793,6 +793,75 @@ function buildFlows(ctx) {
                     puaMissing.length === 0,
                     puaMissing.length === 0 ? `${String(Object.keys(PUA).length)} codepoints` : `missing: ${puaMissing.join(', ')}`
                 );
+
+                /**
+                 * The pixels the ordinary foreground is actually painted with (run-B L4).
+                 *
+                 * "The terminal text looks dim" is exactly the kind of finding that only eyes
+                 * could reach — until the canvas is sampled. ghostty-web paints into a 2D
+                 * context, so `getImageData` returns the truth: the brightest pixel over the
+                 * printed rows IS the default foreground the VT resolved (glyph strokes at
+                 * 13px hit full coverage somewhere). Comparing it against the theme's declared
+                 * `--nex-term-fg` turns "reads like SGR dim" into a number.
+                 */
+                const paint = await page.eval(
+                    `(() => {
+                        const canvas = document.querySelector('[data-pane-id="${paneID}"] canvas') ?? document.querySelector('[data-terminal-host] canvas');
+                        if (canvas === null) return { error: 'no canvas' };
+                        const ctx = canvas.getContext('2d');
+                        if (ctx === null) return { error: 'no 2d context' };
+                        const height = Math.min(canvas.height, Math.round(canvas.height * 0.5));
+                        const data = ctx.getImageData(0, 0, canvas.width, height).data;
+                        const counts = new Map();
+                        let brightest = { lum: -1, rgb: null };
+                        for (let i = 0; i < data.length; i += 4) {
+                            const r = data[i], g = data[i + 1], b = data[i + 2];
+                            const key = r + ',' + g + ',' + b;
+                            counts.set(key, (counts.get(key) ?? 0) + 1);
+                            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                            if (lum > brightest.lum) brightest = { lum, rgb: key };
+                        }
+                        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+                        const root = getComputedStyle(document.documentElement);
+                        return {
+                            brightest,
+                            top,
+                            dpr: window.devicePixelRatio,
+                            canvas: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
+                            themeFg: root.getPropertyValue('--nex-term-fg').trim(),
+                            themeBg: root.getPropertyValue('--nex-term-bg').trim()
+                        };
+                    })()`
+                );
+                recorder.note(`canvas paint: ${JSON.stringify(paint)}`);
+                if (paint?.error === undefined) {
+                    /**
+                     * The INK, not the brightest pixel. The most-painted colour is the
+                     * background; the next one is the default foreground — thousands of pixels
+                     * of ordinary text, against a few hundred for any single SGR colour.
+                     * Measuring the brightest pixel instead would be satisfied by one white
+                     * emoji while every line of text was painted `#2B2B2E`, which is exactly
+                     * the state run-B was in.
+                     */
+                    const background = String(paint.top?.[0]?.[0] ?? '10,10,12');
+                    const ink = String((paint.top ?? []).find((entry) => entry[0] !== background)?.[0] ?? background);
+                    const rgb = ink.split(',').map(Number);
+                    const [r, g, b] = rgb.length === 3 ? rgb : [0, 0, 0];
+                    const channel = (value) => {
+                        const srgb = value / 255;
+                        return srgb <= 0.03928 ? srgb / 12.92 : Math.pow((srgb + 0.055) / 1.055, 2.4);
+                    };
+                    const luminance = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+                    // Contrast against the pane background, which is the darkest thing painted.
+                    const bg = 0.2126 * channel(10) + 0.7152 * channel(10) + 0.0722 * channel(11);
+                    const contrast = (Math.max(luminance, bg) + 0.05) / (Math.min(luminance, bg) + 0.05);
+                    recorder.note(`terminal ink rgb(${String(r)}, ${String(g)}, ${String(b)}) · contrast vs pane bg ≈ ${contrast.toFixed(1)}:1`);
+                    recorder.check(
+                        'ordinary terminal text is painted at full strength (not SGR-dim)',
+                        contrast >= 7,
+                        `the most-painted ink is rgb(${String(r)}, ${String(g)}, ${String(b)}), ${contrast.toFixed(1)}:1 against the pane background; the theme asks for ${String(paint.themeFg)}`
+                    );
+                }
                 recorder.eyes('TOFU CHECK — every row must show real glyphs, not ▯/□ boxes. This is the known font defect.');
             }
         },
@@ -1174,6 +1243,19 @@ function buildFlows(ctx) {
             expect: 'Dragging the vertical divider ~140px to the right widens the left pane and narrows the right one; a size overlay appears during the drag.',
             needsEyes: true,
             async run(recorder) {
+                /**
+                 * A layout with a real T-junction, chosen rather than inherited: `main-vertical`
+                 * is one full-height divider down the middle and a split right column, which is
+                 * the shape the overlap check below needs (the keybinding step before this one
+                 * may have left an even-horizontal grid, which has no crossing at all).
+                 *
+                 * `nex layout` is caller-pane scoped (`requirePaneID()`), so it is run AS a
+                 * pane — without `NEX_PANE_ID` the CLI exits 0 having done nothing, which is
+                 * how this check silently found no junction to test.
+                 */
+                const anchorPane = (await domPaneIDs(page))[0];
+                await cli.run(['layout', 'select', 'main-vertical'], { paneID: anchorPane });
+                await sleep(1400);
                 const dividers = await page.eval(
                     `Array.from(document.querySelectorAll('[data-testid^="divider-"]')).map(el => {
                         const r = el.getBoundingClientRect();
@@ -1211,6 +1293,45 @@ function buildFlows(ctx) {
                     owner === vertical.id,
                     `elementFromPoint resolved to ${String(owner)}; overlapping hit strips at a T-junction can shadow it`
                 );
+
+                /**
+                 * The T-junction itself (run-B m8). Where a perpendicular divider crosses this
+                 * one, both 10px grab strips cover the same square and the DOM hands the press
+                 * to whichever element paints last — grabbing the wrong divider means the drag
+                 * runs across its fixed axis and nothing moves. Press exactly on the crossing
+                 * and ask which divider took it; release without moving, so nothing commits.
+                 */
+                const crossing = dividers.find(
+                    (divider) =>
+                        divider.id !== vertical.id &&
+                        divider.w > divider.h &&
+                        // its bar runs somewhere along the vertical divider's span…
+                        divider.y > vertical.top &&
+                        divider.y < vertical.top + vertical.height &&
+                        // …and reaches (within a grab strip of) the vertical divider's x.
+                        vertical.x >= divider.x - divider.w / 2 - 6 &&
+                        vertical.x <= divider.x + divider.w / 2 + 6
+                );
+                if (crossing === undefined) {
+                    recorder.note('no T-junction in this layout — the overlap check needs a crossing divider');
+                } else {
+                    await page.mouse('mouseMoved', vertical.x, crossing.y, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', vertical.x, crossing.y, { button: 'left', clickCount: 1 });
+                    await sleep(120);
+                    const grabbed = await page.eval(
+                        `Array.from(document.querySelectorAll('[data-testid^="divider-"]'))
+                            .filter(el => el.getAttribute('data-dragging') === 'true')
+                            .map(el => el.getAttribute('data-testid'))`
+                    );
+                    await page.mouse('mouseReleased', vertical.x, crossing.y, { button: 'left', clickCount: 1 });
+                    await sleep(200);
+                    recorder.note(`press at the T-junction (${String(Math.round(vertical.x))}, ${String(Math.round(crossing.y))}) grabbed ${JSON.stringify(grabbed)}`);
+                    recorder.check(
+                        'a press at a T-junction grabs the divider whose bar it is on',
+                        Array.isArray(grabbed) && grabbed.length === 1 && grabbed[0] === vertical.id,
+                        `expected ${vertical.id}, got ${JSON.stringify(grabbed)}`
+                    );
+                }
                 const widthsBefore = await page.eval(
                     `Object.fromEntries(Array.from(document.querySelectorAll('[data-testid^="pane-header-"]')).map(el => [el.getAttribute('data-testid').slice(12), Math.round(el.parentElement.getBoundingClientRect().width)]))`
                 );
@@ -1218,12 +1339,33 @@ function buildFlows(ctx) {
                 // the extra moves after the capture mean a slow screenshot cannot swallow the
                 // gesture, and the sampled overlay is a machine-checkable version of "you can
                 // see the new size while dragging".
+                const badgesExpr =
+                    `Object.fromEntries(Array.from(document.querySelectorAll('[data-testid^="pane-size-"]')).map(el => [el.getAttribute('data-testid').slice(10), el.innerText.trim()]))`;
                 await page.mouse('mouseMoved', vertical.x, grabY, { button: 'none', buttons: 0 });
                 await page.mouse('mousePressed', vertical.x, grabY, { button: 'left', clickCount: 1 });
-                for (let step = 1; step <= 10; step++) {
+                for (let step = 1; step <= 3; step++) {
                     await page.mouse('mouseMoved', vertical.x + step * 14, grabY, { button: 'left', buttons: 1 });
                     await sleep(25);
                 }
+                // Early in the gesture…
+                const badgesEarly = await page.eval(badgesExpr);
+                for (let step = 4; step <= 10; step++) {
+                    await page.mouse('mouseMoved', vertical.x + step * 14, grabY, { button: 'left', buttons: 1 });
+                    await sleep(25);
+                }
+                // …and ~100px further along it. A chip that reads the same at both points is
+                // showing a snapshot, not a size (run-B L5).
+                const badgesLate = await page.eval(badgesExpr);
+                const movedChips = Object.keys(badgesEarly ?? {}).filter(
+                    (paneID) => (badgesLate ?? {})[paneID] !== undefined && badgesLate[paneID] !== badgesEarly[paneID]
+                );
+                recorder.note(`chips at +42px: ${JSON.stringify(badgesEarly)}`);
+                recorder.note(`chips at +140px: ${JSON.stringify(badgesLate)}`);
+                recorder.check(
+                    'the cols × rows chips track the drag instead of showing the pre-drag grid',
+                    movedChips.length >= 1,
+                    `chips that changed during the gesture: ${movedChips.join(', ') || 'none'}`
+                );
                 const midDrag = await page.eval(
                     `(() => ({ dragging: document.querySelector('[data-testid="${vertical.id}"]')?.getAttribute('data-dragging') ?? null,
                                badges: Array.from(document.querySelectorAll('[data-testid^="pane-size-"]')).map(el => el.innerText) }))()`
@@ -1319,6 +1461,60 @@ function buildFlows(ctx) {
                 recorder.check('the daemon named it "Audit Two"', created !== undefined, workspaces.map((w) => w.name).join(', '));
                 state.secondWorkspace = created?.id ?? null;
                 recorder.check('the new workspace became active', created?.is_active === true, `is_active=${String(created?.is_active)}`);
+                /**
+                 * …and the window went there. Creating a workspace from the sidebar and being
+                 * left looking at the old one is run-B L3's first half: the row appears, the
+                 * daemon calls the new workspace active, and the grid never moves.
+                 */
+                let identity = '';
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    identity = String(
+                        await page.eval(`(document.querySelector('[data-testid="top-bar-identity"]')?.innerText ?? '').split('\\n')[0].trim()`)
+                    );
+                    if (identity.includes('Audit Two')) break;
+                    await sleep(500);
+                }
+                recorder.note(`title-bar identity after the create: "${identity}"`);
+                recorder.check(
+                    'the window switched to the workspace it just created',
+                    identity.includes('Audit Two'),
+                    `window shows "${identity}"`
+                );
+                /**
+                 * The pane you were just switched to has to be READABLE. Switching on create
+                 * put a brand-new pane on screen a few hundred ms after its shell started,
+                 * which is a moment nothing used to look at — and the first thing it showed
+                 * was a screen of mojibake.
+                 */
+                const created2 = (await cli.json(['pane', 'list', '--json'])).find(
+                    (pane) => pane.workspace_name === 'Audit Two'
+                );
+                if (created2 !== undefined) {
+                    const capture = await cli.ok(['pane', 'capture', '--target', created2.id]);
+                    recorder.block('nex pane capture (the new workspace’s pane)', capture);
+                    const hosts = await page.eval(
+                        `Array.from(document.querySelectorAll('[data-terminal-host]')).map(el => {
+                            const pane = el.closest('[data-pane-id]');
+                            const r = el.getBoundingClientRect();
+                            return { pane: pane?.getAttribute('data-pane-id') ?? null,
+                                     canvases: el.querySelectorAll('canvas').length,
+                                     onScreen: r.width > 0 && r.height > 0 };
+                        })`
+                    );
+                    recorder.note(`terminal hosts on screen: ${JSON.stringify(hosts)}`);
+                    recorder.check(
+                        'each terminal host holds exactly one canvas (no stale one left behind)',
+                        Array.isArray(hosts) && hosts.every((host) => host.canvases <= 1),
+                        JSON.stringify(hosts)
+                    );
+                    // Anything outside the prompt's own character set is corruption.
+                    const junk = capture.replace(/[\x20-\x7E\s]/g, '');
+                    recorder.check(
+                        'the freshly revealed pane shows a clean prompt, not mojibake',
+                        junk.length === 0,
+                        `${String(junk.length)} non-ASCII characters in the capture: ${JSON.stringify(junk.slice(0, 60))}`
+                    );
+                }
                 recorder.eyes('does the new row have an avatar, colour and pane count consistent with the first?');
             }
         },

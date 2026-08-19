@@ -221,15 +221,43 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     return createPortal(menu, container);
 }
 
-/** Where a context menu should open for a mouse event, clamped into the viewport. */
-export function menuAnchorFromEvent(event: { clientX: number; clientY: number }): {
+/** Panel size assumptions for the viewport clamp (the panel's own min-width is 190px). */
+const MENU_ESTIMATED_WIDTH = 200;
+const MENU_ESTIMATED_HEIGHT = 260;
+const MENU_ROW_GAP = 4;
+
+/** A rectangle the menu must not cover — normally the row that was right-clicked. */
+export interface MenuAvoidRect {
+    readonly top: number;
+    readonly bottom: number;
+}
+
+/**
+ * Where a context menu should open for a mouse event, clamped into the viewport.
+ *
+ * `avoid` keeps the menu off the row it acts on (run-B m7). Opening at the pointer put the
+ * panel straight over the workspace being renamed or deleted, so the one thing a destructive
+ * menu has to keep visible — WHICH one — was behind the menu. Given the row's rect the panel
+ * drops to just under it, or rises above it when there is no room below, which is what a native
+ * menu does when it cannot fit under its anchor.
+ */
+export function menuAnchorFromEvent(
+    event: { clientX: number; clientY: number },
+    avoid?: MenuAvoidRect | null | undefined
+): {
     x: number;
     y: number;
 } {
     const width = globalThis.innerWidth || 1280;
     const height = globalThis.innerHeight || 800;
+    const maxY = Math.max(0, height - MENU_ESTIMATED_HEIGHT);
+    let y = event.clientY;
+    if (avoid !== undefined && avoid !== null) {
+        const below = avoid.bottom + MENU_ROW_GAP;
+        y = below <= maxY ? below : Math.max(0, avoid.top - MENU_ESTIMATED_HEIGHT - MENU_ROW_GAP);
+    }
     return {
-        x: Math.min(event.clientX, Math.max(0, width - 200)),
-        y: Math.min(event.clientY, Math.max(0, height - 260))
+        x: Math.min(event.clientX, Math.max(0, width - MENU_ESTIMATED_WIDTH)),
+        y: Math.min(y, maxY)
     };
 }

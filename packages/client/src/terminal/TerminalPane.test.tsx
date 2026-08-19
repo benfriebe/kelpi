@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     DEFAULT_RESIZE_DEBOUNCE_MS,
+    RESIZE_MAX_WAIT_MS,
     TERMINAL_EDGE_PADDING,
     TerminalPane,
     measureGeometry,
@@ -115,7 +116,9 @@ describe('TerminalPane — replay before live', () => {
         stream.replay('SECOND');
 
         const renderer = renderers.last();
-        expect(renderer.resets).toBe(1);
+        // One per replay: the re-seed supersedes a live screen, and the first one cannot
+        // assume the engine it was handed is blank (see `ingest.ts`).
+        expect(renderer.resets).toBe(2);
         expect(renderer.writes).toEqual(['FIRST', 'output', 'SECOND']);
     });
 
@@ -233,6 +236,46 @@ describe('TerminalPane — resize', () => {
         expect(pty.last().subscription.rows).toBe(24);
     });
 
+    it('publishes live geometry while a resize gesture keeps going', async () => {
+        // run-B L5: a divider drag fires a ResizeObserver callback per frame, and a pure
+        // trailing debounce pushed its timer out on every one — so the engine, the PTY and the
+        // grid's `cols × rows` overlay all kept the PRE-DRAG numbers until the mouse stopped.
+        // The debounce now has a ceiling, so a gesture longer than it republishes as it runs.
+        const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+        const pty = createFakePtyApi();
+        const dimensions: { cols: number; rows: number }[] = [];
+        let width = 800;
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={() => ({ width, height: 480 })}
+                onDimensionsChange={(_, geometry) => dimensions.push(geometry)}
+            />
+        );
+        await settle();
+        act(() => vi.advanceTimersByTime(RESIZE_MAX_WAIT_MS)); // mount-time size sync
+        const stream = pty.last();
+        const before = stream.resizes.length;
+        dimensions.length = 0;
+
+        // 20 frames, 25 ms apart: a 500 ms drag that never pauses long enough to settle.
+        for (let frame = 1; frame <= 20; frame++) {
+            width = 800 - frame * 10;
+            act(() => observers.trigger());
+            act(() => vi.advanceTimersByTime(25));
+        }
+
+        expect(dimensions.length).toBeGreaterThan(1);
+        expect(stream.resizes.length).toBeGreaterThan(before);
+        // …and what it publishes is the CURRENT size, not the one the gesture started from.
+        expect(dimensions.at(-1)).toEqual({ cols: 60, rows: 24 });
+    });
+
     it('debounces a resize storm into one cols/rows update', async () => {
         const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
         const pty = createFakePtyApi();
@@ -256,10 +299,12 @@ describe('TerminalPane — resize', () => {
         const stream = pty.last();
         const before = stream.resizes.length;
 
+        // Four frames inside one ceiling window (4 × 20 ms < RESIZE_MAX_WAIT_MS): a burst,
+        // not a gesture, so nothing is published until it settles.
         for (const next of [790, 700, 640, 600]) {
             width = next;
             act(() => observers.trigger());
-            act(() => vi.advanceTimersByTime(DEFAULT_RESIZE_DEBOUNCE_MS - 10));
+            act(() => vi.advanceTimersByTime(20));
         }
         expect(stream.resizes.length).toBe(before); // still coalescing
 
@@ -503,7 +548,10 @@ describe('TerminalPane — eviction and re-attach', () => {
 
         pty.last().replay('SNAPSHOT AGAIN');
         expect(renderers.last().writes).toEqual(['SNAPSHOT AGAIN']);
-        expect(renderers.last().resets).toBe(0); // fresh engine: nothing to supersede
+        // The re-mounted engine is reset before the snapshot lands on it: "fresh" is not
+        // something a client can verify (ghostty-web shares one WASM instance across panes,
+        // and a pane mounted where another was just torn down came up wearing its screen).
+        expect(renderers.last().resets).toBe(1);
     });
 
     it('re-subscribes when the pane id changes', async () => {

@@ -322,6 +322,21 @@ describe('nex runtime', () => {
         ]);
     });
 
+    it('re-asserts the active workspace even when nothing changed', () => {
+        // run-B L3: clicking the row you are already on was a total no-op — the store
+        // short-circuits an unchanged id and the report deduped against its own last payload —
+        // so once something else (a CLI `workspace create`) had moved the daemon's answer, no
+        // click could pull it back and `nex workspace list` named the wrong one forever.
+        const h = runtimeHarness();
+        h.runtime.activateWorkspace(W1);
+        h.runtime.activateWorkspace(W1);
+
+        expect(reports(h.sockets.last(), 'visibility-report')).toEqual([
+            { type: 'visibility-report', workspaceID: W1, visiblePaneIDs: [P1], documentVisible: true },
+            { type: 'visibility-report', workspaceID: W1, visiblePaneIDs: [P1], documentVisible: true }
+        ]);
+    });
+
     it('echoes focus locally before the daemon confirms it', () => {
         const h = runtimeHarness();
         h.runtime.focusPane(W1, P1);

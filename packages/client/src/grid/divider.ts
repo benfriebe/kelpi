@@ -123,6 +123,66 @@ export function dividerCommit(
 /** The root split path, re-exported so callers don't need a second import for `"d"`. */
 export const ROOT_DIVIDER_PATH = ROOT_SPLIT_PATH;
 
+// ── hit resolution ──────────────────────────────────────────────────────────────────
+
+/** The minimum a divider needs to be hit-tested: where it is and which way it splits. */
+export interface DividerHit {
+    readonly id: string;
+    readonly rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+    readonly direction: SplitDirection;
+}
+
+/** Distance from a point to a divider's bar, measured across the bar (its only free axis). */
+export function dividerAxisDistance(divider: DividerHit, point: Point): number {
+    return divider.direction === 'horizontal'
+        ? Math.abs(point.x - (divider.rect.x + divider.rect.width / 2))
+        : Math.abs(point.y - (divider.rect.y + divider.rect.height / 2));
+}
+
+function withinBand(divider: DividerHit, point: Point, slop: number): boolean {
+    const { rect } = divider;
+    // Along its own length the band is the bar's extent; across it, the bar plus the slop.
+    const alongOK =
+        divider.direction === 'horizontal'
+            ? point.y >= rect.y && point.y <= rect.y + rect.height
+            : point.x >= rect.x && point.x <= rect.x + rect.width;
+    return alongOK && dividerAxisDistance(divider, point) <= slop;
+}
+
+/**
+ * Which divider a press at `point` really means — the fix for overlapping grab strips at a
+ * T-junction (run-B m8).
+ *
+ * Each divider's hit strip is the 2 px bar plus 4 px of slop into each neighbour, so where a
+ * full-height divider meets a perpendicular one the two bands overlap in a small square. The
+ * DOM resolves that square to whichever element paints last, which is arbitrary — and grabbing
+ * the wrong one is worse than a miss, because the drag then runs perpendicular to that
+ * divider's axis and nothing moves ("the divider sometimes doesn't drag").
+ *
+ * The rule is the geometric one a person would state: of the dividers whose band contains the
+ * press, take the one whose BAR the press is actually on (smallest across-axis distance), ties
+ * going to the earlier divider so the choice is stable. A press that lands on neither band —
+ * only possible when the caller passes a stale rect — keeps the divider the DOM chose.
+ */
+export function dividerAtPoint<T extends DividerHit>(
+    dividers: readonly T[],
+    point: Point,
+    fallback: T,
+    slop: number
+): T {
+    let best: T | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const divider of dividers) {
+        if (!withinBand(divider, point, slop)) continue;
+        const distance = dividerAxisDistance(divider, point);
+        if (distance < bestDistance) {
+            best = divider;
+            bestDistance = distance;
+        }
+    }
+    return best ?? fallback;
+}
+
 // ── commit throttling ───────────────────────────────────────────────────────────────
 
 export interface Throttled<Args extends readonly unknown[]> {

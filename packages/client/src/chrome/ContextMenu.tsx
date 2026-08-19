@@ -27,6 +27,8 @@ export interface MenuItemSpec {
     /** A real-color dot (label presets, workspace colors) drawn before the label. */
     readonly swatch?: string | undefined;
     readonly danger?: boolean | undefined;
+    /** A `keyTriggerDisplayString` hint (`⌘N`), right-aligned the way a native menu shows it. */
+    readonly shortcut?: string | undefined;
     readonly submenu?: readonly MenuItemSpec[] | undefined;
     readonly onSelect?: (() => void) | undefined;
 }
@@ -111,6 +113,15 @@ function MenuRow(props: RowProps): ReactElement {
             {item.checked === undefined ? null : <Checkmark state={item.checked} />}
             {item.swatch === undefined ? null : <Swatch color={item.swatch} />}
             <span className="flex-1 truncate">{item.label}</span>
+            {item.shortcut === undefined ? null : (
+                <span
+                    data-testid="menu-shortcut"
+                    className="shrink-0 font-mono text-[10px]"
+                    style={{ color: tokens.textTertiary }}
+                >
+                    {item.shortcut}
+                </span>
+            )}
             {item.submenu === undefined ? null : (
                 <span aria-hidden className="text-[10px]" style={{ color: tokens.textTertiary }}>
                     ▸

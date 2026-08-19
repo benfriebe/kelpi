@@ -34,8 +34,10 @@ import {
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
 import {
     createSyncHub,
+    type AgentChannel,
     type ContentChannel,
     type NexDomainStore,
+    type SettingsChannel,
     type SyncHub,
     type SyncPresence,
     type WebPaneChannel
@@ -79,6 +81,13 @@ export interface WsServerOptions {
      * service instance the `web-*` command handlers got, or the CLI and the host cannot meet.
      */
     readonly webPanes?: WebPaneChannel | undefined;
+    /** The pane header's restart button (`restart-pane-agent`); absent = "not available". */
+    readonly agents?: AgentChannel | undefined;
+    /**
+     * M8 settings sync: the `welcome.settings` payload and the `settings-*` mutation verbs.
+     * Absent = welcome carries no settings and the verbs answer "not available".
+     */
+    readonly settings?: SettingsChannel | undefined;
     /** Extra HTTP routes registered before the static catch-all (the pane-asset route). */
     readonly routes?: HttpAppOptions['routes'] | undefined;
     readonly daemonInfo?: { readonly pid?: number | undefined } | undefined;
@@ -181,6 +190,8 @@ export function createWsServer(options: WsServerOptions): WsServer {
         protocolVersion: options.version.protocol,
         content: options.content,
         webPanes: options.webPanes,
+        settings: options.settings,
+        agents: options.agents,
         // THE token gate: an upgrade with a missing or wrong token still becomes a socket, and
         // this is what turns it away — with a reason the client can show a human.
         ...(options.token !== undefined && options.token.length > 0

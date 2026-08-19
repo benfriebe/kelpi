@@ -17,14 +17,26 @@
  */
 
 export {
+    CONTENT_FONT_SIZE_DEFAULT,
+    CONTENT_FONT_SIZE_MAX,
+    CONTENT_FONT_SIZE_MIN,
     CONTENT_TEXT_DEBOUNCE_MS,
     createContentClient,
+    nextFontSize,
     type ContentApi,
     type ContentClient,
     type ContentClientOptions,
     type ContentListener,
-    type ContentSubscription
+    type ContentSubscription,
+    type FontSizeStep
 } from './client';
+
+export {
+    stripFrontMatter,
+    writeRichText,
+    type RichClipboardWriter,
+    type RichTextPayload
+} from './copy';
 
 export { useContent, type UseContentResult } from './useContent';
 
@@ -32,11 +44,22 @@ export {
     CONTENT_PANE_BACKGROUND,
     ContentFrame,
     ContentStatus,
+    findCountLabel,
     type ContentFrameProps,
     type ContentStatusProps
 } from './ContentFrame';
 
-export { EDITOR_FONT_SIZE, PlainTextEditor, type PlainTextEditorProps } from './PlainTextEditor';
+export {
+    EDITOR_FONT_SIZE,
+    GUTTER_FONT_SIZE,
+    GUTTER_MIN_WIDTH,
+    GUTTER_PADDING,
+    GUTTER_TEXT_PADDING,
+    PlainTextEditor,
+    gutterWidth,
+    lineCount,
+    type PlainTextEditorProps
+} from './PlainTextEditor';
 
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane';
 export { DiffPane, type DiffPaneProps } from './DiffPane';
@@ -46,6 +69,8 @@ export {
     CONTENT_BRIDGE_SOURCE,
     CONTENT_HOST_SOURCE,
     COPY_FEEDBACK_MS,
+    FIND_CURRENT_COLOR,
+    FIND_MATCH_COLOR,
     contentBridgeScript,
     openExternalLink,
     parseBridgeMessage,
@@ -54,6 +79,8 @@ export {
     type ClipboardWriter,
     type ContentBridgeMessage,
     type ContentHostMessage,
+    type FindOp,
+    type FindResult,
     type LinkOpener,
     type PrepareDocumentOptions
 } from './bridge';

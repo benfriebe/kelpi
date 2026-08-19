@@ -101,6 +101,18 @@ describe('parseGeneralSettings', () => {
         ).toBe(true);
     });
 
+    // Not a Swift config key (it lives in UserDefaults there); shell-ui.md's port note moves
+    // the suppression settings into the daemon's settings store, which is this file.
+    it('defaults the workspace-delete confirmation to true, off only for the literal false', () => {
+        expect(parseGeneralSettings('').confirmWorkspaceDeleteWhenActive).toBe(true);
+        expect(parseGeneralSettings('confirm-workspace-delete = FALSE').confirmWorkspaceDeleteWhenActive).toBe(
+            false
+        );
+        expect(parseGeneralSettings('confirm-workspace-delete = garbage').confirmWorkspaceDeleteWhenActive).toBe(
+            true
+        );
+    });
+
     it('ignores unknown keys', () => {
         expect(parseGeneralSettings('who-knows = 5\ntheme = Nord').theme).toBe('Nord');
     });

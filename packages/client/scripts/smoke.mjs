@@ -129,11 +129,35 @@ async function ensureBuilds() {
 
 // ── daemon ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * The settings files the daemon reads (M8). Written BEFORE the daemon boots so the very first
+ * `welcome` already carries them — and written into the throwaway root, never near the
+ * developer's real `~/.config/nex/config` or `~/.config/ghostty/config`.
+ */
+const SMOKE_CONFIG = `# nex smoke config
+focus-follows-mouse = true
+focus-follows-mouse-delay = 175
+
+keybind = ctrl+alt+t=split_right
+`;
+
+const SMOKE_GHOSTTY_CONFIG = `# ghostty smoke config
+background = #ffffff
+background-opacity = 0.85
+font-family = JetBrains Mono
+font-size = 15
+`;
+
 async function startDaemon() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexs-'));
     const home = path.join(root, 'home');
     const runDir = path.join(root, 'run');
     fs.mkdirSync(home, { recursive: true });
+
+    const configPath = path.join(root, 'config');
+    const ghosttyConfigPath = path.join(root, 'ghostty-config');
+    fs.writeFileSync(configPath, SMOKE_CONFIG, 'utf8');
+    fs.writeFileSync(ghosttyConfigPath, SMOKE_GHOSTTY_CONFIG, 'utf8');
 
     const controlPort = await freePort();
     const httpPort = await freePort();
@@ -150,7 +174,10 @@ async function startDaemon() {
             NEXD_SOCKET_PATH: socketPath,
             NEXD_TCP_PORT: String(controlPort),
             NEXD_DB_PATH: path.join(root, 'nex.db'),
-            NEXD_CONFIG_PATH: path.join(root, 'config'),
+            NEXD_CONFIG_PATH: configPath,
+            // The settings service's ghostty override; without it the daemon would read the
+            // developer's own ~/.config/ghostty/config.
+            NEXD_GHOSTTY_CONFIG: ghosttyConfigPath,
             NEXD_HTTP_PORT: String(httpPort),
             NEXD_HTTP_HOST: '127.0.0.1',
             // The static-dir mechanism already exists: `ws/http.ts` `resolveClientDistDir`.
@@ -190,6 +217,8 @@ async function startDaemon() {
         home,
         base,
         token,
+        configPath,
+        ghosttyConfigPath,
         controlPort,
         pid: child.pid ?? 0,
         log: () => log.join(''),
@@ -354,6 +383,29 @@ async function main() {
             `daemon ${welcome.daemon?.version} pid ${welcome.daemon?.pid}`
         );
 
+        // 2b. settings sync (M8): the daemon is the settings authority, and its verdict rides
+        //     the handshake so the client never renders a frame on the wrong bindings/theme.
+        const settings = welcome.settings ?? {};
+        check(
+            'the welcome carries the settings snapshot',
+            settings.general?.focusFollowsMouse === true && settings.general?.focusFollowsMouseDelay === 175,
+            JSON.stringify(settings.general)
+        );
+        check(
+            'the nex config’s keybind line reaches the client',
+            Array.isArray(settings.keybindLines) && settings.keybindLines.includes('ctrl+alt+t=split_right'),
+            JSON.stringify(settings.keybindLines)
+        );
+        check(
+            'the ghostty config is parsed, luminance included',
+            settings.appearance?.backgroundColor === '#ffffff' &&
+                settings.appearance?.backgroundOpacity === 0.85 &&
+                settings.appearance?.fontSize === 15 &&
+                settings.appearance?.fontFamily === '"JetBrains Mono"' &&
+                settings.appearance?.isDark === false,
+            JSON.stringify(settings.appearance)
+        );
+
         const snapshot = await ws.waitJson((m) => m.type === 'snapshot', 'snapshot');
         check(
             'a state snapshot arrives',
@@ -381,6 +433,7 @@ async function main() {
             });
 
         let paneID;
+        let smokeWorkspaceID;
         if (cliAvailable) {
             const created = await cli(['workspace', 'create', '--name', 'smoke', '--json']);
             const reply = created.code === 0 ? JSON.parse(created.stdout) : {};
@@ -402,6 +455,7 @@ async function main() {
                 `seq ${delta.seq}, kinds: ${[...new Set(delta.events.map((event) => event.kind))].join(', ')}`
             );
 
+            smokeWorkspaceID = reply.workspace_id;
             const pane = await cli(['pane', 'create', '--workspace', 'smoke', '--name', 'smoke-pane', '--json']);
             const paneReply = pane.code === 0 ? JSON.parse(pane.stdout) : {};
             paneID = paneReply.pane_id;
@@ -416,6 +470,7 @@ async function main() {
             });
             const reply = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-create', 'create reply');
             check('a WS command creates a workspace', reply.reply?.ok === true, JSON.stringify(reply.reply));
+            smokeWorkspaceID = reply.reply?.workspace_id;
 
             ws.send({
                 type: 'command',
@@ -477,6 +532,106 @@ async function main() {
             ws.send({ type: 'command', id: 'ws-zoom', payload: { command: 'toggle-zoom', pane_id: paneID } });
             const zoom = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-zoom', 'zoom reply');
             check('the WS-only toggle-zoom verb works', zoom.reply?.ok === true, JSON.stringify(zoom.reply));
+
+            // 5a. the client-polish WS-only verbs. An icon is the interesting one: the token is
+            //     opaque end to end, so a value the client cannot draw still has to come back
+            //     verbatim in the delta the daemon broadcasts.
+            if (typeof smokeWorkspaceID === 'string') {
+                const workspaceID = smokeWorkspaceID;
+                ws.send({
+                    type: 'command',
+                    id: 'ws-icon',
+                    payload: { command: 'set-workspace-icon', workspace_id: workspaceID, icon: 'system:hammer.fill' }
+                });
+                const icon = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-icon', 'icon reply');
+                check(
+                    'the WS-only set-workspace-icon verb round-trips an opaque token',
+                    icon.reply?.ok === true && icon.reply?.icon === 'system:hammer.fill',
+                    JSON.stringify(icon.reply)
+                );
+            }
+
+            ws.send({ type: 'command', id: 'ws-clear', payload: { command: 'clear-pane-status', pane_id: paneID } });
+            const cleared = await ws.waitJson((m) => m.type === 'command-reply' && m.id === 'ws-clear', 'clear reply');
+            check(
+                'the WS-only clear-pane-status verb answers with the post-clear status',
+                cleared.reply?.ok === true && cleared.reply?.status === 'idle',
+                JSON.stringify(cleared.reply)
+            );
+
+            // A pane with no agent session cannot be restarted; the refusal is the contract.
+            ws.send({ type: 'command', id: 'ws-restart', payload: { command: 'restart-pane-agent', pane_id: paneID } });
+            const restart = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'ws-restart',
+                'restart reply'
+            );
+            check(
+                'restart-pane-agent refuses a pane with no agent session',
+                restart.reply?.ok === false && String(restart.reply?.error ?? '').includes('no agent session'),
+                JSON.stringify(restart.reply)
+            );
+
+            // 5b. settings mutation: the verb writes THROUGH the config file, so the proof is
+            //     on disk — with every unrelated line still there — and the change comes back
+            //     as a broadcast the way it would for any other attached client.
+            ws.send({
+                type: 'command',
+                id: 'ws-keybind',
+                payload: { command: 'set-keybinding', action: 'close_pane', trigger: 'ctrl+alt+w' }
+            });
+            const bound = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'ws-keybind',
+                'the set-keybinding reply'
+            );
+            check(
+                'a set-keybinding verb is accepted',
+                bound.reply?.ok === true &&
+                    (bound.reply?.settings?.keybindLines ?? []).includes('ctrl+alt+w=close_pane'),
+                JSON.stringify(bound.reply?.settings?.keybindLines ?? bound.reply)
+            );
+            const configAfter = fs.readFileSync(daemon.configPath, 'utf8');
+            check(
+                'the keybinding is written through to the config file',
+                configAfter.includes('keybind = ctrl+alt+w=close_pane'),
+                JSON.stringify(configAfter.split('\n').filter((line) => line.startsWith('keybind')))
+            );
+            check(
+                'the write preserves every unrelated line',
+                configAfter.includes('# nex smoke config') &&
+                    configAfter.includes('focus-follows-mouse = true') &&
+                    configAfter.includes('focus-follows-mouse-delay = 175') &&
+                    configAfter.includes('keybind = ctrl+alt+t=split_right')
+            );
+            const broadcast = await ws.waitJson(
+                (m) =>
+                    m.type === 'settings-changed' &&
+                    (m.settings?.keybindLines ?? []).includes('ctrl+alt+w=close_pane'),
+                'the settings-changed broadcast'
+            );
+            check(
+                'the change reaches attached clients as settings-changed',
+                broadcast !== undefined,
+                JSON.stringify(broadcast.settings?.keybindLines)
+            );
+
+            // …and a HAND edit of the ghostty config (no verb involved) does the same, which is
+            // the watcher doing its job — the path that re-renders markdown/diff on a theme change.
+            fs.writeFileSync(
+                daemon.ghosttyConfigPath,
+                '# edited by the smoke\nbackground = #1a1b26\nbackground-opacity = 0.5\n',
+                'utf8'
+            );
+            const themed = await ws.waitJson(
+                (m) => m.type === 'settings-changed' && m.settings?.appearance?.backgroundColor === '#1a1b26',
+                'the ghostty settings-changed broadcast',
+                20_000
+            );
+            check(
+                'a ghostty config edit is watched and pushed',
+                themed.settings?.appearance?.isDark === true &&
+                    themed.settings?.appearance?.backgroundOpacity === 0.5,
+                JSON.stringify(themed.settings?.appearance)
+            );
 
             // 6. content panes (M5): open a markdown file the way a user does, mirror it the way
             //    the client does, and prove the daemon-side watcher pushes a disk write back out.
@@ -574,6 +729,25 @@ async function main() {
                 'the pane-assets route refuses to escape the file’s directory',
                 escaped.status === 404,
                 `status ${escaped.status}`
+            );
+
+            // §3.16: a font-size change is a RE-RENDER, not a disk read — so the reply carries
+            // new HTML at the new size while the source text is untouched.
+            ws.send({
+                type: 'command',
+                id: 'content-font',
+                payload: { command: 'content-set-font-size', pane_id: markdownPaneID, size: 18 }
+            });
+            const resized = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'content-font',
+                'the content-set-font-size reply'
+            );
+            check(
+                'the font-size verb re-renders the preview at the new size',
+                resized.reply?.ok === true &&
+                    resized.reply?.state?.fontSize === 18 &&
+                    String(resized.reply?.state?.html ?? '').includes('font-size: 18px'),
+                `fontSize ${String(resized.reply?.state?.fontSize)}`
             );
 
             // The watcher: a write on disk (an agent editing the file, a save from vim) has to

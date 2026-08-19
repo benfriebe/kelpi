@@ -11,9 +11,16 @@
  *     still loading, while it is closed (macOS keeps the app alive in the dock), and while
  *     the renderer is reloading.
  *
- * It is deliberately a read-only connection: `hello` → `welcome` → `snapshot` → `delta`, and
- * nothing else. It never attaches a pane (no binary frames), never sends a command, and never
- * mutates daemon state. Everything it learns goes through `./agents.ts` into two numbers.
+ * It is deliberately a near-read-only connection: `hello` → `welcome` → `snapshot` → `delta`,
+ * and nothing else. It never attaches a pane (no binary frames), never sends a command, and
+ * never mutates daemon state. Everything it learns goes through `./agents.ts` into two numbers.
+ *
+ * The one thing it *writes* is `reveal-request` (`revealPane`), and it is worth being explicit
+ * about why it belongs here rather than in a new connection: a clicked notification has to
+ * reach the UI, the UI is a different process, and the daemon is the only channel between them
+ * that exists in every state this socket already handles (window closed, page reloading, a
+ * second machine attached). It is a routing hint, not domain state — the daemon simply fans it
+ * out and the client does the §8.5 focus dance.
  *
  * Reconnect is exponential-with-jitter and never gives up except on a fatal handshake
  * rejection (bad token / protocol mismatch — retrying those is a hot loop against a refusal,
@@ -65,6 +72,12 @@ export interface StatusHost {
 export interface StatusController {
     start(): void;
     stop(): void;
+    /**
+     * Ask the attached clients to go to a pane (a clicked notification, a tray jump). Returns
+     * false when the socket is not ready — the caller has still raised the window, which is the
+     * half of §8.5 the shell owns.
+     */
+    revealPane(workspaceID: string, paneID: string): boolean;
     /** Re-point at a (re)discovered daemon and redial. */
     setLocation(location: DaemonLocation): void;
     /** Force a redial now (tray "Reconnect"). */
@@ -93,6 +106,11 @@ function readString(source: JsonRecord, key: string): string | undefined {
 export interface StatusOptions {
     readonly location: DaemonLocation;
     readonly host: StatusHost;
+    /**
+     * This shell window's id, so a reveal lands only on the UI running in it (a second machine
+     * attached to the same daemon must not jump because someone clicked a toast here).
+     */
+    readonly windowID?: string | undefined;
     /** Test seam; production uses the real `ws`. */
     readonly socketFactory?: ((url: string, headers: Record<string, string>) => WebSocket) | undefined;
     readonly random?: (() => number) | undefined;
@@ -404,6 +422,26 @@ export function createStatusController(options: StatusOptions): StatusController
             tray?.destroy();
             tray = null;
             indicator = null;
+        },
+        revealPane(workspaceID: string, paneID: string): boolean {
+            const current = socket;
+            if (!ready || current === null || current.readyState !== WebSocket.OPEN) return false;
+            try {
+                current.send(
+                    JSON.stringify({
+                        type: 'reveal-request',
+                        workspaceID,
+                        paneID,
+                        // Scoped to this window: the daemon fans the message out to every
+                        // client, and only the UI loaded with this id acts on it.
+                        ...(options.windowID === undefined ? {} : { windowID: options.windowID })
+                    })
+                );
+            } catch (error) {
+                warn(`reveal request failed: ${error instanceof Error ? error.message : String(error)}`);
+                return false;
+            }
+            return true;
         },
         setLocation(next: DaemonLocation): void {
             location = next;

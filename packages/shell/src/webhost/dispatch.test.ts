@@ -71,6 +71,11 @@ class FakeTab implements TabController {
     zoom(): number {
         return this.zoomFactor;
     }
+    devToolsOpen = false;
+    setDevTools(open?: boolean): boolean {
+        this.devToolsOpen = open ?? !this.devToolsOpen;
+        return this.devToolsOpen;
+    }
 }
 
 function harness(
@@ -429,6 +434,31 @@ describe('find + zoom', () => {
         await expect(dispatcher.call('zoom', { ...scope, delta: 0.4 })).resolves.toEqual({ ok: true, zoom: 0.9 });
         await expect(dispatcher.call('zoom', { ...scope, reset: true })).resolves.toEqual({ ok: true, zoom: 1 });
         expect(tab.zoomFactor).toBe(1);
+    });
+
+    it('toggles dev tools, and honours an explicit state', async () => {
+        const { dispatcher, tab } = harness();
+        await expect(dispatcher.call('devtools', scope)).resolves.toEqual({ ok: true, open: true });
+        expect(tab.devToolsOpen).toBe(true);
+        await expect(dispatcher.call('devtools', scope)).resolves.toEqual({ ok: true, open: false });
+        await expect(dispatcher.call('devtools', { ...scope, open: true })).resolves.toEqual({
+            ok: true,
+            open: true
+        });
+        await expect(dispatcher.call('devtools', { ...scope, open: true })).resolves.toEqual({
+            ok: true,
+            open: true
+        });
+    });
+
+    it('answers honestly for a tab that cannot open dev tools', async () => {
+        const { dispatcher, tab } = harness();
+        // The verb is optional on `TabController`: a tab without it must not become a throw.
+        (tab as { setDevTools?: unknown }).setDevTools = undefined;
+        await expect(dispatcher.call('devtools', scope)).resolves.toEqual({
+            ok: false,
+            error: 'dev tools are not available for this tab'
+        });
     });
 });
 

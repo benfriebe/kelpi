@@ -17,22 +17,25 @@
  * Everything is created eagerly except the holder window, which is built on the first pane so a
  * shell with no web panes never allocates a native window.
  *
- * ## What v1 does and does not do
+ * ## Two places a view can live
  *
- * Every **non-visual** verb works: open, navigate, back, forward, reload, url, the whole actuator
- * surface (click, type, the `q-` reads, wait, select, scroll, hover, key), `exec`, `capture` in
- * all five modes, the console pipeline, the element picker, cookies, find and zoom. That is the
- * surface `nex-agentic` drives, and it is exercised end-to-end by
+ * Every **non-visual** verb works with no window at all: open, navigate, back, forward, reload,
+ * url, the whole actuator surface (click, type, the `q-` reads, wait, select, scroll, hover,
+ * key), `exec`, `capture` in all five modes, the console pipeline, the element picker, cookies,
+ * find and zoom. That is the surface `nex-agentic` drives, and it is exercised end-to-end by
  * `packages/shell/scripts/web-smoke.mjs` against the **real Swift CLI**.
  *
- * The views are **not shown**: they live in an off-screen holder window (see `./tab.ts` for why
- * one exists at all), while the web client keeps drawing its placeholder card for web panes.
- * Visual embedding — re-parenting these same views into the main window at the pane's rect,
- * which needs a client→shell channel that does not exist yet (there is deliberately no preload
- * bridge) — is the documented follow-up. Nothing else in this directory changes when it lands.
+ * Views are therefore born in an off-screen holder window (see `./tab.ts` for why one exists at
+ * all) and stay there until somebody can see them. When the web UI **running in this shell's
+ * own window** reports where it drew a web pane's page area, the daemon forwards it as a
+ * `pane-geometry` notify and `./embed.ts` re-parents that pane's active view into the window at
+ * those bounds; hiding the pane, switching workspace, closing the window or quitting puts it
+ * straight back. Geometry from any other client (a browser, another machine) is ignored — those
+ * clients keep drawing the placeholder card, which is why the automation surface is unaffected
+ * by all of this.
  */
 
-import { BaseWindow } from 'electron';
+import { BaseWindow, screen, type BrowserWindow } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,6 +47,8 @@ import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
+import { createEmbedController, type EmbedController } from './embed.js';
+import { GEOMETRY_NOTIFY_VERB, parsePaneGeometry, type WindowMetrics } from './geometry.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
 import { createPaneSessions } from './sessions.js';
 import { DEFAULT_VIEWPORT, createTabHooks, type HostTab } from './tab.js';
@@ -53,6 +58,17 @@ export interface WebPaneHostOptions {
     /** Reported to the daemon for diagnostics. */
     readonly version?: string | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
+    /**
+     * The shell window embedded views are placed in, looked up lazily (it is created after the
+     * host, can be closed and re-opened, and must never be captured as a stale reference).
+     * Absent = a host that only ever runs views off-screen.
+     */
+    readonly window?: (() => BrowserWindow | null) | undefined;
+    /**
+     * This shell window's identity, declared to the daemon and repeated by the UI it loads
+     * (`?shellWindow=`). Without it the host receives geometry but can never own any of it.
+     */
+    readonly windowID?: string | undefined;
 }
 
 export interface WebPaneHost {
@@ -63,6 +79,10 @@ export interface WebPaneHost {
     readonly registered: boolean;
     /** Live pane count (diagnostics, and the smoke's proof that views were built). */
     readonly paneCount: number;
+    /** Panes whose view is currently inside the shell window. */
+    readonly embeddedPaneIDs: readonly string[];
+    /** Send every embedded view back to the holder (the window closed, or is about to). */
+    releaseViews(reason?: string): void;
 }
 
 /**
@@ -117,6 +137,11 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,
         onError,
+        // A destroyed view must leave the embed controller's books BEFORE Electron tears it
+        // down, or the next placement would try to remove a child that no longer exists.
+        beforeDestroy: (tab) => {
+            embed.forget(tab);
+        },
         events: {
             console: (paneID, tabID, payload) => {
                 client?.sendEvent('console', paneID, tabID, {
@@ -151,6 +176,78 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     const registry: TabRegistry<HostTab> = createTabRegistry<HostTab>(hooks);
 
+    /**
+     * The shell window's live measurements, or null when there is nothing to embed into: no
+     * window, a destroyed one, or one the user hid/minimised (a view placed in a hidden window
+     * is invisible anyway, and the holder is where an unseen view belongs).
+     */
+    const windowMetrics = (): WindowMetrics | null => {
+        const window = options.window?.() ?? null;
+        if (window === null || window.isDestroyed() || !window.isVisible() || window.isMinimized()) {
+            return null;
+        }
+        const content = window.getContentBounds();
+        // `getDisplayMatching` rather than the primary display: dragging the window to a 1×
+        // monitor changes the CSS→DIP factor, and the next report has to land correctly there.
+        const scaleFactor = screen.getDisplayMatching(window.getBounds()).scaleFactor;
+        return { contentWidth: content.width, contentHeight: content.height, scaleFactor };
+    };
+
+    const embed: EmbedController<HostTab> = createEmbedController<HostTab>({
+        resolveView: (paneID, tabID) =>
+            tabID === null ? registry.activeView(paneID) : registry.view(paneID, tabID),
+        metrics: windowMetrics,
+        ...(options.windowID === undefined ? {} : { windowID: options.windowID }),
+        hooks: {
+            attach: (tab, bounds) => {
+                const window = options.window?.() ?? null;
+                if (window === null || window.isDestroyed()) return;
+                const view = tab.contentsView;
+                try {
+                    // Removing from the holder first keeps a view from being a child of two
+                    // windows for an instant, which Electron tolerates but the books do not.
+                    holderWindow().contentView.removeChildView(view);
+                } catch {
+                    // Not currently in the holder — nothing to undo.
+                }
+                window.contentView.addChildView(view);
+                view.setBounds(bounds);
+                tab.setVisible(true);
+            },
+            detach: (tab) => {
+                const view = tab.contentsView;
+                const window = options.window?.() ?? null;
+                if (window !== null && !window.isDestroyed()) {
+                    try {
+                        window.contentView.removeChildView(view);
+                    } catch {
+                        // Already removed (the window is tearing down).
+                    }
+                }
+                // Back to the fixed off-screen viewport: every non-visual verb (capture,
+                // element rects, screenshots) is specified against it.
+                view.setBounds({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+                holderWindow().contentView.addChildView(view);
+            },
+            setBounds: (tab, bounds) => {
+                tab.contentsView.setBounds(bounds);
+            }
+        },
+        onChange: (event) => {
+            const box =
+                event.bounds === null
+                    ? '-'
+                    : `${String(event.bounds.x)},${String(event.bounds.y)} ${String(event.bounds.width)}×${String(event.bounds.height)}`;
+            // The live smoke asserts on this line: it is the only externally visible proof that
+            // a view moved into the shell window rather than staying in the holder.
+            log(
+                `web pane ${event.paneID} view ${event.outcome === 'placed' ? 'owner=main' : 'owner=holder'} ` +
+                    `bounds=${box} (${event.reason})`
+            );
+        },
+        onError
+    });
+
     const dispatcher = createVerbDispatcher<HostTab>({
         registry,
         storage: sessions.storage,
@@ -160,18 +257,35 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     /** Session bookkeeping the dispatcher does not own (partitions are this module's problem). */
     const notify = (verb: string, args: JsonObject): void => {
+        // Geometry is placement, not pane state: it never reaches the dispatcher (which would
+        // rightly call it an unknown verb) and it never touches the registry.
+        if (verb === GEOMETRY_NOTIFY_VERB) {
+            const geometry = parsePaneGeometry(args);
+            if (geometry !== null) embed.apply(geometry);
+            return;
+        }
         const paneID = typeof args['paneID'] === 'string' ? args['paneID'] : '';
         // A private flip changes the partition, and the partition is sealed into the views —
         // dropping the handle first is what makes the rebuilt views land on the new store.
         if (verb === 'pane-set-private' && paneID !== '') sessions.forget(paneID);
+        if (verb === 'pane-close' && paneID !== '') embed.release(paneID, 'pane-closed');
         dispatcher.notify(verb, args);
         if (verb === 'pane-close' && paneID !== '') sessions.forget(paneID);
+        // A tab-level change moves which view is the active one; re-apply the last geometry so
+        // the window shows the tab the daemon just selected, without waiting for the client's
+        // next report (they race, and the loser must not leave the wrong page on screen).
+        if (verb === 'tab-open' || verb === 'tab-select' || verb === 'tab-close' || verb === 'pane-open') {
+            embed.refresh();
+        }
     };
 
     client = createWebHostClient({
         location: options.location,
         name: 'nex-shell',
         version: options.version ?? '0.0.0',
+        // Declared at registration so the daemon can tell this window's geometry reports from
+        // any other client's (HOST_PROTOCOL §1 + §3.5).
+        ...(options.windowID === undefined ? {} : { windowID: options.windowID }),
         call: (verb, args) => {
             if (verb === 'pane-close' || verb === 'pane-set-private') {
                 // Keep the session bookkeeping identical whichever framing the daemon uses.
@@ -194,6 +308,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             // Superseded / shutdown / unregistered: another host (or nobody) owns these panes
             // now. Two shells driving the same pages would double every console line.
             log(`web host releasing ${String(registry.paneIDs().length)} pane(s) (${reason})`);
+            embed.releaseAll(reason);
             for (const paneID of registry.paneIDs()) sessions.forget(paneID);
             registry.dispose();
         }
@@ -205,6 +320,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         stop(): void {
             client?.stop();
+            embed.releaseAll('host-stopped');
             for (const paneID of registry.paneIDs()) sessions.forget(paneID);
             registry.dispose();
             if (holder !== null && !holder.isDestroyed()) holder.destroy();
@@ -218,6 +334,14 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         },
         get paneCount(): number {
             return registry.paneIDs().length;
+        },
+        get embeddedPaneIDs(): readonly string[] {
+            return embed.embeddedPaneIDs;
+        },
+        releaseViews(reason = 'window-closed'): void {
+            // The views outlive the window: put them back in the holder so every automation
+            // verb keeps working while there is nothing to look at.
+            embed.releaseAll(reason);
         }
     };
 }

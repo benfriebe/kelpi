@@ -25,7 +25,11 @@
  *      sanitised payload (the nonce round-trips through the CDP binding);
  *   8. cookies + private mode: a cookie set by the page is listed and deleted, and flipping
  *      `private on` rebuilds the pane against a fresh in-memory partition (empty cookie jar);
- *   9. host lifecycle: quitting the shell releases the role (browser-bound verbs then fail with
+ *   9. embedded views: a synthetic WS client tagged as the page inside THIS shell's window
+ *      reports a page-area rect, and the pane's live view moves out of the off-screen holder
+ *      into the real window at those bounds; geometry from any other client is ignored, hiding
+ *      the pane puts the view straight back, and the pane stays fully drivable either way;
+ *  10. host lifecycle: quitting the shell releases the role (browser-bound verbs then fail with
  *      `no web pane host connected`), and a **new** shell re-registers and gets the daemon's
  *      `pane-open` replay, so the same pane is drivable again.
  *
@@ -53,7 +57,6 @@ const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
-const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
 const PROTOCOL_VERSION = 1;
 
 /** The shipped Swift CLI — the whole point of this smoke. */
@@ -268,8 +271,12 @@ async function makeSandbox(label) {
         NEXD_CONFIG_PATH: configPath,
         NEXD_HTTP_PORT: String(await freePort()),
         NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: daemonEntry,
-        ...(fs.existsSync(path.join(clientDist, 'index.html')) ? { NEXD_CLIENT_DIR: clientDist } : {})
+        NEXD_ENTRY: daemonEntry
+        // Deliberately NOT `NEXD_CLIENT_DIR`: the shell window must load the daemon's "client
+        // not built" page rather than the real UI. This smoke plays the client itself (see
+        // `connectProbe`) and a second, genuine reporter would race it for the same pane's
+        // geometry, making the placement assertions depend on whether the client happened to be
+        // built. The window still loads, paints and shows, which is all the host needs.
     };
 
     return {
@@ -409,6 +416,69 @@ function startShell(sandbox) {
             signalGroup(child, 'SIGKILL');
             await sleep(150);
             releaseChild(child);
+        }
+    };
+}
+
+// ── a synthetic web client (the geometry reporter) ──────────────────────────────────
+
+/**
+ * The one thing the shipped CLI cannot do: play the WEB UI.
+ *
+ * Embedded web panes need a client that says where it drew a pane's page area, so this opens an
+ * ordinary WS connection (the same handshake the real client performs, token and all) and sends
+ * `web-geometry-report` frames. Node 24's global `WebSocket` keeps it dependency-free.
+ */
+async function connectProbe(sandbox) {
+    const token = fs
+        .readFileSync(path.join(sandbox.runDir, `daemon-v${PROTOCOL_VERSION}.token`), 'utf8')
+        .trim();
+    const socket = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`);
+    await new Promise((resolve, reject) => {
+        socket.addEventListener('open', resolve, { once: true });
+        socket.addEventListener('error', () => reject(new Error('geometry probe could not connect')), {
+            once: true
+        });
+    });
+    const welcomed = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('no welcome for the geometry probe')), 10_000);
+        socket.addEventListener('message', (event) => {
+            let message;
+            try {
+                message = JSON.parse(String(event.data));
+            } catch {
+                return;
+            }
+            if (message.type === 'welcome') {
+                clearTimeout(timer);
+                resolve(message);
+            }
+            if (message.type === 'rejected') {
+                clearTimeout(timer);
+                reject(new Error(`geometry probe rejected: ${message.message ?? message.code}`));
+            }
+        });
+    });
+    socket.send(
+        JSON.stringify({
+            type: 'hello',
+            protocolVersion: PROTOCOL_VERSION,
+            token,
+            client: { kind: 'browser', name: 'geometry-probe' }
+        })
+    );
+    await welcomed;
+    return {
+        /** One `web-geometry-report`; `shellWindowID` is what makes it actionable. */
+        geometry(report) {
+            socket.send(JSON.stringify({ type: 'web-geometry-report', ...report }));
+        },
+        close() {
+            try {
+                socket.close();
+            } catch {
+                // Already gone.
+            }
         }
     };
 }
@@ -747,6 +817,80 @@ async function webPhase() {
             30_000
         );
         check('flipping back reattaches the untouched persistent store', restored.some((cookie) => cookie.name === 'marker'));
+
+        // ── embedded views (geometry → a view in the real window) ───────────────────
+        //
+        // The only party that knows where a web pane's page area is, is the client that drew
+        // the chrome around it. Here a synthetic WS client plays that part: it tags itself as
+        // the page inside THIS shell's window and reports a rect, and the shell must move the
+        // pane's live view out of the off-screen holder and into the window at those bounds.
+        const loading = await shell.waitForLine(/loading http/, 'the client URL the shell loaded');
+        const windowID = /shellWindow=([0-9A-Fa-f-]{36})/.exec(loading)?.[1];
+        check('the shell marks the UI it loads with its window id', windowID !== undefined, loading.trim());
+        if (windowID === undefined) throw new Error(`no shellWindow marker in: ${loading}`);
+
+        const probe = await connectProbe(sandbox);
+        try {
+            const embedded = `web pane ${paneID} view owner=main`;
+            probe.geometry({
+                paneID,
+                rect: { x: 24, y: 60, w: 800, h: 420 },
+                visible: true,
+                devicePixelRatio: 2,
+                shellWindowID: windowID
+            });
+            const placed = await shell.waitForLine(
+                new RegExp(`${embedded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} bounds=`),
+                'the view to move into the shell window',
+                20_000
+            );
+            check(
+                'a geometry report from the shell’s own window embeds the live view',
+                placed.includes('owner=main') && /bounds=\d+,\d+ \d+×\d+/.test(placed),
+                placed.trim()
+            );
+
+            // Geometry from anyone else must not move anything: a browser on another machine
+            // reporting rects would otherwise shove a desktop user's views around.
+            const before = shell.lines.filter((line) => line.includes('view owner=')).length;
+            probe.geometry({
+                paneID,
+                rect: { x: 0, y: 0, w: 400, h: 200 },
+                visible: true,
+                devicePixelRatio: 1
+            });
+            await sleep(750);
+            check(
+                'geometry from a client that is not this window is ignored',
+                shell.lines.filter((line) => line.includes('view owner=')).length === before,
+                `${String(before)} placement lines before and after`
+            );
+
+            // …and hiding the pane sends the view straight back to the holder, which is what
+            // keeps every off-screen verb (capture, exec, the actuator) working afterwards.
+            probe.geometry({
+                paneID,
+                rect: { x: 0, y: 0, w: 0, h: 0 },
+                visible: false,
+                devicePixelRatio: 2,
+                shellWindowID: windowID
+            });
+            const returned = await shell.waitForLine(
+                new RegExp(`web pane ${paneID} view owner=holder`),
+                'the view to return to the holder',
+                20_000
+            );
+            check('hiding the pane returns the view to the off-screen holder', returned.includes('owner=holder'), returned.trim());
+
+            const stillDrivable = await cli.run(['web', 'capture', '--mode', 'text', ...at()]);
+            check(
+                'the pane is still fully drivable once its view is back off-screen',
+                stillDrivable.code === 0 && stillDrivable.stdout.includes('Hello from the smoke page'),
+                stillDrivable.stdout.slice(0, 80).trim()
+            );
+        } finally {
+            probe.close();
+        }
 
         // ── host lifecycle ──────────────────────────────────────────────────────────
         const shellLog = shell.text();

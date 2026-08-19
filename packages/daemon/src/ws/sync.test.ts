@@ -497,6 +497,78 @@ describe('WS-only commands', () => {
         expect(isWsOnlyCommand('pane-list')).toBe(false);
         for (const command of WS_ONLY_COMMANDS) expect(isWireCommand(command)).toBe(false);
     });
+
+    // ── label presets (M8 Settings ▸ Labels, app-state-core.md §6.4) ─────────────────
+
+    describe('label presets', () => {
+        const presets = (f: Fixture): { name: string; color: unknown }[] =>
+            f.store.state().labelPresets.map((preset) => ({ name: preset.name, color: preset.color }));
+
+        it('adds a preset with §6.2’s one-string color, defaulting to gray', () => {
+            const f = fixture();
+            expect(send(f, { command: 'add-label-preset', name: '  ship  ', color: 'blue' })).toMatchObject({
+                ok: true,
+                name: 'ship'
+            });
+            send(f, { command: 'add-label-preset', name: 'wip' });
+            send(f, { command: 'add-label-preset', name: 'custom', color: '#FF8800' });
+            expect(presets(f)).toEqual([
+                { name: 'ship', color: { kind: 'named', color: 'blue' } },
+                { name: 'wip', color: { kind: 'named', color: 'gray' } },
+                { name: 'custom', color: { kind: 'custom', hex: '#ff8800' } }
+            ]);
+        });
+
+        it('tells the caller about a duplicate instead of no-op’ing silently', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship' });
+            expect(send(f, { command: 'add-label-preset', name: 'ship' })).toEqual({
+                ok: false,
+                error: "label preset 'ship' already exists"
+            });
+            expect(send(f, { command: 'add-label-preset', name: '  ' })['ok']).toBe(false);
+        });
+
+        it('recolors without touching the name, and renames without touching the color', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship', color: 'blue' });
+            send(f, { command: 'update-label-preset', id: 'ship', color: 'purple' });
+            expect(presets(f)).toEqual([{ name: 'ship', color: { kind: 'named', color: 'purple' } }]);
+            send(f, { command: 'update-label-preset', id: 'ship', name: 'shipped' });
+            expect(presets(f)).toEqual([{ name: 'shipped', color: { kind: 'named', color: 'purple' } }]);
+        });
+
+        it('refuses a rename onto another preset, and an unknown id', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship' });
+            send(f, { command: 'add-label-preset', name: 'wip' });
+            expect(send(f, { command: 'update-label-preset', id: 'ship', name: 'wip' })['ok']).toBe(false);
+            expect(send(f, { command: 'update-label-preset', id: 'nope', color: 'blue' })).toEqual({
+                ok: false,
+                error: "no label preset matches 'nope'"
+            });
+            expect(presets(f).map((preset) => preset.name)).toEqual(['ship', 'wip']);
+        });
+
+        // §6.4: deleting a preset never touches the workspaces wearing the label.
+        it('removes a preset and leaves the workspace’s label string alone', () => {
+            const f = fixture();
+            f.store.dispatch({ type: 'workspace-labels', id: W1, op: 'set', values: ['ship'] });
+            send(f, { command: 'add-label-preset', name: 'ship' });
+            expect(send(f, { command: 'remove-label-preset', id: 'ship' })).toMatchObject({ ok: true, id: 'ship' });
+            expect(presets(f)).toEqual([]);
+            expect(f.store.state().workspaces[0]?.labels).toEqual(['ship']);
+            expect(send(f, { command: 'remove-label-preset', id: 'ship' })['ok']).toBe(false);
+        });
+
+        it('answers with the post-mutation list so a client can render the reply', () => {
+            const f = fixture();
+            const reply = send(f, { command: 'add-label-preset', name: 'ship', color: 'blue' });
+            expect(reply['label_presets']).toEqual([
+                { name: 'ship', color: { kind: 'named', color: 'blue' }, textColor: null }
+            ]);
+        });
+    });
 });
 
 describe('broadcast', () => {

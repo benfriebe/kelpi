@@ -1,0 +1,135 @@
+/**
+ * A MINIMAL `~/.config/ghostty/config` reader (content-panes.md §3.1, §3.8 + port note 9).
+ *
+ * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
+ * no ghostty, so it reads the five keys that actually change how Nex draws — and nothing else.
+ * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/nex/config`,
+ * so the line splitter is `@nex/core/config`'s: one parser, one set of quirks.
+ *
+ * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:
+ *
+ *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`;
+ *   - every other key is ignored (ghostty has hundreds);
+ *   - `config-file = …` includes are NOT followed, and a `theme` name is NOT resolved to the
+ *     theme file's own `background` — a user whose background comes from a theme gets the
+ *     default until they set `background` explicitly. `theme` is still reported so a client
+ *     can say what it is;
+ *   - a missing / unreadable file is not an error: it yields the defaults.
+ *
+ * Value rules follow ghostty's own where they are cheap: a later line wins for a scalar key,
+ * repeated `font-family` lines ACCUMULATE into a fallback stack, and `font-family = ""`
+ * clears the accumulated list.
+ */
+
+import { parseConfigLines } from '@nex/core/config';
+import { DEFAULT_SETTINGS_BACKGROUND } from '@nex/protocol';
+
+export interface GhosttyAppearance {
+    /** `#rrggbb`, lowercase. Always concrete: the luminance rule needs a real color. */
+    readonly backgroundColor: string;
+    /** 0..1. */
+    readonly backgroundOpacity: number;
+    /** CSS font stack from the `font-family` lines, or null when the file sets none. */
+    readonly fontFamily: string | null;
+    readonly fontSize: number | null;
+    /** ghostty's `theme` value verbatim (it may be `dark:X,light:Y`); null when unset. */
+    readonly theme: string | null;
+}
+
+export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
+    backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
+    backgroundOpacity: 1,
+    fontFamily: null,
+    fontSize: null,
+    theme: null
+};
+
+const HEX3 = /^[0-9a-f]{3}$/;
+const HEX6 = /^[0-9a-f]{6}$/;
+
+/**
+ * ghostty writes a background as `#1a1b26` or bare `1a1b26`, and both `#abc` and `abc` are
+ * legal short forms. Named colors (`background = black`) and anything else are refused — the
+ * caller keeps the previous/default value rather than painting the pane an accidental black.
+ */
+export function parseGhosttyColor(raw: string): string | null {
+    const value = raw.trim().replace(/^#/, '').toLowerCase();
+    if (HEX6.test(value)) return `#${value}`;
+    if (HEX3.test(value)) {
+        const [r, g, b] = [value[0] as string, value[1] as string, value[2] as string];
+        return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    return null;
+}
+
+function parseNumber(raw: string): number | null {
+    const value = Number.parseFloat(raw.trim());
+    return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Quote-stripping for `font-family = "JetBrains Mono"`. Ghostty accepts the bare form too, so
+ * this only removes a matched surrounding pair — a family whose name contains a quote is not
+ * a thing worth handling.
+ */
+function unquote(raw: string): string {
+    const value = raw.trim();
+    if (value.length >= 2) {
+        const first = value[0];
+        if ((first === '"' || first === "'") && value.endsWith(first)) return value.slice(1, -1);
+    }
+    return value;
+}
+
+/** Quote a family that needs it, so the result is a valid CSS `font-family` value. */
+function cssFamily(name: string): string {
+    return /^[A-Za-z_][\w-]*$/.test(name) ? name : `"${name.replace(/"/g, '\\"')}"`;
+}
+
+export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
+    let backgroundColor = DEFAULT_GHOSTTY_APPEARANCE.backgroundColor;
+    let backgroundOpacity = DEFAULT_GHOSTTY_APPEARANCE.backgroundOpacity;
+    let fontSize: number | null = null;
+    let theme: string | null = null;
+    let families: string[] = [];
+
+    for (const { key, value } of parseConfigLines(contents)) {
+        switch (key) {
+            case 'background': {
+                const color = parseGhosttyColor(value);
+                if (color !== null) backgroundColor = color;
+                break;
+            }
+            case 'background-opacity': {
+                const parsed = parseNumber(value);
+                if (parsed !== null) backgroundOpacity = Math.min(1, Math.max(0, parsed));
+                break;
+            }
+            case 'font-family': {
+                // ghostty: an empty value resets the accumulated family list.
+                const family = unquote(value);
+                if (family === '') families = [];
+                else if (!families.includes(family)) families.push(family);
+                break;
+            }
+            case 'font-size': {
+                const parsed = parseNumber(value);
+                if (parsed !== null && parsed > 0) fontSize = parsed;
+                break;
+            }
+            case 'theme':
+                theme = value === '' ? null : value;
+                break;
+            default:
+                break;
+        }
+    }
+
+    return {
+        backgroundColor,
+        backgroundOpacity,
+        fontFamily: families.length === 0 ? null : families.map(cssFamily).join(', '),
+        fontSize,
+        theme
+    };
+}

@@ -121,6 +121,12 @@ export interface TabController {
     /** Clamped to [0.5, 3.0]; returns the applied factor. */
     setZoom(factor: number): number;
     zoom(): number;
+    /**
+     * Docked dev tools (§16.5); `undefined` toggles, and the return value is the resulting
+     * state. Optional: a tab that cannot open them (a test double, a future non-Electron host)
+     * simply omits it and the verb answers honestly.
+     */
+    setDevTools?(open?: boolean): boolean;
 }
 
 export interface CookieRecord {
@@ -433,6 +439,16 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         return { ok: true, zoom: found.tab.setZoom(clampZoom(next)) };
     };
 
+    /** §16.5's `</>` button. `open` absent = toggle, which is what a button press means. */
+    const devtools = (args: JsonObject): JsonObject => {
+        const found = tabOf(args);
+        if ('error' in found) return found.error;
+        const setter = found.tab.setDevTools?.bind(found.tab);
+        if (setter === undefined) return failure('dev tools are not available for this tab');
+        const wanted = typeof args['open'] === 'boolean' ? args['open'] : undefined;
+        return { ok: true, open: wanted === undefined ? setter() : setter(wanted) };
+    };
+
     // ── cookies (§13.2) ─────────────────────────────────────────────────────────────
 
     const serializeCookie = (cookie: CookieRecord): JsonObject => ({
@@ -558,6 +574,8 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 return await find(args);
             case 'zoom':
                 return zoom(args);
+            case 'devtools':
+                return devtools(args);
             case 'cookies-list':
                 return await cookiesList(args);
             case 'cookies-clear':

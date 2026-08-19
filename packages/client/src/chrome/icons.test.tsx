@@ -1,7 +1,18 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ChromeIcon, GENERIC_ICON_GLYPH, avatarLetter, iconGlyph, iconIsTintable } from './index';
+import {
+    CURATED_EMOJI,
+    CURATED_SYMBOL_ICONS,
+    ChromeIcon,
+    GENERIC_ICON_GLYPH,
+    avatarLetter,
+    formatIconToken,
+    iconGlyph,
+    iconIsTintable,
+    isSingleGrapheme,
+    normalizeEmojiInput
+} from './index';
 
 afterEach(cleanup);
 
@@ -37,6 +48,56 @@ describe('avatarLetter', () => {
         expect(avatarLetter('')).toBe('?');
         expect(avatarLetter('   ')).toBe('?');
         expect(avatarLetter('🚀 launch')).toBe('🚀');
+    });
+});
+
+describe('the Change Icon picker (§5.6)', () => {
+    it('offers the curated sets the doc names, all of them drawable', () => {
+        expect(CURATED_SYMBOL_ICONS.map((choice) => choice.label)).toEqual([
+            'Folder',
+            'Tray',
+            'Archive',
+            'Star',
+            'Flag',
+            'Pin',
+            'Bookmark',
+            'Build',
+            'Tests',
+            'Terminal',
+            'Package',
+            'Docs',
+            'AI'
+        ]);
+        for (const choice of CURATED_SYMBOL_ICONS) {
+            expect(iconGlyph({ kind: 'system', name: choice.name })).not.toBe(GENERIC_ICON_GLYPH);
+        }
+        expect(CURATED_EMOJI).toContain('🔥');
+        expect(CURATED_EMOJI).toHaveLength(12);
+    });
+
+    it('formats the flat DB token both ways round', () => {
+        expect(formatIconToken({ kind: 'emoji', grapheme: '🔥' })).toBe('emoji:🔥');
+        expect(formatIconToken({ kind: 'system', name: 'star' })).toBe('system:star');
+        // An unmapped token still round-trips: the client sets what it cannot draw.
+        expect(formatIconToken({ kind: 'system', name: 'newer.app.only' })).toBe('system:newer.app.only');
+        expect(formatIconToken(null)).toBeNull();
+    });
+
+    it('accepts exactly one grapheme cluster in the custom field', () => {
+        expect(isSingleGrapheme('🔥')).toBe(true);
+        // One grapheme, five code points — the reason `[...value].length` is not the check.
+        expect(isSingleGrapheme('👩‍👩‍👧')).toBe(true);
+        expect(isSingleGrapheme('🇦🇺')).toBe(true);
+        expect(isSingleGrapheme('a')).toBe(true);
+        expect(isSingleGrapheme('ab')).toBe(false);
+        expect(isSingleGrapheme('🔥🔥')).toBe(false);
+        expect(isSingleGrapheme('')).toBe(false);
+    });
+
+    it('trims before validating, and rejects anything longer', () => {
+        expect(normalizeEmojiInput('  🚀  ')).toBe('🚀');
+        expect(normalizeEmojiInput('   ')).toBeNull();
+        expect(normalizeEmojiInput('no')).toBeNull();
     });
 });
 

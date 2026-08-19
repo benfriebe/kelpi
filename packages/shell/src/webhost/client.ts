@@ -38,6 +38,13 @@ export interface WebHostClientOptions {
     /** Diagnostics only; shows up in the daemon's logs. */
     readonly name: string;
     readonly version: string;
+    /**
+     * The shell window this host renders into. Declared in the handshake so the daemon can tag
+     * geometry reports coming from the UI loaded in that same window (`?shellWindow=`), which is
+     * what tells embedded views apart from a browser's placeholder cards
+     * (`daemon/src/webpane/HOST_PROTOCOL.md` §3.5).
+     */
+    readonly windowID?: string | undefined;
     /** Answer one `host-rpc`. Must never reject — a failure envelope is a legitimate answer. */
     readonly call: (verb: string, args: JsonObject) => Promise<JsonObject>;
     /** Apply one `host-notify` (daemon-owned state mirrored onto real views). */
@@ -204,18 +211,21 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
 
         next.on('open', () => {
             if (socket !== next) return;
-            next.send(
-                JSON.stringify(
-                    shellHello({
-                        token: location.token,
-                        name: options.name,
-                        version: options.version,
-                        // Claims the role at handshake time — no second round trip, and no
-                        // window where the daemon has a client but no host.
-                        capabilities: ['web-pane-host']
-                    })
-                )
-            );
+            const hello = shellHello({
+                token: location.token,
+                name: options.name,
+                version: options.version,
+                // Claims the role at handshake time — no second round trip, and no
+                // window where the daemon has a client but no host.
+                capabilities: ['web-pane-host']
+            });
+            // Merged rather than threaded through `shellHello`: the window id is a web-host
+            // concern (the status socket has no window), so it stays out of the shared frame.
+            const client =
+                options.windowID === undefined
+                    ? hello['client']
+                    : { ...(hello['client'] as JsonObject), windowID: options.windowID };
+            next.send(JSON.stringify({ ...hello, client }));
         });
 
         next.on('message', (data: unknown, isBinary: boolean) => {

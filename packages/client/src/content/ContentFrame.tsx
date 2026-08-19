@@ -19,9 +19,19 @@
  *
  * The pane is painted with the ghostty background behind the transparent document (§3.8), which
  * is what makes a content pane look like it belongs beside a terminal.
+ *
+ * Two more things ride the same channel because the sandbox leaves no other route:
+ *
+ *   - **find-in-page** (§3.13). The marks and the match count live inside the document (the
+ *     injected `__nexFind`); the needle, the bar and the count display live here, PER CLIENT —
+ *     two browsers searching the same pane never see each other's highlights. The stored needle
+ *     is re-applied on every `ready`, so a watcher reload does not silently drop the marks.
+ *   - **the whole-document copy commands** (§3.14). "Copy as Markdown" needs only the source
+ *     text the daemon already sent; "Copy as Rich Text" needs the rendered DOM, which only the
+ *     frame can see — so the host asks for it and writes what comes back.
  */
 
-import { useEffect, useMemo, useRef, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
 import {
     CONTENT_HOST_SOURCE,
@@ -30,8 +40,10 @@ import {
     prepareContentDocument,
     writeClipboardText,
     type ClipboardWriter,
+    type FindOp,
     type LinkOpener
 } from './bridge';
+import { stripFrontMatter, writeRichText, type RichClipboardWriter } from './copy';
 import { contentScrollStore, type ScrollStore } from './scroll';
 
 /** The pane fill behind the transparent document (`--nex-term-bg`, as terminal panes use). */
@@ -54,8 +66,25 @@ export interface ContentFrameProps {
     readonly scrollStore?: ScrollStore | undefined;
     /** Seams for tests; the defaults are `navigator.clipboard` and `window.open`. */
     readonly writeClipboard?: ClipboardWriter | undefined;
+    readonly writeRichClipboard?: RichClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
+    /**
+     * §3.14: the pane's raw markdown. A string enables both copy commands (the button and the
+     * preview's context menu); `null`/absent disables them — which is how a failed load is
+     * refused, since you cannot copy the synthetic error blockquote.
+     */
+    readonly copySource?: string | null | undefined;
+    /** §3.13: set false for a surface with no find bar. */
+    readonly findEnabled?: boolean | undefined;
+    /** Bump to open the find bar from outside (the app's `toggle_search` binding). */
+    readonly findToken?: number | undefined;
     readonly testID?: string | undefined;
+}
+
+/** §3.13: the overlay's "current / total" readout; 0 matches shows `0/0`, never `3/0`. */
+export function findCountLabel(total: number, current: number): string {
+    if (total <= 0) return '0/0';
+    return `${String(current < 0 ? 0 : current + 1)}/${String(total)}`;
 }
 
 export interface ContentStatusProps {
@@ -107,6 +136,79 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
         [html, paneID, props.assetBase]
     );
 
+    // ── find-in-page (§3.13), per client ────────────────────────────────────────────
+    const [findOpen, setFindOpen] = useState(false);
+    const [needle, setNeedle] = useState('');
+    const [matches, setMatches] = useState<{ total: number; current: number }>(EMPTY_MATCHES);
+    const findInputRef = useRef<HTMLInputElement | null>(null);
+    /** What the document is currently marked for, replayed after every reload. */
+    const appliedNeedleRef = useRef('');
+
+    const toFrame = useCallback((message: Record<string, unknown>): void => {
+        frameRef.current?.contentWindow?.postMessage({ source: CONTENT_HOST_SOURCE, ...message }, '*');
+    }, []);
+
+    const sendFind = useCallback(
+        (op: FindOp, value?: string): void => {
+            appliedNeedleRef.current = op === 'clear' ? '' : (value ?? appliedNeedleRef.current);
+            toFrame({ kind: 'find', op, ...(value === undefined ? {} : { needle: value }) });
+        },
+        [toFrame]
+    );
+
+    const closeFind = useCallback((): void => {
+        setFindOpen(false);
+        setMatches(EMPTY_MATCHES);
+        sendFind('clear');
+    }, [sendFind]);
+
+    // The app's `toggle_search` binding: a token bump opens the bar and claims the caret.
+    const findToken = props.findToken ?? 0;
+    const lastFindToken = useRef(findToken);
+    useEffect(() => {
+        if (findToken === lastFindToken.current) return;
+        lastFindToken.current = findToken;
+        if (props.findEnabled === false) return;
+        setFindOpen(true);
+        // The input mounts in the same commit, so the focus has to wait for it.
+        queueMicrotask(() => findInputRef.current?.focus());
+    }, [findToken, props.findEnabled]);
+
+    // §3.13: no debounce — it is local JS, and a lagging highlight reads as a broken one.
+    useEffect(() => {
+        if (!findOpen) return;
+        sendFind('search', needle);
+    }, [findOpen, needle, sendFind]);
+
+    // ── the copy commands (§3.14) ───────────────────────────────────────────────────
+    const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+    /** Pending "Copy as Rich Text" requests: the frame answers asynchronously. */
+    const richTokenRef = useRef<string | null>(null);
+
+    const copyable = typeof props.copySource === 'string';
+
+    // The frame only takes the browser's own context menu away while there is something to
+    // replace it with, so it has to be told — on every `ready` (a reload resets the flag) and
+    // whenever the document's copyability changes under a live frame.
+    useEffect(() => {
+        toFrame({ kind: 'copy-menu', enabled: copyable });
+    }, [copyable, toFrame, srcDoc]);
+
+    const copyMarkdown = useCallback((): void => {
+        setMenu(null);
+        const source = latest.current.copySource;
+        if (typeof source !== 'string') return;
+        writeClipboardText(stripFrontMatter(source), latest.current.writeClipboard);
+    }, []);
+
+    const copyRichText = useCallback((): void => {
+        setMenu(null);
+        if (typeof latest.current.copySource !== 'string') return;
+        const token = `rich-${String(Date.now())}-${String(Math.random()).slice(2, 8)}`;
+        richTokenRef.current = token;
+        toFrame({ kind: 'collect-rich-text', token });
+    }, [toFrame]);
+
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
             const frame = frameRef.current;
@@ -119,6 +221,27 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
 
             switch (message.kind) {
                 case 'ready': {
+                    // A fresh document starts with the native menu intact; re-arm it here so a
+                    // reload does not silently lose the copy menu.
+                    frame?.contentWindow?.postMessage(
+                        {
+                            source: CONTENT_HOST_SOURCE,
+                            kind: 'copy-menu',
+                            enabled: typeof current.copySource === 'string'
+                        },
+                        '*'
+                    );
+                    // §3.13: the document was replaced (watcher write, font change, theme swap)
+                    // and its marks went with it — re-apply the stored needle before anything
+                    // else, or the overlay would keep showing a count for highlights that
+                    // no longer exist.
+                    const stored = appliedNeedleRef.current;
+                    if (stored.length > 0) {
+                        frame?.contentWindow?.postMessage(
+                            { source: CONTENT_HOST_SOURCE, kind: 'find', op: 'search', needle: stored },
+                            '*'
+                        );
+                    }
                     // A reload of a mount that has already scrolled restores pixels; a fresh
                     // mount restores the shared fraction (§3.11 precedence).
                     const reload = restoredRef.current && lastTopRef.current > 0;
@@ -148,6 +271,27 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 case 'toggle-edit':
                     current.onToggleEdit?.(paneID);
                     return;
+                case 'find-open':
+                    if (current.findEnabled === false) return;
+                    setFindOpen(true);
+                    queueMicrotask(() => findInputRef.current?.focus());
+                    return;
+                case 'find-result':
+                    setMatches({ total: message.total, current: message.current });
+                    return;
+                case 'context-menu':
+                    if (typeof current.copySource !== 'string') return;
+                    current.onFocusRequest?.(paneID);
+                    setMenu({ x: message.x, y: message.y });
+                    return;
+                case 'rich-text': {
+                    // Only the request still outstanding may write the clipboard: a stale reply
+                    // (a second click, a reloaded document) must not overwrite a newer copy.
+                    if (richTokenRef.current !== message.token) return;
+                    richTokenRef.current = null;
+                    writeRichText({ html: message.html, text: message.text }, current.writeRichClipboard);
+                    return;
+                }
             }
         };
 
@@ -161,7 +305,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
         <div
             data-testid={props.testID ?? `content-frame-${paneID}`}
             data-pane-id={paneID}
-            className="h-full w-full overflow-hidden"
+            className="relative h-full w-full overflow-hidden"
             style={{
                 background: props.background ?? CONTENT_PANE_BACKGROUND,
                 visibility: visible ? 'visible' : 'hidden'
@@ -179,6 +323,135 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 className="h-full w-full border-0"
                 style={{ background: 'transparent', display: 'block' }}
             />
+
+            {copyable && !findOpen ? (
+                <button
+                    type="button"
+                    data-testid={`content-copy-${paneID}`}
+                    aria-label="Copy document"
+                    title="Copy document"
+                    className="absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] opacity-40 transition-opacity hover:opacity-100"
+                    style={OVERLAY_STYLE}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        const box = event.currentTarget.getBoundingClientRect();
+                        const host = event.currentTarget.parentElement?.getBoundingClientRect();
+                        setMenu({
+                            x: box.left - (host?.left ?? 0),
+                            y: box.bottom - (host?.top ?? 0) + 2
+                        });
+                    }}
+                >
+                    Copy
+                </button>
+            ) : null}
+
+            {menu === null ? null : (
+                <>
+                    {/* A click anywhere else dismisses; the frame's own clicks cannot reach us. */}
+                    <div
+                        data-testid={`content-copy-scrim-${paneID}`}
+                        className="absolute inset-0"
+                        onClick={() => setMenu(null)}
+                    />
+                    <div
+                        role="menu"
+                        aria-label="Copy document"
+                        data-testid={`content-copy-menu-${paneID}`}
+                        className="absolute z-10 min-w-[160px] rounded-md p-1 text-[12px]"
+                        style={{ ...OVERLAY_STYLE, left: menu.x, top: menu.y }}
+                    >
+                        <button
+                            type="button"
+                            role="menuitem"
+                            data-testid={`content-copy-markdown-${paneID}`}
+                            className="block w-full rounded px-2 py-1 text-left"
+                            onClick={copyMarkdown}
+                        >
+                            Copy as Markdown
+                        </button>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            data-testid={`content-copy-rich-${paneID}`}
+                            className="block w-full rounded px-2 py-1 text-left"
+                            onClick={copyRichText}
+                        >
+                            Copy as Rich Text
+                        </button>
+                    </div>
+                </>
+            )}
+
+            {findOpen ? (
+                <div
+                    data-testid={`content-find-${paneID}`}
+                    className="absolute right-2 top-2 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px]"
+                    style={OVERLAY_STYLE}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            closeFind();
+                        }
+                    }}
+                >
+                    <input
+                        ref={findInputRef}
+                        aria-label={`Find in ${title}`}
+                        placeholder="Find"
+                        data-testid={`content-find-input-${paneID}`}
+                        className="w-32 bg-transparent outline-none"
+                        value={needle}
+                        onChange={(event) => setNeedle(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key !== 'Enter') return;
+                            event.preventDefault();
+                            sendFind(event.shiftKey ? 'prev' : 'next');
+                        }}
+                    />
+                    <span
+                        data-testid={`content-find-count-${paneID}`}
+                        className="tabular-nums opacity-60"
+                    >
+                        {findCountLabel(matches.total, matches.current)}
+                    </span>
+                    <button
+                        type="button"
+                        aria-label="Previous match"
+                        data-testid={`content-find-prev-${paneID}`}
+                        onClick={() => sendFind('prev')}
+                    >
+                        ↑
+                    </button>
+                    <button
+                        type="button"
+                        aria-label="Next match"
+                        data-testid={`content-find-next-${paneID}`}
+                        onClick={() => sendFind('next')}
+                    >
+                        ↓
+                    </button>
+                    <button
+                        type="button"
+                        aria-label="Close find"
+                        data-testid={`content-find-close-${paneID}`}
+                        onClick={closeFind}
+                    >
+                        ✕
+                    </button>
+                </div>
+            ) : null}
         </div>
     );
 }
+
+const EMPTY_MATCHES = { total: 0, current: -1 } as const;
+
+/** The chrome the overlays sit in — deliberately opaque so text under them never shows through. */
+const OVERLAY_STYLE = {
+    background: 'var(--nex-surface-bg, #1B1B20)',
+    border: '1px solid var(--nex-divider, #2A2A31)',
+    color: 'var(--nex-fg-primary, #E6E6EA)',
+    boxShadow: '0 6px 18px rgba(0,0,0,0.35)'
+} as const;

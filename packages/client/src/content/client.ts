@@ -44,6 +44,23 @@ export interface ContentSubscription {
  * What a content pane component needs. Structural on purpose: a test hands the components a
  * three-method fake instead of a socket.
  */
+/** §3.16 — what the header's +/- buttons and the ⌘= / ⌘- / ⌘0 bindings ask for. */
+export type FontSizeStep = 'increase' | 'decrease' | 'reset';
+
+/** §3.16 bounds. Applied here so the daemon's clamp is never the thing the user notices. */
+export const CONTENT_FONT_SIZE_MIN = 8;
+export const CONTENT_FONT_SIZE_MAX = 32;
+export const CONTENT_FONT_SIZE_DEFAULT = 14;
+
+/** `increase → min(size+1, 32)`, `decrease → max(size-1, 8)`, `reset → 14` (§3.16). */
+export function nextFontSize(current: number, step: FontSizeStep): number {
+    if (step === 'reset') return CONTENT_FONT_SIZE_DEFAULT;
+    const base = Number.isFinite(current) && current > 0 ? current : CONTENT_FONT_SIZE_DEFAULT;
+    return step === 'increase'
+        ? Math.min(base + 1, CONTENT_FONT_SIZE_MAX)
+        : Math.max(base - 1, CONTENT_FONT_SIZE_MIN);
+}
+
 export interface ContentApi {
     subscribe(paneID: string, listener: ContentListener): ContentSubscription;
     /** Debounced; the last text within the window wins. */
@@ -56,6 +73,14 @@ export interface ContentApi {
     refresh(paneID: string): Promise<void>;
     /** Ask the daemon to write its buffer now. */
     save(paneID: string): Promise<void>;
+    /**
+     * §3.16 preview font size. The step is resolved against the state this client already
+     * mirrors, so callers do not have to carry the current size — and the daemon's reducer
+     * still owns the clamp and the "markdown, not editing" guard.
+     */
+    setFontSize(paneID: string, step: FontSizeStep): Promise<void>;
+    /** The last state seen for a pane; null when nothing is (or was) subscribed. */
+    peek(paneID: string): ContentPaneState | null;
 }
 
 export interface ContentClientOptions {
@@ -254,6 +279,17 @@ export function createContentClient(options: ContentClientOptions): ContentClien
         save(paneID) {
             void flushText(paneID);
             return settle(paneID, commands.saveContent({ paneID }), 'markdown-save');
+        },
+
+        setFontSize(paneID, step) {
+            const current = entries.get(paneID)?.last?.fontSize ?? CONTENT_FONT_SIZE_DEFAULT;
+            const size = nextFontSize(current, step);
+            if (size === current) return Promise.resolve();
+            return settle(paneID, commands.setContentFontSize({ paneID, size }), 'content-set-font-size');
+        },
+
+        peek(paneID) {
+            return entries.get(paneID)?.last ?? null;
         },
 
         listenerCount(paneID) {

@@ -27,9 +27,11 @@ import {
     MENU_BAR_ACTIONS,
     actionForTrigger,
     applyKeybindOverrides,
+    keyTriggerDisplayString,
     makeKeyTrigger,
     parseKeybindValue,
     resolveKeyBindings,
+    triggersForAction,
     type KeyBindingMap,
     type KeyModifier,
     type KeyTrigger,
@@ -115,6 +117,17 @@ export function clientKeyBindings(overrideLines?: readonly string[] | undefined)
 }
 
 export { DEFAULT_KEYBINDINGS, applyKeybindOverrides, actionForTrigger };
+
+/**
+ * The hint a menu row or palette entry shows for an action (config-keybindings.md §3.3), or
+ * `undefined` when nothing is bound to it. `triggersForAction` sorts by `configString`, so a
+ * multiply-bound action shows the same hint on every launch rather than whichever trigger the
+ * map happened to iterate first.
+ */
+export function shortcutForAction(bindings: KeyBindingMap, action: NexAction): string | undefined {
+    const trigger = triggersForAction(bindings, action)[0];
+    return trigger === undefined ? undefined : keyTriggerDisplayString(trigger);
+}
 
 // ── dispatch ────────────────────────────────────────────────────────────────────────
 

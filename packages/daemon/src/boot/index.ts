@@ -27,6 +27,21 @@ export {
     type LoadConfigOptions
 } from './config.js';
 export {
+    GHOSTTY_CONFIG_PATH_ENV,
+    SettingsError,
+    buildSettingsSnapshot,
+    contentAppearanceOf,
+    createSettingsService,
+    keybindLinesFrom,
+    parseGhosttyAppearance,
+    resolveGhosttyConfigPath,
+    watchConfigFile,
+    type GhosttyAppearance,
+    type SettingsService,
+    type SettingsServiceOptions,
+    type SettingsSnapshot
+} from '../settings/index.js';
+export {
     createDispatcher,
     mergeHandlerTables,
     unknownCommandError,

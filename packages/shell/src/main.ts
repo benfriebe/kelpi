@@ -24,6 +24,7 @@
  */
 
 import { BrowserWindow, Menu, app, dialog, globalShortcut, screen, session, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
 
 import { sendControlCommand } from './control.js';
 import {
@@ -64,6 +65,17 @@ let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
 /** Files handed to us by Finder before the daemon was ready. */
 const pendingOpens: string[] = [];
+
+/**
+ * This shell window's identity, minted once per process.
+ *
+ * It is the thread that ties three parties together without a preload bridge: the web-pane host
+ * declares it to the daemon, the UI is loaded with `?shellWindow=<id>` and repeats it on every
+ * geometry report, and a reveal request names it so only this window's UI jumps. A browser (or
+ * another machine's shell) carries a different id — or none — and is therefore never mistaken
+ * for the page that shares this process's window.
+ */
+const shellWindowID = randomUUID();
 
 app.setName('Nex');
 
@@ -167,7 +179,10 @@ function applyPermissionPolicy(): void {
 
 function loadDaemonUrl(window: BrowserWindow): void {
     if (daemon === null) return;
-    const target = clientUrl(daemon);
+    // `shellWindow` marks the page as "the UI inside this shell window" — it is what makes the
+    // client's web-pane geometry reports actionable and scopes reveal requests to this window.
+    // The client keeps it (only `daemon`/`token` are stripped from the visible URL).
+    const target = `${clientUrl(daemon)}&shellWindow=${encodeURIComponent(shellWindowID)}`;
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -214,7 +229,16 @@ function createWindow(): BrowserWindow {
     });
     window.on('closed', () => {
         mainWindow = null;
+        // Embedded web-pane views outlive the window: back to the host's off-screen holder, or
+        // the next placement would address a destroyed window (and `capture` would break for a
+        // pane whose view is parented to nothing).
+        webHost?.releaseViews('window-closed');
     });
+    window.on('hide', () => webHost?.releaseViews('window-hidden'));
+    // Resizing/moving the window changes the content area under every embedded view; the client
+    // re-measures and reports, so nothing is recomputed here — but a window that leaves the
+    // screen entirely must not keep views parented to it.
+    window.on('minimize', () => webHost?.releaseViews('window-minimized'));
 
     window.webContents.on('did-finish-load', () => {
         loadRetries = 0;
@@ -362,6 +386,7 @@ async function startDaemonAndConnect(): Promise<void> {
     if (status === null) {
         status = createStatusController({
             location: daemon,
+            windowID: shellWindowID,
             host: {
                 showWindow,
                 isWindowFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
@@ -372,14 +397,19 @@ async function startDaemonAndConnect(): Promise<void> {
                 },
                 quit: () => app.quit(),
                 revealPane: (workspaceID, paneID) => {
-                    // Raising the window is all the shell can do today: switching workspace
-                    // and focusing the pane is the CLIENT's job (agent-lifecycle.md §8.5's
-                    // ordering invariant lives there), and reaching it needs either a preload
-                    // bridge or a deep link the client understands — neither exists yet, and
-                    // adding a preload API only for this would undo the "empty preload
-                    // surface" posture. Deferred with the client's routing work.
+                    // §8.5's ordering, split across the two processes that can each do half:
+                    // the shell raises/activates the window FIRST (only it can), then asks the
+                    // daemon to tell this window's UI to switch workspace and focus the pane
+                    // LAST (only the client can, and only it knows when the DOM is ready).
+                    // The route is the daemon rather than a preload bridge on purpose — the
+                    // renderer surface stays empty, and the same message works for a client
+                    // that is still loading, or attached from another machine.
                     showWindow();
-                    log(`reveal requested for pane ${paneID} in workspace ${workspaceID}`);
+                    const routed = status?.revealPane(workspaceID, paneID) ?? false;
+                    log(
+                        `reveal requested for pane ${paneID} in workspace ${workspaceID}` +
+                            (routed ? '' : ' (daemon socket not ready; window raised only)')
+                    );
                 }
             }
         });
@@ -392,7 +422,15 @@ async function startDaemonAndConnect(): Promise<void> {
     // tab (`./webhost/`). It is a separate connection from the status socket on purpose: losing
     // one role must not disturb the other, and both work while the window is closed.
     if (webHost === null) {
-        webHost = createWebPaneHost({ location: daemon, version: app.getVersion() });
+        webHost = createWebPaneHost({
+            location: daemon,
+            version: app.getVersion(),
+            // Embedding: the host places a pane's view in THIS window when the UI running in it
+            // (same `windowID`) reports where it drew the page area. Looked up lazily — the
+            // window is created after this, and can be closed and re-opened under it.
+            window: () => mainWindow,
+            windowID: shellWindowID
+        });
         webHost.start();
     } else {
         webHost.setLocation(daemon);

@@ -6,7 +6,7 @@
  * socket, and every one of them would otherwise re-invent this fake.
  */
 
-import type { ContentApi, ContentListener, ContentSubscription } from './client';
+import type { ContentApi, ContentListener, ContentSubscription, FontSizeStep } from './client';
 import type { ContentPaneState } from './types';
 
 export interface SentText {
@@ -19,6 +19,11 @@ export interface SentMode {
     readonly mode: 'view' | 'edit';
 }
 
+export interface SentFontSize {
+    readonly paneID: string;
+    readonly step: FontSizeStep;
+}
+
 export interface FakeContentApi extends ContentApi {
     /** Pane ids in subscribe order (one entry per `subscribe` call). */
     readonly subscribes: string[];
@@ -28,6 +33,7 @@ export interface FakeContentApi extends ContentApi {
     readonly refreshes: string[];
     readonly saves: string[];
     readonly flushes: string[];
+    readonly fontSizes: SentFontSize[];
     listenerCount(paneID: string): number;
     /** Deliver a state snapshot to a pane's listeners. */
     push(state: ContentPaneState): void;
@@ -44,6 +50,8 @@ export function createFakeContentApi(): FakeContentApi {
     const refreshes: string[] = [];
     const saves: string[] = [];
     const flushes: string[] = [];
+    const fontSizes: SentFontSize[] = [];
+    const states = new Map<string, ContentPaneState>();
 
     return {
         subscribes,
@@ -53,6 +61,7 @@ export function createFakeContentApi(): FakeContentApi {
         refreshes,
         saves,
         flushes,
+        fontSizes,
 
         subscribe(paneID: string, listener: ContentListener): ContentSubscription {
             subscribes.push(paneID);
@@ -92,11 +101,21 @@ export function createFakeContentApi(): FakeContentApi {
             return Promise.resolve();
         },
 
+        setFontSize(paneID: string, step: FontSizeStep): Promise<void> {
+            fontSizes.push({ paneID, step });
+            return Promise.resolve();
+        },
+
+        peek(paneID: string): ContentPaneState | null {
+            return states.get(paneID) ?? null;
+        },
+
         listenerCount(paneID: string): number {
             return listeners.get(paneID)?.size ?? 0;
         },
 
         push(state: ContentPaneState): void {
+            states.set(state.paneID, state);
             for (const listener of [...(listeners.get(state.paneID) ?? [])]) listener.onState(state);
         },
 

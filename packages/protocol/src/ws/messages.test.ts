@@ -165,6 +165,54 @@ describe('web-pane host channel (M6)', () => {
         expect([...WS_HOST_REVOKE_REASONS]).toEqual(['superseded', 'unregistered', 'shutdown']);
     });
 
+    it('round-trips the embedded-view geometry report and the reveal pair', () => {
+        const messages: (WsClientMessage | WsServerMessage)[] = [
+            {
+                type: 'web-geometry-report',
+                paneID: 'P',
+                tabID: 'T',
+                rect: { x: 12, y: 40, w: 800, h: 600 },
+                visible: true,
+                devicePixelRatio: 2,
+                shellWindowID: 'WIN'
+            },
+            // The hide report is the same message with `visible:false` — no separate verb, so a
+            // host that only ever sees this one message can still return the view to its holder.
+            {
+                type: 'web-geometry-report',
+                paneID: 'P',
+                rect: { x: 0, y: 0, w: 0, h: 0 },
+                visible: false,
+                devicePixelRatio: 1
+            },
+            { type: 'reveal-request', workspaceID: 'W', paneID: 'P', windowID: 'WIN' },
+            { type: 'reveal-pane', workspaceID: 'W', paneID: 'P', windowID: 'WIN' }
+        ];
+        for (const message of messages) expect(JSON.parse(JSON.stringify(message))).toEqual(message);
+    });
+
+    it('pairs a shell window with its host connection through windowID', () => {
+        const hello: WsClientMessage = {
+            type: 'hello',
+            protocolVersion: WS_PROTOCOL_VERSION,
+            token: 'tok',
+            client: {
+                kind: 'electron',
+                name: 'nex-shell',
+                capabilities: ['web-pane-host'],
+                windowID: 'WIN'
+            }
+        };
+        const register: WsClientMessage = {
+            type: 'host-register',
+            role: 'web-pane',
+            name: 'nex-shell',
+            windowID: 'WIN'
+        };
+        expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
+        expect(JSON.parse(JSON.stringify(register))).toEqual(register);
+    });
+
     it('lets a client claim the host role in its hello capabilities', () => {
         const hello: WsClientMessage = {
             type: 'hello',

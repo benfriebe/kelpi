@@ -36,7 +36,8 @@ export type ChromeIconName =
     | 'note'
     | 'plusminus'
     | 'globe'
-    | 'bolt';
+    | 'bolt'
+    | 'gear';
 
 const PATHS: Record<ChromeIconName, ReactElement> = {
     search: (
@@ -118,7 +119,14 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
             <path d="M1.8 6h8.4M6 1.8c1.6 1.8 1.6 6.6 0 8.4-1.6-1.8-1.6-6.6 0-8.4z" />
         </>
     ),
-    bolt: <path d="M6.6 1.8 3.2 6.6h2.4l-.6 3.6 3.6-4.8H6.2z" />
+    bolt: <path d="M6.6 1.8 3.2 6.6h2.4l-.6 3.6 3.6-4.8H6.2z" />,
+    /** Settings: a hub with four spokes — legible at 12px where real cog teeth are mush. */
+    gear: (
+        <>
+            <circle cx="6" cy="6" r="2" />
+            <path d="M6 1.4v1.6M6 9v1.6M1.4 6h1.6M9 6h1.6M2.8 2.8l1.1 1.1M8.1 8.1l1.1 1.1M9.2 2.8 8.1 3.9M3.9 8.1 2.8 9.2" />
+        </>
+    )
 };
 
 export interface ChromeIconProps {
@@ -205,6 +213,82 @@ export function iconGlyph(icon: IconRef | null | undefined): string | null {
 /** True when the glyph is an SF-symbol stand-in and may be tinted (emoji must not be). */
 export function iconIsTintable(icon: IconRef | null | undefined): boolean {
     return icon !== null && icon !== undefined && icon.kind === 'system';
+}
+
+// ── the "Change Icon" picker (§5.6) ─────────────────────────────────────────────────
+
+export interface IconChoice {
+    /** The SF Symbol token stored in the DB, kept verbatim so a legacy value round-trips. */
+    readonly name: string;
+    readonly label: string;
+}
+
+/**
+ * §5.6's "Change Icon ▸ Symbol" list, in menu order. The TOKEN is what travels; which glyph a
+ * client draws for it is `ICON_TOKEN_GLYPHS`'s business, and one it cannot draw falls back —
+ * the same contract a value written by a newer app version gets.
+ */
+export const CURATED_SYMBOL_ICONS: readonly IconChoice[] = [
+    { name: 'folder', label: 'Folder' },
+    { name: 'tray', label: 'Tray' },
+    { name: 'archivebox', label: 'Archive' },
+    { name: 'star', label: 'Star' },
+    { name: 'flag', label: 'Flag' },
+    { name: 'pin', label: 'Pin' },
+    { name: 'bookmark', label: 'Bookmark' },
+    { name: 'hammer', label: 'Build' },
+    { name: 'testtube.2', label: 'Tests' },
+    { name: 'terminal', label: 'Terminal' },
+    { name: 'shippingbox', label: 'Package' },
+    { name: 'book', label: 'Docs' },
+    { name: 'sparkles', label: 'AI' }
+];
+
+/** §5.6's "Change Icon ▸ Emoji" quick set. */
+export const CURATED_EMOJI: readonly string[] = [
+    '📁',
+    '📂',
+    '⭐',
+    '🔥',
+    '💼',
+    '🎯',
+    '🧪',
+    '🐛',
+    '📝',
+    '🚀',
+    '☁️',
+    '🎨'
+];
+
+interface SegmenterCtor {
+    new (locale?: string | undefined, options?: { granularity: string }): {
+        segment(input: string): Iterable<unknown>;
+    };
+}
+
+/**
+ * The "Custom Emoji…" field's validation: exactly ONE grapheme cluster, so a ZWJ family or a
+ * flag counts as one character and `ab` does not. `Intl.Segmenter` is the only thing that gets
+ * this right — `[...value].length` splits an emoji into its code points — with a conservative
+ * code-point fallback for a runtime that lacks it.
+ */
+export function isSingleGrapheme(value: string): boolean {
+    if (value.length === 0) return false;
+    const Segmenter = (Intl as unknown as { Segmenter?: SegmenterCtor }).Segmenter;
+    if (Segmenter === undefined) return [...value].length === 1;
+    return [...new Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length === 1;
+}
+
+/** Trim, then accept a single grapheme; anything else is `null` (the field stays invalid). */
+export function normalizeEmojiInput(value: string): string | null {
+    const trimmed = value.trim();
+    return isSingleGrapheme(trimmed) ? trimmed : null;
+}
+
+/** The flat DB spelling the wire carries; `null` clears it (§5.6 "Reset to Letter"). */
+export function formatIconToken(icon: IconRef | null): string | null {
+    if (icon === null) return null;
+    return icon.kind === 'emoji' ? `emoji:${icon.grapheme}` : `system:${icon.name}`;
 }
 
 /** First grapheme of a name, uppercased — the letter avatar (§5.3); empty name → `"?"`. */

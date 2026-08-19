@@ -20,7 +20,12 @@
  */
 
 import { applyDomainEvents, type DaemonState, type DomainEvent } from '@nex/daemon/store';
-import { WS_DELTA_KINDS, type WsNotificationKind } from '@nex/protocol';
+import {
+    DEFAULT_WS_SETTINGS,
+    WS_DELTA_KINDS,
+    type WsNotificationKind,
+    type WsSettingsSnapshot
+} from '@nex/protocol';
 import { create } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
@@ -140,6 +145,22 @@ export interface FocusEcho {
     readonly paneID: string | null;
 }
 
+/**
+ * The daemon's config-file settings (M8).
+ *
+ * A THIRD slice, deliberately not folded into `daemon`: settings are not domain state, they
+ * arrive on `welcome` (and on `settings-changed`) rather than in the snapshot, and no
+ * `DomainEvent` describes them — so replaying deltas must never touch them.
+ *
+ * `loaded` distinguishes "the daemon told us the user has no config" from "we have not heard
+ * yet", which is what stops the chrome flashing the wrong light/dark bucket on connect.
+ */
+export interface SettingsSlice {
+    readonly value: WsSettingsSnapshot;
+    /** True once a `welcome` (or a `settings-changed`) delivered a payload. */
+    readonly loaded: boolean;
+}
+
 export interface UiSlice {
     readonly connection: ConnectionStatus;
     readonly connectionError: string | null;
@@ -157,6 +178,11 @@ export interface UiSlice {
 }
 
 export interface NexActions {
+    /**
+     * A `welcome.settings` payload or a `settings-changed` broadcast. `undefined` (an older
+     * daemon that sends no settings) leaves the defaults in place and stays unloaded.
+     */
+    applySettings(raw: unknown): void;
     applySnapshot(seq: number, rawState: unknown): void;
     /** False when the batch was out of order (caller must resync the socket). */
     applyDelta(seq: number, rawEvents: unknown): boolean;
@@ -183,6 +209,7 @@ export interface NexActions {
 export interface NexState extends NexActions {
     readonly daemon: DaemonSlice;
     readonly ui: UiSlice;
+    readonly settings: SettingsSlice;
 }
 
 export const MAX_TOASTS = 5;
@@ -196,6 +223,78 @@ function initialDaemonSlice(): DaemonSlice {
         clientID: null,
         info: null
     };
+}
+
+function initialSettingsSlice(): SettingsSlice {
+    return { value: DEFAULT_WS_SETTINGS, loaded: false };
+}
+
+/**
+ * Structural hydration for a settings payload: anything missing or of the wrong type falls
+ * back to the default, so a daemon that grows a field (or loses one) cannot blank the client.
+ */
+export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
+    if (!isRecord(raw)) return null;
+    const general = isRecord(raw['general']) ? raw['general'] : {};
+    const appearance = isRecord(raw['appearance']) ? raw['appearance'] : {};
+    const fallbackGeneral = DEFAULT_WS_SETTINGS.general;
+    const fallbackAppearance = DEFAULT_WS_SETTINGS.appearance;
+
+    const bool = (value: unknown, fallback: boolean): boolean =>
+        typeof value === 'boolean' ? value : fallback;
+    const num = (value: unknown, fallback: number): number =>
+        typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+    const nullableText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+    const nullableNum = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+    return {
+        keybindLines: array(raw['keybindLines']).filter((line): line is string => typeof line === 'string'),
+        // M8 Settings ▸ Profiles: the config file's `profile` lines, already parsed daemon-side.
+        // A malformed entry is dropped rather than guessed at — the editor writes the WHOLE set
+        // back, so a half-understood profile would be a silent deletion of the user's vars.
+        profiles: array(raw['profiles']).flatMap((entry) => {
+            if (!isRecord(entry) || typeof entry['name'] !== 'string') return [];
+            const rawEnv = entry['env'];
+            const env: Record<string, string> = {};
+            if (isRecord(rawEnv)) {
+                for (const [key, value] of Object.entries(rawEnv)) {
+                    if (typeof value === 'string') env[key] = value;
+                }
+            }
+            return [{ name: entry['name'], env }];
+        }),
+        general: {
+            focusFollowsMouse: bool(general['focusFollowsMouse'], fallbackGeneral.focusFollowsMouse),
+            focusFollowsMouseDelay: Math.max(
+                0,
+                num(general['focusFollowsMouseDelay'], fallbackGeneral.focusFollowsMouseDelay)
+            ),
+            theme: nullableText(general['theme']),
+            confirmWorkspaceDeleteWhenActive: bool(
+                general['confirmWorkspaceDeleteWhenActive'],
+                fallbackGeneral.confirmWorkspaceDeleteWhenActive
+            )
+        },
+        appearance: {
+            backgroundColor:
+                typeof appearance['backgroundColor'] === 'string' && appearance['backgroundColor'] !== ''
+                    ? appearance['backgroundColor']
+                    : fallbackAppearance.backgroundColor,
+            backgroundOpacity: Math.min(
+                1,
+                Math.max(0, num(appearance['backgroundOpacity'], fallbackAppearance.backgroundOpacity))
+            ),
+            fontFamily: nullableText(appearance['fontFamily']),
+            fontSize: nullableNum(appearance['fontSize']),
+            isDark: bool(appearance['isDark'], fallbackAppearance.isDark),
+            theme: nullableText(appearance['theme'])
+        }
+    };
+}
+
+function sameSettings(a: WsSettingsSnapshot, b: WsSettingsSnapshot): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function initialUiSlice(): UiSlice {
@@ -232,6 +331,17 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
     return {
         daemon: initialDaemonSlice(),
         ui: initialUiSlice(),
+        settings: initialSettingsSlice(),
+
+        applySettings(raw) {
+            const value = hydrateSettings(raw);
+            if (value === null) return;
+            const settings = get().settings;
+            // Identity stability matters: every consumer of this slice is a memo dependency,
+            // and a fresh object per broadcast would rebuild the key dispatcher for nothing.
+            if (settings.loaded && sameSettings(settings.value, value)) return;
+            set({ settings: { value, loaded: true } });
+        },
 
         applySnapshot(seq, rawState) {
             const state = hydrateSnapshotState(rawState);

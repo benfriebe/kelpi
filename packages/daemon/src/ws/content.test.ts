@@ -101,6 +101,11 @@ function stubContent(): StubContent {
             calls.push(`refresh:${paneID}`);
             if (stub.fail !== null) throw stub.fail;
             return stateFor(paneID, { type: 'diff', text: null });
+        },
+        async setFontSize(paneID, size) {
+            calls.push(`setFontSize:${paneID}:${String(size)}`);
+            if (stub.fail !== null) throw stub.fail;
+            return stateFor(paneID, { fontSize: size });
         }
     };
     return stub;
@@ -166,14 +171,16 @@ function replyBody(transport: RecordedTransport, id: string): Record<string, unk
 // ---------------------------------------------------------------------------
 
 describe('content commands', () => {
-    it('lists exactly the M5 verbs and matches them before the wire decode', () => {
+    it('lists exactly the content verbs and matches them before the wire decode', () => {
         expect([...CONTENT_COMMANDS]).toEqual([
             'content-subscribe',
             'content-unsubscribe',
             'markdown-set-mode',
             'content-set-text',
             'diff-refresh',
-            'markdown-save'
+            'markdown-save',
+            // §3.16's preview font size: a re-render, so it rides the same async channel.
+            'content-set-font-size'
         ]);
         for (const command of CONTENT_COMMANDS) expect(isContentCommand(command)).toBe(true);
         expect(isContentCommand('pane-list')).toBe(false);
@@ -273,7 +280,8 @@ describe('content commands', () => {
             setMode: async (paneID) => stateFor(paneID),
             setText: async (paneID) => stateFor(paneID),
             save: async (paneID) => stateFor(paneID),
-            refresh: async (paneID) => stateFor(paneID)
+            refresh: async (paneID) => stateFor(paneID),
+            setFontSize: async (paneID) => stateFor(paneID)
         };
         const f = fixture(slow);
         const { session, transport } = f.connect();

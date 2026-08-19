@@ -57,21 +57,37 @@ export {
 } from './streams.js';
 
 export {
+    AGENT_COMMANDS,
     BAD_TOKEN_MESSAGE,
     CONTENT_COMMANDS,
     CONTENT_UPDATED_MESSAGE,
     DEFAULT_HELLO_TIMEOUT_MS,
+    REVEAL_PANE_MESSAGE,
+    REVEAL_REQUEST_MESSAGE,
     WEB_COMMANDS,
     WEB_CONSOLE_LINE_MESSAGE,
+    WEB_GEOMETRY_REPORT_MESSAGE,
     WEB_HOST_CAPABILITY,
     WS_CLOSE_CODES,
+    WS_ONLY_COMMANDS,
+    WS_SETTINGS_CHANGED_MESSAGE,
+    WS_SETTINGS_COMMANDS,
     createSyncHub,
+    handleSettingsCommand,
+    handleWsOnlyCommand,
+    isAgentCommand,
     isContentCommand,
     isWebCommand,
+    isWsOnlyCommand,
+    isWsSettingsCommand,
+    type AgentChannel,
+    type AgentCommand,
+    type AgentRestartResult,
     type ContentChannel,
     type ContentCommand,
     type NexDomainStore,
     type SessionOptions,
+    type SettingsChannel,
     type SyncHub,
     type SyncHubOptions,
     type SyncPaneBridge,
@@ -79,8 +95,13 @@ export {
     type SyncSession,
     type SyncTransport,
     type WebCommand,
-    type WebPaneChannel
+    type WebPaneChannel,
+    type WsOnlyCommand,
+    type WsOnlyCommandOptions,
+    type WsSettingsCommand
 } from './sync.js';
+
+export { createAgentChannel, type AgentChannelOptions } from './agents.js';
 
 export {
     DEFAULT_HTTP_HOST,

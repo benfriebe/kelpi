@@ -23,7 +23,8 @@
  * Everything else is props/callbacks — the sidebar never reads the store or sends a command.
  */
 
-import type { WorkspaceColor } from '@nex/daemon/store';
+import type { KeyBindingMap, NexAction } from '@nex/core/config';
+import type { IconRef, WorkspaceColor } from '@nex/daemon/store';
 import {
     memo,
     useCallback,
@@ -37,7 +38,16 @@ import {
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
-import { ChromeIcon, avatarLetter, iconGlyph, iconIsTintable } from './icons';
+import {
+    ChromeIcon,
+    CURATED_EMOJI,
+    CURATED_SYMBOL_ICONS,
+    avatarLetter,
+    iconGlyph,
+    iconIsTintable,
+    normalizeEmojiInput
+} from './icons';
+import { shortcutForAction } from './keys';
 import {
     applyGroupDrop,
     applyWorkspaceDrop,
@@ -72,6 +82,20 @@ import {
 const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_ROW_HEIGHT = 34;
 const CONTENT_TOP_PADDING = 4;
+
+/**
+ * §5.5's drag timers, verbatim from the timer inventory (§15):
+ *
+ *   - hovering a COLLAPSED group for 650 ms transiently expands it for the rest of the drag
+ *     (its persisted `isCollapsed` is untouched — leaving cancels, releasing collapses again);
+ *   - within 40 px of the viewport's top/bottom edge the list scrolls 3 px every 15 ms, and
+ *     each tick re-derives the content-space cursor and re-runs the whole target resolution,
+ *     because a stationary pointer emits no further mousemove events.
+ */
+export const SPRING_LOAD_MS = 650;
+export const AUTO_SCROLL_EDGE_PX = 40;
+export const AUTO_SCROLL_STEP_PX = 3;
+export const AUTO_SCROLL_INTERVAL_MS = 15;
 
 // ── small pieces ────────────────────────────────────────────────────────────────────
 
@@ -246,6 +270,10 @@ interface WorkspaceRowProps {
     readonly presets: readonly ChromeLabelPreset[];
     readonly renaming: boolean;
     readonly dragging: boolean;
+    /** §5.5 multi-drag: the other selected rows collapse to zero height for the drag. */
+    readonly dragHidden?: boolean | undefined;
+    /** §5.5 multi-drag: the `+N` capsule on the grabbed row (0 = no capsule). */
+    readonly dragExtra?: number | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -272,12 +300,28 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
           ? `1px solid ${withAlpha('#5276B8', 0.7)}`
           : 'none';
 
+    const hidden = props.dragHidden === true;
     const style: CSSProperties = {
         background,
         outline,
         outlineOffset: '-1px',
         marginLeft: props.depth === 1 ? 24 : 0,
-        opacity: props.dragging ? 0.8 : 1
+        // §5.5: a dragged row lifts to 80% opacity and scales up; the OTHER rows of a
+        // multi-selection collapse to zero height so the grid closes over them.
+        opacity: hidden ? 0 : props.dragging ? 0.8 : 1,
+        ...(props.dragging && !hidden ? { transform: 'scale(1.03)' } : {}),
+        ...(hidden
+            ? {
+                  height: 0,
+                  minHeight: 0,
+                  marginTop: 0,
+                  marginBottom: 0,
+                  paddingTop: 0,
+                  paddingBottom: 0,
+                  overflow: 'hidden',
+                  pointerEvents: 'none' as const
+              }
+            : {})
     };
 
     return (
@@ -285,6 +329,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             ref={(element) => {
                 props.registerRow(`ws:${workspace.id}`, element);
             }}
+            data-drag-hidden={hidden ? 'true' : undefined}
             role="option"
             tabIndex={-1}
             aria-selected={props.active}
@@ -360,6 +405,15 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                     </span>
                 )}
             </span>
+            {props.dragExtra !== undefined && props.dragExtra > 0 ? (
+                <span
+                    data-testid="drag-count"
+                    className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold"
+                    style={{ background: tokens.accent, color: '#fff' }}
+                >
+                    +{props.dragExtra}
+                </span>
+            ) : null}
             {props.badgeIndex >= 0 && props.badgeIndex < 9 ? (
                 <span
                     data-testid="cmd-badge"
@@ -482,6 +536,25 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly rowHeight?: number | undefined;
     readonly selectedWorkspaceIDs?: ReadonlySet<string> | undefined;
     readonly onSelectionChange?: ((ids: ReadonlySet<string>) => void) | undefined;
+    /** Shortcut hints on the menu rows that have one; absent = no hints. */
+    readonly keyBindings?: KeyBindingMap | undefined;
+    /**
+     * §15's one-shot "scroll the new entry into view". Assembly sets it when THIS client's own
+     * create lands, and the sidebar clears it through `onScrollHandled` — a delta caused by
+     * another client must not yank this one's viewport.
+     */
+    readonly scrollToWorkspaceID?: string | null | undefined;
+    readonly onScrollHandled?: (() => void) | undefined;
+    /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
+    readonly springLoadMs?: number | undefined;
+    readonly autoScrollIntervalMs?: number | undefined;
+    /**
+     * The footer's gear and the Labels submenu's "Manage Labels…" deep link (M8 Settings,
+     * shell-ui.md §5.7). Absent = neither is rendered, which keeps every existing fixture and
+     * the Electron shell exactly as before. `'labels'` is the only section the sidebar names —
+     * the tab vocabulary lives in `settings/`, not here.
+     */
+    readonly onOpenSettings?: ((section?: 'labels' | undefined) => void) | undefined;
 }
 
 interface DragState {
@@ -489,8 +562,15 @@ interface DragState {
     readonly id: string;
     readonly startY: number;
     readonly originModel: SidebarOrderModel;
+    /** Every row this drag moves — the grabbed one, or the whole selection it belongs to. */
+    readonly ids: readonly string[];
     active: boolean;
     preview: DropTarget | null;
+    /** The last cursor position, so an auto-scroll tick can re-resolve without a new event. */
+    clientY: number;
+    /** The collapsed group the cursor is dwelling over, and when the dwell started. */
+    springCandidate: string | null;
+    springTimer: ReturnType<typeof setTimeout> | null;
 }
 
 type MenuState =
@@ -507,6 +587,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
     const presets = props.labelPresets ?? EMPTY_PRESETS;
     const rowHeight = props.rowHeight ?? DEFAULT_ROW_HEIGHT;
+    const springLoadMs = props.springLoadMs ?? SPRING_LOAD_MS;
+    const autoScrollIntervalMs = props.autoScrollIntervalMs ?? AUTO_SCROLL_INTERVAL_MS;
 
     const [collapseOverrides, setCollapseOverrides] = useState<ReadonlyMap<string, boolean>>(EMPTY_OVERRIDES);
     const [shadow, setShadow] = useState<SidebarOrderModel | null>(null);
@@ -518,9 +600,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [dragID, setDragID] = useState<string | null>(null);
     /** The group a preview-only `ontoGroupHeader` target is tinting (§5.5). */
     const [previewGroupID, setPreviewGroupID] = useState<string | null>(null);
+    /** §5.5 spring-loading: a collapsed group held open for the rest of THIS drag. */
+    const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
+    /** The workspace whose icon is being picked in the custom-emoji sheet. */
+    const [emojiSheet, setEmojiSheet] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
 
     const selection = props.selectedWorkspaceIDs ?? internalSelection;
-    const collapse: CollapseState = useMemo(() => ({ overrides: collapseOverrides }), [collapseOverrides]);
+    const collapse: CollapseState = useMemo(
+        () => ({ overrides: collapseOverrides, springLoadedGroupID }),
+        [collapseOverrides, springLoadedGroupID]
+    );
 
     const baseModel = useMemo(() => orderModelFromEntries(props.entries), [props.entries]);
     const effectiveEntries = useMemo(
@@ -574,6 +663,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 .map((entry) => entry.group),
         [props.entries]
     );
+
+    // The drag loop reads groups from a ref: it runs from window listeners and timers whose
+    // closures must not pin a stale render's entry list.
+    const groupsRef = useRef(groups);
+    groupsRef.current = groups;
 
     const groupIDForWorkspace = useCallback(
         (workspaceID: string): string | null => locateWorkspace(baseModel, workspaceID)?.groupID ?? null,
@@ -657,31 +751,77 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (rename !== null) return;
             const target = event.target as HTMLElement | null;
             if (target !== null && target.closest('input, button') !== null) return;
+            // §5.5 multi-drag: grabbing a row that belongs to a ≥2 selection drags the whole
+            // selection. Only the grabbed row live-applies (a single-row gap keeps the target
+            // legible); the rest are hidden and land together on release.
+            const multi = kind === 'workspace' && selection.size >= 2 && selection.has(id);
+            const ids = multi ? visibleOrder.filter((candidate) => selection.has(candidate)) : [id];
             dragRef.current = {
                 kind,
                 id,
                 startY: event.clientY,
                 originModel: shadowRef.current ?? baseModel,
+                ids,
                 active: false,
-                preview: null
+                preview: null,
+                clientY: event.clientY,
+                springCandidate: null,
+                springTimer: null
             };
             setDragID(id);
         },
-        [baseModel, rename]
+        [baseModel, rename, selection, visibleOrder]
     );
 
     useEffect(() => {
         if (dragID === null) return;
 
-        const onMove = (event: MouseEvent): void => {
-            const drag = dragRef.current;
-            if (drag === null) return;
-            if (!drag.active) {
-                if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD_PX) return;
-                drag.active = true;
+        const cancelSpring = (drag: DragState): void => {
+            if (drag.springTimer !== null) clearTimeout(drag.springTimer);
+            drag.springTimer = null;
+            drag.springCandidate = null;
+        };
+
+        /**
+         * The group the cursor is currently over, whether it is hovering the header or the band
+         * where its children would be — that second case is what makes a spring-load feel like
+         * "I am trying to get in here" rather than "I touched a header".
+         */
+        const groupUnder = (target: DropTarget | null): string | null => {
+            if (target === null) return null;
+            if (target.kind === 'ontoGroupHeader') return target.groupID;
+            if (target.kind === 'intoGroup') return target.groupID;
+            return null;
+        };
+
+        const updateSpring = (drag: DragState, target: DropTarget | null): void => {
+            const groupID = groupUnder(target);
+            if (groupID === null) {
+                // Left the group: cancel the dwell AND collapse it again (§5.5).
+                cancelSpring(drag);
+                setSpringLoadedGroupID((current) => (current === null ? current : null));
+                return;
             }
+            if (drag.springCandidate === groupID) return;
+            cancelSpring(drag);
+            const group = groupsRef.current.find((candidate) => candidate.id === groupID);
+            // Only a COLLAPSED group springs; an expanded one is already open.
+            if (group === undefined || !isGroupCollapsed(group, { overrides: collapseRef.current.overrides })) {
+                setSpringLoadedGroupID((current) => (current === groupID ? current : null));
+                return;
+            }
+            drag.springCandidate = groupID;
+            drag.springTimer = setTimeout(() => {
+                drag.springTimer = null;
+                if (dragRef.current !== drag || drag.springCandidate !== groupID) return;
+                setSpringLoadedGroupID(groupID);
+            }, springLoadMs);
+        };
+
+        /** Resolve the cursor against the current geometry and apply/preview the result. */
+        const resolve = (drag: DragState): void => {
             const current = shadowRef.current ?? drag.originModel;
-            const y = contentY(event.clientY);
+            const y = contentY(drag.clientY);
             const heights = measuredHeights();
             if (drag.kind === 'group') {
                 const spans = buildGroupSpans(current, rowsRef.current, {
@@ -698,9 +838,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 heights,
                 rowHeight,
                 contentTop: CONTENT_TOP_PADDING,
-                dragging: new Set([drag.id])
+                // Every dragged row is omitted as a target and excluded from the post-remove
+                // indices, so a multi-drag's arithmetic already describes the bulk landing.
+                dragging: new Set(drag.ids)
             });
             const target = resolveDropTarget(layout, y);
+            updateSpring(drag, target);
             if (target === null) return;
             if (target.kind === 'ontoGroupHeader') {
                 // Preview-only: the cursor transits headers constantly (§5.5), so the order
@@ -714,11 +857,77 @@ export function Sidebar(props: SidebarProps): ReactElement {
             setShadow(applyWorkspaceDrop(current, drag.id, target));
         };
 
+        /**
+         * §5.5 auto-scroll. The OS emits no mousemove while the pointer is stationary, so each
+         * tick re-derives the content-space cursor from the STORED client position and re-runs
+         * the whole resolution — otherwise the list would scroll under a frozen drop target.
+         */
+        let autoScrollTimer: ReturnType<typeof setInterval> | null = null;
+        const stopAutoScroll = (): void => {
+            if (autoScrollTimer === null) return;
+            clearInterval(autoScrollTimer);
+            autoScrollTimer = null;
+        };
+        const autoScrollDelta = (clientY: number): number => {
+            const list = listRef.current;
+            if (list === null) return 0;
+            const rect = list.getBoundingClientRect();
+            if (rect.height <= 0) return 0;
+            if (clientY < rect.top + AUTO_SCROLL_EDGE_PX) return -AUTO_SCROLL_STEP_PX;
+            if (clientY > rect.bottom - AUTO_SCROLL_EDGE_PX) return AUTO_SCROLL_STEP_PX;
+            return 0;
+        };
+        const syncAutoScroll = (drag: DragState): void => {
+            const delta = autoScrollDelta(drag.clientY);
+            if (delta === 0) {
+                stopAutoScroll();
+                return;
+            }
+            if (autoScrollTimer !== null) return;
+            autoScrollTimer = setInterval(() => {
+                const live = dragRef.current;
+                const list = listRef.current;
+                if (live === null || list === null) {
+                    stopAutoScroll();
+                    return;
+                }
+                const step = autoScrollDelta(live.clientY);
+                if (step === 0) {
+                    stopAutoScroll();
+                    return;
+                }
+                const before = list.scrollTop;
+                list.scrollTop = before + step;
+                if (list.scrollTop === before) {
+                    // Hit an end: nothing more to scroll, so stop burning a timer on it.
+                    stopAutoScroll();
+                    return;
+                }
+                resolve(live);
+            }, autoScrollIntervalMs);
+        };
+
+        const onMove = (event: MouseEvent): void => {
+            const drag = dragRef.current;
+            if (drag === null) return;
+            drag.clientY = event.clientY;
+            if (!drag.active) {
+                if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD_PX) return;
+                drag.active = true;
+            }
+            syncAutoScroll(drag);
+            resolve(drag);
+        };
+
         const onUp = (): void => {
             const drag = dragRef.current;
             dragRef.current = null;
+            stopAutoScroll();
+            if (drag !== null) cancelSpring(drag);
             setDragID(null);
             setPreviewGroupID(null);
+            // §5.5: the spring-loaded group stays open through the drop, then collapses.
+            setSpringLoadedGroupID(null);
             if (drag === null || !drag.active) return;
             suppressClickRef.current = true;
 
@@ -732,13 +941,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 return;
             }
             const commit = workspaceCommit(drag.originModel, final, drag.id);
-            if (commit !== null) {
-                props.onMoveWorkspace?.({
-                    workspaceID: drag.id,
+            if (commit === null) return;
+            if (drag.ids.length > 1 && props.onMoveWorkspaces !== undefined) {
+                // The grabbed row's landing spot IS the selection's landing spot: the zones it
+                // was resolved against already had every dragged row detached.
+                props.onMoveWorkspaces({
+                    workspaceIDs: drag.ids,
                     groupID: commit.groupID,
                     index: commit.index
                 });
+                return;
             }
+            props.onMoveWorkspace?.({
+                workspaceID: drag.id,
+                groupID: commit.groupID,
+                index: commit.index
+            });
         };
 
         const target = globalThis.window;
@@ -747,13 +965,87 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return () => {
             target.removeEventListener('mousemove', onMove);
             target.removeEventListener('mouseup', onUp);
+            stopAutoScroll();
+            const drag = dragRef.current;
+            if (drag !== null) cancelSpring(drag);
         };
-    }, [contentY, dragID, measuredHeights, props, rowHeight]);
+    }, [autoScrollIntervalMs, contentY, dragID, measuredHeights, props, rowHeight, springLoadMs]);
+
+    // §15: scroll the entry THIS client just created into view, exactly once. A row that has
+    // not rendered yet simply waits for the commit that renders it.
+    const scrollTarget = props.scrollToWorkspaceID ?? null;
+    const onScrollHandled = props.onScrollHandled;
+    useEffect(() => {
+        if (scrollTarget === null) return;
+        const element = rowElements.current.get(`ws:${scrollTarget}`);
+        if (element === undefined) return;
+        element.scrollIntoView?.({ block: 'nearest' });
+        onScrollHandled?.();
+    }, [scrollTarget, onScrollHandled, rows]);
 
     // ── menus ───────────────────────────────────────────────────────────────────
     const closeMenu = useCallback((): void => {
         setMenu(null);
     }, []);
+
+    const shortcut = useCallback(
+        (action: NexAction): string | undefined =>
+            props.keyBindings === undefined ? undefined : shortcutForAction(props.keyBindings, action),
+        [props.keyBindings]
+    );
+
+    /**
+     * §5.6's "Change Icon ▸" submenu, shared by the workspace and group menus (they differ only
+     * in which callback the choice lands on). Tokens pass through verbatim, so this client never
+     * has to be able to DRAW a symbol in order to set one.
+     *
+     * The doc nests a further level ("Symbol ▸", "Emoji ▸"); `ContextMenu` is deliberately one
+     * level deep (§5.6/§5.7 are the only menus and nothing else needs two), so the two groups
+     * become caption-separated sections of one list instead — same choices, one fewer hover.
+     */
+    const iconSubmenu = useCallback(
+        (kind: 'workspace' | 'group', id: string, current: IconRef | null): MenuItemSpec[] => {
+            const apply = (icon: string | null): void => {
+                if (kind === 'workspace') props.onSetWorkspaceIcon?.(id, icon);
+                else props.onSetGroupIcon?.(id, icon);
+            };
+            return [
+                { id: 'icon:symbols', label: 'Symbol', kind: 'caption' },
+                ...CURATED_SYMBOL_ICONS.map(
+                    (choice): MenuItemSpec => ({
+                        id: `icon:symbol:${choice.name}`,
+                        label: `${iconGlyph({ kind: 'system', name: choice.name }) ?? ''}  ${choice.label}`,
+                        checked: current?.kind === 'system' && current.name === choice.name,
+                        onSelect: () => apply(`system:${choice.name}`)
+                    })
+                ),
+                { id: 'icon:emojis', label: 'Emoji', kind: 'caption' },
+                ...CURATED_EMOJI.map(
+                    (grapheme): MenuItemSpec => ({
+                        id: `icon:emoji:${grapheme}`,
+                        label: grapheme,
+                        checked: current?.kind === 'emoji' && current.grapheme === grapheme,
+                        onSelect: () => apply(`emoji:${grapheme}`)
+                    })
+                ),
+                { id: 'icon:sep', label: '', kind: 'separator' },
+                {
+                    id: 'icon:custom',
+                    label: 'Custom Emoji…',
+                    onSelect: () => {
+                        setEmojiSheet({ kind, id });
+                    }
+                },
+                {
+                    id: 'icon:reset',
+                    label: 'Reset to Letter',
+                    disabled: current === null,
+                    onSelect: () => apply(null)
+                }
+            ];
+        },
+        [props]
+    );
 
     const workspaceMenuItems = useCallback(
         (workspaceID: string): MenuItemSpec[] => {
@@ -785,9 +1077,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 {
                     id: 'rename',
                     label: 'Rename…',
+                    ...(shortcut('rename_workspace') === undefined
+                        ? {}
+                        : { shortcut: shortcut('rename_workspace') }),
                     onSelect: () => {
                         setRename({ kind: 'workspace', id: workspaceID });
                     }
+                },
+                {
+                    id: 'icon',
+                    label: 'Change Icon',
+                    submenu: iconSubmenu('workspace', workspaceID, workspace.icon)
                 },
                 {
                     id: 'color',
@@ -805,10 +1105,24 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 {
                     id: 'labels',
                     label: 'Labels',
-                    submenu:
-                        presetItems.length + freeform.length === 0
-                            ? [{ id: 'no-labels', label: 'No presets', kind: 'caption' }]
-                            : [...presetItems, ...freeform]
+                    submenu: [
+                        ...(presetItems.length + freeform.length === 0
+                            ? [{ id: 'no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
+                            : [...presetItems, ...freeform]),
+                        // shell-ui.md §5.7: the submenu offers existing presets only, so this is
+                        // the way to CREATE or recolor one.
+                        ...(props.onOpenSettings === undefined
+                            ? []
+                            : [
+                                  {
+                                      id: 'manage-labels',
+                                      label: 'Manage Labels…',
+                                      onSelect: () => {
+                                          props.onOpenSettings?.('labels');
+                                      }
+                                  } satisfies MenuItemSpec
+                              ])
+                    ]
                 },
                 {
                     id: 'move',
@@ -857,7 +1171,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [baseModel, bucket, groupIDForWorkspace, groups, presets, props, workspaceByID]
+        [baseModel, bucket, groupIDForWorkspace, groups, iconSubmenu, presets, props, shortcut, workspaceByID]
     );
 
     const groupMenuItems = useCallback(
@@ -869,6 +1183,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 {
                     id: 'new-workspace',
                     label: 'New Workspace',
+                    ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
                     onSelect: () => {
                         setNewForm({ kind: 'workspace', groupID });
                     }
@@ -880,6 +1195,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     onSelect: () => {
                         setRename({ kind: 'group', id: groupID });
                     }
+                },
+                {
+                    id: 'icon',
+                    label: 'Change Icon',
+                    submenu: iconSubmenu('group', groupID, group.icon)
                 },
                 {
                     id: 'collapse',
@@ -899,7 +1219,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [collapseOverrides, groups, toggleCollapse]
+        [collapseOverrides, groups, iconSubmenu, shortcut, toggleCollapse]
     );
 
     const backgroundMenuItems = useCallback(
@@ -907,6 +1227,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-workspace',
                 label: 'New Workspace',
+                ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
                 onSelect: () => {
                     setNewForm({ kind: 'workspace', groupID: null });
                 }
@@ -914,12 +1235,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-group',
                 label: 'New Group',
+                ...(shortcut('new_group') === undefined ? {} : { shortcut: shortcut('new_group') }),
                 onSelect: () => {
                     setNewForm({ kind: 'group', groupID: null });
                 }
             }
         ],
-        []
+        [shortcut]
     );
 
     const menuItems = useMemo((): readonly MenuItemSpec[] => {
@@ -967,6 +1289,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
         },
         [props]
     );
+
+    /**
+     * §5.5 multi-drag: the selected rows that are NOT the grabbed one. They collapse to zero
+     * height for the duration so the list shows a single moving row and one gap, and the
+     * grabbed row wears a `+N` capsule for the rest.
+     */
+    const dragCompanions = useMemo((): ReadonlySet<string> => {
+        if (dragID === null) return EMPTY_SELECTION;
+        if (!selection.has(dragID) || selection.size < 2) return EMPTY_SELECTION;
+        const companions = new Set(selection);
+        companions.delete(dragID);
+        return companions;
+    }, [dragID, selection]);
 
     // ── filtered list ───────────────────────────────────────────────────────────
     const needle = props.filter.trim();
@@ -1089,6 +1424,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             presets={presets}
                             renaming={rename?.kind === 'workspace' && rename.id === workspace.id}
                             dragging={dragID === workspace.id}
+                            dragHidden={dragCompanions.has(workspace.id)}
+                            dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
                             groupCaption={null}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
@@ -1225,6 +1562,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         <span className="ml-auto font-mono text-[10px]" style={{ color: tokens.textTertiary }}>
                             ⌘N
                         </span>
+                        {props.onOpenSettings === undefined ? null : (
+                            <button
+                                type="button"
+                                data-testid="sidebar-settings"
+                                aria-label="Settings"
+                                title="Settings (⌘,)"
+                                className="flex items-center"
+                                style={{ color: tokens.textSecondary }}
+                                onClick={() => {
+                                    props.onOpenSettings?.();
+                                }}
+                            >
+                                <ChromeIcon name="gear" />
+                            </button>
+                        )}
                     </div>
                 ) : (
                     <NewEntryForm
@@ -1248,6 +1600,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     items={menuItems}
                     onClose={closeMenu}
                     label={menu.kind === 'group' ? 'Group menu' : 'Workspace menu'}
+                />
+            )}
+
+            {emojiSheet === null ? null : (
+                <CustomEmojiSheet
+                    onCancel={() => {
+                        setEmojiSheet(null);
+                    }}
+                    onSubmit={(grapheme) => {
+                        if (emojiSheet.kind === 'workspace') {
+                            props.onSetWorkspaceIcon?.(emojiSheet.id, `emoji:${grapheme}`);
+                        } else {
+                            props.onSetGroupIcon?.(emojiSheet.id, `emoji:${grapheme}`);
+                        }
+                        setEmojiSheet(null);
+                    }}
                 />
             )}
 
@@ -1312,6 +1680,87 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                 Create
             </button>
         </form>
+    );
+}
+
+interface CustomEmojiSheetProps {
+    readonly onSubmit: (grapheme: string) => void;
+    readonly onCancel: () => void;
+}
+
+/**
+ * §5.6's "Custom Emoji…" sheet. The only rule it enforces is the one that matters: exactly one
+ * grapheme cluster, checked with `Intl.Segmenter` so a ZWJ family or a flag counts as one and
+ * `ab` does not. Submit stays disabled until the field holds one.
+ */
+function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
+    const [value, setValue] = useState('');
+    const container = globalThis.document?.body;
+    const normalized = normalizeEmojiInput(value);
+    if (container === undefined || container === null) return null;
+
+    return createPortal(
+        <div
+            data-testid="emoji-sheet"
+            role="dialog"
+            aria-label="Custom emoji"
+            className="fixed left-1/2 top-1/3 z-50 w-[280px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+            style={{
+                background: tokens.surfaceBackground,
+                border: `1px solid ${tokens.divider}`,
+                color: tokens.textPrimary,
+                boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+            }}
+        >
+            <form
+                onSubmit={(event) => {
+                    event.preventDefault();
+                    if (normalized !== null) props.onSubmit(normalized);
+                }}
+            >
+                <label className="mb-2 block" htmlFor="nex-custom-emoji">
+                    Paste or type one emoji
+                </label>
+                <input
+                    id="nex-custom-emoji"
+                    autoFocus
+                    aria-label="Custom emoji"
+                    data-testid="emoji-input"
+                    className="mb-1 w-full rounded border bg-transparent px-2 py-1 text-center text-[20px] outline-none"
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    value={value}
+                    onChange={(event) => {
+                        setValue(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key !== 'Escape') return;
+                        event.stopPropagation();
+                        props.onCancel();
+                    }}
+                />
+                <div
+                    data-testid="emoji-hint"
+                    className="mb-3 h-4 text-[10px]"
+                    style={{ color: value.length > 0 && normalized === null ? '#E0655C' : tokens.textTertiary }}
+                >
+                    {value.length > 0 && normalized === null ? 'Enter exactly one character' : ''}
+                </div>
+                <div className="flex justify-end gap-2">
+                    <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        data-testid="emoji-submit"
+                        disabled={normalized === null}
+                        style={{ color: normalized === null ? tokens.textTertiary : tokens.accent }}
+                    >
+                        Set Icon
+                    </button>
+                </div>
+            </form>
+        </div>,
+        container
     );
 }
 

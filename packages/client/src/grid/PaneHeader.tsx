@@ -220,6 +220,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         onToggleZoom,
         onToggleMarkdownEdit,
         onRefreshDiff,
+        onSetFontSize,
         onRestartAgent,
         onNewWebPane,
         onPaneContextMenu
@@ -388,6 +389,25 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             )}
 
             {/* 9 — per-type buttons */}
+            {/* §3.16: font size is a PREVIEW control — the built-in editor is fixed 13 px, so
+                the pair disappears in edit mode rather than sitting there inert. ⌥-click either
+                one resets to 14, which is the ⌘0 binding without a second pair of buttons. */}
+            {pane.type === 'markdown' && !pane.isEditing ? (
+                <>
+                    <HeaderButton
+                        testID={`pane-font-smaller-${pane.id}`}
+                        label="Decrease font size (⌘-, ⌥-click resets)"
+                        icon="font-smaller"
+                        onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'decrease')}
+                    />
+                    <HeaderButton
+                        testID={`pane-font-larger-${pane.id}`}
+                        label="Increase font size (⌘=, ⌥-click resets)"
+                        icon="font-larger"
+                        onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'increase')}
+                    />
+                </>
+            ) : null}
             {pane.type === 'markdown' ? (
                 <HeaderButton
                     testID={`pane-edit-toggle-${pane.id}`}

@@ -22,16 +22,24 @@ close). It completes the normal handshake first:
 ```jsonc
 // host → daemon
 {"type":"hello","protocolVersion":1,"token":"…",
- "client":{"kind":"electron","name":"nex-shell","capabilities":["web-pane-host"]}}
+ "client":{"kind":"electron","name":"nex-shell","capabilities":["web-pane-host"],
+           "windowID":"<uuid>"}}
 ```
 
 Listing `web-pane-host` in `client.capabilities` claims the role as part of the handshake. The
 explicit form works too, any time after `hello`:
 
 ```jsonc
-{"type":"host-register","role":"web-pane","name":"nex-shell"}   // host → daemon
+{"type":"host-register","role":"web-pane","name":"nex-shell","windowID":"<uuid>"}  // host → daemon
 {"type":"host-registered","role":"web-pane","hostID":"…","superseded":false}  // daemon → host
 ```
+
+**`windowID` is optional but load-bearing for embedded views** (§3.5). A host that renders into
+a window mints one id per window, declares it here, and loads the web UI with the same id in the
+URL (`?shellWindow=<uuid>`). The daemon then compares the two on every geometry report and tells
+the host whether a rect came from its **own** window — which is what stops a browser on another
+machine from moving a desktop user's views. A host with no window (a headless automation host)
+simply omits it and never gets `ownWindow:true`.
 
 **Exactly one host is active.** A second registration wins, and the previous host is told:
 
@@ -95,6 +103,47 @@ Fire-and-forget mirroring of daemon-owned state (no reply, ever):
 | `tab-open` | `{paneID, tabID, url, makeActive}` | create the view, load `url`, show it when `makeActive`. |
 | `tab-close` | `{paneID, tabID}` | destroy that tab's view; if the element picker was armed on it, disarm (§17.6). |
 | `tab-select` | `{paneID, tabID}` | show that tab; background tabs keep running (agents rely on it). |
+| `pane-geometry` | `{paneID, tabID?, rect:{x,y,w,h}, visible, devicePixelRatio, ownWindow, shellWindowID?, clientID?}` | §3.5 — place (or un-place) the pane's active view in the host's own window. |
+
+### 3.5 Geometry: where an embedded view goes
+
+The daemon owns no pixels and the host owns no layout: the **client** draws a web pane's chrome
+(URL bar, tab strip, nav buttons) and leaves the page area empty, so it is the only party that
+knows where the hole is. It reports that rect — CSS pixels, **relative to its viewport** — and
+the daemon forwards it here, unmodified apart from the tagging below.
+
+```jsonc
+// client → daemon                                   // daemon → host
+{"type":"web-geometry-report","paneID":"…",          {"type":"host-notify","verb":"pane-geometry",
+ "tabID":"…","rect":{"x":12,"y":40,"w":900,"h":500},  "args":{…, "ownWindow":true}}
+ "visible":true,"devicePixelRatio":2,
+ "shellWindowID":"<uuid>"}
+```
+
+Rules:
+
+- **`ownWindow` is the only field that authorises anything.** It is true when the reporter's
+  `shellWindowID` equals the `windowID` this host declared at registration (§1) — i.e. the report
+  came from the UI running inside the host's own window. Anything else (a browser on a phone, a
+  second shell's window, a client that sends no id) arrives with `ownWindow:false` and **must be
+  ignored**: those clients render the placeholder card instead. Re-check the id against your own
+  window anyway; the daemon's tag is a convenience, not a capability.
+- **`visible:false` means "put the view back"** — the pane was zoomed away, the workspace
+  switched, the tab closed, or the client unmounted it. A zero-area rect is normalised to
+  `visible:false` by the daemon so there is exactly one rule to implement.
+- **CSS px → DIP is the host's job.** `devicePixelRatio` is display scale × page zoom; dividing
+  it by the window's own scale factor yields the CSS→DIP factor. Clamp the result to the window's
+  content bounds — a pane can be scrolled or dragged partly off-screen, and a view must never be
+  placed outside the window it lives in.
+- **Reports are facts about *now***, never stored: the daemon keeps no geometry, so a host that
+  reconnects gets nothing until the client's next report (which its own re-render produces).
+  Panes that never get one — every pane while no client is attached — keep working exactly as
+  before, off-screen: this whole section is additive to the automation surface.
+- **A client that vanishes releases what it placed.** A closed tab, a reload or a crash never
+  sends `visible:false`, so the daemon synthesises one per pane that connection had placed when
+  its socket closes. Expect a hide you did not see a report for.
+- The report is fire-and-forget; the daemon never answers it, and drops it when no host is
+  attached or the pane is not a web pane.
 
 ### 3.2 Navigation (RPC)
 
@@ -114,6 +163,7 @@ Fire-and-forget mirroring of daemon-owned state (no reply, ever):
 | `exec` | `{paneID, tabID, script}` | Wrap per §8.5 (`$`/`$$`/`nex` aliases, statement-vs-expression detection) and return `{ok:true, result}` or `{ok:false, error, js_error:{name,message,line,column}}`. Budget: 30 s. |
 | `inspect-arm` | `{paneID, tabID, nonce, sticky}` | Arm the in-page picker with that **nonce**; `{ok:true}` on success, `{ok:false,error}` otherwise (the daemon substitutes `failed to arm inspector for active tab` when no error is given). |
 | `inspect-disarm` | `{paneID}` | Sent as a notify. Tear the picker down. |
+| `devtools` | `{paneID, tabID?, open?}` | Toggle the tab's docked dev tools (§16.5); `open` forces a state, absent toggles. Reply `{ok:true, open:<bool>}`. GUI-only — it reaches the daemon as the WS command `web-devtools`, never from the CLI. |
 
 Budgets: `actuate` 5 s, except `wait`, which gets the caller's `timeout_ms` + 5 s (default
 15 s) so the page-side timeout resolves first and the agent sees the real `{ok:false,
@@ -199,8 +249,13 @@ Failure strings the daemon can author, all stable:
   through unchanged and re-check it host-side too.
 - **Background tabs keep running.** Agents race a `wait` in one tab while another is visible.
 - **The daemon never assumes it can render.** A remote browser client shows a placeholder for
-  web panes in v1; nothing in this protocol requires pixels to reach the daemon.
+  web panes; nothing in this protocol requires pixels to reach the daemon. `pane-geometry` is
+  the *host's* affordance for putting a view on screen in its own window, not a rendering
+  channel — no image ever crosses this socket.
+- **A pane with no geometry is a working pane.** Views live in the host's off-screen holder
+  until a report from the host's own window moves them, and go straight back there when one says
+  `visible:false`. Every automation verb behaves identically in both places, which is what keeps
+  the headless surface (and its live smoke) honest.
 - **Not implemented daemon-side yet** (client/shell milestones own them): the batch "element
-  pickup" session (§12) beyond `inspect-result --clear`, favourites (§14 — no wire surface), the
-  find-in-page bar (§10), zoom, and dev-tools toggling. They add verbs to this table; they do
-  not change the ones above.
+  pickup" session (§12) beyond `inspect-result --clear`, favourites (§14 — no wire surface), and
+  the find-in-page bar (§10). They add verbs to this table; they do not change the ones above.

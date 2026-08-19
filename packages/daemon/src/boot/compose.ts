@@ -28,6 +28,11 @@ import type { ResumeTuple } from '@nex/core/agent';
 
 import { createContentService, type ContentService } from '../content/index.js';
 import {
+    contentAppearanceOf,
+    createSettingsService,
+    type SettingsService
+} from '../settings/index.js';
+import {
     createControlServer,
     resolveControlEndpoints,
     type ControlServer
@@ -66,6 +71,7 @@ import {
 } from '../store/index.js';
 import { createTerminalStateService, type TerminalStateServiceImpl } from '../term/index.js';
 import {
+    createAgentChannel,
     createPaneAssetsRoute,
     createWsServer,
     resolveClientDistDir,
@@ -150,6 +156,8 @@ export interface Daemon {
     readonly persistence: SqlitePersistence;
     /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
     readonly content: ContentService;
+    /** M8: the config-file settings authority (nex + ghostty), watched and write-through. */
+    readonly settings: SettingsService;
     /** M6: the web-pane runtime (host RPC seam, console buffers, picker arms). */
     readonly webPanes: WebPaneService;
     /** M7: the graft engine (sessions, sync, breadcrumbs). */
@@ -243,10 +251,30 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const input = createTerminalInput({ pty, modes: (paneID) => term.modes(paneID) });
     // M5: content panes. It owns its own git service (diff panes) and file watchers, and its
     // edit buffers are flushed by `stop()` below before the persist gate closes.
+    // M8: the settings authority. Created BEFORE the content service so markdown/diff panes
+    // render against the user's real ghostty background from the very first load rather than
+    // painting the fallback and re-rendering a tick later.
+    const settings = createSettingsService({
+        env,
+        home,
+        ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
     const content = createContentService({
         store,
+        appearance: contentAppearanceOf(settings.snapshot),
         ...(onError !== undefined ? { onError } : {}),
         ...(options.now !== undefined ? { now: options.now } : {})
+    });
+    // A ghostty theme change re-renders every live content pane (content-panes.md §3.8) and
+    // reaches every attached client as one broadcast.
+    const offSettings = settings.subscribe((snapshot) => {
+        try {
+            content.setAppearance(contentAppearanceOf(snapshot));
+        } catch (error) {
+            report(error, 'content appearance');
+        }
+        ws?.broadcast({ type: 'settings-changed', settings: snapshot });
     });
     // M7: one git service shared by the handlers, the graft engine and the HEAD watchers, so
     // every git spawn resolves the same executable and honours the same timeouts.
@@ -449,6 +477,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             unsubscribe();
             offData();
             offExit();
+            offSettings();
+            settings.dispose();
             content.dispose();
             // Releases the host slot (the shell sees `host-revoked`) and ends every console
             // follow stream; nothing here can block the shutdown.
@@ -514,6 +544,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 daemonInfo: { pid: process.pid },
                 content,
                 webPanes,
+                settings,
+                // The pane header's restart button: typing a resume command needs the same
+                // TerminalInput (live VT modes, no sync mirroring) the CLI's `pane send` uses.
+                agents: createAgentChannel({ store, pty, input }),
                 // `/pane-assets/<paneID>/<relpath>` — sibling files of an open markdown file, so
                 // relative `<img src>` resolves (content-panes.md port note 4).
                 routes: createPaneAssetsRoute((paneID, relativePath) =>
@@ -666,6 +700,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         input,
         persistence,
         content,
+        settings,
         webPanes,
         graft,
         repoWatch,

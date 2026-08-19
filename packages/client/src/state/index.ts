@@ -14,6 +14,7 @@ export {
     createNexStore,
     emptyDaemonState,
     hydrateDomainEvents,
+    hydrateSettings,
     hydrateSnapshotState,
     nexStateCreator,
     recentlyClosedCount,
@@ -24,6 +25,7 @@ export {
     type NexActions,
     type NexState,
     type NexStoreApi,
+    type SettingsSlice,
     type Toast,
     type UiSlice
 } from './store';

@@ -9,6 +9,7 @@
 
 import type { JsonObject, JsonValue } from '../json.js';
 import type { AgentKind, PaneStatus } from '../wire/vocab.js';
+import type { WsSettingsChangedMessage, WsSettingsSnapshot } from './settings.js';
 
 /** Bumped only on a breaking change; the daemon serves `daemon-v<version>` run files. */
 export const WS_PROTOCOL_VERSION = 1;
@@ -25,6 +26,15 @@ export interface WsClientInfo {
      * handshake time — the same effect as sending `host-register` right after `hello`.
      */
     readonly capabilities?: readonly string[];
+    /**
+     * Window identity (embedded web panes). The Electron shell mints one id per shell window:
+     * its **host** connection declares it here, and the UI loaded in that window repeats it on
+     * every `web-geometry-report` (it rides the window URL as `?shellWindow=<id>`). That
+     * pairing is what lets the daemon tell the host "this rect came from your own window" —
+     * geometry from a plain browser matches nothing, which is why a browser keeps seeing the
+     * placeholder card instead of a native view.
+     */
+    readonly windowID?: string;
 }
 
 // ── client → server ─────────────────────────────────────────────────────────────────
@@ -95,6 +105,58 @@ export interface WsPingMessage {
     readonly id: string;
 }
 
+/** A rectangle in the reporting client's own coordinate space. */
+export interface WsRect {
+    readonly x: number;
+    readonly y: number;
+    readonly w: number;
+    readonly h: number;
+}
+
+/**
+ * Where a web pane's PAGE AREA sits inside the reporting client's viewport (embedded web
+ * panes).
+ *
+ * The client draws a web pane's chrome (URL bar, tab strip, nav buttons) and leaves the page
+ * area empty; the pixels come from a native `WebContentsView` the Electron shell owns. The
+ * client is the only party that knows where that hole is, so it reports the rect — in **CSS
+ * pixels, relative to the viewport** — and the daemon forwards it to the web-pane host as a
+ * `pane-geometry` notification (`daemon/src/webpane/HOST_PROTOCOL.md` §3.1).
+ *
+ * Two rules keep it honest:
+ *   - it is a **report**, not a command: no reply, and a daemon with no host drops it;
+ *   - `shellWindowID` is the client's claim to be the page inside a shell window (from
+ *     `?shellWindow=`). The host only acts on geometry whose id matches its own window, so a
+ *     browser tab reporting rects cannot move a desktop user's views around.
+ */
+export interface WsWebGeometryReportMessage {
+    readonly type: 'web-geometry-report';
+    readonly paneID: string;
+    /** The pane's active tab, so a tab switch re-targets the embedded view. */
+    readonly tabID?: string;
+    readonly rect: WsRect;
+    /** False when the pane is not on screen (zoomed away, workspace switched, unmounted). */
+    readonly visible: boolean;
+    /** `window.devicePixelRatio`: display scale × page zoom, which the host divides out. */
+    readonly devicePixelRatio: number;
+    readonly shellWindowID?: string;
+}
+
+/**
+ * "Take the user to this pane" — the shell's notification click, arriving over its own
+ * connection because only a CLIENT can perform the §8.5 focus ordering (activate the
+ * workspace, focus the pane last).
+ *
+ * `windowID` scopes it to the UI running in that shell window; without one every attached
+ * client reveals (the CLI/automation case).
+ */
+export interface WsRevealRequestMessage {
+    readonly type: 'reveal-request';
+    readonly workspaceID: string;
+    readonly paneID: string;
+    readonly windowID?: string;
+}
+
 // ── host channel (M6 web panes) ─────────────────────────────────────────────────────
 
 /**
@@ -115,6 +177,12 @@ export interface WsHostRegisterMessage {
     readonly role: WsHostRole;
     /** Diagnostics only (shows up in daemon logs). */
     readonly name?: string;
+    /**
+     * The host's own window identity, for matching `web-geometry-report`s (see
+     * `WsClientInfo.windowID`). A `hello` that claims the role by capability declares it
+     * there instead.
+     */
+    readonly windowID?: string;
 }
 
 /** Give the role up without dropping the connection. */
@@ -154,6 +222,8 @@ export type WsClientMessage =
     | WsVisibilityReportMessage
     | WsCommandMessage
     | WsPingMessage
+    | WsWebGeometryReportMessage
+    | WsRevealRequestMessage
     | WsHostRegisterMessage
     | WsHostUnregisterMessage
     | WsHostRpcReplyMessage
@@ -170,6 +240,12 @@ export interface WsWelcomeMessage {
         readonly build: string;
         readonly pid: number;
     };
+    /**
+     * The daemon's config-file settings (M8). Rides here rather than in `snapshot` because
+     * settings are not domain state — see `./settings.ts` for the reasoning. Absent on a
+     * daemon that predates settings sync; later changes arrive as `settings-changed`.
+     */
+    readonly settings?: WsSettingsSnapshot;
 }
 
 export const WS_REJECTION_CODES = ['protocol-mismatch', 'unauthorized', 'server-error'] as const;
@@ -405,6 +481,20 @@ export interface WsWebConsoleLineMessage {
     readonly line: JsonObject;
 }
 
+/**
+ * The daemon's fan-out of a `reveal-request`: go to this pane.
+ *
+ * A client that acts on it must follow agent-lifecycle.md §8.5 — activate the workspace
+ * first, focus the pane last — because the window restoring its previous focus otherwise
+ * reverts the selection. `windowID`, when present, means "only the UI in that shell window".
+ */
+export interface WsRevealPaneMessage {
+    readonly type: 'reveal-pane';
+    readonly workspaceID: string;
+    readonly paneID: string;
+    readonly windowID?: string;
+}
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
@@ -415,10 +505,12 @@ export type WsServerMessage =
     | WsPaneExitMessage
     | WsResyncRequiredMessage
     | WsPongMessage
+    | WsSettingsChangedMessage
     | WsHostRegisteredMessage
     | WsHostRevokedMessage
     | WsHostRpcMessage
     | WsHostNotifyMessage
-    | WsWebConsoleLineMessage;
+    | WsWebConsoleLineMessage
+    | WsRevealPaneMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

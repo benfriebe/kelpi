@@ -21,6 +21,8 @@ src/
    ├─ client.ts     its OWN daemon WebSocket, claiming the `web-pane-host` role
    ├─ dispatch.ts   verb → CLI-shaped envelope (Electron-free, so it is unit-testable)
    ├─ registry.ts   pane → tabs → views; reconciles the daemon's lifecycle notifications
+   ├─ geometry.ts   CSS px → DIP + the content-area clamp (pure arithmetic, unit-tested)
+   ├─ embed.ts      which view is in the window, and when it goes back to the holder (pure)
    ├─ tab.ts        one `WebContentsView` + its CDP session (the only Electron-aware module)
    ├─ scripts.ts    the injected page scripts (actuator, picker, find) + eval wrappers
    ├─ console-format.ts  CDP console/network events → the spec's message strings
@@ -38,13 +40,16 @@ surface: navigate/back/forward/reload, `capture` (meta/text/dom/screenshot/all),
 (`click`, `type`, `q-*`, `wait`, `select`, `scroll`, `hover`, `key`), `exec`, the element
 picker, cookies, find and zoom.
 
-**v1 is an automation surface, not a rendered pane.** The views live in an off-screen holder
-window that is never shown, while the web client keeps drawing its placeholder card for web
-panes. That is deliberate: the shell has no preload bridge, so the client cannot tell it where
-a pane's rectangle is, and everything an agent needs works without pixels on screen. Visual
-embedding — re-parenting these same views into the main window at the pane's rect — is the
-documented follow-up and touches only `tab.ts`'s bounds/ownership plus a new client→shell
-channel. Two consequences worth knowing:
+**Views are born off-screen and only move when somebody can see them.** Every tab is created in
+a holder window that is never shown, which is what makes the whole automation surface work with
+no UI at all. When the web UI **running in this shell's own window** reports where it drew a
+pane's page area, the daemon forwards it as `pane-geometry` and `embed.ts` re-parents that
+pane's active view into the window at those bounds (`geometry.ts` converts CSS px → DIP and
+clamps to the content area); hiding the pane, switching workspace, closing the window or
+quitting sends it straight back to the holder. The pairing that makes this safe is a
+window id: the host declares it at registration and the shell loads the UI with the same id
+(`?shellWindow=`), so geometry from any *other* client — a browser, another machine — is
+ignored and those clients keep drawing the placeholder card. Two consequences worth knowing:
 
 - a `WebContentsView` has **no renderer until something is loaded**, and every CDP command
   silently hangs until then, so each tab bootstraps with an `about:blank` load before the
@@ -108,8 +113,12 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   with the **shipped Swift `nex` binary** (`NEX_SOCKET=tcp:…`, never `/tmp/nex.sock`) and drives
   the real Chromium behind it — capture/exec/actuator, the console pipeline's exact message
   formats, tabs, `file://` sibling assets, the element picker's nonce round trip, cookies and
-  the private-partition rebuild, then asserts that quitting the shell releases the role
-  (`no web pane host connected`) and that a fresh shell gets the daemon's `pane-open` replay.
+  the private-partition rebuild. It then plays the web UI with a synthetic WS client tagged as
+  the page inside this shell's window: a geometry report must move the pane's live view into the
+  real window (and one from any other client must not), hiding it must return the view to the
+  holder, and the pane must stay drivable throughout. Finally it asserts that quitting the shell
+  releases the role (`no web pane host connected`) and that a fresh shell gets the daemon's
+  `pane-open` replay.
   With no Swift CLI installed it skips (exit 0); `NEX_COMPAT_CLI` points it at another copy.
 
 Note the shell is **not** part of the repo-root vitest projects or the root `typecheck` script

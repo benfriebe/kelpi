@@ -225,6 +225,38 @@ describe('markdown panes', () => {
         subscription.unsubscribe();
         f.dispose();
     });
+
+    // §3.16 — the preview's font size is a re-render, never a disk read.
+    it('re-renders at a new font size without re-reading the file', async () => {
+        const f = fixture({ watch: false });
+        openMarkdown(f);
+        const seen: ContentPaneState[] = [];
+        const subscription = await f.service.subscribe(MD, (state) => seen.push(state));
+
+        const bigger = await f.service.setFontSize(MD, 18);
+        expect(bigger.fontSize).toBe(18);
+        expect(bigger.html).toContain('font-size: 18px');
+        expect(seen.at(-1)?.fontSize).toBe(18);
+        expect(visiblePane(workspaceByID(f.store.state(), W1) as never, MD)?.markdownFontSize).toBe(18);
+
+        // The reducer owns the clamp (8…32), so an out-of-range request lands on the bound
+        // rather than being rejected — which is what the ⌘=/⌘- handlers rely on.
+        expect((await f.service.setFontSize(MD, 99)).fontSize).toBe(32);
+        expect((await f.service.setFontSize(MD, 1)).fontSize).toBe(8);
+
+        subscription.unsubscribe();
+        f.dispose();
+    });
+
+    it('leaves the font size alone while the markdown pane is editing', async () => {
+        const f = fixture({ watch: false });
+        openMarkdown(f);
+        await f.service.setMode(MD, 'edit');
+        const state = await f.service.setFontSize(MD, 20);
+        // The guard lives in the reducer; the service reports the (unchanged) truth.
+        expect(state.fontSize).toBe(14);
+        f.dispose();
+    });
 });
 
 // ---------------------------------------------------------------------------

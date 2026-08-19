@@ -58,6 +58,20 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     offs.push(
         connection.on('welcome', (message) => {
             store.getState().setDaemonIdentity(message.clientID, message.daemon);
+            // M8: settings ride the handshake (see `@nex/protocol` `ws/settings.ts`), so they
+            // are in the store before the first snapshot renders — no light/dark flash, no
+            // window where the key dispatcher is running on the shipped defaults.
+            store.getState().applySettings(message.settings);
+        })
+    );
+
+    offs.push(
+        // `settings-changed` has no dedicated connection event: it is a fire-and-forget
+        // broadcast with no ordering relationship to anything, and `message` already carries
+        // every decoded frame. Subscribing here keeps the socket layer unaware of settings.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'settings-changed') return;
+            store.getState().applySettings(message['settings']);
         })
     );
 

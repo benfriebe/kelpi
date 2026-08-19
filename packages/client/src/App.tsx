@@ -20,11 +20,15 @@
  *     which is why the handler set can be built once instead of on every render.
  *
  * Content panes (markdown/diff/scratchpad) are M5's bodies and subscribe through one shared
- * `ContentClient`; a web pane still renders an honest placeholder card rather than an empty box
- * (its renderer is M6), because the pane is real daemon state either way.
+ * `ContentClient`. A **web pane** is the one body this client cannot draw: it renders the
+ * browser chrome and reports where it left the page-area hole, and the Electron shell moves a
+ * real `WebContentsView` there (`webpane/`). In any other client the same hole holds an "open in
+ * the app" card — the pane is real daemon state either way.
  */
 
+import type { NexAction } from '@nex/core/config';
 import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@nex/core/layout';
+import type { JsonObject } from '@nex/protocol';
 import {
     layoutPaneOrder,
     syncedPaneIDs,
@@ -32,7 +36,15 @@ import {
     type PredefinedLayoutKind,
     type WorkspaceState
 } from '@nex/daemon/store';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type CSSProperties,
+    type ReactElement
+} from 'react';
 import { useStore } from 'zustand';
 
 import { ContentPanePlaceholder } from './app/ContentPanePlaceholder';
@@ -43,13 +55,18 @@ import {
     StatusFooter,
     ThemeProvider,
     TopBar,
+    actionForTrigger,
     buildPaletteItems,
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
+    normalizeHexColor,
     installKeyDispatcher,
+    shortcutForAction,
+    triggerFromEvent,
     tokens as chromeTokens,
     useChromeTheme,
+    withAlpha,
     workspaceSwitchHandlers,
     type AgentBucket,
     type FaviconController,
@@ -57,9 +74,10 @@ import {
     type PaletteItem,
     type StatusBarItem
 } from './chrome';
-import { isOkReply, replyError, type CommandReply } from './connection';
-import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient } from './content';
+import { isOkReply, replyError, replyText, type CommandReply } from './connection';
+import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient, type FontSizeStep } from './content';
 import { PaneGrid, type PaneModel, type RenderPane } from './grid';
+import { SettingsOverlay, type SettingsActions, type SettingsTabID } from './settings';
 import {
     selectActiveWorkspace,
     selectAgentSummary,
@@ -79,6 +97,15 @@ import {
     type TerminalRendererFactory,
     type TerminalTheme
 } from './terminal';
+import {
+    WebPane,
+    createGeometryReporter,
+    createWebPaneCommands,
+    parseRevealMessage,
+    readShellWindowID,
+    revealAppliesHere,
+    type WebPaneTab
+} from './webpane';
 
 /** `@nex/core/layout`'s geometric drop zones → the wire's `pane-move-adjacent` vocabulary. */
 const WIRE_DROP_ZONE: Readonly<Record<DropZone, 'above' | 'below' | 'left-of' | 'right-of'>> = {
@@ -105,9 +132,38 @@ export interface AppProps {
     readonly autoConnect?: boolean | undefined;
 }
 
+/**
+ * The root provider reads ONE thing from the store: the daemon's synced settings.
+ *
+ * Light vs dark is the ghostty background's luminance, not the OS scheme (content-panes.md
+ * port note 9) — the daemon computes `isDark` from the same color it renders markdown and
+ * diff HTML against, so chrome, content panes and terminals cannot disagree. Until settings
+ * arrive (an older daemon, or the moment before `welcome`) the OS probe stands in, which is
+ * what the client did before M8.
+ *
+ * `--nex-term-bg` is overridden here with the ghostty background AT THE GHOSTTY OPACITY:
+ * every pane fill in the tree (terminal, markdown, diff, scratchpad, the placeholder cards)
+ * already resolves that variable, so one assignment tints all of them (§3.8).
+ */
 export function App(props: AppProps): ReactElement {
+    const settings = useStore(props.runtime.store, (state) => state.settings);
+    const appearance = settings.value.appearance;
+    const paneFill = useMemo(
+        () => withAlpha(appearance.backgroundColor, appearance.backgroundOpacity),
+        [appearance.backgroundColor, appearance.backgroundOpacity]
+    );
+    const style = useMemo(
+        () => (settings.loaded ? ({ '--nex-term-bg': paneFill } as CSSProperties) : undefined),
+        [settings.loaded, paneFill]
+    );
+
     return (
-        <ThemeProvider appearance="system" applyToDocument className="contents">
+        <ThemeProvider
+            appearance={settings.loaded ? (appearance.isDark ? 'dark' : 'light') : 'system'}
+            applyToDocument
+            className="contents"
+            {...(style !== undefined ? { style } : {})}
+        >
             <Shell {...props} />
         </ThemeProvider>
     );
@@ -122,9 +178,26 @@ function Shell(props: AppProps): ReactElement {
     const nex = useStore(store);
     const daemon = nex.daemon;
     const ui = nex.ui;
+    const settings = nex.settings.value;
 
     const [sidebarVisible, setSidebarVisible] = useState(true);
     const [terminalTheme, setTerminalTheme] = useState<TerminalTheme | undefined>(undefined);
+    /**
+     * Two pieces of purely client-local UI state that only assembly can own:
+     *   - which content pane was last asked to open its find bar, and how many times (the pane
+     *     re-opens on every bump, so ⌘F twice on the same pane still works);
+     *   - the workspace THIS client just created, scrolled into view once (§15).
+     */
+    const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
+    const [scrollToWorkspaceID, setScrollToWorkspaceID] = useState<string | null>(null);
+    /**
+     * The Settings window (M8): open flag + which tab, so a deep link ("Manage labels…") can
+     * name one. It is client-local UI state like the sidebar's visibility — the daemon owns the
+     * SETTINGS, not the window showing them.
+     */
+    const [settingsTab, setSettingsTab] = useState<SettingsTabID | null>(null);
+    /** Pending §8.5 focus hand-offs, cleared on unmount so none fires into a dead tree. */
+    const revealTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
 
@@ -152,6 +225,67 @@ function Shell(props: AppProps): ReactElement {
         window.addEventListener('pointerdown', ask);
         return () => window.removeEventListener('pointerdown', ask);
     }, [runtime]);
+
+    // ── web panes ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Whether this client IS the page inside a Nex shell window (`?shellWindow=`). It decides
+     * two things: whether web panes get real pixels (the shell moves a native view into the
+     * hole the chrome leaves) and whether a reveal aimed at that window is ours to act on.
+     * Read once — the marker cannot change without a reload.
+     */
+    const shellWindowID = useMemo(() => readShellWindowID(), []);
+    /**
+     * One reporter for the whole client: it dedupes and throttles per pane, so a divider drag
+     * across a workspace full of web panes is a handful of frames rather than one per render.
+     */
+    const webGeometry = useMemo(
+        () =>
+            createGeometryReporter({
+                send: (report) => {
+                    runtime.connection.send({
+                        type: 'web-geometry-report',
+                        paneID: report.paneID,
+                        ...(report.tabID === undefined || report.tabID === null
+                            ? {}
+                            : { tabID: report.tabID }),
+                        rect: report.rect,
+                        visible: report.visible,
+                        devicePixelRatio: report.devicePixelRatio,
+                        // The claim the daemon matches against the host's own window id.
+                        ...(shellWindowID === null ? {} : { shellWindowID })
+                    });
+                }
+            }),
+        [runtime, shellWindowID]
+    );
+    useEffect(() => () => webGeometry.dispose(), [webGeometry]);
+
+    /**
+     * A clicked desktop notification, arriving the long way round: shell → daemon → every
+     * client. §8.5's ordering is the reason it is done here rather than in the shell — activate
+     * the workspace first, focus the pane LAST (a tick later, after the window has restored its
+     * own focus, or the restoration re-selects the pane the user came from).
+     */
+    useEffect(() => {
+        const timers = revealTimers.current;
+        const off = runtime.connection.on('message', (message) => {
+            const target = parseRevealMessage(message);
+            if (target === null || !revealAppliesHere(target, shellWindowID)) return;
+            runtime.activateWorkspace(target.workspaceID);
+            const timer = setTimeout(() => {
+                timers.delete(timer);
+                runtime.focusPane(target.workspaceID, target.paneID);
+                focusTerminalElement(target.paneID);
+            }, 0);
+            timers.add(timer);
+        });
+        return () => {
+            off();
+            for (const timer of timers) clearTimeout(timer);
+            timers.clear();
+        };
+    }, [runtime, shellWindowID]);
 
     // ── derived reads ───────────────────────────────────────────────────────────────
 
@@ -215,6 +349,25 @@ function Shell(props: AppProps): ReactElement {
         [notifyFailure]
     );
 
+    /**
+     * The web-pane chrome's verbs, routed through `run` so a refusal (`no web pane host
+     * connected` when the desktop app is not there, a tab ref the daemon rejects) surfaces as
+     * the same error toast every other command uses — and never as an unhandled rejection,
+     * since the buttons deliberately do not await their acks (they are optimistic by design,
+     * web-pane.md §17.4).
+     */
+    const webCommands = useMemo(
+        () =>
+            createWebPaneCommands({
+                raw: (payload) => {
+                    const promise = commands.raw(payload);
+                    run(webCommandLabel(payload), promise);
+                    return promise;
+                }
+            }),
+        [commands, run]
+    );
+
     /** `run` for anything that is not a raw command reply (the content verbs resolve to void). */
     const runTask = useCallback(
         (label: string, task: Promise<unknown>): true => {
@@ -263,6 +416,28 @@ function Shell(props: AppProps): ReactElement {
             const pane = selectPane(store.getState(), paneID);
             if (pane === null || pane.type !== 'markdown') return false;
             return runTask('Toggle markdown edit', content.setMode(paneID, pane.isEditing ? 'view' : 'edit'));
+        };
+
+        /**
+         * §15's one-shot "scroll the new entry into view". The reply carries the id, so this
+         * client knows the row is ITS doing — a `workspace-created` delta caused by another
+         * client (or by the CLI) must not move this one's viewport.
+         */
+        const runCreateWorkspace = (promise: Promise<CommandReply>): true => {
+            void promise.then(
+                (reply) => {
+                    if (!isOkReply(reply)) {
+                        notifyFailure('New workspace', replyError(reply));
+                        return;
+                    }
+                    const created = replyText(reply, 'workspace_id');
+                    if (created !== undefined) setScrollToWorkspaceID(created);
+                },
+                (error: unknown) => {
+                    notifyFailure('New workspace', error instanceof Error ? error.message : String(error));
+                }
+            );
+            return true;
         };
 
         return {
@@ -404,14 +579,63 @@ function Shell(props: AppProps): ReactElement {
                 return runTask('Refresh diff', content.refresh(paneID));
             },
 
+            /**
+             * §3.16 — the header's +/- buttons and ⌘= / ⌘- / ⌘0. Only a markdown pane in VIEW
+             * mode has a preview font size, so anything else declines and the keystroke falls
+             * through to the pane (the same conditional-binding rule ⌘E follows).
+             */
+            setFontSize(paneID: string, step: FontSizeStep): boolean {
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || pane.type !== 'markdown' || pane.isEditing) return false;
+                return runTask('Font size', content.setFontSize(paneID, step));
+            },
+
+            setFontSizeFocused(step: FontSizeStep): boolean {
+                const paneID = focused();
+                if (paneID === null) return false;
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || pane.type !== 'markdown' || pane.isEditing) return false;
+                return runTask('Font size', content.setFontSize(paneID, step));
+            },
+
+            /**
+             * §3.13 — ⌘F over a content pane opens ITS find bar. The needle, the marks and the
+             * counts are per client (they live in the pane's iframe and its host component), so
+             * this only nudges the pane that has focus; a terminal pane declines and the
+             * binding falls through to whatever the terminal search will be.
+             */
+            openFind(): boolean {
+                const paneID = focused();
+                if (paneID === null) return false;
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || (pane.type !== 'markdown' && pane.type !== 'diff')) return false;
+                setFindRequest((current) =>
+                    current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
+                );
+                return true;
+            },
+
+            /**
+             * The 600 ms focus-dwell acknowledgment (agent-lifecycle.md §5.8). The grid runs the
+             * timer (it knows which pane this client shows); the daemon owns the mutation, so a
+             * cleared status reaches every other client as a delta.
+             */
+            dwellClear(paneID: string): boolean {
+                return run('Clear pane status', commands.clearPaneStatus({ paneID }));
+            },
+
+            /** The header's restart button: the daemon types the pane's resume command. */
+            restartAgent(paneID: string): boolean {
+                return run('Restart agent', commands.restartPaneAgent({ paneID }));
+            },
+
             newWorkspace(): boolean {
-                return run('New workspace', commands.createWorkspace({}));
+                return runCreateWorkspace(commands.createWorkspace({}));
             },
 
             createWorkspace(name: string, groupID: string | null): boolean {
                 const trimmed = name.trim();
-                return run(
-                    'New workspace',
+                return runCreateWorkspace(
                     commands.createWorkspace({
                         ...(trimmed.length > 0 ? { name: trimmed } : {}),
                         ...(groupID === null ? {} : { group: groupID })
@@ -441,6 +665,31 @@ function Shell(props: AppProps): ReactElement {
                         index: request.index
                     })
                 );
+            },
+
+            /** A multi-row drag: ONE atomic bulk move, never N `workspace-move`s (§5.5). */
+            moveWorkspaces(request: {
+                workspaceIDs: readonly string[];
+                groupID: string | null;
+                index: number;
+            }): boolean {
+                return run(
+                    'Move workspaces',
+                    commands.moveWorkspaces({
+                        workspaceIDs: request.workspaceIDs,
+                        groupID: request.groupID,
+                        index: request.index
+                    })
+                );
+            },
+
+            /** "Change Icon" (§5.6). `icon` is the flat DB token; `null` resets to the letter. */
+            setWorkspaceIcon(workspaceID: string, icon: string | null): boolean {
+                return run('Change icon', commands.setWorkspaceIcon({ workspaceID, icon }));
+            },
+
+            setGroupIcon(groupID: string, icon: string | null): boolean {
+                return run('Change icon', commands.setGroupIcon({ groupID, icon }));
             },
 
             toggleWorkspaceLabel(workspaceID: string, label: string, applied: boolean): boolean {
@@ -536,6 +785,28 @@ function Shell(props: AppProps): ReactElement {
         setTerminalTheme(resolveTerminalTheme());
     }, [bucket]);
 
+    // The ghostty background overrides whatever the chrome palette says, and it must stay an
+    // opaque hex: ghostty-web's parser maps `rgba()` (and every other non-hex form) to BLACK.
+    // The pane container behind the canvas gets the alpha instead — `paneFill` below — which
+    // is exactly the Swift split (renderer takes the color, container takes the opacity, §3.8).
+    const paneTheme = useMemo<TerminalTheme | undefined>(() => {
+        const background = normalizeHexColor(settings.appearance.backgroundColor);
+        if (background === null) return terminalTheme;
+        return { ...(terminalTheme ?? {}), background };
+    }, [terminalTheme, settings.appearance.backgroundColor]);
+
+    const paneFill = useMemo(
+        () => withAlpha(settings.appearance.backgroundColor, settings.appearance.backgroundOpacity),
+        [settings.appearance.backgroundColor, settings.appearance.backgroundOpacity]
+    );
+
+    // Memoized so `renderPane`'s dependency list only changes when the FONT changes: the
+    // engines take a font at construction, so a new object here would rebuild every engine.
+    const terminalFont = useMemo(
+        () => ({ fontFamily: settings.appearance.fontFamily, fontSize: settings.appearance.fontSize }),
+        [settings.appearance.fontFamily, settings.appearance.fontSize]
+    );
+
     // ── pane dimensions (the grid's resize badge) ───────────────────────────────────
 
     const dimensionsRef = useRef(new Map<string, TerminalGeometry>());
@@ -559,6 +830,43 @@ function Shell(props: AppProps): ReactElement {
         },
         [act]
     );
+
+    // ── settings window ─────────────────────────────────────────────────────────────
+
+    /**
+     * The Settings verbs, bound once. Every one of them WRITES A FILE (or, for the label
+     * presets, the daemon's database) and comes back as a broadcast the store applies — so
+     * nothing here echoes optimistically, and a failure is the same toast every other command
+     * raises rather than a form that silently did nothing.
+     */
+    const settingsActions = useMemo<SettingsActions>(
+        () => ({
+            setKeybinding: (action, trigger) =>
+                void run('Set keybinding', commands.setKeybinding({ action, trigger })),
+            resetKeybindings: (action) => void run('Reset keybindings', commands.resetKeybindings({ action })),
+            setGeneralSetting: (key, value) => void run('Change setting', commands.setGeneralSetting({ key, value })),
+            setProfiles: (profiles) => void run('Save profiles', commands.setProfiles({ profiles })),
+            addLabelPreset: (input) => void run('Add label preset', commands.addLabelPreset(input)),
+            updateLabelPreset: (input) => void run('Update label preset', commands.updateLabelPreset(input)),
+            removeLabelPreset: (id) => void run('Delete label preset', commands.removeLabelPreset({ id }))
+        }),
+        [commands, run]
+    );
+
+    const openSettings = useCallback((tab: SettingsTabID = 'keybindings'): void => {
+        setSettingsTab(tab);
+    }, []);
+
+    /**
+     * Closing hands the keyboard back to the pane the user came from — the same choreography
+     * the palette follows (§10.4). Without it the window is left with focus on a button that
+     * no longer exists, and the next keystroke goes nowhere.
+     */
+    const closeSettings = useCallback((): void => {
+        setSettingsTab(null);
+        const paneID = selectFocusedPaneID(store.getState());
+        if (paneID !== null) focusTerminalElement(paneID);
+    }, [store]);
 
     // ── favicon / tab badge ─────────────────────────────────────────────────────────
 
@@ -593,6 +901,12 @@ function Shell(props: AppProps): ReactElement {
             // Conditional binding (§4.1): only a focused markdown pane consumes ⌘E — anything
             // else returns false and the keystroke falls through to the pane.
             toggle_markdown_edit: () => act.toggleMarkdownEditFocused(),
+            // §3.16: same conditional shape — markdown, and not editing, or fall through.
+            increase_markdown_font_size: () => act.setFontSizeFocused('increase'),
+            decrease_markdown_font_size: () => act.setFontSizeFocused('decrease'),
+            reset_markdown_font_size: () => act.setFontSizeFocused('reset'),
+            // §3.13: ⌘F over a markdown/diff pane opens that pane's find bar.
+            toggle_search: () => act.openFind(),
             toggle_sync_input: () => act.toggleSyncInput(),
             command_palette: () => act.togglePalette(),
             toggle_sidebar: () => act.toggleSidebar(),
@@ -609,44 +923,133 @@ function Shell(props: AppProps): ReactElement {
         keyActionsRef.current = keyActions;
     }, [keyActions]);
 
+    /** Read inside the dispatcher's predicates, which are built once and must not go stale. */
+    const settingsOpenRef = useRef(settingsTab !== null);
+    settingsOpenRef.current = settingsTab !== null;
+
+    // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
+    // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
+    // store only mints a new settings object on a REAL change — so a `settings-changed` that
+    // touched only the appearance does not re-install the listener.
+    const keybindLines = settings.keybindLines;
     useEffect(() => {
-        const bindings = clientKeyBindings();
+        const bindings = clientKeyBindings(keybindLines);
         const dispatcher = createKeyDispatcher({
             bindings,
             actions: () => keyActionsRef.current,
-            isPaletteOpen: () => store.getState().ui.palette.open,
+            // §7.2 step 1's rule, applied to the Settings window for the same reason: while a
+            // modal overlay is up every keystroke belongs to IT — a ⌘D behind the sheet must not
+            // split a pane, and the key recorder needs to see combos the map would have eaten.
+            isPaletteOpen: () => store.getState().ui.palette.open || settingsOpenRef.current,
             hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store]);
+    }, [store, keybindLines]);
+
+    /**
+     * ⌘, opens Settings — the platform convention, and NOT a `NexAction`: the Swift app reaches
+     * it through the OS menu bar (there is no `open_settings` in §4's 51), so inventing one
+     * would put a value in the config file the shipped app cannot parse. It therefore lives
+     * outside the binding map and, to stay honest about that, yields whenever the user's own map
+     * claims ⌘, for something else.
+     */
+    useEffect(() => {
+        const bindings = clientKeyBindings(keybindLines);
+        const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.code !== 'Comma' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            const trigger = triggerFromEvent(event);
+            if (trigger !== null && actionForTrigger(bindings, trigger) !== null) return;
+            event.preventDefault();
+            setSettingsTab((current) => (current === null ? 'keybindings' : current));
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        return () => window.removeEventListener('keydown', onKeyDown, true);
+    }, [keybindLines]);
 
     // ── palette ─────────────────────────────────────────────────────────────────────
 
+    /**
+     * The binding map the chrome shows hints from. It is the SAME map the interceptor resolves,
+     * built from the daemon's `keybind` lines, so a rebound ⌘P is reflected in the palette row
+     * rather than the hint claiming a shortcut that no longer fires.
+     */
+    const bindings = useMemo(() => clientKeyBindings(keybindLines), [keybindLines]);
+    const hint = useCallback(
+        (action: NexAction): string | undefined => shortcutForAction(bindings, action),
+        [bindings]
+    );
+
     const paletteCommands = useMemo<PaletteItem[]>(
         () => [
-            paletteCommand('cmd:new-pane', 'terminal', 'New Pane', 'split the focused pane right', () =>
-                act.splitFocused('horizontal')
+            paletteCommand(
+                'cmd:new-pane',
+                'terminal',
+                'New Pane',
+                'split the focused pane right',
+                () => act.splitFocused('horizontal'),
+                hint('split_right')
             ),
-            paletteCommand('cmd:split-down', 'terminal', 'Split Down', 'split the focused pane down', () =>
-                act.splitFocused('vertical')
+            paletteCommand(
+                'cmd:split-down',
+                'terminal',
+                'Split Down',
+                'split the focused pane down',
+                () => act.splitFocused('vertical'),
+                hint('split_down')
             ),
-            paletteCommand('cmd:close-pane', 'terminal', 'Close Pane', 'close the focused pane', () =>
-                act.closeFocused()
+            paletteCommand(
+                'cmd:close-pane',
+                'terminal',
+                'Close Pane',
+                'close the focused pane',
+                () => act.closeFocused(),
+                hint('close_pane')
             ),
-            paletteCommand('cmd:toggle-zoom', 'rectangle.stack', 'Toggle Zoom', 'zoom the focused pane', () =>
-                act.toggleZoomFocused()
+            paletteCommand(
+                'cmd:toggle-zoom',
+                'rectangle.stack',
+                'Toggle Zoom',
+                'zoom the focused pane',
+                () => act.toggleZoomFocused(),
+                hint('toggle_zoom')
             ),
-            paletteCommand('cmd:cycle-layout', 'rectangle.stack', 'Cycle Layout', 'next predefined layout', () =>
-                act.cycleLayout()
+            paletteCommand(
+                'cmd:cycle-layout',
+                'rectangle.stack',
+                'Cycle Layout',
+                'next predefined layout',
+                () => act.cycleLayout(),
+                hint('cycle_layout')
             ),
-            paletteCommand('cmd:sync-input', 'terminal', 'Toggle Synchronise Input', 'mirror typing across panes', () =>
-                act.toggleSyncInput()
+            paletteCommand(
+                'cmd:sync-input',
+                'terminal',
+                'Toggle Synchronise Input',
+                'mirror typing across panes',
+                () => act.toggleSyncInput(),
+                hint('toggle_sync_input')
             ),
-            paletteCommand('cmd:new-workspace', 'rectangle.stack', 'New Workspace', 'create an empty workspace', () =>
-                act.newWorkspace()
+            paletteCommand(
+                'cmd:new-workspace',
+                'rectangle.stack',
+                'New Workspace',
+                'create an empty workspace',
+                () => act.newWorkspace(),
+                hint('new_workspace')
+            ),
+            // ⌘, is not a bindable action (see the listener above), so the hint is literal.
+            paletteCommand(
+                'cmd:settings',
+                'gearshape',
+                'Settings…',
+                'keybindings, appearance, labels, profiles',
+                () => {
+                    openSettings('keybindings');
+                },
+                '⌘,'
             )
         ],
-        [act]
+        [act, hint, openSettings]
     );
 
     const paletteItems = useMemo(
@@ -711,6 +1114,7 @@ function Shell(props: AppProps): ReactElement {
                         visible={renderState.visible}
                         onFocusRequest={onTerminalFocus}
                         onToggleEdit={act.toggleMarkdownEdit}
+                        findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                     />
                 );
             }
@@ -722,6 +1126,7 @@ function Shell(props: AppProps): ReactElement {
                         focused={focused}
                         visible={renderState.visible}
                         onFocusRequest={onTerminalFocus}
+                        findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                     />
                 );
             }
@@ -736,8 +1141,29 @@ function Shell(props: AppProps): ReactElement {
                     />
                 );
             }
+            // The one pane whose body this client cannot draw: the page lives in a native view
+            // the Electron shell owns. The chrome is ours, the page area is a measured hole
+            // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.
+            if (pane.type === 'web') {
+                const web = workspace?.webPanes[paneID];
+                return (
+                    <WebPane
+                        paneID={paneID}
+                        tabs={web?.tabs ?? EMPTY_WEB_TABS}
+                        activeTabID={web?.activeTabID ?? null}
+                        isPrivate={web?.isPrivate ?? false}
+                        focused={focused}
+                        visible={renderState.visible}
+                        embedded={shellWindowID !== null}
+                        commands={webCommands}
+                        onGeometry={webGeometry.report}
+                        onHidden={webGeometry.hide}
+                        onFocusRequest={onTerminalFocus}
+                    />
+                );
+            }
             if (pane.type !== 'shell') {
-                return <ContentPanePlaceholder pane={pane} url={webPaneURL(workspace, paneID)} />;
+                return <ContentPanePlaceholder pane={pane} />;
             }
             if (!mountedSet.has(paneID)) {
                 return <ContentPanePlaceholder pane={pane} variant="detached" />;
@@ -748,7 +1174,10 @@ function Shell(props: AppProps): ReactElement {
                     ptyApi={runtime.pty}
                     focused={focused}
                     visible={renderState.visible}
-                    theme={terminalTheme}
+                    theme={paneTheme}
+                    background={paneFill}
+                    {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
+                    {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
                     onFocusRequest={onTerminalFocus}
                     onDimensionsChange={onDimensionsChange}
                     createRenderer={createRenderer}
@@ -758,14 +1187,20 @@ function Shell(props: AppProps): ReactElement {
         [
             act,
             content,
+            findRequest,
             paneByID,
             workspace,
             mountedSet,
             runtime,
-            terminalTheme,
+            paneTheme,
+            paneFill,
+            terminalFont,
             onTerminalFocus,
             onDimensionsChange,
-            createRenderer
+            createRenderer,
+            webCommands,
+            webGeometry,
+            shellWindowID
         ]
     );
 
@@ -797,10 +1232,19 @@ function Shell(props: AppProps): ReactElement {
                     onDeleteWorkspace={act.deleteWorkspace}
                     onToggleWorkspaceLabel={act.toggleWorkspaceLabel}
                     onMoveWorkspace={act.moveWorkspace}
+                    onMoveWorkspaces={act.moveWorkspaces}
+                    onSetWorkspaceIcon={act.setWorkspaceIcon}
+                    onSetGroupIcon={act.setGroupIcon}
                     onRenameGroup={act.renameGroup}
                     onDeleteGroup={act.deleteGroup}
                     onCreateWorkspace={act.createWorkspace}
                     onCreateGroup={act.createGroup}
+                    keyBindings={bindings}
+                    scrollToWorkspaceID={scrollToWorkspaceID}
+                    onScrollHandled={() => setScrollToWorkspaceID(null)}
+                    onOpenSettings={(section) => {
+                        openSettings(section === 'labels' ? 'labels' : 'keybindings');
+                    }}
                 />
             ) : null}
 
@@ -824,6 +1268,10 @@ function Shell(props: AppProps): ReactElement {
 
                 <div className="relative min-h-0 flex-1">
                     <PaneGrid
+                        // §10: the daemon's config file drives hover-focus; the grid owns the
+                        // cancel-on-re-hover timer semantics.
+                        focusFollowsMouse={settings.general.focusFollowsMouse}
+                        focusFollowsMouseDelayMs={settings.general.focusFollowsMouseDelay}
                         layout={workspace?.layout ?? EMPTY_LAYOUT}
                         panes={panes}
                         focusedPaneID={focusedPaneID}
@@ -839,6 +1287,9 @@ function Shell(props: AppProps): ReactElement {
                         onToggleZoom={act.toggleZoom}
                         onToggleMarkdownEdit={act.toggleMarkdownEdit}
                         onRefreshDiff={act.refreshDiff}
+                        onSetFontSize={act.setFontSize}
+                        onRestartAgent={act.restartAgent}
+                        onDwellClear={act.dwellClear}
                         onMovePane={act.movePaneAdjacent}
                         onCreatePane={act.createPane}
                         onSetRatio={(_splitPath, _ratio, commit) => {
@@ -874,6 +1325,16 @@ function Shell(props: AppProps): ReactElement {
                 onFocusHandoff={onFocusHandoff}
                 fallbackPaneID={focusedPaneID}
                 bucket={bucket}
+            />
+
+            <SettingsOverlay
+                open={settingsTab !== null}
+                initialTab={settingsTab ?? 'keybindings'}
+                settings={settings}
+                domain={{ labelPresets: daemon.state.labelPresets, workspaces: daemon.state.workspaces }}
+                actions={settingsActions}
+                bucket={bucket}
+                onClose={closeSettings}
             />
 
             <ToastStack toasts={ui.toasts} onDismiss={(id) => store.getState().dismissToast(id)} />
@@ -1062,6 +1523,15 @@ function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null
 const EMPTY_PANES: readonly Pane[] = [];
 const EMPTY_IDS: readonly string[] = [];
 const EMPTY_LAYOUT = { kind: 'empty' } as const;
+/** A web pane whose sidecar has not arrived yet renders its (empty) chrome, not nothing. */
+const EMPTY_WEB_TABS: readonly WebPaneTab[] = [];
+
+/** Toast titles for the web verbs: the wire name without its `web-` prefix, sentence-cased. */
+function webCommandLabel(payload: JsonObject): string {
+    const command = typeof payload['command'] === 'string' ? payload['command'] : 'web';
+    const words = command.replace(/^web-/, '').replace(/-/g, ' ');
+    return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 function sameOrder(a: readonly string[], b: readonly string[]): boolean {
     return a.length === b.length && a.every((value, index) => value === b[index]);
@@ -1072,7 +1542,8 @@ function paletteCommand(
     icon: string,
     title: string,
     subtitle: string,
-    action: () => void
+    action: () => void,
+    shortcut?: string | undefined
 ): PaletteItem {
     return {
         id,
@@ -1084,16 +1555,9 @@ function paletteCommand(
         workspaceName: '',
         paneID: null,
         workspaceColor: null,
-        run: action
+        run: action,
+        ...(shortcut === undefined ? {} : { shortcut })
     };
-}
-
-/** The active tab's URL for a web pane; the daemon keeps it beside the pane record. */
-function webPaneURL(workspace: WorkspaceState | null, paneID: string): string | null {
-    const web = workspace?.webPanes[paneID];
-    if (web === undefined) return null;
-    const active = web.tabs.find((tab) => tab.id === web.activeTabID) ?? web.tabs[0];
-    return active?.url ?? null;
 }
 
 /** agent-lifecycle.md §9.3 buckets, over every workspace's visible panes. */

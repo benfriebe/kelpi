@@ -119,6 +119,12 @@ export interface ContentService {
     save(paneID: string): Promise<ContentPaneState>;
     /** Diff: re-run git. Markdown: re-read the file. Scratchpad: no-op. */
     refresh(paneID: string): Promise<ContentPaneState>;
+    /**
+     * §3.16 preview font size. The clamp (8…32) and the markdown-and-not-editing guard live in
+     * the reducer, so this only dispatches and re-reads: a rejected change comes back as the
+     * unchanged snapshot rather than an error, exactly as the keybinding path behaves.
+     */
+    setFontSize(paneID: string, size: number): Promise<ContentPaneState>;
     /** Sibling-asset resolution for `/pane-assets/<paneID>/<relpath>`; null = 404. */
     assetPath(paneID: string, relativePath: string): string | null;
     /** Re-render every live entry against a new ghostty background (§3.8 theme change). */
@@ -575,6 +581,21 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                 await reloadFromDisk(entry);
                 return snapshot(entry);
             }
+            return snapshot(entry);
+        },
+
+        async setFontSize(paneID, size) {
+            const entry = await ensure(paneID);
+            if (!Number.isFinite(size)) throw new Error('font size must be a number');
+            store.dispatch({
+                type: 'set-markdown-font-size',
+                workspaceID: entry.workspaceID,
+                paneID,
+                size
+            });
+            // `dispatch` is synchronous and this service subscribes to the store, so by the time
+            // it returns the `pane-upserted` handler above has already re-rendered and emitted;
+            // the snapshot below is therefore the post-change one, not a stale read.
             return snapshot(entry);
         },
 

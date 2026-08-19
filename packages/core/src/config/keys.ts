@@ -75,6 +75,51 @@ export const KEY_CODE_TO_CONFIG_NAME: ReadonlyMap<number, string> = new Map([
 /** Serialized name for an unmapped keyCode; will not re-parse (§3.3). */
 export const UNKNOWN_KEY_NAME = 'unknown';
 
+/**
+ * §3.3 display half: the macOS symbol per modifier, in **display** order `⌃ ⌥ ⇧ ⌘`. That
+ * is a different contract from `MODIFIER_ORDER` (the config-file serialization order) even
+ * though the two sequences happen to coincide, so it is spelled separately rather than
+ * aliased — a change to one must not silently move the other.
+ */
+export const MODIFIER_DISPLAY_ORDER: readonly KeyModifier[] = ['ctrl', 'alt', 'shift', 'super'];
+
+export const MODIFIER_SYMBOLS: Readonly<Record<KeyModifier, string>> = {
+    ctrl: '⌃',
+    alt: '⌥',
+    shift: '⇧',
+    super: '⌘'
+};
+
+/** Shown for a keyCode with no display name (§3.3). */
+export const UNKNOWN_KEY_DISPLAY = '?';
+
+/**
+ * §3.3 — keyCode → the string a menu or hint shows. Letters/digits/punctuation are the
+ * config name uppercased (so `a` → `A`, `[` → `[`); the non-printing keys get the doc's
+ * verbatim names (`Return`, `Tab`, `Esc`, `Delete`, `Space`, `Fwd Del`, the arrow glyphs,
+ * `F1`…`F12`), which is why they are listed AFTER the derived rows and win the collision.
+ */
+export const KEY_CODE_TO_DISPLAY_NAME: ReadonlyMap<number, string> = new Map<number, string>([
+    ...[...KEY_CODE_TO_CONFIG_NAME].map(([code, name]): [number, string] => [code, name.toUpperCase()]),
+    [36, 'Return'], [48, 'Tab'], [53, 'Esc'], [51, 'Delete'], [49, 'Space'],
+    [117, 'Fwd Del'],
+    [123, '←'], [124, '→'], [125, '↓'], [126, '↑'],
+    [122, 'F1'], [120, 'F2'], [99, 'F3'], [118, 'F4'], [96, 'F5'], [97, 'F6'],
+    [98, 'F7'], [100, 'F8'], [101, 'F9'], [109, 'F10'], [103, 'F11'], [111, 'F12']
+]);
+
+/**
+ * `displayString` (§3.3): modifier symbols concatenated in `⌃⌥⇧⌘` order with no separator,
+ * then the key's display name — `⌘⇧D`, `⌃⌥Space`. An unmapped keyCode renders `?`.
+ */
+export function keyTriggerDisplayString(trigger: KeyTrigger): string {
+    const present = new Set(trigger.modifiers);
+    const symbols = MODIFIER_DISPLAY_ORDER.filter((mod) => present.has(mod))
+        .map((mod) => MODIFIER_SYMBOLS[mod])
+        .join('');
+    return symbols + (KEY_CODE_TO_DISPLAY_NAME.get(trigger.keyCode) ?? UNKNOWN_KEY_DISPLAY);
+}
+
 export function makeKeyTrigger(keyCode: number, modifiers: Iterable<KeyModifier>): KeyTrigger {
     const present = new Set(modifiers);
     return { keyCode, modifiers: MODIFIER_ORDER.filter((mod) => present.has(mod)) };

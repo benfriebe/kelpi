@@ -84,6 +84,12 @@ export interface TabEventSink {
 export interface TabFactoryOptions {
     /** The off-screen holder every view is parented to. Built lazily by `./index.ts`. */
     readonly holder: () => BaseWindow;
+    /**
+     * Called before a tab is destroyed, so whoever else is holding the view can let go first —
+     * today the embed controller, which must drop a view it has parented into the shell window
+     * rather than try to remove it after Electron has torn it down.
+     */
+    readonly beforeDestroy?: ((tab: HostTab) => void) | undefined;
     /** The pane's storage partition — persistent, or in-memory when the pane is private (§6). */
     readonly sessionFor: (paneID: string, isPrivate: boolean) => Session;
     readonly events: TabEventSink;
@@ -95,6 +101,11 @@ export interface TabFactoryOptions {
 export interface HostTab extends TabController {
     setVisible(visible: boolean): void;
     dispose(reason: DestroyReason): void;
+    /**
+     * The Electron view, for whoever owns the window layout: the holder by default, the shell
+     * window while the pane is embedded (`./embed.ts`).
+     */
+    readonly contentsView: WebContentsView;
 }
 
 interface CdpContext {
@@ -590,6 +601,24 @@ class ElectronTab implements HostTab {
         this.view.setVisible(visible);
     }
 
+    /**
+     * §16.5's `</>` button. Electron's `openDevTools({mode:'bottom'})` replaces the whole
+     * WebKit private-SPI + container-view dance the Swift app needed; `undefined` means toggle,
+     * which is what a button press is.
+     */
+    setDevTools(open?: boolean): boolean {
+        if (this.disposed || this.contents.isDestroyed()) return false;
+        const wanted = open ?? !this.contents.isDevToolsOpened();
+        try {
+            if (wanted) this.contents.openDevTools({ mode: 'bottom' });
+            else this.contents.closeDevTools();
+        } catch (error) {
+            this.report(error, 'devtools');
+            return this.contents.isDevToolsOpened();
+        }
+        return wanted;
+    }
+
     dispose(reason: DestroyReason): void {
         if (this.disposed) return;
         this.disposed = true;
@@ -627,6 +656,10 @@ export function createTabHooks(options: TabFactoryOptions): {
             return new ElectronTab(input, options);
         },
         destroy(tab, reason) {
+            // Whoever else parented this view (the shell window, while embedded) drops it
+            // first: `removeChildView` after `close()` is a throw, and a stale placement would
+            // point the embed controller at a destroyed view.
+            options.beforeDestroy?.(tab);
             const holder = options.holder();
             const view = tab instanceof ElectronTab ? tab.contentsView : null;
             if (view !== null) {

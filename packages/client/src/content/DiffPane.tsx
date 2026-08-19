@@ -31,6 +31,8 @@ export interface DiffPaneProps {
     readonly scrollStore?: ScrollStore | undefined;
     readonly writeClipboard?: ClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
+    /** Bump to open the find bar (§3.13 — a diff is as searchable as a preview). */
+    readonly findToken?: number | undefined;
 }
 
 export function DiffPane(props: DiffPaneProps): ReactElement {
@@ -64,6 +66,7 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
             scrollStore={props.scrollStore}
             writeClipboard={props.writeClipboard}
             openLink={props.openLink}
+            findToken={props.findToken}
         />
     );
 }

@@ -21,6 +21,7 @@ import { type ReactElement } from 'react';
 import type { ContentApi } from './client';
 import { ContentFrame, ContentStatus } from './ContentFrame';
 import type { ClipboardWriter, LinkOpener } from './bridge';
+import type { RichClipboardWriter } from './copy';
 import { PlainTextEditor } from './PlainTextEditor';
 import type { ScrollStore } from './scroll';
 import { useContent } from './useContent';
@@ -34,7 +35,10 @@ export interface MarkdownPaneProps {
     readonly onToggleEdit?: ((paneID: string) => void) | undefined;
     readonly scrollStore?: ScrollStore | undefined;
     readonly writeClipboard?: ClipboardWriter | undefined;
+    readonly writeRichClipboard?: RichClipboardWriter | undefined;
     readonly openLink?: LinkOpener | undefined;
+    /** Bump to open the preview's find bar (the app's `toggle_search` binding, §3.13). */
+    readonly findToken?: number | undefined;
 }
 
 export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
@@ -63,6 +67,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                 onToggleEdit={props.onToggleEdit}
                 onFocusRequest={props.onFocusRequest}
                 scrollStore={props.scrollStore}
+                showGutter
             />
         );
     }
@@ -78,7 +83,12 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             onToggleEdit={props.onToggleEdit}
             scrollStore={props.scrollStore}
             writeClipboard={props.writeClipboard}
+            writeRichClipboard={props.writeRichClipboard}
             openLink={props.openLink}
+            findToken={props.findToken}
+            // §3.14: both copy commands bail on a failed load — you cannot copy the synthetic
+            // "Failed to load file" blockquote, so the affordance is simply absent.
+            copySource={state.loaded ? state.text : null}
         />
     );
 }

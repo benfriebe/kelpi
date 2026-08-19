@@ -26,7 +26,9 @@ export type IconName =
     | 'refresh'
     | 'restart'
     | 'rename'
-    | 'terminal';
+    | 'terminal'
+    | 'font-smaller'
+    | 'font-larger';
 
 const PATHS: Record<IconName, ReactElement> = {
     document: (
@@ -132,6 +134,19 @@ const PATHS: Record<IconName, ReactElement> = {
         <>
             <rect x="1.5" y="2" width="9" height="8" rx="1" />
             <path d="m3.5 4.5 2 1.5-2 1.5M6.5 8h2.5" />
+        </>
+    ),
+    // §3.16's two preview font-size controls: a small "A" beside a minus / a plus.
+    'font-smaller': (
+        <>
+            <path d="M1.6 8.4 3.6 3.6l2 4.8M2.3 6.8h2.6" />
+            <path d="M7.2 6.4h3.4" />
+        </>
+    ),
+    'font-larger': (
+        <>
+            <path d="M1.6 8.4 3.6 3.6l2 4.8M2.3 6.8h2.6" />
+            <path d="M7.2 6.4h3.4M8.9 4.7v3.4" />
         </>
     )
 };

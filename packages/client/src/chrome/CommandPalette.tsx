@@ -260,6 +260,15 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                                     </span>
                                                 )}
                                             </span>
+                                            {item.shortcut === undefined ? null : (
+                                                <span
+                                                    data-testid="palette-shortcut"
+                                                    className="shrink-0 font-mono text-[10px]"
+                                                    style={{ color: tokens.textTertiary }}
+                                                >
+                                                    {item.shortcut}
+                                                </span>
+                                            )}
                                             {item.kind === 'workspace' ? (
                                                 <span
                                                     className="shrink-0 rounded px-1.5 py-px text-[10px]"

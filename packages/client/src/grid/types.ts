@@ -76,6 +76,11 @@ export interface PaneActions {
     readonly onToggleMarkdownEdit?: ((paneID: string) => void) | undefined;
     /** Diff pane refresh token bump (M5 owns the body; the button lives here). */
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
+    /**
+     * §3.16 preview font size. Markdown panes in VIEW mode only — the built-in editor is a
+     * fixed 13 px and diff panes have no bindings to change theirs.
+     */
+    readonly onSetFontSize?: ((paneID: string, step: 'increase' | 'decrease' | 'reset') => void) | undefined;
     /** Restart the pane's agent (kill + `claude --resume` / `codex resume`). */
     readonly onRestartAgent?: ((paneID: string) => void) | undefined;
     /** New web pane split off this one (shift-click splits down) — shell-ui.md §4.2 item 12. */

@@ -83,6 +83,17 @@ export interface WorkspaceMoveRequest {
     readonly index: number;
 }
 
+/**
+ * A multi-row drag: the whole selection lands in ONE commit (§5.5 "consolidated atomically via
+ * a bulk move"). It is a separate callback rather than N `onMoveWorkspace`s because those would
+ * re-index against each other and scramble the order the user dropped.
+ */
+export interface WorkspacesMoveRequest {
+    readonly workspaceIDs: readonly string[];
+    readonly groupID: string | null;
+    readonly index: number;
+}
+
 /** Top-level group reorder. No wire verb today — assembly decides how to persist it. */
 export interface GroupMoveRequest {
     readonly groupID: string;
@@ -103,7 +114,19 @@ export interface SidebarCallbacks {
         | undefined;
     /** ONE atomic commit per drag (§15 "Live-apply drag model"). */
     readonly onMoveWorkspace?: ((request: WorkspaceMoveRequest) => void) | undefined;
+    /**
+     * A drag that grabbed a row inside a ≥2 selection. Absent = the sidebar falls back to
+     * moving the grabbed row alone, which is strictly better than moving nothing.
+     */
+    readonly onMoveWorkspaces?: ((request: WorkspacesMoveRequest) => void) | undefined;
     readonly onMoveGroup?: ((request: GroupMoveRequest) => void) | undefined;
+    /**
+     * "Change Icon" (§5.6). `icon` is the flat DB spelling (`"emoji:🔥"` / `"system:star"`);
+     * `null` is "Reset to Letter". The client passes an SF Symbol token straight back through,
+     * so a legacy value survives even when this client draws it as the generic glyph.
+     */
+    readonly onSetWorkspaceIcon?: ((workspaceID: string, icon: string | null) => void) | undefined;
+    readonly onSetGroupIcon?: ((groupID: string, icon: string | null) => void) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
     readonly onDeleteGroup?: ((groupID: string, cascade: boolean) => void) | undefined;
     readonly onCreateWorkspace?: ((name: string, groupID: string | null) => void) | undefined;

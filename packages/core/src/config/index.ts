@@ -11,10 +11,15 @@ export {
 } from './lines.js';
 export {
     KEY_CODE_TO_CONFIG_NAME,
+    KEY_CODE_TO_DISPLAY_NAME,
     KEY_NAME_TO_CODE,
+    MODIFIER_DISPLAY_ORDER,
     MODIFIER_ORDER,
+    MODIFIER_SYMBOLS,
+    UNKNOWN_KEY_DISPLAY,
     UNKNOWN_KEY_NAME,
     keyTriggerConfigString,
+    keyTriggerDisplayString,
     keyTriggerKey,
     keyTriggersEqual,
     makeKeyTrigger,
@@ -41,4 +46,4 @@ export type { GeneralSettings } from './general.js';
 export { parseKeybindOverrides } from './keybinds.js';
 export { parseProfiles, serializeProfileLines } from './profiles.js';
 export type { ParseProfilesOptions, Profile } from './profiles.js';
-export { setGeneralSetting, writeProfiles } from './write.js';
+export { setGeneralSetting, writeKeybindings, writeProfiles } from './write.js';

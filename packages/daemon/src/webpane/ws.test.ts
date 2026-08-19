@@ -13,7 +13,10 @@ import type { ControlDispatcher } from '../seams.js';
 import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
 import {
     createSyncHub,
+    REVEAL_PANE_MESSAGE,
+    REVEAL_REQUEST_MESSAGE,
     WEB_CONSOLE_LINE_MESSAGE,
+    WEB_GEOMETRY_REPORT_MESSAGE,
     WEB_HOST_CAPABILITY,
     type SyncHub,
     type SyncSession
@@ -332,6 +335,225 @@ describe('client console subscription', () => {
         expect(f.service.console.subscribers(WEB_PANE)).toBe(1);
         client.session.close();
         expect(f.service.console.subscribers(WEB_PANE)).toBe(0);
+    });
+});
+
+describe('geometry reports → pane-geometry notifies', () => {
+    /** A host connection that declared the shell window it renders into. */
+    function hostWithWindow(f: Fixture, windowID: string): RecordedTransport {
+        const { session, transport } = f.connect();
+        session.handleMessage(
+            hello({
+                kind: 'electron',
+                name: 'nex-shell',
+                capabilities: [WEB_HOST_CAPABILITY],
+                windowID
+            })
+        );
+        return transport;
+    }
+
+    function geometry(overrides: Record<string, unknown> = {}): string {
+        return JSON.stringify({
+            type: WEB_GEOMETRY_REPORT_MESSAGE,
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            rect: { x: 12, y: 40, w: 900, h: 500 },
+            visible: true,
+            devicePixelRatio: 2,
+            ...overrides
+        });
+    }
+
+    it('forwards a shell window’s report to the host, tagged as its own', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser', name: 'nex-web' }));
+
+        client.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+
+        const notifies = host.ofType('host-notify').filter((message) => message['verb'] === 'pane-geometry');
+        expect(notifies).toHaveLength(1);
+        expect(notifies[0]?.['args']).toMatchObject({
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            rect: { x: 12, y: 40, w: 900, h: 500 },
+            visible: true,
+            devicePixelRatio: 2,
+            ownWindow: true,
+            shellWindowID: 'WIN-1'
+        });
+    });
+
+    it('forwards a plain browser’s report untagged, so the host ignores it', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser', name: 'nex-web' }));
+
+        client.session.handleMessage(geometry());
+        client.session.handleMessage(geometry({ shellWindowID: 'SOMEONE-ELSE' }));
+
+        const args = host
+            .ofType('host-notify')
+            .filter((message) => message['verb'] === 'pane-geometry')
+            .map((message) => (message['args'] as Record<string, unknown>)['ownWindow']);
+        expect(args).toEqual([false, false]);
+    });
+
+    it('carries the hide report through as visible:false', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        client.session.handleMessage(
+            geometry({ shellWindowID: 'WIN-1', visible: false, rect: { x: 0, y: 0, w: 0, h: 0 } })
+        );
+        const last = host.ofType('host-notify').at(-1);
+        expect(last?.['args']).toMatchObject({ visible: false, ownWindow: true });
+    });
+
+    it('drops geometry for a pane that is not a web pane, and when nothing is hosting', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        client.session.handleMessage(geometry({ paneID: SHELL_PANE, shellWindowID: 'WIN-1' }));
+        expect(host.ofType('host-notify').filter((m) => m['verb'] === 'pane-geometry')).toHaveLength(0);
+
+        // With no host there is nothing to move: the report is simply dropped.
+        const lonely = fixture();
+        const only = lonely.connect();
+        only.session.handleMessage(hello({ kind: 'browser' }));
+        expect(() => only.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }))).not.toThrow();
+        expect(only.transport.ofType('host-notify')).toHaveLength(0);
+    });
+
+    it('takes the views back when the reporting client disappears', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+
+        client.session.close();
+
+        const last = host.ofType('host-notify').at(-1);
+        expect(last?.['verb']).toBe('pane-geometry');
+        // A client that closes its tab never says "hidden": the daemon says it for it, or a
+        // dead page would sit over a window nobody is driving.
+        expect(last?.['args']).toMatchObject({ paneID: WEB_PANE, visible: false, ownWindow: true });
+    });
+
+    it('has nothing to release for a client that only ever hid its panes', () => {
+        const f = fixture();
+        const host = hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+        client.session.handleMessage(geometry({ shellWindowID: 'WIN-1', visible: false }));
+        const before = host.ofType('host-notify').length;
+        client.session.close();
+        expect(host.ofType('host-notify')).toHaveLength(before);
+    });
+
+    it('never answers a report (it is a report, not a command)', () => {
+        const f = fixture();
+        hostWithWindow(f, 'WIN-1');
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        const before = client.transport.json.length;
+        client.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
+        expect(client.transport.json.length).toBe(before);
+    });
+});
+
+describe('reveal routing', () => {
+    it('fans a reveal-request out to every attached client', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello());
+        const ui = f.connect();
+        ui.session.handleMessage(hello({ kind: 'browser' }));
+
+        shell.session.handleMessage(
+            JSON.stringify({
+                type: REVEAL_REQUEST_MESSAGE,
+                workspaceID: WORKSPACE,
+                paneID: SHELL_PANE,
+                windowID: 'WIN-1'
+            })
+        );
+
+        for (const transport of [shell.transport, ui.transport]) {
+            expect(transport.ofType(REVEAL_PANE_MESSAGE)[0]).toEqual({
+                type: REVEAL_PANE_MESSAGE,
+                workspaceID: WORKSPACE,
+                paneID: SHELL_PANE,
+                windowID: 'WIN-1'
+            });
+        }
+    });
+
+    it('ignores a request that names no pane or workspace', () => {
+        const f = fixture();
+        const { session, transport } = f.connect();
+        session.handleMessage(hello());
+        session.handleMessage(JSON.stringify({ type: REVEAL_REQUEST_MESSAGE, workspaceID: WORKSPACE }));
+        session.handleMessage(JSON.stringify({ type: REVEAL_REQUEST_MESSAGE, paneID: SHELL_PANE }));
+        expect(transport.ofType(REVEAL_PANE_MESSAGE)).toHaveLength(0);
+    });
+});
+
+describe('web-devtools (GUI-only verb)', () => {
+    it('forwards to the host and returns its envelope', async () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-devtools', pane_id: WEB_PANE, tab_id: WEB_TAB }
+            })
+        );
+        const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+        expect(rpc['verb']).toBe('devtools');
+        expect(rpc['args']).toMatchObject({ paneID: WEB_PANE, tabID: WEB_TAB });
+        host.session.handleMessage(
+            JSON.stringify({ type: 'host-rpc-reply', id: rpc['id'], reply: { ok: true, open: true } })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: true,
+            open: true,
+            pane_id: WEB_PANE
+        });
+    });
+
+    it('answers the no-host failure rather than hanging', async () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-devtools', pane_id: WEB_PANE }
+            })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: false,
+            error: NO_HOST_ERROR,
+            pane_id: WEB_PANE
+        });
     });
 });
 

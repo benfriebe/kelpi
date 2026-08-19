@@ -51,6 +51,7 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             onFlush={() => void content.flush(paneID)}
             onFocusRequest={props.onFocusRequest}
             scrollStore={props.scrollStore}
+            showGutter
         />
     );
 }

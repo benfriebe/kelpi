@@ -1,0 +1,299 @@
+/**
+ * The Settings window inside the assembled client: what a click actually puts on the wire, and
+ * what the broadcast coming back actually changes.
+ *
+ * The tabs' own tests drive them from fixtures; this one exists for the three things only
+ * assembly can prove — the window opens from all three affordances, a recorded key travels
+ * verb → daemon → `settings-changed` → table, and while the window is up the app's key
+ * dispatcher is silent (a ⌘D behind the sheet must not split a pane).
+ */
+
+import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { App } from '../App';
+import { createFakeSocketFactory, type FakeWebSocket } from '../connection';
+import { createNexRuntime, createNexStore } from '../state';
+import { createFakeRendererFactory } from '../terminal/testing';
+
+const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
+const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
+const NOW = 1_755_500_000_000;
+
+function snapshotState(): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'dev', color: 'blue', now: NOW });
+    store.dispatch({ type: 'workspace-labels', id: W1, op: 'set', values: ['ship'] });
+    store.dispatch({ type: 'add-label-preset', name: 'ship', color: { kind: 'named', color: 'gray' } });
+    return store.getState() as unknown as JsonObject;
+}
+
+interface SettingsInput {
+    readonly keybindLines?: readonly string[];
+    readonly profiles?: readonly { name: string; env: Record<string, string> }[];
+}
+
+function settingsPayload(input: SettingsInput = {}): Record<string, unknown> {
+    return {
+        keybindLines: input.keybindLines ?? [],
+        profiles: input.profiles ?? [{ name: 'work', env: { NEX_PROFILE: 'work', A: '1' } }],
+        general: {
+            focusFollowsMouse: false,
+            focusFollowsMouseDelay: 100,
+            theme: 'Nord',
+            confirmWorkspaceDeleteWhenActive: true
+        },
+        appearance: {
+            backgroundColor: '#0a0a0c',
+            backgroundOpacity: 1,
+            fontFamily: null,
+            fontSize: null,
+            isDark: true,
+            theme: null
+        }
+    };
+}
+
+interface Harness {
+    socket(): FakeWebSocket;
+    commands(): Record<string, unknown>[];
+    push(input: SettingsInput): void;
+}
+
+function setup(input: SettingsInput = {}): Harness {
+    const sockets = createFakeSocketFactory();
+    const runtime = createNexRuntime({
+        url: 'ws://daemon.test/ws',
+        token: 'tok',
+        socketFactory: sockets.factory,
+        store: createNexStore(),
+        notifications: null,
+        tokenStorage: null,
+        heartbeatIntervalMs: 0,
+        backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
+    });
+    render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} />);
+
+    act(() => {
+        const socket = sockets.last();
+        socket.open();
+        socket.emit({
+            type: 'welcome',
+            protocolVersion: 1,
+            clientID: 'client-1',
+            daemon: { version: '0.1.0', build: 'test', pid: 4242 },
+            settings: settingsPayload(input)
+        });
+        socket.emit({ type: 'snapshot', seq: 0, state: snapshotState() });
+    });
+
+    return {
+        socket: () => sockets.last(),
+        commands: () =>
+            sockets
+                .last()
+                .messages()
+                .filter((message) => message['type'] === 'command')
+                .map((message) => message['payload'] as Record<string, unknown>),
+        push(next) {
+            act(() => {
+                sockets.last().emit({ type: 'settings-changed', settings: settingsPayload(next) });
+            });
+        }
+    };
+}
+
+const sent = (h: Harness, command: string): Record<string, unknown>[] =>
+    h.commands().filter((payload) => payload['command'] === command);
+
+afterEach(cleanup);
+
+describe('opening the Settings window', () => {
+    it('opens on ⌘,', () => {
+        setup();
+        expect(screen.queryByTestId('settings-window')).toBeNull();
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+        });
+        expect(screen.getByTestId('settings-window')).toBeDefined();
+    });
+
+    it('opens from the sidebar gear', () => {
+        setup();
+        act(() => {
+            fireEvent.click(screen.getByTestId('sidebar-settings'));
+        });
+        expect(screen.getByTestId('settings-window')).toBeDefined();
+    });
+
+    it('opens from the command palette', () => {
+        setup();
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyP', metaKey: true });
+        });
+        const row = document.querySelector('[data-item-id="cmd:settings"]');
+        act(() => {
+            fireEvent.click(row as HTMLElement);
+        });
+        expect(screen.getByTestId('settings-window')).toBeDefined();
+    });
+
+    // §3.4 spells the key `comma`; `super+,` is not parseable, which is exactly the kind of
+    // detail that makes "the client and the daemon resolve the same file" worth testing.
+    // shell-ui.md §5.7: the workspace menu's Labels submenu offers existing presets only, so it
+    // deep-links to the tab where they are created and recolored.
+    it('opens straight to Labels from the sidebar’s “Manage Labels…”', () => {
+        setup();
+        act(() => {
+            fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        });
+        act(() => {
+            fireEvent.mouseEnter(screen.getByText('Labels'));
+        });
+        act(() => {
+            fireEvent.click(screen.getByText('Manage Labels…'));
+        });
+        expect(screen.getByTestId('settings-tab-labels')).toBeDefined();
+    });
+
+    it('yields ⌘, to the user’s own map when they have bound it', () => {
+        setup({ keybindLines: ['super+comma=split_right'] });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+        });
+        expect(screen.queryByTestId('settings-window')).toBeNull();
+    });
+
+    it('closes on Escape', () => {
+        setup();
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+        });
+        act(() => {
+            fireEvent.keyDown(screen.getByTestId('settings-window'), { key: 'Escape' });
+        });
+        expect(screen.queryByTestId('settings-window')).toBeNull();
+    });
+});
+
+describe('the window owns the keyboard while it is open', () => {
+    it('does not let a pane shortcut fire behind the sheet', () => {
+        const h = setup();
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+        });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyD', metaKey: true });
+        });
+        expect(sent(h, 'pane-split')).toHaveLength(0);
+
+        // …and the shortcut works again once the window is gone.
+        act(() => {
+            fireEvent.keyDown(screen.getByTestId('settings-window'), { key: 'Escape' });
+        });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyD', metaKey: true });
+        });
+        expect(sent(h, 'pane-split')).toHaveLength(1);
+    });
+});
+
+describe('a recorded keybinding, end to end', () => {
+    it('records → set-keybinding → settings-changed → the table shows the new chip', () => {
+        const h = setup();
+        act(() => {
+            fireEvent.click(screen.getByTestId('sidebar-settings'));
+        });
+
+        // Before: `open_diff` ships unbound.
+        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
+
+        act(() => {
+            fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
+        });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyJ', ctrlKey: true, altKey: true });
+        });
+
+        expect(sent(h, 'set-keybinding')).toEqual([
+            { command: 'set-keybinding', action: 'open_diff', trigger: 'ctrl+alt+j' }
+        ]);
+        // Nothing has changed locally — the file is the truth, so the row is still empty.
+        expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
+
+        h.push({ keybindLines: ['ctrl+alt+j=open_diff'] });
+
+        expect(screen.queryByTestId('keybinding-empty-open_diff')).toBeNull();
+        expect(screen.getByTestId('keybinding-row-open_diff').textContent).toContain('⌃⌥J');
+        // The reset button woke up with it: the row now differs from its shipped default.
+        expect((screen.getByTestId('keybinding-reset-open_diff') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('rebinding also rebuilds the live dispatcher, not just the table', () => {
+        const h = setup();
+        h.push({ keybindLines: ['ctrl+alt+t=split_right'] });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyT', ctrlKey: true, altKey: true });
+        });
+        expect(sent(h, 'pane-split')).toHaveLength(1);
+    });
+});
+
+describe('the other tabs on the wire', () => {
+    const openTab = (tab: string): void => {
+        act(() => {
+            fireEvent.click(screen.getByTestId('sidebar-settings'));
+        });
+        act(() => {
+            fireEvent.click(screen.getByTestId(`settings-tab-button-${tab}`));
+        });
+    };
+
+    it('recolors a label preset from the daemon’s own list', () => {
+        const h = setup();
+        openTab('labels');
+        // The preset came from the state snapshot, and the workspace wearing it is counted.
+        expect(screen.getByTestId('label-preset-ship').textContent).toContain('1 workspace');
+        act(() => {
+            fireEvent.click(screen.getByTestId('label-color-ship-purple'));
+        });
+        expect(sent(h, 'update-label-preset')).toEqual([
+            { command: 'update-label-preset', id: 'ship', color: 'purple' }
+        ]);
+    });
+
+    it('writes the whole profile set from the snapshot’s parsed profiles', () => {
+        const h = setup();
+        openTab('profiles');
+        expect(screen.getByTestId('profile-row-work')).toBeDefined();
+        act(() => {
+            fireEvent.click(screen.getByTestId('profile-row-work'));
+        });
+        act(() => {
+            fireEvent.click(screen.getByTestId('profile-var-remove-0'));
+        });
+        expect(sent(h, 'set-profiles')).toEqual([
+            { command: 'set-profiles', profiles: [{ name: 'work', env: { NEX_PROFILE: 'work' } }] }
+        ]);
+    });
+
+    it('writes the delete-confirmation flag through set-general-setting', () => {
+        const h = setup();
+        openTab('workspaces');
+        act(() => {
+            fireEvent.click(screen.getByTestId('confirm-delete-toggle'));
+        });
+        expect(sent(h, 'set-general-setting')).toEqual([
+            { command: 'set-general-setting', key: 'confirm-workspace-delete', value: 'false' }
+        ]);
+    });
+
+    it('shows the resolved appearance the daemon sent', () => {
+        setup();
+        openTab('appearance');
+        expect(screen.getByTestId('appearance-bucket').textContent).toContain('dark');
+        expect(screen.getByTestId('appearance-nex-theme').textContent).toContain('Nord');
+    });
+});

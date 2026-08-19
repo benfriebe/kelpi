@@ -52,9 +52,18 @@ export interface HostRegistry {
     readonly hasHost: boolean;
     readonly hostID: string | null;
     readonly hostName: string | null;
+    /**
+     * The window the host renders into, when it declared one (`WsClientInfo.windowID`). It is
+     * what makes a client's geometry report addressable: only the UI running inside THAT window
+     * knows where the host's own views belong (`./geometry.ts`).
+     */
+    readonly hostWindowID: string | null;
     /** Calls awaiting a reply (diagnostics + tests). */
     readonly pending: number;
-    register(transport: HostTransport, options?: { name?: string | undefined }): HostRegistration;
+    register(
+        transport: HostTransport,
+        options?: { name?: string | undefined; windowID?: string | undefined }
+    ): HostRegistration;
     /**
      * Forward one verb. Resolves with the host's `{ok:…}` envelope, or with a daemon-authored
      * failure envelope (`NO_HOST_ERROR`, `HOST_GONE_ERROR`, timeout). It never rejects: a
@@ -96,6 +105,7 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
     let transport: HostTransport | null = null;
     let hostID: string | null = null;
     let hostName: string | null = null;
+    let hostWindowID: string | null = null;
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(error instanceof Error ? error : new Error(String(error)), context);
@@ -117,6 +127,7 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
         transport = null;
         hostID = null;
         hostName = null;
+        hostWindowID = null;
         if (gone === null) return;
         if (writer !== null && reason !== 'unregistered') {
             try {
@@ -150,6 +161,9 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
         get hostName() {
             return hostName;
         },
+        get hostWindowID() {
+            return hostWindowID;
+        },
         get pending() {
             return pending.size;
         },
@@ -163,6 +177,7 @@ export function createHostRegistry(options: HostRegistryOptions = {}): HostRegis
             transport = nextTransport;
             hostID = id;
             hostName = registerOptions.name ?? null;
+            hostWindowID = registerOptions.windowID ?? null;
             send({ type: 'host-registered', role: 'web-pane', hostID: id, superseded });
             options.onHostChanged?.(id);
             return {

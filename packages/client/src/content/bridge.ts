@@ -32,21 +32,59 @@ export const CONTENT_HOST_SOURCE = 'nex-host';
 /** §3.10: how long the copy button shows its checkmark. */
 export const COPY_FEEDBACK_MS = 1500;
 
+/** §3.13 highlight palette — ghostty's search-background / search-selected-background. */
+export const FIND_MATCH_COLOR = '#F2D027';
+export const FIND_CURRENT_COLOR = '#FF7A00';
+
+/** What the host asks the document's `__nexFind` namespace to do (§3.13). */
+export type FindOp = 'search' | 'next' | 'prev' | 'clear';
+
+/** Every operation answers with this; `current` is -1 when there are no matches. */
+export interface FindResult {
+    readonly total: number;
+    readonly current: number;
+}
+
 export type ContentBridgeMessage =
     | { readonly kind: 'ready' }
     | { readonly kind: 'focus' }
     | { readonly kind: 'scroll'; readonly top: number; readonly fraction: number }
     | { readonly kind: 'copy'; readonly text: string }
     | { readonly kind: 'link'; readonly href: string }
-    | { readonly kind: 'toggle-edit' };
+    | { readonly kind: 'toggle-edit' }
+    /** ⌘F inside the preview — the host's key interceptor cannot see through the iframe. */
+    | { readonly kind: 'find-open' }
+    | { readonly kind: 'find-result'; readonly total: number; readonly current: number }
+    /** Right-click inside the preview; the host opens the copy menu at these coordinates. */
+    | { readonly kind: 'context-menu'; readonly x: number; readonly y: number }
+    /** §3.14 "Copy as Rich Text": the cleaned `#content` HTML plus its flattened text. */
+    | { readonly kind: 'rich-text'; readonly token: string; readonly html: string; readonly text: string };
 
 /** Host → frame. `top` wins when both are present (§3.11 same-document reload precedence). */
-export interface ContentHostMessage {
-    readonly source: typeof CONTENT_HOST_SOURCE;
-    readonly kind: 'scroll-to';
-    readonly top?: number | undefined;
-    readonly fraction?: number | undefined;
-}
+export type ContentHostMessage =
+    | {
+          readonly source: typeof CONTENT_HOST_SOURCE;
+          readonly kind: 'scroll-to';
+          readonly top?: number | undefined;
+          readonly fraction?: number | undefined;
+      }
+    | {
+          readonly source: typeof CONTENT_HOST_SOURCE;
+          readonly kind: 'find';
+          readonly op: FindOp;
+          readonly needle?: string | undefined;
+      }
+    | {
+          readonly source: typeof CONTENT_HOST_SOURCE;
+          readonly kind: 'collect-rich-text';
+          readonly token: string;
+      }
+    /** Whether a right-click has a host menu to show; false leaves the native menu alone. */
+    | {
+          readonly source: typeof CONTENT_HOST_SOURCE;
+          readonly kind: 'copy-menu';
+          readonly enabled: boolean;
+      };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -81,6 +119,19 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
         case 'link': {
             const href = data['href'];
             return typeof href === 'string' && href.length > 0 ? { kind: 'link', href } : null;
+        }
+        case 'find-open':
+            return { kind: 'find-open' };
+        case 'find-result':
+            return { kind: 'find-result', total: finite(data['total']), current: finite(data['current']) };
+        case 'context-menu':
+            return { kind: 'context-menu', x: finite(data['x']), y: finite(data['y']) };
+        case 'rich-text': {
+            const token = data['token'];
+            const html = data['html'];
+            const text = data['text'];
+            if (typeof token !== 'string' || typeof html !== 'string') return null;
+            return { kind: 'rich-text', token, html, text: typeof text === 'string' ? text : '' };
         }
         default:
             return null;
@@ -194,12 +245,164 @@ export function contentBridgeScript(paneID: string): string {
   document.addEventListener('mousedown', function () { post({ kind: 'focus' }); }, true);
 
   // ⌘E / ctrl+E inside the preview: the host's key interceptor cannot see it either.
+  // ⌘F is the same problem for the find bar, and Escape closes it from inside the document.
   document.addEventListener('keydown', function (event) {
     if ((event.metaKey || event.ctrlKey) && (event.key === 'e' || event.key === 'E')) {
       event.preventDefault();
       post({ kind: 'toggle-edit' });
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && (event.key === 'f' || event.key === 'F')) {
+      event.preventDefault();
+      post({ kind: 'find-open' });
     }
   });
+
+  // §3.14 — the two copy commands are also reachable from the preview's context menu; the
+  // host owns the menu because the frame has no chrome of its own to draw one in.
+  //
+  // The suppression is CONDITIONAL on the host actually having a menu to show (it says so
+  // with a copy-menu message): a diff pane, or a markdown pane whose load failed, has no copy
+  // commands, and taking the browser's own menu away there would leave a right-click doing
+  // nothing at all.
+  var copyMenuEnabled = false;
+  document.addEventListener('contextmenu', function (event) {
+    if (!copyMenuEnabled) return;
+    event.preventDefault();
+    var box = { left: 0, top: 0 };
+    try { box = document.documentElement.getBoundingClientRect(); } catch (error) { /* detached */ }
+    post({ kind: 'context-menu', x: event.clientX - box.left, y: event.clientY - box.top });
+  });
+
+  // §3.14 "Copy as Rich Text": the RENDERED DOM, minus the front-matter table (it breaks the
+  // RTF conversion) and the copy buttons (they leak in as a stray glyph). Relative URLs are
+  // absolutized against the document's own base so a sibling image survives the paste.
+  var collectRichText = function (token) {
+    var source = document.getElementById('content') || document.body;
+    var clone = source ? source.cloneNode(true) : null;
+    if (!clone) { post({ kind: 'rich-text', token: token, html: '', text: '' }); return; }
+    var drop = clone.querySelectorAll('.frontmatter, .frontmatter-raw, .frontmatter-nested, .code-copy-btn');
+    for (var i = 0; i < drop.length; i += 1) {
+      if (drop[i].parentNode) drop[i].parentNode.removeChild(drop[i]);
+    }
+    var resolve = function (selector, attribute) {
+      var nodes = clone.querySelectorAll(selector);
+      for (var j = 0; j < nodes.length; j += 1) {
+        var raw = nodes[j].getAttribute(attribute);
+        if (!raw) continue;
+        try { nodes[j].setAttribute(attribute, new URL(raw, document.baseURI).href); }
+        catch (error) { /* leave an unresolvable value as-is */ }
+      }
+    };
+    resolve('[src]', 'src');
+    resolve('a[href]', 'href');
+    post({ kind: 'rich-text', token: token, html: clone.innerHTML, text: clone.textContent || '' });
+  };
+
+  // §3.13 — find-in-page. The host owns the overlay and the needle; this owns the marks.
+  var findState = { marks: [], current: -1 };
+  var FIND_STYLE_ID = '__nex-find-style';
+  var ensureFindStyle = function () {
+    if (document.getElementById(FIND_STYLE_ID)) return;
+    var head = document.head || document.documentElement;
+    if (!head) return;
+    var style = document.createElement('style');
+    style.id = FIND_STYLE_ID;
+    style.textContent =
+      'mark.nex-find-match{background:${FIND_MATCH_COLOR};color:#000;border-radius:2px;padding:0}' +
+      'mark.nex-find-match.nex-find-current{background:${FIND_CURRENT_COLOR};color:#000}';
+    head.appendChild(style);
+  };
+  var clearMarks = function () {
+    for (var m = 0; m < findState.marks.length; m += 1) {
+      var mark = findState.marks[m];
+      var parent = mark.parentNode;
+      if (!parent) continue;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      if (parent.normalize) parent.normalize();
+    }
+    findState.marks = [];
+    findState.current = -1;
+  };
+  var reportFind = function () {
+    post({ kind: 'find-result', total: findState.marks.length, current: findState.current });
+  };
+  var showCurrent = function () {
+    for (var i = 0; i < findState.marks.length; i += 1) {
+      var mark = findState.marks[i];
+      if (i === findState.current) mark.classList.add('nex-find-current');
+      else mark.classList.remove('nex-find-current');
+    }
+    var active = findState.marks[findState.current];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'center' });
+  };
+  var SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, MARK: 1 };
+  var textNodes = function () {
+    var found = [];
+    if (!document.body || !document.createTreeWalker) return found;
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var node = walker.nextNode();
+    while (node) {
+      var parent = node.parentNode;
+      var skip = false;
+      while (parent && parent !== document.body) {
+        if (SKIP[parent.nodeName]) { skip = true; break; }
+        parent = parent.parentNode;
+      }
+      if (!skip && node.nodeValue) found.push(node);
+      node = walker.nextNode();
+    }
+    return found;
+  };
+  var search = function (needle) {
+    clearMarks();
+    if (!needle) { reportFind(); return; }
+    ensureFindStyle();
+    // Literal substring with case folding done by the engine: lowercasing the haystack would
+    // drift the offsets for characters whose case change alters their length.
+    var escaped = needle.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+    var nodes = textNodes();
+    for (var n = 0; n < nodes.length; n += 1) {
+      var node = nodes[n];
+      var value = node.nodeValue || '';
+      var pattern = new RegExp(escaped, 'gi');
+      var pieces = document.createDocumentFragment();
+      var last = 0;
+      var match = pattern.exec(value);
+      var any = false;
+      while (match) {
+        if (match[0].length === 0) { pattern.lastIndex += 1; match = pattern.exec(value); continue; }
+        any = true;
+        if (match.index > last) pieces.appendChild(document.createTextNode(value.slice(last, match.index)));
+        var mark = document.createElement('mark');
+        mark.className = 'nex-find-match';
+        mark.appendChild(document.createTextNode(match[0]));
+        pieces.appendChild(mark);
+        findState.marks.push(mark);
+        last = match.index + match[0].length;
+        match = pattern.exec(value);
+      }
+      if (!any) continue;
+      if (last < value.length) pieces.appendChild(document.createTextNode(value.slice(last)));
+      if (node.parentNode) node.parentNode.replaceChild(pieces, node);
+    }
+    findState.current = findState.marks.length > 0 ? 0 : -1;
+    showCurrent();
+    reportFind();
+  };
+  var step = function (delta) {
+    if (findState.marks.length === 0) { reportFind(); return; }
+    findState.current = (findState.current + delta + findState.marks.length) % findState.marks.length;
+    showCurrent();
+    reportFind();
+  };
+  window.__nexFind = {
+    search: search,
+    next: function () { step(1); },
+    prev: function () { step(-1); },
+    clear: function () { clearMarks(); reportFind(); }
+  };
 
   // §3.11 / §9 — continuous position reporting, coalesced to one frame.
   var pending = false;
@@ -219,6 +422,21 @@ export function contentBridgeScript(paneID: string): string {
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data || data.source !== ${JSON.stringify(CONTENT_HOST_SOURCE)}) return;
+    if (data.kind === 'find') {
+      if (data.op === 'search') search(typeof data.needle === 'string' ? data.needle : '');
+      else if (data.op === 'next') step(1);
+      else if (data.op === 'prev') step(-1);
+      else if (data.op === 'clear') { clearMarks(); reportFind(); }
+      return;
+    }
+    if (data.kind === 'collect-rich-text') {
+      collectRichText(typeof data.token === 'string' ? data.token : '');
+      return;
+    }
+    if (data.kind === 'copy-menu') {
+      copyMenuEnabled = data.enabled === true;
+      return;
+    }
     if (data.kind !== 'scroll-to') return;
     var height = document.documentElement ? document.documentElement.scrollHeight : 0;
     var max = Math.max(0, height - window.innerHeight);

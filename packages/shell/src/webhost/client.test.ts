@@ -87,6 +87,7 @@ function harness(
     overrides: {
         call?: (verb: string, args: JsonObject) => Promise<JsonObject>;
         notify?: (verb: string, args: JsonObject) => void;
+        windowID?: string;
     } = {}
 ): Harness {
     const sockets: FakeSocket[] = [];
@@ -99,6 +100,7 @@ function harness(
         location: location('http://127.0.0.1:4242', 'tok'),
         name: 'test-shell',
         version: '9.9.9',
+        ...(overrides.windowID === undefined ? {} : { windowID: overrides.windowID }),
         call: (verb, args) => {
             calls.push({ verb, args });
             return overrides.call?.(verb, args) ?? Promise.resolve({ ok: true, verb });
@@ -158,6 +160,25 @@ describe('handshake', () => {
         expect(hello?.['token']).toBe('tok');
         expect((hello?.['client'] as JsonObject)['capabilities']).toEqual(['web-pane-host']);
         expect(test.client.registered).toBe(false);
+    });
+
+    it('declares the shell window it renders into, when it has one', () => {
+        const test = harness({ windowID: 'WIN-1' });
+        test.client.start();
+        test.latest().emit('open');
+        const client = test.latest().frames('hello')[0]?.['client'] as JsonObject;
+        // Both halves matter: the capability claims the role, the window id is what makes a
+        // geometry report from the UI in that same window addressable back to this host.
+        expect(client['capabilities']).toEqual(['web-pane-host']);
+        expect(client['windowID']).toBe('WIN-1');
+    });
+
+    it('omits the window id entirely for a host with no window', () => {
+        const test = harness();
+        test.client.start();
+        test.latest().emit('open');
+        const client = test.latest().frames('hello')[0]?.['client'] as JsonObject;
+        expect('windowID' in client).toBe(false);
     });
 
     it('reports the registration (and whether it took a role off another shell)', () => {

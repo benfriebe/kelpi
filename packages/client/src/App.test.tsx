@@ -23,13 +23,15 @@ const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
 const PANE_C = 'DDDDDDDD-0000-4000-8000-000000000003';
+const PANE_D = 'DDDDDDDD-0000-4000-8000-000000000004';
+const WEB_TAB = 'EEEEEEEE-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
 
 /**
  * A snapshot payload built by the DAEMON's own store, so the fixture is whatever the daemon
  * would actually send rather than a hand-written guess at the shape.
  */
-function snapshotState(options: { markdown?: boolean; diff?: boolean } = {}): JsonObject {
+function snapshotState(options: { markdown?: boolean; diff?: boolean; web?: boolean } = {}): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({
         type: 'create-workspace',
@@ -57,6 +59,17 @@ function snapshotState(options: { markdown?: boolean; diff?: boolean } = {}): Js
             now: NOW
         });
     }
+    if (options.web === true) {
+        // Real daemon state, sidecar included: the chrome reads `workspace.webPanes[paneID]`.
+        store.dispatch({
+            type: 'open-web-pane',
+            workspaceID: W1,
+            paneID: PANE_D,
+            tabID: WEB_TAB,
+            url: 'https://example.com',
+            now: NOW
+        });
+    }
     return store.getState() as unknown as JsonObject;
 }
 
@@ -71,7 +84,9 @@ interface Harness {
     lastOfType(type: string): Record<string, unknown> | undefined;
 }
 
-function setup(options: { markdown?: boolean; diff?: boolean; snapshot?: boolean } = {}): Harness {
+function setup(
+    options: { markdown?: boolean; diff?: boolean; web?: boolean; snapshot?: boolean } = {}
+): Harness {
     const sockets = createFakeSocketFactory();
     const store = createNexStore();
     const runtime = createNexRuntime({
@@ -92,9 +107,10 @@ function setup(options: { markdown?: boolean; diff?: boolean; snapshot?: boolean
     render(<App runtime={runtime} createRenderer={renderers.factory} />);
 
     if (options.snapshot !== false) {
-        const fixture: { markdown?: boolean; diff?: boolean } = {};
+        const fixture: { markdown?: boolean; diff?: boolean; web?: boolean } = {};
         if (options.markdown === true) fixture.markdown = true;
         if (options.diff === true) fixture.diff = true;
+        if (options.web === true) fixture.web = true;
         act(() => {
             completeHandshake(sockets.last(), { state: snapshotState(fixture) });
         });
@@ -242,37 +258,68 @@ describe('pane bodies', () => {
         expect(screen.getByTestId(`pane-${PANE_A}`)).toBeTruthy();
     });
 
-    it('still renders an honest placeholder for a pane type that lands in a later milestone', () => {
-        const h = setup();
-        const fixture = snapshotState() as unknown as {
-            workspaces: { panes: Record<string, unknown>[] }[];
-        };
+    it('gives a web pane its chrome, with an honest card where the page would be', () => {
+        const h = setup({ web: true });
 
-        act(() => {
-            h.socket().emit({
-                type: 'delta',
-                seq: 1,
-                events: [
-                    {
-                        kind: 'pane-upserted',
-                        workspaceID: W1,
-                        paneID: PANE_C,
-                        lane: 'visible',
-                        index: 1,
-                        pane: {
-                            ...(fixture.workspaces[0]?.panes[0] ?? {}),
-                            id: PANE_C,
-                            type: 'web',
-                            title: 'example.com'
-                        }
-                    }
-                ]
+        // The chrome is ordinary DOM, so every client draws it, URL bar filled from the tab…
+        expect((screen.getByTestId(`web-url-${PANE_D}`) as HTMLInputElement).value).toBe(
+            'https://example.com'
+        );
+        expect(screen.getByTestId(`web-page-${PANE_D}`)).toBeTruthy();
+        // …but this client is a plain browser (no `?shellWindow=`), so nothing can paint the
+        // page itself, and no geometry is reported for a view that will never be placed.
+        expect(screen.getByTestId(`web-external-${PANE_D}`).textContent).toContain('Open in the Nex app');
+        expect(h.sent().some((message) => message['type'] === 'web-geometry-report')).toBe(false);
+        // A single tab hides the strip (§16.4).
+        expect(screen.queryByTestId(`web-tabs-${PANE_D}`)).toBeNull();
+    });
+
+    it('sends the URL bar’s text as `web-navigate`', async () => {
+        const h = setup({ web: true });
+
+        const input = screen.getByTestId(`web-url-${PANE_D}`);
+        fireEvent.focus(input);
+        fireEvent.change(input, { target: { value: 'example.org' } });
+        fireEvent.submit(input);
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'web-navigate',
+                pane_id: PANE_D,
+                url: 'example.org'
             });
         });
+    });
 
-        const placeholder = screen.getByTestId(`pane-placeholder-${PANE_C}`);
-        expect(placeholder.textContent).toContain('Web page');
-        expect(placeholder.textContent).toContain('renders in M6');
+    it('reveals a pane on the daemon’s say-so: workspace first, focus last (§8.5)', async () => {
+        const h = setup();
+
+        act(() => {
+            h.socket().emit({ type: 'reveal-pane', workspaceID: W1, paneID: PANE_A });
+        });
+
+        // The workspace activation is immediate; the focus report lands a tick later, after
+        // the window has restored whatever focus it had.
+        await waitFor(() => {
+            expect(h.lastOfType('focus-report')).toMatchObject({ workspaceID: W1, paneID: PANE_A });
+        });
+    });
+
+    it('ignores a reveal aimed at a different shell window', async () => {
+        const h = setup();
+        const before = h.sent().length;
+        act(() => {
+            h.socket().emit({
+                type: 'reveal-pane',
+                workspaceID: W1,
+                paneID: PANE_A,
+                windowID: 'some-other-window'
+            });
+        });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        // This client is a browser: a window-scoped reveal is not addressed to it, so it says
+        // nothing at all — no focus report, no workspace activation.
+        expect(h.sent().length).toBe(before);
     });
 });
 

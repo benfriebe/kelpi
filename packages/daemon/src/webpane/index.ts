@@ -8,6 +8,7 @@
  *   - `service.ts`  the runtime: host registry + console buffers + picker arms, one per daemon;
  *   - `handlers.ts` the `web-*` control-socket commands (they replace the M2 stubs);
  *   - `host.ts`     the RPC seam (one active host, bounded calls, honest no-host failure);
+ *   - `geometry.ts` client page-area reports → the host's `pane-geometry` notify (embedded views);
  *   - `console.ts` / `ring.ts`  the per-pane ring buffer with seq/dropped semantics;
  *   - `inspect.ts`  payload sanitisation, the result queue and the paste format;
  *   - `resolve.ts`  pane/tab scope resolution with the spec's exact error strings.
@@ -30,6 +31,14 @@ export {
     type ConsoleStore,
     type ConsoleSubscriber
 } from './console.js';
+
+export {
+    GEOMETRY_NOTIFY_VERB,
+    geometryNotifyArgs,
+    parseGeometryRect,
+    type GeometryRect,
+    type GeometryReportInput
+} from './geometry.js';
 
 export {
     ARM_FAILED_ERROR,

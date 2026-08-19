@@ -33,24 +33,39 @@ import { randomUUID } from 'node:crypto';
 import {
     WS_CLIENT_KINDS,
     WS_PROTOCOL_VERSION,
+    WS_SETTINGS_CHANGED_MESSAGE,
+    WS_SETTINGS_COMMANDS,
     decodeWireObject,
     dispatchSequence,
     errorReply,
+    isWsSettingsCommand,
+    parseWorkspaceColor,
     type JsonObject,
     type WsClientInfo,
     type WsClientKind,
+    type WsProfile,
     type WsRejectionCode,
-    type WsRejectionReason
+    type WsRejectionReason,
+    type WsSettingsCommand,
+    type WsSettingsSnapshot
 } from '@nex/protocol';
+
+import { formatIconString, parseIconString } from '@nex/core/codec';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
 import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
-import { groupByID, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
-import type { DaemonState, DomainAction, DomainEvent } from '../store/types.js';
+import {
+    findPaneAnywhere,
+    groupByID,
+    workspaceByID,
+    workspaceContainingVisiblePane
+} from '../store/derived.js';
+import type { DaemonState, DomainAction, DomainEvent, LabelColor } from '../store/types.js';
+import { parseGeometryRect } from '../webpane/geometry.js';
 import type { HostRegistration } from '../webpane/host.js';
 import type { WebPaneService } from '../webpane/service.js';
-import { serializeDomainEvents, serializeState } from './serialize.js';
+import { serializeDomainEvents, serializeLabelPreset, serializeState } from './serialize.js';
 
 export type NexDomainStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
 
@@ -115,6 +130,15 @@ export interface SyncHubOptions {
      * `web-*` command handlers got. Absent = no connection can become a host.
      */
     readonly webPanes?: WebPaneChannel | undefined;
+    /** The pane header's restart button; absent = `restart-pane-agent` says "not available". */
+    readonly agents?: AgentChannel | undefined;
+    /**
+     * M8 settings sync. Supplies the `welcome.settings` payload and backs the three
+     * `settings-*` mutation verbs; absent = `welcome` carries no settings and the verbs answer
+     * "not available" (which is what a daemon booted without a settings service should say
+     * rather than silently pretending the write happened).
+     */
+    readonly settings?: SettingsChannel | undefined;
     /**
      * The token check. The upgrade no longer refuses a bad token (it cannot say why to a
      * browser), so for an anonymous connection this IS the gate. Absent = accept whatever
@@ -189,11 +213,13 @@ function parseClientInfo(value: unknown): WsClientInfo {
     const capabilities = Array.isArray(rawCapabilities)
         ? rawCapabilities.filter((entry): entry is string => typeof entry === 'string')
         : undefined;
+    const windowID = text(value['windowID']);
     return {
         kind: known,
         ...(name !== undefined ? { name } : {}),
         ...(version !== undefined ? { version } : {}),
-        ...(capabilities !== undefined ? { capabilities } : {})
+        ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(windowID !== undefined ? { windowID } : {})
     };
 }
 
@@ -213,8 +239,40 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
  *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace
+ *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon
+ *   set-group-icon       `group_id`, `icon`              → set-group-icon
+ *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
+ *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
+ *   add-label-preset     `name`, `color?`                → add-label-preset
+ *   update-label-preset  `id`, `name?`, `color`          → update-label-preset
+ *   remove-label-preset  `id`                            → remove-label-preset
+ *
+ * The three label-preset verbs are Settings ▸ Labels (app-state-core.md §6.4). The CLI's
+ * `workspace label` back-fill already dispatches `addLabelPreset` daemon-side, but nothing
+ * could RECOLOR or delete a preset over the wire — that is a Settings-window gesture, so it
+ * lands here rather than in `WIRE_COMMANDS`. `color` is the serialized `LabelColor` string the
+ * DB stores: a `WorkspaceColor` raw value (`"blue"`) or a `#rrggbb` hex (§6.2's one-string
+ * encoding), absent = gray. Every rule the reducer enforces (empty/duplicate name is a silent
+ * no-op, a rename into another preset's name is refused, deleting never touches a workspace's
+ * `labels`) is left where it is; this is pure routing.
+ *
+ * `icon` is the flat prefix string the DB stores (`"emoji:🔥"` / `"system:star"`), decoded by
+ * `@nex/core/codec`'s `parseIconString`; `null` (or anything unparseable) clears the icon back
+ * to the letter avatar. An SF Symbol name is therefore an OPAQUE token end to end — a legacy DB
+ * value the client cannot draw still round-trips through a client that never touches it.
  */
-export const WS_ONLY_COMMANDS = ['toggle-zoom', 'set-group-collapsed', 'rename-workspace'] as const;
+export const WS_ONLY_COMMANDS = [
+    'toggle-zoom',
+    'set-group-collapsed',
+    'rename-workspace',
+    'set-workspace-icon',
+    'set-group-icon',
+    'move-workspaces',
+    'clear-pane-status',
+    'add-label-preset',
+    'update-label-preset',
+    'remove-label-preset'
+] as const;
 export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
 
 export function isWsOnlyCommand(command: string): command is WsOnlyCommand {
@@ -225,17 +283,159 @@ function failure(error: string): JsonObject {
     return { ok: false, error };
 }
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * §6.2's one-string `LabelColor` encoding: a `WorkspaceColor` raw value (`"blue"`) or a
+ * `#rrggbb` hex. Absent / unrecognized → gray, which is exactly what the CLI back-fill and a
+ * malformed custom hex already render as (§6.2: "never crashes").
+ */
+export function decodeLabelColorToken(raw: unknown): LabelColor {
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        const named = parseWorkspaceColor(trimmed);
+        if (named !== undefined) return { kind: 'named', color: named };
+        if (HEX_COLOR.test(trimmed)) return { kind: 'custom', hex: trimmed.toLowerCase() };
+    }
+    return { kind: 'named', color: 'gray' };
+}
+
+/** The reply shape all three preset verbs share: the post-mutation list, wire-serialized. */
+function presetsReply(store: NexDomainStore, extra: JsonObject): JsonObject {
+    return {
+        ok: true,
+        ...extra,
+        label_presets: store.getState().labelPresets.map(serializeLabelPreset)
+    };
+}
+
 /**
  * Executes one WS-only command against the store and returns the reply object. Pure routing +
  * dispatch: every mutation is an existing `DomainAction`, so the delta stream, persistence and
  * the CLI's view of the world all stay identical to a GUI-driven change.
  */
+export interface WsOnlyCommandOptions {
+    /** Epoch-ms clock for the actions that stamp one (`clear-pane-status`). */
+    readonly now?: (() => number) | undefined;
+}
+
 export function handleWsOnlyCommand(
     store: NexDomainStore,
     command: WsOnlyCommand,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    options: WsOnlyCommandOptions = {}
 ): JsonObject {
     const state = store.getState();
+
+    if (command === 'set-workspace-icon' || command === 'set-group-icon') {
+        const workspaceScoped = command === 'set-workspace-icon';
+        const id = text(payload[workspaceScoped ? 'workspace_id' : 'group_id']);
+        if (id === undefined) {
+            return failure(`${command} requires ${workspaceScoped ? 'workspace_id' : 'group_id'}`);
+        }
+        const exists = workspaceScoped ? workspaceByID(state, id) !== null : groupByID(state, id) !== null;
+        if (!exists) return failure(`no ${workspaceScoped ? 'workspace' : 'group'} matches '${id}'`);
+        // Anything that is not a well-formed icon string clears the icon; that is the
+        // "Reset to Letter" menu item and the only way back to the avatar.
+        const raw = payload['icon'];
+        const icon = typeof raw === 'string' ? parseIconString(raw) : null;
+        store.dispatch(
+            workspaceScoped
+                ? { type: 'set-workspace-icon', id, icon }
+                : { type: 'set-group-icon', id, icon }
+        );
+        return {
+            ok: true,
+            ...(workspaceScoped ? { workspace_id: id } : { group_id: id }),
+            icon: icon === null ? null : formatIconString(icon)
+        };
+    }
+
+    if (command === 'add-label-preset') {
+        const name = typeof payload['name'] === 'string' ? payload['name'].trim() : '';
+        if (name === '') return failure('add-label-preset requires name');
+        // §6.4: a duplicate is a SILENT no-op in the reducer (that is what makes the CLI
+        // back-fill safe), so the caller is told plainly rather than being left to diff lists.
+        if (state.labelPresets.some((preset) => preset.name === name)) {
+            return failure(`label preset '${name}' already exists`);
+        }
+        store.dispatch({ type: 'add-label-preset', name, color: decodeLabelColorToken(payload['color']) });
+        return presetsReply(store, { name });
+    }
+
+    if (command === 'update-label-preset') {
+        const id = text(payload['id']);
+        if (id === undefined) return failure('update-label-preset requires id');
+        const preset = state.labelPresets.find((candidate) => candidate.name === id);
+        if (preset === undefined) return failure(`no label preset matches '${id}'`);
+        // Recolor-only is the common call: `name` absent keeps the current one.
+        const name = typeof payload['name'] === 'string' ? payload['name'].trim() : preset.name;
+        if (name === '') return failure('update-label-preset requires a non-empty name');
+        if (name !== id && state.labelPresets.some((candidate) => candidate.name === name)) {
+            return failure(`label preset '${name}' already exists`);
+        }
+        const color =
+            payload['color'] === undefined ? preset.color : decodeLabelColorToken(payload['color']);
+        store.dispatch({ type: 'update-label-preset', id, name, color });
+        return presetsReply(store, { id, name });
+    }
+
+    if (command === 'remove-label-preset') {
+        const id = text(payload['id']);
+        if (id === undefined) return failure('remove-label-preset requires id');
+        if (!state.labelPresets.some((preset) => preset.name === id)) {
+            return failure(`no label preset matches '${id}'`);
+        }
+        // §6.4: removal never touches a workspace's `labels` — the string keeps existing and
+        // its chip simply renders neutral. That is why no workspace is inspected here.
+        store.dispatch({ type: 'remove-label-preset', id });
+        return presetsReply(store, { id });
+    }
+
+    if (command === 'move-workspaces') {
+        const raw = payload['workspace_ids'];
+        const ids = Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === 'string') : [];
+        if (ids.length === 0) return failure('move-workspaces requires workspace_ids');
+        const unknown = ids.find((id) => workspaceByID(state, id) === null);
+        if (unknown !== undefined) return failure(`no workspace matches '${unknown}'`);
+        const groupID = text(payload['group_id']) ?? null;
+        if (groupID !== null && groupByID(state, groupID) === null) {
+            return failure(`no group matches '${groupID}'`);
+        }
+        const index = count(payload['index']);
+        // ONE dispatch for the whole selection: a multi-row sidebar drag must land as a single
+        // atomic move, not N moves each of which the next one re-indexes (shell-ui.md §5.5).
+        store.dispatch({
+            type: 'move-workspaces-to-group',
+            ids,
+            groupID,
+            ...(index === undefined ? {} : { index })
+        });
+        return { ok: true, workspace_ids: ids, group_id: groupID, index: index ?? null };
+    }
+
+    if (command === 'clear-pane-status') {
+        const paneID = text(payload['pane_id']);
+        if (paneID === undefined) return failure('clear-pane-status requires pane_id');
+        const found = findPaneAnywhere(state, paneID);
+        if (found === null) return failure(`no pane matches '${paneID}'`);
+        // The 600 ms focus-dwell acknowledgment (agent-lifecycle.md §5.8): the timer is a
+        // client concern, the mutation is not, so the client reports and the daemon decides.
+        store.dispatch({
+            type: 'pane-agent-event',
+            paneID,
+            event: { type: 'clearPaneStatus' },
+            now: (options.now ?? Date.now)(),
+            workspaceID: found.workspaceID
+        });
+        const after = findPaneAnywhere(store.getState(), paneID);
+        return {
+            ok: true,
+            pane_id: paneID,
+            workspace_id: found.workspaceID,
+            status: after?.pane.status ?? 'idle'
+        };
+    }
 
     if (command === 'toggle-zoom') {
         const paneID = text(payload['pane_id']);
@@ -289,6 +489,7 @@ export function handleWsOnlyCommand(
  *   content-set-text     `pane_id`, `text`  → `{ok, pane_id, state}` (the edit buffer)
  *   diff-refresh         `pane_id`          → `{ok, pane_id, state}` (re-runs git)
  *   markdown-save        `pane_id`          → `{ok, pane_id, state}` (flush the debounce)
+ *   content-set-font-size `pane_id`, `size` → `{ok, pane_id, state}` (§3.16, re-render only)
  *
  * `content-updated` (`{type, paneID, state}`) goes ONLY to sessions subscribed to that pane.
  */
@@ -298,7 +499,8 @@ export const CONTENT_COMMANDS = [
     'markdown-set-mode',
     'content-set-text',
     'diff-refresh',
-    'markdown-save'
+    'markdown-save',
+    'content-set-font-size'
 ] as const;
 export type ContentCommand = (typeof CONTENT_COMMANDS)[number];
 
@@ -319,6 +521,39 @@ export interface ContentChannel {
     setText(paneID: string, text: string): Promise<ContentPaneState>;
     save(paneID: string): Promise<ContentPaneState>;
     refresh(paneID: string): Promise<ContentPaneState>;
+    setFontSize(paneID: string, size: number): Promise<ContentPaneState>;
+}
+
+// ── agent restart (WS-only) ─────────────────────────────────────────────────────────
+
+/**
+ * `restart-pane-agent` — the pane header's restart button.
+ *
+ * It is WS-only for the usual reason (a direct-manipulation gesture the CLI never grew a verb
+ * for) and lives on its own channel rather than in `handleWsOnlyCommand` because, unlike every
+ * other WS-only verb, it is not a store mutation: it types `claude --resume <id>` /
+ * `codex resume <id>` into the pane's PTY through `TerminalInput`, with the session id passed
+ * through `isSafeSessionID` first — the same allowlist the boot-time resume applies, for the
+ * same reason (the id came off a local socket and is about to reach a shell).
+ */
+export const AGENT_COMMANDS = ['restart-pane-agent'] as const;
+export type AgentCommand = (typeof AGENT_COMMANDS)[number];
+
+export function isAgentCommand(command: string): command is AgentCommand {
+    return (AGENT_COMMANDS as readonly string[]).includes(command);
+}
+
+export interface AgentRestartResult {
+    readonly ok: boolean;
+    readonly error?: string | undefined;
+    readonly paneID?: string | undefined;
+    readonly workspaceID?: string | undefined;
+    readonly agent?: string | undefined;
+    readonly command?: string | undefined;
+}
+
+export interface AgentChannel {
+    restart(paneID: string): AgentRestartResult;
 }
 
 // ── web panes (M6) ──────────────────────────────────────────────────────────────────
@@ -339,21 +574,145 @@ export interface ContentChannel {
  */
 export type WebPaneChannel = Pick<
     WebPaneService,
-    'registerHost' | 'settleHostReply' | 'handleHostEvent' | 'subscribeConsole' | 'console'
+    | 'registerHost'
+    | 'settleHostReply'
+    | 'handleHostEvent'
+    | 'subscribeConsole'
+    | 'console'
+    | 'notifyGeometry'
+    | 'call'
 >;
 
-export const WEB_COMMANDS = ['web-console-subscribe', 'web-console-unsubscribe'] as const;
+/**
+ * `web-devtools` joins the console pair for the same reason they are here: it is a GUI gesture
+ * (the chrome's `</>` button, web-pane.md §16.5) with no CLI equivalent, so giving it a wire
+ * verb would mean owing the Swift CLI a command it will never send. It forwards straight to the
+ * host — the only process with a `webContents` to open dev tools on.
+ */
+export const WEB_COMMANDS = [
+    'web-console-subscribe',
+    'web-console-unsubscribe',
+    'web-devtools'
+] as const;
 export type WebCommand = (typeof WEB_COMMANDS)[number];
 
 export function isWebCommand(command: string): command is WebCommand {
     return (WEB_COMMANDS as readonly string[]).includes(command);
 }
 
+/** The client → daemon report that carries an embedded web pane's page-area rect. */
+export const WEB_GEOMETRY_REPORT_MESSAGE = 'web-geometry-report';
+
+/** Client → daemon "take the user to this pane", and the daemon's fan-out of it. */
+export const REVEAL_REQUEST_MESSAGE = 'reveal-request';
+export const REVEAL_PANE_MESSAGE = 'reveal-pane';
+
 /** The message type carrying one streamed console line to a subscribed client. */
 export const WEB_CONSOLE_LINE_MESSAGE = 'web-console-line';
 
 /** Capability token a `hello` can carry to claim the host role without a second message. */
 export const WEB_HOST_CAPABILITY = 'web-pane-host';
+
+// ── settings (M8) ───────────────────────────────────────────────────────────────────
+
+/**
+ * The settings verbs. Same reasoning as `WS_ONLY_COMMANDS` (direct-manipulation gestures the
+ * CLI has no vocabulary for, matched before `decodeWireObject`), with one rule of their own:
+ * **they write through the config file**. Nothing is kept in memory here — the service applies
+ * a `@nex/core/config` writer to the file's current contents, re-reads it, and the reply
+ * carries the re-read snapshot. That is why a hand-edit and a UI edit cannot disagree.
+ *
+ *   set-keybinding       `action`, `trigger` (config string, or null to unbind the action)
+ *   reset-keybindings    `action` (or null / absent for the whole map)
+ *   set-general-setting  `key`, `value`
+ *
+ * Every reply is `{ok:true, settings}` so a client can apply the result without waiting for
+ * the `settings-changed` broadcast that follows.
+ */
+export { WS_SETTINGS_COMMANDS, isWsSettingsCommand, type WsSettingsCommand };
+
+/** The message type carrying a settings change to every attached client. */
+export { WS_SETTINGS_CHANGED_MESSAGE, type WsSettingsSnapshot };
+
+/** The slice of `SettingsService` the sync hub uses (so tests can stub it). */
+export interface SettingsChannel {
+    readonly snapshot: WsSettingsSnapshot;
+    setKeybinding(action: string, trigger: string | null): WsSettingsSnapshot;
+    resetKeybindings(action: string | null): WsSettingsSnapshot;
+    setGeneralSetting(key: string, value: string): WsSettingsSnapshot;
+    setProfiles(profiles: readonly WsProfile[]): WsSettingsSnapshot;
+}
+
+/**
+ * `set-profiles`'s payload → the writer's input. Anything that is not a `{name, env}` object of
+ * strings is REJECTED rather than coerced: the write replaces the file's whole profile section,
+ * so a half-understood payload would silently delete a user's definitions.
+ */
+export function decodeProfilesPayload(raw: unknown): readonly WsProfile[] | null {
+    if (!Array.isArray(raw)) return null;
+    const profiles: WsProfile[] = [];
+    for (const entry of raw) {
+        if (!isRecord(entry)) return null;
+        const name = entry['name'];
+        if (typeof name !== 'string') return null;
+        const rawEnv = entry['env'];
+        const env: Record<string, string> = {};
+        if (rawEnv !== undefined && rawEnv !== null) {
+            if (!isRecord(rawEnv)) return null;
+            for (const [key, value] of Object.entries(rawEnv)) {
+                if (typeof value !== 'string') return null;
+                env[key] = value;
+            }
+        }
+        profiles.push({ name, env });
+    }
+    return profiles;
+}
+
+/**
+ * Executes one settings verb and returns the reply object. Errors from the service (unknown
+ * action, unparseable trigger, unwritable key, a failed write) become `{ok:false,error}` with
+ * the service's own wording — these are user-fixable mistakes, not daemon faults.
+ */
+export function handleSettingsCommand(
+    settings: SettingsChannel,
+    command: WsSettingsCommand,
+    payload: Record<string, unknown>
+): JsonObject {
+    const optionalText = (value: unknown): string | null =>
+        typeof value === 'string' && value.length > 0 ? value : null;
+
+    try {
+        if (command === 'set-keybinding') {
+            const action = text(payload['action']);
+            if (action === undefined) return failure('set-keybinding requires action');
+            const next = settings.setKeybinding(action, optionalText(payload['trigger']));
+            return { ok: true, settings: next as unknown as JsonObject };
+        }
+        if (command === 'reset-keybindings') {
+            const next = settings.resetKeybindings(optionalText(payload['action']));
+            return { ok: true, settings: next as unknown as JsonObject };
+        }
+        if (command === 'set-profiles') {
+            const profiles = decodeProfilesPayload(payload['profiles']);
+            if (profiles === null) return failure('set-profiles requires profiles: [{name, env}]');
+            return { ok: true, settings: settings.setProfiles(profiles) as unknown as JsonObject };
+        }
+        const key = text(payload['key']);
+        if (key === undefined) return failure('set-general-setting requires key');
+        const raw = payload['value'];
+        const value =
+            typeof raw === 'string'
+                ? raw
+                : typeof raw === 'number' || typeof raw === 'boolean'
+                  ? String(raw)
+                  : undefined;
+        if (value === undefined) return failure('set-general-setting requires value');
+        return { ok: true, settings: settings.setGeneralSetting(key, value) as unknown as JsonObject };
+    } catch (error) {
+        return failure(toError(error).message);
+    }
+}
 
 /** A `ReplyHandle` whose lines ride the WS channel as `command-reply` messages. */
 class WsReplyHandle implements ReplyHandle {
@@ -444,6 +803,14 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private hostRegistration: HostRegistration | null = null;
         /** paneID → unsubscribe for this connection's console streams. */
         private readonly consoleSubs = new Map<string, () => void>();
+        /**
+         * Web panes this connection has placed a view for (`web-geometry-report`). A client
+         * that goes away without saying "hidden" would otherwise leave a browser view parked
+         * over a window nobody is driving, so its panes are released on close.
+         */
+        private readonly geometryPanes = new Set<string>();
+        /** The shell window this connection claims to be; needed to release on its behalf. */
+        private geometryWindowID: string | null = null;
         /** Fires when the connection has held a socket open without ever saying hello. */
         private helloTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -529,13 +896,19 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case 'command':
                     this.command(parsed);
                     return;
+                case WEB_GEOMETRY_REPORT_MESSAGE:
+                    this.geometryReport(parsed);
+                    return;
+                case REVEAL_REQUEST_MESSAGE:
+                    this.revealRequest(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
                     return;
                 }
                 case 'host-register':
-                    this.registerHost(text(parsed['name']));
+                    this.registerHost(text(parsed['name']), text(parsed['windowID']));
                     return;
                 case 'host-unregister':
                     this.releaseHost();
@@ -586,8 +959,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             }
             this.contentSubs.clear();
             this.contentEpoch.clear();
-            // A dropped host must free the slot (a later shell can then take over) and every
-            // console follower must stop writing into a socket that is gone.
+            // A dropped host must free the slot (a later shell can then take over), a dropped
+            // VIEWER must give back the browser views it had placed, and every console follower
+            // must stop writing into a socket that is gone.
+            this.releaseGeometry();
             this.releaseHost();
             for (const unsubscribe of this.consoleSubs.values()) {
                 try {
@@ -603,7 +978,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
         // ── web-pane host (M6) ──────────────────────────────────────────────
 
-        private registerHost(name: string | undefined): void {
+        private registerHost(name: string | undefined, windowID?: string | undefined): void {
             const channel = options.webPanes;
             if (channel === undefined) return;
             // Re-registering on the same connection is idempotent from the caller's side: the
@@ -620,7 +995,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                             this.send(message);
                         }
                     },
-                    name === undefined ? {} : { name }
+                    {
+                        ...(name === undefined ? {} : { name }),
+                        // The window this host renders into: what a client's geometry report is
+                        // matched against so a host only ever moves views in its OWN window.
+                        ...(windowID === undefined ? {} : { windowID })
+                    }
                 );
             } catch (error) {
                 report(error, 'host-register');
@@ -682,7 +1062,13 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     version: options.daemon.version,
                     build: options.daemon.build,
                     pid: options.daemon.pid ?? process.pid
-                }
+                },
+                // M8: settings ride the handshake, not the snapshot — they are not domain
+                // state and must not enter the delta-replayed mirror (`ws/settings.ts`).
+                // Every reconnect re-sends them, so a client is never rendering without.
+                ...(options.settings !== undefined
+                    ? { settings: options.settings.snapshot as unknown as JsonObject }
+                    : {})
             });
 
             // `resumeFromSeq` is accepted by the protocol but cannot be served safely yet:
@@ -700,7 +1086,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.
             if (this.client?.capabilities?.includes(WEB_HOST_CAPABILITY) === true) {
-                this.registerHost(this.client.name);
+                this.registerHost(this.client.name, this.client.windowID);
             }
         }
 
@@ -759,6 +1145,87 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (workspaceID !== undefined && this.documentVisible) this.setActiveWorkspace(workspaceID);
         }
 
+        /**
+         * `web-geometry-report` → the host's `pane-geometry` notify.
+         *
+         * A pure forward: the daemon owns no pixels and does no layout, it only tags the report
+         * with who sent it (`./webpane/geometry.ts`) so the host can tell its own window's
+         * geometry from a remote browser's. Nothing is stored — a report is a fact about
+         * *right now*, and a stale one would place a view against a window that has moved.
+         */
+        private geometryReport(message: Record<string, unknown>): void {
+            const channel = options.webPanes;
+            if (channel === undefined) return;
+            const paneID = text(message['paneID']);
+            if (paneID === undefined) return;
+            const visible = message['visible'] === true;
+            const shellWindowID = text(message['shellWindowID']);
+            if (shellWindowID !== undefined) this.geometryWindowID = shellWindowID;
+            if (visible) this.geometryPanes.add(paneID);
+            else this.geometryPanes.delete(paneID);
+            try {
+                channel.notifyGeometry({
+                    paneID,
+                    ...(text(message['tabID']) !== undefined ? { tabID: text(message['tabID']) } : {}),
+                    rect: parseGeometryRect(message['rect']),
+                    visible,
+                    devicePixelRatio: count(message['devicePixelRatio']) ?? 1,
+                    ...(shellWindowID === undefined ? {} : { shellWindowID }),
+                    clientID: this.clientID
+                });
+            } catch (error) {
+                report(error, 'web-geometry-report');
+            }
+        }
+
+        /**
+         * The reporting client vanished (tab closed, reload, crash): every view it placed goes
+         * back to the host's holder. Without this a stale page would sit over a window whose
+         * UI is gone — and the next client's first report cannot undo a view it never placed.
+         */
+        private releaseGeometry(): void {
+            const channel = options.webPanes;
+            if (channel === undefined || this.geometryPanes.size === 0) return;
+            const panes = [...this.geometryPanes];
+            this.geometryPanes.clear();
+            for (const paneID of panes) {
+                try {
+                    channel.notifyGeometry({
+                        paneID,
+                        rect: { x: 0, y: 0, w: 0, h: 0 },
+                        visible: false,
+                        devicePixelRatio: 1,
+                        ...(this.geometryWindowID === null ? {} : { shellWindowID: this.geometryWindowID }),
+                        clientID: this.clientID
+                    });
+                } catch (error) {
+                    report(error, 'web-geometry-release');
+                }
+            }
+        }
+
+        /**
+         * `reveal-request` → a `reveal-pane` fan-out.
+         *
+         * The Electron shell raises the window itself but cannot switch workspace or move focus
+         * — that is the client's job, and agent-lifecycle.md §8.5 pins the ORDER (workspace
+         * first, pane last) because the window restoring its old first responder otherwise
+         * reverts the selection. So the shell asks, every client hears, and the one running in
+         * the named window acts.
+         */
+        private revealRequest(message: Record<string, unknown>): void {
+            const workspaceID = text(message['workspaceID']);
+            const paneID = text(message['paneID']);
+            if (workspaceID === undefined || paneID === undefined) return;
+            const windowID = text(message['windowID']);
+            revealPane({
+                type: REVEAL_PANE_MESSAGE,
+                workspaceID,
+                paneID,
+                ...(windowID === undefined ? {} : { windowID })
+            });
+        }
+
         private setActiveWorkspace(workspaceID: string): void {
             if (this.activeWorkspaceID === workspaceID) return;
             this.activeWorkspaceID = workspaceID;
@@ -803,10 +1270,29 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.webCommand(id, name, payload);
                     return;
                 }
+                if (name !== undefined && isAgentCommand(name)) {
+                    this.agentCommand(id, payload);
+                    return;
+                }
+                if (name !== undefined && isWsSettingsCommand(name)) {
+                    const channel = options.settings;
+                    let reply: JsonObject;
+                    if (channel === undefined) reply = failure('settings are not available');
+                    else {
+                        try {
+                            reply = handleSettingsCommand(channel, name, payload);
+                        } catch (error) {
+                            report(error, `ws-command ${name}`);
+                            reply = { ...errorReply('handler failed') };
+                        }
+                    }
+                    this.send({ type: 'command-reply', id, reply });
+                    return;
+                }
                 if (name !== undefined && isWsOnlyCommand(name)) {
                     let reply: JsonObject;
                     try {
-                        reply = handleWsOnlyCommand(store, name, payload);
+                        reply = handleWsOnlyCommand(store, name, payload, { now });
                     } catch (error) {
                         report(error, `ws-command ${name}`);
                         reply = { ...errorReply('handler failed') };
@@ -847,6 +1333,38 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
             // Fire-and-forget verbs get an acknowledgement so the client's promise settles.
             if (!answered) this.send({ type: 'command-reply', id, reply: { ok: true } });
+        }
+
+        // ── agent restart ───────────────────────────────────────────────────────────
+
+        private agentCommand(id: string, payload: Record<string, unknown>): void {
+            const channel = options.agents;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('agent restart is not available') });
+                return;
+            }
+            const paneID = text(payload['pane_id']);
+            if (paneID === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('restart-pane-agent requires pane_id') });
+                return;
+            }
+            let result: AgentRestartResult;
+            try {
+                result = channel.restart(paneID);
+            } catch (error) {
+                report(error, 'restart-pane-agent');
+                result = { ok: false, error: 'handler failed' };
+            }
+            const reply: JsonObject = result.ok
+                ? {
+                      ok: true,
+                      pane_id: result.paneID ?? paneID,
+                      ...(result.workspaceID === undefined ? {} : { workspace_id: result.workspaceID }),
+                      ...(result.agent === undefined ? {} : { agent: result.agent }),
+                      ...(result.command === undefined ? {} : { command: result.command })
+                  }
+                : failure(result.error ?? 'restart failed');
+            this.send({ type: 'command-reply', id, reply });
         }
 
         // ── content panes (M5) ──────────────────────────────────────────────────────
@@ -950,6 +1468,15 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     settle(content.setText(paneID, value));
                     return;
                 }
+                case 'content-set-font-size': {
+                    const size = count(payload['size']);
+                    if (size === undefined) {
+                        this.contentReply(id, failure('content-set-font-size requires size'));
+                        return;
+                    }
+                    settle(content.setFontSize(paneID, size));
+                    return;
+                }
                 case 'diff-refresh':
                     settle(content.refresh(paneID));
                     return;
@@ -980,6 +1507,27 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     id,
                     reply: failure(`${command} requires pane_id`)
                 });
+                return;
+            }
+
+            if (command === 'web-devtools') {
+                // Straight through to the host — the daemon has no `webContents` to open dev
+                // tools on, and the client already knows which tab it means (§16.5). `open`
+                // absent means "toggle", which is what the chrome button does.
+                const tabID = text(payload['tab_id']);
+                void channel
+                    .call('devtools', {
+                        paneID,
+                        ...(tabID === undefined ? {} : { tabID }),
+                        ...(typeof payload['open'] === 'boolean' ? { open: payload['open'] } : {})
+                    })
+                    .then((reply) => {
+                        this.send({
+                            type: 'command-reply',
+                            id,
+                            reply: { ...reply, pane_id: paneID }
+                        });
+                    });
                 return;
             }
 
@@ -1056,6 +1604,19 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             if (this.focusedPaneID !== paneID) return false;
             // An empty visibility set means the client never reported one; trust focus.
             return this.visiblePaneIDs.size === 0 || this.visiblePaneIDs.has(paneID);
+        }
+    }
+
+    /**
+     * Fan a reveal out to every attached client. Deliberately unfiltered here: `windowID`
+     * scoping is the CLIENT's check (it knows which window it is running in), so a browser
+     * that is not the named window ignores the message and the daemon needs no map of which
+     * connection lives in which window.
+     */
+    function revealPane(message: JsonObject): void {
+        if (closed) return;
+        for (const session of sessions) {
+            if (session.ready) session.send(message);
         }
     }
 

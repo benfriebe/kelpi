@@ -39,6 +39,11 @@ export interface PaletteItem {
     readonly workspaceColor: WorkspaceColor | null;
     /** Command items only. */
     readonly run?: (() => void) | undefined;
+    /**
+     * A `keyTriggerDisplayString` hint (`⌘P`). Command items whose action the binding map
+     * covers carry one; workspace/pane rows never do — there is no key for "this workspace".
+     */
+    readonly shortcut?: string | undefined;
 }
 
 /** §10.1 icon per pane type. */

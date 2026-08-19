@@ -61,6 +61,13 @@ export interface TerminalPaneProps {
     readonly visible: boolean;
     /** Explicit palette; otherwise resolved from the `--nex-term-*` custom properties. */
     readonly theme?: TerminalTheme | undefined;
+    /**
+     * Fill painted behind the engine canvas. Defaults to the theme's background (an opaque
+     * hex, which is what the engines require), but assembly passes the ghostty background at
+     * the ghostty OPACITY — `rgba(r,g,b,a)` — so a sub-1.0 config composites through to the
+     * window exactly as it does for markdown/diff panes (content-panes.md §3.8).
+     */
+    readonly background?: string | undefined;
     /** A click in the pane wants focus; assembly turns this into a daemon focus report. */
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly fontFamily?: string | undefined;
@@ -220,7 +227,13 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             streamRef.current = null;
             geometryRef.current = null;
         };
-    }, [paneID, ptyApi, clearResizeTimer, syncGeometry]);
+        // `fontFamily` / `fontSize` are in the deps on purpose: the engines take a font at
+        // construction and the adapter's xterm-compatible subset has no live setter, so a
+        // ghostty-config font change rebuilds the engine. That is cheap and safe — the daemon
+        // owns the VT, so re-attaching replays the screen (this is the same path a workspace
+        // eviction takes). Settings arrive on `welcome`, BEFORE the first snapshot renders a
+        // pane, so connecting never costs a rebuild.
+    }, [paneID, ptyApi, clearResizeTimer, syncGeometry, props.fontFamily, props.fontSize]);
 
     // ── resize observation ──────────────────────────────────────────────────────────
     useEffect(() => {
@@ -290,7 +303,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         current.onFocusRequest?.(current.paneID);
     }, []);
 
-    const background = theme?.background ?? 'var(--nex-term-bg, #0A0A0C)';
+    const background = props.background ?? theme?.background ?? 'var(--nex-term-bg, #0A0A0C)';
 
     return (
         <div

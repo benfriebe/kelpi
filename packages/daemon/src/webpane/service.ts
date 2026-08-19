@@ -28,6 +28,7 @@ import {
     type ConsoleStore,
     type ConsoleSubscriber
 } from './console.js';
+import { GEOMETRY_NOTIFY_VERB, geometryNotifyArgs, type GeometryReportInput } from './geometry.js';
 import {
     createHostRegistry,
     type HostCallOptions,
@@ -73,7 +74,10 @@ export interface WebPaneService {
     /** True when a host is attached (handlers use it to answer `no web pane host connected`). */
     readonly hasHost: boolean;
     /** Claim the web-pane host role for this connection, and replay pane state onto it. */
-    registerHost(transport: HostTransport, options?: { name?: string | undefined }): HostRegistration;
+    registerHost(
+        transport: HostTransport,
+        options?: { name?: string | undefined; windowID?: string | undefined }
+    ): HostRegistration;
     /** Route a `host-rpc-reply`. */
     settleHostReply(id: string, reply: JsonObject): void;
     /** Route a `host-event` (console line, URL/title change, picked element, closed tab). */
@@ -82,6 +86,14 @@ export interface WebPaneService {
     call(verb: string, args: JsonObject, options?: HostCallOptions): Promise<JsonObject>;
     /** Fire-and-forget mirror of daemon-owned state. */
     notify(verb: string, args: JsonObject): void;
+    /**
+     * Forward one client `web-geometry-report` to the host as `pane-geometry` (§3.1).
+     *
+     * Silently dropped when there is no host (there are no views to move) or when the pane is
+     * not a web pane — a client that reports geometry for something else is confused, and a
+     * stream of them must not become host traffic.
+     */
+    notifyGeometry(report: GeometryReportInput): void;
     subscribeConsole(paneID: string, subscriber: ConsoleSubscriber): () => void;
     close(): void;
 }
@@ -294,6 +306,14 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
         notify(verb, args) {
             host.notify(verb, args);
+        },
+
+        notifyGeometry(report) {
+            if (!host.hasHost) return;
+            // With a store attached, only real web panes are forwarded: geometry is a hot path
+            // (every divider drag, every resize) and a bogus paneID would be pure host churn.
+            if (store !== undefined && webPaneOf(report.paneID) === null) return;
+            host.notify(GEOMETRY_NOTIFY_VERB, geometryNotifyArgs(report, host.hostWindowID));
         },
 
         subscribeConsole(paneID, subscriber) {

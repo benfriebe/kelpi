@@ -666,6 +666,159 @@ export class CommandClient {
         );
     }
 
+    /**
+     * "Change Icon" (shell-ui.md §5.6). `icon` is the flat DB spelling — `"emoji:🔥"` or
+     * `"system:<sf-symbol>"` — and `null` resets to the letter avatar. The client never has to
+     * understand an SF Symbol name to send one back, which is what keeps a legacy DB value
+     * round-tripping through a client that cannot draw it (PLAN.md).
+     */
+    setWorkspaceIcon(input: { workspaceID: string; icon: string | null }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-workspace-icon', { workspace_id: input.workspaceID, icon: input.icon }),
+            options ?? {}
+        );
+    }
+
+    setGroupIcon(input: { groupID: string; icon: string | null }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-group-icon', { group_id: input.groupID, icon: input.icon }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * A multi-row sidebar drag: ONE atomic move for the whole selection (§5.5). Sending N
+     * `workspace-move`s instead would re-index between each one, so the rows land scrambled.
+     */
+    moveWorkspaces(
+        input: { workspaceIDs: readonly string[]; groupID?: string | null; index?: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('move-workspaces', {
+                workspace_ids: [...input.workspaceIDs],
+                group_id: input.groupID ?? undefined,
+                index: input.index
+            }),
+            options ?? {}
+        );
+    }
+
+    /** The 600 ms focus-dwell acknowledgment (agent-lifecycle.md §5.8). */
+    clearPaneStatus(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('clear-pane-status', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /** Pane header restart button: the daemon types the pane's resume command into its PTY. */
+    restartPaneAgent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('restart-pane-agent', { pane_id: input.paneID }), options ?? {});
+    }
+
+    // ── label presets (Settings ▸ Labels) ──────────────────────────────────────────
+    //
+    // app-state-core.md §6.4, over the same WS-only channel. `color` is §6.2's one-string
+    // encoding: a `WorkspaceColor` raw value (`"blue"`) or a `#rrggbb` hex; absent = gray, the
+    // default the CLI's `workspace label` back-fill already uses. The list itself is daemon
+    // STATE (`labelPresets` on the mirror, advanced by a `label-presets-changed` delta), so
+    // these verbs only push a change — nothing here caches a list.
+
+    /** Append a preset. The daemon refuses a duplicate name rather than no-op'ing silently. */
+    addLabelPreset(
+        input: { name: string; color?: string | undefined },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(wirePayload('add-label-preset', { name: input.name, color: input.color }), options ?? {});
+    }
+
+    /**
+     * Recolor and/or rename. `id` is the preset's CURRENT name (its identity); `name` absent
+     * keeps it, which is what a palette swatch click sends.
+     */
+    updateLabelPreset(
+        input: { id: string; name?: string | undefined; color?: string | undefined },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('update-label-preset', { id: input.id, name: input.name, color: input.color }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * Delete a preset. §6.4: this never touches any workspace's `labels` — the label string
+     * survives and its chip just renders neutral, so deleting is not a destructive edit of the
+     * workspaces wearing it.
+     */
+    removeLabelPreset(input: { id: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('remove-label-preset', { id: input.id }), options ?? {});
+    }
+
+    // ── settings verbs (M8) ────────────────────────────────────────────────────────
+    //
+    // The daemon owns `~/.config/nex/config`: each verb applies a `@nex/core/config` writer to
+    // the file's current contents, re-reads it, and answers `{ok, settings}` with the re-read
+    // snapshot — so the reply is the truth, not an optimistic echo. A `settings-changed`
+    // broadcast follows for every OTHER attached client; this client can apply the reply
+    // directly (the store dedupes the two).
+
+    /**
+     * Bind `action` to `trigger` (a config-file trigger string like `"super+d"`), stealing it
+     * from whatever action held it. `trigger: null` removes every trigger the action has.
+     */
+    setKeybinding(
+        input: { action: string; trigger: string | null },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-keybinding', { action: input.action, trigger: input.trigger }),
+            options ?? {}
+        );
+    }
+
+    /** One action back to its shipped triggers, or the whole map when `action` is null. */
+    resetKeybindings(
+        input: { action?: string | null | undefined } = {},
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('reset-keybindings', { action: input.action ?? null }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * One `key = value` general setting. The daemon refuses anything outside
+     * config-keybindings.md §1.3's writable list — `theme` included, which the app never
+     * writes back to this file.
+     */
+    setGeneralSetting(
+        input: { key: string; value: string | number | boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-general-setting', { key: input.key, value: String(input.value) }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * Settings ▸ Profiles (config-keybindings.md §1.6, §9.5): a **whole-set replace**. The
+     * daemon drops every `profile` line, keeps all other lines byte-for-byte, and re-emits the
+     * set — so the caller must send the complete list, never a patch. Profiles with a blank
+     * name and vars with a blank key are dropped by the writer.
+     */
+    setProfiles(
+        input: { profiles: readonly { name: string; env: Readonly<Record<string, string>> }[] },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-profiles', {
+                profiles: input.profiles.map((profile) => ({ name: profile.name, env: { ...profile.env } }))
+            }),
+            options ?? {}
+        );
+    }
+
     // ── content-pane verbs (M5) ────────────────────────────────────────────────────
     //
     // The daemon's `ContentService` behind `daemon/src/ws/sync.ts` `CONTENT_COMMANDS`. A
@@ -710,6 +863,17 @@ export class CommandClient {
     /** Flush the daemon's pending debounced save now (quit flush, mode switch). */
     saveContent(input: { paneID: string }, options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('markdown-save', { pane_id: input.paneID }), options ?? {});
+    }
+
+    /**
+     * §3.16 preview font size. The size is absolute; the daemon's reducer clamps it to 8…32 and
+     * ignores it for a pane that is editing, so an out-of-range value is a no-op, not an error.
+     */
+    setContentFontSize(input: { paneID: string; size: number }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('content-set-font-size', { pane_id: input.paneID, size: input.size }),
+            options ?? {}
+        );
     }
 
     // ── internals ──────────────────────────────────────────────────────────────────

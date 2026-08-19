@@ -16,6 +16,15 @@ export interface GeneralSettings {
     readonly tcpPort: number;
     readonly globalHotkey: KeyTrigger | null;
     readonly globalHotkeyHideOnRepress: boolean;
+    /**
+     * §13's "Confirm before deleting a workspace with active agents", default true.
+     *
+     * NOT a Swift config key: the app stores it in UserDefaults. shell-ui.md's port note
+     * ("Suppression settings … port them into the daemon settings store") makes the config
+     * file its home here, so every attached client agrees. Same lenient rule as
+     * `global-hotkey-hide-on-repress`: only the literal `false` turns it off.
+     */
+    readonly confirmWorkspaceDeleteWhenActive: boolean;
 }
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
@@ -24,7 +33,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     theme: null,
     tcpPort: 0,
     globalHotkey: null,
-    globalHotkeyHideOnRepress: true
+    globalHotkeyHideOnRepress: true,
+    confirmWorkspaceDeleteWhenActive: true
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -76,6 +86,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 // Only the literal `false` disables it; any other value (incl. garbage)
                 // means true.
                 settings = { ...settings, globalHotkeyHideOnRepress: lowered !== 'false' };
+                break;
+            case 'confirm-workspace-delete':
+                settings = { ...settings, confirmWorkspaceDeleteWhenActive: lowered !== 'false' };
                 break;
             default:
                 break;

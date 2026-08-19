@@ -14,7 +14,14 @@
  * callbacks, so every surface renders from a fixture and the Electron shell can reuse it.
  */
 
-export { Sidebar, type SidebarProps } from './Sidebar';
+export {
+    AUTO_SCROLL_EDGE_PX,
+    AUTO_SCROLL_INTERVAL_MS,
+    AUTO_SCROLL_STEP_PX,
+    SPRING_LOAD_MS,
+    Sidebar,
+    type SidebarProps
+} from './Sidebar';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
     StatusFooter,
@@ -28,14 +35,20 @@ export { CommandPalette, FOCUS_HANDOFF_MS, type CommandPaletteProps } from './Co
 export { ContextMenu, menuAnchorFromEvent, type ContextMenuProps, type MenuItemSpec } from './ContextMenu';
 
 export {
+    CURATED_EMOJI,
+    CURATED_SYMBOL_ICONS,
     ChromeIcon,
     GENERIC_ICON_GLYPH,
     ICON_TOKEN_GLYPHS,
     avatarLetter,
+    formatIconToken,
     iconGlyph,
     iconIsTintable,
+    isSingleGrapheme,
+    normalizeEmojiInput,
     type ChromeIconName,
-    type ChromeIconProps
+    type ChromeIconProps,
+    type IconChoice
 } from './icons';
 
 export { useSecondsTicker, tickerListenerCount } from './clock';
@@ -97,7 +110,8 @@ export {
     type ChromeWorkspace,
     type GroupMoveRequest,
     type SidebarCallbacks,
-    type WorkspaceMoveRequest
+    type WorkspaceMoveRequest,
+    type WorkspacesMoveRequest
 } from './types';
 
 export {
@@ -164,6 +178,7 @@ export {
     isEditableTarget,
     keyBindingsFromOverrideLines,
     modifiersFromEvent,
+    shortcutForAction,
     triggerFromEvent,
     workspaceSwitchHandlers,
     workspaceSwitchIndex,

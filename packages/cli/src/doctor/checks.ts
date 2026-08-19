@@ -1,0 +1,326 @@
+/**
+ * Doctor checks 1–5 (cli.md §16), with the two the daemon architecture changes.
+ *
+ * Unchanged: `transport` (what we would dial), `socket`/`resolve` (can we reach it at all),
+ * `ping` (a real request/response through the same dispatcher a command uses — the check that
+ * actually proves the wire works).
+ *
+ * **`process` is daemon-aware.** The Swift check grepped `ps` for
+ * `Nex.app/Contents/MacOS/Nex` and FAILed when the app was gone, which is wrong in the new
+ * world: a healthy `nexd` is the normal case and there may be no `.app` at all. It now
+ * accepts, in order: a live pid record in the daemon run dir (`daemon-v<N>.pid`, cross-checked
+ * with `kill(pid, 0)`), a `nexd` / `nexd.js` process in `ps`, or the Swift app. Only when NONE
+ * of those exist is it a FAIL. TCP still SKIPs — the daemon is on another host.
+ *
+ * **`version` compares identities, and the protocol first.** CLI and daemon are separate
+ * artifacts now, so a version-string difference is advisory (WARN, exit code unchanged) while
+ * a PROTOCOL mismatch is the actionable one: it means the two cannot agree on the wire even if
+ * both are healthy. Equal version AND build ⇒ PASS.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { PROTOCOL_VERSION } from '@nex/protocol';
+
+import { asInt, asString, parseJsonObject } from '../json.js';
+import type { ProcessResult } from '../proc.js';
+import { describeTransportFailure, takeLastTransportFailure, type Transport } from '../transport.js';
+import type { CliIdentity } from '../version.js';
+import type { DoctorCheck } from './types.js';
+
+export interface PingFacts {
+    pid?: number | undefined;
+    version?: string | undefined;
+    build?: string | undefined;
+    protocol?: number | undefined;
+}
+
+export function transportCheck(transport: Transport): DoctorCheck {
+    if (transport.kind === 'unix') {
+        return { name: 'transport', status: 'PASS', detail: `Unix socket at ${transport.path}` };
+    }
+    return {
+        name: 'transport',
+        status: 'PASS',
+        detail: `TCP ${transport.host}:${String(transport.port)} (from NEX_SOCKET)`
+    };
+}
+
+export interface ReachabilityDeps {
+    socketExists(path: string): boolean;
+    resolveHost(host: string): Promise<boolean>;
+}
+
+export async function reachabilityCheck(transport: Transport, deps: ReachabilityDeps): Promise<DoctorCheck> {
+    if (transport.kind === 'unix') {
+        if (!deps.socketExists(transport.path)) {
+            return {
+                name: 'socket',
+                status: 'FAIL',
+                detail: `Unix socket file ${transport.path} does not exist.`,
+                repair: 'Is Nex running? Launch the Nex app and re-run `nex doctor`.'
+            };
+        }
+        return { name: 'socket', status: 'PASS', detail: 'socket file exists' };
+    }
+    if (!(await deps.resolveHost(transport.host))) {
+        return {
+            name: 'resolve',
+            status: 'FAIL',
+            detail: `cannot resolve host "${transport.host}"`,
+            repair:
+                'Check the hostname in NEX_SOCKET. From a dev container use `tcp:host.docker.internal:<port>`.'
+        };
+    }
+    return { name: 'resolve', status: 'PASS', detail: 'hostname resolves' };
+}
+
+/**
+ * The ping round trip. `reply === null` is a transport failure (rendered with the same
+ * categorized text a real command would print); an EMPTY reply means a peer that closed
+ * without answering.
+ */
+export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
+    if (reply === null) {
+        const failure = takeLastTransportFailure();
+        if (failure === null) {
+            return {
+                name: 'ping',
+                status: 'FAIL',
+                detail: 'nex doctor: transport failure (no diagnostic captured).',
+                repair: 'Re-run with more verbose tooling, or restart Nex.'
+            };
+        }
+        const [line, repair] = describeTransportFailure(failure, 'nex doctor');
+        return { name: 'ping', status: 'FAIL', detail: line, repair };
+    }
+    if (reply.length === 0) {
+        return {
+            name: 'ping',
+            status: 'FAIL',
+            detail:
+                'connected, but Nex closed the connection before replying — likely a pre-ping (<v0.26) Nex, or the app is wedged.',
+            repair: 'Rebuild and relaunch Nex if you\'re on a recent main; if `ping` still fails, restart the app.'
+        };
+    }
+    const json = parseJsonObject(reply);
+    if (json === null || json['ok'] !== true) {
+        return {
+            name: 'ping',
+            status: 'FAIL',
+            detail: `received malformed reply (${String(Buffer.byteLength(reply, 'utf8'))} bytes).`,
+            repair: 'Restart Nex. If reproducible, file an issue with the raw bytes.'
+        };
+    }
+    facts.pid = asInt(json['pid']);
+    facts.version = asString(json['version']);
+    facts.build = asString(json['build']);
+    facts.protocol = asInt(json['protocol']);
+    return {
+        name: 'ping',
+        status: 'PASS',
+        detail: `round-trip ok (app pid ${facts.pid === undefined ? '?' : String(facts.pid)})`
+    };
+}
+
+// ── the daemon run dir (a local mirror of lifecycle/rundir.ts, no @nex/daemon dependency) ──
+
+export function resolveRunDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
+    const override = env['NEXD_RUN_DIR']?.trim();
+    if (override !== undefined && override.length > 0) {
+        return path.resolve(override.startsWith('~') ? path.join(home, override.slice(1)) : override);
+    }
+    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'nexd', 'run');
+    const xdg = env['XDG_RUNTIME_DIR']?.trim();
+    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(xdg), 'nexd');
+    return path.join(home, '.local', 'state', 'nexd', 'run');
+}
+
+export interface DaemonRecord {
+    readonly pid: number;
+    readonly protocol: number;
+    readonly version?: string | undefined;
+}
+
+export function readDaemonRecord(runDir: string, readFile: (path: string) => string | null): DaemonRecord | null {
+    const raw = readFile(path.join(runDir, `daemon-v${String(PROTOCOL_VERSION)}.pid`));
+    if (raw === null) return null;
+    const json = parseJsonObject(raw);
+    if (json === null) return null;
+    const pid = asInt(json['pid']);
+    if (pid === undefined || pid <= 0) return null;
+    return {
+        pid,
+        protocol: asInt(json['protocol']) ?? PROTOCOL_VERSION,
+        version: asString(json['version'])
+    };
+}
+
+export interface ProcessDeps {
+    readonly env: NodeJS.ProcessEnv;
+    readonly platform: NodeJS.Platform;
+    readonly home: string;
+    run(path: string, args: readonly string[]): Promise<ProcessResult>;
+    readFile(path: string): string | null;
+    isAlive(pid: number): boolean;
+}
+
+/** `ps` rows whose comm ends with the Swift app's executable path. */
+function swiftAppPids(psOutput: string): number[] {
+    const pids: number[] = [];
+    for (const line of psOutput.split('\n')) {
+        const trimmed = line.trim();
+        const separator = trimmed.indexOf(' ');
+        if (separator < 0) continue;
+        const pid = Number.parseInt(trimmed.slice(0, separator), 10);
+        const comm = trimmed.slice(separator + 1).trim();
+        if (!Number.isInteger(pid)) continue;
+        if (comm.endsWith('Nex.app/Contents/MacOS/Nex')) pids.push(pid);
+    }
+    return pids;
+}
+
+/** `ps` rows whose command line runs `nexd` or `nexd.js` (a bundled daemon under node). */
+function daemonPids(psOutput: string, selfPid: number): number[] {
+    const pids: number[] = [];
+    for (const line of psOutput.split('\n')) {
+        const trimmed = line.trim();
+        const separator = trimmed.indexOf(' ');
+        if (separator < 0) continue;
+        const pid = Number.parseInt(trimmed.slice(0, separator), 10);
+        if (!Number.isInteger(pid) || pid === selfPid) continue;
+        const command = trimmed.slice(separator + 1);
+        const runsDaemon = command
+            .split(/\s+/)
+            .some((token) => token === 'nexd' || token.endsWith('/nexd') || token.endsWith('/nexd.js'));
+        if (runsDaemon) pids.push(pid);
+    }
+    return pids;
+}
+
+export async function processCheck(transport: Transport, deps: ProcessDeps, facts: PingFacts): Promise<DoctorCheck> {
+    if (transport.kind === 'tcp') {
+        return {
+            name: 'process',
+            status: 'SKIP',
+            detail: 'skipped (TCP transport — running Nex is on a remote host).'
+        };
+    }
+
+    const runDir = resolveRunDir(deps.env, deps.platform, deps.home);
+    const record = readDaemonRecord(runDir, deps.readFile);
+    const liveRecord = record !== null && deps.isAlive(record.pid) ? record : null;
+
+    // `ps -axo pid=,comm=` for the app (exact executable path) and `pid=,command=` for the
+    // daemon (a bundled `nexd.js` runs under node, so `comm` is just the node binary).
+    const comm = await deps.run('/bin/ps', ['-axo', 'pid=,comm=']);
+    const full = await deps.run('/bin/ps', ['-axo', 'pid=,command=']);
+    const appPids = swiftAppPids(comm.stdout);
+    const nexdPids = daemonPids(full.stdout, process.pid);
+
+    const known = new Set<number>(nexdPids);
+    for (const pid of appPids) known.add(pid);
+    if (liveRecord !== null) known.add(liveRecord.pid);
+
+    if (known.size === 0) {
+        return {
+            name: 'process',
+            status: 'FAIL',
+            detail: 'no running nexd or Nex.app process found',
+            repair:
+                'Start the daemon (`nexd start`) or launch Nex from /Applications, then re-run `nex doctor`.'
+        };
+    }
+    const pids = [...known].sort((left, right) => left - right);
+    if (facts.pid !== undefined && !known.has(facts.pid)) {
+        return {
+            name: 'process',
+            status: 'WARN',
+            detail: `found pids [${pids.join(', ')}], but ping replied from pid ${String(facts.pid)} — multiple Nex instances?`,
+            repair: 'Quit the stale instances (`kill <pid>`) and keep one running.'
+        };
+    }
+    if (liveRecord !== null) {
+        const extra = appPids.length > 0 ? `; Nex.app pids: ${appPids.join(', ')}` : '';
+        return {
+            name: 'process',
+            status: 'PASS',
+            detail: `nexd running (pid ${String(liveRecord.pid)}, protocol ${String(liveRecord.protocol)})${extra}`
+        };
+    }
+    const label = nexdPids.length > 0 ? 'nexd running' : 'Nex.app running';
+    return { name: 'process', status: 'PASS', detail: `${label} (pids: ${pids.join(', ')})` };
+}
+
+/**
+ * Identity drift. New semantics, documented in the package README:
+ *   - no version from ping ⇒ SKIP (the ping FAIL already carries the actionable bit);
+ *   - PROTOCOL mismatch ⇒ WARN, and it is the one that means "these two cannot talk";
+ *   - same version AND build ⇒ PASS;
+ *   - anything else ⇒ WARN, advisory only (the CLI and the daemon ship separately now, so a
+ *     locally-built CLI against a packaged daemon is a normal, working configuration).
+ */
+export function versionCheck(cli: CliIdentity, facts: PingFacts): DoctorCheck {
+    const daemonVersion = facts.version;
+    if (daemonVersion === undefined) {
+        return { name: 'version', status: 'SKIP', detail: 'skipped (ping did not return a version)' };
+    }
+    if (facts.protocol !== undefined && facts.protocol !== cli.protocol) {
+        return {
+            name: 'version',
+            status: 'WARN',
+            detail: `CLI speaks protocol ${String(cli.protocol)}; nexd ${daemonVersion} speaks protocol ${String(facts.protocol)}.`,
+            repair:
+                'Protocol drift, not just version drift: rebuild both sides from the same checkout (`pnpm --filter @nex/cli build`, `pnpm --filter @nex/daemon build`) so they speak the same wire.'
+        };
+    }
+    const daemonBuild = facts.build;
+    if (daemonVersion === cli.version && (daemonBuild === undefined || daemonBuild === cli.build)) {
+        return { name: 'version', status: 'PASS', detail: `CLI ${cli.version} matches nexd ${daemonVersion}` };
+    }
+    const daemonIdentity = daemonBuild === undefined ? daemonVersion : `${daemonVersion} (build ${daemonBuild})`;
+    return {
+        name: 'version',
+        status: 'WARN',
+        detail: `CLI is ${cli.version} (build ${cli.build}); nexd is ${daemonIdentity}.`,
+        repair:
+            'Advisory only — the CLI and the daemon are separate artifacts and the wire protocol matches. Rebuild both from one checkout if they are meant to be the same release.'
+    };
+}
+
+/** Production wiring for the filesystem/process side of the checks. */
+export const nodeDoctorDeps = {
+    socketExists: (target: string): boolean => {
+        try {
+            fs.statSync(target);
+            return true;
+        } catch {
+            return false;
+        }
+    },
+    readFile: (target: string): string | null => {
+        try {
+            return fs.readFileSync(target, 'utf8');
+        } catch {
+            return null;
+        }
+    },
+    isDirectory: (target: string): boolean => {
+        try {
+            return fs.statSync(target).isDirectory();
+        } catch {
+            return false;
+        }
+    },
+    isAlive: (pid: number): boolean => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (error) {
+            return (error as NodeJS.ErrnoException).code === 'EPERM';
+        }
+    },
+    platform: os.platform()
+};

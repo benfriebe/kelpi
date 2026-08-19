@@ -36,6 +36,7 @@ import {
 import { readGlobalHotkeySettings, swapGlobalHotkey, type HotkeyRegistrar } from './hotkey.js';
 import { log, logError, warn } from './log.js';
 import { createStatusController, type StatusController } from './status.js';
+import { maybeStartAutoUpdate } from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
 import {
@@ -455,6 +456,9 @@ async function boot(): Promise<void> {
 
     mainWindow = createWindow();
     registerGlobalHotkey();
+    // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
+    // signed build) and what it logs when it declines. No network call happens by default.
+    void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform });
     quitGate = installQuitGate({
         counts: () => status?.counts ?? { running: 0, waiting: 0, workspaces: [], panes: [], waitingPaneIDs: [] },
         settingsPath: settingsFile(app.getPath('userData')),

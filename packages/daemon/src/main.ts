@@ -21,6 +21,8 @@
  */
 
 import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import nodePath from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -31,6 +33,8 @@ import {
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
+import { expandTilde, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
+import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
     isProcessAlive,
     probeDaemon,
@@ -49,13 +53,21 @@ export const START_TIMEOUT_MS = 15_000;
 /** How long `nexd stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type NexdCommand = 'start' | 'stop' | 'status' | 'url' | 'help' | 'version';
+export type NexdCommand = 'start' | 'stop' | 'status' | 'url' | 'import' | 'help' | 'version';
 
 export interface ParsedArgs {
     readonly command: NexdCommand;
     readonly foreground: boolean;
     readonly json: boolean;
     readonly timeoutMs: number | undefined;
+    /** `import --from`: the legacy Swift database. Defaults to the Mac app's path. */
+    readonly from: string | undefined;
+    /** `import --to`: the daemon database. Defaults to this environment's `NEXD_DB_PATH`. */
+    readonly to: string | undefined;
+    /** `import --force`: replace a populated target (after backing it up). */
+    readonly force: boolean;
+    /** `import --dry-run`: report only, write nothing. */
+    readonly dryRun: boolean;
     /** Set when parsing failed; `runNexd` prints it and exits 2. */
     readonly error: string | undefined;
 }
@@ -67,8 +79,27 @@ Usage:
   nexd stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
   nexd status [--json]        Ping the daemon and report version, pid and ports
   nexd url                    Print the client URL (with the token) and nothing else
+  nexd import [options]       Import the Swift app's nex.db into the daemon's database
   nexd --version              Print the daemon version
   nexd --help                 This message
+
+Import (one-time migration from the macOS app):
+  nexd import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]
+
+    --from   legacy database (default: ~/Library/Application Support/Nex/nex.db)
+    --to     daemon database (default: NEXD_DB_PATH, else the platform default)
+    --force  replace a target that already holds workspaces; the existing database
+             is copied aside as <target>.<timestamp>.bak first
+    --dry-run  print the report and write nothing
+
+  The source is opened read-only and is never modified. Stop the daemon first —
+  the import is refused while one is running against the target, and --force does
+  not override that. Recommended flow:
+
+    nexd stop && nexd import && nexd start
+
+  Panes come back on that start, and any pane that had an agent session resumes it
+  (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Nex.app restart would.
 
 Open the web client (the token is required — a bare http://127.0.0.1:<port> cannot
 authenticate and the client will say so):
@@ -105,16 +136,54 @@ function parseTimeout(raw: string | undefined): number | undefined {
     return Number.parseInt(trimmed, 10);
 }
 
+/** A flag value must be present and must not be the next flag (`--from --json`). */
+function parseValue(raw: string | undefined): string | undefined {
+    if (raw === undefined) return undefined;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('--')) return undefined;
+    return trimmed;
+}
+
 export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
     let command: NexdCommand | undefined;
     let foreground = false;
     let json = false;
     let timeoutMs: number | undefined;
+    let from: string | undefined;
+    let to: string | undefined;
+    let force = false;
+    let dryRun = false;
     let error: string | undefined;
 
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index] as string;
         switch (arg) {
+            case '--force':
+                force = true;
+                break;
+            case '--dry-run':
+                dryRun = true;
+                break;
+            case '--from': {
+                const value = parseValue(argv[index + 1]);
+                if (value === undefined) {
+                    error ??= '--from needs a path';
+                    break;
+                }
+                from = value;
+                index += 1;
+                break;
+            }
+            case '--to': {
+                const value = parseValue(argv[index + 1]);
+                if (value === undefined) {
+                    error ??= '--to needs a path';
+                    break;
+                }
+                to = value;
+                index += 1;
+                break;
+            }
             case '--help':
             case '-h':
                 command = 'help';
@@ -142,7 +211,13 @@ export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
                 break;
             }
             default:
-                if (arg === 'start' || arg === 'stop' || arg === 'status' || arg === 'url') {
+                if (
+                    arg === 'start' ||
+                    arg === 'stop' ||
+                    arg === 'status' ||
+                    arg === 'url' ||
+                    arg === 'import'
+                ) {
                     if (command === undefined || command === 'version') command = arg;
                     break;
                 }
@@ -156,6 +231,10 @@ export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
         foreground,
         json,
         timeoutMs,
+        from,
+        to,
+        force,
+        dryRun,
         error
     };
 }
@@ -426,6 +505,97 @@ async function commandUrl(io: CliIO): Promise<number> {
     return 0;
 }
 
+/**
+ * `nexd import` — the one-time migration from the macOS app's database.
+ *
+ * Three things this function owns that `import/` deliberately does not:
+ *   - resolving the two default paths (they come from the environment, not the importer);
+ *   - printing BOTH of them before anything is opened — an import replaces a whole database,
+ *     so "which two files?" must be answerable before, not after;
+ *   - refusing while a daemon is running against the target. `--force` does NOT override it:
+ *     the running daemon holds the state in memory and its next save would overwrite whatever
+ *     we imported, so the only correct order is stop → import → start.
+ *
+ * "Running against the target" is judged from THIS environment: the run dir it names is probed,
+ * and the answer only matters when the target is also the database that environment resolves.
+ * A daemon started with a different `NEXD_RUN_DIR` is invisible here — the same blind spot every
+ * other verb has, and the reason `--to` a foreign path only warns.
+ */
+async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
+    const env = io.env ?? process.env;
+    const home = env['HOME'] ?? homedir();
+    const from = args.from === undefined ? legacyMacAppDatabasePath(home) : expandTilde(args.from, home);
+    const to = args.to === undefined ? resolveDatabasePath({ env, home }) : expandTilde(args.to, home);
+
+    // With --json stdout carries the report alone, so the announcement goes to stderr.
+    const announce = args.json ? io.err : io.out;
+    announce(`nexd import${args.dryRun ? ' (dry run)' : ''}`);
+    announce(`  from: ${from}`);
+    announce(`  to:   ${to}`);
+
+    const fail = (message: string, repair: string): number => {
+        if (args.json) io.out(JSON.stringify({ ok: false, from, to, error: message, repair }));
+        else {
+            io.err(`Error: ${message}`);
+            io.err(`Repair: ${repair}`);
+        }
+        return 1;
+    };
+
+    const probe = await probeDaemon(runPathsFor(env), { timeoutMs: 500 });
+    if (probe.alive) {
+        const pid = probe.pid === undefined ? 'unknown' : String(probe.pid);
+        // "Running against the target" = the daemon this environment describes owns that file.
+        if (nodePath.resolve(to) === nodePath.resolve(resolveDatabasePath({ env, home }))) {
+            return fail(
+                `nexd is running (pid ${pid}) and owns ${to}`,
+                'Stop it first — `nexd stop`, then `nexd import`, then `nexd start`. --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save.'
+            );
+        }
+        io.err(`Warning: nexd is running (pid ${pid}), but ${to} is not the database it opened; importing anyway.`);
+    }
+
+    let report: ImportReport;
+    try {
+        report = runImport({ from, to, force: args.force, dryRun: args.dryRun });
+    } catch (error) {
+        if (isLegacyImportError(error)) return fail(error.message, error.repair);
+        return fail(
+            error instanceof Error ? error.message : String(error),
+            'Re-run with --dry-run to see how far the import gets without writing anything.'
+        );
+    }
+
+    if (args.json) {
+        io.out(JSON.stringify({ ok: true, ...report }));
+        return 0;
+    }
+
+    io.out(
+        `${report.dryRun ? 'would import' : 'imported'} ${String(report.workspaces)} workspace(s), ${String(report.panes)} pane(s), ${String(report.groups)} group(s), ${String(report.repos)} repo(s)`
+    );
+    if (report.resumable > 0) {
+        io.out(`  agent session(s) to resume on the next start: ${String(report.resumable)}`);
+    }
+    if (report.backupPath !== null) io.out(`  backup: ${report.backupPath}`);
+    if (report.skipped.length > 0) {
+        io.out(`  skipped ${String(report.skipped.length)} row(s):`);
+        for (const row of report.skipped) {
+            io.out(`    ${row.table} ${row.id ?? '(no id)'}: ${row.reason}`);
+        }
+    }
+    if (report.warnings.length > 0) {
+        io.out('  warnings:');
+        for (const warning of report.warnings) io.out(`    ${warning}`);
+    }
+    io.out(
+        report.dryRun
+            ? 'Nothing was written. Re-run without --dry-run to import.'
+            : 'Next: `nexd start` — panes are restored and agent sessions resume automatically.'
+    );
+    return 0;
+}
+
 function printInfo(io: CliIO, info: DaemonInfo): void {
     io.out(`nexd running (pid ${String(info.pid)})`);
     io.out(`  control: ${info.socketPath}`);
@@ -461,6 +631,8 @@ export async function runNexd(argv: readonly string[], io: CliIO = defaultIO()):
             return commandStatus(io, args);
         case 'url':
             return commandUrl(io);
+        case 'import':
+            return commandImport(io, args);
     }
 }
 

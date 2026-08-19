@@ -1,0 +1,26 @@
+{
+  "name": "@nex/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The `nex` CLI: a TypeScript port of the shipped Swift binary, daemon-aware.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "bin": {
+    "nex": "./dist/nex.js"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "watch": "node scripts/bundle.mjs --watch",
+    "typecheck": "tsc -b .",
+    "test": "vitest run --root ../.. --project node packages/cli"
+  },
+  "dependencies": {
+    "@nex/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

@@ -257,5 +257,8 @@ Failure strings the daemon can author, all stable:
   `visible:false`. Every automation verb behaves identically in both places, which is what keeps
   the headless surface (and its live smoke) honest.
 - **Not implemented daemon-side yet** (client/shell milestones own them): the batch "element
-  pickup" session (§12) beyond `inspect-result --clear`, favourites (§14 — no wire surface), and
-  the find-in-page bar (§10). They add verbs to this table; they do not change the ones above.
+  pickup" session (§12) beyond `inspect-result --clear`, favourites (§14 — no wire surface),
+  the find-in-page bar (§10), and page **zoom** (`web_zoom_in|out|reset` are bindable actions
+  with no dispatch target). The host already answers `find` and `zoom` as RPC verbs
+  (`shell/src/webhost/dispatch.ts`), so wiring them is a daemon handler, not a port. They add
+  verbs to this table; they do not change the ones above. Tracked in `docs/PARITY.md`.

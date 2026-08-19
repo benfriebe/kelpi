@@ -26,9 +26,10 @@
  * message handler — so those replies arrive when the daemon's promise settles, which changes
  * nothing here: every command already settles through `command-reply`.
  *
- * Still unwired for want of any daemon action name: pane status override and
- * reopen-closed-pane. `raw()` is deliberately public so either can be sent the moment the
- * daemon grows the verb, without a new client release.
+ * Still unwired for want of any daemon action name: reopen-closed-pane. (Pane status override
+ * landed in M8 wave 6 as `clear-pane-status`/`restart-pane-agent` — see the bottom of the
+ * class.) `raw()` is deliberately public so a new verb can be sent the moment the daemon grows
+ * it, without a new client release.
  */
 
 import type {

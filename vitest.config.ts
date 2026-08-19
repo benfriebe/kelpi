@@ -15,7 +15,7 @@ export default defineConfig({
       {
         test: {
           name: 'node',
-          include: ['packages/{protocol,core,daemon}/{src,tests}/**/*.test.ts'],
+          include: ['packages/{protocol,core,daemon,cli}/{src,tests}/**/*.test.ts'],
           exclude: ['**/node_modules/**', '**/dist/**'],
         },
       },

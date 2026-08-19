@@ -31,6 +31,7 @@ import {
 } from '@nex/daemon/lifecycle';
 
 import { log, warn } from './log.js';
+import { hasClientBuild, packagedClientDir, packagedDaemonEntry, packagedNodeBinary } from './resources.js';
 
 /** Where `nexd` lives, when it is not in the default dev/packaged locations. */
 export const ENTRY_ENV = 'NEXD_ENTRY';
@@ -38,6 +39,8 @@ export const ENTRY_ENV = 'NEXD_ENTRY';
 export const NODE_ENV_VAR = 'NEXD_NODE';
 /** Append the detached daemon's output here (handed straight to `spawnDetached`). */
 export const LOG_FILE_ENV = 'NEXD_LOG_FILE';
+/** The daemon's own name for "the directory holding the built web client" (`ws/http.ts`). */
+export const CLIENT_DIR_ENV = 'NEXD_CLIENT_DIR';
 
 export const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const PROBE_TIMEOUT_MS = 750;
@@ -106,10 +109,11 @@ export interface EntryLookup {
  *   1. `NEXD_ENTRY` — the same override the daemon's own CLI honours (tests, odd layouts).
  *   2. `<appDir>/../daemon/dist/nexd.js` — the dev workspace: the shell package sits beside
  *      the daemon package, and `pnpm --filter @nex/daemon build` writes that bundle.
- *   3. `<resourcesPath>/daemon/nexd.js` — **the packaging hook**. When the shell is packaged
- *      the daemon bundle is copied into `Contents/Resources/daemon/` (with its `node_modules/
- *      node-pty` beside it, since that stays external to the bundle). Nothing produces this
- *      layout yet; the path is fixed here so packaging (M8) only has to place the files.
+ *   3. `<resourcesPath>/daemon/nexd.js` — **the packaged app**. `forge.config.cjs` stages the
+ *      daemon payload (the bundle plus its `node_modules/node-pty`, which stays external to
+ *      the bundle because it is native) into `Contents/Resources/daemon/`, deliberately
+ *      OUTSIDE `app.asar`: `node` cannot execute a file inside an archive, and `dlopen` cannot
+ *      load `pty.node` from one either. `./resources.ts` owns that layout.
  */
 export function daemonEntryCandidates(lookup: EntryLookup = {}): readonly string[] {
     const env = lookup.env ?? process.env;
@@ -121,7 +125,7 @@ export function daemonEntryCandidates(lookup: EntryLookup = {}): readonly string
         candidates.push(path.resolve(lookup.appDir, '..', 'daemon', 'dist', 'nexd.js'));
     }
     if (lookup.resourcesPath !== undefined && lookup.resourcesPath.length > 0) {
-        candidates.push(path.resolve(lookup.resourcesPath, 'daemon', 'nexd.js'));
+        candidates.push(path.resolve(packagedDaemonEntry(lookup.resourcesPath)));
     }
     return candidates;
 }
@@ -146,7 +150,7 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
     if (override !== undefined && override.length > 0) return override;
 
     if (lookup.resourcesPath !== undefined && lookup.resourcesPath.length > 0) {
-        const bundled = path.join(lookup.resourcesPath, 'node');
+        const bundled = packagedNodeBinary(lookup.resourcesPath);
         if (isExecutableFile(bundled)) return bundled;
     }
 
@@ -158,6 +162,35 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
         if (isExecutableFile(candidate)) return candidate;
     }
     return undefined;
+}
+
+/**
+ * The environment a daemon spawned by THIS shell inherits.
+ *
+ * One addition, and only in a packaged app: `NEXD_CLIENT_DIR` pointing at
+ * `Contents/Resources/client`. The daemon serves the web UI, and its own resolution of that
+ * directory is env-only (`ws/http.ts` `resolveClientDistDir`) — deliberately, because the
+ * daemon has no idea it is living inside an app bundle and `process.resourcesPath` is an
+ * Electron concept. So the side that *does* know tells it, at spawn time, which keeps the
+ * daemon free of packaging knowledge and keeps a headless `nexd` (installed from npm, running
+ * on a server) using its own rules.
+ *
+ * An explicit `NEXD_CLIENT_DIR` always wins — that is how a developer points a packaged app at
+ * a `vite build` output — and a Resources directory without an `index.html` is ignored rather
+ * than passed on, since the daemon's "client not built" page is a better answer than a
+ * configured-but-empty directory.
+ *
+ * Note the scope: this applies to a daemon **this shell starts**. A daemon that was already
+ * running (started by the CLI, or by an older app) is adopted as-is, so it keeps whatever
+ * client directory it was started with.
+ */
+export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {}): NodeJS.ProcessEnv {
+    const existing = env[CLIENT_DIR_ENV]?.trim();
+    if (existing !== undefined && existing.length > 0) return env;
+    if (lookup.resourcesPath === undefined || lookup.resourcesPath.length === 0) return env;
+    const bundled = packagedClientDir(lookup.resourcesPath);
+    if (!hasClientBuild(bundled)) return env;
+    return { ...env, [CLIENT_DIR_ENV]: bundled };
 }
 
 // ── readiness ───────────────────────────────────────────────────────────────────────
@@ -252,10 +285,14 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     }
 
     const logFile = env[LOG_FILE_ENV]?.trim();
+    const spawnEnv = daemonSpawnEnv(env, lookup);
+    if (spawnEnv[CLIENT_DIR_ENV] !== env[CLIENT_DIR_ENV]) {
+        log(`daemon client dir ${String(spawnEnv[CLIENT_DIR_ENV])} (from the app bundle)`);
+    }
     // `start --foreground` is what `nexd start` itself execs after detaching; going straight
     // to it skips a redundant process hop and gives us the daemon's real pid.
     const child = spawnDetached(entry, ['start', '--foreground'], {
-        env,
+        env: spawnEnv,
         execPath: nodeBinary,
         ...(logFile !== undefined && logFile.length > 0 ? { logFile } : {})
     });

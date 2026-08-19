@@ -9,15 +9,24 @@ Electron shell on the desktop, or any browser over a tailnet) attach to it and r
 existing `nex` CLI and the Claude Code / Codex hooks keep working unchanged — the daemon speaks
 the same newline-JSON control protocol on the same socket.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model and [`PLAN.md`](PLAN.md) for the
-milestone plan. Behavioural contracts for every subsystem live in [`docs/current/`](docs/current).
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model, [`docs/PARITY.md`](docs/PARITY.md)
+for where the port stands against the macOS app, and [`PLAN.md`](PLAN.md) for the milestone plan.
+Behavioural contracts for every subsystem live in [`docs/current/`](docs/current).
 
 ## Status
 
-Milestone 2 — the daemon — is in progress. `nexd` boots, restores persisted workspaces, spawns
-PTYs, serves the control protocol and exposes an HTTP + WebSocket endpoint. The web client
-(M3) and the Electron shell (M4) are not built yet, so `http://127.0.0.1:<port>` currently
-answers with a "client not built" page while `/healthz`, the control socket and `/ws` all work.
+**The port is complete.** The daemon, the web client, the Electron shell, content panes, web
+panes, graft, the `nex` CLI rewrite and the legacy `nex.db` importer are all built and green, and
+the app packages into a `Nex.app` (unsigned — see [Install and run](#install-and-run)).
+
+- [`docs/PARITY.md`](docs/PARITY.md) — the honest end-state ledger: what is at parity and how it
+  was proven, where the port deliberately differs from the macOS app, and the eight remaining gaps.
+- [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
+  against `nexd`, as measured.
+- [`PLAN.md`](PLAN.md) — the milestone lineage.
+
+Closeout gates: `pnpm check` 3038 passed; the compat suite 103/103 against **both** the shipped
+Swift CLI and the TypeScript one; four live smokes (client 33, shell 29, web 46, packaged 47).
 
 ## Quickstart
 
@@ -87,6 +96,22 @@ NEX_SOCKET=tcp:127.0.0.1:19400 nex pane send --target worker-1 "echo hello"
 The same variable is how a dev container or a remote agent reaches the daemon
 (`NEX_SOCKET=tcp:host.docker.internal:19400`, or an SSH reverse tunnel).
 
+### The `nex` CLI
+
+This repo also ships its own `nex` — a TypeScript rewrite of the Swift binary that speaks the
+same protocol, prints the same lines and exits with the same codes (it passes the same 103-test
+compat suite the shipped binary does):
+
+```bash
+pnpm --filter @nex/cli build                          # → packages/cli/dist/nex.js
+ln -sf "$PWD/packages/cli/dist/nex.js" /usr/local/bin/nex
+nex doctor                                            # daemon-aware: checks nexd, not Nex.app
+```
+
+`dist/nex.js` is a single dependency-free file with a shebang, so it needs nothing installed
+beside it. [`packages/cli/README.md`](packages/cli/README.md) covers the two deliberate
+divergences (`web console --follow`, `web capture`'s flag set) and what `doctor` now checks.
+
 ### Running beside the real Nex.app
 
 The production control socket is `/tmp/nex.sock`, which the Swift app owns while it is running —
@@ -117,23 +142,235 @@ NEXD_RUN_DIR=~/.local/state/nexd-dev open "$(packages/daemon/dist/nexd.js url)"
 `nexd --help` lists every environment override (run dir, control socket, TCP port, HTTP
 host/port, database, config file, client build directory, log file).
 
+## Importing from the macOS app
+
+The Swift app keeps its state in `~/Library/Application Support/Nex/nex.db`; the daemon owns a
+separate database (`~/Library/Application Support/nexd/nex.db`, or `NEXD_DB_PATH`) so the two can
+run side by side during the port. `nexd import` copies the first into the second, once.
+
+The daemon must be stopped: it holds the whole state in memory and its next save would overwrite
+whatever the import wrote. That is also the order that gets your sessions back:
+
+```bash
+nexd stop
+nexd import          # or: nexd import --dry-run   to see the report first
+nexd start
+```
+
+On that `start` the panes come back, and every pane that had an agent session resumes it —
+`claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent — exactly as
+a Nex.app restart would. Session ids that fail the shell-safety allowlist are skipped, and the
+report says which.
+
+```
+nexd import
+  from: /Users/you/Library/Application Support/Nex/nex.db
+  to:   /Users/you/Library/Application Support/nexd/nex.db
+imported 12 workspace(s), 34 pane(s), 7 group(s), 3 repo(s)
+  agent session(s) to resume on the next start: 2
+  warnings:
+    regenerated 1 empty workspace slug(s) from name + id (legacy v3 rows)
+Next: `nexd start` — panes are restored and agent sessions resume automatically.
+```
+
+| flag | meaning |
+|------|---------|
+| `--from <db>` | legacy database (default: the Swift app's path above) |
+| `--to <db>` | daemon database (default: `NEXD_DB_PATH`, else the platform default) |
+| `--force` | replace a target that already holds workspaces — the existing database is copied aside as `<target>.<timestamp>.bak` first |
+| `--dry-run` | print the report and write nothing (not even an empty database) |
+| `--json` | one JSON report on stdout; the two paths still go to stderr |
+
+The whole flow is verified end to end — fixture database → `import` → `start` → state read back
+over the real `nex` CLI, including both agent kinds resuming into their PTYs — in
+[`docs/PARITY.md`](docs/PARITY.md) ▸ "Legacy import, end to end".
+
+Both paths are printed before anything is opened. The source is opened **read-only** and is never
+written, migrated or deleted, so importing twice — or importing into a scratch `--to` — is safe.
+Without `--force`, a target that already holds workspaces is refused; a running daemon is refused
+regardless of `--force`.
+
+What comes across: workspaces (name, color, icon, labels, profile, layout tree, focused pane),
+groups (order, collapse state, members), the sidebar order, panes of every type (shell, markdown,
+scratchpad, diff, web) with their working directories, files, scratchpad contents and web tabs,
+plus the repo registry and its associations. What does not: live pane statuses (reset to idle —
+no PTY survives an import), private web-pane tabs (the private flag persists, the contents never
+do), and parked/recently-closed panes (the Swift app never persisted them either).
+
+Rows the Swift loader would silently drop — an unparseable UUID, an orphaned pane, a corrupt
+layout — are dropped the same way and *reported*: `skipped` names the table, id and reason, and
+`warnings` covers every fallback taken (unknown enum, undecodable JSON, regenerated slug,
+synthesized sidebar order). Tables the daemon does not own (`scheduledTask`, `workspaceFolder`)
+are listed as ignored and left alone, and a database whose migration ledger carries newer
+identifiers is read with a warning rather than refused.
+
+## Install and run
+
+### From source (development)
+
+The daemon is the only thing you strictly need — a browser is a complete client. The Electron
+shell adds the native chrome (tray, dock badge, global hotkey, native notifications, web panes).
+
+```bash
+pnpm install
+pnpm --filter @nex/daemon build     # esbuild → packages/daemon/dist/nexd.js
+pnpm --filter @nex/client build     # vite    → packages/client/dist
+pnpm --filter @nex/shell build      # esbuild → packages/shell/dist/main.js
+
+NEXD_CLIENT_DIR=packages/client/dist pnpm --filter @nex/shell start
+```
+
+`start` runs `electron .`, which discovers a running daemon or starts one detached (and leaves it
+running when you quit). To use the browser instead, start the daemon yourself and open
+`nexd url` — see [Quickstart](#quickstart) above.
+
+### As an app (`pnpm dist`)
+
+```bash
+pnpm dist                                          # client + daemon + shell, then electron-forge make
+open packages/shell/out/Nex-darwin-arm64/Nex.app
+```
+
+`pnpm dist` builds all three bundles and produces, in `packages/shell/out/`:
+
+| artifact | what it is |
+|----------|------------|
+| `Nex-darwin-arm64/Nex.app` | the app bundle (also what `open` above launches) |
+| `make/Nex.dmg` | the DMG, for handing to another machine |
+| `make/zip/darwin/arm64/Nex-darwin-arm64-<version>.zip` | the ZIP — Squirrel.Mac's format, for when auto-update is switched on |
+
+Use `pnpm --filter @nex/shell package` for just the `.app` (no DMG/ZIP), and
+`pnpm --filter @nex/shell smoke:packaged` to verify a build end to end: it packages the app,
+launches it with a throwaway environment and asserts that it starts its own daemon, serves its
+own client, answers the shipped `nex` CLI, runs a real PTY, and leaves the daemon alive on quit.
+
+Inside `Nex.app/Contents/Resources`:
+
+```
+app.asar     the shell: dist/main.js + package.json, and nothing else
+daemon/      nexd.js + node_modules/node-pty   ← outside the asar, on purpose
+client/      the built web UI                  ← outside the asar
+node         a Node 24 runtime for the daemon  ← outside the asar
+```
+
+The three staged directories sit outside the archive because a plain `node` process — not
+Electron — executes the daemon: `node` cannot run a script inside an asar, and `dlopen` cannot
+load node-pty's `pty.node` out of one. On launch the shell finds its daemon at
+`Resources/daemon/nexd.js`, runs it under `Resources/node` (never `ELECTRON_RUN_AS_NODE`, which
+is fused off), and hands it `NEXD_CLIENT_DIR=…/Resources/client`. All three are overridable —
+`NEXD_ENTRY`, `NEXD_NODE`, `NEXD_CLIENT_DIR` — and a daemon that is *already* running is adopted
+as-is, so a packaged app and a development daemon coexist.
+
+Two things about the build worth knowing:
+
+- **The bundled `node` is whichever Node built the app** (or `NEX_NODE_BINARY`), copied in and
+  checked for version and architecture. That is fine locally and not fine for a release — see
+  below.
+- **The icon is generated, not designed**: `src/packaging.ts` draws it and writes a real `.icns`,
+  so a build never silently ships the stock Electron icon. Replacing it means dropping a designed
+  `.icns` in and pointing `packagerConfig.icon` at it. (macOS keeps the file's original name,
+  `electron.icns`, inside the bundle; `CFBundleIconFile` is what matters.)
+
+Auto-update is wired but **off**, and off by default in every build: `update-electron-app` is
+loaded lazily behind `NEX_AUTO_UPDATE=1`, so a packaged app makes no update request at all. It
+must stay off until the two conditions in `packages/shell/src/updater.ts` hold — a **public**
+GitHub repo (`update.electronjs.org` serves no private ones) and a signed, notarized build.
+
+### Signing and notarization — not done yet
+
+Nothing in the current output is signed or notarized:
+
+| | today |
+|---|---|
+| Code signature | ad-hoc only (an arm64 requirement, applied automatically; identity `com.github.Electron`) |
+| Developer ID | none — `forge.config.cjs` has no `osxSign` block by default |
+| Notarization / stapling | none |
+| Bundled `node` | copied unsigned from the build machine |
+| Auto-update | off (and must stay off: Squirrel cannot install an unsigned update) |
+
+In practice: the app runs on the machine that built it, and on any other Mac it is quarantined
+("Nex is damaged and can't be opened") until someone runs
+`xattr -dr com.apple.quarantine /Applications/Nex.app`. Do not ship it to anyone yet.
+
+The checklist for closing that gap, in order:
+
+1. A **Developer ID Application** certificate in the login keychain. `NEX_MACOS_IDENTITY="Developer ID Application: …"` already opts `pnpm dist` into `osxSign` with it.
+2. **Sign the bundled `node`** and replace it with an official Node build for the target arch. It is a redistributed executable inside the bundle, so it needs its own signature; with the hardened runtime it also needs the JIT entitlements (`com.apple.security.cs.allow-jit`, `…allow-unsigned-executable-memory`).
+3. **Notarize + staple**: add `osxNotarize` (notarytool with an App Store Connect API key) to `forge.config.cjs`, then `xcrun stapler staple` the `.app` and the `.dmg`.
+4. **Verify** on a machine that never saw the build: `spctl -a -vvv -t install Nex.app` and `codesign --verify --deep --strict --verbose=2 Nex.app`.
+5. Only then consider `NEX_AUTO_UPDATE`, and only if the repo is public.
+
+Fuse flipping already happens before signing (Forge's fuses plugin runs in `packageAfterCopy`),
+so the order above needs no rearranging — but re-run `pnpm --filter @nex/shell smoke:packaged`
+after any signing change, since a mis-signed bundle fails at launch, not at build time.
+
+### Remote access over Tailscale
+
+The daemon listens on loopback only. `tailscale serve` fronts that port with HTTPS at
+`https://<machine>.<tailnet>.ts.net`, reachable from any device on the tailnet (including a
+phone), with certificates handled for you. Verified against `tailscale` 1.98.10:
+
+```bash
+# the HTTP port the daemon actually bound
+port=$(packages/daemon/dist/nexd.js status --json | jq -r .http_port)
+
+tailscale serve --bg "$port"     # background; foreground is the same command without --bg
+tailscale serve status           # what is currently proxied
+```
+
+Then open it with the daemon's token — the tailnet only decides *who can reach the port*; the
+WebSocket handshake is still gated on the run dir's token:
+
+```bash
+url=$(packages/daemon/dist/nexd.js url)                                   # http://127.0.0.1:<port>/?token=…
+host=$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')     # <machine>.<tailnet>.ts.net
+open "https://$host/?${url#*\?}"
+```
+
+The token is stored in `localStorage` and stripped from the address bar, so later visits to
+`https://$host/` just work until the daemon's run dir is recreated.
+
+Stop sharing with `tailscale serve reset`. Use `serve`, never `funnel` — `funnel` publishes to
+the open internet, and this port is a shell. Proxied requests arrive with Tailscale's identity
+headers (`Tailscale-User-Login`, `Tailscale-User-Name`), which is where per-user gating would
+go if it is ever wanted.
+
 ## Repository layout
 
 ```
 packages/
 ├─ protocol/   wire message types, type-strict decode, reply allowlist, WS protocol
 ├─ core/       pure domain: layout tree, resolvers, agent state machine, env, config, codecs
-├─ daemon/     nexd: store, PTY manager, terminal state, control + HTTP/WS servers, SQLite
-├─ client/     web UI (M3)
-├─ shell/      Electron wrapper (M4)
-└─ cli/        TypeScript rewrite of the nex CLI (M8)
+├─ daemon/     nexd: store, PTY manager, terminal state, control + HTTP/WS servers, SQLite,
+│              content + web-pane + graft services, legacy nex.db importer
+├─ client/     web UI: terminal rendering, pane grid, sidebar, settings, web-pane chrome
+├─ shell/      Electron wrapper: tray, dock, notifications, web-pane host, packaging
+└─ cli/        the `nex` CLI, a TypeScript rewrite of the shipped Swift binary
 ```
 
 ## Development
 
 ```bash
-pnpm check          # typecheck + the full test suite
+pnpm check          # typecheck + the full test suite   (the gate — must stay green)
 pnpm test           # vitest across every package
-pnpm typecheck      # tsc -b protocol core daemon
+pnpm typecheck      # tsc -b protocol core daemon cli, then client + shell
 pnpm --filter @nex/daemon watch    # rebuild the bundle on change
+```
+
+Beyond the unit suites, four **live** smokes boot real daemons on private paths (never
+`/tmp/nex.sock`) and assert what only a running system can prove:
+
+```bash
+node packages/client/scripts/smoke.mjs      # 33 checks: HTTP + WS + delta + PTY round trip
+node packages/shell/scripts/smoke.mjs       # 29 checks: adopt-or-spawn, quit gate, daemon survives
+node packages/shell/scripts/web-smoke.mjs   # 46 checks: real Chromium, real CDP, real CLI
+node packages/shell/scripts/packaged-smoke.mjs   # 47 checks: the built Nex.app, end to end
+```
+
+And the compat harness drives a real CLI binary against a real daemon — either implementation:
+
+```bash
+npx vitest run packages/daemon/tests/compat                                  # shipped Swift CLI
+NEX_COMPAT_CLI="$PWD/packages/cli/dist/nex.js" \
+  npx vitest run packages/daemon/tests/compat                                # the TypeScript CLI
 ```

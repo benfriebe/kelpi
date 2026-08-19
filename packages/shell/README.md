@@ -16,6 +16,9 @@ src/
 ├─ window-state.ts  frame persistence + the off-screen clamp
 ├─ icon.ts          the tray icon, rasterized and PNG-encoded in code (no binary assets)
 ├─ control.ts       a minimal control-protocol client (Finder "Open With" → daemon `open`)
+├─ resources.ts     the packaged `Contents/Resources` layout — written by the build, read here
+├─ packaging.ts     build-time only: the app icon + ICNS, the asar allowlist, Node-runtime checks
+├─ updater.ts       auto-update, off unless `NEX_AUTO_UPDATE=1` (and then only when packaged)
 ├─ log.ts           `[shell] …` lines on stdout; the smoke asserts on them
 └─ webhost/         the web-pane host (M6): WebContentsViews + CDP behind the daemon's host RPC
    ├─ client.ts     its OWN daemon WebSocket, claiming the `web-pane-host` role
@@ -90,14 +93,44 @@ pnpm --filter @nex/shell start
 Environment it reads: `NEXD_RUN_DIR` (which daemon to talk to), `NEXD_ENTRY` (the `nexd`
 script to spawn), `NEXD_NODE` (the Node binary to spawn it with), `NEXD_LOG_FILE` (where a
 spawned daemon's output goes), `NEXD_CONFIG_PATH` (the shared `nex` config, for
-`global-hotkey`). Everything else it inherits and passes to the daemon it spawns.
+`global-hotkey`), `NEX_AUTO_UPDATE` (off unless `1`; see `src/updater.ts`). Everything else it
+inherits and passes to the daemon it spawns — plus, in a packaged app only, `NEXD_CLIENT_DIR`
+pointing at the client build in its own Resources (an explicit one always wins).
+
+## Packaging
+
+```bash
+pnpm dist                              # from the repo root: all three bundles, then make
+pnpm --filter @nex/shell package       # just out/Nex-darwin-<arch>/Nex.app
+pnpm --filter @nex/shell make          # + out/make/Nex.dmg and the Squirrel-shaped ZIP
+pnpm --filter @nex/shell icon          # re-render out/staging/icon.icns on its own
+```
+
+`forge.config.cjs` is the whole configuration and its header is the long-form explanation. The
+short version: `app.asar` holds `dist/main.js` and `package.json` and nothing else (an allowlist,
+`packagedAppIgnore`), while three things are staged into `Contents/Resources` *outside* the
+archive by `scripts/stage-resources.mjs` — the daemon payload (`packages/daemon/scripts/
+stage-payload.mjs` owns its contents: the bundle plus the node-pty tree its `require` resolves
+to), the built client, and a Node 24 runtime. They have to be outside because a plain `node`
+process runs the daemon: `node` cannot execute a script inside an asar, and `dlopen` cannot load
+`pty.node` out of one. `src/resources.ts` is the single description of that layout — the Forge
+config writes it, `daemon.ts` reads it, `scripts/packaged-smoke.mjs` asserts it.
+
+Fuses (stack.md §1) are flipped in the binary: `runAsNode`, `nodeOptions` and `nodeCliInspect`
+off, `onlyLoadAppFromAsar` and asar integrity validation on. Turning `runAsNode` off is
+load-bearing rather than decorative — it forecloses the "run the daemon with
+`ELECTRON_RUN_AS_NODE`" shortcut that stack.md rules out, which is why the bundled `node` exists.
+
+Nothing is signed or notarized (ad-hoc only, as arm64 requires); the repo README's *Install and
+run* section carries the gap and the release checklist. `NEX_MACOS_IDENTITY` opts into `osxSign`.
 
 ## Tests
 
 ```bash
-pnpm --filter @nex/shell test          # vitest, this package's own project
-pnpm --filter @nex/shell smoke         # the real thing: Electron + a private daemon
-pnpm --filter @nex/shell smoke:web     # the web-pane host, driven by the shipped Swift CLI
+pnpm --filter @nex/shell test           # vitest, this package's own project
+pnpm --filter @nex/shell smoke          # the real thing: Electron + a private daemon
+pnpm --filter @nex/shell smoke:web      # the web-pane host, driven by the shipped Swift CLI
+pnpm --filter @nex/shell smoke:packaged # electron-forge package, then launch the .app itself
 ```
 
 The unit tests cover the pure modules only (bounds clamp, badge/tray derivation, hotkey parse
@@ -120,6 +153,14 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   releases the role (`no web pane host connected`) and that a fresh shell gets the daemon's
   `pane-open` replay.
   With no Swift CLI installed it skips (exit 0); `NEX_COMPAT_CLI` points it at another copy.
+- `scripts/packaged-smoke.mjs` covers everything that is only true inside `Nex.app`: it runs
+  `electron-forge package`, reads the asar header back to prove the allowlist held, reads the
+  fuses out of the binary, then launches the **packaged** app with a private environment that
+  names no daemon, no client and no Node — so all three have to come from its own Resources. It
+  asserts the daemon process really is the bundled Node, that the served page is the staged
+  client byte for byte, that the shipped `nex` CLI gets a ping and can drive a real PTY (the only
+  proof node-pty loaded its native module from inside the bundle), and that the daemon is still
+  running after the app quits. ~30s; keeps the packaged app unless `--clean-app`.
 
 Note the shell is **not** part of the repo-root vitest projects or the root `typecheck` script
 (neither includes `packages/shell`, and the root config is not this package's to edit) —
@@ -139,9 +180,9 @@ resort, not the first.
 
 ## Not done here (later milestones)
 
-- **Packaging** (M8): Forge config, signing/notarization, `@electron/fuses`, and the bundled
-  daemon payload. `daemon.ts` already looks for `<resourcesPath>/daemon/nexd.js` and
-  `<resourcesPath>/node`, so packaging only has to place those files.
+- **Signing and notarization**: packaging is done (above), but the output is ad-hoc-signed only.
+  The checklist — Developer ID, signing the bundled `node`, `osxNotarize` + stapling, then
+  auto-update — is in the repo README's *Install and run* section.
 - **Visual web panes**: the host (above) is a headless automation surface; putting the views on
   screen at the pane's rect needs a client→shell channel (there is deliberately no preload
   bridge yet) and the chrome from `docs/current/web-pane.md` §16 in the client.

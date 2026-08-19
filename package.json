@@ -6,9 +6,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "typecheck": "tsc -b packages/protocol packages/core packages/daemon && tsc -p packages/client/tsconfig.json && tsc -p packages/shell/tsconfig.json",
+    "typecheck": "tsc -b packages/protocol packages/core packages/daemon packages/cli && tsc -p packages/client/tsconfig.json && tsc -p packages/shell/tsconfig.json",
     "test": "vitest run && pnpm --filter @nex/shell test",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "dist": "pnpm --filter @nex/daemon build && pnpm --filter @nex/client build && pnpm --filter @nex/shell build && pnpm --filter @nex/shell make"
   },
   "devDependencies": {
     "@types/node": "^24",
@@ -19,6 +20,8 @@
     "onlyBuiltDependencies": [
       "electron",
       "esbuild",
+      "fs-xattr",
+      "macos-alias",
       "node-pty"
     ]
   }

@@ -5,8 +5,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    CLIENT_DIR_ENV,
     clientUrl,
     daemonEntryCandidates,
+    daemonSpawnEnv,
     daemonUrl,
     readHttpPort,
     resolveDaemonEntry,
@@ -78,6 +80,46 @@ describe('resolveNodeBinary', () => {
     it('falls back to the current interpreter outside Electron', () => {
         // These tests run under plain Node, which is exactly the "not Electron" branch.
         expect(resolveNodeBinary({ env: {} })).toBe(process.execPath);
+    });
+});
+
+describe('daemonSpawnEnv', () => {
+    /** A packaged `Contents/Resources` with a client build in it. */
+    function resourcesWithClient(): string {
+        const resources = tempDir();
+        fs.mkdirSync(path.join(resources, 'client'), { recursive: true });
+        fs.writeFileSync(path.join(resources, 'client', 'index.html'), '<!doctype html>');
+        return resources;
+    }
+
+    it('tells a daemon it starts where the bundled client build is', () => {
+        const resources = resourcesWithClient();
+        expect(daemonSpawnEnv({ PATH: '/usr/bin' }, { resourcesPath: resources })).toEqual({
+            PATH: '/usr/bin',
+            [CLIENT_DIR_ENV]: path.join(resources, 'client')
+        });
+    });
+
+    it('leaves an explicit NEXD_CLIENT_DIR alone — that is how a dev points at a vite build', () => {
+        const resources = resourcesWithClient();
+        const env = { [CLIENT_DIR_ENV]: '/work/client/dist' };
+        expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
+    });
+
+    it('adds nothing in a development run (there is no Resources directory)', () => {
+        const env = { PATH: '/usr/bin' };
+        expect(daemonSpawnEnv(env, {})).toBe(env);
+        expect(daemonSpawnEnv(env, { resourcesPath: '' })).toBe(env);
+    });
+
+    it('would rather say nothing than point the daemon at an empty directory', () => {
+        // The daemon's own "client not built" page is a better answer than a configured
+        // directory with no index.html in it.
+        const resources = tempDir();
+        const env = { PATH: '/usr/bin' };
+        expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
+        fs.mkdirSync(path.join(resources, 'client'));
+        expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
     });
 });
 

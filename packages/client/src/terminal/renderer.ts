@@ -33,6 +33,9 @@
  *      (ghostty-web#141 reports corruption after freeing a terminal that saw graphemes).
  *      Verified on both engines: RIS clears screen + scrollback, resets modes and leaves the
  *      alternate screen.
+ *   4. **Startups are serialized, and an engine that throws is poisoned, not retried in
+ *      place.** See `serializeEngineStartup` and `AdapterRenderer.poison` — the two halves of
+ *      run-F N1.
  */
 
 import { loadTerminalFonts, measureCellSize, TERMINAL_FONT_FALLBACKS } from './fonts';
@@ -109,6 +112,17 @@ export interface TerminalRenderer {
     readonly rows: number;
     /** Resolves when the engine is loaded and attached; rejects if the engine failed to open. */
     readonly ready: Promise<void>;
+    /**
+     * The engine threw from inside itself and has been abandoned. A poisoned renderer accepts
+     * no further bytes — its owner must dispose it and build a fresh one (run-F N1).
+     */
+    readonly failed: boolean;
+    /**
+     * The engine died AFTER `open()` had resolved. Fires at most once, and only for a renderer
+     * that was already live: a failure DURING the open is reported by rejecting `open()`, so a
+     * caller that handles both never gets told twice. Returns an unsubscribe.
+     */
+    onEngineFailure(listener: (error: unknown) => void): () => void;
     /** Idempotent: a second `open` returns the same promise. */
     open(element: HTMLElement): Promise<void>;
     /** Raw PTY bytes. Never decode them first — UTF-8 splits across chunk boundaries. */
@@ -212,6 +226,14 @@ export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const DEFAULT_SCROLLBACK_BYTES = 5_000_000;
 /** Queued bytes tolerated before the engine is open; beyond this the oldest chunks go. */
 export const PENDING_WRITE_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Ceiling on how long one engine startup may hold the serialization gate (see
+ * `serializeEngineStartup`). A startup that wedges must not wedge every pane behind it, so the
+ * next waiter goes anyway once this elapses — the gate narrows a race, it is not a lock whose
+ * failure mode is a hung window.
+ */
+export const ENGINE_STARTUP_GATE_TIMEOUT_MS = 10_000;
 
 /**
  * Dark palette matching the chrome tokens (`--nex-bg` / `--nex-fg`). Hex only — see
@@ -399,6 +421,104 @@ export function estimateCellSize(fontSize: number, fontFamily: string): CellSize
     return measureCellSize(fontSize, fontFamily);
 }
 
+// ── engine startup serialization (run-F N1) ─────────────────────────────────────────
+
+/**
+ * Every engine startup in the page runs one at a time.
+ *
+ * ghostty-web 0.4 puts **every terminal in the tab through one shared WASM instance**, and its
+ * `init()` is not idempotent under concurrency — the shipped dist is literally
+ *
+ *     let R = null;
+ *     async function init() { R || (R = await Ghostty.load()); }
+ *
+ * so two panes that start while neither `load()` has settled each see `R === null`, each
+ * instantiate the module, and the singleton ends up whichever finished last. Panes then hold
+ * terminals from *different* instances, allocate from one heap and index another, and the first
+ * write after `open()` lands outside the buffer it was measured against:
+ *
+ *     RangeError: offset is out of bounds
+ *         at Uint8Array.set        ← GhosttyTerminal.write: alloc into instance A,
+ *         at K.write                 `new Uint8Array(memory.buffer).set(bytes, ptr)`
+ *
+ * That is run-F N1 — two occurrences in four full audit runs, always on a flow that reveals a
+ * pane while another engine is still coming up (`nex pane split`, `nex workspace create`).
+ * Serializing the whole startup — load, `open()`, geometry, and the first flush — means a
+ * second pane never instantiates while the first is mid-flight, which is the window the bug
+ * lives in. The cost is nothing after the first pane: `init()` returns an already-resolved
+ * promise and the rest of the critical section is synchronous.
+ *
+ * It is a *narrowing*, not a proof of absence, which is why the retry path exists too.
+ */
+let engineStartupGate: Promise<void> = Promise.resolve();
+
+/** Resolve when `promise` settles or `ms` elapses — whichever comes first. Never rejects. */
+function settledOrAfter(promise: Promise<void>, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        // A gate timer must never hold a test runner (or Node) open on its own.
+        (timer as unknown as { unref?: () => void }).unref?.();
+        void promise.then(
+            () => {
+                clearTimeout(timer);
+                resolve();
+            },
+            () => {
+                clearTimeout(timer);
+                resolve();
+            }
+        );
+    });
+}
+
+/**
+ * Run `task` with no other serialized startup in flight. Exported because it is the seam the
+ * unit tests assert exclusivity through.
+ */
+export function serializeEngineStartup<T>(task: () => Promise<T>, timeoutMs = ENGINE_STARTUP_GATE_TIMEOUT_MS): Promise<T> {
+    const predecessor = engineStartupGate;
+    let release: () => void = () => undefined;
+    engineStartupGate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return (async (): Promise<T> => {
+        await settledOrAfter(predecessor, timeoutMs);
+        try {
+            return await task();
+        } finally {
+            release();
+        }
+    })();
+}
+
+/** Drop the queue between test files, so one pending startup cannot stall the next suite. */
+export function resetEngineStartupGateForTests(): void {
+    engineStartupGate = Promise.resolve();
+}
+
+// ── engine fault injection (the stress harness's seam) ──────────────────────────────
+
+/** Where a synthetic engine failure is planted. */
+export type EngineFaultKind = 'load' | 'open' | 'write';
+
+/**
+ * A page-global hook the renderer consults, so a harness can make the N1 failure happen on
+ * demand instead of waiting for a one-in-two run of the full audit.
+ *
+ * Nothing in the app installs it: the adapter reads `globalThis.__nexTerminalFaults` once per
+ * renderer and holds `undefined` in every real session, so the cost in production is one
+ * property read at construction. `packages/shell/scripts/renderer-start-stress.mjs` sets it
+ * over CDP; returning a message plants that error, returning nothing lets the call through.
+ */
+export interface EngineFaultHook {
+    fault(kind: EngineFaultKind, engine: TerminalEngine): string | undefined;
+}
+
+function engineFaultHook(): EngineFaultHook | undefined {
+    const hook = (globalThis as { __nexTerminalFaults?: EngineFaultHook | undefined }).__nexTerminalFaults;
+    return hook !== undefined && typeof hook.fault === 'function' ? hook : undefined;
+}
+
 // ── the adapter ─────────────────────────────────────────────────────────────────────
 
 function resolveOptions(options: TerminalRendererOptions | undefined, engine: TerminalEngine): ResolvedRendererOptions {
@@ -427,10 +547,15 @@ class AdapterRenderer implements TerminalRenderer {
     private handle: EngineHandle | undefined;
     private openPromise: Promise<void> | undefined;
     private disposed = false;
+    /** The engine threw from inside itself; it takes no further bytes (run-F N1). */
+    private poisoned = false;
+    /** `open()` resolved — the point after which a failure is the owner's to hear about. */
+    private opened = false;
 
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
+    private readonly failureListeners = new Set<(error: unknown) => void>();
     private readonly engineDisposables: EngineDisposable[] = [];
 
     private pending: (Uint8Array | string)[] = [];
@@ -438,6 +563,7 @@ class AdapterRenderer implements TerminalRenderer {
     private wantFocus = false;
     private requestedCols: number;
     private requestedRows: number;
+    private readonly faults: EngineFaultHook | undefined;
 
     constructor(
         engine: TerminalEngine,
@@ -448,6 +574,9 @@ class AdapterRenderer implements TerminalRenderer {
         this.options = resolveOptions(options, engine);
         this.requestedCols = this.options.cols;
         this.requestedRows = this.options.rows;
+        // Read once, at construction: `write()` is the hottest path in the client and must not
+        // pay a global lookup per PTY chunk. Undefined in every real session.
+        this.faults = engineFaultHook();
     }
 
     get cols(): number {
@@ -462,6 +591,15 @@ class AdapterRenderer implements TerminalRenderer {
         return this.openPromise ?? Promise.resolve();
     }
 
+    get failed(): boolean {
+        return this.poisoned;
+    }
+
+    onEngineFailure(listener: (error: unknown) => void): () => void {
+        this.failureListeners.add(listener);
+        return () => this.failureListeners.delete(listener);
+    }
+
     open(element: HTMLElement): Promise<void> {
         if (this.openPromise !== undefined) return this.openPromise;
         this.openPromise = this.load(element);
@@ -469,17 +607,22 @@ class AdapterRenderer implements TerminalRenderer {
     }
 
     write(data: Uint8Array | string): void {
-        if (this.disposed) return;
+        if (this.disposed || this.poisoned) return;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             this.queue(data);
             return;
         }
-        terminal.write(data);
+        // CONTAIN (run-F N1): ghostty-web's `write()` reaches straight into the shared WASM
+        // heap and can throw `RangeError: offset is out of bounds`. Unwrapped, that throw goes
+        // wherever the byte came from — the WebSocket message handler — as an unhandled
+        // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
+        // renderer exactly once, which is the signal the pane restarts on.
+        this.guard(() => terminal.write(data), 'write');
     }
 
     reset(): void {
-        if (this.disposed) return;
+        if (this.disposed || this.poisoned) return;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             /**
@@ -504,7 +647,7 @@ class AdapterRenderer implements TerminalRenderer {
         }
         // RIS in-stream rather than `terminal.reset()` — see the header note (ordering with
         // xterm's async write queue; ghostty-web's reset() frees the WASM terminal).
-        terminal.write(TERMINAL_RESET_SEQUENCE);
+        this.guard(() => terminal.write(TERMINAL_RESET_SEQUENCE), 'reset');
     }
 
     onData(listener: (data: string) => void): () => void {
@@ -531,28 +674,29 @@ class AdapterRenderer implements TerminalRenderer {
         const nextRows = Math.max(1, Math.trunc(rows));
         this.requestedCols = nextCols;
         this.requestedRows = nextRows;
+        if (this.poisoned) return;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) return; // applied at open
         if (terminal.cols === nextCols && terminal.rows === nextRows) return;
-        terminal.resize(nextCols, nextRows);
+        this.guard(() => terminal.resize(nextCols, nextRows), 'resize');
     }
 
     focus(): void {
         this.wantFocus = true;
-        if (this.disposed) return;
-        this.handle?.terminal.focus();
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.terminal.focus());
     }
 
     blur(): void {
         this.wantFocus = false;
-        if (this.disposed) return;
-        this.handle?.terminal.blur();
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.terminal.blur());
     }
 
     setTheme(theme: TerminalTheme): void {
         this.options = { ...this.options, theme };
-        if (this.disposed) return;
-        this.handle?.setTheme?.(theme);
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.setTheme?.(theme));
     }
 
     cellSize(): CellSize {
@@ -562,22 +706,78 @@ class AdapterRenderer implements TerminalRenderer {
     }
 
     repaint(): void {
-        if (this.disposed) return;
-        this.handle?.repaint?.();
+        if (this.disposed || this.poisoned) return;
+        // A repaint walks the WASM cell buffer, so it can throw the same way `write()` does.
+        this.guard(() => this.handle?.repaint?.(), 'repaint');
     }
 
     remeasure(): void {
-        if (this.disposed) return;
-        try {
-            this.handle?.remeasure?.();
-        } catch {
-            /* an engine that cannot re-measure keeps its construction metrics */
-        }
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.remeasure?.());
     }
 
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.releaseEngine();
+        this.pending = [];
+        this.pendingBytes = 0;
+        this.dataListeners.clear();
+        this.bellListeners.clear();
+        this.titleListeners.clear();
+        this.failureListeners.clear();
+    }
+
+    // ── internals ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Run an engine call that touches the VT. A throw means the engine is gone — poison it,
+     * never call it again, and tell the owner so it can build a fresh one.
+     */
+    private guard(action: () => void, kind: 'write' | 'reset' | 'resize' | 'repaint'): void {
+        const planted = kind === 'write' ? this.faults?.fault('write', this.engine) : undefined;
+        if (planted !== undefined) {
+            this.poison(new RangeError(planted));
+            return;
+        }
+        try {
+            action();
+        } catch (error) {
+            this.poison(error);
+        }
+    }
+
+    /** Cosmetic engine calls (focus, theme, re-measure): a throw is not worth killing a pane. */
+    private swallow(action: () => void): void {
+        try {
+            action();
+        } catch {
+            /* a pane whose caret or palette did not take is still a working terminal */
+        }
+    }
+
+    /**
+     * Abandon the engine. Idempotent, and deliberately quiet: the owner decides what a user
+     * sees, and a failure that happens DURING `open()` is already carried by that rejection —
+     * announcing it here as well would restart the pane twice for one fault.
+     */
+    private poison(error: unknown): void {
+        if (this.poisoned) return;
+        this.poisoned = true;
+        this.pending = [];
+        this.pendingBytes = 0;
+        if (!this.opened) return;
+        for (const listener of [...this.failureListeners]) {
+            try {
+                listener(error);
+            } catch {
+                /* a listener that throws must not swallow the failure for the others */
+            }
+        }
+    }
+
+    /** Unhook and free whatever engine this adapter is holding. Safe to call twice. */
+    private releaseEngine(): void {
         for (const disposable of this.engineDisposables) {
             try {
                 disposable.dispose();
@@ -588,11 +788,6 @@ class AdapterRenderer implements TerminalRenderer {
         this.engineDisposables.length = 0;
         const handle = this.handle;
         this.handle = undefined;
-        this.pending = [];
-        this.pendingBytes = 0;
-        this.dataListeners.clear();
-        this.bellListeners.clear();
-        this.titleListeners.clear();
         if (handle === undefined) return;
         try {
             handle.dispose?.();
@@ -606,8 +801,6 @@ class AdapterRenderer implements TerminalRenderer {
         }
     }
 
-    // ── internals ───────────────────────────────────────────────────────────────────
-
     private queue(data: Uint8Array | string): void {
         this.pending.push(data);
         this.pendingBytes += byteLength(data);
@@ -618,7 +811,24 @@ class AdapterRenderer implements TerminalRenderer {
         }
     }
 
-    private async load(element: HTMLElement): Promise<void> {
+    /**
+     * The whole startup runs inside the page-wide gate — see `serializeEngineStartup`. The
+     * critical section is not just the WASM load: `open()` allocates the shared instance's
+     * terminal and the flush below is the first thing that writes into it, which is exactly
+     * where N1's `RangeError` landed.
+     */
+    private load(element: HTMLElement): Promise<void> {
+        return serializeEngineStartup(() => this.loadExclusive(element));
+    }
+
+    private async loadExclusive(element: HTMLElement): Promise<void> {
+        // Disposed while queued behind another startup — a pane evicted mid-wait must not cost
+        // the shared WASM instance another terminal on its way out.
+        if (this.disposed) return;
+
+        const planted = this.faults?.fault('load', this.engine);
+        if (planted !== undefined) throw new Error(planted);
+
         const handle = await this.loader(this.options);
         if (this.disposed) {
             try {
@@ -635,6 +845,8 @@ class AdapterRenderer implements TerminalRenderer {
         // engine — ghostty-web has already allocated a WASM terminal by then — and leave the
         // adapter un-opened, so the caller sees a rejected `ready` and the queue is not lost.
         try {
+            const plantedOpen = this.faults?.fault('open', this.engine);
+            if (plantedOpen !== undefined) throw new Error(plantedOpen);
             terminal.open(element);
         } catch (error) {
             try {
@@ -647,40 +859,60 @@ class AdapterRenderer implements TerminalRenderer {
         }
         this.handle = handle;
 
-        this.engineDisposables.push(
-            terminal.onData((data) => {
-                for (const listener of [...this.dataListeners]) listener(data);
-            })
-        );
-        const bell = terminal.onBell?.((): void => {
-            for (const listener of [...this.bellListeners]) listener();
-        });
-        if (bell !== undefined) this.engineDisposables.push(bell);
-        const title = terminal.onTitleChange?.((value: string): void => {
-            for (const listener of [...this.titleListeners]) listener(value);
-        });
-        if (title !== undefined) this.engineDisposables.push(title);
-
-        // Metrics first, then geometry, then the bytes. A replay written before the resize
-        // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
-        // stacks duplicate prompt copies on re-attach (terminal-surface.md §4).
+        /**
+         * Everything from here on talks to a LIVE engine, and every one of these calls reaches
+         * into the shared WASM heap. Run-F N1 threw from the flush at the bottom — after
+         * `open()` had returned cleanly — which left the adapter holding a half-started engine
+         * whose WASM terminal was never freed while the rejection went to the pane. Wrapping
+         * the tail means one outcome per startup: either a renderer that is fully live, or a
+         * freed engine and a rejection the owner can retry on.
+         */
         try {
-            handle.remeasure?.();
-        } catch {
-            /* an engine without a remeasure hook keeps its construction metrics */
-        }
-        if (terminal.cols !== this.requestedCols || terminal.rows !== this.requestedRows) {
-            terminal.resize(this.requestedCols, this.requestedRows);
+            this.engineDisposables.push(
+                terminal.onData((data) => {
+                    for (const listener of [...this.dataListeners]) listener(data);
+                })
+            );
+            const bell = terminal.onBell?.((): void => {
+                for (const listener of [...this.bellListeners]) listener();
+            });
+            if (bell !== undefined) this.engineDisposables.push(bell);
+            const title = terminal.onTitleChange?.((value: string): void => {
+                for (const listener of [...this.titleListeners]) listener(value);
+            });
+            if (title !== undefined) this.engineDisposables.push(title);
+
+            // Metrics first, then geometry, then the bytes. A replay written before the resize
+            // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what
+            // stacks duplicate prompt copies on re-attach (terminal-surface.md §4).
+            try {
+                handle.remeasure?.();
+            } catch {
+                /* an engine without a remeasure hook keeps its construction metrics */
+            }
+            if (terminal.cols !== this.requestedCols || terminal.rows !== this.requestedRows) {
+                terminal.resize(this.requestedCols, this.requestedRows);
+            }
+
+            const queued = this.pending;
+            this.pending = [];
+            this.pendingBytes = 0;
+            for (const chunk of queued) {
+                const plantedWrite = this.faults?.fault('write', this.engine);
+                if (plantedWrite !== undefined) throw new RangeError(plantedWrite);
+                terminal.write(chunk);
+            }
+
+            // ghostty-web#100: `open()` focuses itself. Re-assert what the caller asked for.
+            if (this.wantFocus) terminal.focus();
+            else terminal.blur();
+        } catch (error) {
+            this.poisoned = true;
+            this.releaseEngine();
+            throw error;
         }
 
-        const queued = this.pending;
-        this.pending = [];
-        this.pendingBytes = 0;
-        for (const chunk of queued) terminal.write(chunk);
-
-        // ghostty-web#100: `open()` focuses itself. Re-assert what the caller actually asked for.
-        if (this.wantFocus) terminal.focus();
-        else terminal.blur();
+        this.opened = true;
     }
 }
 

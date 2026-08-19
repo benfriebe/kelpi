@@ -5,6 +5,8 @@ import {
     DEFAULT_RESIZE_DEBOUNCE_MS,
     RESIZE_MAX_WAIT_MS,
     TERMINAL_EDGE_PADDING,
+    TERMINAL_START_ATTEMPTS,
+    TERMINAL_START_RETRY_MS,
     TerminalPane,
     measureGeometry,
     shouldGrabFocus
@@ -34,6 +36,9 @@ afterEach(() => {
     cleanup();
     observers.restore();
     vi.useRealTimers();
+    // Console spies are per-test: several of the retry cases assert exact call counts, and a
+    // spy left installed by an earlier test would carry its calls into the next one.
+    vi.restoreAllMocks();
 });
 
 /** Flush the renderer's `open()` promise continuation (a real microtask, not a timer). */
@@ -42,6 +47,21 @@ async function settle(): Promise<void> {
         await Promise.resolve();
         await Promise.resolve();
     });
+}
+
+/** Run one retry backoff to completion, then let the new engine's `open()` settle (run-F N1). */
+async function runBackoff(): Promise<void> {
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(TERMINAL_START_RETRY_MS * 2 ** TERMINAL_START_ATTEMPTS);
+        await Promise.resolve();
+        await Promise.resolve();
+    });
+}
+
+/** Burn the whole start budget: every attempt fails and the pane lands on the placeholder. */
+async function exhaustStartAttempts(): Promise<void> {
+    await settle();
+    for (let index = 1; index < TERMINAL_START_ATTEMPTS; index += 1) await runBackoff();
 }
 
 describe('TerminalPane — replay before live', () => {
@@ -482,8 +502,49 @@ describe('TerminalPane — input and focus', () => {
         expect(titles).toEqual(['~/src — zsh']);
     });
 
-    it('surfaces an engine that cannot start without tearing the stream down', async () => {
+    it('surfaces an engine that cannot start, and detaches rather than feeding a dead pane', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
         const renderers = createFakeRendererFactory({ failOpen: true });
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await exhaustStartAttempts();
+
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(host.dataset['terminalStatus']).toBe('error');
+        // Detach, not kill: `unsubscribe` sends `detach-pane`, exactly as a mount-policy
+        // eviction does, so the PTY and its scrollback stay alive daemon-side and Retry
+        // re-attaches to the same session. Before the retry work this pane stayed attached
+        // forever with nothing to paint into.
+        expect(pty.last().unsubscribed).toBe(true);
+        expect(pty.streams).toHaveLength(TERMINAL_START_ATTEMPTS);
+    });
+});
+
+/**
+ * run-F N1 — "terminal renderer failed to start", and the pane never recovering.
+ *
+ * ghostty-web 0.4 shares one WASM instance across every terminal in the tab, so a pane that
+ * starts while another engine is still instantiating can have its first write land outside the
+ * heap it was measured against (`RangeError: offset is out of bounds`, thrown from inside
+ * `Uint8Array.set`). Two occurrences in four full audit runs — and one rejected `open()` was
+ * terminal: the placeholder stayed until the pane was closed.
+ *
+ * The failure is a race, so the same pane on a FRESH engine comes straight up. These tests are
+ * that claim, with the failure injected instead of waited for.
+ */
+describe('TerminalPane — renderer start retry (run-F N1)', () => {
+    it('rebuilds on a fresh engine when the first start fails, and never shows the placeholder', async () => {
+        const renderers = createFakeRendererFactory({ failOpensBefore: 1 });
         const pty = createFakePtyApi();
 
         const view = render(
@@ -499,8 +560,173 @@ describe('TerminalPane — input and focus', () => {
         await settle();
 
         const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
-        expect(host.dataset['terminalStatus']).toBe('error');
+        // Not 'error': the pane is between engines, which is a hiccup, not a dead pane.
+        expect(host.dataset['terminalStatus']).toBe('loading');
+
+        await runBackoff();
+
+        expect(renderers.instances).toHaveLength(2);
+        expect(renderers.instances[0]?.disposed).toBe(true);
+        expect(host.dataset['terminalStatus']).toBe('live');
+        expect(host.dataset['terminalAttempts']).toBe('2');
+        // A fresh engine means a fresh attach: the daemon replays the screen onto it.
+        expect(pty.streams).toHaveLength(2);
+        expect(pty.streams[0]?.unsubscribed).toBe(true);
         expect(pty.last().unsubscribed).toBe(false);
+    });
+
+    it('keeps the console clean when it recovers — a retried start is not a renderer error', async () => {
+        const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+        const renderers = createFakeRendererFactory({ failOpensBefore: 1 });
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        await runBackoff();
+
+        // The audit's closing step counts every renderer console error AND warning; a pane that
+        // healed itself must not read as a defect there.
+        expect(error).not.toHaveBeenCalled();
+        expect(info).toHaveBeenCalledTimes(1);
+        error.mockRestore();
+        info.mockRestore();
+    });
+
+    it('gives up after the attempt budget and says why, once', async () => {
+        const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const renderers = createFakeRendererFactory({ failOpensBefore: 99 });
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await exhaustStartAttempts();
+
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(renderers.instances).toHaveLength(TERMINAL_START_ATTEMPTS);
+        expect(host.dataset['terminalStatus']).toBe('error');
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(String(error.mock.calls[0]?.[0])).toContain('pane-1');
+        error.mockRestore();
+    });
+
+    it('offers a Retry button on the placeholder that starts over on a fresh engine', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        // Mutable on purpose: the injected fault is cleared before the human retries, which is
+        // what a real transient race looks like.
+        const fake: { failOpensBefore: number } = { failOpensBefore: 99 };
+        const renderers = createFakeRendererFactory(fake);
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await exhaustStartAttempts();
+
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(host.dataset['terminalStatus']).toBe('error');
+
+        const retry = view.container.querySelector('[data-testid="terminal-retry-pane-1"]');
+        expect(retry).not.toBeNull();
+
+        fake.failOpensBefore = 0;
+        await act(async () => {
+            fireEvent.click(retry as HTMLElement);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(renderers.instances).toHaveLength(TERMINAL_START_ATTEMPTS + 1);
+        expect(host.dataset['terminalStatus']).toBe('live');
+        // The budget starts over, so a person can keep asking.
+        expect(host.dataset['terminalAttempts']).toBe('1');
+    });
+
+    it('rebuilds when a LIVE engine dies, and seals the stream off the dead one', async () => {
+        const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+
+        const first = renderers.last();
+        pty.last().replay('SNAPSHOT');
+        expect(first.writes).toEqual(['SNAPSHOT']);
+
+        // ghostty-web threw `RangeError: offset is out of bounds` from inside `write()`.
+        await act(async () => {
+            first.poison();
+            await Promise.resolve();
+        });
+
+        // Bytes that arrive between the throw and the teardown must not reach the dead engine.
+        pty.streams[0]?.output('after-the-throw');
+        expect(first.writes).toEqual(['SNAPSHOT']);
+
+        await runBackoff();
+
+        expect(renderers.instances).toHaveLength(2);
+        expect(first.disposed).toBe(true);
+        const host = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(host.dataset['terminalStatus']).toBe('live');
+        info.mockRestore();
+    });
+
+    it('does not restart a pane that is being unmounted', async () => {
+        const renderers = createFakeRendererFactory({ failOpensBefore: 99 });
+        const pty = createFakePtyApi();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        view.unmount();
+        await runBackoff();
+
+        expect(renderers.instances).toHaveLength(1);
+        expect(renderers.instances[0]?.disposed).toBe(true);
+        expect(pty.last().unsubscribed).toBe(true);
     });
 });
 

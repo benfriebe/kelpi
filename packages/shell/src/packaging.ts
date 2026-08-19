@@ -50,6 +50,46 @@ export function packagedAppIgnore(file: string): boolean {
     return true;
 }
 
+// ── the macOS fuse set ──────────────────────────────────────────────────────────────
+
+/**
+ * Is this build signed with a real identity, rather than the ad-hoc signature Forge falls back
+ * to? `NEX_MACOS_IDENTITY` is the one input: set it and `forge.config.cjs` adds an `osxSign`
+ * block, leave it empty and the bundle carries an ad-hoc (`-`) signature whose code identity
+ * changes with every build.
+ */
+export function isSignedBuild(identity: string | null | undefined): boolean {
+    return (identity ?? '').trim().length > 0;
+}
+
+/**
+ * May this build fuse Chromium's cookie encryption on? **Only when it is really signed.**
+ *
+ * `EnableCookieEncryption` makes Chromium encrypt the cookie store with a key it keeps in the
+ * macOS login keychain ("<app> Safe Storage"), fetched by `OSCrypt` during browser startup. The
+ * network service will not serve a single request until it has that key, so anything that makes
+ * the keychain call block blocks *every* navigation — silently, with no `did-fail-load` and no
+ * error: the window just stays on the initial empty document forever. That is exactly what the
+ * packaged app did (run-F ▸ N2), and a `sample` of the browser process names the mechanism:
+ *
+ *     SecItemAdd → SecItemAdd_osx → SecKeychainItemCreateFromContent
+ *       → StorageManager::defaultKeychainUI → makeLoginAuthUI
+ *         → AuthorizationCopyRights → xpc_connection_send_message_with_reply_sync → mach_msg
+ *
+ * — a *synchronous* wait on an authorization dialog that nothing is going to answer. Two things
+ * make that dialog appear, and an unsigned build has both: the item's ACL is bound to the code
+ * signature, and an ad-hoc signature is a different identity on every rebuild; and any launch
+ * without an unlocked login keychain (a private `HOME`, ssh, launchd, CI — `packaged-smoke.mjs`
+ * runs in exactly such a sandbox) has no keychain to satisfy it with.
+ *
+ * So cookie encryption travels with signing, and turns on in the same step as the Developer ID
+ * (README ▸ "Signing and notarization"). Note that even a signed build cannot answer that dialog
+ * inside the smoke's private `HOME`: run `packaged-smoke.mjs --mock-keychain` there.
+ */
+export function cookieEncryptionFuseEnabled(identity: string | null | undefined): boolean {
+    return isSignedBuild(identity);
+}
+
 // ── the bundled Node runtime ────────────────────────────────────────────────────────
 
 /** What `<node> -p "process.versions.node + ' ' + process.arch"` tells us about a candidate. */

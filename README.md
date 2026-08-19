@@ -18,26 +18,32 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 **Wire parity, plus an audited UI whose defect ledger is closed except for one accepted engine
 limit.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the `nex`
 CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
-binary. The window has been driven end to end and photographed four times over: the campaign opened
+binary. The window has been driven end to end and photographed five times over: the campaign opened
 with **17 defects + 6 nits, two of them blockers**, and closes with **no blockers — 1 accepted major
-(the daemon's VT does not reflow on resize), 1 new intermittent major, 2 minor, 1 nit.** The one red
-gate is the **packaged `Nex.app`**: it builds correctly but its window never finishes loading (see
-[Install and run](#install-and-run) and `docs/PARITY.md` ▸ Known gaps #9).
+(the daemon's VT does not reflow on resize), 2 minor, 1 nit.** The two findings the closing re-audit
+added are both closed as of 2026-08-20: the intermittent terminal-renderer start failure (a pane
+whose engine dies now rebuilds on a fresh one, and a stress harness that stranded 4 panes in 36 on
+the old bundle strands none), and the **packaged `Nex.app`**, the one red gate on 2026-08-19 — its
+window loads the daemon-served client and `smoke:packaged` is 47/47 (see
+[Install and run](#install-and-run) and `docs/PARITY.md` ▸ Known gaps #9 for what it was).
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
-  **what a person actually sees** (the UI audit and its severity-ordered defect list), where the
-  port deliberately differs from the macOS app, and the remaining functional gaps.
-- [`docs/audit/run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) — the closing re-audit: a verdict
-  per defect, each with the screenshot that settles it. [`docs/audit/`](docs/audit/) holds the runs.
+  **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
+  screenshot that settles each row), where the port deliberately differs from the macOS app, and
+  the remaining functional gaps.
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-G/`](docs/audit/run-G/FINDINGS.md) is the
+  closeout; [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table
+  that closed the original ledger.
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-19 evening): `pnpm check` 3143 passed; the compat suite 103/103 against **both** the
+Gates (2026-08-20): `pnpm check` **3164 passed**; the compat suite 103/103 against **both** the
 shipped Swift CLI and the TypeScript one; four live smokes green (client 33, shell 29, web 46,
-terminal 19) and the packaged one **failing at 34/35**; the UI audit's 179 assertions with 1 failing
-— a real finding, an intermittent terminal-renderer start failure, not a harness fault. Nothing here
-is called done without a screenshot that shows it.
+terminal 19) and the packaged one too, **47/47**; the terminal-renderer start stress **0 stranded in
+48 panes**; and the UI audit **182 assertions, 0 failed, 0 step errors** — the first full run with
+nothing red, taken with the audit now also checking for a stranded renderer on the split and close
+steps. Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart
 
@@ -261,12 +267,14 @@ Use `pnpm --filter @nex/shell package` for just the `.app` (no DMG/ZIP), and
 launches it with a throwaway environment and asserts that it starts its own daemon, serves its
 own client, answers the shipped `nex` CLI, runs a real PTY, and leaves the daemon alive on quit.
 
-> **Known-broken as of 2026-08-19 evening.** That smoke stops at 34/35: the packaged app builds
-> correctly and its daemon comes up, but the **window never finishes loading** — the renderer dies
-> inside Electron's own bootstrap (`Cannot destructure property 'preloadScripts' of
-> 'binding.startupData' as it is null`). The development shell is unaffected. Do not hand the
-> artifact to anyone until this is understood: `docs/PARITY.md` ▸ Known gaps #9 has the repro and
-> the rule-outs.
+> **Green as of 2026-08-20: 47/47**, window included. It stopped at `did-finish-load` through
+> 2026-08-19 evening because `EnableCookieEncryption` was fused on: Chromium then wants the
+> cookie-store key out of the macOS login keychain before its network service will serve anything,
+> and on an ad-hoc-signed build that call blocks on an authorization dialog nothing can answer —
+> so no request is ever made and the window sits on an empty document, silently. The fuse now
+> travels with the signing identity (`docs/PARITY.md` ▸ Known gaps #9). **When you do the signing
+> work below**, the fuse comes back on and this smoke needs `--mock-keychain`, because its sandbox
+> `HOME` has no login keychain in it.
 
 Inside `Nex.app/Contents/Resources`:
 
@@ -311,6 +319,7 @@ Nothing in the current output is signed or notarized:
 | Notarization / stapling | none |
 | Bundled `node` | copied unsigned from the build machine |
 | Auto-update | off (and must stay off: Squirrel cannot install an unsigned update) |
+| Cookie encryption | off — the fuse needs a stable code identity for its keychain key, so it turns on with step 1 below |
 
 In practice: the app runs on the machine that built it, and on any other Mac it is quarantined
 ("Nex is damaged and can't be opened") until someone runs
@@ -318,7 +327,7 @@ In practice: the app runs on the machine that built it, and on any other Mac it 
 
 The checklist for closing that gap, in order:
 
-1. A **Developer ID Application** certificate in the login keychain. `NEX_MACOS_IDENTITY="Developer ID Application: …"` already opts `pnpm dist` into `osxSign` with it.
+1. A **Developer ID Application** certificate in the login keychain. `NEX_MACOS_IDENTITY="Developer ID Application: …"` already opts `pnpm dist` into `osxSign` with it — **and, in the same step, flips `EnableCookieEncryption` back on**, because that fuse needs a code identity stable enough for the keychain's ACL (`cookieEncryptionFuseEnabled`, `packages/shell/src/packaging.ts`). Expect a one-time "Nex wants to use your confidential information stored in Nex Safe Storage" prompt on first launch, and run the packaged smoke with `--mock-keychain` from then on.
 2. **Sign the bundled `node`** and replace it with an official Node build for the target arch. It is a redistributed executable inside the bundle, so it needs its own signature; with the hardened runtime it also needs the JIT entitlements (`com.apple.security.cs.allow-jit`, `…allow-unsigned-executable-memory`).
 3. **Notarize + staple**: add `osxNotarize` (notarytool with an App Store Connect API key) to `forge.config.cjs`, then `xcrun stapler staple` the `.app` and the `.dmg`.
 4. **Verify** on a machine that never saw the build: `spctl -a -vvv -t install Nex.app` and `codesign --verify --deep --strict --verbose=2 Nex.app`.
@@ -388,7 +397,17 @@ Beyond the unit suites, four **live** smokes boot real daemons on private paths 
 node packages/client/scripts/smoke.mjs      # 33 checks: HTTP + WS + delta + PTY round trip
 node packages/shell/scripts/smoke.mjs       # 29 checks: adopt-or-spawn, quit gate, daemon survives
 node packages/shell/scripts/web-smoke.mjs   # 46 checks: real Chromium, real CDP, real CLI
-node packages/shell/scripts/packaged-smoke.mjs   # the built Nex.app, end to end — FAILING 34/35 today
+node packages/shell/scripts/packaged-smoke.mjs   # 47 checks: the built Nex.app, end to end
+```
+
+`terminal-smoke.mjs` (19 checks: font, columns, re-attach, re-boot) drives the same stack for
+terminal *fidelity*, and one more harness exists for the terminal's one intermittent failure:
+
+```bash
+# run-F N1 — creates panes six-at-a-time across workspaces and requires that none is stranded
+# on "terminal renderer failed to start". `--faults <0..1>` plants the exact upstream error to
+# exercise the retry path on demand; `--client-dist <dir>` points it at another bundle.
+node packages/shell/scripts/renderer-start-stress.mjs --rounds 8 --panes 6 --workspaces 3
 ```
 
 And the compat harness drives a real CLI binary against a real daemon — either implementation:

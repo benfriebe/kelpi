@@ -65,6 +65,77 @@ describe('terminal ingest', () => {
         expect(ingest.replays).toBe(2);
     });
 
+    it('seals the target while paused — a poisoned engine hears nothing more (run-F N1)', () => {
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        ingest.replay('SNAPSHOT');
+        ingest.live('before');
+        expect(target.writes).toEqual(['SNAPSHOT', 'before']);
+
+        // The renderer just threw `RangeError: offset is out of bounds` from inside WASM.
+        ingest.pause();
+        ingest.live('after-1');
+        ingest.replay('RESEED');
+        ingest.live('after-2');
+
+        expect(ingest.paused).toBe(true);
+        // Not one byte, and not the reset either: the dead engine is never touched again.
+        expect(target.writes).toEqual(['SNAPSHOT', 'before']);
+        expect(target.resets).toBe(1);
+    });
+
+    it('releases what it held, in order and behind a reset, when it resumes', () => {
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        ingest.replay('SNAPSHOT');
+        ingest.pause();
+        ingest.live('lost-to-the-reseed');
+        ingest.replay('RESEED');
+        ingest.live('after-1');
+        ingest.live('after-2');
+        ingest.resume();
+
+        // The re-seed supersedes anything queued behind it (the daemon snapshots at attach),
+        // and it still leads with the reset a replay always gets.
+        expect(target.resets).toBe(2);
+        expect(target.writes).toEqual(['SNAPSHOT', 'RESEED', 'after-1', 'after-2']);
+        expect(ingest.paused).toBe(false);
+    });
+
+    it('keeps holding after a resume while a replay is still awaited', () => {
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        ingest.pause();
+        ingest.live('early');
+        ingest.resume();
+        expect(target.writes).toEqual([]);
+
+        ingest.replay('SNAPSHOT');
+        expect(target.writes).toEqual(['SNAPSHOT', 'early']);
+    });
+
+    it('drops a replay held behind a pause when a newer one arrives', () => {
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        ingest.pause();
+        ingest.replay('STALE');
+        ingest.live('behind-the-stale-one');
+        ingest.resume();
+        // `resume()` released the stale pair; a newer snapshot now supersedes both.
+        expect(target.writes).toEqual(['STALE', 'behind-the-stale-one']);
+
+        ingest.pause();
+        ingest.replay('OLD');
+        ingest.replay('NEW');
+        ingest.resume();
+
+        expect(target.writes).toEqual(['STALE', 'behind-the-stale-one', 'NEW']);
+    });
+
     it('bounds the hold buffer instead of growing without limit', () => {
         const target = recorder();
         const ingest = createTerminalIngest(target);

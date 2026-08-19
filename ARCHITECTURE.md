@@ -146,6 +146,6 @@ against conformance cases extracted from the Swift tests.
 | Client shell | Electron over Tauri | proven PTY/terminal hosts, single language, CDP for web panes, consistent Chromium everywhere |
 | Daemon language | TypeScript/Node | IO-bound workload; shares ghostty-vt WASM + protocol types with client; one language |
 | Update model | side-by-side versioned daemons | zero-risk updates without FD-handoff engineering; old sessions never die |
-| Terminal render | ghostty-web | libghostty-vt fidelity + xterm-compat API; faster than xterm.js |
+| Terminal render | ghostty-web | libghostty-vt fidelity + xterm-compat API; faster than xterm.js. **One WASM instance is shared by every terminal in the tab**, which is what the client's engine-startup serialization, poisoned-engine containment and per-pane retry are for — `packages/client/src/terminal/`, `docs/audit/renderer-start-flake/` |
 | UI delivery | daemon-served, shell loads URL | atomic UI+daemon updates; remote browsers version-matched; thin shell |
 | Remote access | bind tailnet + `tailscale serve` | zero auth code; matches existing SSH-tunnel philosophy |

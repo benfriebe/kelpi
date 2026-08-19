@@ -121,6 +121,15 @@ off, `onlyLoadAppFromAsar` and asar integrity validation on. Turning `runAsNode`
 load-bearing rather than decorative — it forecloses the "run the daemon with
 `ELECTRON_RUN_AS_NODE`" shortcut that stack.md rules out, which is why the bundled `node` exists.
 
+**Cookie encryption is the one conditional fuse**, and the condition is the code signature
+(`cookieEncryptionFuseEnabled` in `src/packaging.ts` has the whole story). Fused on, Chromium
+fetches the cookie-store key from the macOS login keychain before its network service will serve
+anything; on an ad-hoc-signed build — whose code identity changes with every build — that call
+blocks forever inside `SecItemAdd → makeLoginAuthUI → AuthorizationCopyRights`, waiting on an
+authorization dialog nothing can answer. The window then never loads, with no `did-fail-load` and
+nothing in the log (`docs/PARITY.md` ▸ Known gaps #9). So it turns on in the same step as the
+Developer ID, and `packaged-smoke.mjs` asserts that rule from the fuse wire in phase 1.
+
 Nothing is signed or notarized (ad-hoc only, as arm64 requires); the repo README's *Install and
 run* section carries the gap and the release checklist. `NEX_MACOS_IDENTITY` opts into `osxSign`.
 
@@ -170,8 +179,12 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   names no daemon, no client and no Node — so all three have to come from its own Resources. It
   asserts the daemon process really is the bundled Node, that the served page is the staged
   client byte for byte, that the shipped `nex` CLI gets a ping and can drive a real PTY (the only
-  proof node-pty loaded its native module from inside the bundle), and that the daemon is still
-  running after the app quits. ~30s; keeps the packaged app unless `--clean-app`.
+  proof node-pty loaded its native module from inside the bundle), that **the window really
+  loaded the daemon-served client** (`did-finish-load` — the check that was red through run-F, and
+  the one whose failure message carries the diagnosis), and that the daemon is still running after
+  the app quits. 47 checks, ~30s; keeps the packaged app unless `--clean-app`. A *signed* build
+  needs `--mock-keychain`, since it has cookie encryption fused on and the smoke's private `HOME`
+  contains no login keychain to satisfy it.
 
 Note the shell is **not** part of the repo-root vitest projects or the root `typecheck` script
 (neither includes `packages/shell`, and the root config is not this package's to edit) —

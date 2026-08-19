@@ -29,6 +29,14 @@ export interface FakeRendererOptions {
     readonly deferOpen?: boolean;
     /** Reject `open()` (the "no 2D context" failure mode). */
     readonly failOpen?: boolean;
+    /**
+     * Reject `open()` on the first N renderers a FACTORY builds, then behave. That is the shape
+     * of run-F N1: a start that dies on the shared WASM instance and comes straight up on a
+     * fresh engine a moment later, which is what the pane's retry has to turn into a hiccup.
+     */
+    readonly failOpensBefore?: number;
+    /** The error a failing `open()` rejects with; defaults to the N1 `RangeError`. */
+    readonly openError?: () => Error;
 }
 
 export class FakeRenderer implements TerminalRenderer {
@@ -49,22 +57,33 @@ export class FakeRenderer implements TerminalRenderer {
 
     readonly ready: Promise<void>;
 
+    /** The engine was abandoned mid-flight (`poison()`); it takes no further bytes. */
+    failed = false;
+
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
+    private readonly failureListeners = new Set<(error: unknown) => void>();
     private cell: CellSize;
     private settle: (() => void) | undefined;
     private fail: ((error: Error) => void) | undefined;
 
-    constructor(readonly options: TerminalRendererOptions | undefined, fake: FakeRendererOptions = {}) {
+    constructor(
+        readonly options: TerminalRendererOptions | undefined,
+        fake: FakeRendererOptions = {},
+        /** Which renderer this is, counting from 1 — `failOpensBefore` reads it. */
+        readonly ordinal = 1
+    ) {
         this.cell = fake.cell ?? { width: 10, height: 20 };
+        const openError = fake.openError ?? ((): Error => new RangeError('offset is out of bounds'));
+        const rejectThisOne = fake.failOpen === true || this.ordinal <= (fake.failOpensBefore ?? 0);
         if (fake.deferOpen === true) {
             this.ready = new Promise<void>((resolve, reject) => {
                 this.settle = resolve;
                 this.fail = reject;
             });
-        } else if (fake.failOpen === true) {
-            this.ready = Promise.reject(new Error('Failed to get 2D rendering context'));
+        } else if (rejectThisOne) {
+            this.ready = Promise.reject(fake.failOpen === true ? new Error('Failed to get 2D rendering context') : openError());
             this.ready.catch(() => undefined);
         } else {
             this.ready = Promise.resolve();
@@ -89,11 +108,28 @@ export class FakeRenderer implements TerminalRenderer {
     }
 
     write(data: Uint8Array | string): void {
+        if (this.failed) return;
         this.writes.push(asText(data));
     }
 
     reset(): void {
+        if (this.failed) return;
         this.resets += 1;
+    }
+
+    onEngineFailure(listener: (error: unknown) => void): () => void {
+        this.failureListeners.add(listener);
+        return () => this.failureListeners.delete(listener);
+    }
+
+    /**
+     * The engine threw from inside itself after it was live — what `AdapterRenderer.poison()`
+     * does when a ghostty-web `write()` raises `RangeError: offset is out of bounds`.
+     */
+    poison(error: unknown = new RangeError('offset is out of bounds')): void {
+        if (this.failed) return;
+        this.failed = true;
+        for (const listener of [...this.failureListeners]) listener(error);
     }
 
     onData(listener: (data: string) => void): () => void {
@@ -146,6 +182,7 @@ export class FakeRenderer implements TerminalRenderer {
         this.dataListeners.clear();
         this.bellListeners.clear();
         this.titleListeners.clear();
+        this.failureListeners.clear();
     }
 
     // ── driving from a test ─────────────────────────────────────────────────────────
@@ -175,7 +212,7 @@ export function createFakeRendererFactory(fake: FakeRendererOptions = {}): FakeR
     const instances: FakeRenderer[] = [];
     return {
         factory: (options?: TerminalRendererOptions): TerminalRenderer => {
-            const renderer = new FakeRenderer(options, fake);
+            const renderer = new FakeRenderer(options, fake, instances.length + 1);
             instances.push(renderer);
             return renderer;
         },

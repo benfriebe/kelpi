@@ -20,6 +20,9 @@
  *                field that is mid-edit; a click anywhere in the pane raises `onFocusRequest`
  *   unmount      dispose the engine + detach the stream. Only pane close / mount-policy
  *                eviction unmounts; the daemon keeps the PTY and replays on re-attach.
+ *   start fails  dispose the half-built engine, seal the byte stream and start over on a FRESH
+ *                one after a short backoff (run-F N1); only an exhausted budget paints the
+ *                placeholder, and the placeholder carries a Retry button onto the same path.
  */
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
@@ -59,6 +62,28 @@ export const RESIZE_MAX_WAIT_MS = 100;
  * geometry is measured from, so cols stay honest.
  */
 export const TERMINAL_EDGE_PADDING = 2;
+
+/**
+ * How many times a pane will build an engine before it gives up and shows the placeholder
+ * (run-F N1).
+ *
+ * ghostty-web 0.4 shares one WASM instance across every terminal in the tab, and a pane that
+ * starts while another engine is mid-instantiation can have its first write land outside the
+ * heap it was measured against — `RangeError: offset is out of bounds`, thrown from inside
+ * `Uint8Array.set`. Two occurrences in four full audit runs, and it never recovered: one
+ * rejected `open()` was terminal for the pane, so a user got a sentence where their shell
+ * should be until they closed it.
+ *
+ * The failure is a *race*, so the same pane on a fresh engine almost always comes straight up.
+ * The budget is per MOUNT, not per failure — deliberately: an engine that keeps dying after it
+ * goes live would otherwise restart forever, and a placeholder with a Retry button is a better
+ * answer to that than a pane that flickers. Retry resets the budget, because a person asking
+ * again is new information.
+ */
+export const TERMINAL_START_ATTEMPTS = 3;
+
+/** Backoff before rebuilding a failed engine; doubles per attempt (150 ms, then 300 ms). */
+export const TERMINAL_START_RETRY_MS = 150;
 
 export interface TerminalGeometry {
     readonly cols: number;
@@ -159,6 +184,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** When the current run of coalesced resizes started (null = nothing pending). */
     const pendingResizeSince = useRef<number | null>(null);
     const [status, setStatus] = useState<PaneStatus>('loading');
+    /** Engine builds so far in this mount — surfaced on the root for the audit harness. */
+    const [attempts, setAttempts] = useState(0);
+    /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
+    const restartRef = useRef<(() => void) | null>(null);
 
     const clearResizeTimer = useCallback((): void => {
         if (resizeTimer.current === null) return;
@@ -225,9 +254,60 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (host === null) return;
         let cancelled = false;
         let teardown: (() => void) | null = null;
+        /** Engine builds so far in this mount — the retry budget (run-F N1). */
+        let attempt = 0;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const stop = (): void => {
+            if (retryTimer !== null) {
+                clearTimeout(retryTimer);
+                retryTimer = null;
+            }
+            teardown?.();
+            teardown = null;
+        };
+
+        /**
+         * A start attempt failed. Tear the half-built engine down and go again on a fresh one;
+         * only an exhausted budget flips the pane to the placeholder.
+         *
+         * A retried attempt is logged at `info`, not `error`: the pane recovered, and the audit
+         * counts a renderer console error as a defect. The give-up is still an `error`, because
+         * by then a person is looking at a sentence instead of their shell.
+         */
+        const failed = (error: unknown, phase: 'open' | 'engine'): void => {
+            stop();
+            if (cancelled) return;
+            if (attempt < TERMINAL_START_ATTEMPTS) {
+                console.info(
+                    `[nex] terminal renderer ${phase === 'open' ? 'failed to start' : 'died'} for pane ${paneID} ` +
+                        `(attempt ${String(attempt)}/${String(TERMINAL_START_ATTEMPTS)}) — rebuilding on a fresh engine`,
+                    error
+                );
+                setStatus('loading');
+                const backoff = TERMINAL_START_RETRY_MS * 2 ** (attempt - 1);
+                retryTimer = setTimeout(() => {
+                    retryTimer = null;
+                    start();
+                }, backoff);
+                return;
+            }
+            // Say WHY. The placeholder ("terminal renderer failed to start") is all a person
+            // gets, and this rejection used to be swallowed — which is why the audit's first
+            // occurrence of it (run-F step 14, a pane revealed by `nex workspace create`)
+            // arrived with zero renderer console output and no cause to chase.
+            console.error(
+                `[nex] terminal renderer failed to start for pane ${paneID} after ` +
+                    `${String(attempt)} attempt(s)`,
+                error
+            );
+            setStatus('error');
+        };
 
         const start = (): void => {
             if (cancelled || hostRef.current === null) return;
+            attempt += 1;
+            setAttempts(attempt);
             const current = latest.current;
             const factory = current.createRenderer ?? createTerminalRenderer;
             const renderer = factory({
@@ -260,6 +340,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const offData = renderer.onData((data) => stream.write(data));
             const offBell = renderer.onBell(() => latest.current.onBell?.(paneID));
             const offTitle = renderer.onTitleChange((title) => latest.current.onTitleChange?.(paneID, title));
+            // The engine threw from inside WASM after it was already live. It is poisoned and
+            // takes no more bytes, so seal the stream off it and rebuild — an engine that dies
+            // under a running shell is the same defect as one that dies while starting.
+            const offFailure = renderer.onEngineFailure((error: unknown) => {
+                if (cancelled) return;
+                ingest.pause();
+                failed(error, 'engine');
+            });
 
             void renderer.open(host).then(
                 () => {
@@ -272,27 +360,37 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 },
                 (error: unknown) => {
                     if (cancelled) return;
-                    // Say WHY. The placeholder ("terminal renderer failed to start") is all a
-                    // person gets, and this rejection used to be swallowed — which is why the
-                    // audit's one intermittent occurrence of it (run-F step 14, a pane revealed
-                    // by `nex workspace create`) arrived with zero renderer console output and
-                    // no cause to chase. The next one names itself.
-                    console.error(`[nex] terminal renderer failed to start for pane ${paneID}`, error);
-                    setStatus('error');
+                    // Seal the stream BEFORE the teardown: the daemon keeps sending, and a
+                    // chunk that arrives between the rejection and the unsubscribe must not be
+                    // handed to the engine that just failed.
+                    ingest.pause();
+                    failed(error, 'open');
                 }
             );
 
             teardown = () => {
                 clearResizeTimer();
+                ingest.pause();
                 offData();
                 offBell();
                 offTitle();
+                offFailure();
                 stream.unsubscribe();
                 renderer.dispose();
                 rendererRef.current = null;
                 streamRef.current = null;
                 geometryRef.current = null;
             };
+        };
+
+        // The placeholder's Retry button: a person asking again is new information, so the
+        // budget starts over and the rebuild is immediate rather than backed off.
+        restartRef.current = () => {
+            if (cancelled) return;
+            stop();
+            attempt = 0;
+            setStatus('loading');
+            start();
         };
 
         // Kick the load (idempotent), THEN ask whether it settled synchronously — it does
@@ -305,8 +403,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
 
         return () => {
             cancelled = true;
-            teardown?.();
-            teardown = null;
+            restartRef.current = null;
+            stop();
         };
         // `fontFamily` / `fontSize` are in the deps on purpose: the engines take a font at
         // construction and the adapter's xterm-compatible subset has no live setter, so a
@@ -400,12 +498,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         current.onFocusRequest?.(current.paneID);
     }, []);
 
+    const retryStart = useCallback((): void => {
+        restartRef.current?.();
+    }, []);
+
     const background = props.background ?? theme?.background ?? 'var(--nex-term-bg, #0A0A0C)';
 
     return (
         <div
             data-pane-id={paneID}
             data-terminal-status={status}
+            data-terminal-attempts={String(attempts)}
             data-terminal-visible={visible ? 'true' : 'false'}
             className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
             style={{
@@ -427,12 +530,34 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         >
             <div ref={hostRef} className="h-full w-full" data-terminal-host="" aria-label={`terminal ${paneID}`} />
             {status === 'error' ? (
+                // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
+                // is now the last stop on the retry path, not a dead end. The pane root still
+                // sees the click through the capture-phase handler above, so asking for focus
+                // keeps working.
                 <div
                     role="status"
-                    className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-center text-xs"
+                    className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-xs"
                     style={{ color: 'var(--nex-fg-secondary, #9A9AA0)' }}
                 >
-                    terminal renderer failed to start
+                    <span>terminal renderer failed to start</span>
+                    <button
+                        type="button"
+                        data-testid={`terminal-retry-${paneID}`}
+                        onClick={retryStart}
+                        title="Build a fresh terminal engine for this pane"
+                        className="cursor-pointer rounded text-xs font-medium whitespace-nowrap"
+                        style={{
+                            // Padding inline, not as a utility: `styles.css` resets `button`
+                            // outside any cascade layer, so an unlayered `padding: 0` beats
+                            // Tailwind's layered `px-3` and the chip would hug its own text.
+                            padding: '5px 12px',
+                            border: '1px solid var(--nex-border, #24242B)',
+                            color: 'var(--nex-accent, #6F9BD8)',
+                            backgroundColor: 'var(--nex-header-bg, #13131A)'
+                        }}
+                    >
+                        Retry
+                    </button>
                 </div>
             ) : null}
         </div>

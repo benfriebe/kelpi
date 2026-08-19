@@ -480,6 +480,25 @@ async function panesFailedToRender(page) {
     );
 }
 
+/**
+ * How many engines each pane had to build before it came up (`data-terminal-attempts`).
+ *
+ * The flake N1 catalogues is upstream and still fires — ghostty-web 0.4 throws
+ * `RangeError: offset is out of bounds` out of `write()` on a freshly created terminal — but a
+ * pane now rebuilds on a fresh engine instead of stranding. This read is what keeps that
+ * visible: `> 1` is a pane that RECOVERED, which is a note in the report, not a failure.
+ */
+async function paneStartAttempts(page) {
+    return (
+        (await page.eval(
+            `Array.from(document.querySelectorAll('[data-terminal-attempts]')).map((el) => ({
+                id: el.getAttribute('data-pane-id'),
+                attempts: Number(el.getAttribute('data-terminal-attempts') || '0')
+            }))`
+        )) ?? []
+    );
+}
+
 /** Focus a pane by clicking its body — a real click, so focus follows the real code path. */
 async function focusPaneBody(page, paneID) {
     const box = await page.box(`[data-testid="pane-body-${paneID}"]`);
@@ -1342,6 +1361,21 @@ function buildFlows(ctx) {
                     `document.querySelector('[data-testid="pane-header-' + ${JSON.stringify(String(reply.pane_id))} + '"]') !== null`
                 );
                 recorder.check('the new pane id is in the DOM', present === true);
+                // run-F N1: this is the step the intermittent renderer-start failure was caught
+                // on, and it was caught five minutes late — by the closing console tally, not
+                // here. A pane created by the CLI is a pane BUILT IN A HURRY, which is exactly
+                // where the shared WASM engine used to strand one.
+                const failedSplit = await panesFailedToRender(page);
+                recorder.check(
+                    'the pane the CLI split off has a live terminal, not the renderer-failed placeholder',
+                    failedSplit.length === 0,
+                    `panes showing "terminal renderer failed to start": ${JSON.stringify(failedSplit)}`
+                );
+                // Noted, not asserted: a pane that needed a second engine RECOVERED, which is
+                // the retry doing its job, not a defect. Recording it keeps the upstream flake
+                // rate visible run over run instead of invisible once it stops hurting.
+                const retried = (await paneStartAttempts(page)).filter((pane) => pane.attempts > 1);
+                if (retried.length > 0) recorder.note(`panes that needed a second engine: ${JSON.stringify(retried)}`);
             }
         },
         {
@@ -1623,6 +1657,14 @@ function buildFlows(ctx) {
                 recorder.check('the closed pane left the DOM', gone === true);
                 const panes = await cli.json(['pane', 'list', '--json']);
                 recorder.check('daemon agrees', panes.length === after, `cli=${String(panes.length)} dom=${String(after)}`);
+                // run-F N1: closing a pane frees a terminal on the shared WASM instance, and
+                // the survivors re-measure against it. Nothing here should have gone dark.
+                const failedClose = await panesFailedToRender(page);
+                recorder.check(
+                    'no survivor fell back to the renderer-failed placeholder',
+                    failedClose.length === 0,
+                    `panes showing "terminal renderer failed to start": ${JSON.stringify(failedClose)}`
+                );
             }
         },
 

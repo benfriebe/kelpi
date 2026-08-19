@@ -9,8 +9,10 @@ import {
     createRendererFromLoader,
     estimateCellSize,
     isEngineColor,
+    resetEngineStartupGateForTests,
     resolveTerminalEngine,
     resolveTerminalTheme,
+    serializeEngineStartup,
     terminalThemePreset,
     LIGHT_TERMINAL_THEME,
     type CellSize,
@@ -169,6 +171,8 @@ function host(): HTMLElement {
 
 afterEach(() => {
     document.body.innerHTML = '';
+    // One test's pending startup must not hold the page-wide gate against the next one.
+    resetEngineStartupGateForTests();
 });
 
 describe('engine selection', () => {
@@ -419,11 +423,29 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
-    it('disposing mid-load never opens the engine', async () => {
+    it('disposing before the startup gate releases never builds an engine at all', async () => {
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);
 
         const opening = renderer.open(host());
+        renderer.dispose(); // synchronous: the startup is still queued behind the gate
+        engine.settle();
+        await opening;
+
+        // A pane evicted while it waited its turn must not cost the shared WASM instance a
+        // terminal on its way out — the loader is never even called.
+        expect(engine.terminal.opened).toBeNull();
+        expect(engine.terminal.disposals).toBe(0);
+    });
+
+    it('disposing while the loader is in flight frees the engine it produced', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        const opening = renderer.open(host());
+        // Let the gate release and the loader actually start before disposing.
+        await Promise.resolve();
+        await Promise.resolve();
         renderer.dispose();
         engine.settle();
         await opening;
@@ -481,6 +503,169 @@ describe('TerminalRenderer adapter', () => {
 
         expect(engine.terminal.writes).toEqual([]);
         expect(engine.terminal.disposals).toBe(1);
+    });
+});
+
+/**
+ * run-F N1 — a newly created pane coming up with "terminal renderer failed to start".
+ *
+ * ghostty-web 0.4 runs every terminal in the tab through ONE shared WASM instance and its
+ * `init()` is `R || (R = await Ghostty.load())`, so two panes starting at once each instantiate
+ * the module. The first write after `open()` then lands outside the heap it was measured
+ * against and `Uint8Array.set` throws `RangeError: offset is out of bounds` — from inside the
+ * engine, mid-`load()`, where nothing used to catch it.
+ *
+ * Two halves are tested here: startups are serialized so the window barely exists, and a throw
+ * out of the engine is contained rather than left to strand a pane.
+ */
+describe('engine startup serialization (run-F N1)', () => {
+    it('never lets two engine startups overlap', async () => {
+        let running = 0;
+        let peak = 0;
+        const order: number[] = [];
+
+        const task = (id: number) => async (): Promise<number> => {
+            running += 1;
+            peak = Math.max(peak, running);
+            order.push(id);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            running -= 1;
+            return id;
+        };
+
+        const results = await Promise.all([
+            serializeEngineStartup(task(1)),
+            serializeEngineStartup(task(2)),
+            serializeEngineStartup(task(3))
+        ]);
+
+        expect(results).toEqual([1, 2, 3]);
+        expect(peak).toBe(1);
+        expect(order).toEqual([1, 2, 3]);
+    });
+
+    it('releases the gate when a startup throws, so one bad engine cannot block the rest', async () => {
+        const failing = serializeEngineStartup(async () => {
+            await Promise.resolve();
+            throw new Error('boom');
+        });
+        await expect(failing).rejects.toThrow('boom');
+
+        await expect(serializeEngineStartup(async () => 'ok')).resolves.toBe('ok');
+    });
+
+    it('lets the next startup through when one wedges, rather than hanging every pane behind it', async () => {
+        // Never settles: the gate is a narrowing, not a lock whose failure mode is a dead window.
+        const wedged = serializeEngineStartup(() => new Promise<void>(() => undefined), 20);
+        const after = await serializeEngineStartup(async () => 'through', 20);
+
+        expect(after).toBe('through');
+        expect(wedged).toBeInstanceOf(Promise);
+    });
+
+    it('holds the second renderer back until the first one is fully started', async () => {
+        const first = stubEngine();
+        const second = stubEngine();
+        const a = createRendererFromLoader('xterm', first.loader);
+        const b = createRendererFromLoader('xterm', second.loader);
+
+        const openingA = a.open(host());
+        const openingB = b.open(host());
+        // B's loader has not even been asked for a handle yet — A holds the gate.
+        second.settle();
+        await Promise.resolve();
+        expect(second.terminal.opened).toBeNull();
+
+        first.settle();
+        await openingA;
+        await openingB;
+
+        expect(first.terminal.opened).not.toBeNull();
+        expect(second.terminal.opened).not.toBeNull();
+        a.dispose();
+        b.dispose();
+    });
+});
+
+describe('a poisoned engine (run-F N1)', () => {
+    /** An engine that throws the N1 `RangeError` out of `write()`, from the Nth write on. */
+    function throwingEngine(throwFromWrite: number): StubEngine {
+        const engine = stubEngine();
+        let writes = 0;
+        const inner = engine.terminal.write.bind(engine.terminal);
+        engine.terminal.write = (data: string | Uint8Array): void => {
+            writes += 1;
+            if (writes >= throwFromWrite) throw new RangeError('offset is out of bounds');
+            inner(data);
+        };
+        return engine;
+    }
+
+    it('rejects `open()` and frees the engine when the first flush throws', async () => {
+        const engine = throwingEngine(1);
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+        renderer.write('replay');
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await expect(opening).rejects.toThrow('offset is out of bounds');
+
+        // The WASM terminal `open()` allocated is freed — the half-started engine used to leak.
+        expect(engine.terminal.disposals).toBe(1);
+        expect(renderer.failed).toBe(true);
+    });
+
+    it('does not announce a failure that happened during open — the rejection already carries it', async () => {
+        const engine = throwingEngine(1);
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+        const failures: unknown[] = [];
+        renderer.onEngineFailure((error) => failures.push(error));
+        renderer.write('replay');
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await expect(opening).rejects.toThrow('offset is out of bounds');
+
+        // Two signals for one fault would restart the pane twice.
+        expect(failures).toEqual([]);
+    });
+
+    it('contains a throw from a live engine and reports it exactly once', async () => {
+        const engine = throwingEngine(2);
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        const failures: unknown[] = [];
+        renderer.onEngineFailure((error) => failures.push(error));
+
+        renderer.write('first'); // survives
+        expect(() => renderer.write('kills-it')).not.toThrow();
+
+        expect(renderer.failed).toBe(true);
+        expect(failures).toHaveLength(1);
+        expect(failures[0]).toBeInstanceOf(RangeError);
+
+        // Poisoned means poisoned: not one more byte, and no second announcement.
+        renderer.write('after');
+        renderer.reset();
+        renderer.resize(40, 20);
+        renderer.repaint();
+        expect(engine.terminal.writes).toEqual(['first']);
+        expect(failures).toHaveLength(1);
+        renderer.dispose();
+    });
+
+    it('holds bytes for an engine that never opened rather than throwing at the caller', () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        // The strict engine throws "Terminal must be opened before use"; the adapter queues.
+        expect(() => renderer.write('queued')).not.toThrow();
+        expect(engine.terminal.writes).toEqual([]);
+        expect(renderer.failed).toBe(false);
     });
 });
 

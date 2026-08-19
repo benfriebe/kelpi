@@ -91,6 +91,15 @@ function assertBuilt() {
 /** Ad-hoc by default; an identity in the environment opts into a real signature. */
 const signingIdentity = (process.env['NEX_MACOS_IDENTITY'] ?? '').trim();
 
+/**
+ * Cookie encryption travels with the signature — see `cookieEncryptionFuseEnabled` in
+ * `src/packaging.ts` for the whole story. Short version: the fuse makes Chromium fetch a key
+ * from the login keychain before the network service will serve anything, and on an
+ * ad-hoc-signed build (or any launch without an unlocked keychain) that call blocks on an
+ * authorization dialog nobody can answer — the window then never loads, with no error at all.
+ */
+const cookieEncryption = packagingHelpers().cookieEncryptionFuseEnabled(signingIdentity);
+
 module.exports = {
     packagerConfig: {
         // `productName` in package.json names the bundle (`Nex.app`); this is the id that keeps
@@ -148,7 +157,7 @@ module.exports = {
         new FusesPlugin({
             version: FuseVersion.V1,
             [FuseV1Options.RunAsNode]: false,
-            [FuseV1Options.EnableCookieEncryption]: true,
+            [FuseV1Options.EnableCookieEncryption]: cookieEncryption,
             [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
             [FuseV1Options.EnableNodeCliInspectArguments]: false,
             [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,

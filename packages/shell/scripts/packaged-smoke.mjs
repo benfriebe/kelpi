@@ -32,6 +32,13 @@
  *     --keep-logs    print the captured output at the end even when everything passed
  *     --clean-app    delete the packaged app when finished (default: keep it — it is the
  *                    artifact you just built, and `out/` is gitignored)
+ *     --mock-keychain  launch with Chromium's `--use-mock-keychain`. Only needed for a build
+ *                    that has cookie encryption fused on (i.e. a *signed* one): the sandbox
+ *                    below gives the app a private, empty `HOME`, so `OSCrypt`'s login-keychain
+ *                    call would block on an authorization dialog nothing can answer and the
+ *                    window would never load (see `cookieEncryptionFuseEnabled`). Off by
+ *                    default on purpose — it would mask exactly that failure on an unsigned
+ *                    build, which is the one this smoke has to keep catching.
  *
  * Runtime is ~30s with the Electron zip already in `~/Library/Caches/electron`.
  * Exit code 0 = every check passed.
@@ -39,6 +46,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -47,6 +55,12 @@ import { fileURLToPath } from 'node:url';
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 
 const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * The build-time helpers, from the same compiled module `forge.config.cjs` uses — so the fuse
+ * rule asserted below is literally the rule the packager applied, not a copy of it. Resolved
+ * lazily: `dist/packaging.cjs` is a build output, and `ensureBuilds()` may be what creates it.
+ */
+const packagingHelpers = () => createRequire(import.meta.url)(path.join(shellRoot, 'dist', 'packaging.cjs'));
 const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonBundle = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
 const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.html');
@@ -68,8 +82,12 @@ const options = {
     package: !argv.has('--no-package'),
     verbose: argv.has('--verbose'),
     keepLogs: argv.has('--keep-logs'),
-    cleanApp: argv.has('--clean-app')
+    cleanApp: argv.has('--clean-app'),
+    mockKeychain: argv.has('--mock-keychain')
 };
+
+/** What `forge.config.cjs` saw, so the fuse expectation matches the build that just ran. */
+const signingIdentity = (process.env.NEX_MACOS_IDENTITY ?? '').trim();
 
 // ── tiny test harness (same shape as scripts/smoke.mjs) ─────────────────────────────
 
@@ -378,7 +396,32 @@ async function fusePhase() {
         wire[FuseV1Options.OnlyLoadAppFromAsar] === FuseState.ENABLE &&
             wire[FuseV1Options.EnableEmbeddedAsarIntegrityValidation] === FuseState.ENABLE
     );
-    check('cookie encryption is on', wire[FuseV1Options.EnableCookieEncryption] === FuseState.ENABLE);
+    /**
+     * Cookie encryption travels with the code signature (`cookieEncryptionFuseEnabled`). Fused
+     * on, Chromium will not serve a single request until `OSCrypt` has fetched its key from the
+     * login keychain — and on an ad-hoc-signed build that call blocks forever inside
+     * `SecItemAdd → makeLoginAuthUI → AuthorizationCopyRights`, waiting on a dialog no
+     * automated launch can answer. The window then never loads and *nothing* says why: no
+     * `did-fail-load`, no console error, just an empty document (run-F ▸ N2, reproduced 5/5).
+     *
+     * So this is the early, static guard for that whole failure mode: it fires in phase 1, from
+     * the fuse wire in the binary, before anything is launched.
+     */
+    const cookieExpected = packagingHelpers().cookieEncryptionFuseEnabled(signingIdentity);
+    const cookieActual = wire[FuseV1Options.EnableCookieEncryption] === FuseState.ENABLE;
+    check(
+        cookieExpected
+            ? 'cookie encryption is on (this build is signed, so the keychain key has a stable owner)'
+            : 'cookie encryption is off (an ad-hoc build must not block on the login keychain)',
+        cookieActual === cookieExpected,
+        cookieActual === cookieExpected
+            ? `NEX_MACOS_IDENTITY ${signingIdentity === '' ? 'unset' : 'set'}`
+            : cookieActual
+              ? 'the fuse is ON but this build is ad-hoc signed (NEX_MACOS_IDENTITY unset) — it will hang ' +
+                'the browser process on a login-keychain authorization dialog and never load its window'
+              : 'the fuse is OFF but NEX_MACOS_IDENTITY is set — repackage so the signed build gets it ' +
+                '(if you only exported the variable for this run, the app it is checking was built without it)'
+    );
 }
 
 // ── the sandbox the packaged app runs in ────────────────────────────────────────────
@@ -432,7 +475,11 @@ async function makeSandbox() {
 
 function startApp(sandbox) {
     const lines = [];
-    const child = spawn(appBinary, [`--user-data-dir=${sandbox.userData}`], {
+    const args = [`--user-data-dir=${sandbox.userData}`];
+    // Only when asked for: see `--mock-keychain` in the header. A default-on switch here would
+    // hide the very failure phase 2 exists to catch.
+    if (options.mockKeychain) args.push('--use-mock-keychain');
+    const child = spawn(appBinary, args, {
         cwd: sandbox.home,
         // A bare object, NOT `{...process.env}`: an inherited NEXD_* from the developer's shell
         // would quietly invalidate the entire phase.
@@ -583,8 +630,34 @@ async function launchPhase() {
             );
         }
 
-        await app.waitForLine(/did-finish-load/, 'did-finish-load');
-        pass('the window loaded the daemon-served UI');
+        /**
+         * The renderer-booted check, and the one that stayed red through run-F.
+         *
+         * It is deliberately *not* fatal to the phase: everything after it talks to the daemon,
+         * so a dead window should cost one red check and still let the rest report. What it
+         * must do is say why — the failure mode is completely silent from the outside (no
+         * `did-fail-load`, no crash, an empty document forever), so the diagnosis has to be
+         * carried here rather than looked up.
+         */
+        try {
+            await app.waitForLine(/did-finish-load/, 'did-finish-load', 30_000);
+            pass('the window loaded the daemon-served UI');
+        } catch (error) {
+            const loading = app.lines.find((line) => line.includes('loading http')) ?? '(no "loading" line)';
+            fail(
+                'the window loaded the daemon-served UI',
+                `${error instanceof Error ? error.message : String(error)} — the shell asked for the page ` +
+                    `(${loading.trim()}) and the renderer never came back.\n` +
+                    '      The daemon is healthy above, so this is the window, not the payload. Check, in order:\n' +
+                    '        · cookie encryption fused on without a signing identity — the browser process blocks\n' +
+                    '          in SecItemAdd → makeLoginAuthUI on a keychain dialog nothing can answer, and no\n' +
+                    '          navigation ever commits (phase 1 asserts the rule; re-run with --mock-keychain if\n' +
+                    "          this build IS signed, since the sandbox's private HOME has no login keychain);\n" +
+                    '        · attach CDP (--remote-debugging-port) and read the page target for a real page error.\n' +
+                    "      Note: an 'Electron sandboxed_renderer.bundle.js script failed to run' console line is\n" +
+                    '      NOT a signal — the dev Electron prints it too, on a window that loads fine.'
+            );
+        }
         await app.waitForLine(/status ws connected/, 'the status WebSocket');
         pass('the main process opened its status WebSocket');
         check(

@@ -8,7 +8,9 @@ import {
     appIconPixels,
     appIconPng,
     buildAppIcns,
+    cookieEncryptionFuseEnabled,
     encodeIcns,
+    isSignedBuild,
     nodeRuntimeIssues,
     packagedAppIgnore
 } from './packaging.js';
@@ -163,5 +165,22 @@ describe('buildAppIcns', () => {
 describe('STAGED_RESOURCE_NAMES', () => {
     it('is the list forge.config.cjs copies into Contents/Resources', () => {
         expect([...STAGED_RESOURCE_NAMES]).toEqual(['daemon', 'client', 'node']);
+    });
+});
+
+describe('cookieEncryptionFuseEnabled', () => {
+    // The regression guard for run-F ▸ N2: with this fuse on and no signing identity, the
+    // packaged app blocks in OSCrypt's login-keychain call and its window never loads.
+    it('stays off for an ad-hoc build', () => {
+        expect(cookieEncryptionFuseEnabled(undefined)).toBe(false);
+        expect(cookieEncryptionFuseEnabled(null)).toBe(false);
+        expect(cookieEncryptionFuseEnabled('')).toBe(false);
+        expect(cookieEncryptionFuseEnabled('   ')).toBe(false);
+    });
+
+    it('turns on with a real identity, in the same step as signing', () => {
+        expect(cookieEncryptionFuseEnabled('Developer ID Application: Someone (TEAMID)')).toBe(true);
+        expect(isSignedBuild('Developer ID Application: Someone (TEAMID)')).toBe(true);
+        expect(isSignedBuild('')).toBe(false);
     });
 });

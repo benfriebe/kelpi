@@ -37,7 +37,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MOD, connect, sleep, waitForPageTarget } from './lib/cdp.mjs';
+import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
 import { createReport } from './lib/report.mjs';
 import {
     buildAll,
@@ -402,6 +402,84 @@ async function domPaneIDs(page) {
     return (await page.eval(paneIDsExpr)) ?? [];
 }
 
+/**
+ * How much ink a pane's canvas is actually painting.
+ *
+ * "Ink" is every pixel that is not the most-common colour on the canvas — which, on a terminal,
+ * is always the background. It is the only mechanical read there is on what a pane SHOWS: the
+ * grid is a canvas, so there is no text to query, and every cross-pane bleed found so far (a
+ * pane wearing its predecessor's screen after a remount) was caught by a person opening a PNG.
+ * Counting ink turns that into a number the daemon's own answer can be compared against.
+ */
+async function paneInkPixels(page, paneID) {
+    return await page.eval(
+        `(() => {
+            const canvas = document.querySelector('[data-pane-id="${paneID}"] canvas');
+            if (canvas === null) return null;
+            const ctx = canvas.getContext('2d');
+            if (ctx === null) return null;
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const counts = new Map();
+            for (let i = 0; i < data.length; i += 4) {
+                const key = data[i] + ',' + data[i + 1] + ',' + data[i + 2];
+                counts.set(key, (counts.get(key) ?? 0) + 1);
+            }
+            let background = null;
+            let most = -1;
+            for (const [key, count] of counts) {
+                if (count > most) { most = count; background = key; }
+            }
+            const total = data.length / 4;
+            return { ink: total - most, total, background };
+        })()`
+    );
+}
+
+/**
+ * A pane may not paint much more than its own content could account for.
+ *
+ * A deliberately generous UPPER bound, not a match: the defect it exists for is a pane painting
+ * a screenful of another pane's output while its own VT holds a bare prompt — what a remount
+ * did while `renderer.ts`'s `reset()` swallowed the RIS because the engine was still loading,
+ * so the replay landed on the WASM grid the previous pane had left behind.
+ *
+ * The unit is a **cell the capture says is in use** (every column up to the last non-space one,
+ * per line), not a glyph: a powerline prompt colours whole cells, blanks included, so counting
+ * only visible characters would charge a pane for ink its own content legitimately paints. The
+ * per-cell budget is then the cost of a FULLY inked cell — at a 2× device pixel ratio an 8×17
+ * CSS-pixel cell is 544 device pixels — so no honest screen can exceed it.
+ *
+ * Measured both ways on the workspace-switch step: 756 ink pixels for a 7-cell prompt when the
+ * pane paints its own screen, 21 675 for the same 7 cells when it came back wearing its
+ * neighbour's grid, against a 10 900 budget.
+ */
+const INK_FLOOR_PIXELS = 6_000;
+const INK_PER_CELL_PIXELS = 700;
+
+/** Cells the daemon's capture says are in use — the denominator for the ink budget. */
+function capturedCells(capture) {
+    return String(capture)
+        .split('\n')
+        .reduce((total, line) => total + line.replace(/\s+$/, '').length, 0);
+}
+
+/**
+ * Panes whose renderer never came up — `TerminalPane`'s `status === 'error'`, which paints
+ * "terminal renderer failed to start" across the pane.
+ *
+ * Worth its own read because nothing else sees it: the daemon is happy, the pane is in the DOM
+ * at the right size, `nex pane capture` answers from the server-side VT — and the person looking
+ * at the window has a sentence where their shell should be. Checked wherever a pane is REVEALED
+ * (a create, a workspace switch), which is where an engine is built in a hurry.
+ */
+async function panesFailedToRender(page) {
+    return (
+        (await page.eval(
+            `Array.from(document.querySelectorAll('[data-terminal-status="error"]')).map(el => el.getAttribute('data-pane-id'))`
+        )) ?? []
+    );
+}
+
 /** Focus a pane by clicking its body — a real click, so focus follows the real code path. */
 async function focusPaneBody(page, paneID) {
     const box = await page.box(`[data-testid="pane-body-${paneID}"]`);
@@ -626,6 +704,54 @@ async function main() {
 
 // ── the flows ───────────────────────────────────────────────────────────────────────
 
+/**
+ * `rgb(…)` / `rgba(…)` → components, so a step can ask two questions about a computed colour:
+ * is it OPAQUE, and which side of the light/dark line is it on. Both matter for content panes —
+ * run-B's blocker L1 was a document painting dark ink over a canvas that was still white.
+ */
+function parseCssColor(value) {
+    const match = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,/\s]+([\d.]+))?/i.exec(String(value ?? ''));
+    if (match === null) return null;
+    return {
+        r: Number(match[1]),
+        g: Number(match[2]),
+        b: Number(match[3]),
+        a: match[4] === undefined ? 1 : Number(match[4])
+    };
+}
+
+/** content-panes.md §3.1's rule, so the audit judges a canvas the way the renderer does. */
+function perceivedLuminance(color) {
+    return (0.299 * color.r + 0.587 * color.g + 0.114 * color.b) / 255;
+}
+
+/**
+ * The one assertion run-B's blocker L1 needed and nobody could make: what colour is the
+ * document's CANVAS, measured from inside the sandboxed frame?
+ *
+ * The daemon emits the document transparent (content-panes.md §3.8, a WKWebView contract) and
+ * the client shows it in an `allow-scripts` iframe — an opaque origin, isolated into its own
+ * process, compositing over Chromium's WHITE base. Every structural assertion passed while the
+ * pane was dark ink on white. So: the canvas must be OPAQUE, and it must be on the same side of
+ * the luminance line as the `dark`/`light` class the daemon chose for the ink.
+ */
+function checkFrameCanvas(recorder, rendered, label) {
+    const canvas = parseCssColor(rendered.canvas);
+    recorder.note(`${label} canvas: ${String(rendered.canvas)} · color-scheme ${String(rendered.colorScheme)} · html.${rendered.darkDoc === true ? 'dark' : 'light'}`);
+    recorder.check(
+        `the ${label} document paints an opaque canvas (not Chromium's white base)`,
+        canvas !== null && canvas.a === 1,
+        String(rendered.canvas)
+    );
+    if (canvas === null) return;
+    const luminance = perceivedLuminance(canvas);
+    recorder.check(
+        `the ${label} canvas matches the theme its ink was chosen for`,
+        rendered.darkDoc === true ? luminance < 0.5 : luminance >= 0.5,
+        `luminance ${luminance.toFixed(3)} for html.${rendered.darkDoc === true ? 'dark' : 'light'}`
+    );
+}
+
 function buildFlows(ctx) {
     const { page, cli, sandbox, work, repo, site, runtime, repoRoot, options: runOptions } = ctx;
     /** Mutable across flows: the panes the audit created, so later steps can address them. */
@@ -667,6 +793,32 @@ function buildFlows(ctx) {
                 const panes = await cli.json(['pane', 'list', '--json']);
                 state.firstPane = panes[0]?.id ?? null;
                 recorder.check('daemon agrees: one pane', panes.length === 1, `cli reports ${String(panes.length)}`);
+
+                /**
+                 * Every pane-header button says what it does (run-B m1). The audit found an
+                 * I-beam glyph sitting in the header with nothing in §4.2's list to explain it;
+                 * an icon-only control that carries no accessible name is unreadable to a
+                 * screen reader AND to a person hovering it, so the name is the thing to
+                 * assert — the glyph is an eyes call, the label is not.
+                 */
+                const headerButtons = await page.eval(
+                    `Array.from(document.querySelectorAll('[data-testid^="pane-header-"] button')).map(el => ({
+                        testid: el.getAttribute('data-testid'),
+                        label: (el.getAttribute('aria-label') ?? '').trim(),
+                        tooltip: (el.getAttribute('title') ?? '').trim()
+                    }))`
+                );
+                recorder.note(`pane header buttons: ${JSON.stringify(headerButtons)}`);
+                const unlabelled = (headerButtons ?? []).filter(
+                    (button) => button.label.length === 0 || button.tooltip.length === 0
+                );
+                recorder.check(
+                    'every pane-header button carries a label and a tooltip',
+                    (headerButtons ?? []).length > 0 && unlabelled.length === 0,
+                    unlabelled.length === 0
+                        ? `${String((headerButtons ?? []).length)} buttons, all named`
+                        : `unlabelled: ${unlabelled.map((button) => button.testid).join(', ')}`
+                );
                 recorder.eyes('spacing, contrast, focus ring, prompt legibility, title-bar affordances vs shell-ui.md §3');
             }
         },
@@ -1122,6 +1274,55 @@ function buildFlows(ctx) {
                         `focused=${JSON.stringify(focusAfter.focused)}, new=${String(newPane)}`
                     );
                 }
+
+                /**
+                 * Middle truncation, measured (run-B m9). A split is where it starts to matter:
+                 * two half-width headers cannot show a `/var/folders/…` path whole, and
+                 * `text-overflow: ellipsis` on its own throws away the tail — the only part
+                 * that says WHICH directory. §4.2 item 3 asks for the middle to go instead,
+                 * which the header does by ellipsizing a head span and pinning the last path
+                 * segment beside it.
+                 *
+                 * So the check is geometric, not textual: of the titles that are too long for
+                 * their header, every one must still paint its tail segment inside the title
+                 * box. `title.right + 1` is the box; a tail pushed past it would be clipped.
+                 */
+                const titles = await page.eval(
+                    `Array.from(document.querySelectorAll('[data-testid^="pane-title-"]')).map(el => {
+                        const spans = Array.from(el.children);
+                        const head = spans[0] ?? null;
+                        const tail = spans[1] ?? null;
+                        const box = el.getBoundingClientRect();
+                        return {
+                            pane: el.getAttribute('data-testid').slice('pane-title-'.length),
+                            full: (el.getAttribute('title') ?? '').trim(),
+                            headText: (head?.textContent ?? '').trim(),
+                            tailText: (tail?.textContent ?? '').trim(),
+                            ellipsized: head === null ? false : head.scrollWidth > head.clientWidth + 1,
+                            tailInside: tail === null ? false : tail.getBoundingClientRect().right <= box.right + 1
+                        };
+                    })`
+                );
+                recorder.note(`pane header titles: ${JSON.stringify(titles)}`);
+                const truncated = (titles ?? []).filter((title) => title.ellipsized);
+                recorder.check(
+                    'a half-width pane header is too narrow for its path (so truncation is under test)',
+                    truncated.length >= 1,
+                    `${String(truncated.length)} of ${String((titles ?? []).length)} titles are ellipsized`
+                );
+                recorder.check(
+                    'a truncated pane-header path keeps its last segment (middle truncation, §4.2 item 3)',
+                    truncated.every(
+                        (title) =>
+                            title.tailText.length > 0 &&
+                            title.tailInside &&
+                            title.full.endsWith(title.tailText) &&
+                            title.tailText.startsWith('/')
+                    ),
+                    JSON.stringify(
+                        truncated.map((title) => ({ tail: title.tailText, inside: title.tailInside }))
+                    )
+                );
                 recorder.eyes('divider thickness/contrast, focus ring on the NEW pane, both prompts legible');
             }
         },
@@ -1432,10 +1633,13 @@ function buildFlows(ctx) {
             needsEyes: true,
             async run(recorder) {
                 const before = await page.eval(`document.querySelectorAll('${PAGE.workspaceRows}').length`);
+                // By test id first: the label carries its ⌘N hint inside the button, so an exact
+                // text match is a selector that breaks the moment the button gains an affordance.
                 const clicked = await page.eval(
                     `(() => {
-                        const button = Array.from(document.querySelectorAll('button')).find(el => (el.textContent ?? '').trim() === 'New Workspace');
-                        if (button === undefined) return null;
+                        const button = document.querySelector('[data-testid="sidebar-new-workspace"]')
+                            ?? Array.from(document.querySelectorAll('button')).find(el => (el.textContent ?? '').trim().startsWith('New Workspace'));
+                        if (button === undefined || button === null) return null;
                         const r = button.getBoundingClientRect();
                         return JSON.stringify({ x: r.x + r.width/2, y: r.y + r.height/2 });
                     })()`
@@ -1515,6 +1719,12 @@ function buildFlows(ctx) {
                         `${String(junk.length)} non-ASCII characters in the capture: ${JSON.stringify(junk.slice(0, 60))}`
                     );
                 }
+                const failedUI = await panesFailedToRender(page);
+                recorder.check(
+                    'the new workspace\u2019s pane has a live terminal, not the renderer-failed placeholder',
+                    failedUI.length === 0,
+                    `panes showing "terminal renderer failed to start": ${JSON.stringify(failedUI)}`
+                );
                 recorder.eyes('does the new row have an avatar, colour and pane count consistent with the first?');
             }
         },
@@ -1551,6 +1761,12 @@ function buildFlows(ctx) {
                     uiIdentity.includes(String(daemonActive)),
                     `window shows "${uiIdentity}" while the daemon calls "${String(daemonActive)}" active`
                 );
+                const failedCLI = await panesFailedToRender(page);
+                recorder.check(
+                    'the revealed pane has a live terminal, not the renderer-failed placeholder',
+                    failedCLI.length === 0,
+                    `panes showing "terminal renderer failed to start": ${JSON.stringify(failedCLI)}`
+                );
                 // Leave the audit where the later flows expect it.
                 await cli.run(['workspace', 'delete', 'Audit CLI', '--force']);
                 await sleep(1500);
@@ -1569,6 +1785,37 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`menu items: ${JSON.stringify(items)}`);
                 recorder.check('the context menu opened', Array.isArray(items) && items.length > 0);
+
+                /**
+                 * The menu must not sit on the row it acts on (run-B m7). Opening at the
+                 * pointer put the panel over the workspace being renamed or deleted, so the one
+                 * thing a destructive menu has to keep on screen — WHICH one — was behind it.
+                 * Overlap is measured as area against the row that was right-clicked (the first
+                 * row, which is what `rightClick` targets), so a menu that merely brushes the
+                 * NEXT row still passes.
+                 */
+                const placement = await page.eval(
+                    `(() => {
+                        const row = document.querySelector('${PAGE.workspaceRows}');
+                        const menu = document.querySelector('${PAGE.contextMenu}');
+                        if (row === null || menu === null) return null;
+                        const r = row.getBoundingClientRect();
+                        const m = menu.getBoundingClientRect();
+                        const overlapX = Math.max(0, Math.min(r.right, m.right) - Math.max(r.left, m.left));
+                        const overlapY = Math.max(0, Math.min(r.bottom, m.bottom) - Math.max(r.top, m.top));
+                        return {
+                            row: { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) },
+                            menu: { top: Math.round(m.top), bottom: Math.round(m.bottom), left: Math.round(m.left), right: Math.round(m.right) },
+                            overlap: Math.round(overlapX * overlapY)
+                        };
+                    })()`
+                );
+                recorder.note(`menu placement: ${JSON.stringify(placement)}`);
+                recorder.check(
+                    'the context menu opens clear of the row it acts on',
+                    placement !== null && placement.overlap === 0,
+                    placement === null ? 'no row/menu to measure' : `${String(placement.overlap)}px² of the row is covered`
+                );
                 for (const expected of ['Rename…', 'Change Icon', 'Color', 'Labels', 'Delete']) {
                     recorder.check(`menu has "${expected}"`, items.some((item) => item.startsWith(expected)), items.join(' / '));
                 }
@@ -1601,6 +1848,26 @@ function buildFlows(ctx) {
             expect: 'Clicking a sidebar row activates that workspace (its panes replace the grid, the title-bar identity updates); ⌘2 activates the second workspace.',
             needsEyes: true,
             async run(recorder) {
+                /**
+                 * What this click IS matters to the reading of the assertion below. When the
+                 * window is already showing the row being clicked, the click is the idempotent
+                 * re-assert of run-B L3 — the case that used to be a total no-op, leaving
+                 * `nex workspace list` naming the wrong workspace for the rest of the session.
+                 * Recorded rather than asserted: which workspace the run arrives here on
+                 * depends on the steps before it, and the assertion is the same either way.
+                 */
+                const before = await page.eval(
+                    `(document.querySelector('[data-testid="top-bar-identity"]')?.innerText ?? '').split('\\n')[0].trim()`
+                );
+                const beforeDaemon =
+                    (await cli.json(['workspace', 'list', '--json'])).find((workspace) => workspace.is_active)?.name ??
+                    null;
+                recorder.note(
+                    `before the click: window shows "${String(before)}", daemon calls "${String(beforeDaemon)}" active` +
+                        (String(before).includes('Renamed One')
+                            ? ' — this click is the IDEMPOTENT re-assert (the row is already the one on screen)'
+                            : '')
+                );
                 await page.click(`${PAGE.workspaceRows}`);
                 await sleep(1200);
                 await recorder.shot(page, 'click');
@@ -1621,6 +1888,43 @@ function buildFlows(ctx) {
                 const identity = await page.eval(`(document.querySelector('[data-testid="top-bar-identity"]')?.innerText ?? '').replace(/\\n/g,' ')`);
                 recorder.note(`title-bar identity: ${identity}`);
                 recorder.check('the title bar names the active workspace', String(identity).includes('Renamed One'), identity);
+
+                /**
+                 * The panes the switch brought back must show THEIR OWN screens.
+                 *
+                 * Switching workspace evicts the background workspace's engines
+                 * (`mount-policy.ts`) and remounts them on the way back, and a remounted pane
+                 * used to come up wearing the screen of whichever pane had last held its WASM
+                 * slot — a garbled grid on a plain sidebar click, with the daemon perfectly
+                 * innocent (`nex pane capture` was always clean). Nothing in the DOM can be
+                 * asked what a canvas says, so the check is the ink: a pane whose VT holds a
+                 * bare prompt cannot be painting a screenful of somebody else's output.
+                 */
+                const failedSwitch = await panesFailedToRender(page);
+                recorder.check(
+                    'every pane the switch brought back has a live terminal',
+                    failedSwitch.length === 0,
+                    `panes showing "terminal renderer failed to start": ${JSON.stringify(failedSwitch)}`
+                );
+                for (const paneID of await domPaneIDs(page)) {
+                    // Ink first: a pane with no canvas is a content pane, and `pane capture`
+                    // rejects those — so the absence of a canvas is the skip condition, not an
+                    // error to recover from.
+                    const paint = await paneInkPixels(page, paneID);
+                    if (paint === null) continue;
+                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const cells = capturedCells(capture);
+                    const budget = INK_FLOOR_PIXELS + INK_PER_CELL_PIXELS * cells;
+                    recorder.note(
+                        `pane ${paneID.slice(0, 8)}: ${String(cells)} cells in use in the daemon's VT, ` +
+                            `${String(paint.ink)} ink pixels on screen (budget ${String(budget)})`
+                    );
+                    recorder.check(
+                        `the revealed pane ${paneID.slice(0, 8)} paints its own screen, not a leftover one`,
+                        paint.ink <= budget,
+                        `${String(paint.ink)} ink pixels for a capture using ${String(cells)} cells — a remounted pane wearing another pane's grid is what this catches`
+                    );
+                }
 
                 await page.key('Digit2', { modifiers: MOD.meta });
                 await sleep(1200);
@@ -1659,6 +1963,34 @@ function buildFlows(ctx) {
                 const box = await page.box(`[data-testid="pane-body-${keep.id}"]`);
                 recorder.note(`surviving pane body: ${JSON.stringify(box === null ? null : { w: Math.round(box.width), h: Math.round(box.height) })}`);
                 recorder.check('the survivor filled the grid', (box?.width ?? 0) > 600, `${String(Math.round(box?.width ?? 0))}px wide`);
+
+                /**
+                 * The survivor is the most-resized pane in the whole run — three window sizes,
+                 * four splits, two closes — and by this step its screen is a wall of glyphs,
+                 * because `@xterm/headless` re-wraps instead of reflowing (ledger L6) and the
+                 * grid has been re-wrapped at 128 → 81 → 178 → 51 → 128 columns. A screenshot
+                 * alone cannot tell that apart from the client painting somebody else's grid,
+                 * which is the defect the workspace-switch step catches on a remount. So make
+                 * the same read here: print what the daemon's VT actually holds, and bound the
+                 * ink by it. A mess the daemon agrees with is L6; ink beyond the budget is the
+                 * client's.
+                 */
+                const survivorCapture = await cli.ok(['pane', 'capture', '--target', keep.id]);
+                recorder.block('nex pane capture (the survivor)', survivorCapture);
+                const survivorPaint = await paneInkPixels(page, keep.id);
+                if (survivorPaint !== null) {
+                    const cells = capturedCells(survivorCapture);
+                    const budget = INK_FLOOR_PIXELS + INK_PER_CELL_PIXELS * cells;
+                    recorder.note(
+                        `survivor ${keep.id.slice(0, 8)}: ${String(cells)} cells in use in the daemon's VT, ` +
+                            `${String(survivorPaint.ink)} ink pixels on screen (budget ${String(budget)})`
+                    );
+                    recorder.check(
+                        'the survivor paints only what its own VT holds (a re-wrapped screen is the daemon’s, not a bleed)',
+                        survivorPaint.ink <= budget,
+                        `${String(survivorPaint.ink)} ink pixels for a capture using ${String(cells)} cells`
+                    );
+                }
             }
         },
         {
@@ -1688,7 +2020,11 @@ function buildFlows(ctx) {
                                lists: document.querySelectorAll('ul,ol').length,
                                links: document.querySelectorAll('a').length,
                                tasks: document.querySelectorAll('input[type=checkbox]').length,
-                               frontMatter: document.querySelectorAll('.front-matter, table').length }))()`
+                               frontMatter: document.querySelectorAll('.front-matter, table').length,
+                               // run-B L1: the CANVAS, read from inside the sandboxed frame.
+                               canvas: getComputedStyle(document.documentElement).backgroundColor,
+                               colorScheme: getComputedStyle(document.documentElement).colorScheme,
+                               darkDoc: document.documentElement.classList.contains('dark') }))()`
                 );
                 recorder.note(`markdown DOM: ${JSON.stringify({ ...rendered, text: undefined })}`);
                 if (rendered !== null) {
@@ -1702,6 +2038,7 @@ function buildFlows(ctx) {
                         !rendered.text.includes('---\ntitle:'),
                         'no raw YAML fence in the output'
                     );
+                    checkFrameCanvas(recorder, rendered, 'markdown preview');
                 } else {
                     recorder.check('the markdown pane body is in the DOM', false, 'no pane body element');
                 }
@@ -1743,6 +2080,33 @@ function buildFlows(ctx) {
                     String(editing?.raw ?? '').includes('---') && String(editing?.raw ?? '').includes('# Markdown pane fixture'),
                     String(editing?.raw ?? '').slice(0, 80)
                 );
+
+                /**
+                 * A long line runs past the right edge (`wrap="off"`, which is what a source
+                 * editor should do) — run-B's m10 called it "clipped with no visible horizontal
+                 * scrollbar", from a screenshot taken while macOS's overlay scroller was idle.
+                 * The question a picture cannot settle is whether the rest of the line is
+                 * REACHABLE: scroll the editor and see whether it moves.
+                 */
+                const scroller = await page.eval(
+                    `(() => {
+                        const area = document.querySelector('[data-testid="content-textarea-${state.mdPane}"]');
+                        if (area === null) return null;
+                        const before = area.scrollLeft;
+                        area.scrollLeft = area.scrollWidth;
+                        const after = area.scrollLeft;
+                        area.scrollLeft = before;
+                        return { scrollWidth: Math.round(area.scrollWidth), clientWidth: Math.round(area.clientWidth), after: Math.round(after) };
+                    })()`
+                );
+                recorder.note(`editor h-scroll: ${JSON.stringify(scroller)}`);
+                if (scroller !== null && scroller.scrollWidth > scroller.clientWidth) {
+                    recorder.check(
+                        'a line wider than the editor is reachable by scrolling, not just cut off',
+                        scroller.after > 0,
+                        `scrollWidth ${String(scroller.scrollWidth)} vs clientWidth ${String(scroller.clientWidth)}, scrolled to ${String(scroller.after)}`
+                    );
+                }
                 await page.key('KeyE', { modifiers: MOD.meta });
                 await sleep(1000);
                 await recorder.shot(page, 'preview');
@@ -1774,7 +2138,19 @@ function buildFlows(ctx) {
                                adds: document.querySelectorAll('.line-add').length,
                                dels: document.querySelectorAll('.line-del').length,
                                hunks: document.querySelectorAll('.line-hunk').length,
-                               files: document.querySelectorAll('details.file, .file-header').length }))()`
+                               files: document.querySelectorAll('details.file, .file-header').length,
+                               canvas: getComputedStyle(document.documentElement).backgroundColor,
+                               colorScheme: getComputedStyle(document.documentElement).colorScheme,
+                               darkDoc: document.documentElement.classList.contains('dark'),
+                               // §5.4's per-file horizontal scroller: it must EXIST and, when a
+                               // line is wider than the pane, actually be scrollable — a clipped
+                               // line with no way to reach its tail is the defect (run-B L1).
+                               scrollers: Array.from(document.querySelectorAll('.hunks')).map((el) => ({
+                                   overflowX: getComputedStyle(el).overflowX,
+                                   scrollWidth: el.scrollWidth,
+                                   clientWidth: el.clientWidth,
+                                   scrollable: el.scrollWidth > el.clientWidth
+                               })) }))()`
                 );
                 if (rendered !== null) {
                     recorder.block('rendered diff text', rendered.text);
@@ -1785,6 +2161,19 @@ function buildFlows(ctx) {
                     recorder.check('the diff mentions both changed files', rendered.text.includes('service.ts') && rendered.text.includes('README.md'), 'service.ts + README.md');
                     recorder.check('added lines are present', rendered.text.includes('+') && rendered.text.includes('reduce'), 'the new reduce() line');
                     recorder.check('removed lines are present', rendered.text.includes('Original line.') || rendered.text.includes('let sum = 0'), 'an original line shows as removed');
+                    checkFrameCanvas(recorder, rendered, 'diff');
+                    const scrollers = rendered.scrollers ?? [];
+                    recorder.note(`hunk scrollers: ${JSON.stringify(scrollers)}`);
+                    recorder.check(
+                        'every file has the §5.4 horizontal scroll container',
+                        scrollers.length >= 2 && scrollers.every((entry) => entry.overflowX === 'auto'),
+                        scrollers.map((entry) => entry.overflowX).join(', ') || 'none'
+                    );
+                    recorder.check(
+                        'a line wider than the pane is reachable by scrolling, not just cut off',
+                        scrollers.some((entry) => entry.scrollable),
+                        scrollers.map((entry) => `${String(entry.scrollWidth)}/${String(entry.clientWidth)}`).join(' ')
+                    );
                 } else {
                     recorder.check('the diff pane body is in the DOM', false, 'no pane body element');
                 }
@@ -1814,14 +2203,65 @@ function buildFlows(ctx) {
                 recorder.check('the page text is readable through the host', capture.stdout.includes('Nex web pane fixture'), 'header text present');
                 const placeholder = await page.eval(
                     `(() => {
-                        const host = document.querySelector('[data-testid="pane-body-${String(web?.id)}"]');
+                        const host = document.querySelector('[data-testid="web-page-${String(web?.id)}"]');
                         if (host === null) return null;
                         const r = host.getBoundingClientRect();
-                        return { text: (host.innerText ?? '').slice(0, 200), w: Math.round(r.width), h: Math.round(r.height) };
+                        return { text: (host.innerText ?? '').slice(0, 200),
+                                 x: Math.round(r.x), y: Math.round(r.y),
+                                 w: Math.round(r.width), h: Math.round(r.height),
+                                 dpr: window.devicePixelRatio };
                     })()`
                 );
-                recorder.note(`web pane body: ${JSON.stringify(placeholder)}`);
-                recorder.eyes('IS THE PAGE ACTUALLY VISIBLE inside the pane, at the right rect, under the pane header — or is the pane empty/placeholder?');
+                recorder.note(`web page hole: ${JSON.stringify(placeholder)}`);
+
+                /**
+                 * The placement, proved from BOTH ends.
+                 *
+                 * The shell logs `owner=main bounds=…` when it re-parents the view into the
+                 * window — that is the host's account of what it did. The other end is the page
+                 * itself: an embedded view is laid out by the pane's rect, so its own
+                 * `innerWidth`/`innerHeight`/`devicePixelRatio` have to match the hole the client
+                 * drew. Run-B's L2 was invisible to the first check and caught by the second —
+                 * the view WAS attached, and the page inside it was still laid out at the
+                 * off-screen automation viewport (1280×800 @1×), so the pane showed its clipped
+                 * top-left corner.
+                 */
+                const placement = runtime.shell?.lines.filter((line) =>
+                    line.includes(`web pane ${String(web?.id)} view owner=`)
+                ) ?? [];
+                const lastPlacement = placement[placement.length - 1] ?? '(none)';
+                recorder.note(`shell placement log: ${lastPlacement}`);
+                recorder.check('the shell re-parented the view into its own window', lastPlacement.includes('owner=main'), lastPlacement);
+
+                const targets = await listTargets(sandbox.debugPort);
+                const viewTarget = targets.find(
+                    (entry) => entry.type === 'page' && typeof entry.url === 'string' && entry.url.startsWith(site.url)
+                );
+                recorder.check('the embedded page has its own CDP target', viewTarget !== undefined, String(targets.length) + ' targets');
+                if (viewTarget !== undefined && placeholder !== null) {
+                    const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
+                    const metrics = await view.eval(
+                        '({ iw: window.innerWidth, ih: window.innerHeight, dpr: window.devicePixelRatio })'
+                    );
+                    view.close();
+                    recorder.note(`embedded page viewport: ${JSON.stringify(metrics)}`);
+                    recorder.check(
+                        'the page is laid out at the pane\'s width, not the automation viewport',
+                        Math.abs((metrics?.iw ?? 0) - placeholder.w) <= 2,
+                        `page ${String(metrics?.iw)}px vs hole ${String(placeholder.w)}px`
+                    );
+                    recorder.check(
+                        'the page is laid out at the pane\'s height',
+                        Math.abs((metrics?.ih ?? 0) - placeholder.h) <= 2,
+                        `page ${String(metrics?.ih)}px vs hole ${String(placeholder.h)}px`
+                    );
+                    recorder.check(
+                        'the page renders at the window\'s device pixel ratio',
+                        (metrics?.dpr ?? 0) === placeholder.dpr,
+                        `page ${String(metrics?.dpr)} vs window ${String(placeholder.dpr)}`
+                    );
+                }
+                recorder.eyes('IS THE PAGE ACTUALLY VISIBLE inside the pane, at the right rect, under the pane header — the fixture\'s purple header and BOTH cards, unclipped?');
             }
         },
 

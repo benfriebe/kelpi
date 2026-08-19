@@ -124,7 +124,10 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
         <div
             data-testid="settings-backdrop"
             className="absolute inset-0 z-50 flex items-center justify-center"
-            style={{ background: 'rgba(0,0,0,0.35)' }}
+            // run-B m6: at 0.35 the panes behind kept their full brightness and the window did
+            // not read as modal at all. 0.62 plus a 2px blur pushes the content behind out of
+            // focus without hiding which workspace you are in.
+            style={{ background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(2px)' }}
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) props.onClose();
             }}

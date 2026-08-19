@@ -286,8 +286,30 @@ export async function connect(webSocketDebuggerUrl, { repoRoot, verbose = false 
 
         // ── screenshots ─────────────────────────────────────────────────────────────
 
+        /**
+         * A screenshot of the WINDOW, not of the renderer.
+         *
+         * `fromSurface: false` is the load-bearing flag. The default (`true`) copies the page's
+         * own compositor surface — which is every pixel this client draws, and NONE of the
+         * native `WebContentsView`s the Electron shell layers on top of it for web panes. Under
+         * the default, a correctly embedded page photographs as the empty hole the client drew
+         * behind it, and run-B's blocker L2 ("the web pane shows no page") was exactly that
+         * artifact: the shell log said `owner=main bounds=764,91 516×673` while the PNG showed
+         * `#0A0A0C`. Capturing from the VIEW composites the window's whole layer tree, so the
+         * audit photographs what a person sees. Everything else is pixel-identical bar text
+         * anti-aliasing.
+         *
+         * The fallback exists because the flag is a Chromium implementation detail: if a build
+         * ever refuses it, an anti-aliased-but-incomplete screenshot beats no screenshot.
+         */
         async screenshot(file) {
-            const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+            const base = { format: 'png', captureBeyondViewport: false };
+            let shot;
+            try {
+                shot = await send('Page.captureScreenshot', { ...base, fromSurface: false });
+            } catch {
+                shot = await send('Page.captureScreenshot', base);
+            }
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
             return file;

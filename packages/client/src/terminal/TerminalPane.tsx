@@ -270,8 +270,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     syncGeometry(true);
                     if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
                 },
-                () => {
+                (error: unknown) => {
                     if (cancelled) return;
+                    // Say WHY. The placeholder ("terminal renderer failed to start") is all a
+                    // person gets, and this rejection used to be swallowed — which is why the
+                    // audit's one intermittent occurrence of it (run-F step 14, a pane revealed
+                    // by `nex workspace create`) arrived with zero renderer console output and
+                    // no cause to chase. The next one names itself.
+                    console.error(`[nex] terminal renderer failed to start for pane ${paneID}`, error);
                     setStatus('error');
                 }
             );

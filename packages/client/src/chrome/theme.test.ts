@@ -18,6 +18,7 @@ import {
     presetChromeTheme,
     resolveChromeTheme,
     resolveLabelStyle,
+    flattenOver,
     withAlpha,
     workspaceColorHex
 } from './index';
@@ -107,6 +108,36 @@ describe('color helpers', () => {
         expect(normalizeHexColor('#zzz')).toBeNull();
         expect(withAlpha('#5E8AC4', 0.5)).toBe('rgba(94, 138, 196, 0.5)');
         expect(withAlpha('garbage', 0.5)).toBe('garbage');
+    });
+
+    /**
+     * A `var(--nex-x, #hex)` token used to pass through unchanged, so the alpha vanished and the
+     * "tinted" surfaces (selected settings tab, selected profile row, armed key recorder) painted
+     * a solid accent slab — run-B's "reads as selected text" nit. Mixing keeps the live variable,
+     * so a user theme's accent still wins.
+     */
+    it('mixes a CSS variable rather than dropping its alpha', () => {
+        expect(withAlpha('var(--nex-accent, #6F9BD8)', 0.18)).toBe(
+            'color-mix(in srgb, var(--nex-accent, #6F9BD8) 18%, transparent)'
+        );
+        expect(withAlpha('var(--nex-accent, #6F9BD8)', 0.125)).toBe(
+            'color-mix(in srgb, var(--nex-accent, #6F9BD8) 12.5%, transparent)'
+        );
+    });
+
+    /**
+     * The content pane's sandboxed frame paints this instead of compositing (run-B L1): an
+     * opaque-origin iframe is out-of-process and cannot see through to the pane container, so
+     * the client hands it the composite the container would have produced.
+     */
+    it('flattens a translucent pane fill over the window background', () => {
+        expect(flattenOver('#FFFFFF', 0.5, '#000000')).toBe('#808080');
+        expect(flattenOver('#1A1B26', 1, '#EAE8E2')).toBe('#1A1B26'); // opaque → the fill itself
+        expect(flattenOver('#1A1B26', 0, '#EAE8E2')).toBe('#EAE8E2'); // invisible → the base
+        expect(flattenOver('#1A1B26', 2, '#EAE8E2')).toBe('#1A1B26'); // alpha clamps to 0..1
+        expect(flattenOver('#1A1B26', Number.NaN, '#EAE8E2')).toBe('#1A1B26'); // NaN → opaque
+        expect(flattenOver('garbage', 0.5, '#EAE8E2')).toBe('#EAE8E2'); // degrade to the half
+        expect(flattenOver('#1A1B26', 0.5, 'garbage')).toBe('#1A1B26'); // that still parses
     });
 
     it('picks label text by luminance (> 0.6 → black)', () => {

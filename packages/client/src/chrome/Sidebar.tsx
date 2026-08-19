@@ -1555,8 +1555,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
             >
                 {newForm === null ? (
                     <div className="flex items-center gap-2">
+                        {/*
+                          * ⌘N is New Workspace's shortcut, so it rides INSIDE that button. It
+                          * used to sit `ml-auto` after "New Group", which reads as New Group's
+                          * shortcut — the audit's nit list opened with it (run-B).
+                          */}
                         <button
                             type="button"
+                            data-testid="sidebar-new-workspace"
+                            aria-label="New Workspace"
+                            title="New Workspace (⌘N)"
                             className="flex items-center gap-1 text-[12px]"
                             style={{ color: tokens.textSecondary }}
                             onClick={() => {
@@ -1564,6 +1572,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             }}
                         >
                             <ChromeIcon name="plus" /> New Workspace
+                            <span className="font-mono text-[10px]" style={{ color: tokens.textTertiary }}>
+                                ⌘N
+                            </span>
                         </button>
                         <button
                             type="button"
@@ -1575,16 +1586,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         >
                             New Group
                         </button>
-                        <span className="ml-auto font-mono text-[10px]" style={{ color: tokens.textTertiary }}>
-                            ⌘N
-                        </span>
                         {props.onOpenSettings === undefined ? null : (
                             <button
                                 type="button"
                                 data-testid="sidebar-settings"
                                 aria-label="Settings"
                                 title="Settings (⌘,)"
-                                className="flex items-center"
+                                className="ml-auto flex items-center"
                                 style={{ color: tokens.textSecondary }}
                                 onClick={() => {
                                     props.onOpenSettings?.();

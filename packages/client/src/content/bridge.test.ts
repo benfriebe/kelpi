@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     CONTENT_BRIDGE_SOURCE,
     contentBridgeScript,
+    frameBaseStyle,
     openExternalLink,
     parseBridgeMessage,
     prepareContentDocument,
@@ -49,6 +50,44 @@ describe('prepareContentDocument', () => {
 
         expect(prepared).not.toContain('"><script>alert(1)');
         expect(prepared).toContain('&quot;&gt;&lt;script&gt;');
+    });
+
+    /**
+     * run-B L1. The daemon emits `body { background-color: transparent }` because §3.8 has the
+     * PANE CONTAINER paint the ghostty fill behind the document — which is a WKWebView contract.
+     * This client shows the document in an `allow-scripts` sandbox, i.e. an opaque origin, i.e.
+     * an out-of-process frame that composites over Chromium's WHITE base and cannot inherit the
+     * embedder's transparency. So the client paints the frame itself.
+     */
+    it('paints the frame opaque without touching the daemon body rule', () => {
+        const html =
+            '<!DOCTYPE html>\n<html class="dark">\n<head>\n<style>\nbody { background-color: transparent; }\n</style>\n</head>\n<body><p>hi</p></body>\n</html>\n';
+        const prepared = prepareContentDocument(html, { paneID: PANE, background: '#0A0A0C' });
+
+        // The daemon's contract is untouched — another embedder may still want it transparent.
+        expect(prepared).toContain('body { background-color: transparent; }');
+        // Ours lands on `html`, so the canvas takes it however short the body is…
+        expect(prepared).toContain('html{background-color:#0A0A0C;color-scheme:dark;}');
+        // …and AFTER the daemon's stylesheet, so a same-specificity rule cannot outrank it.
+        expect(prepared.indexOf('body { background-color: transparent; }')).toBeLessThan(
+            prepared.indexOf('data-nex-frame-base')
+        );
+        expect(prepared.indexOf('data-nex-frame-base')).toBeLessThan(prepared.indexOf('</head>'));
+    });
+
+    it('takes the light color scheme when the document is light, and injects nothing without a color', () => {
+        const html = '<html><head></head><body></body></html>';
+        expect(prepareContentDocument(html, { paneID: PANE, background: '#FFFFFF', colorScheme: 'light' })).toContain(
+            'html{background-color:#FFFFFF;color-scheme:light;}'
+        );
+        // No background = the caller CAN composite (a non-sandboxed embedder, a test fixture).
+        expect(prepareContentDocument(html, { paneID: PANE })).not.toContain('data-nex-frame-base');
+    });
+
+    it('prepends the base style when the daemon sent a bare fragment with no head', () => {
+        const prepared = prepareContentDocument('<h1>bare</h1>', { paneID: PANE, background: '#101013' });
+        expect(prepared.indexOf('data-nex-frame-base')).toBeLessThan(prepared.indexOf('<h1>bare</h1>'));
+        expect(frameBaseStyle('#101013', 'dark')).toContain('background-color:#101013');
     });
 
     it('carries the pane id into the script so a message names its sender', () => {

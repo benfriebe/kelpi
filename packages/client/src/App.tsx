@@ -60,6 +60,7 @@ import {
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
+    flattenOver,
     normalizeHexColor,
     installKeyDispatcher,
     shortcutForAction,
@@ -175,7 +176,7 @@ function Shell(props: AppProps): ReactElement {
     const { runtime, createRenderer, mountLimit } = props;
     const store = runtime.store;
     const commands = runtime.commands;
-    const { bucket } = useChromeTheme();
+    const { bucket, theme: chromeTheme } = useChromeTheme();
 
     const nex = useStore(store);
     const daemon = nex.daemon;
@@ -822,6 +823,28 @@ function Shell(props: AppProps): ReactElement {
         [settings.appearance.backgroundColor, settings.appearance.backgroundOpacity]
     );
 
+    /**
+     * The fill a CONTENT pane's sandboxed frame paints inside itself (run-B L1).
+     *
+     * `paneFill` is what the pane container paints, and for a terminal that is the end of it —
+     * the canvas composites through it. A markdown/diff document cannot: it is a `srcdoc` frame
+     * sandboxed to `allow-scripts`, which gives it an opaque origin, which Chromium isolates
+     * into its own process, and an out-of-process frame paints its own surface over a WHITE base
+     * rather than inheriting the embedder's transparency (`content/bridge.ts` → `frameBaseStyle`).
+     * Flattening the same two colors the container composites — the ghostty background at the
+     * ghostty opacity, over the window fill — reproduces that composite as one opaque value, so
+     * the document is pixel-identical to the container it can no longer see through.
+     */
+    const contentDocumentFill = useMemo(
+        () =>
+            flattenOver(
+                settings.appearance.backgroundColor,
+                settings.appearance.backgroundOpacity,
+                chromeTheme.windowBackground
+            ),
+        [settings.appearance.backgroundColor, settings.appearance.backgroundOpacity, chromeTheme.windowBackground]
+    );
+
     // Memoized so `renderPane`'s dependency list only changes when the FONT changes: the
     // engines take a font at construction, so a new object here would rebuild every engine.
     //
@@ -1128,6 +1151,18 @@ function Shell(props: AppProps): ReactElement {
 
     // ── pane bodies ─────────────────────────────────────────────────────────────────
 
+    /**
+     * A modal is up, so every embedded web view has to go back to the holder.
+     *
+     * A web pane's page is a native `WebContentsView` layered ON TOP of this renderer by the
+     * Electron shell — it is not part of the DOM and no z-index, backdrop or `opacity` in here
+     * can get above it. Left in place, a live page would keep painting over the settings window
+     * or the command palette, so the pane reports itself hidden for as long as the modal is open
+     * and the shell parks the view off-screen (`webpane/geometry.ts` → `shell/webhost/embed.ts`).
+     * The page keeps running; only its placement is suspended.
+     */
+    const modalOpen = settingsTab !== null || ui.palette.open;
+
     const renderPane = useCallback<RenderPane>(
         (paneID, _frame, focused, renderState) => {
             const pane = paneByID.get(paneID);
@@ -1142,6 +1177,8 @@ function Shell(props: AppProps): ReactElement {
                         content={content}
                         focused={focused}
                         visible={renderState.visible}
+                        background={paneFill}
+                        documentBackground={contentDocumentFill}
                         onFocusRequest={onTerminalFocus}
                         onToggleEdit={act.toggleMarkdownEdit}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
@@ -1155,6 +1192,8 @@ function Shell(props: AppProps): ReactElement {
                         content={content}
                         focused={focused}
                         visible={renderState.visible}
+                        background={paneFill}
+                        documentBackground={contentDocumentFill}
                         onFocusRequest={onTerminalFocus}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                     />
@@ -1167,6 +1206,7 @@ function Shell(props: AppProps): ReactElement {
                         content={content}
                         focused={focused}
                         visible={renderState.visible}
+                        background={paneFill}
                         onFocusRequest={onTerminalFocus}
                     />
                 );
@@ -1183,7 +1223,7 @@ function Shell(props: AppProps): ReactElement {
                         activeTabID={web?.activeTabID ?? null}
                         isPrivate={web?.isPrivate ?? false}
                         focused={focused}
-                        visible={renderState.visible}
+                        visible={renderState.visible && !modalOpen}
                         embedded={shellWindowID !== null}
                         commands={webCommands}
                         onGeometry={webGeometry.report}
@@ -1224,13 +1264,15 @@ function Shell(props: AppProps): ReactElement {
             runtime,
             paneTheme,
             paneFill,
+            contentDocumentFill,
             terminalFont,
             onTerminalFocus,
             onDimensionsChange,
             createRenderer,
             webCommands,
             webGeometry,
-            shellWindowID
+            shellWindowID,
+            modalOpen
         ]
     );
 

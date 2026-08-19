@@ -24,6 +24,8 @@ export interface ScratchpadPaneProps {
     readonly content: ContentApi;
     readonly focused?: boolean | undefined;
     readonly visible?: boolean | undefined;
+    /** The pane container's fill (may carry the ghostty opacity). */
+    readonly background?: string | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly scrollStore?: ScrollStore | undefined;
 }
@@ -44,6 +46,7 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
             isDark={state?.isDark ?? true}
             focused={props.focused}
             visible={props.visible}
+            background={props.background}
             // Read-only until the first snapshot: a keystroke into the empty pre-load buffer
             // would go out as a `content-set-text` that wipes the restored scratchpad.
             readOnly={state === null}

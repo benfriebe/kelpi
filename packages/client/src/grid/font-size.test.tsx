@@ -1,10 +1,11 @@
 /**
  * The pane header's preview font-size pair (content-panes.md §3.16).
  *
- * The rule that matters is WHERE they appear: §3.16 is explicit that the size applies "only
- * when the focused pane is markdown AND `isEditing == false`" — the built-in editor is a fixed
- * 13 px and a diff pane has no bindings — so the buttons are absent everywhere else rather
- * than present and inert.
+ * The rule that matters is WHERE they act: §3.16 is explicit that the size applies "only when
+ * the focused pane is markdown AND `isEditing == false`" — the built-in editor is a fixed 13 px
+ * and a diff pane has no bindings. On a non-markdown pane the pair is absent; in EDIT mode it
+ * stays in the row, disabled, because a control that unmounts reflows the whole button strip on
+ * every ⌘E and takes the affordance out of sight in the mode you are looking at (run-B nit).
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -58,11 +59,19 @@ describe('font-size buttons', () => {
         expect(onSetFontSize).toHaveBeenCalledWith(PANE, 'reset');
     });
 
-    it('disappear in edit mode and never appear on other pane types', () => {
+    it('stay in the row but go inert in edit mode, and never appear on other pane types', () => {
+        const onSetFontSize = vi.fn();
         const view = render(
-            <PaneHeader pane={testPane(PANE, { type: 'markdown', isEditing: true })} focused />
+            <PaneHeader
+                pane={testPane(PANE, { type: 'markdown', isEditing: true })}
+                focused
+                onSetFontSize={onSetFontSize}
+            />
         );
-        expect(screen.queryByTestId(`pane-font-smaller-${PANE}`)).toBeNull();
+        expect((smaller() as HTMLButtonElement).disabled).toBe(true);
+        expect((larger() as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(smaller());
+        expect(onSetFontSize).not.toHaveBeenCalled();
 
         for (const type of ['shell', 'diff', 'scratchpad', 'web'] as const) {
             view.rerender(<PaneHeader pane={testPane(PANE, { type })} focused />);

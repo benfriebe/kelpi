@@ -152,12 +152,27 @@ export function normalizeHexColor(value: string): string | null {
     return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
 }
 
-/** `rgba(...)` from a hex + alpha; an unparseable hex passes through unchanged. */
+/**
+ * `rgba(...)` from a hex + alpha.
+ *
+ * A **`var(--nex-x, #hex)` token** (what `tokens.ts` hands every component) is not a hex, and
+ * returning it unchanged dropped the alpha silently: `withAlpha(tokens.accent, 0.18)` painted
+ * the accent at FULL strength, which is why a selected settings tab, a selected profile row and
+ * an armed key recorder all wore a solid periwinkle slab instead of an 18 % tint (the audit
+ * read it as "selected text rather than a selected nav item" — run-B's nit list). Those keep
+ * the live variable, so they are mixed in CSS rather than resolved here.
+ *
+ * Anything that is neither a hex nor a CSS colour expression still passes through unchanged —
+ * a bad input must not become a valid-but-wrong declaration.
+ */
 export function withAlpha(color: string, alpha: number): string {
-    const rgb = parseHexColor(color);
-    if (rgb === null) return color;
     const clamped = Math.min(1, Math.max(0, alpha));
-    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${clamped})`;
+    const rgb = parseHexColor(color);
+    if (rgb !== null) return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${clamped})`;
+    if (/^(var|color-mix|rgb|rgba|hsl|hsla|oklch|lab)\(/i.test(color.trim())) {
+        return `color-mix(in srgb, ${color} ${(clamped * 100).toFixed(2).replace(/\.?0+$/, '')}%, transparent)`;
+    }
+    return color;
 }
 
 /**

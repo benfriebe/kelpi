@@ -25,7 +25,6 @@ import {
     clockLabel,
     homeAbbreviated,
     middleTruncate,
-    withAlpha,
     workspaceColorHex,
     type ChromeBucket
 } from './theme';
@@ -83,7 +82,10 @@ function bucketColor(bucket: AgentBucket): string {
 /**
  * A tiny SVG trace. Percentage-bounded metrics scale 0–100; anything else auto-scales to the
  * window max (§8.1). With fewer than two samples the spec keeps the slot but draws nothing —
- * that empty slot is the placeholder.
+ * that empty slot is the placeholder, and it is **invisible**: §8.1 gates every gauge on
+ * `showSystemStats`, so with no sampler running there is nothing for a user to see. It kept a
+ * 6 %-white fill until the visual audit photographed it as an empty chip sitting in the footer
+ * (run-B m2); the slot survives so the counts beside it do not jump when a sampler lands.
  */
 export function SystemSparkline(props: {
     readonly samples: readonly number[];
@@ -100,7 +102,7 @@ export function SystemSparkline(props: {
                 data-testid="sparkline-placeholder"
                 aria-hidden
                 className="inline-block rounded-[2px]"
-                style={{ width, height, background: withAlpha('#E6E6EA', 0.06) }}
+                style={{ width, height, background: 'transparent' }}
             />
         );
     }

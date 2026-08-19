@@ -86,6 +86,9 @@ const TONE_COLOR: Readonly<Record<SettingsButtonTone, string>> = {
 export function SettingsButton(props: SettingsButtonProps): ReactElement {
     const tone = props.tone ?? 'default';
     const disabled = props.disabled === true;
+    // `whitespace-nowrap`: a button label is a name, not prose. "Reset All to Defaults" wrapped
+    // onto two lines in the Keybindings header (run-B's nit list), which reads as a paragraph
+    // rather than a control; the copy beside it wraps instead.
     return (
         <button
             type="button"
@@ -93,7 +96,7 @@ export function SettingsButton(props: SettingsButtonProps): ReactElement {
             title={props.title ?? undefined}
             aria-label={props.ariaLabel ?? undefined}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
-            className="rounded border px-2 py-1 text-[11px] disabled:opacity-40"
+            className="whitespace-nowrap rounded border px-2 py-1 text-[11px] disabled:opacity-40"
             style={{
                 borderColor: tokens.divider,
                 color: TONE_COLOR[tone],

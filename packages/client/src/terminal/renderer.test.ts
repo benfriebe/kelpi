@@ -304,7 +304,13 @@ describe('TerminalRenderer adapter', () => {
         renderer.dispose();
     });
 
-    it('drops the queue on a reset before the engine is up', async () => {
+    it('drops the queue on a reset before the engine is up, and leads the flush with RIS', async () => {
+        // The RIS is not ceremony. ghostty-web hands a new Terminal the WASM slot a disposed
+        // one just freed, so the engine this queue flushes into may already hold another
+        // pane's grid — and a remount (workspace switch, font change, LRU eviction) delivers
+        // its replay while `open()` is still in flight, which is exactly when this branch
+        // runs. Swallowing the reset here is what painted a pane's snapshot over its
+        // predecessor's screen.
         const engine = stubEngine();
         const renderer = createRendererFromLoader('xterm', engine.loader);
 
@@ -315,7 +321,8 @@ describe('TerminalRenderer adapter', () => {
         engine.settle();
         await opening;
 
-        expect(engine.terminal.writes).toEqual(['replay']);
+        expect(engine.terminal.writes).toEqual([TERMINAL_RESET_SEQUENCE, 'replay']);
+        // Still the in-stream byte, never the engine's own reset() (ghostty-web#141).
         expect(engine.terminal.resets).toBe(0);
         renderer.dispose();
     });

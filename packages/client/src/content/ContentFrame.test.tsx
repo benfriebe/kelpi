@@ -47,6 +47,37 @@ describe('sandboxing', () => {
         expect(sandbox).not.toContain('allow-same-origin');
     });
 
+    /**
+     * run-B L1: the sandbox is precisely what breaks §3.8's transparent document. `allow-scripts`
+     * alone gives the frame an opaque origin; Chromium isolates one into its own process; an
+     * out-of-process frame composites over a WHITE base and never sees the pane container behind
+     * it. The frame therefore paints the fill assembly resolved, and the pane container keeps
+     * painting its own so the two agree at the edges.
+     */
+    it('paints the frame with the fill assembly resolved, not Chromium’s white base', () => {
+        render(
+            <ContentFrame
+                paneID={PANE}
+                title="markdown preview"
+                html={BARE_DOCUMENT}
+                documentBackground="#1A1B26"
+                isDark
+            />
+        );
+
+        expect(srcdoc()).toContain('html{background-color:#1A1B26;color-scheme:dark;}');
+    });
+
+    it('falls back to the theme default when assembly resolved nothing', () => {
+        const view = render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} />);
+        expect(srcdoc()).toContain('html{background-color:#0A0A0C;color-scheme:dark;}');
+
+        view.rerender(
+            <ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} isDark={false} />
+        );
+        expect(srcdoc()).toContain('html{background-color:#FFFFFF;color-scheme:light;}');
+    });
+
     it('loads the daemon’s document through srcdoc with the copy-button script injected', () => {
         render(<ContentFrame paneID={PANE} title="markdown preview" html={BARE_DOCUMENT} />);
 

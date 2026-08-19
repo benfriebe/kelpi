@@ -482,10 +482,24 @@ class AdapterRenderer implements TerminalRenderer {
         if (this.disposed) return;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
-            // Nothing has been painted yet; dropping the queue *is* the reset, and a fresh
-            // engine needs no RIS.
-            this.pending = [];
-            this.pendingBytes = 0;
+            /**
+             * The engine is still loading — so drop the queue (a replay supersedes anything
+             * waiting) and make RIS the FIRST thing it will be handed.
+             *
+             * "A fresh engine needs no RIS" is the assumption this used to make, and it is
+             * false for the engine the app actually ships: ghostty-web runs every Terminal
+             * through one shared WASM instance, and a Terminal constructed moments after
+             * another was disposed comes up holding that one's grid. `ingest.ts` already
+             * resets before every replay for exactly that reason, but on the path that
+             * matters — a pane REMOUNTING, where the replay lands while `open()` is still in
+             * flight — the reset arrived here with no terminal to write to and was swallowed,
+             * so the snapshot was painted over the previous pane's screen. Switching
+             * workspaces is that path for every visible pane at once (`mount-policy.ts`
+             * evicts a background workspace's engines), which is why clicking a sidebar row
+             * came back to a garbled grid.
+             */
+            this.pending = [TERMINAL_RESET_SEQUENCE];
+            this.pendingBytes = byteLength(TERMINAL_RESET_SEQUENCE);
             return;
         }
         // RIS in-stream rather than `terminal.reset()` — see the header note (ordering with

@@ -144,6 +144,42 @@ export interface PrepareDocumentOptions {
     readonly paneID: string;
     /** `/pane-assets/<paneID>/` — the daemon's sibling-file route (port note 4). */
     readonly assetBase?: string | null | undefined;
+    /**
+     * An OPAQUE color painted on the document's own `<html>` (see `frameBaseStyle`). Absent
+     * leaves the daemon's transparent document alone, which is only correct for a frame that
+     * is not sandboxed into its own process.
+     */
+    readonly background?: string | null | undefined;
+    /** `dark`/`light` for the frame's `color-scheme` (UA widgets, scrollbars, form controls). */
+    readonly colorScheme?: 'dark' | 'light' | undefined;
+}
+
+/**
+ * The one stylesheet the CLIENT adds to the daemon's document, and the reason it has to exist.
+ *
+ * content-panes.md §3.8 makes the document transparent and has the **pane container** paint
+ * `rgba(ghostty-bg, opacity)` behind it, so a content pane blends with the terminal beside it.
+ * That contract is written for a WKWebView, which can be non-opaque. This client shows the
+ * document in an iframe sandboxed to `allow-scripts` — an **opaque origin**, which Chromium
+ * isolates into its own process. An out-of-process frame composites its own surface and does not
+ * inherit the embedder's transparency: it paints over Chromium's **white base background**, and
+ * `background: transparent` on the `<iframe>` element cannot reach across the process boundary.
+ * The result was a dark-theme document (dark ink, dark table headers) on a white canvas.
+ *
+ * So the client gives the FRAME a real background instead: the same two colors the pane
+ * container composites (`--nex-term-bg` = ghostty background at ghostty opacity, over the window
+ * fill), flattened to one opaque value by `chrome/theme.ts`'s `flattenOver` and painted on
+ * `<html>`. `body { background-color: transparent }` then propagates it to the canvas, so the
+ * daemon's HTML contract is untouched — a client that CAN composite (a future non-sandboxed
+ * embedder, another app) simply does not pass a background and gets the transparent document.
+ *
+ * `color-scheme` rides along because it is the same question asked of the UA: it decides the
+ * default canvas, the scrollbars and any form control the document contains.
+ */
+export function frameBaseStyle(background: string, colorScheme: 'dark' | 'light'): string {
+    // `html` rather than `body`: the daemon's stylesheet owns `body`, and a document whose body
+    // is shorter than the viewport would leave the rest of the canvas unpainted.
+    return `<style data-nex-frame-base="1">html{background-color:${background};color-scheme:${colorScheme};}</style>`;
 }
 
 function escapeAttribute(value: string): string {
@@ -181,6 +217,16 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
         } else {
             document = tag + document;
         }
+    }
+
+    const background = options.background ?? null;
+    if (background !== null && background.length > 0) {
+        // AFTER the daemon's `<style>`, so a future rule of the same specificity resolves our
+        // way — the frame being opaque is a correctness requirement here, not a preference.
+        const style = `${frameBaseStyle(background, options.colorScheme ?? 'dark')}\n`;
+        const headEnd = document.search(/<\/head\s*>/i);
+        if (headEnd >= 0) document = document.slice(0, headEnd) + style + document.slice(headEnd);
+        else document = style + document;
     }
 
     const script = `<script>\n${contentBridgeScript(options.paneID)}\n</script>\n`;

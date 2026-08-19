@@ -49,6 +49,20 @@ import { contentScrollStore, type ScrollStore } from './scroll';
 /** The pane fill behind the transparent document (`--nex-term-bg`, as terminal panes use). */
 export const CONTENT_PANE_BACKGROUND = 'var(--nex-term-bg, #0A0A0C)';
 
+/**
+ * The opaque fill painted INSIDE the frame when assembly did not resolve one (`bridge.ts`'s
+ * `frameBaseStyle` explains why the frame needs its own). These are the `--nex-term-bg` defaults
+ * of the two chrome columns, so a standalone frame (a test, a storybook) is still theme-correct.
+ */
+export const FRAME_DOCUMENT_BACKGROUND = { dark: '#0A0A0C', light: '#FFFFFF' } as const;
+
+/**
+ * Content overlays clear the document's 8 px scrollbar gutter (`::-webkit-scrollbar { width: 8px }`
+ * in the daemon's stylesheet, content-panes.md §3.9). At `right-2` the Copy chip's right edge
+ * landed exactly on the scroller, so it read as clipped by the pane edge in every screenshot.
+ */
+const OVERLAY_INSET = 14;
+
 export interface ContentFrameProps {
     readonly paneID: string;
     /** The daemon's rendered document. An empty string renders an empty (but live) frame. */
@@ -59,7 +73,16 @@ export interface ContentFrameProps {
     readonly title: string;
     /** False keeps the frame mounted (and its scroll position) while hiding it. */
     readonly visible?: boolean | undefined;
+    /** The pane container's fill; may carry the ghostty background opacity. */
     readonly background?: string | undefined;
+    /**
+     * The OPAQUE color the document itself is painted with (`bridge.ts` → `frameBaseStyle`).
+     * Assembly flattens the container fill over the window background so the frame matches the
+     * composite it cannot join; omitted, the frame falls back to the `isDark` default.
+     */
+    readonly documentBackground?: string | undefined;
+    /** The daemon's light/dark verdict for this document — drives the frame's `color-scheme`. */
+    readonly isDark?: boolean | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     /** ⌘E inside the preview — the host's key interceptor cannot see through the iframe. */
     readonly onToggleEdit?: ((paneID: string) => void) | undefined;
@@ -131,9 +154,18 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     /** False until this mount has restored once — the first restore uses the shared fraction. */
     const restoredRef = useRef(false);
 
+    const colorScheme = props.isDark === false ? 'light' : 'dark';
+    const documentBackground = props.documentBackground ?? FRAME_DOCUMENT_BACKGROUND[colorScheme];
+
     const srcDoc = useMemo(
-        () => prepareContentDocument(html, { paneID, assetBase: props.assetBase ?? null }),
-        [html, paneID, props.assetBase]
+        () =>
+            prepareContentDocument(html, {
+                paneID,
+                assetBase: props.assetBase ?? null,
+                background: documentBackground,
+                colorScheme
+            }),
+        [html, paneID, props.assetBase, documentBackground, colorScheme]
     );
 
     // ── find-in-page (§3.13), per client ────────────────────────────────────────────
@@ -330,8 +362,8 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                     data-testid={`content-copy-${paneID}`}
                     aria-label="Copy document"
                     title="Copy document"
-                    className="absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] opacity-40 transition-opacity hover:opacity-100"
-                    style={OVERLAY_STYLE}
+                    className="absolute rounded px-1.5 py-0.5 text-[10px] opacity-70 transition-opacity hover:opacity-100"
+                    style={{ ...OVERLAY_STYLE, right: OVERLAY_INSET, top: 8 }}
                     onClick={(event) => {
                         event.stopPropagation();
                         const box = event.currentTarget.getBoundingClientRect();
@@ -386,8 +418,8 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
             {findOpen ? (
                 <div
                     data-testid={`content-find-${paneID}`}
-                    className="absolute right-2 top-2 flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px]"
-                    style={OVERLAY_STYLE}
+                    className="absolute flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px]"
+                    style={{ ...OVERLAY_STYLE, right: OVERLAY_INSET, top: 8 }}
                     onKeyDown={(event) => {
                         if (event.key === 'Escape') {
                             event.preventDefault();

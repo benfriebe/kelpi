@@ -31,6 +31,10 @@ export interface MarkdownPaneProps {
     readonly content: ContentApi;
     readonly focused?: boolean | undefined;
     readonly visible?: boolean | undefined;
+    /** The pane container's fill (may carry the ghostty opacity). */
+    readonly background?: string | undefined;
+    /** The opaque fill painted inside the sandboxed frame (`bridge.ts` → `frameBaseStyle`). */
+    readonly documentBackground?: string | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly onToggleEdit?: ((paneID: string) => void) | undefined;
     readonly scrollStore?: ScrollStore | undefined;
@@ -62,6 +66,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                 isDark={state.isDark}
                 focused={props.focused}
                 visible={props.visible}
+                background={props.background}
                 onChange={(text) => content.setText(paneID, text)}
                 onFlush={() => void content.flush(paneID)}
                 onToggleEdit={props.onToggleEdit}
@@ -79,6 +84,9 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             html={state.html ?? ''}
             assetBase={state.assetBase}
             visible={props.visible}
+            background={props.background}
+            documentBackground={props.documentBackground}
+            isDark={state.isDark}
             onFocusRequest={props.onFocusRequest}
             onToggleEdit={props.onToggleEdit}
             scrollStore={props.scrollStore}

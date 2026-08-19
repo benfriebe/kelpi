@@ -2,7 +2,7 @@ import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@nex/proto
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
-import { G1, harness as storeHarness, seededState, W1 } from '../store/testing.js';
+import { G1, harness as storeHarness, NOW, seededState, W1, W2 } from '../store/testing.js';
 import {
     BAD_TOKEN_MESSAGE,
     createSyncHub,
@@ -312,6 +312,35 @@ describe('reports', () => {
         expect(session.documentVisible).toBe(true);
         expect([...session.visiblePaneIDs]).toEqual([f.paneID]);
         expect(f.hub.presence()).toMatchObject({ visibleClients: 1, anyVisible: true });
+    });
+
+    it('lets an unchanged visibility report pull the last-active workspace back (run-B L3)', () => {
+        // The audit's "the daemon and the window disagree indefinitely": a `nex workspace
+        // create` from a terminal moves the daemon's last-active, and the window that is still
+        // showing the OLD workspace then clicks its row — an unchanged report for this
+        // connection, but the only signal the daemon gets. While `setActiveWorkspace` returned
+        // early on its own value being unchanged, that click could never pull the answer back
+        // and `nex workspace list`'s ACTIVE column stayed wrong for the rest of the session.
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        const report = JSON.stringify({
+            type: 'visibility-report',
+            workspaceID: W1,
+            visiblePaneIDs: [f.paneID],
+            documentVisible: true
+        });
+
+        session.handleMessage(report);
+        expect(f.store.state().lastActiveWorkspaceID).toBe(W1);
+
+        // Something else moves it — this is what a CLI `workspace create` does.
+        f.store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'other', now: NOW });
+        expect(f.store.state().lastActiveWorkspaceID).toBe(W2);
+
+        // The same client re-asserts the workspace it never stopped showing.
+        session.handleMessage(report);
+        expect(f.store.state().lastActiveWorkspaceID).toBe(W1);
     });
 
     it('answers ping with pong', () => {

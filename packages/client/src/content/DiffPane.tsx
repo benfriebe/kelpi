@@ -27,6 +27,10 @@ export interface DiffPaneProps {
     readonly content: ContentApi;
     readonly focused?: boolean | undefined;
     readonly visible?: boolean | undefined;
+    /** The pane container's fill (may carry the ghostty opacity). */
+    readonly background?: string | undefined;
+    /** The opaque fill painted inside the sandboxed frame (`bridge.ts` → `frameBaseStyle`). */
+    readonly documentBackground?: string | undefined;
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly scrollStore?: ScrollStore | undefined;
     readonly writeClipboard?: ClipboardWriter | undefined;
@@ -62,6 +66,9 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
             title={`diff ${paneID}`}
             html={state.html ?? ''}
             visible={props.visible}
+            background={props.background}
+            documentBackground={props.documentBackground}
+            isDark={state.isDark}
             onFocusRequest={props.onFocusRequest}
             scrollStore={props.scrollStore}
             writeClipboard={props.writeClipboard}

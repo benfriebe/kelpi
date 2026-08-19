@@ -183,18 +183,24 @@ interface HeaderButtonProps {
     readonly testID: string;
     readonly label: string;
     readonly icon: IconName;
+    /** Dimmed and inert, but still in the row: a control that vanishes reflows the header. */
+    readonly disabled?: boolean | undefined;
     readonly onClick?: ((event: MouseEvent<HTMLButtonElement>) => void) | undefined;
 }
 
-function HeaderButton({ testID, label, icon, onClick }: HeaderButtonProps): ReactElement {
+function HeaderButton({ testID, label, icon, disabled, onClick }: HeaderButtonProps): ReactElement {
+    const off = disabled === true;
     return (
         <button
             type="button"
             data-testid={testID}
             aria-label={label}
             title={label}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded opacity-60 hover:opacity-100"
-            style={{ color: tokens.textSecondary }}
+            disabled={off}
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
+                off ? 'opacity-25' : 'opacity-60 hover:opacity-100'
+            }`}
+            style={{ color: tokens.textSecondary, cursor: off ? 'default' : 'pointer' }}
             onPointerDown={(event) => {
                 // Never let a button press start a pane-move drag.
                 event.stopPropagation();
@@ -418,21 +424,33 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             )}
 
             {/* 9 — per-type buttons */}
-            {/* §3.16: font size is a PREVIEW control — the built-in editor is fixed 13 px, so
-                the pair disappears in edit mode rather than sitting there inert. ⌥-click either
-                one resets to 14, which is the ⌘0 binding without a second pair of buttons. */}
-            {pane.type === 'markdown' && !pane.isEditing ? (
+            {/* §3.16: font size is a PREVIEW control — the built-in editor is a fixed 13 px
+                monospace, so the pair cannot act in edit mode. It stays in the row DISABLED
+                rather than unmounting (run-B nit): a control that vanishes reflows every button
+                beside it on ⌘E, and the affordance goes undiscoverable in the mode you are in.
+                ⌥-click either one resets to 14 — the ⌘0 binding without a second pair. */}
+            {pane.type === 'markdown' ? (
                 <>
                     <HeaderButton
                         testID={`pane-font-smaller-${pane.id}`}
-                        label="Decrease font size (⌘-, ⌥-click resets)"
+                        label={
+                            pane.isEditing
+                                ? 'Font size applies to the preview (⌘E)'
+                                : 'Decrease font size (⌘-, ⌥-click resets)'
+                        }
                         icon="font-smaller"
+                        disabled={pane.isEditing === true}
                         onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'decrease')}
                     />
                     <HeaderButton
                         testID={`pane-font-larger-${pane.id}`}
-                        label="Increase font size (⌘=, ⌥-click resets)"
+                        label={
+                            pane.isEditing
+                                ? 'Font size applies to the preview (⌘E)'
+                                : 'Increase font size (⌘=, ⌥-click resets)'
+                        }
                         icon="font-larger"
+                        disabled={pane.isEditing === true}
                         onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'increase')}
                     />
                 </>

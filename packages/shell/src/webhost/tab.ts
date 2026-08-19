@@ -100,6 +100,20 @@ export interface TabFactoryOptions {
 /** A tab plus the bits only the host (not the dispatcher) needs. */
 export interface HostTab extends TabController {
     setVisible(visible: boolean): void;
+    /**
+     * The view moved between the off-screen holder and the shell window (`./embed.ts`).
+     *
+     * It exists because the two homes want *opposite* layout rules. In the holder the viewport is
+     * **pinned** to `DEFAULT_VIEWPORT` at 1× by `Emulation.setDeviceMetricsOverride`, so
+     * `capture`, element rects and `wait` answer the same on every machine whatever the holder
+     * window happens to be. Inside the shell window the pane's rect IS the viewport, and a pinned
+     * one is a defect the user sees: a 1280×800 page painted into a 516×673 hole shows its
+     * top-left corner — clipped, non-responsive, and at 1× on a retina panel (run-B L2).
+     *
+     * So the override is cleared while embedded (Chromium then lays the page out at the widget's
+     * real size and the window's real scale factor) and re-applied the moment it goes back.
+     */
+    setEmbedded(embedded: boolean): void;
     dispose(reason: DestroyReason): void;
     /**
      * The Electron view, for whoever owns the window layout: the holder by default, the shell
@@ -140,6 +154,11 @@ class ElectronTab implements HostTab {
     private failedLoad = false;
     private zoomFactor = 1;
 
+    /** The pinned automation viewport, re-applied whenever the view returns to the holder. */
+    private readonly viewport: { readonly width: number; readonly height: number };
+    /** True while the view lives in the shell window, where the pane's rect is the viewport. */
+    private embedded = false;
+
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
     private readonly requests = new Map<string, NetworkRequestInfo & { frameId?: string }>();
@@ -152,6 +171,7 @@ class ElectronTab implements HostTab {
         this.lastAttemptedURL = input.url;
 
         const viewport = options.viewport ?? DEFAULT_VIEWPORT;
+        this.viewport = viewport;
         this.view = new WebContentsView({
             webPreferences: {
                 session: options.sessionFor(input.paneID, input.isPrivate),
@@ -258,9 +278,28 @@ class ElectronTab implements HostTab {
                 }
             );
         }
+        await this.applyViewportPin();
+    }
+
+    /**
+     * Pin (or unpin) the layout viewport, per `HostTab.setEmbedded`.
+     *
+     * Off-screen the tab is an automation surface and the viewport is fixed at `DEFAULT_VIEWPORT`
+     * @1×, so `capture`, `q-rect` and `wait` are deterministic. Embedded in the shell window the
+     * pane's rect is the viewport, so the override has to go — otherwise the page lays out at
+     * 1280×800 inside whatever hole the client drew and the user sees its clipped top-left corner.
+     */
+    private async applyViewportPin(): Promise<void> {
+        if (this.embedded) {
+            await this.send('Emulation.clearDeviceMetricsOverride').catch((error: unknown) => {
+                // Non-fatal: the page keeps the pinned viewport, i.e. today's behaviour.
+                this.report(error, 'device-metrics-clear');
+            });
+            return;
+        }
         await this.send('Emulation.setDeviceMetricsOverride', {
-            width: viewport.width,
-            height: viewport.height,
+            width: this.viewport.width,
+            height: this.viewport.height,
             // 1, not 0 ("system default"): on a retina Mac the default would double every
             // screenshot's byte count for no extra information, and push captures over §8.4's
             // 1 MB inline budget for pages that have no business spilling to a temp file.
@@ -599,6 +638,17 @@ class ElectronTab implements HostTab {
     setVisible(visible: boolean): void {
         if (this.disposed) return;
         this.view.setVisible(visible);
+    }
+
+    setEmbedded(embedded: boolean): void {
+        if (this.disposed || this.embedded === embedded) return;
+        this.embedded = embedded;
+        // Sequenced behind `ready`: a view can be placed before its CDP session exists (the
+        // client's first geometry report races the bootstrap), and an override applied to a
+        // renderer that is not there yet never resolves.
+        void this.ready.then(() => this.applyViewportPin()).catch((error: unknown) => {
+            this.report(error, 'device-metrics-embed');
+        });
     }
 
     /**

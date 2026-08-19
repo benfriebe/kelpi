@@ -144,7 +144,12 @@ describe('clock and sparkline', () => {
 
     it('keeps the sparkline slot as a placeholder until there are two samples', () => {
         const view = render(<StatusFooter summary={SUMMARY} now={NOW} />);
-        expect(screen.getByTestId('sparkline-placeholder')).toBeDefined();
+        const placeholder = screen.getByTestId('sparkline-placeholder');
+        expect(placeholder).toBeDefined();
+        // The slot holds its space so the counts beside it do not jump when a sampler lands,
+        // but it PAINTS nothing: §8.1 draws a gauge only when system stats are on, and the
+        // audit photographed the old 6 %-white fill as an empty chip in the footer (run-B m2).
+        expect((placeholder as HTMLElement).style.background).toBe('transparent');
 
         view.rerender(<StatusFooter summary={SUMMARY} now={NOW} sparklineSamples={[1, 4, 2, 8]} />);
         const svg = screen.getByTestId('sparkline');

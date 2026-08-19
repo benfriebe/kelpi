@@ -213,6 +213,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 window.contentView.addChildView(view);
                 view.setBounds(bounds);
                 tab.setVisible(true);
+                // The pane's rect is the viewport now: drop the pinned automation one, or the
+                // page keeps laying out at 1280×800 and the hole shows its clipped top-left
+                // corner at 1× (run-B L2). `setEmbedded` sequences itself behind CDP readiness.
+                tab.setEmbedded(true);
             },
             detach: (tab) => {
                 const view = tab.contentsView;
@@ -225,8 +229,10 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                     }
                 }
                 // Back to the fixed off-screen viewport: every non-visual verb (capture,
-                // element rects, screenshots) is specified against it.
+                // element rects, screenshots) is specified against it — both the view's bounds
+                // and the emulated metrics that make the layout deterministic.
                 view.setBounds({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+                tab.setEmbedded(false);
                 holderWindow().contentView.addChildView(view);
             },
             setBounds: (tab, bounds) => {

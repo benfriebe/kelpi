@@ -15,25 +15,29 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, plus an audited UI with an open defect ledger.** The daemon, the web client, the
-Electron shell, content panes, web panes, graft, the `nex` CLI rewrite and the legacy `nex.db`
-importer are all built and green against the shipped Swift binary, and the app packages into a
-`Nex.app` (unsigned — see [Install and run](#install-and-run)). The window itself has now been
-driven end to end and photographed: **17 defects a person can see are still open, two of them
-blockers.**
+**Wire parity, plus an audited UI whose defect ledger is closed except for one accepted engine
+limit.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the `nex`
+CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
+binary. The window has been driven end to end and photographed four times over: the campaign opened
+with **17 defects + 6 nits, two of them blockers**, and closes with **no blockers — 1 accepted major
+(the daemon's VT does not reflow on resize), 1 new intermittent major, 2 minor, 1 nit.** The one red
+gate is the **packaged `Nex.app`**: it builds correctly but its window never finishes loading (see
+[Install and run](#install-and-run) and `docs/PARITY.md` ▸ Known gaps #9).
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
   **what a person actually sees** (the UI audit and its severity-ordered defect list), where the
   port deliberately differs from the macOS app, and the remaining functional gaps.
-- [`docs/audit/`](docs/audit/) — the visual audit runs: a PNG per step plus a `FINDINGS.md`.
+- [`docs/audit/run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) — the closing re-audit: a verdict
+  per defect, each with the screenshot that settles it. [`docs/audit/`](docs/audit/) holds the runs.
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-19): `pnpm check` 3110 passed; the compat suite 103/103 against **both** the shipped
-Swift CLI and the TypeScript one; five live smokes (client 33, shell 29, web 46, terminal 19,
-packaged 47); the UI audit's 150 assertions with 2 failing (both the same workspace-activation
-defect). Nothing here is called done without a screenshot that shows it.
+Gates (2026-08-19 evening): `pnpm check` 3143 passed; the compat suite 103/103 against **both** the
+shipped Swift CLI and the TypeScript one; four live smokes green (client 33, shell 29, web 46,
+terminal 19) and the packaged one **failing at 34/35**; the UI audit's 179 assertions with 1 failing
+— a real finding, an intermittent terminal-renderer start failure, not a harness fault. Nothing here
+is called done without a screenshot that shows it.
 
 ## Quickstart
 
@@ -257,6 +261,13 @@ Use `pnpm --filter @nex/shell package` for just the `.app` (no DMG/ZIP), and
 launches it with a throwaway environment and asserts that it starts its own daemon, serves its
 own client, answers the shipped `nex` CLI, runs a real PTY, and leaves the daemon alive on quit.
 
+> **Known-broken as of 2026-08-19 evening.** That smoke stops at 34/35: the packaged app builds
+> correctly and its daemon comes up, but the **window never finishes loading** — the renderer dies
+> inside Electron's own bootstrap (`Cannot destructure property 'preloadScripts' of
+> 'binding.startupData' as it is null`). The development shell is unaffected. Do not hand the
+> artifact to anyone until this is understood: `docs/PARITY.md` ▸ Known gaps #9 has the repro and
+> the rule-outs.
+
 Inside `Nex.app/Contents/Resources`:
 
 ```
@@ -377,7 +388,7 @@ Beyond the unit suites, four **live** smokes boot real daemons on private paths 
 node packages/client/scripts/smoke.mjs      # 33 checks: HTTP + WS + delta + PTY round trip
 node packages/shell/scripts/smoke.mjs       # 29 checks: adopt-or-spawn, quit gate, daemon survives
 node packages/shell/scripts/web-smoke.mjs   # 46 checks: real Chromium, real CDP, real CLI
-node packages/shell/scripts/packaged-smoke.mjs   # 47 checks: the built Nex.app, end to end
+node packages/shell/scripts/packaged-smoke.mjs   # the built Nex.app, end to end — FAILING 34/35 today
 ```
 
 And the compat harness drives a real CLI binary against a real daemon — either implementation:

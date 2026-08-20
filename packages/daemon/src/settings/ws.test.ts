@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { WS_PROTOCOL_VERSION, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, WS_PROTOCOL_VERSION, type WsSettingsSnapshot } from '@nex/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher } from '../seams.js';
@@ -47,7 +47,9 @@ interface Fixture {
     readonly hub: SyncHub;
     readonly settings: SettingsService | undefined;
     readonly configPath: string;
+    readonly ghosttyPath: string;
     read(): string | null;
+    readGhostty(): string | null;
     connect(): {
         transport: RecordedTransport;
         send(payload: Record<string, unknown>): Record<string, unknown>;
@@ -86,7 +88,9 @@ function fixture(options: { config?: string; ghostty?: string; withSettings?: bo
         hub,
         settings,
         configPath,
+        ghosttyPath,
         read: () => (fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : null),
+        readGhostty: () => (fs.existsSync(ghosttyPath) ? fs.readFileSync(ghosttyPath, 'utf8') : null),
         connect() {
             const transport = recordingTransport();
             const session = hub.createSession(transport);
@@ -155,6 +159,8 @@ describe('welcome carries the settings snapshot', () => {
         f.settings?.setGeneralSetting('focus-follows-mouse', 'true');
         const second = f.connect();
         expect(settingsOf(second.transport.ofType('welcome')[0] as Record<string, unknown>).general).toEqual({
+            // Spread: this asserts the two keys the fixture set, not the whole shape.
+            ...DEFAULT_WS_SETTINGS.general,
             focusFollowsMouse: true,
             focusFollowsMouseDelay: 100,
             theme: 'Nord',
@@ -398,5 +404,66 @@ describe('settings-changed broadcast', () => {
             expect(changed).toHaveLength(1);
             expect(settingsOf(changed[0] as Record<string, unknown>).general.focusFollowsMouse).toBe(false);
         }
+    });
+});
+
+// ── set-ghostty-setting (SET-039…SET-041) ───────────────────────────────────────────
+
+/**
+ * The one settings verb that writes a file Nex does not own. Everything below is about that
+ * boundary: only the five keys the daemon can read back are writable, `null` means REMOVE, and
+ * a user's own ghostty lines survive untouched.
+ */
+describe('set-ghostty-setting', () => {
+    const GHOSTTY = 'theme = Nord\nfont-size = 13\nwindow-padding-x = 8\n';
+
+    it('writes a key and answers with the re-read snapshot', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const client = f.connect();
+        const reply = client.send({ command: 'set-ghostty-setting', key: 'background', value: '#1a1b26' });
+        expect(settingsOf(reply).appearance.backgroundColor).toBe('#1a1b26');
+        expect(f.readGhostty()).toContain('background = #1a1b26');
+        // The user's own keys are still there.
+        expect(f.readGhostty()).toContain('window-padding-x = 8');
+    });
+
+    it('removes the key when the value is null', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const client = f.connect();
+        const reply = client.send({ command: 'set-ghostty-setting', key: 'theme', value: null });
+        expect(settingsOf(reply).appearance.theme).toBeNull();
+        expect(f.readGhostty()).not.toContain('theme =');
+    });
+
+    it('refuses a key the daemon cannot read back', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const client = f.connect();
+        expect(client.send({ command: 'set-ghostty-setting', key: 'window-padding-x', value: '16' })).toEqual({
+            ok: false,
+            error: "'window-padding-x' is not a writable ghostty setting"
+        });
+        expect(f.readGhostty()).toBe(GHOSTTY);
+    });
+
+    it('requires a key and a value field', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const client = f.connect();
+        expect(client.send({ command: 'set-ghostty-setting', value: '1' })).toEqual({
+            ok: false,
+            error: 'set-ghostty-setting requires key'
+        });
+        expect(client.send({ command: 'set-ghostty-setting', key: 'background' })).toEqual({
+            ok: false,
+            error: 'set-ghostty-setting requires value'
+        });
+    });
+
+    it('broadcasts nothing when settings are not wired', () => {
+        const f = fixture({ withSettings: false });
+        const client = f.connect();
+        expect(client.send({ command: 'set-ghostty-setting', key: 'background', value: '#000000' })).toEqual({
+            ok: false,
+            error: 'settings are not available'
+        });
     });
 });

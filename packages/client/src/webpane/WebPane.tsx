@@ -31,8 +31,14 @@ import {
 } from 'react';
 
 import { tokens } from '../grid/tokens';
+import { BatchPanel } from './BatchPanel';
 import type { WebPaneCommands } from './commands';
+import { FavouritesMenu } from './FavouritesMenu';
 import type { GeometryRect, GeometryReport } from './geometry';
+import { WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
+import type { BatchDestination, WebBatchSession, WebFavourite } from './state';
+import { StoragePanel } from './StoragePanel';
+import { WebFindBar } from './WebFindBar';
 
 /** The tab fields the chrome renders; the daemon's `WebTab` satisfies it structurally. */
 export interface WebPaneTab {
@@ -64,6 +70,22 @@ export interface WebPaneProps {
     readonly measure?: ((element: HTMLElement) => GeometryRect) | undefined;
     /** Test seam; production reads `window.devicePixelRatio`. */
     readonly devicePixelRatio?: number | undefined;
+
+    // ── §10 find, §12 batch, §14 favourites ─────────────────────────────────
+    /**
+     * Bump to open the find bar from outside (the app's `toggle_search` binding), exactly like a
+     * content pane's `findToken`. A repeat ⌘F re-focuses the field rather than toggling it shut.
+     */
+    readonly findToken?: number | undefined;
+    /** Bump to move the caret into the URL bar (⌘L / `web_focus_url_bar`). */
+    readonly focusURLToken?: number | undefined;
+    /** The pane's live batch session, or null/absent when no batch is running. */
+    readonly batch?: WebBatchSession | null | undefined;
+    /** Other shell panes in this workspace, for the batch's destination picker (WEB-133). */
+    readonly batchDestinations?: readonly BatchDestination[] | undefined;
+    readonly favourites?: readonly WebFavourite[] | undefined;
+    /** "Manage favourites…" — opens Settings on the Web tab (WEB-038). */
+    readonly onManageFavourites?: (() => void) | undefined;
 }
 
 /** §17.2: the active tab always falls back to `tabs[0]` — every consumer shares the fallback. */
@@ -82,6 +104,9 @@ export function tabLabel(tab: WebPaneTab): string {
     return 'New tab';
 }
 
+const EMPTY_FAVOURITES: readonly WebFavourite[] = [];
+const EMPTY_DESTINATIONS: readonly BatchDestination[] = [];
+
 function measureElement(element: HTMLElement): GeometryRect {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
@@ -99,7 +124,11 @@ const GLYPHS = {
     reload: 'M9.5 6a3.5 3.5 0 1 1-1.03-2.47M9.5 2v2.2H7.3',
     plus: 'M6 2.5v7M2.5 6h7',
     close: 'M3.5 3.5l5 5M8.5 3.5l-5 5',
-    code: 'M4.2 3.5 1.7 6l2.5 2.5M7.8 3.5 10.3 6 7.8 8.5'
+    code: 'M4.2 3.5 1.7 6l2.5 2.5M7.8 3.5 10.3 6 7.8 8.5',
+    /** §12's scope button: a crosshair, the cursor the armed picker puts on the page. */
+    scope: 'M6 1.6v2M6 8.4v2M1.6 6h2M8.4 6h2M6 3.9A2.1 2.1 0 1 0 6 8.1a2.1 2.1 0 0 0 0-4.2',
+    /** §13's storage panel: a cookie/database cylinder. */
+    storage: 'M2.4 3.2c0-.9 1.6-1.6 3.6-1.6s3.6.7 3.6 1.6-1.6 1.6-3.6 1.6-3.6-.7-3.6-1.6ZM2.4 3.2v5.6c0 .9 1.6 1.6 3.6 1.6s3.6-.7 3.6-1.6V3.2M2.4 6c0 .9 1.6 1.6 3.6 1.6S9.6 6.9 9.6 6'
 } as const;
 
 type GlyphName = keyof typeof GLYPHS;
@@ -166,6 +195,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
 
     const active = useMemo(() => resolveActiveTab(tabs, activeTabID), [tabs, activeTabID]);
     const liveURL = active?.url ?? '';
+    const batch = props.batch ?? null;
+    const favourites = props.favourites ?? EMPTY_FAVOURITES;
 
     // §16.2: `lastWritten` is what WE put in the field; a difference from it means the user has
     // been typing, and an incoming URL must wait rather than overwrite the draft.
@@ -201,6 +232,34 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         void commands.navigate(paneID, value);
         pending.current = null;
     }, [commands, draft, paneID]);
+
+    // ── find, storage panel, ⌘L ─────────────────────────────────────────────────────
+
+    const [findOpen, setFindOpen] = useState(false);
+    const [storageOpen, setStorageOpen] = useState(false);
+    const [batchDestination, setBatchDestination] = useState<string | null>(null);
+    const urlRef = useRef<HTMLInputElement | null>(null);
+
+    // §3.13's token pattern: a bump opens the bar and claims the caret; a repeat re-focuses it.
+    const findToken = props.findToken ?? 0;
+    const lastFindToken = useRef(findToken);
+    useEffect(() => {
+        if (findToken === lastFindToken.current) return;
+        lastFindToken.current = findToken;
+        setFindOpen(true);
+    }, [findToken]);
+
+    // ⌘L, and the bindable `web_focus_url_bar`: select the whole address, as a browser does.
+    const focusURLToken = props.focusURLToken ?? 0;
+    const lastFocusToken = useRef(focusURLToken);
+    useEffect(() => {
+        if (focusURLToken === lastFocusToken.current) return;
+        lastFocusToken.current = focusURLToken;
+        const input = urlRef.current;
+        if (input === null) return;
+        input.focus();
+        input.select();
+    }, [focusURLToken]);
 
     // ── geometry ────────────────────────────────────────────────────────────────────
 
@@ -311,32 +370,73 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         submit();
                     }}
                 >
-                    <input
-                        data-testid={`web-url-${paneID}`}
-                        aria-label="URL"
-                        placeholder="Enter URL"
-                        spellCheck={false}
-                        autoComplete="off"
-                        className="w-full rounded px-2 py-[3px] font-mono text-[11px] outline-none"
+                    <div
+                        className="flex w-full items-center gap-1 rounded pr-1"
+                        // The star sits INSIDE the field's border (§16.1), so the border is on
+                        // this row rather than on the input itself.
                         style={{
                             background: tokens.surfaceBackground,
-                            border: `1px solid ${tokens.divider}`,
-                            color: tokens.textPrimary
+                            border: `1px solid ${props.isPrivate === true ? '#9B6BD6' : tokens.divider}`
                         }}
-                        value={draft}
-                        onChange={(event) => setDraft(event.target.value)}
-                        onFocus={(event) => {
-                            setEditing(true);
-                            event.target.select();
-                        }}
-                        onBlur={onBlur}
-                    />
+                    >
+                        <input
+                            ref={urlRef}
+                            data-testid={`web-url-${paneID}`}
+                            aria-label="URL"
+                            placeholder="Enter URL"
+                            spellCheck={false}
+                            autoComplete="off"
+                            // SET-190: while this has the caret, the priority layer defers
+                            // ⌘←/⌘→ and ⌘⇧[ / ⌘⇧] so they move the cursor instead.
+                            {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
+                            className="min-w-0 flex-1 bg-transparent px-2 py-[3px] font-mono text-[11px] outline-none"
+                            style={{ color: tokens.textPrimary }}
+                            value={draft}
+                            onChange={(event) => setDraft(event.target.value)}
+                            onFocus={(event) => {
+                                setEditing(true);
+                                event.target.select();
+                            }}
+                            onBlur={onBlur}
+                        />
+                        <FavouritesMenu
+                            paneID={paneID}
+                            url={liveURL}
+                            title={active?.title ?? ''}
+                            favourites={favourites}
+                            onToggle={(url, title) => void commands.favouriteToggle(url, title)}
+                            onOpen={(url) => void commands.navigate(paneID, url)}
+                            onManage={() => props.onManageFavourites?.()}
+                        />
+                    </div>
                 </form>
                 <ChromeButton
                     testID={`web-new-tab-${paneID}`}
                     label="New tab (⌘T)"
                     glyph="plus"
                     onClick={() => void commands.newTab(paneID)}
+                />
+                <ChromeButton
+                    testID={`web-batch-toggle-${paneID}`}
+                    // WEB-126's three-way, said out loud so the button explains itself.
+                    label={
+                        batch === null
+                            ? 'Start element pickup'
+                            : batch.visible
+                              ? 'Hide element pickup'
+                              : 'Show element pickup'
+                    }
+                    glyph="scope"
+                    active={batch !== null && batch.visible}
+                    disabled={active === null}
+                    onClick={() => void commands.batchToggle(paneID)}
+                />
+                <ChromeButton
+                    testID={`web-storage-toggle-${paneID}`}
+                    label="Cookies and site data"
+                    glyph="storage"
+                    active={storageOpen || props.isPrivate === true}
+                    onClick={() => setStorageOpen((current) => !current)}
                 />
                 <ChromeButton
                     testID={`web-devtools-${paneID}`}
@@ -347,6 +447,24 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     onClick={() => void commands.toggleDevTools(paneID, active?.id ?? null)}
                 />
             </div>
+
+            {findOpen ? (
+                <WebFindBar
+                    paneID={paneID}
+                    activeTabID={active?.id ?? null}
+                    commands={commands}
+                    onClose={() => setFindOpen(false)}
+                />
+            ) : null}
+
+            {!storageOpen ? null : (
+                <StoragePanel
+                    paneID={paneID}
+                    isPrivate={props.isPrivate === true}
+                    commands={commands}
+                    onClose={() => setStorageOpen(false)}
+                />
+            )}
 
             {showTabs ? (
                 <div
@@ -418,7 +536,30 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         detail={`${liveURL || 'This page'} renders in the desktop app; this browser shows its chrome only.`}
                     />
                 )}
+
             </div>
+
+            {/*
+             * The pickup panel is a ROW under the page area, not an overlay over it.
+             *
+             * The page is a native `WebContentsView` the shell composites on top of this
+             * document — the same reason a modal has to park the view rather than draw over it
+             * (see `modalOpen` in App.tsx). An absolutely-positioned panel inside the page hole
+             * is therefore invisible: the audit run that found this shows two numbered badges in
+             * the page and no panel anywhere. As a sibling it simply shrinks the hole, and the
+             * next geometry report moves the view for us.
+             */}
+            {batch === null || !batch.visible ? null : (
+                <BatchPanel
+                    paneID={paneID}
+                    session={batch}
+                    activeTabID={active?.id ?? null}
+                    destinations={props.batchDestinations ?? EMPTY_DESTINATIONS}
+                    commands={commands}
+                    destination={batchDestination}
+                    onDestinationChange={setBatchDestination}
+                />
+            )}
         </div>
     );
 });

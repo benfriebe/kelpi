@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
     RESOURCE_NAMES,
     hasClientBuild,
+    hasCliPayload,
     hasDaemonPayload,
+    packagedCliLauncher,
     packagedClientDir,
     packagedDaemonEntry,
     packagedNodeBinary
@@ -30,14 +32,31 @@ describe('the packaged Resources layout', () => {
         expect(packagedDaemonEntry('/A/Contents/Resources')).toBe('/A/Contents/Resources/daemon/nexd.js');
         expect(packagedClientDir('/A/Contents/Resources')).toBe('/A/Contents/Resources/client');
         expect(packagedNodeBinary('/A/Contents/Resources')).toBe('/A/Contents/Resources/node');
+        expect(packagedCliLauncher('/A/Contents/Resources')).toBe('/A/Contents/Resources/cli/nex');
     });
 
     it('names each entry exactly once, so the Forge config has one thing to copy', () => {
-        expect([RESOURCE_NAMES.daemon, RESOURCE_NAMES.client, RESOURCE_NAMES.node]).toEqual([
+        expect([RESOURCE_NAMES.daemon, RESOURCE_NAMES.client, RESOURCE_NAMES.cli, RESOURCE_NAMES.node]).toEqual([
             'daemon',
             'client',
+            'cli',
             'node'
         ]);
+    });
+});
+
+describe('hasCliPayload', () => {
+    it('is true only when the launcher the app would symlink to is really there', () => {
+        const dir = tempDir();
+        expect(hasCliPayload(dir)).toBe(false);
+        expect(hasCliPayload(undefined)).toBe(false);
+        expect(hasCliPayload('')).toBe(false);
+        fs.mkdirSync(path.join(dir, 'cli'));
+        // The bundle alone is not enough: /usr/local/bin/nex points at the launcher.
+        fs.writeFileSync(path.join(dir, 'cli', 'nex.js'), '');
+        expect(hasCliPayload(dir)).toBe(false);
+        fs.writeFileSync(path.join(dir, 'cli', 'nex'), '#!/bin/sh\n');
+        expect(hasCliPayload(dir)).toBe(true);
     });
 });
 

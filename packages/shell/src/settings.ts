@@ -20,9 +20,24 @@ export const SETTINGS_FILE = 'shell-settings.json';
 
 export interface ShellSettings {
     readonly confirmQuitWhenActive: boolean;
+    /**
+     * Has the user been offered the `/usr/local/bin/nex` install once? (`./cli-install.ts`)
+     * Asking twice about the same thing is nagging; asking never means a fresh install has no
+     * CLI and therefore no hooks.
+     */
+    readonly cliInstallPrompted: boolean;
+    /**
+     * App version whose "CLI is out of date" notification has already been shown — the port of
+     * the Swift `cliInstallHealNotifiedVersion` default (APP-005). Empty = never shown.
+     */
+    readonly cliInstallNotifiedVersion: string;
 }
 
-export const DEFAULT_SHELL_SETTINGS: ShellSettings = { confirmQuitWhenActive: true };
+export const DEFAULT_SHELL_SETTINGS: ShellSettings = {
+    confirmQuitWhenActive: true,
+    cliInstallPrompted: false,
+    cliInstallNotifiedVersion: ''
+};
 
 export function settingsFile(userDataDir: string): string {
     return path.join(userDataDir, SETTINGS_FILE);
@@ -34,8 +49,14 @@ export function readShellSettings(file: string): ShellSettings {
         const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (typeof parsed !== 'object' || parsed === null) return DEFAULT_SHELL_SETTINGS;
         const source = parsed as Record<string, unknown>;
-        // Absent (or any non-`false` value) = true, matching the UserDefaults semantics.
-        return { confirmQuitWhenActive: source['confirmQuitWhenActive'] !== false };
+        const notified = source['cliInstallNotifiedVersion'];
+        return {
+            // Absent (or any non-`false` value) = true, matching the UserDefaults semantics.
+            confirmQuitWhenActive: source['confirmQuitWhenActive'] !== false,
+            // The CLI keys are opt-IN, so absent = false / never shown.
+            cliInstallPrompted: source['cliInstallPrompted'] === true,
+            cliInstallNotifiedVersion: typeof notified === 'string' ? notified : ''
+        };
     } catch {
         return DEFAULT_SHELL_SETTINGS;
     }
@@ -57,7 +78,12 @@ export function writeShellSettings(file: string, settings: ShellSettings): void 
  * when something is actually running, and the dialog says the opposite thing — see
  * `quitConfirmDetail`.
  */
-export function shouldConfirmQuit(settings: ShellSettings, counts: AgentCounts): boolean {
+export function shouldConfirmQuit(
+    // Only the one field: the file also carries CLI-install state that has nothing to do with
+    // quitting, and a policy that cannot see it cannot accidentally depend on it.
+    settings: Pick<ShellSettings, 'confirmQuitWhenActive'>,
+    counts: AgentCounts
+): boolean {
     return settings.confirmQuitWhenActive && activitySummary(counts).agents > 0;
 }
 

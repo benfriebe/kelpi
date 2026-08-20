@@ -25,7 +25,39 @@ export interface GeneralSettings {
      * `global-hotkey-hide-on-repress`: only the literal `false` turns it off.
      */
     readonly confirmWorkspaceDeleteWhenActive: boolean;
+    /**
+     * §13's Settings ▸ General ▸ Repositories "Auto-detect from pane directories", default
+     * **true** (`SettingsFeature.State.autoDetectRepos`). It gates BOTH halves of the
+     * auto-detect subsystem: the 500 ms auto-link after a pane's pwd changes and the 5 s
+     * auto-unlink sweep (graft-git.md §GIT-074).
+     *
+     * NOT a Swift config key either — the app keeps it in UserDefaults. Same reasoning as
+     * `confirm-workspace-delete`: a multi-client daemon has no UserDefaults, so the config
+     * file is its home and every attached client reads the same value. Lenient in the same
+     * way: only the literal `false` turns it off.
+     */
+    readonly autoDetectRepos: boolean;
+    /**
+     * §13's Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
+     * `~/nex/worktrees/<repo>`. `<repo>` expands to the full repo path at the START of the
+     * template and to the repo's directory NAME elsewhere; `~` expands too
+     * (`@nex/daemon`'s `git/names.ts`, SET-009 — already implemented and tested there).
+     *
+     * UserDefaults in the Swift app; a config key here for the same multi-client reason as
+     * the flags above. A blank value falls back to the shipped default rather than producing
+     * worktrees at the filesystem root.
+     */
+    readonly worktreeBasePath: string;
+    /**
+     * §13's "New workspace placement" (SET-013) and "New group placement" (SET-014), default
+     * `end-of-list` for both. `near-selection` inserts after the active workspace's slot.
+     */
+    readonly newWorkspacePlacement: 'end-of-list' | 'near-selection';
+    readonly newGroupPlacement: 'end-of-list' | 'near-selection';
 }
+
+/** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
+export const DEFAULT_WORKTREE_BASE_PATH_TEMPLATE = '~/nex/worktrees/<repo>';
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     focusFollowsMouse: false,
@@ -34,7 +66,11 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     tcpPort: 0,
     globalHotkey: null,
     globalHotkeyHideOnRepress: true,
-    confirmWorkspaceDeleteWhenActive: true
+    confirmWorkspaceDeleteWhenActive: true,
+    autoDetectRepos: true,
+    worktreeBasePath: DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
+    newWorkspacePlacement: 'end-of-list',
+    newGroupPlacement: 'end-of-list'
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -89,6 +125,23 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'confirm-workspace-delete':
                 settings = { ...settings, confirmWorkspaceDeleteWhenActive: lowered !== 'false' };
+                break;
+            case 'auto-detect-repos':
+                settings = { ...settings, autoDetectRepos: lowered !== 'false' };
+                break;
+            case 'worktree-base-path':
+                // A blank value means "the default", not "the filesystem root".
+                if (value !== '') settings = { ...settings, worktreeBasePath: value };
+                break;
+            case 'new-workspace-placement':
+                if (lowered === 'end-of-list' || lowered === 'near-selection') {
+                    settings = { ...settings, newWorkspacePlacement: lowered };
+                }
+                break;
+            case 'new-group-placement':
+                if (lowered === 'end-of-list' || lowered === 'near-selection') {
+                    settings = { ...settings, newGroupPlacement: lowered };
+                }
                 break;
             default:
                 break;

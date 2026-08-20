@@ -82,6 +82,8 @@ function harness(
     options: {
         cookies?: readonly CookieRecord[];
         writeScreenshot?: (paneID: string, png: Uint8Array) => Promise<string>;
+        /** False models a host with no cookie-write surface, which must refuse honestly. */
+        canWriteCookies?: boolean;
     } = {}
 ) {
     const tabs: FakeTab[] = [];
@@ -97,8 +99,17 @@ function harness(
     });
     const removals: { paneID: string; filter: { name?: string | undefined; domain?: string | undefined } }[] = [];
     const cleared: string[] = [];
+    const writes: { paneID: string; cookie: unknown; original: unknown }[] = [];
     const storage: PaneStorage = {
         list: () => Promise.resolve(options.cookies ?? []),
+        ...(options.canWriteCookies === false
+            ? {}
+            : {
+                  set: (paneID, cookie, original) => {
+                      writes.push({ paneID, cookie, original });
+                      return Promise.resolve();
+                  }
+              }),
         clearAllSiteData: (paneID) => {
             cleared.push(paneID);
             return Promise.resolve();
@@ -119,7 +130,7 @@ function harness(
         tabs: [{ id: 'T1', url: 'https://example.com/', title: 'Example' }]
     });
     const tab = tabs[0] as FakeTab;
-    return { dispatcher, registry, tabs, tab, removals, cleared, writeScreenshot };
+    return { dispatcher, registry, tabs, tab, removals, cleared, writes, writeScreenshot };
 }
 
 const scope = { paneID: 'P1', tabID: 'T1' };
@@ -555,5 +566,108 @@ describe('unknown verbs', () => {
             ok: false,
             error: "unsupported host verb 'teleport'"
         });
+    });
+});
+
+describe('cookies-set — §13.2\'s write half', () => {
+    it('names the original so the host can delete-then-set (WEB-052)', async () => {
+        const { dispatcher, writes } = harness();
+        const reply = await dispatcher.call('cookies-set', {
+            ...scope,
+            cookie: { name: 'renamed', value: '1', domain: 'example.com', path: '/', is_secure: true },
+            original: { name: 'session', domain: 'example.com', path: '/' }
+        });
+        expect(reply).toEqual({ ok: true, name: 'renamed', domain: 'example.com' });
+        expect(writes).toHaveLength(1);
+        expect(writes[0]?.cookie).toMatchObject({
+            name: 'renamed',
+            domain: 'example.com',
+            isSecure: true,
+            isHttpOnly: false
+        });
+        expect(writes[0]?.original).toMatchObject({ name: 'session', domain: 'example.com' });
+    });
+
+    it('defaults the path and drops an empty original', async () => {
+        const { dispatcher, writes } = harness();
+        await dispatcher.call('cookies-set', {
+            ...scope,
+            cookie: { name: 'a', value: '', domain: 'example.com' },
+            original: { name: '', domain: '' }
+        });
+        expect(writes[0]?.cookie).toMatchObject({ path: '/' });
+        expect(writes[0]?.original).toBeUndefined();
+    });
+
+    it('refuses a nameless or domainless cookie before touching the store', async () => {
+        const { dispatcher, writes } = harness();
+        expect(await dispatcher.call('cookies-set', { ...scope, cookie: { domain: 'example.com' } })).toEqual({
+            ok: false,
+            error: 'cookie name is required'
+        });
+        expect(await dispatcher.call('cookies-set', { ...scope, cookie: { name: 'a' } })).toEqual({
+            ok: false,
+            error: 'cookie domain is required'
+        });
+        expect(await dispatcher.call('cookies-set', { ...scope })).toEqual({
+            ok: false,
+            error: 'cookie is required'
+        });
+        expect(writes).toHaveLength(0);
+    });
+
+    it('answers honestly when the host has no write surface', async () => {
+        const { dispatcher } = harness({ canWriteCookies: false });
+        expect(
+            await dispatcher.call('cookies-set', { ...scope, cookie: { name: 'a', domain: 'b' } })
+        ).toEqual({ ok: false, error: 'this host cannot write cookies' });
+    });
+});
+
+describe('the batch marker verbs (§7.3)', () => {
+    it('drive the page through notifies, dropping selector-less items', async () => {
+        const { dispatcher, tab } = harness();
+        dispatcher.notify('batch-markers', {
+            ...scope,
+            items: [
+                { id: 'i1', selector: '#a', label: '1', comment: 'note' },
+                { id: 'i2', label: '2' },
+                'nope'
+            ]
+        });
+        await Promise.resolve();
+        const call = tab.evaluated.at(-1) ?? '';
+        expect(call).toContain('__nexBatchSetMarkers');
+        expect(call).toContain('"selector":"#a"');
+        // A marker with no selector cannot be re-queried, so it never reaches the page.
+        expect(call).not.toContain('"id":"i2"');
+    });
+
+    it('highlight defaults to scrolling, and unfocus/clear/comment reach their globals', async () => {
+        const { dispatcher, tab } = harness();
+        dispatcher.notify('batch-highlight', { ...scope, itemID: 'i1' });
+        await Promise.resolve();
+        expect(tab.evaluated.at(-1)).toContain('__nexBatchHighlight("i1", true)');
+
+        dispatcher.notify('batch-highlight', { ...scope, itemID: 'i1', scrollIntoView: false });
+        await Promise.resolve();
+        expect(tab.evaluated.at(-1)).toContain('__nexBatchHighlight("i1", false)');
+
+        dispatcher.notify('batch-unfocus', scope);
+        await Promise.resolve();
+        expect(tab.evaluated.at(-1)).toContain('__nexBatchUnfocus');
+
+        dispatcher.notify('batch-clear', scope);
+        await Promise.resolve();
+        expect(tab.evaluated.at(-1)).toContain('__nexBatchClearMarkers');
+
+        dispatcher.notify('batch-comment', { ...scope, itemID: 'i1', comment: 'typed' });
+        await Promise.resolve();
+        expect(tab.evaluated.at(-1)).toContain('__nexBatchUpdateComment("i1", "typed")');
+    });
+
+    it('is a silent no-op for a pane the host has no view for', () => {
+        const { dispatcher } = harness();
+        expect(() => dispatcher.notify('batch-clear', { paneID: 'gone', tabID: 'gone' })).not.toThrow();
     });
 });

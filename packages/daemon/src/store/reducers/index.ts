@@ -42,6 +42,7 @@ const ROUTES = {
     'remove-repo': 'workspace',
     'rename-repo': 'workspace',
     'set-repo-remote-url': 'workspace',
+    'set-repo-auto-discovered': 'workspace',
     'add-repo-association': 'workspace',
     'remove-repo-association': 'workspace',
     'set-repo-association-branch': 'workspace',

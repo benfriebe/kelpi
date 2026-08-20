@@ -13,6 +13,7 @@ import type { WsProfile } from '@nex/protocol';
 
 import type { ChromeLabelPreset } from '../chrome';
 import type { LabelledWorkspace } from './model';
+import type { RepositoryEntry } from './RepositoriesTab';
 
 export interface SettingsActions {
     /**
@@ -24,6 +25,12 @@ export interface SettingsActions {
     resetKeybindings(action: NexAction | null): void;
     /** `set-general-setting` — one `key = value` line in `~/.config/nex/config` (§1.3). */
     setGeneralSetting(key: string, value: string): void;
+    /**
+     * `set-ghostty-setting` — one `key = value` in `~/.config/ghostty/config`, the file ghostty
+     * owns. `null` removes the key. Only the five keys the daemon can read back are writable
+     * (`background`, `background-opacity`, `font-family`, `font-size`, `theme`).
+     */
+    setGhosttySetting(key: string, value: string | null): void;
     /** `set-profiles` — the WHOLE profile set (§1.6's full-replacement write). */
     setProfiles(profiles: readonly WsProfile[]): void;
     /** `add-label-preset`; `color` is §6.2's one-string encoding (`"blue"` / `"#ff8800"`). */
@@ -36,6 +43,21 @@ export interface SettingsActions {
     }): void;
     /** `remove-label-preset`. §6.4: workspaces keep the label string. */
     removeLabelPreset(id: string): void;
+
+    // ── the repo registry (Settings ▸ Repositories, graft-git.md §GIT-065…§GIT-072) ─
+    //
+    // Optional, unlike everything above: a host that has no repo verbs wired (a fixture, an
+    // embedder) still satisfies `SettingsActions`, and the tab disables the control rather than
+    // offering a button that cannot do anything.
+
+    /** `repo-add`. An auto-discovered path is PROMOTED to manual rather than duplicated. */
+    addRepo?(input: { readonly path: string; readonly name?: string | undefined }): void;
+    /** `repo-remove`. Cascades: associations, HEAD watchers and graft sessions all go. */
+    removeRepo?(input: { readonly repoID: string }): void;
+    /** `repo-rename` — the display name only; the path is identity. */
+    renameRepo?(input: { readonly repoID: string; readonly name: string }): void;
+    /** `repo-scan` — walk a directory (depth 3) and register the checkouts that are new. */
+    scanRepos?(input: { readonly path: string }): void;
 }
 
 /** Where the daemon's two config files live, for the footer strips (§13.1). */
@@ -49,8 +71,10 @@ export const DEFAULT_SETTINGS_PATHS: SettingsPaths = {
     ghosttyConfig: '~/.config/ghostty/config'
 };
 
-/** The domain state the Labels tab reads (mirror slices, passed in by assembly). */
+/** The domain state the Labels and Repositories tabs read (mirror slices, from assembly). */
 export interface SettingsDomainState {
     readonly labelPresets: readonly ChromeLabelPreset[];
     readonly workspaces: readonly LabelledWorkspace[];
+    /** The repo registry (`daemon.state.repos`). Absent = the Repositories tab shows empty. */
+    readonly repos?: readonly RepositoryEntry[] | undefined;
 }

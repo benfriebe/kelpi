@@ -472,6 +472,10 @@ const KEYS = {
     KeyD: { key: 'd', keyCode: 68 },
     KeyE: { key: 'e', keyCode: 69 },
     KeyF: { key: 'f', keyCode: 70 },
+    // The web-pane priority layer's chords. A key with no `keyCode` here is dispatched with
+    // `windowsVirtualKeyCode: 0`, which Chromium drops — a silent, very confusing no-op.
+    KeyL: { key: 'l', keyCode: 76 },
+    KeyT: { key: 't', keyCode: 84 },
     KeyN: { key: 'n', keyCode: 78 },
     KeyO: { key: 'o', keyCode: 79 },
     KeyP: { key: 'p', keyCode: 80 },
@@ -481,7 +485,12 @@ const KEYS = {
     Digit1: { key: '1', keyCode: 49 },
     Digit2: { key: '2', keyCode: 50 },
     Digit3: { key: '3', keyCode: 51 },
-    Comma: { key: ',', keyCode: 188 }
+    Comma: { key: ',', keyCode: 188 },
+    Equal: { key: '=', keyCode: 187 },
+    Minus: { key: '-', keyCode: 189 },
+    Digit0: { key: '0', keyCode: 48 },
+    BracketLeft: { key: '[', keyCode: 219 },
+    BracketRight: { key: ']', keyCode: 221 }
 };
 
 function codeForCharacter(character) {

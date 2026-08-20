@@ -427,6 +427,13 @@ async function adoptPhase() {
         const tray = await shell.waitForLine(/tray ready/, 'the tray');
         check('a tray item was created', tray !== undefined, tray.trim());
 
+        // APP-020/APP-026/APP-027: the application menu is not observable from outside the
+        // process, so the shell logs what it built and this is the check.
+        const menu = await shell.waitForLine(/menu: Nex /, 'the application menu');
+        check('the app menu offers "Check for Updates…"', menu.includes('Check for Updates…'), menu.trim());
+        check('the File menu offers "Preview Markdown…" on ⌘O', menu.includes('Preview Markdown… (⌘O)'), menu.trim());
+        check('the Help menu offers "Nex Help" on ⌘?', menu.includes('Nex Help (⌘?)'), menu.trim());
+
         // A real agent lifecycle, driven over the control socket exactly as the `nex` CLI's
         // hooks drive it: the deltas have to reach the MAIN process and move the dock badge.
         const workspace = await controlCommand(sandbox.runSocket, { command: 'workspace-create', name: 'smoke' });

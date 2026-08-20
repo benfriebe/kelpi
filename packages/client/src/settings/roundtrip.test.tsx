@@ -293,7 +293,69 @@ describe('the other tabs on the wire', () => {
     it('shows the resolved appearance the daemon sent', () => {
         setup();
         openTab('appearance');
+        // The daemon's own luminance verdict on the background it parsed — the one value that
+        // makes chrome, content panes and terminals agree about light vs dark.
         expect(screen.getByTestId('appearance-bucket').textContent).toContain('dark');
-        expect(screen.getByTestId('appearance-nex-theme').textContent).toContain('Nord');
+    });
+
+    /**
+     * SET-039/040 on the wire. The terminal theme is a GHOSTTY key, so it must leave as
+     * `set-ghostty-setting` — and choosing one must also drop any explicit `background`, which
+     * would otherwise silently outrank the theme the user just picked.
+     */
+    it('writes the terminal theme through set-ghostty-setting, clearing the background', () => {
+        const h = setup();
+        openTab('appearance');
+        act(() => {
+            fireEvent.change(screen.getByTestId('terminal-theme-select'), { target: { value: 'Nord' } });
+        });
+        expect(sent(h, 'set-ghostty-setting')).toEqual([
+            { command: 'set-ghostty-setting', key: 'theme', value: 'Nord' },
+            { command: 'set-ghostty-setting', key: 'background', value: null }
+        ]);
+    });
+
+    /** SET-024: a preset is a nex-config write and must not touch the ghostty file at all. */
+    it('applies a chrome preset through set-general-setting only', () => {
+        const h = setup();
+        openTab('appearance');
+        act(() => {
+            fireEvent.click(screen.getByTestId('theme-preset-nord'));
+        });
+        const keys = sent(h, 'set-general-setting').map((payload) => payload['key']);
+        expect(keys[0]).toBe('chrome-appearance');
+        expect(keys).toContain('chrome-colors');
+        expect(sent(h, 'set-ghostty-setting')).toEqual([]);
+    });
+
+    /** SET-081: the recorder writes `global-hotkey` into the nex config like any other key. */
+    it('records a global hotkey from the Keybindings tab', () => {
+        const h = setup();
+        openTab('keybindings');
+        act(() => {
+            fireEvent.click(screen.getByTestId('global-hotkey-record'));
+        });
+        act(() => {
+            fireEvent.keyDown(window, { code: 'Space', ctrlKey: true, altKey: true });
+        });
+        expect(sent(h, 'set-general-setting')).toEqual([
+            { command: 'set-general-setting', key: 'global-hotkey', value: 'ctrl+alt+space' }
+        ]);
+    });
+
+    /** SET-008: the General tab's worktree base path is a real key the daemon reads back. */
+    it('writes the worktree base path from the General tab', () => {
+        const h = setup();
+        openTab('general');
+        const field = screen.getByTestId('worktree-base-path-input');
+        act(() => {
+            fireEvent.change(field, { target: { value: '<repo>/.worktrees' } });
+        });
+        act(() => {
+            fireEvent.blur(field);
+        });
+        expect(sent(h, 'set-general-setting')).toEqual([
+            { command: 'set-general-setting', key: 'worktree-base-path', value: '<repo>/.worktrees' }
+        ]);
     });
 });

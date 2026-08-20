@@ -15,6 +15,7 @@ import { handleDoctor } from './commands/doctor.js';
 import { handleEvent } from './commands/event.js';
 import { handleGraft } from './commands/graft.js';
 import { handleGroup } from './commands/group.js';
+import { handleInstallHooks } from './commands/install-hooks.js';
 import { handleLayout } from './commands/layout.js';
 import { handleDiff, handleMarkdown, handleOpen } from './commands/openmd.js';
 import { handlePane } from './commands/pane.js';
@@ -72,6 +73,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleWeb(args);
         case 'doctor':
             return handleDoctor(args);
+        case 'install-hooks':
+            return handleInstallHooks(args);
         default:
             writeErr(`Unknown command: ${subcommand}\n`);
             writeErr(globalUsage);

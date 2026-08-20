@@ -22,6 +22,7 @@ import {
     buildFindCall,
     buildInspectArm,
     buildInspectDisarm,
+    batchMarkerScript,
     findScript,
     injectedScriptSources,
     inspectorScript,
@@ -32,13 +33,15 @@ describe('injection', () => {
     it('installs the bridge before anything that posts through it', () => {
         const sources = injectedScriptSources();
         expect(sources[0]).toBe(bridgeScript());
-        expect(sources).toHaveLength(4);
+        expect(sources).toHaveLength(5);
+        // The batch markers post through the bridge too (§7.3's `nexBatchMarker` channel).
+        expect(sources).toContain(batchMarkerScript());
     });
 
     it('guards every main-frame script against running in subframes', () => {
         // `Page.addScriptToEvaluateOnNewDocument` runs in ALL frames, unlike WKWebView's
         // `forMainFrameOnly` — the guard is the whole reason these scripts port safely.
-        for (const source of [actuatorScript(), inspectorScript(), findScript()]) {
+        for (const source of [actuatorScript(), inspectorScript(), findScript(), batchMarkerScript()]) {
             expect(source).toContain('window !== window.top');
         }
     });
@@ -54,6 +57,7 @@ describe('injection', () => {
         expect(inspectorScript()).toContain('__nexInspectorInstalled');
         expect(bridgeScript()).toContain('__nexBridgeInstalled');
         expect(findScript()).toContain('__nexWebFind');
+        expect(batchMarkerScript()).toContain('__nexBatchMarkersInstalled');
     });
 
     it('is self-contained: no bundler helper reaches the page unresolved', () => {

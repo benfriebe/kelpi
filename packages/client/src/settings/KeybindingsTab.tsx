@@ -18,6 +18,7 @@ import { keyTriggerConfigString, type KeyBindingMap, type NexAction } from '@nex
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { tokens, withAlpha } from '../chrome';
+import { GlobalHotkeySection } from './GlobalHotkeySection';
 import { hasCustomBindings, keybindingSections } from './model';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
@@ -27,6 +28,15 @@ export interface KeybindingsTabProps {
     readonly bindings: KeyBindingMap;
     readonly actions: SettingsActions;
     readonly configPath: string;
+    /**
+     * §8's system-wide hotkey (SET-081…084, SET-093). Absent = the caller has no settings
+     * snapshot to render it from, and the Global section is simply not shown — the rest of the
+     * table still works, which is what a fixture-driven test needs.
+     */
+    readonly globalHotkey?: string | null | undefined;
+    readonly globalHotkeyHideOnRepress?: boolean | undefined;
+    /** A registration failure the Electron shell reported (SET-083). */
+    readonly globalHotkeyError?: string | null | undefined;
 }
 
 interface RecordingState {
@@ -88,6 +98,16 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                     Reset All to Defaults
                 </SettingsButton>
             </div>
+
+            {props.globalHotkey === undefined ? null : (
+                <GlobalHotkeySection
+                    hotkey={props.globalHotkey}
+                    hideOnRepress={props.globalHotkeyHideOnRepress ?? true}
+                    bindings={props.bindings}
+                    actions={props.actions}
+                    registrationError={props.globalHotkeyError}
+                />
+            )}
 
             {sections.map((section) => (
                 <div key={section.category} className="flex flex-col gap-1">

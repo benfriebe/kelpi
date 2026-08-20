@@ -56,10 +56,17 @@ export interface AppHandlerOptions {
     readonly now?: (() => number) | undefined;
     /** Injected for `nextRandomColor`; deterministic in tests. */
     readonly random?: (() => number) | undefined;
-    /** Settings `worktreeBasePath`; `<repo>` + `~` expand per app-state-core §4.2.2. */
-    readonly worktreeBasePath?: string | undefined;
-    /** Settings `newWorkspacePlacement`. */
-    readonly placement?: NewWorkspacePlacement | undefined;
+    /**
+     * Settings `worktreeBasePath`; `<repo>` + `~` expand per app-state-core §4.2.2.
+     *
+     * A **function** is the useful form: this table is built once at boot, but the value is a
+     * user setting (`worktree-base-path`) that can change at any moment via Settings or a
+     * hand-edit. `resolveAppDeps` turns whichever form it is given into a getter, so every
+     * `deps.worktreeBasePath` read below is a fresh read and no call site had to change.
+     */
+    readonly worktreeBasePath?: string | (() => string) | undefined;
+    /** Settings `newWorkspacePlacement`. Same live-value reasoning as above. */
+    readonly placement?: NewWorkspacePlacement | (() => NewWorkspacePlacement) | undefined;
     /** Debounced full-state save (§5 persistState). */
     readonly persist?: (() => void) | undefined;
     /** Immediate save — `session-end` only (issue #178). Defaults to `persist`. */
@@ -118,8 +125,18 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         uuid: options.uuid ?? (() => newUUID()),
         now: options.now ?? (() => Date.now()),
         random: options.random ?? (() => Math.random()),
-        worktreeBasePath: options.worktreeBasePath ?? DEFAULT_WORKTREE_BASE_PATH,
-        placement: options.placement ?? 'end-of-list',
+        // Getters, so a settings change is visible to the very next command without rebuilding
+        // the handler table. A plain string/enum still works — it is just a constant getter.
+        get worktreeBasePath(): string {
+            const value = options.worktreeBasePath;
+            if (typeof value === 'function') return value();
+            return value ?? DEFAULT_WORKTREE_BASE_PATH;
+        },
+        get placement(): NewWorkspacePlacement {
+            const value = options.placement;
+            if (typeof value === 'function') return value();
+            return value ?? 'end-of-list';
+        },
         persist,
         persistNow: options.persistNow ?? persist,
         spawnPane:

@@ -64,6 +64,7 @@ const packagingHelpers = () => createRequire(import.meta.url)(path.join(shellRoo
 const repoRoot = path.resolve(shellRoot, '..', '..');
 const daemonBundle = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
 const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.html');
+const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
 const shellBundle = path.join(shellRoot, 'dist', 'main.js');
 
 const PROTOCOL_VERSION = 1;
@@ -228,6 +229,9 @@ async function ensureBuilds() {
     const steps = [
         { name: 'daemon', output: daemonBundle, args: ['--filter', '@nex/daemon', 'build'] },
         { name: 'client', output: clientBundle, args: ['--filter', '@nex/client', 'build'] },
+        // The CLI is staged into Contents/Resources/cli so the app can install it
+        // (`src/cli-install.ts`); an unbuilt one fails `stage-resources.mjs`, not the launch.
+        { name: 'cli', output: cliBundle, args: ['--filter', '@nex/cli', 'build'] },
         { name: 'shell', output: shellBundle, args: ['--filter', '@nex/shell', 'build'] }
     ];
     for (const step of steps) {
@@ -347,6 +351,62 @@ function bundlePhase() {
     // ── the client build ─────────────────────────────────────────────────────────
     check('the client build is staged', fs.existsSync(path.join(resourcesPath, 'client', 'index.html')));
 
+    // ── the CLI payload ──────────────────────────────────────────────────────────
+    // `/usr/local/bin/nex` is a symlink into this directory (`src/cli-install.ts`), so both
+    // files have to be there and the launcher has to be executable by a plain shell.
+    const cliDir = path.join(resourcesPath, 'cli');
+    const launcher = path.join(cliDir, 'nex');
+    if (check('the CLI is staged beside the app', fs.existsSync(path.join(cliDir, 'nex.js')))) {
+        let launcherExecutable = false;
+        try {
+            fs.accessSync(launcher, fs.constants.X_OK);
+            launcherExecutable = true;
+        } catch {
+            launcherExecutable = false;
+        }
+        check('its launcher is executable', launcherExecutable, launcher);
+        const marker = fs.readFileSync(launcher, 'utf8');
+        check(
+            'the launcher carries the install-attribution marker',
+            marker.includes('nex-cli-launcher'),
+            'src/cli-install.ts refuses to touch /usr/local/bin/nex without it'
+        );
+        // The real proof: exec the launcher exactly as a symlinked /usr/local/bin/nex would,
+        // through a symlink from a scratch directory, with NOTHING on PATH but /usr/bin:/bin —
+        // so a pass means it found the app's own Node rather than a developer's.
+        const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'nexcli-'));
+        const linked = path.join(scratch, 'nex');
+        fs.symlinkSync(launcher, linked);
+        const version = spawnSync(linked, ['--version'], {
+            encoding: 'utf8',
+            env: { PATH: '/usr/bin:/bin', HOME: scratch }
+        });
+        check(
+            'the bundled CLI runs through a symlink with no Node on PATH',
+            version.status === 0 && /^nex \S+/.test((version.stdout ?? '').trim()),
+            (version.stdout ?? '').trim() || (version.stderr ?? '').trim()
+        );
+        check(
+            'the nex-agentic skill rides along in the CLI payload',
+            fs.existsSync(path.join(cliDir, 'skills', 'nex-agentic', 'SKILL.md')),
+            'install-hooks copies it into ~/.claude/skills/'
+        );
+        // And it is the whole CLI, installer included: a dry run against a scratch HOME must
+        // report the write it would make without touching anything.
+        const dry = spawnSync(linked, ['install-hooks', '--dry-run', '--command', 'nex'], {
+            encoding: 'utf8',
+            env: { PATH: '/usr/bin:/bin', HOME: scratch }
+        });
+        check(
+            'the bundled CLI can install hooks (--dry-run against a scratch HOME)',
+            dry.status === 0 &&
+                (dry.stdout ?? '').includes('Dry run: nothing was written') &&
+                !fs.existsSync(path.join(scratch, '.claude')),
+            (dry.stdout ?? '').trim().split('\n').pop() ?? (dry.stderr ?? '').trim()
+        );
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+
     // ── the Node runtime ─────────────────────────────────────────────────────────
     const node = path.join(resourcesPath, 'node');
     if (check('a Node runtime is staged beside the app', fs.existsSync(node))) {
@@ -374,6 +434,23 @@ function bundlePhase() {
     check(
         'the bundle id is distinct from the shipped Swift app',
         /<key>CFBundleIdentifier<\/key>\s*<string>com\.benfriebe\.newnex<\/string>/.test(plist)
+    );
+
+    // ── Finder "Open With" (CONT-123) ────────────────────────────────────────────
+    // Both halves are required: the document type puts Nex in the menu, and the imported UTI is
+    // what tells LaunchServices that `.md` IS that type. Without the import the type matches
+    // nothing and `app.on('open-file')` can never fire from Finder.
+    check(
+        'the bundle declares a markdown document type (Editor, rank Alternate)',
+        /<key>CFBundleDocumentTypes<\/key>/.test(plist) &&
+            /<key>LSItemContentTypes<\/key>\s*<array>\s*<string>net\.daringfireball\.markdown<\/string>/.test(plist) &&
+            /<key>LSHandlerRank<\/key>\s*<string>Alternate<\/string>/.test(plist) &&
+            /<key>CFBundleTypeRole<\/key>\s*<string>Editor<\/string>/.test(plist)
+    );
+    check(
+        'and imports net.daringfireball.markdown with the md/markdown extensions',
+        /<key>UTImportedTypeDeclarations<\/key>/.test(plist) &&
+            /<key>public\.filename-extension<\/key>\s*<array>\s*<string>md<\/string>\s*<string>markdown<\/string>/.test(plist)
     );
 }
 
@@ -440,6 +517,8 @@ async function makeSandbox() {
 
     const socketPath = path.join(root, 'nexd.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
+    const cliLinkPath = path.join(root, 'usr', 'local', 'bin', 'nex');
+    if (cliLinkPath === '/usr/local/bin/nex') throw new Error('refusing to touch the real CLI symlink');
     fs.writeFileSync(path.join(root, 'config'), '');
 
     const httpPort = await freePort();
@@ -453,13 +532,25 @@ async function makeSandbox() {
         NEXD_DB_PATH: path.join(root, 'nex.db'),
         NEXD_CONFIG_PATH: path.join(root, 'config'),
         NEXD_HTTP_PORT: String(httpPort),
-        NEXD_HTTP_HOST: '127.0.0.1'
+        NEXD_HTTP_HOST: '127.0.0.1',
+        // The CLI self-heal, aimed inside the sandbox. `NEX_CLI_LINK_PATH` exists for exactly
+        // this: the real link is /usr/local/bin/nex — the developer's own CLI — and the launch
+        // phase must never write there. `heal` (not `prompt`) also keeps the first-launch offer
+        // from opening a dialog nobody is going to click.
+        NEX_CLI_INSTALL: 'heal',
+        NEX_CLI_LINK_PATH: cliLinkPath
     };
+
+    // A stale install to repair: a symlink into a bundle that is not there any more, which is
+    // what a moved or updated Nex.app leaves behind (APP-003).
+    fs.mkdirSync(path.dirname(cliLinkPath), { recursive: true });
+    fs.symlinkSync(path.join(root, 'Gone.app', 'Contents', 'Resources', 'cli', 'nex'), cliLinkPath);
 
     return {
         root,
         home,
         env,
+        cliLinkPath,
         userData,
         runDir: env.NEXD_RUN_DIR,
         runSocket: path.join(env.NEXD_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
@@ -664,6 +755,31 @@ async function launchPhase() {
             'auto-update stayed off (no network call in the packaged default)',
             app.text().includes('auto-update: disabled'),
             app.lines.find((line) => line.includes('auto-update')) ?? ''
+        );
+
+        // ── the CLI self-heal (APP-003) ─────────────────────────────────────────
+        // The sandbox planted a dangling symlink into a bundle that no longer exists. A
+        // packaged launch has to notice and repoint it at THIS app's launcher — the drift that
+        // an auto-update leaves behind, repaired without anyone asking.
+        const healedTo = fs.existsSync(sandbox.cliLinkPath) ? fs.readlinkSync(sandbox.cliLinkPath) : '(gone)';
+        check(
+            'the app healed the stale CLI symlink to its own bundle',
+            healedTo === path.join(resourcesPath, 'cli', 'nex'),
+            healedTo
+        );
+        check(
+            'the tray offers "Install CLI" (the bundle carries one)',
+            app.text().includes('cli-install: tray item enabled'),
+            app.lines.find((line) => line.includes('cli-install: tray item')) ?? ''
+        );
+        const healedCli = spawnSync(sandbox.cliLinkPath, ['--version'], {
+            encoding: 'utf8',
+            env: { PATH: '/usr/bin:/bin', HOME: sandbox.home }
+        });
+        check(
+            'and the healed link runs the CLI',
+            healedCli.status === 0 && (healedCli.stdout ?? '').startsWith('nex '),
+            (healedCli.stdout ?? '').trim() || (healedCli.stderr ?? '').trim()
         );
 
         // ── the shipped CLI drives it, and a real PTY runs ───────────────────────

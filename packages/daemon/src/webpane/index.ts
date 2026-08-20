@@ -18,6 +18,40 @@
  */
 
 export {
+    batchMarkerInputs,
+    createBatchState,
+    formatBatchForPaste,
+    serializeBatchItem,
+    serializeBatchSession,
+    type BatchItem,
+    type BatchSession,
+    type BatchState,
+    type BatchToggleOutcome
+} from './batch.js';
+
+export {
+    createFavouritesStore,
+    decodeFavouritesJSON,
+    encodeFavouritesJSON,
+    favouriteLabel,
+    normalizeFavouriteURL,
+    serializeFavourite,
+    type Favourite,
+    type FavouritesStore,
+    type FavouritesStoreOptions
+} from './favourites.js';
+
+export {
+    FIND_ACTIONS,
+    createWebFindState,
+    findCountsOf,
+    isFindAction,
+    type WebFindAction,
+    type WebFindSession,
+    type WebFindState
+} from './find.js';
+
+export {
     CONSOLE_BUFFER_CAPACITY,
     CONSOLE_LEVELS,
     createConsoleStore,
@@ -92,6 +126,7 @@ export {
 
 export {
     createWebPaneService,
+    type BatchSendOutcome,
     type HostEventInput,
     type WebDomainStore,
     type WebPaneService,

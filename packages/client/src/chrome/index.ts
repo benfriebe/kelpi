@@ -24,15 +24,92 @@ export {
 } from './Sidebar';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
+    CreateWorktreeSheet,
+    DEFAULT_PROFILE_NAME,
+    INSPECTOR_WIDTH_PX,
+    Inspector,
+    InspectorIconButton,
+    groupAssociations,
+    type InspectorAssociation,
+    type InspectorGitStatus,
+    type InspectorProps,
+    type InspectorRepo,
+    type WorktreeRequest
+} from './Inspector';
+export {
+    SIDEBAR_DEFAULT_WIDTH,
+    SIDEBAR_MAX_WIDTH,
+    SIDEBAR_MIN_WIDTH,
+    SIDEBAR_WIDTH_STORAGE_KEY,
+    SidebarResizer,
+    clampSidebarWidth,
+    readStoredSidebarWidth,
+    storeSidebarWidth,
+    type SidebarResizerProps
+} from './SidebarResizer';
+export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
+export {
     StatusFooter,
     SystemSparkline,
     type AgentBucket,
     type AgentCountSummary,
     type StatusBarItem,
-    type StatusFooterProps
+    type StatusFooterProps,
+    type SystemStatsView
 } from './StatusFooter';
+export {
+    Sparkline,
+    SystemStatGauge,
+    type SparklineProps,
+    type SparklineStyle,
+    type SystemStatGaugeProps
+} from './SystemStatGauge';
+export {
+    SYSTEM_STAT_KINDS,
+    SYSTEM_STAT_META,
+    compactStatLabel,
+    detailStatLabel,
+    formatBytes,
+    formatRate,
+    historyFootnote,
+    sparklineRange,
+    summarizeHistory,
+    summaryStatValue,
+    systemStatMeta,
+    visibleStatKinds,
+    type HistorySummary,
+    type SystemStatKind,
+    type SystemStatMeta
+} from './stats';
+export {
+    BUILT_IN_CHROME_THEMES,
+    CHROME_THEME_CODE_PREFIX,
+    CHROME_THEME_VERSION,
+    ChromeThemeError,
+    INVALID_THEME_MESSAGE,
+    base64Decode,
+    base64Encode,
+    builtInStyleTheme,
+    chromeThemeFileJson,
+    chromeThemeShareCode,
+    decodeChromeStyleTheme,
+    paletteOverrides,
+    parseChromeThemeCode,
+    presetAppearance,
+    unsupportedVersionMessage,
+    type BuiltInChromeTheme,
+    type ChromePalette,
+    type ChromeStyleTheme
+} from './presets';
 export { CommandPalette, FOCUS_HANDOFF_MS, type CommandPaletteProps } from './CommandPalette';
 export { ContextMenu, menuAnchorFromEvent, type ContextMenuProps, type MenuItemSpec } from './ContextMenu';
+export {
+    HELP_GITHUB_URL,
+    HELP_CLI_ENTRIES,
+    HelpOverlay,
+    type HelpCliEntry,
+    type HelpOverlayProps
+} from './HelpOverlay';
 
 export {
     CURATED_EMOJI,
@@ -104,6 +181,9 @@ export {
 export {
     WORKSPACE_COLORS,
     type ChromeGroup,
+    type ChromeRepo,
+    type SubmitResult,
+    type WorkspaceWorktreeRequest,
     type ChromeLabelPreset,
     type ChromePane,
     type ChromeSidebarEntry,
@@ -119,8 +199,10 @@ export {
     CHROME_CSS_VAR_ALIASES,
     DARK_CHROME_THEME,
     DEFAULT_SIDEBAR_FILL_STROKE,
+    DEFAULT_SIDEBAR_TINT,
     LIGHT_CHROME_THEME,
     OVERRIDABLE_CHROME_KEYS,
+    SIDEBAR_TINT_VARS,
     WORKSPACE_COLOR_HEX,
     applyChromeTheme,
     autoTextColor,
@@ -141,6 +223,8 @@ export {
     presetChromeTheme,
     resolveChromeTheme,
     resolveLabelStyle,
+    sidebarTintCssVars,
+    tintedColor,
     withAlpha,
     workspaceColorHex,
     type ChromeAppearance,
@@ -154,7 +238,8 @@ export {
     type OverridableChromeKey,
     type ResolvedLabelStyle,
     type Rgb,
-    type SidebarFillStroke
+    type SidebarFillStroke,
+    type SidebarTint
 } from './theme';
 
 export {

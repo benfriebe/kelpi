@@ -25,6 +25,7 @@ import type { Terminal as HeadlessTerminal } from '@xterm/headless';
 
 import type { TerminalStateService, VtModes } from '../seams.js';
 import { DEFAULT_RING_CAPACITY_BYTES, RawRingBuffer } from './ring.js';
+import { searchTerminal, type SearchOptions, type TerminalMatch } from './search.js';
 
 const { Terminal } = headless;
 const { SerializeAddon } = serializeModule;
@@ -49,6 +50,19 @@ export interface TerminalStateOptions {
      * is what a reattaching client wants (it gets history for free).
      */
     readonly snapshotScrollbackLines?: number;
+    /**
+     * **OSC 7** — the shell reporting its working directory (`ESC ] 7 ; file://host/path BEL`).
+     *
+     * This is the port's pwd producer (terminal-panes.md §TERM-048): every byte already flows
+     * through this emulator, so the sequence is parsed here rather than by a second scanner,
+     * and the pane's `workingDirectory` follows the shell instead of being frozen at spawn.
+     * Boot dispatches `pane-directory-changed` from it and hands the same event to repo
+     * auto-detect (graft-git.md §GIT-075).
+     *
+     * The callback fires for every report, including a repeat of the current directory — the
+     * store's reducer and the auto-detect debounce are where "did it actually change?" lives.
+     */
+    readonly onDirectoryChange?: ((paneID: string, directory: string) => void) | undefined;
 }
 
 export interface GridSize {
@@ -67,6 +81,37 @@ const IDLE_MODES: VtModes = { applicationCursorKeys: false, bracketedPaste: fals
 /** Convenience factory for boot wiring. */
 export function createTerminalStateService(options: TerminalStateOptions = {}): TerminalStateServiceImpl {
     return new TerminalStateServiceImpl(options);
+}
+
+/**
+ * OSC 7's payload: a `file://` URL whose path is the shell's cwd — `file:///Users/me/code`,
+ * or, with the hostname a shell usually inserts, `file://mac.local/Users/me/code`.
+ *
+ * Deliberately tolerant, because shells are:
+ *   - a bare absolute path (some emit `7;/Users/me`) is accepted as itself;
+ *   - percent-escapes are decoded (a path with a space arrives as `%20`), and a malformed
+ *     escape keeps the raw string rather than throwing;
+ *   - anything neither absolute nor a `file:` URL is ignored — a relative or empty report
+ *     must never become a pane's working directory.
+ */
+export function parseOsc7(data: string): string | null {
+    const raw = data.trim();
+    if (raw === '') return null;
+    let candidate: string;
+    if (raw.startsWith('file://')) {
+        const rest = raw.slice('file://'.length);
+        const slash = rest.indexOf('/');
+        if (slash < 0) return null; // `file://host` with no path at all
+        candidate = rest.slice(slash);
+    } else if (raw.startsWith('/')) {
+        candidate = raw;
+    } else return null;
+    try {
+        candidate = decodeURIComponent(candidate);
+    } catch {
+        // Keep the undecoded form: a bad escape is better than losing the report.
+    }
+    return candidate === '' ? null : candidate;
 }
 
 /** xterm refuses to go below these; clamping here keeps `gridSize()` truthful. */
@@ -115,6 +160,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly defaultCols: number;
     private readonly defaultRows: number;
     private readonly snapshotScrollbackLines: number | undefined;
+    private readonly onDirectoryChange: ((paneID: string, directory: string) => void) | undefined;
 
     constructor(options: TerminalStateOptions = {}) {
         this.scrollback = Math.max(0, Math.floor(options.scrollback ?? DEFAULT_SCROLLBACK_LINES));
@@ -125,6 +171,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             options.snapshotScrollbackLines === undefined
                 ? undefined
                 : Math.max(0, Math.floor(options.snapshotScrollbackLines));
+        this.onDirectoryChange = options.onDirectoryChange;
     }
 
     // ── lifecycle ───────────────────────────────────────────────────────────────────
@@ -144,7 +191,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             }
             return;
         }
-        this.panes.set(paneID, this.create(wantCols, wantRows));
+        this.panes.set(paneID, this.create(paneID, wantCols, wantRows));
     }
 
     has(paneID: string): boolean {
@@ -186,7 +233,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         if (data.length === 0) return;
         let entry = this.panes.get(paneID);
         if (!entry) {
-            entry = this.create(this.defaultCols, this.defaultRows);
+            entry = this.create(paneID, this.defaultCols, this.defaultRows);
             this.panes.set(paneID, entry);
         }
         entry.ring.append(typeof data === 'string' ? encoder.encode(data) : data);
@@ -251,6 +298,58 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     }
 
     /**
+     * The wrap-joined logical line under a VIEWPORT cell, plus where that cell lands in it.
+     *
+     * This is what ⌘-clicking a path in a terminal needs (CONT-122 / TERM-052). Neither
+     * renderer this port ships exposes a word-under-cursor API — the same reason scrollback
+     * search moved server-side (`term/search.ts`) — so the client sends the cell it computed
+     * from the pane's own grid geometry and the daemon reads the buffer that already holds the
+     * authoritative screen.
+     *
+     * Soft wraps are re-joined exactly as `search.ts` does (full-width rows for every row but
+     * the last of a logical line) so a path that wrapped mid-line is one token again, and the
+     * clicked column still maps into it by `(row - start) * cols + col`.
+     *
+     * Unknown pane, out-of-range row, or an empty line → null.
+     */
+    cellText(paneID: string, row: number, col: number): { text: string; offset: number } | null {
+        const entry = this.panes.get(paneID);
+        if (!entry) return null;
+        const buffer = entry.term.buffer.active;
+        const cols = entry.term.cols;
+        if (!Number.isFinite(row) || !Number.isFinite(col) || row < 0 || col < 0) return null;
+        const y = Math.max(0, buffer.baseY) + Math.floor(row);
+        if (y >= buffer.length) return null;
+
+        // Walk back to the first row of this logical line.
+        let start = y;
+        while (start > 0 && buffer.getLine(start)?.isWrapped === true) start -= 1;
+
+        let text = '';
+        for (let cursor = start; cursor < buffer.length; cursor++) {
+            if (cursor > start && buffer.getLine(cursor)?.isWrapped !== true) break;
+            const line = buffer.getLine(cursor);
+            if (!line) break;
+            // Full width for continued rows so the offset arithmetic below stays exact; the
+            // final row is trimmed, which is what makes the joined text end where content does.
+            const isLast =
+                cursor + 1 >= buffer.length || buffer.getLine(cursor + 1)?.isWrapped !== true;
+            text += line.translateToString(isLast);
+        }
+        if (text === '') return null;
+        return { text, offset: (y - start) * cols + Math.floor(col) };
+    }
+
+    async cellTextAsync(
+        paneID: string,
+        row: number,
+        col: number
+    ): Promise<{ text: string; offset: number } | null> {
+        await this.flush(paneID);
+        return this.cellText(paneID, row, col);
+    }
+
+    /**
      * Serialized screen + scrollback a fresh client replays into its renderer
      * (`@xterm/addon-serialize` VT stream; includes modes so DECCKM / bracketed paste
      * survive the replay).
@@ -286,6 +385,27 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         return this.modes(paneID);
     }
 
+    /**
+     * Every occurrence of `needle` in the pane's buffer (`./search.ts`). Unknown pane → `[]`,
+     * which is the same answer as "no matches" on purpose: a pane that closed mid-search is a
+     * search with nothing to find, not an error the overlay has to render.
+     */
+    search(paneID: string, needle: string, options: SearchOptions = {}): TerminalMatch[] {
+        const entry = this.panes.get(paneID);
+        if (!entry) return [];
+        return searchTerminal(entry.term, needle, options);
+    }
+
+    /** `search()` after flushing pending writes — what the WS handler uses (see `feed`). */
+    async searchAsync(
+        paneID: string,
+        needle: string,
+        options: SearchOptions = {}
+    ): Promise<TerminalMatch[]> {
+        await this.flush(paneID);
+        return this.search(paneID, needle, options);
+    }
+
     /** Grid the daemon believes the pane has (authoritative cols×rows for PTY sizing). */
     gridSize(paneID: string): GridSize | null {
         const entry = this.panes.get(paneID);
@@ -302,7 +422,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
 
     // ── internals ───────────────────────────────────────────────────────────────────
 
-    private create(cols: number, rows: number): PaneTerminal {
+    private create(paneID: string, cols: number, rows: number): PaneTerminal {
         const term = new Terminal({
             cols,
             rows,
@@ -313,6 +433,16 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         });
         const serializer = new SerializeAddon();
         term.loadAddon(serializer);
+        if (this.onDirectoryChange !== undefined) {
+            const report = this.onDirectoryChange;
+            // `false` = "not fully handled", so xterm's own OSC 7 bookkeeping still runs and a
+            // future handler can see the sequence too.
+            term.parser.registerOscHandler(7, (data) => {
+                const directory = parseOsc7(data);
+                if (directory !== null) report(paneID, directory);
+                return false;
+            });
+        }
         return {
             term,
             serializer,

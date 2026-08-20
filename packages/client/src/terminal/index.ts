@@ -92,6 +92,7 @@ export {
     type EngineLoader,
     type ResolvedRendererOptions,
     type TerminalEngine,
+    type TerminalMatchLocation,
     type TerminalRenderer,
     type TerminalRendererFactory,
     type TerminalRendererOptions,

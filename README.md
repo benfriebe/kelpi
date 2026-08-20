@@ -15,35 +15,44 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, plus an audited UI whose defect ledger is closed except for one accepted engine
-limit.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the `nex`
-CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
-binary. The window has been driven end to end and photographed five times over: the campaign opened
-with **17 defects + 6 nits, two of them blockers**, and closes with **no blockers — 1 accepted major
-(the daemon's VT does not reflow on resize), 2 minor, 1 nit.** The two findings the closing re-audit
-added are both closed as of 2026-08-20: the intermittent terminal-renderer start failure (a pane
-whose engine dies now rebuilds on a fresh one, and a stress harness that stranded 4 panes in 36 on
-the old bundle strands none), and the **packaged `Nex.app`**, the one red gate on 2026-08-19 — its
-window loads the daemon-served client and `smoke:packaged` is 47/47 (see
-[Install and run](#install-and-run) and `docs/PARITY.md` ▸ Known gaps #9 for what it was).
+**Wire parity, an audited UI whose defect ledger is closed except for one accepted engine limit,
+and 91% of the shipped app's feature surface.** The daemon, the web client, the Electron shell,
+content panes, web panes, graft, the `nex` CLI rewrite and the legacy `nex.db` importer are all
+built and green against the shipped Swift binary. The window has been driven end to end and
+photographed ten times over: the campaign opened with **17 defects + 6 nits, two of them blockers**,
+and stands at **no blockers — 1 accepted major (the daemon's VT does not reflow on resize), 1 minor,
+1 nit.** The three findings the re-audits added are all closed: the intermittent terminal-renderer
+start failure, the **packaged `Nex.app`** window (`smoke:packaged` is 58/58), and a context submenu
+that opened past the window's right edge.
+
+A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
+app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
+domains — found 285 behaviours with no port-side implementation at all; a burn-down closed **250 of
+them**, taking coverage from 73.6% to **91.0%** and doubling the audit to **70 flows, 427
+assertions**. What is still open is ranked in that index's §2, headed by the one dispatcher that
+would light up the pane-header and footer git-branch chips.
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
   **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
   screenshot that settles each row), where the port deliberately differs from the macOS app, and
   the remaining functional gaps.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-G/`](docs/audit/run-G/FINDINGS.md) is the
-  closeout; [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table
-  that closed the original ledger.
+- [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
+  against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
+  defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-H/`](docs/audit/run-H/index.md) is current
+  (70 flows); the six scoped runs beside it are one per feature area;
+  [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
+  the original ledger.
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-20): `pnpm check` **3164 passed**; the compat suite 103/103 against **both** the
-shipped Swift CLI and the TypeScript one; four live smokes green (client 33, shell 29, web 46,
-terminal 19) and the packaged one too, **47/47**; the terminal-renderer start stress **0 stranded in
-48 panes**; and the UI audit **182 assertions, 0 failed, 0 step errors** — the first full run with
-nothing red, taken with the audit now also checking for a stranded renderer on the split and close
-steps. Nothing here is called done without a screenshot that shows it.
+Gates (2026-08-20): `pnpm check` **3933 passed**; the compat suite 103/103 against **both** the
+shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 32, web 46,
+terminal 19) and the packaged one too, **58/58**; the terminal-renderer start stress **0 stranded in
+48 panes**; the UI audit **427 assertions, 0 failed, 0 step errors** across **70 real user flows**;
+and capability coverage against the shipped app at **91.0%** of 1490 inventoried items, up from
+73.6% before the burn-down. Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart
 
@@ -121,13 +130,42 @@ compat suite the shipped binary does):
 
 ```bash
 pnpm --filter @nex/cli build                          # → packages/cli/dist/nex.js
-ln -sf "$PWD/packages/cli/dist/nex.js" /usr/local/bin/nex
+node packages/cli/dist/nex.js install-hooks --link    # symlink + Claude/Codex hooks
 nex doctor                                            # daemon-aware: checks nexd, not Nex.app
 ```
 
 `dist/nex.js` is a single dependency-free file with a shebang, so it needs nothing installed
 beside it. [`packages/cli/README.md`](packages/cli/README.md) covers the two deliberate
 divergences (`web console --follow`, `web capture`'s flag set) and what `doctor` now checks.
+
+### Hooks: `nex install-hooks`
+
+Agent status, session ids and desktop notifications all come from lifecycle hooks that Claude
+Code and Codex CLI fire; without them a pane never leaves "idle". `nex install-hooks` is this
+repo's replacement for the Swift app's `scripts/install-hooks.sh` — it writes the five Claude
+hooks into `~/.claude/settings.json` and, when `~/.codex` exists, the four Codex hooks into
+`~/.codex/hooks.json`:
+
+```bash
+nex install-hooks --dry-run     # show what would change, write nothing
+nex install-hooks               # merge (safe to re-run — this is what `nex doctor` suggests)
+nex install-hooks --link        # …and symlink this CLI into /usr/local/bin first
+```
+
+It **merges**: your own hooks survive, nex-managed ones are deduped by their flag-less base
+(so an old absolute-path install is replaced rather than left to double-fire), and a stale
+pre-v0.19 `"matcher": "startup"` SessionStart group is migrated to a matcher-less one so
+`claude --resume` binds its session id again. An existing file is copied to `<file>.nex-backup`
+before it changes, and a file that is not valid JSON is refused rather than overwritten. A
+packaged `Nex.app` installs the symlink itself — on first launch it offers, on later launches
+it repairs drift, and the tray's **Install CLI** item does it on demand.
+
+**PATH assumption.** The hooks run in the *non-interactive* shell Claude Code spawns, which
+does not read your `~/.zshrc` and inherits the agent's own `PATH`. `install-hooks` writes a bare
+`nex` only when a `nex` on the current `PATH` really resolves to this binary; otherwise it
+writes the absolute path, so the hooks fire either way. `--install-dir` / `NEX_INSTALL_DIR`
+move the symlink elsewhere, and an unwritable directory prints the `sudo` command to run by
+hand — it never escalates on its own.
 
 ### Running beside the real Nex.app
 

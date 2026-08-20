@@ -633,6 +633,71 @@ async function main() {
                 JSON.stringify(themed.settings?.appearance)
             );
 
+            // 5b. Settings ▸ Appearance writes a file Nex does NOT own (SET-039…041). The
+            //     `set-ghostty-setting` verb applies the surgical writer to the user's real
+            //     ghostty config, and the check that matters is the line it left alone: a
+            //     colour picker must not be able to eat a hand-maintained config.
+            ws.send({
+                type: 'command',
+                id: 'ws-ghostty',
+                payload: { command: 'set-ghostty-setting', key: 'font-size', value: '17' }
+            });
+            const ghosttyReply = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'ws-ghostty',
+                'the set-ghostty-setting reply'
+            );
+            check(
+                'set-ghostty-setting answers with the re-read appearance',
+                ghosttyReply.reply?.ok === true && ghosttyReply.reply?.settings?.appearance?.fontSize === 17,
+                JSON.stringify(ghosttyReply.reply?.settings?.appearance ?? ghosttyReply.reply)
+            );
+            const ghosttyAfter = fs.readFileSync(daemon.ghosttyConfigPath, 'utf8');
+            check(
+                'the ghostty write preserves every unrelated line',
+                ghosttyAfter.includes('font-size = 17') &&
+                    ghosttyAfter.includes('# edited by the smoke') &&
+                    ghosttyAfter.includes('background = #1a1b26'),
+                JSON.stringify(ghosttyAfter)
+            );
+            ws.send({
+                type: 'command',
+                id: 'ws-ghostty-bad',
+                payload: { command: 'set-ghostty-setting', key: 'window-padding-x', value: '8' }
+            });
+            const refused = await ws.waitJson(
+                (m) => m.type === 'command-reply' && m.id === 'ws-ghostty-bad',
+                'the refused ghostty key'
+            );
+            check(
+                'a ghostty key the daemon cannot read back is refused',
+                refused.reply?.ok === false && /not a writable ghostty setting/.test(refused.reply?.error ?? ''),
+                JSON.stringify(refused.reply)
+            );
+
+            // 5c. The system-stat sampler (APP-078…085). The daemon samples the HOST — a
+            //     browser tab cannot — and broadcasts on its own 2 s cadence, gated on some
+            //     client being attached. This socket is that client, so a sample must arrive.
+            const stats = await ws.waitJson((m) => m.type === 'system-stats', 'a system-stats broadcast', 15_000);
+            check(
+                'the daemon broadcasts system stats to an attached client',
+                stats !== undefined && typeof stats.stats?.memTotalBytes === 'number' && stats.stats.memTotalBytes > 0,
+                JSON.stringify(stats?.stats)
+            );
+            check(
+                'every metric carries a history ring',
+                ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace'].every((kind) =>
+                    Array.isArray(stats?.history?.[kind])
+                ),
+                Object.keys(stats?.history ?? {}).join(', ')
+            );
+            // AGNT-109: the FIRST sample has no baseline, so its rates are 0 rather than the
+            // cumulative counter reported as a per-second figure.
+            check(
+                'the rates are deltas, not cumulative counters',
+                (stats?.history?.network?.[0] ?? -1) === 0 && (stats?.history?.diskIO?.[0] ?? -1) === 0,
+                `network[0]=${String(stats?.history?.network?.[0])} diskIO[0]=${String(stats?.history?.diskIO?.[0])}`
+            );
+
             // 6. content panes (M5): open a markdown file the way a user does, mirror it the way
             //    the client does, and prove the daemon-side watcher pushes a disk write back out.
             //    A unit test can fake any of those three; only a live run proves they meet.

@@ -6,7 +6,7 @@
  * with the same `--nex-*` tokens, so a chrome theme change moves this window too.
  */
 
-import type { CSSProperties, ReactElement, ReactNode } from 'react';
+import type { CSSProperties, ReactElement, ReactNode, Ref } from 'react';
 
 import { tokens, withAlpha } from '../chrome';
 
@@ -75,6 +75,12 @@ export interface SettingsButtonProps {
     readonly title?: string | undefined;
     readonly testID?: string | undefined;
     readonly ariaLabel?: string | undefined;
+    /**
+     * A handle on the underlying element, for the one thing a parent genuinely cannot express
+     * declaratively: moving focus here after a sibling control removes itself from the DOM
+     * (`GlobalHotkeySection`'s ✕, which unmounts along with the chip it clears).
+     */
+    readonly buttonRef?: Ref<HTMLButtonElement> | undefined;
 }
 
 const TONE_COLOR: Readonly<Record<SettingsButtonTone, string>> = {
@@ -91,6 +97,7 @@ export function SettingsButton(props: SettingsButtonProps): ReactElement {
     // rather than a control; the copy beside it wraps instead.
     return (
         <button
+            ref={props.buttonRef ?? null}
             type="button"
             disabled={disabled}
             title={props.title ?? undefined}
@@ -115,16 +122,27 @@ export interface ToggleProps {
     readonly onChange: (next: boolean) => void;
     readonly label: string;
     readonly testID?: string | undefined;
+    /**
+     * A toggle whose value would mean nothing (SET-082's "Press again to hide" with no hotkey
+     * set). Disabled rather than hidden: the option still exists, it just has no subject yet.
+     */
+    readonly disabled?: boolean | undefined;
 }
 
 /** A real checkbox: the accessible name is the row's label, so tests query it by role. */
 export function SettingsToggle(props: ToggleProps): ReactElement {
+    const disabled = props.disabled === true;
     return (
         <input
             type="checkbox"
             role="switch"
             aria-label={props.label}
             checked={props.checked}
+            disabled={disabled}
+            // `accentColor`: a native checkbox otherwise paints the OS blue, which is the only
+            // blue on a themed page (the audit photographed a column of them against a
+            // Gruvbox-orange chrome).
+            style={{ accentColor: tokens.accent, ...(disabled ? { opacity: 0.4 } : {}) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
             onChange={(event) => {
                 props.onChange(event.target.checked);

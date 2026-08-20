@@ -20,9 +20,6 @@
  * Deliberately NOT injected:
  *   - the **console** script (§7.1). The port takes the spec's CDP branch instead
  *     (`./console-format.ts`), and installing both would double-report every line.
- *   - the **batch marker** script (§7.3). Element pickup is a GUI surface with no wire verbs
- *     and no daemon state (`webpane/HOST_PROTOCOL.md` §7 lists it as not implemented
- *     daemon-side); the single-shot picker below is the half the CLI can reach.
  */
 
 /** The CDP binding the injected scripts post through (`Runtime.addBinding`). */
@@ -30,6 +27,8 @@ export const BINDING_NAME = 'nexPost';
 /** Channel names, kept identical to the Swift app's `WKScriptMessageHandler` names. */
 export const INSPECT_CHANNEL = 'nexInspect';
 export const FIND_CHANNEL = 'nexWebFind';
+/** §7.3 batch "element pickup": badge clicks, popover comment edits, dismiss and remove. */
+export const BATCH_MARKER_CHANNEL = 'nexBatchMarker';
 
 const BINDING_PLACEHOLDER = '__NEX_BINDING__';
 
@@ -976,6 +975,525 @@ function inspectorMain(): void {
     };
 }
 
+// ── §7.3 batch markers ──────────────────────────────────────────────────────────────
+
+/**
+ * The page half of the batch "element pickup" session (WEB-137…WEB-143).
+ *
+ * A faithful port of `WebPaneBatchMarkerScript.swift`. Four surfaces, all `position:fixed` and
+ * all carrying a `data-nex-batch-*` attribute so the picker's `isOverlay()` walk refuses to treat
+ * a click on them as a pick:
+ *
+ *   - **numbered badges**, positioned from a LIVE re-query of each item's selector on every
+ *     scroll/resize, so they follow React and responsive reflows rather than a stale rect, and
+ *     hidden (not clamped) when the element is collapsed or fully off-screen (WEB-137);
+ *   - a **focus ring** around the focused item's element, plus a 320 ms badge scale pulse
+ *     (WEB-139);
+ *   - a **comment popover**: viewport-centred, below the element when there is room else above,
+ *     clamped 8 px from every edge, user-resizable from its bottom-right corner (WEB-140). Its
+ *     edits stream out on every `input`, and an external edit is only written back when the
+ *     textarea is NOT focused, so neither side clobbers the other's cursor (WEB-141);
+ *   - `window.__nexBatchHasOpenPopover`, the cross-script flag the picker reads to suspend
+ *     itself while the popover owns the keyboard and the pointer (WEB-143).
+ *
+ * `setMarkers` is a diff-rebuild that preserves `focusedID` rather than a `clearAll`, and a
+ * `highlight` that arrives before its marker exists is parked in `pendingFocusID` and applied on
+ * the next sync — without which the ring vanished on every second pick (WEB-138).
+ */
+function batchMarkerMain(): void {
+    if (window !== window.top) return;
+    const w = window as unknown as PageGlobal;
+    if (w.__nexBatchMarkersInstalled) return;
+    w.__nexBatchMarkersInstalled = true;
+
+    const doc = document;
+    let markers: PageGlobal = {};
+    let container: HTMLElement | null = null;
+    let focusRing: HTMLElement | null = null;
+    let focusedID: string | null = null;
+    let pendingFocusID: string | null = null;
+    let popover: HTMLElement | null = null;
+    let popoverTextarea: HTMLTextAreaElement | null = null;
+    let popoverLabel: HTMLElement | null = null;
+
+    function post(body: PageGlobal): void {
+        const poster = w.__nexPost;
+        if (typeof poster === 'function') poster('nexBatchMarker', body);
+    }
+
+    function queryElement(selector: string): Element | null {
+        if (!selector) return null;
+        try {
+            return doc.querySelector(selector);
+        } catch {
+            return null;
+        }
+    }
+
+    function ensureContainer(): HTMLElement {
+        if (container !== null && container.isConnected) return container;
+        const node = doc.createElement('div');
+        node.setAttribute('data-nex-batch-markers', '1');
+        node.style.cssText = [
+            'position:fixed',
+            'top:0',
+            'left:0',
+            'width:100%',
+            'height:100%',
+            'pointer-events:none',
+            'z-index:2147483646'
+        ].join(';');
+        (doc.body ?? doc.documentElement).appendChild(node);
+        container = node;
+        return node;
+    }
+
+    function hidePopover(): void {
+        if (popover !== null) popover.style.display = 'none';
+        w.__nexBatchHasOpenPopover = false;
+    }
+
+    function clearFocusRing(): void {
+        focusedID = null;
+        pendingFocusID = null;
+        if (focusRing !== null) {
+            focusRing.style.display = 'none';
+            focusRing.style.opacity = '0';
+        }
+    }
+
+    function ensureFocusRing(): HTMLElement {
+        if (focusRing !== null && focusRing.isConnected) return focusRing;
+        const node = doc.createElement('div');
+        node.setAttribute('data-nex-batch-focus-ring', '1');
+        node.style.cssText = [
+            'position:fixed',
+            'pointer-events:none',
+            'z-index:2147483645',
+            'border:2px solid #007AFF',
+            'border-radius:3px',
+            'background:rgba(0,122,255,0.12)',
+            'box-shadow:0 0 0 1px rgba(255,255,255,0.6), 0 0 12px rgba(0,122,255,0.5)',
+            'box-sizing:border-box',
+            'transition:left 80ms linear, top 80ms linear, width 80ms linear, height 80ms linear, opacity 120ms linear',
+            'display:none',
+            'opacity:0'
+        ].join(';');
+        ensureContainer().appendChild(node);
+        focusRing = node;
+        return node;
+    }
+
+    /** Collapsed (display:none) or entirely outside the viewport: the surfaces hide, never clamp. */
+    function offscreen(rect: DOMRect): boolean {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        if (rect.width === 0 && rect.height === 0) return true;
+        return rect.bottom <= 0 || rect.right <= 0 || rect.top >= vh || rect.left >= vw;
+    }
+
+    function positionFocusRing(): void {
+        if (focusedID === null) return;
+        const marker = markers[focusedID];
+        if (marker === undefined) {
+            clearFocusRing();
+            return;
+        }
+        const el = queryElement(marker.selector);
+        if (el === null) {
+            clearFocusRing();
+            return;
+        }
+        const rect = el.getBoundingClientRect();
+        if (offscreen(rect)) {
+            if (focusRing !== null) {
+                focusRing.style.display = 'none';
+                focusRing.style.opacity = '0';
+            }
+            return;
+        }
+        const ring = ensureFocusRing();
+        ring.style.display = 'block';
+        ring.style.opacity = '1';
+        ring.style.left = String(rect.left - 3) + 'px';
+        ring.style.top = String(rect.top - 3) + 'px';
+        ring.style.width = String(rect.width + 6) + 'px';
+        ring.style.height = String(rect.height + 6) + 'px';
+    }
+
+    function makePopoverButton(label: string, background: string, color: string, border: string): HTMLElement {
+        const btn = doc.createElement('button');
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.style.cssText = [
+            'background:' + background,
+            'color:' + color,
+            'border:' + border,
+            'border-radius:4px',
+            'padding:3px 10px',
+            'font:600 11px -apple-system,system-ui,sans-serif',
+            'cursor:pointer',
+            'min-width:60px'
+        ].join(';');
+        btn.addEventListener('mousedown', function (event: Event): void {
+            event.stopPropagation();
+        });
+        return btn;
+    }
+
+    function ensurePopover(): HTMLElement {
+        if (popover !== null && popover.isConnected) return popover;
+        const node = doc.createElement('div');
+        node.setAttribute('data-nex-batch-popover', '1');
+        node.style.cssText = [
+            'position:fixed',
+            'display:none',
+            'flex-direction:column',
+            'box-sizing:border-box',
+            'width:280px',
+            'min-width:220px',
+            'min-height:130px',
+            'max-width:90vw',
+            'max-height:80vh',
+            'resize:both',
+            'overflow:hidden',
+            'background:#1c1c1e',
+            'color:#fff',
+            'border:1px solid rgba(255,255,255,0.18)',
+            'border-radius:6px',
+            'box-shadow:0 6px 24px rgba(0,0,0,0.4)',
+            'padding:8px 8px 15px',
+            'font:11px -apple-system,system-ui,sans-serif',
+            'pointer-events:auto',
+            'z-index:2147483647',
+            // The picker sets `cursor:crosshair` on documentElement while armed; the popover is
+            // a form, so it forces the pointer back.
+            'cursor:default'
+        ].join(';');
+
+        const label = doc.createElement('div');
+        label.style.cssText = [
+            'flex:0 0 auto',
+            'color:#5AC8FA',
+            'font:600 10px/14px ui-monospace,SFMono-Regular,Menlo,monospace',
+            'margin-bottom:4px',
+            'white-space:nowrap',
+            'overflow:hidden',
+            'text-overflow:ellipsis'
+        ].join(';');
+        popoverLabel = label;
+
+        const textarea = doc.createElement('textarea');
+        textarea.setAttribute('rows', '3');
+        textarea.setAttribute('placeholder', 'Add a comment…');
+        textarea.setAttribute('data-nex-batch-comment', '1');
+        textarea.style.cssText = [
+            'width:100%',
+            'box-sizing:border-box',
+            'flex:1 1 auto',
+            'resize:none',
+            'background:rgba(255,255,255,0.06)',
+            'color:#fff',
+            'border:1px solid rgba(255,255,255,0.18)',
+            'border-radius:4px',
+            'padding:4px 6px',
+            'font:12px -apple-system,system-ui,sans-serif',
+            'min-height:48px',
+            'outline:none'
+        ].join(';');
+        textarea.addEventListener('input', function (): void {
+            if (focusedID === null) return;
+            const marker = markers[focusedID];
+            if (marker !== undefined) marker.comment = textarea.value;
+            post({ commentChanged: { id: focusedID, comment: textarea.value } });
+        });
+        textarea.addEventListener('keydown', function (event: KeyboardEvent): void {
+            const isEsc = event.key === 'Escape';
+            // ⌘-Return is suppressed while an IME is composing, so a CJK candidate is not
+            // committed (and truncated) mid-composition.
+            const isCmdEnter =
+                event.isComposing !== true && event.metaKey && (event.key === 'Enter' || event.key === 'Return');
+            if (!isEsc && !isCmdEnter) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (focusedID !== null) post({ dismiss: { id: focusedID } });
+        });
+        textarea.addEventListener('click', function (event: Event): void {
+            event.stopPropagation();
+        });
+        textarea.addEventListener('mousedown', function (event: Event): void {
+            event.stopPropagation();
+        });
+        popoverTextarea = textarea;
+
+        const footer = doc.createElement('div');
+        footer.style.cssText = [
+            'flex:0 0 auto',
+            'display:flex',
+            'align-items:center',
+            'justify-content:space-between',
+            'gap:6px',
+            'margin-top:6px'
+        ].join(';');
+
+        const removeBtn = makePopoverButton('Remove', 'transparent', '#FF6B6B', '1px solid rgba(255,107,107,0.4)');
+        removeBtn.addEventListener('click', function (event: Event): void {
+            event.preventDefault();
+            event.stopPropagation();
+            if (focusedID !== null) post({ remove: { id: focusedID } });
+        });
+        const doneBtn = makePopoverButton('Done', '#007AFF', '#fff', '1px solid #007AFF');
+        doneBtn.addEventListener('click', function (event: Event): void {
+            event.preventDefault();
+            event.stopPropagation();
+            if (focusedID !== null) post({ dismiss: { id: focusedID } });
+        });
+
+        footer.appendChild(removeBtn);
+        footer.appendChild(doneBtn);
+        node.appendChild(label);
+        node.appendChild(textarea);
+        node.appendChild(footer);
+        ensureContainer().appendChild(node);
+        popover = node;
+        return node;
+    }
+
+    function positionPopover(): void {
+        if (focusedID === null) {
+            hidePopover();
+            return;
+        }
+        const marker = markers[focusedID];
+        if (marker === undefined) {
+            hidePopover();
+            return;
+        }
+        const el = queryElement(marker.selector);
+        if (el === null) {
+            hidePopover();
+            return;
+        }
+        const rect = el.getBoundingClientRect();
+        if (offscreen(rect)) {
+            hidePopover();
+            return;
+        }
+        const pop = ensurePopover();
+        pop.style.display = 'flex';
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        // Measure LIVE, so a user-resized dialog stays centred and clamped.
+        const popWidth = pop.offsetWidth || 280;
+        const popHeight = pop.offsetHeight || 120;
+        const roomBelow = vh - rect.bottom;
+        const roomAbove = rect.top;
+        let top = roomBelow >= popHeight + 16 || roomBelow >= roomAbove ? rect.bottom + 8 : rect.top - popHeight - 8;
+        if (top + popHeight > vh - 8) top = vh - popHeight - 8;
+        if (top < 8) top = 8;
+        let left = Math.round((vw - popWidth) / 2);
+        if (left < 8) left = 8;
+        if (left + popWidth > vw - 8) left = vw - popWidth - 8;
+        pop.style.left = String(left) + 'px';
+        pop.style.top = String(top) + 'px';
+        w.__nexBatchHasOpenPopover = true;
+    }
+
+    function syncPopoverContent(): void {
+        if (focusedID === null || popover === null) return;
+        const marker = markers[focusedID];
+        if (marker === undefined) return;
+        if (popoverLabel !== null) {
+            const prefix = marker.label !== undefined && marker.label !== null ? '#' + String(marker.label) + ' ' : '';
+            popoverLabel.textContent = prefix + String(marker.selector || '');
+        }
+        if (popoverTextarea !== null && doc.activeElement !== popoverTextarea) {
+            popoverTextarea.value = String(marker.comment || '');
+        }
+    }
+
+    function positionBadge(marker: PageGlobal): void {
+        const badge = marker.badgeEl as HTMLElement | null;
+        if (badge === null || badge === undefined) return;
+        const el = queryElement(marker.selector);
+        if (el === null) {
+            badge.style.display = 'none';
+            return;
+        }
+        const rect = el.getBoundingClientRect();
+        if (offscreen(rect)) {
+            badge.style.display = 'none';
+            return;
+        }
+        badge.style.display = 'flex';
+        // Slightly outside the element's top-left, and NOT clamped: a partially visible element
+        // shows its badge beside it rather than pinned to a corner it does not own.
+        badge.style.left = String(rect.left - 6) + 'px';
+        badge.style.top = String(rect.top - 6) + 'px';
+    }
+
+    function refreshAll(): void {
+        for (const id of Object.keys(markers)) positionBadge(markers[id]);
+        positionFocusRing();
+        positionPopover();
+    }
+
+    function createBadge(marker: PageGlobal): HTMLElement {
+        const el = doc.createElement('div');
+        el.setAttribute('data-nex-batch-marker', '1');
+        el.style.cssText = [
+            'position:fixed',
+            'min-width:18px',
+            'height:18px',
+            'padding:0 5px',
+            'border-radius:9px',
+            'background:#007AFF',
+            'color:white',
+            'font:600 11px/18px -apple-system,system-ui,sans-serif',
+            'text-align:center',
+            'box-sizing:content-box',
+            'border:2px solid white',
+            'box-shadow:0 1px 4px rgba(0,0,0,0.35)',
+            'cursor:pointer',
+            'pointer-events:auto',
+            'z-index:2147483646',
+            'user-select:none',
+            'transition:transform 180ms ease',
+            'display:flex',
+            'align-items:center',
+            'justify-content:center'
+        ].join(';');
+        el.textContent = String(marker.label);
+        el.addEventListener('click', function (event: Event): void {
+            event.preventDefault();
+            event.stopPropagation();
+            post({ id: marker.id });
+        });
+        return el;
+    }
+
+    function setMarkers(items: PageGlobal[]): boolean {
+        // Diff-rebuild, NOT clearAll: `focusedID` has to survive, or the ring and the popover
+        // would blink away on every new pick and every comment keystroke.
+        for (const id of Object.keys(markers)) {
+            const badge = markers[id].badgeEl as HTMLElement | null;
+            if (badge !== null && badge !== undefined) badge.remove();
+        }
+        markers = {};
+        if (items === undefined || items === null || items.length === 0) {
+            clearFocusRing();
+            hidePopover();
+            if (container !== null) {
+                container.remove();
+                container = null;
+            }
+            return true;
+        }
+        const root = ensureContainer();
+        for (let index = 0; index < items.length; index += 1) {
+            const item = items[index];
+            if (item === undefined || item === null || !item.selector) continue;
+            if (queryElement(item.selector) === null) continue;
+            const marker: PageGlobal = {
+                id: String(item.id || ''),
+                selector: String(item.selector),
+                label: String(item.label !== undefined && item.label !== null ? item.label : index + 1),
+                comment: String(item.comment || ''),
+                badgeEl: null
+            };
+            const badge = createBadge(marker);
+            root.appendChild(badge);
+            marker.badgeEl = badge;
+            markers[marker.id] = marker;
+            positionBadge(marker);
+        }
+        if (pendingFocusID !== null && markers[pendingFocusID] !== undefined) {
+            focusedID = pendingFocusID;
+            pendingFocusID = null;
+        }
+        if (focusedID !== null && markers[focusedID] === undefined) {
+            clearFocusRing();
+            hidePopover();
+        } else if (focusedID !== null) {
+            syncPopoverContent();
+            positionFocusRing();
+            positionPopover();
+        }
+        return true;
+    }
+
+    function clearAll(): boolean {
+        setMarkers([]);
+        popover = null;
+        popoverTextarea = null;
+        popoverLabel = null;
+        focusRing = null;
+        w.__nexBatchHasOpenPopover = false;
+        return true;
+    }
+
+    function highlight(id: string, scrollIntoView: boolean): boolean {
+        const key = String(id);
+        const marker = markers[key];
+        if (marker === undefined) {
+            // The highlight beat its own sync (they are dispatched together): park it.
+            pendingFocusID = key;
+            return true;
+        }
+        pendingFocusID = null;
+        focusedID = key;
+        const shouldScroll = scrollIntoView !== false;
+        const el = queryElement(marker.selector);
+        if (el !== null && shouldScroll) {
+            try {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch {
+                el.scrollIntoView();
+            }
+        }
+        const badge = marker.badgeEl as HTMLElement | null;
+        if (badge !== null && badge !== undefined) {
+            badge.style.transform = 'scale(1.6)';
+            setTimeout(function (): void {
+                badge.style.transform = 'scale(1)';
+            }, 320);
+        }
+        syncPopoverContent();
+        positionFocusRing();
+        positionPopover();
+        // Re-anchor once the smooth scroll has settled.
+        if (shouldScroll) setTimeout(refreshAll, 400);
+        return true;
+    }
+
+    function unfocus(): boolean {
+        clearFocusRing();
+        hidePopover();
+        return true;
+    }
+
+    function updateExternalComment(id: string, comment: string): boolean {
+        const key = String(id);
+        const marker = markers[key];
+        if (marker === undefined) return false;
+        marker.comment = comment || '';
+        // Only write back when the user is NOT in the textarea (WEB-141).
+        if (focusedID === key && popoverTextarea !== null && doc.activeElement !== popoverTextarea) {
+            popoverTextarea.value = marker.comment;
+        }
+        return true;
+    }
+
+    window.addEventListener('scroll', refreshAll, true);
+    window.addEventListener('resize', refreshAll, true);
+
+    w.__nexBatchSetMarkers = setMarkers;
+    w.__nexBatchClearMarkers = clearAll;
+    w.__nexBatchHighlight = highlight;
+    w.__nexBatchUnfocus = unfocus;
+    w.__nexBatchUpdateComment = updateExternalComment;
+}
+
 // ── §7.5 find-in-page ───────────────────────────────────────────────────────────────
 
 function findMain(): void {
@@ -1139,9 +1657,13 @@ export function findScript(): string {
     return serialize(findMain);
 }
 
+export function batchMarkerScript(): string {
+    return serialize(batchMarkerMain);
+}
+
 /** Injection order matters: the bridge must exist before anything tries to post through it. */
 export function injectedScriptSources(): readonly string[] {
-    return [bridgeScript(), actuatorScript(), inspectorScript(), findScript()];
+    return [bridgeScript(), actuatorScript(), inspectorScript(), findScript(), batchMarkerScript()];
 }
 
 // ── evaluation wrappers (§8.2 actuator dispatch, §8.5 exec) ─────────────────────────
@@ -1214,6 +1736,42 @@ export function buildFindCall(action: FindAction, needle: string): string {
             ? `window.__nexWebFind.search(${JSON.stringify(needle)})`
             : `window.__nexWebFind.${action}()`;
     return `(() => { if (!window.__nexWebFind) return null; return ${call}; })()`;
+}
+
+// ── §7.3 batch markers: the daemon → page calls ─────────────────────────────────────
+
+/**
+ * One numbered marker as the daemon describes it. `selector` is re-queried live in the page on
+ * every reposition, so a React re-render that swaps the node keeps its badge (WEB-137).
+ */
+export interface BatchMarkerInput {
+    readonly id: string;
+    readonly selector: string;
+    readonly label: string;
+    readonly comment: string;
+}
+
+/** Replace the marker set (the diff-rebuild of WEB-138). An empty list tears the surfaces down. */
+export function buildBatchSetMarkers(items: readonly BatchMarkerInput[]): string {
+    return `(() => { if (!window.__nexBatchSetMarkers) return false; return window.__nexBatchSetMarkers(${JSON.stringify(items)}) !== false; })()`;
+}
+
+export function buildBatchClearMarkers(): string {
+    return '(() => { if (!window.__nexBatchClearMarkers) return false; return window.__nexBatchClearMarkers() !== false; })()';
+}
+
+/** Focus one item: ring, badge pulse, popover — and, for a panel-origin focus, a smooth scroll. */
+export function buildBatchHighlight(itemID: string, scrollIntoView: boolean): string {
+    return `(() => { if (!window.__nexBatchHighlight) return false; return window.__nexBatchHighlight(${JSON.stringify(itemID)}, ${String(scrollIntoView)}) !== false; })()`;
+}
+
+export function buildBatchUnfocus(): string {
+    return '(() => { if (!window.__nexBatchUnfocus) return false; return window.__nexBatchUnfocus() !== false; })()';
+}
+
+/** A panel-side comment edit pushed into the popover (never over a focused textarea, WEB-141). */
+export function buildBatchUpdateComment(itemID: string, comment: string): string {
+    return `(() => { if (!window.__nexBatchUpdateComment) return false; return window.__nexBatchUpdateComment(${JSON.stringify(itemID)}, ${JSON.stringify(comment)}) !== false; })()`;
 }
 
 /** §8.4 capture reads, kept here so the page expressions live in one place. */

@@ -37,7 +37,17 @@ export type ChromeIconName =
     | 'plusminus'
     | 'globe'
     | 'bolt'
-    | 'gear';
+    | 'ellipsis'
+    | 'gear'
+    // The six status-bar metric glyphs — `SystemStatKind.systemImage`'s SF Symbols (`cpu`,
+    // `memorychip`, `gauge.with.dots.needle.33percent`, `network`,
+    // `externaldrive.badge.timemachine`, `internaldrive`) redrawn at this file's 12×12 grid.
+    | 'cpu'
+    | 'memory'
+    | 'gauge'
+    | 'network'
+    | 'diskio'
+    | 'drive';
 
 const PATHS: Record<ChromeIconName, ReactElement> = {
     search: (
@@ -120,11 +130,63 @@ const PATHS: Record<ChromeIconName, ReactElement> = {
         </>
     ),
     bolt: <path d="M6.6 1.8 3.2 6.6h2.4l-.6 3.6 3.6-4.8H6.2z" />,
+    /** The row-actions affordance: three dots read as "more", where an ✕ reads as "delete". */
+    ellipsis: (
+        <>
+            <circle cx="2.6" cy="6" r="0.85" fill="currentColor" stroke="none" />
+            <circle cx="6" cy="6" r="0.85" fill="currentColor" stroke="none" />
+            <circle cx="9.4" cy="6" r="0.85" fill="currentColor" stroke="none" />
+        </>
+    ),
     /** Settings: a hub with four spokes — legible at 12px where real cog teeth are mush. */
     gear: (
         <>
             <circle cx="6" cy="6" r="2" />
             <path d="M6 1.4v1.6M6 9v1.6M1.4 6h1.6M9 6h1.6M2.8 2.8l1.1 1.1M8.1 8.1l1.1 1.1M9.2 2.8 8.1 3.9M3.9 8.1 2.8 9.2" />
+        </>
+    ),
+    /** A die with pins — the SF `cpu` silhouette at 12px. */
+    cpu: (
+        <>
+            <rect x="3.2" y="3.2" width="5.6" height="5.6" rx="0.8" />
+            <path d="M4.6 1.6v1.6M7.4 1.6v1.6M4.6 8.8v1.6M7.4 8.8v1.6M1.6 4.6h1.6M1.6 7.4h1.6M8.8 4.6h1.6M8.8 7.4h1.6" />
+        </>
+    ),
+    /** `memorychip`: a chip body with contact legs down one side. */
+    memory: (
+        <>
+            <rect x="2.2" y="3" width="7.6" height="6" rx="0.8" />
+            <path d="M4.2 9v1.4M6 9v1.4M7.8 9v1.4M4.4 5h3.2v2H4.4z" />
+        </>
+    ),
+    /** `gauge…`: a dial arc with a needle at roughly a third of travel. */
+    gauge: (
+        <>
+            <path d="M1.9 8.4a4.6 4.6 0 1 1 8.2 0" />
+            <path d="M6 8.2 4.1 5.4" />
+        </>
+    ),
+    /** `network`: a globe with a latitude and a meridian. */
+    network: (
+        <>
+            <circle cx="6" cy="6" r="4.2" />
+            <path d="M1.8 6h8.4M6 1.8c1.7 1.9 1.7 6.5 0 8.4-1.7-1.9-1.7-6.5 0-8.4z" />
+        </>
+    ),
+    /** `externaldrive…`: a drive body with a throughput arrow through it. */
+    diskio: (
+        <>
+            <rect x="1.6" y="3.4" width="8.8" height="5.2" rx="1" />
+            <path d="M3.2 6h3.4M5.4 4.8 6.8 6 5.4 7.2" />
+            <circle cx="8.7" cy="6" r="0.7" fill="currentColor" stroke="none" />
+        </>
+    ),
+    /** `internaldrive`: a platter enclosure with a spindle. */
+    drive: (
+        <>
+            <rect x="1.6" y="2.6" width="8.8" height="6.8" rx="1.2" />
+            <circle cx="6" cy="6" r="1.6" />
+            <circle cx="6" cy="6" r="0.4" fill="currentColor" stroke="none" />
         </>
     )
 };

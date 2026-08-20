@@ -164,7 +164,7 @@ describe('buildAppIcns', () => {
 
 describe('STAGED_RESOURCE_NAMES', () => {
     it('is the list forge.config.cjs copies into Contents/Resources', () => {
-        expect([...STAGED_RESOURCE_NAMES]).toEqual(['daemon', 'client', 'node']);
+        expect([...STAGED_RESOURCE_NAMES]).toEqual(['daemon', 'client', 'cli', 'node']);
     });
 });
 

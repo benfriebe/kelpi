@@ -43,8 +43,32 @@ describe('shell settings', () => {
 
     it('round-trips the suppression flag', () => {
         const file = settingsFile(tempDir());
-        writeShellSettings(file, { confirmQuitWhenActive: false });
+        writeShellSettings(file, { ...DEFAULT_SHELL_SETTINGS, confirmQuitWhenActive: false });
         expect(readShellSettings(file).confirmQuitWhenActive).toBe(false);
+    });
+
+    it('round-trips the CLI-install state, defaulting both keys to "never"', () => {
+        const file = settingsFile(tempDir());
+        expect(readShellSettings(file).cliInstallPrompted).toBe(false);
+        expect(readShellSettings(file).cliInstallNotifiedVersion).toBe('');
+
+        writeShellSettings(file, {
+            ...DEFAULT_SHELL_SETTINGS,
+            cliInstallPrompted: true,
+            cliInstallNotifiedVersion: '0.1.0'
+        });
+        const read = readShellSettings(file);
+        expect(read.cliInstallPrompted).toBe(true);
+        expect(read.cliInstallNotifiedVersion).toBe('0.1.0');
+        // Unchanged by the new keys.
+        expect(read.confirmQuitWhenActive).toBe(true);
+    });
+
+    it('reads a garbage CLI-install value as "never", not as truthy', () => {
+        const file = path.join(tempDir(), 'settings.json');
+        fs.writeFileSync(file, JSON.stringify({ cliInstallPrompted: 'yes', cliInstallNotifiedVersion: 7 }));
+        expect(readShellSettings(file).cliInstallPrompted).toBe(false);
+        expect(readShellSettings(file).cliInstallNotifiedVersion).toBe('');
     });
 
     it('treats any non-false value (including garbage) as true', () => {

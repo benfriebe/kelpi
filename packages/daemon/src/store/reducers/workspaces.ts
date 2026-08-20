@@ -498,6 +498,17 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
                     repo.id === action.id ? { ...repo, remoteURL: action.remoteURL } : repo
                 )
             };
+        // §GIT-068: promote an auto-discovered repo to manual so the auto-unlink GC (§GIT-081)
+        // stops treating it as disposable.
+        case 'set-repo-auto-discovered':
+            return {
+                ...state,
+                repos: state.repos.map((repo) =>
+                    repo.id === action.id
+                        ? { ...repo, isAutoDiscovered: action.isAutoDiscovered }
+                        : repo
+                )
+            };
         case 'add-repo-association':
             return updateWorkspace(state, action.workspaceID, (workspace) =>
                 workspace.repoAssociations.some((assoc) => assoc.id === action.association.id)

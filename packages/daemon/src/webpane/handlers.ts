@@ -91,6 +91,16 @@ function resolveScope(
     return resolution.target;
 }
 
+/**
+ * WEB-064's close half. `web-tab-close` removes the tab the find may have been running on, so
+ * the new active tab has to be read back out of the post-dispatch state before the needle can be
+ * re-applied — which is why this cannot be inlined the way `tab-select` can.
+ */
+function retargetFind(ctx: AppContext, service: WebPaneService, paneID: string): void {
+    const resolution = resolveWebPane(ctx.store.getState(), { pane_id: paneID, target: paneID });
+    service.retargetFind(paneID, resolution.ok ? (resolution.target.activeTab?.id ?? null) : null);
+}
+
 /** `web-open` routing (§3.3): the caller's pane's workspace, else the active one. */
 function routeWorkspace(state: DaemonState, paneID: string | undefined): string | null {
     if (paneID !== undefined) {
@@ -387,6 +397,9 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 tabID: resolved.tab.id
             });
             service.notify('tab-close', { paneID: target.paneID, tabID: resolved.tab.id });
+            // WEB-064: an open find follows the pane, not the tab. The reducer has already
+            // re-activated a neighbour, so this reads the NEW active tab and re-runs the needle.
+            retargetFind(ctx, service, target.paneID);
             persist();
         }),
 
@@ -406,6 +419,8 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 tabID: resolved.tab.id
             });
             service.notify('tab-select', { paneID: target.paneID, tabID: resolved.tab.id });
+            // WEB-064: clear the outgoing tab's marks and re-run the needle on the incoming one.
+            service.retargetFind(target.paneID, resolved.tab.id);
             persist();
         }),
 

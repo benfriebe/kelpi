@@ -34,10 +34,18 @@ export const expectedCodexHooks: readonly (readonly [string, string])[] = [
 
 export const sessionStartSources: readonly string[] = ['startup', 'resume', 'clear', 'compact'];
 
+/**
+ * The repair the port can actually perform.
+ *
+ * The Swift CLI pointed at `/Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh`,
+ * a shell script that shipped inside the app bundle. This CLI *is* the installer
+ * (`nex install-hooks`, `../commands/install-hooks.ts`), so the repair names a command the user
+ * already has rather than a file the port does not ship. Same guarantee as the script: safe to
+ * re-run, merges, dedupes nex-managed commands, normalises stale matchers.
+ */
 const HOOKS_REPAIR =
-    'Re-run the bundled installer (safe to re-run — it merges, dedupes, and normalises nex-managed hooks): /Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh';
-const CODEX_REPAIR =
-    'Re-run the bundled installer (/Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh), then run /hooks inside codex once to trust the nex hooks.';
+    'Run the installer (safe to re-run — it merges, dedupes, and normalises nex-managed hooks): nex install-hooks';
+const CODEX_REPAIR = 'Run `nex install-hooks`, then run /hooks inside codex once to trust the nex hooks.';
 
 export interface HookFilesystem {
     /** File contents, or null when absent/unreadable. */

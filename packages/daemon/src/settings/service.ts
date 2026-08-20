@@ -32,6 +32,7 @@ import {
     DEFAULT_KEYBINDINGS,
     isNexAction,
     keyTriggerConfigString,
+    parseChromeSettings,
     parseGeneralSettings,
     parseKeyTrigger,
     parseKeybindOverrides,
@@ -40,6 +41,7 @@ import {
     resolveKeyBindings,
     setBinding,
     setGeneralSetting,
+    setGhosttySetting,
     triggersForAction,
     writeKeybindings,
     writeProfiles,
@@ -50,6 +52,7 @@ import {
 import {
     DEFAULT_WS_SETTINGS,
     isWsWritableGeneralKey,
+    isWsWritableGhosttyKey,
     type WsProfile,
     type WsSettingsSnapshot
 } from '@nex/protocol';
@@ -119,6 +122,13 @@ export interface SettingsService {
     /** One `key = value` general setting (§1.3's writable list). */
     setGeneralSetting(key: string, value: string): SettingsSnapshot;
     /**
+     * One `key = value` in the **ghostty** config (`WS_WRITABLE_GHOSTTY_KEYS`), or `null` to
+     * remove the key entirely. Same write-through discipline as every other setter: apply the
+     * surgical `@nex/core/config` writer to the file's current contents, write atomically,
+     * re-read, notify. The five writable keys are exactly the five `./ghostty.ts` parses back.
+     */
+    setGhosttySetting(key: string, value: string | null): SettingsSnapshot;
+    /**
      * Replace the file's WHOLE profile section (§1.6/§9.5's write-through). Every non-`profile`
      * line survives byte-for-byte; profiles with a blank name, and vars with a blank key, are
      * dropped by the writer, so a name-only profile needs its `NEX_PROFILE` marker var to
@@ -154,6 +164,7 @@ export function buildSettingsSnapshot(
     const general = nexConfig === '' ? DEFAULT_GENERAL_SETTINGS : parseGeneralSettings(nexConfig);
     const appearance =
         ghosttyConfig === '' ? DEFAULT_GHOSTTY_APPEARANCE : parseGhosttyAppearance(ghosttyConfig);
+    const chrome = parseChromeSettings(nexConfig);
     return {
         keybindLines: keybindLinesFrom(nexConfig),
         // §9.5: the Settings editor is the only consumer, and it must round-trip `~` values
@@ -163,11 +174,42 @@ export function buildSettingsSnapshot(
             name: profile.name,
             env: { ...profile.env }
         })),
+        // The chrome/status-bar half of the same file (`@nex/core/config`'s `chrome.ts`).
+        // Additive: every field has a default, so a config that names none of these keys
+        // produces exactly the shipped palette and the shipped gauge set.
+        chrome: {
+            appearance: chrome.appearance,
+            colors: { ...chrome.colors },
+            sidebarColorIntensity: chrome.sidebarColorIntensity,
+            sidebarAvatarFill: chrome.sidebarAvatarFill,
+            sidebarAvatarStroke: chrome.sidebarAvatarStroke,
+            sidebarGroupFill: chrome.sidebarGroupFill,
+            sidebarGroupStroke: chrome.sidebarGroupStroke,
+            showSystemStats: chrome.showSystemStats,
+            enabledSystemStats: [...chrome.enabledSystemStats],
+            showSystemStatGraphs: chrome.showSystemStatGraphs,
+            sparklineStyle: chrome.sparklineStyle,
+            sparklineColor: chrome.sparklineColor,
+            sparklineWidth: chrome.sparklineWidth
+        },
         general: {
             focusFollowsMouse: general.focusFollowsMouse,
             focusFollowsMouseDelay: general.focusFollowsMouseDelay,
             theme: general.theme,
-            confirmWorkspaceDeleteWhenActive: general.confirmWorkspaceDeleteWhenActive
+            confirmWorkspaceDeleteWhenActive: general.confirmWorkspaceDeleteWhenActive,
+            tcpPort: general.tcpPort,
+            // The CONFIG STRING, not the parsed trigger — the wire is JSON and the client's
+            // recorder speaks this spelling in both directions.
+            globalHotkey:
+                general.globalHotkey === null ? null : keyTriggerConfigString(general.globalHotkey),
+            globalHotkeyHideOnRepress: general.globalHotkeyHideOnRepress,
+            // graft-git.md §GIT-074: the auto-link / auto-unlink gate. It rides the snapshot
+            // rather than only being read where it is enforced, because Settings ▸ Repositories
+            // renders it and every attached window must agree on its value.
+            autoDetectRepos: general.autoDetectRepos,
+            worktreeBasePath: general.worktreeBasePath,
+            newWorkspacePlacement: general.newWorkspacePlacement,
+            newGroupPlacement: general.newGroupPlacement
         },
         appearance: {
             backgroundColor: appearance.backgroundColor,
@@ -294,6 +336,22 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
         return emit(read());
     };
 
+    /**
+     * The ghostty file's equivalent of `commit`. Separate because the two files have different
+     * lifecycles: the nex config is ours to delete when it holds nothing (§5.3), the ghostty
+     * config is the user's and is only ever rewritten in place — never removed, and created
+     * only when a write needs somewhere to land.
+     */
+    const commitGhostty = (next: string): SettingsSnapshot => {
+        try {
+            fs.mkdirSync(path.dirname(ghosttyPath), { recursive: true });
+            writeFileAtomic(ghosttyPath, next);
+        } catch (error) {
+            throw new SettingsError(`could not write ${ghosttyPath}: ${toError(error).message}`);
+        }
+        return emit(read());
+    };
+
     return {
         get snapshot() {
             return current;
@@ -348,6 +406,18 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
                 throw new SettingsError(`'${key}' is not a writable general setting`);
             }
             return commit(setGeneralSetting(contentsOrNull(configPath), name, value.trim()));
+        },
+
+        setGhosttySetting(key, value) {
+            const name = key.trim();
+            if (!isWsWritableGhosttyKey(name)) {
+                // The five keys `./ghostty.ts` parses, and no others: writing a key this
+                // daemon cannot read back would let the UI claim a change it cannot show.
+                throw new SettingsError(`'${key}' is not a writable ghostty setting`);
+            }
+            return commitGhostty(
+                setGhosttySetting(contentsOrNull(ghosttyPath), name, value === null ? null : value.trim())
+            );
         },
 
         setProfiles(profiles) {

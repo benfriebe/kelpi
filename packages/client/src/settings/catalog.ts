@@ -132,21 +132,38 @@ export const CATALOGUED_ACTIONS: readonly NexAction[] = NEX_ACTIONS;
 // ── the tabs ────────────────────────────────────────────────────────────────────────
 
 /**
- * The tabs this port ships (§13's 7-tab window, minus the three whose subject matter has no
- * daemon-side home yet):
+ * The tabs this port ships.
  *
- *   General / Repositories / Web are NOT here. General's worktree + repo + placement settings
- *   live in the Swift app's UserDefaults with no config-file or daemon key (the two suppression
- *   toggles that shell-ui.md's port note DID name are on the Workspaces tab below); the repo
- *   registry and web favourites are daemon state with no editing verbs yet. Adding a tab that
- *   cannot write anything would be worse than not having it.
+ * §13's window has seven: General, Appearance, Repositories, Labels, Profiles, Keybindings,
+ * Web. **General** is now here — its worktree base path and the two placement pickers became
+ * real config keys (`@nex/core/config` `general.ts`), so the tab writes rather than merely
+ * displays, which was the bar it previously failed.
+ *
+ * **Repositories** is now here too: the registry gained its own WS verbs (`repo-add` /
+ * `repo-remove` / `repo-rename` / `repo-scan`, `daemon/src/ws/repos.ts`), so the tab adds,
+ * scans, renames and removes rather than merely listing — and it is where §GIT-074's
+ * auto-detect toggle lives, as it does in the shipped app.
+ *
+ * **Web** is now here too: favourites gained a daemon home (`webpane/favourites.ts`, persisted
+ * as `favourites.json`) and the `web-favourite-*` verbs to rename, remove and reorder them, so
+ * the URL-bar star's "Manage favourites…" has somewhere to land (SET-097…SET-100).
+ *
+ * **Workspaces** is this port's own: it holds the two settings §13 spreads across General
+ * ▸ Workspaces and General ▸ Panes that already had a daemon key before General existed, and
+ * the General tab points at it rather than duplicating the controls — two switches for one
+ * value is how they drift apart.
  */
 export const SETTINGS_TABS = [
+    { id: 'general', label: 'General' },
+    // §13's tab order puts Repositories straight after General, which is also where its
+    // auto-detect toggle lives in the shipped app (graft-git.md §GIT-065/§GIT-074).
+    { id: 'repositories', label: 'Repositories' },
     { id: 'keybindings', label: 'Keybindings' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'labels', label: 'Labels' },
     { id: 'profiles', label: 'Profiles' },
-    { id: 'workspaces', label: 'Workspaces' }
+    { id: 'workspaces', label: 'Workspaces' },
+    { id: 'web', label: 'Web' }
 ] as const;
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]['id'];

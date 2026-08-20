@@ -33,6 +33,7 @@ import { createTerminalIngest } from './ingest';
 import {
     createTerminalRenderer,
     resolveTerminalTheme,
+    type TerminalMatchLocation,
     type TerminalRenderer,
     type TerminalRendererFactory,
     type TerminalTheme
@@ -125,6 +126,14 @@ export interface TerminalPaneProps {
     readonly resizeDebounceMs?: number | undefined;
     /** Ceiling on the debounce during a continuous gesture; defaults to `RESIZE_MAX_WAIT_MS`. */
     readonly resizeMaxWaitMs?: number | undefined;
+    /**
+     * A terminal-search hit to scroll to and select (`grid/PaneSearchOverlay.tsx`).
+     *
+     * `seq` is what makes it fire: pressing Return on the SAME match must scroll back to it
+     * after the user has scrolled away, and a value-equal object alone would not re-run the
+     * effect. The daemon owns the search (`daemon/src/ws/search.ts`); this only shows the answer.
+     */
+    readonly reveal?: (TerminalMatchLocation & { readonly seq: number }) | null | undefined;
     /** Measured grid, for the resize badge (`grid/types.ts` `PaneDimensions`). */
     readonly onDimensionsChange?: ((paneID: string, geometry: TerminalGeometry) => void) | undefined;
     readonly onExit?: ((paneID: string, exitCode: number | null, signal?: string) => void) | undefined;
@@ -492,6 +501,23 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         if (theme === undefined) return;
         rendererRef.current?.setTheme(theme);
     }, [theme]);
+
+    // ── search reveal ───────────────────────────────────────────────────────────────
+    //
+    // Keyed on `seq`, not on the coordinates: pressing Return on the same match again has to
+    // scroll back to it, and the engine may not be up yet on the first hit (a pane that just
+    // mounted), so the effect also re-runs when the renderer goes live.
+    const revealSeq = props.reveal?.seq ?? 0;
+    useEffect(() => {
+        const match = latest.current.reveal;
+        if (match === null || match === undefined || match.seq === 0) return;
+        if (status !== 'live') return;
+        rendererRef.current?.revealMatch({
+            linesFromBottom: match.linesFromBottom,
+            col: match.col,
+            length: match.length
+        });
+    }, [revealSeq, status]);
 
     const requestFocus = useCallback((): void => {
         const current = latest.current;

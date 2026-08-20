@@ -31,6 +31,11 @@ import {
     type DaemonVersionInfo,
     type HttpAppOptions
 } from './http.js';
+import type { DesktopChannel } from './desktop.js';
+import type { PaneLifecycleChannel } from './panes.js';
+import type { RepoChannel } from './repos.js';
+import type { GraftChannel } from './graft.js';
+import { createTerminalSearchChannel, type TerminalSearchBackend } from './search.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
 import {
     createSyncHub,
@@ -83,6 +88,22 @@ export interface WsServerOptions {
     readonly webPanes?: WebPaneChannel | undefined;
     /** The pane header's restart button (`restart-pane-agent`); absent = "not available". */
     readonly agents?: AgentChannel | undefined;
+    /** M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). */
+    readonly repos?: RepoChannel | undefined;
+    /** The inspector's graft toggle + orphan banner verbs (`ws/graft.ts`). */
+    readonly graftUi?: GraftChannel | undefined;
+    /**
+     * Reopen-closed-pane / create-scratchpad / reveal-path (`ws/panes.ts`). Those three need a
+     * `PaneHandlerContext` (a PTY to spawn, a `TerminalInput` to type the resume command into),
+     * which only boot has — so unlike terminal search this one cannot be built here.
+     */
+    readonly panes?: PaneLifecycleChannel | undefined;
+    /**
+     * The desktop gestures (`ws/desktop.ts`): the ⌘O picker relay, ⌘-clicking a path in a
+     * terminal, hosting `$EDITOR` in a markdown pane, and `restart-control-server`. Like
+     * `panes`, it needs a `PaneHandlerContext` (and the control listeners), so boot builds it.
+     */
+    readonly desktop?: DesktopChannel | undefined;
     /**
      * M8 settings sync: the `welcome.settings` payload and the `settings-*` mutation verbs.
      * Absent = welcome carries no settings and the verbs answer "not available".
@@ -195,6 +216,17 @@ export function createWsServer(options: WsServerOptions): WsServer {
         webPanes: options.webPanes,
         settings: options.settings,
         agents: options.agents,
+        repos: options.repos,
+        graftUi: options.graftUi,
+        panes: options.panes,
+        desktop: options.desktop,
+        // Terminal search reads the SAME `@xterm/headless` buffer the PTY streams and
+        // `pane capture` already share, so it is composed here rather than passed in: there is
+        // nothing boot knows about it that this file does not.
+        search: createTerminalSearchChannel({
+            store: options.store,
+            term: options.term as Partial<TerminalSearchBackend>
+        }),
         // THE token gate: an upgrade with a missing or wrong token still becomes a socket, and
         // this is what turns it away — with a reason the client can show a human.
         ...(options.token !== undefined && options.token.length > 0

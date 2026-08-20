@@ -18,7 +18,12 @@ const SETTINGS: WsSettingsSnapshot = {
     keybindLines: ['ctrl+alt+t=split_right'],
     // M8 Settings ▸ Profiles: the config file's `profile` lines ride the same snapshot.
     profiles: [{ name: 'work', env: { CLAUDE_CONFIG_DIR: '~/.claude-accounts/work' } }],
+    // The chrome/status-bar half of the same file. Spread from the defaults rather than
+    // restated: this fixture exists to prove the hydrator is field-for-field faithful, and a
+    // literal here would have to be retyped every time a styling key is added.
+    chrome: DEFAULT_WS_SETTINGS.chrome,
     general: {
+        ...DEFAULT_WS_SETTINGS.general,
         focusFollowsMouse: true,
         focusFollowsMouseDelay: 250,
         theme: 'Nord',

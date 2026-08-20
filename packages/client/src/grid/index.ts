@@ -40,6 +40,12 @@ export {
 } from './PaneHeader';
 
 export {
+    PaneSearchOverlay,
+    matchCountLabel,
+    type PaneSearchOverlayProps
+} from './PaneSearchOverlay';
+
+export {
     FOCUS_DWELL_MS,
     FOCUS_RING_WIDTH,
     FocusRing,

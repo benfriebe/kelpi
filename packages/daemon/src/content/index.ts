@@ -86,3 +86,22 @@ export {
     type ContentServiceOptions,
     type ContentSubscription
 } from './service.js';
+
+export {
+    EDITOR_BEGIN_MARKER,
+    EDITOR_END_MARKER,
+    FAILURE_RETRY_MS,
+    SHELL_TIMEOUT_MS,
+    chooseEditor,
+    createEditorResolver,
+    editorProbeScript,
+    formatEditorCommand,
+    parseShellOutput,
+    probeLoginShell,
+    resolveFromProcessEnv,
+    resolveUserShell,
+    singleQuoteEscape,
+    type EditorResolution,
+    type EditorResolver,
+    type EditorResolverOptions
+} from './external-editor.js';

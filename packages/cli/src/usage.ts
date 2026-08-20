@@ -70,6 +70,44 @@ export const globalUsage = `Usage:
   nex web console [--since N] [--level log|debug|info|warn|error] [--clear] [--follow] [--json]
   nex web exec (--file <path> | <js>) [--timeout 30] [--target X] [--workspace Y] [--json]
   nex doctor [--json]                                   # IPC health check
+  nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]
+
+`;
+
+export const installHooksUsage = `Usage:
+  nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>] \\
+                    [--link [--install-dir <dir>]] [--dry-run] [--json]
+
+Wires the nex lifecycle hooks into Claude Code and (when present) Codex CLI, so
+panes track agent status and session ids. Safe to re-run: it MERGES, preserving
+unrelated hooks, deduping nex-managed ones (absolute-path and --agent variants
+included) and normalising stale matchers.
+
+Options:
+  --claude-dir <dir>   Claude Code config directory (default ~/.claude).
+  --codex-dir <dir>    Codex CLI config directory (default ~/.codex). Skipped
+                       when the directory does not exist.
+  --command <prefix>   What the hooks invoke (default: bare \`nex\` when this
+                       binary is on PATH, else its absolute path).
+  --link               Also symlink this CLI into the install directory.
+  --install-dir <dir>  Where --link puts the symlink (default /usr/local/bin,
+                       or \$NEX_INSTALL_DIR). Never uses sudo: an unwritable
+                       directory prints the command to run by hand.
+  --skill-source <dir> Directory holding the bundled nex-agentic SKILL.md
+                       (default: beside this binary; skipped when absent).
+  --dry-run            Report what would change; write nothing.
+  --json               Print one structured result object instead of progress.
+  -h, --help           Show this help.
+
+Writes five Claude hooks (UserPromptSubmit/Stop/Notification/SessionStart —
+matcher-less, so resumed sessions bind too — and SessionEnd) and four Codex
+hooks with --agent codex (Codex has no SessionEnd or Notification event;
+PermissionRequest carries the approval signal). An existing file is copied to
+<file>.nex-backup before it changes; a file that is not valid JSON is refused,
+never overwritten. The bundled nex-agentic skill is copied to
+<claude-dir>/skills/nex-agentic/ when this build carries one.
+
+Codex problems never fail the run: exit code follows the Claude half.
 
 `;
 

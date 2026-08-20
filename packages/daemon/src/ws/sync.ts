@@ -50,7 +50,7 @@ import {
     type WsSettingsSnapshot
 } from '@nex/protocol';
 
-import { formatIconString, parseIconString } from '@nex/core/codec';
+import { formatIconString, newUUID, parseIconString } from '@nex/core/codec';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
@@ -62,6 +62,31 @@ import {
     workspaceContainingVisiblePane
 } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, LabelColor } from '../store/types.js';
+import {
+    isDesktopCommand,
+    type DesktopChannel,
+    type DesktopCommand
+} from './desktop.js';
+import {
+    isPaneLifecycleCommand,
+    type PaneLifecycleChannel,
+    type PaneLifecycleCommand
+} from './panes.js';
+import { handleRepoCommand, isRepoCommand, type RepoChannel, type RepoCommand } from './repos.js';
+import {
+    FAVOURITE_COMMANDS,
+    WEB_BATCH_MESSAGE,
+    WEB_FAVOURITES_MESSAGE,
+    favouritesCommand,
+    webPaneGuiCommand
+} from './web-ui.js';
+import {
+    handleGraftUiCommand,
+    isGraftUiCommand,
+    type GraftChannel,
+    type GraftUiCommand
+} from './graft.js';
+import { isTerminalSearchCommand, type TerminalSearchChannel } from './search.js';
 import { parseGeometryRect } from '../webpane/geometry.js';
 import type { HostRegistration } from '../webpane/host.js';
 import type { WebPaneService } from '../webpane/service.js';
@@ -132,6 +157,36 @@ export interface SyncHubOptions {
     readonly webPanes?: WebPaneChannel | undefined;
     /** The pane header's restart button; absent = `restart-pane-agent` says "not available". */
     readonly agents?: AgentChannel | undefined;
+    /**
+     * M9 workspace inspector: the repo registry + association verbs (`ws/repos.ts`). Absent =
+     * they answer "repo commands are not available", which is what a daemon booted without a
+     * git service should say rather than pretending an association was written.
+     */
+    readonly repos?: RepoChannel | undefined;
+    /**
+     * The inspector's graft verbs (`ws/graft.ts`): the per-association toggle, the typed
+     * `alreadyActive` rejection the swap prompt reads, and orphan recover/dismiss. Absent =
+     * they answer "graft is not available", which is honest for a daemon composed without the
+     * graft engine.
+     */
+    readonly graftUi?: GraftChannel | undefined;
+    /**
+     * Terminal scrollback search (`ws/search.ts`) — the daemon side of ⌘F over a shell pane.
+     * Absent = `terminal-search` answers "terminal search is not available".
+     */
+    readonly search?: TerminalSearchChannel | undefined;
+    /**
+     * Reopen-closed-pane, create-scratchpad and reveal-path (`ws/panes.ts`). Absent = those
+     * three verbs answer "not available", which is what a daemon composed without a pane
+     * handler context should say rather than silently dropping the gesture.
+     */
+    readonly panes?: PaneLifecycleChannel | undefined;
+    /**
+     * The desktop gestures (`ws/desktop.ts`): the ⌘O picker relay, ⌘-click path opening, the
+     * external `$EDITOR` host and `restart-control-server`. Absent = those verbs answer
+     * "not available".
+     */
+    readonly desktop?: DesktopChannel | undefined;
     /**
      * M8 settings sync. Supplies the `welcome.settings` payload and backs the three
      * `settings-*` mutation verbs; absent = `welcome` carries no settings and the verbs answer
@@ -243,6 +298,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   set-group-icon       `group_id`, `icon`              → set-group-icon
  *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
+ *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
  *   add-label-preset     `name`, `color?`                → add-label-preset
  *   update-label-preset  `id`, `name?`, `color`          → update-label-preset
  *   remove-label-preset  `id`                            → remove-label-preset
@@ -268,7 +324,11 @@ export const WS_ONLY_COMMANDS = [
     'set-workspace-icon',
     'set-group-icon',
     'move-workspaces',
+    'create-group-for-workspaces',
+    'set-bulk-color',
+    'set-bulk-label',
     'clear-pane-status',
+    'set-pane-status',
     'add-label-preset',
     'update-label-preset',
     'remove-label-preset'
@@ -317,6 +377,8 @@ function presetsReply(store: NexDomainStore, extra: JsonObject): JsonObject {
 export interface WsOnlyCommandOptions {
     /** Epoch-ms clock for the actions that stamp one (`clear-pane-status`). */
     readonly now?: (() => number) | undefined;
+    /** Id source for the verbs that mint one (`create-group-for-workspaces`); tests inject. */
+    readonly uuid?: (() => string) | undefined;
 }
 
 export function handleWsOnlyCommand(
@@ -414,6 +476,66 @@ export function handleWsOnlyCommand(
         return { ok: true, workspace_ids: ids, group_id: groupID, index: index ?? null };
     }
 
+    if (command === 'create-group-for-workspaces') {
+        // §5.6 bulk "Group N Workspaces…" (WS-058). The wire's `group-create` cannot carry
+        // members — it is fire-and-forget and adding a field to it would be a CLI compatibility
+        // surface forever — so the GUI path is this verb, which dispatches the SAME
+        // `create-group` action with its `initialWorkspaceIDs` so the group and its membership
+        // land in one atomic change (never create-then-move, which the sidebar would render
+        // as two jumps).
+        const name = typeof payload['name'] === 'string' ? payload['name'].trim() : '';
+        if (name === '') return failure('create-group-for-workspaces requires a non-empty name');
+        const raw = payload['workspace_ids'];
+        const requested = Array.isArray(raw)
+            ? raw.filter((entry): entry is string => typeof entry === 'string')
+            : [];
+        if (requested.length === 0) return failure('create-group-for-workspaces requires workspace_ids');
+        const unknown = requested.find((id) => workspaceByID(state, id) === null);
+        if (unknown !== undefined) return failure(`no workspace matches '${unknown}'`);
+        const color =
+            typeof payload['color'] === 'string' ? parseWorkspaceColor(payload['color'].trim()) : undefined;
+        const id = (options.uuid ?? newUUID)();
+        store.dispatch({
+            type: 'create-group',
+            id,
+            name,
+            now: (options.now ?? Date.now)(),
+            initialWorkspaceIDs: requested,
+            ...(color === undefined ? {} : { color })
+        });
+        const created = groupByID(store.getState(), id);
+        return {
+            ok: true,
+            group_id: id,
+            name,
+            workspace_ids: created?.childOrder ?? requested
+        };
+    }
+
+    if (command === 'set-bulk-color' || command === 'set-bulk-label') {
+        // The multi-select context menu (§5.6 bulk variant, WS-056/WS-057). ONE dispatch for
+        // the whole selection so N rows recolour/relabel in a single delta, exactly as the
+        // Swift `setBulkColor` / `setBulkLabel` reducers do.
+        const raw = payload['workspace_ids'];
+        const ids = Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === 'string') : [];
+        if (ids.length === 0) return failure(`${command} requires workspace_ids`);
+        const unknown = ids.find((id) => workspaceByID(state, id) === null);
+        if (unknown !== undefined) return failure(`no workspace matches '${unknown}'`);
+        if (command === 'set-bulk-color') {
+            const color = parseWorkspaceColor(typeof payload['color'] === 'string' ? payload['color'].trim() : '');
+            if (color === undefined) return failure('set-bulk-color requires a known color');
+            store.dispatch({ type: 'set-bulk-color', ids, color });
+            return { ok: true, workspace_ids: ids, color };
+        }
+        const label = typeof payload['label'] === 'string' ? payload['label'].trim() : '';
+        if (label === '') return failure('set-bulk-label requires label');
+        // Tri-state menus send the state they want, never a per-row toggle: `apply` is what
+        // every selected workspace ends up at.
+        const apply = payload['apply'] === true;
+        store.dispatch({ type: 'set-bulk-label', ids, label, apply });
+        return { ok: true, workspace_ids: ids, label, apply };
+    }
+
     if (command === 'clear-pane-status') {
         const paneID = text(payload['pane_id']);
         if (paneID === undefined) return failure('clear-pane-status requires pane_id');
@@ -425,6 +547,36 @@ export function handleWsOnlyCommand(
             type: 'pane-agent-event',
             paneID,
             event: { type: 'clearPaneStatus' },
+            now: (options.now ?? Date.now)(),
+            workspaceID: found.workspaceID
+        });
+        const after = findPaneAnywhere(store.getState(), paneID);
+        return {
+            ok: true,
+            pane_id: paneID,
+            workspace_id: found.workspaceID,
+            status: after?.pane.status ?? 'idle'
+        };
+    }
+
+    if (command === 'set-pane-status') {
+        const paneID = text(payload['pane_id']);
+        if (paneID === undefined) return failure('set-pane-status requires pane_id');
+        const status = text(payload['status']);
+        if (status !== 'idle' && status !== 'running' && status !== 'waitingForInput') {
+            return failure("set-pane-status requires status 'idle', 'running' or 'waitingForInput'");
+        }
+        const found = findPaneAnywhere(state, paneID);
+        if (found === null) return failure(`no pane matches '${paneID}'`);
+        // The pane header's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The whole
+        // rule — shell-only, the elapsed clock arms only on a FRESH transition into running,
+        // and the background count is zeroed so no stale "N running" lingers — lives in
+        // `core/src/agent/machine.ts`; this is pure routing, and a non-shell pane is a complete
+        // no-op there rather than an error here.
+        store.dispatch({
+            type: 'pane-agent-event',
+            paneID,
+            event: { type: 'setPaneStatus', status },
             now: (options.now ?? Date.now)(),
             workspaceID: found.workspaceID
         });
@@ -581,6 +733,18 @@ export type WebPaneChannel = Pick<
     | 'console'
     | 'notifyGeometry'
     | 'call'
+    // The GUI-only halves (§10 find, §4.2 zoom, §12 batch pickup, §14 favourites): no CLI verb
+    // exists for any of them, so the client drives them straight over this channel.
+    | 'runFind'
+    | 'retargetFind'
+    | 'find'
+    | 'batch'
+    | 'armBatch'
+    | 'publishBatch'
+    | 'focusBatchItem'
+    | 'sendBatch'
+    | 'cancelBatch'
+    | 'favourites'
 >;
 
 /**
@@ -592,7 +756,29 @@ export type WebPaneChannel = Pick<
 export const WEB_COMMANDS = [
     'web-console-subscribe',
     'web-console-unsubscribe',
-    'web-devtools'
+    'web-devtools',
+    // §10 find-in-page and §4.2 page zoom. The host has always answered `find` and `zoom` as
+    // RPCs; these are the verbs that finally reach them, and both are GUI-only in the Swift app
+    // too (⌘F and the ⌘= / ⌘- / ⌘0 layer — there is no `nex web find`).
+    'web-find',
+    'web-zoom',
+    // §12 batch "element pickup". All pane-scoped, all direct manipulation.
+    'web-batch-state',
+    'web-batch-toggle',
+    'web-batch-cancel',
+    'web-batch-send',
+    'web-batch-remove',
+    'web-batch-comment',
+    'web-batch-focus',
+    // §13.2's write half — the storage panel's add/edit form.
+    'web-cookie-set',
+    // §14 favourites. The only web verbs with NO pane: they are a global list, so they are
+    // matched before the `pane_id` guard.
+    'web-favourites-list',
+    'web-favourite-toggle',
+    'web-favourite-remove',
+    'web-favourite-rename',
+    'web-favourite-move'
 ] as const;
 export type WebCommand = (typeof WEB_COMMANDS)[number];
 
@@ -600,12 +786,34 @@ export function isWebCommand(command: string): command is WebCommand {
     return (WEB_COMMANDS as readonly string[]).includes(command);
 }
 
+/**
+ * The GUI-only web verbs' bodies live in `./web-ui.ts` — find, zoom, batch pickup, favourites
+ * and the cookie write are a feature's vocabulary rather than the hub's, and keeping them out of
+ * here is what stops this file growing a second time the size of the protocol it serves.
+ */
+export {
+    FAVOURITE_COMMANDS,
+    WEB_BATCH_MESSAGE,
+    WEB_FAVOURITES_MESSAGE,
+    favouritesCommand,
+    webPaneGuiCommand
+};
+
 /** The client → daemon report that carries an embedded web pane's page-area rect. */
 export const WEB_GEOMETRY_REPORT_MESSAGE = 'web-geometry-report';
 
 /** Client → daemon "take the user to this pane", and the daemon's fan-out of it. */
 export const REVEAL_REQUEST_MESSAGE = 'reveal-request';
 export const REVEAL_PANE_MESSAGE = 'reveal-pane';
+
+/**
+ * Shell → daemon → client: a native menu item whose behaviour the CLIENT owns (⌘O's picker
+ * entry point, "Nex Help"). The mirror image of `reveal-request`, for the same reason — the
+ * Electron shell has no preload, so the daemon is the only channel between the main process and
+ * the page (`ws/desktop.ts` documents both directions).
+ */
+export const MENU_REQUEST_MESSAGE = 'menu-request';
+export const MENU_COMMAND_MESSAGE = 'menu-command';
 
 /** The message type carrying one streamed console line to a subscribed client. */
 export const WEB_CONSOLE_LINE_MESSAGE = 'web-console-line';
@@ -641,6 +849,8 @@ export interface SettingsChannel {
     resetKeybindings(action: string | null): WsSettingsSnapshot;
     setGeneralSetting(key: string, value: string): WsSettingsSnapshot;
     setProfiles(profiles: readonly WsProfile[]): WsSettingsSnapshot;
+    /** The GHOSTTY file's writer (`WS_WRITABLE_GHOSTTY_KEYS`); `null` removes the key. */
+    setGhosttySetting(key: string, value: string | null): WsSettingsSnapshot;
 }
 
 /**
@@ -697,6 +907,28 @@ export function handleSettingsCommand(
             const profiles = decodeProfilesPayload(payload['profiles']);
             if (profiles === null) return failure('set-profiles requires profiles: [{name, env}]');
             return { ok: true, settings: settings.setProfiles(profiles) as unknown as JsonObject };
+        }
+        if (command === 'set-ghostty-setting') {
+            const ghosttyKey = text(payload['key']);
+            if (ghosttyKey === undefined) return failure('set-ghostty-setting requires key');
+            // `null` is MEANINGFUL here (remove the key), so it is not folded into the
+            // "requires value" guard the way it is for `set-general-setting`; only an absent
+            // field or a non-scalar is an error.
+            const rawValue = payload['value'];
+            if (rawValue === undefined) return failure('set-ghostty-setting requires value');
+            const ghosttyValue =
+                rawValue === null
+                    ? null
+                    : typeof rawValue === 'string'
+                      ? rawValue
+                      : typeof rawValue === 'number' || typeof rawValue === 'boolean'
+                        ? String(rawValue)
+                        : undefined;
+            if (ghosttyValue === undefined) return failure('set-ghostty-setting requires value');
+            return {
+                ok: true,
+                settings: settings.setGhosttySetting(ghosttyKey, ghosttyValue) as unknown as JsonObject
+            };
         }
         const key = text(payload['key']);
         if (key === undefined) return failure('set-general-setting requires key');
@@ -901,6 +1133,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 case REVEAL_REQUEST_MESSAGE:
                     this.revealRequest(parsed);
+                    return;
+                case MENU_REQUEST_MESSAGE:
+                    this.menuRequest(parsed);
                     return;
                 case 'ping': {
                     const id = text(parsed['id']);
@@ -1227,6 +1462,24 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         }
 
         /**
+         * `menu-request` → a `menu-command` fan-out (the shell's native menu bar).
+         *
+         * Same fan-out-and-let-the-client-filter rule as `reveal-request`: `windowID` scoping is
+         * the client's own check, so a browser attached from another machine ignores a ⌘O raised
+         * in someone's desktop window.
+         */
+        private menuRequest(message: Record<string, unknown>): void {
+            const command = text(message['command']);
+            if (command === undefined) return;
+            const windowID = text(message['windowID']);
+            revealPane({
+                type: MENU_COMMAND_MESSAGE,
+                command,
+                ...(windowID === undefined ? {} : { windowID })
+            });
+        }
+
+        /**
          * A client says "this is the workspace I am looking at".
          *
          * The per-connection value and the daemon's persisted `lastActiveWorkspaceID` are
@@ -1315,6 +1568,26 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.send({ type: 'command-reply', id, reply });
                     return;
                 }
+                if (name !== undefined && isRepoCommand(name)) {
+                    this.repoCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isGraftUiCommand(name)) {
+                    this.graftCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isTerminalSearchCommand(name)) {
+                    this.searchCommand(id, payload);
+                    return;
+                }
+                if (name !== undefined && isPaneLifecycleCommand(name)) {
+                    this.paneLifecycleCommand(id, name, payload);
+                    return;
+                }
+                if (name !== undefined && isDesktopCommand(name)) {
+                    this.desktopCommand(id, name, payload);
+                    return;
+                }
             }
 
             const decoded = decodeWireObject(payload);
@@ -1348,6 +1621,123 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
 
             // Fire-and-forget verbs get an acknowledgement so the client's promise settles.
             if (!answered) this.send({ type: 'command-reply', id, reply: { ok: true } });
+        }
+
+        // ── inspector repo verbs (M9) ───────────────────────────────────────────────
+
+        /**
+         * The five `repos.ts` verbs. Async (every one shells out to git), so the reply lands
+         * through `command-reply` when the promise settles — the content verbs' shape.
+         */
+        private repoCommand(id: string, command: RepoCommand, payload: Record<string, unknown>): void {
+            const channel = options.repos;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('repo commands are not available') });
+                return;
+            }
+            void handleRepoCommand(channel, command, payload)
+                .then((reply) => {
+                    this.send({ type: 'command-reply', id, reply });
+                })
+                .catch((error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                });
+        }
+
+        // ── inspector graft verbs ───────────────────────────────────────────────────
+
+        /**
+         * `ws/graft.ts`'s five verbs. Async like the repo family (start/stop drive git and a
+         * recursive watcher), so the reply lands through `command-reply` when it settles.
+         */
+        private graftCommand(id: string, command: GraftUiCommand, payload: Record<string, unknown>): void {
+            const channel = options.graftUi;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('graft is not available') });
+                return;
+            }
+            void handleGraftUiCommand(channel, command, payload)
+                .then((reply) => {
+                    this.send({ type: 'command-reply', id, reply });
+                })
+                .catch((error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                });
+        }
+
+        // ── terminal search ─────────────────────────────────────────────────────────
+
+        /**
+         * `terminal-search`. Async for the same reason the content verbs are: the buffer read
+         * flushes `@xterm/headless`'s write queue first, so a needle typed a heartbeat after
+         * the output it looks for still finds it.
+         */
+        private searchCommand(id: string, payload: Record<string, unknown>): void {
+            const channel = options.search;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure('terminal search is not available') });
+                return;
+            }
+            void channel.run(payload).then(
+                (reply) => {
+                    this.send({ type: 'command-reply', id, reply });
+                },
+                (error: unknown) => {
+                    report(error, 'ws-command terminal-search');
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                }
+            );
+        }
+
+        // ── reopen / scratchpad / reveal ────────────────────────────────────────────
+
+        private paneLifecycleCommand(
+            id: string,
+            command: PaneLifecycleCommand,
+            payload: Record<string, unknown>
+        ): void {
+            const channel = options.panes;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
+                return;
+            }
+            let reply: JsonObject;
+            try {
+                reply = channel.run(command, payload);
+            } catch (error) {
+                report(error, `ws-command ${command}`);
+                reply = { ...errorReply('handler failed') };
+            }
+            this.send({ type: 'command-reply', id, reply });
+        }
+
+        /**
+         * The desktop gestures (`ws/desktop.ts`): the ⌘O picker relay, ⌘-click path opening,
+         * `$EDITOR` hosting and the control-socket rebind. Asynchronous — a shell probe and a
+         * listener rebind both take longer than a message handler — so the reply settles when
+         * the promise does, like the content verbs.
+         */
+        private desktopCommand(
+            id: string,
+            command: DesktopCommand,
+            payload: Record<string, unknown>
+        ): void {
+            const channel = options.desktop;
+            if (channel === undefined) {
+                this.send({ type: 'command-reply', id, reply: failure(`${command} is not available`) });
+                return;
+            }
+            void channel.run(command, payload).then(
+                (reply) => {
+                    this.send({ type: 'command-reply', id, reply });
+                },
+                (error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    this.send({ type: 'command-reply', id, reply: { ...errorReply('handler failed') } });
+                }
+            );
         }
 
         // ── agent restart ───────────────────────────────────────────────────────────
@@ -1515,12 +1905,35 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 this.send({ type: 'command-reply', id, reply: failure('web panes are not available') });
                 return;
             }
+            const settle = (reply: JsonObject): void => {
+                this.send({ type: 'command-reply', id, reply });
+            };
+
+            // §14 favourites are a global list, not a pane's: matched before the pane guard.
+            if (FAVOURITE_COMMANDS.has(command)) {
+                settle(favouritesCommand(channel, command, payload));
+                return;
+            }
+
             const paneID = text(payload['pane_id']);
             if (paneID === undefined) {
                 this.send({
                     type: 'command-reply',
                     id,
                     reply: failure(`${command} requires pane_id`)
+                });
+                return;
+            }
+
+            if (
+                command === 'web-find' ||
+                command === 'web-zoom' ||
+                command === 'web-cookie-set' ||
+                command.startsWith('web-batch-')
+            ) {
+                void webPaneGuiCommand(channel, store, command, paneID, payload).then(settle, (error: unknown) => {
+                    report(error, `ws-command ${command}`);
+                    settle(failure('handler failed'));
                 });
                 return;
             }

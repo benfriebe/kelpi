@@ -46,6 +46,7 @@ import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
 import { clampInspectPayload, screenshotFileName } from './caps.js';
 import { createWebHostClient, type WebHostClient } from './client.js';
+import { chordCommand } from './keys.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, parsePaneGeometry, type WindowMetrics } from './geometry.js';
@@ -137,6 +138,20 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,
         onError,
+        /**
+         * §7.3's other half: the chords the web-pane key layer owns are taken from the page and
+         * replayed into the shell window's renderer, which is the process that implements them.
+         * Without this, clicking a page permanently disables ⌘F / ⌘L / ⌘T for that pane — the
+         * page's renderer has keyboard focus and Nex's never sees the keystroke.
+         */
+        forwardChord: (chord) => {
+            // NOT `webContents.sendInputEvent`: a synthetic OS key is delivered to whichever
+            // widget the browser considers focused, which — by construction, here — is the page
+            // that just gave the chord up. It would bounce straight back. The daemon's
+            // `menu-request` relay reaches the page in this window directly, and is the same
+            // channel the native menu bar already uses.
+            client?.sendWindowCommand(chordCommand(chord));
+        },
         // A destroyed view must leave the embed controller's books BEFORE Electron tears it
         // down, or the next placement would try to remove a child that no longer exists.
         beforeDestroy: (tab) => {
@@ -164,6 +179,12 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                 // it can reach a PTY, §11.6) — this pass only stops a page's multi-megabyte
                 // `outerHTML` from crossing the socket to be clamped at the other end.
                 client?.sendEvent('inspect', paneID, tabID, clampInspectPayload(payload) as JsonObject);
+            },
+            batchMarker: (paneID, tabID, payload) => {
+                // Intents only (`{id}` badge click, `{commentChanged}`, `{dismiss}`, `{remove}`):
+                // small by construction, and the daemon re-validates every field against the
+                // batch it owns before anything changes.
+                client?.sendEvent('batch-marker', paneID, tabID, payload as JsonObject);
             },
             tabClosed: (paneID, tabID) => {
                 // The daemon drops the tab and re-activates the left neighbour; our registry

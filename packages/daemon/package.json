@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./store": "./src/store/index.ts",
+    "./git": "./src/git/index.ts",
     "./lifecycle": "./src/lifecycle/index.ts",
     "./boot/port": "./src/boot/port.ts"
   },

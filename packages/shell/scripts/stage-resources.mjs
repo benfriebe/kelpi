@@ -33,7 +33,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,16 @@ export const DEFAULT_STAGING_DIR = path.join(packageRoot, 'out', 'staging');
 
 const DAEMON_STAGER = path.join(repoRoot, 'packages', 'daemon', 'scripts', 'stage-payload.mjs');
 const CLIENT_DIST = path.join(repoRoot, 'packages', 'client', 'dist');
+const CLI_DIST = path.join(repoRoot, 'packages', 'cli', 'dist');
+
+/** The app's version, stamped into the CLI launcher so `nex --version` agrees with the app. */
+function packageVersion() {
+    try {
+        return JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
+    } catch {
+        return undefined;
+    }
+}
 
 function helpers() {
     const compiled = path.join(packageRoot, 'dist', 'packaging.cjs');
@@ -123,6 +133,43 @@ export function stageNode({ stagingDir, arch, binary = process.env['NEX_NODE_BIN
     return { path: target, source: binary, ...probe, bytes: statSync(target).size };
 }
 
+// ── the CLI payload ─────────────────────────────────────────────────────────────────
+
+/**
+ * `cli/` — the `nex` bundle plus the POSIX-sh launcher `/usr/local/bin/nex` points at.
+ *
+ * It ships OUTSIDE the asar for the same reason the daemon does: that symlink is exec'd by a
+ * plain shell, and neither `sh` nor `node` can read through an Electron archive. The launcher
+ * text comes from `src/packaging.ts` (`cliLauncherScript`) so the marker the app's
+ * install-attribution looks for and the script carrying it are one definition — see
+ * `src/cli-install.ts`.
+ */
+export function stageCli({ stagingDir, cliDist = CLI_DIST, version }) {
+    const { cliLauncherScript } = helpers();
+    const bundle = path.join(cliDist, 'nex.js');
+    if (!existsSync(bundle)) {
+        throw new Error(
+            `the CLI is not built (${bundle} is missing). Run \`pnpm --filter @nex/cli build\` first — ` +
+                'a packaged app without it could not install the `nex` command.'
+        );
+    }
+    const outDir = path.join(stagingDir, 'cli');
+    rmSync(outDir, { recursive: true, force: true });
+    mkdirSync(outDir, { recursive: true });
+    cpSync(bundle, path.join(outDir, 'nex.js'), { dereference: true });
+    const map = `${bundle}.map`;
+    if (existsSync(map)) cpSync(map, path.join(outDir, 'nex.js.map'), { dereference: true });
+    const launcher = path.join(outDir, 'nex');
+    writeFileSync(launcher, cliLauncherScript(version === undefined ? {} : { version }), 'utf8');
+    chmodSync(launcher, 0o755);
+    // `skills/` rides along beside the bundle: `nex install-hooks` looks for the nex-agentic
+    // SKILL.md there first (`packages/cli/src/install/skill.ts`), which is how the packaged app
+    // ships the skill the Swift bundle carried in Contents/Resources/skills.
+    const skills = path.join(path.dirname(cliDist), 'resources', 'skills');
+    if (existsSync(skills)) cpSync(skills, path.join(outDir, 'skills'), { recursive: true, dereference: true });
+    return { dir: outDir, launcher, bundle: path.join(outDir, 'nex.js'), skills: path.join(outDir, 'skills') };
+}
+
 // ── the whole thing ─────────────────────────────────────────────────────────────────
 
 export function stageResources({
@@ -134,9 +181,10 @@ export function stageResources({
     mkdirSync(stagingDir, { recursive: true });
     const daemon = stageDaemon({ stagingDir, platform, arch });
     const client = stageClient({ stagingDir });
+    const cli = stageCli({ stagingDir, version: packageVersion() });
     const node = stageNode({ stagingDir, arch });
     const icons = icon ? writeAppIcon(stagingDir) : undefined;
-    return { stagingDir, daemon, client, node, ...(icons === undefined ? {} : { icon: icons }) };
+    return { stagingDir, daemon, client, cli, node, ...(icons === undefined ? {} : { icon: icons }) };
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +208,7 @@ if (invokedDirectly) {
             `staged resources → ${staged.stagingDir}\n` +
                 `  daemon/  ${staged.daemon.entry}\n` +
                 `  client/  ${staged.client.dir}\n` +
+                `  cli/     ${staged.cli.launcher}\n` +
                 `  node     ${staged.node.version} ${staged.node.arch} (${String(staged.node.bytes)} bytes, from ${staged.node.source})\n` +
                 (staged.icon === undefined ? '' : `  icon     ${staged.icon.icns}\n`)
         );

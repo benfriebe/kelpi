@@ -163,3 +163,71 @@ describe('swapGlobalHotkey', () => {
         expect(result).toMatchObject({ ok: false, accelerator: 'Control+Alt+Space', error: 'boom' });
     });
 });
+
+/**
+ * SET-081's shell half: re-registering when the daemon says the config changed.
+ *
+ * `main.ts` wires `StatusHost.settingsChanged` to `registerGlobalHotkey()`, which is a re-READ
+ * followed by a staged swap. That function itself needs Electron, so what is asserted here is
+ * the two properties that make wiring it to a broadcast correct:
+ *
+ *   1. a re-read after the file changes yields the NEW accelerator (the shell is not caching
+ *      the launch-time value anywhere);
+ *   2. re-registering the same accelerator touches nothing — so firing on every settings write,
+ *      including the many that have nothing to do with hotkeys, costs one file read.
+ */
+describe('re-reading after a settings write', () => {
+    function registrar(): HotkeyRegistrar & { registered: string[]; unregistered: string[] } {
+        const registered: string[] = [];
+        const unregistered: string[] = [];
+        return {
+            registered,
+            unregistered,
+            register: (accelerator) => (registered.push(accelerator), true),
+            unregister: (accelerator) => void unregistered.push(accelerator),
+            isRegistered: () => false
+        };
+    }
+
+    it('picks up a hotkey the Settings recorder just wrote', () => {
+        const file = configFile('focus-follows-mouse = true\n');
+        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBeNull();
+
+        // What `set-general-setting global-hotkey = …` leaves on disk.
+        fs.writeFileSync(file, 'focus-follows-mouse = true\nglobal-hotkey = ctrl+alt+shift+k\n');
+        const after = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        expect(after.configString).toBe('ctrl+alt+shift+k');
+        expect(after.accelerator).toBe('Control+Alt+Shift+K');
+    });
+
+    it('picks up the ✕ clearing it', () => {
+        const file = configFile('global-hotkey = ctrl+alt+space\n');
+        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBe('Control+Alt+Space');
+        fs.writeFileSync(file, 'global-hotkey = none\n');
+        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBeNull();
+    });
+
+    it('is free to fire on a settings write that changed something else', () => {
+        const file = configFile('global-hotkey = ctrl+alt+space\n');
+        const registry = registrar();
+        const first = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        let current = swapGlobalHotkey(registry, null, first.accelerator, () => undefined).accelerator;
+        expect(registry.registered).toEqual(['Control+Alt+Space']);
+
+        // An unrelated key changes; the broadcast fires; the shell re-reads and re-swaps.
+        fs.writeFileSync(file, 'global-hotkey = ctrl+alt+space\nshow-system-stats = false\n');
+        const second = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        current = swapGlobalHotkey(registry, current, second.accelerator, () => undefined).accelerator;
+        expect(current).toBe('Control+Alt+Space');
+        // Nothing was registered or unregistered a second time.
+        expect(registry.registered).toEqual(['Control+Alt+Space']);
+        expect(registry.unregistered).toEqual([]);
+    });
+
+    it('honours the repress flag changing under it', () => {
+        const file = configFile('global-hotkey = ctrl+alt+space\n');
+        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(true);
+        fs.writeFileSync(file, 'global-hotkey = ctrl+alt+space\nglobal-hotkey-hide-on-repress = false\n');
+        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(false);
+    });
+});

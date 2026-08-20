@@ -13,6 +13,8 @@
 
 import {
     memo,
+    useEffect,
+    useRef,
     useState,
     type KeyboardEvent,
     type MouseEvent,
@@ -230,6 +232,15 @@ export interface PaneHeaderProps extends PaneActions {
     /** Pins the elapsed clock (tests); omit to subscribe to the shared 1 s ticker. */
     readonly nowSeconds?: number | undefined;
     readonly height?: number | undefined;
+    /**
+     * Bumped to open the inline rename field from OUTSIDE the header — the context menu's
+     * "Rename…" (TERM-106), which in the Swift app raised a sheet and here reuses the field
+     * that is already the port's rename affordance (TERM-112's accepted divergence).
+     *
+     * A counter rather than a boolean, so asking twice in a row re-opens the field after the
+     * first edit was committed.
+     */
+    readonly renameToken?: number | undefined;
     /** The grid's pane-move drag hook (shell-ui.md §4.3). */
     readonly onHeaderPointerDown?: ((paneID: string, event: PointerEvent<HTMLElement>) => void) | undefined;
 }
@@ -245,6 +256,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         homeDirectory = '',
         nowSeconds,
         height = PANE_HEADER_HEIGHT,
+        renameToken = 0,
         onHeaderPointerDown,
         onFocusPane,
         onClosePane,
@@ -271,6 +283,15 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const renaming = renameDraft !== null;
 
     const startRename = (): void => setRenameDraft(pane.label ?? '');
+
+    // The context menu's "Rename…" reaches the field through a bumped token; the effect runs
+    // only on a CHANGE, so a re-render caused by an agent tick can never re-open it.
+    const lastRenameToken = useRef(renameToken);
+    useEffect(() => {
+        if (renameToken === lastRenameToken.current) return;
+        lastRenameToken.current = renameToken;
+        if (renameToken > 0) setRenameDraft(pane.label ?? '');
+    }, [renameToken, pane.label]);
 
     const commitRename = (): void => {
         if (renameDraft === null) return;

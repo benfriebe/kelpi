@@ -19,7 +19,7 @@
 
 import { session, type Session } from 'electron';
 
-import type { CookieRecord, PaneStorage } from './dispatch.js';
+import type { CookieRecord, CookieWrite, PaneStorage } from './dispatch.js';
 
 /** The shared persistent store for non-private panes. */
 export const PERSISTENT_PARTITION = 'persist:nex-web';
@@ -108,6 +108,43 @@ export function createPaneSessions(options: PaneSessionOptions = {}): PaneSessio
             } catch (error) {
                 report(error, 'clear-cache');
             }
+        },
+
+        /**
+         * WEB-052: delete the ORIGINAL record first, then set the new one. A rename otherwise
+         * leaves a stale twin, because `cookies.set` keys on (name, domain, path) and a changed
+         * name simply writes a second cookie beside the old one.
+         *
+         * `httpOnly` rides through an edit but is not offered in the form; `secure`/`httpOnly`
+         * are omitted entirely when off, mirroring the Swift panel's write.
+         */
+        async set(paneID, cookie: CookieWrite, original) {
+            const store = sessionOf(paneID);
+            if (store === null) throw new Error('web pane has no storage yet');
+            if (original !== undefined && original.name !== '') {
+                try {
+                    await store.cookies.remove(
+                        cookieURL({
+                            domain: original.domain,
+                            path: original.path ?? cookie.path,
+                            secure: cookie.isSecure
+                        }),
+                        original.name
+                    );
+                } catch (error) {
+                    report(error, 'cookies-remove-original');
+                }
+            }
+            await store.cookies.set({
+                url: cookieURL({ domain: cookie.domain, path: cookie.path, secure: cookie.isSecure }),
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path,
+                ...(cookie.isSecure ? { secure: true } : {}),
+                ...(cookie.isHttpOnly ? { httpOnly: true } : {}),
+                ...(cookie.expires === undefined ? {} : { expirationDate: cookie.expires })
+            });
         },
 
         async remove(paneID, filter) {

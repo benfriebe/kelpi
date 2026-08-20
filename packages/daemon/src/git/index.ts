@@ -35,6 +35,24 @@ export {
     sweepGraftTempIndexes
 } from './service.js';
 
+/** Settings ▸ Repositories' "Scan Directory" walk (§GIT-066). */
+export { REPO_SCAN_MAX_DEPTH, scanForRepos } from './scan.js';
+export type { ScanForReposOptions, ScannedRepo } from './scan.js';
+
+/** Repo auto-detect: auto-link on a pane's pwd change, auto-unlink + GC (§GIT-074…§GIT-081). */
+export {
+    AUTO_LINK_DEBOUNCE_MS,
+    AUTO_UNLINK_DEBOUNCE_MS,
+    createRepoAutoDetect,
+    isPathInside
+} from './autodetect.js';
+export type {
+    AutoDetectGit,
+    AutoDetectStore,
+    CreateRepoAutoDetectOptions,
+    RepoAutoDetectService
+} from './autodetect.js';
+
 export {
     describeRepoState,
     NOTHING_TO_STASH,

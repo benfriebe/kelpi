@@ -41,9 +41,30 @@ export {
     triggersForAction
 } from './bindings.js';
 export type { KeyBinding, KeyBindingMap, KeybindOverride } from './bindings.js';
-export { DEFAULT_GENERAL_SETTINGS, parseGeneralSettings } from './general.js';
+export {
+    DEFAULT_GENERAL_SETTINGS,
+    DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
+    parseGeneralSettings
+} from './general.js';
 export type { GeneralSettings } from './general.js';
 export { parseKeybindOverrides } from './keybinds.js';
 export { parseProfiles, serializeProfileLines } from './profiles.js';
 export type { ParseProfilesOptions, Profile } from './profiles.js';
 export { setGeneralSetting, writeKeybindings, writeProfiles } from './write.js';
+export {
+    DEFAULT_CHROME_SETTINGS,
+    SYSTEM_STAT_IDS,
+    parseChromeColors,
+    parseChromeHex,
+    parseChromeSettings,
+    parseSystemStatIDs,
+    serializeChromeColors,
+    serializeSystemStatIDs
+} from './chrome.js';
+export type {
+    ChromeAppearancePreference,
+    ChromeSettings,
+    SparklineStyle,
+    SystemStatID
+} from './chrome.js';
+export { ghosttyColorValue, ghosttyFontFamilyValue, setGhosttySetting } from './ghostty-write.js';

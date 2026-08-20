@@ -36,6 +36,15 @@ export interface PtySpawnOptions {
   readonly rows: number;
   /** Login shell resolved by the caller; undefined = user's default shell. */
   readonly shell?: string | undefined;
+  /**
+   * A command to host INSTEAD of an interactive shell (CONT-081/CONT-088: `$EDITOR <file>`).
+   *
+   * The manager runs it as `<shell> -c '<command>'`, the same contract libghostty gives
+   * `ghostty_surface_config_s.command` — so the string the Swift app persisted in
+   * `Pane.externalEditorCommand` runs here unchanged. The PTY exits when the command does, and
+   * that exit is what returns a markdown pane to preview (CONT-091).
+   */
+  readonly command?: string | undefined;
 }
 
 export interface PtyManager {

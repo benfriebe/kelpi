@@ -13,6 +13,10 @@
  * │  └─ node_modules/node-pty stage-payload.mjs owns everything under here.)
  * ├─ client/                 the built web UI, handed to the daemon as NEXD_CLIENT_DIR
  * │  └─ index.html
+ * ├─ cli/                    the `nex` CLI, so the app can install it (`./cli-install.ts`)
+ * │  ├─ nex                  …a POSIX-sh launcher: it is what `/usr/local/bin/nex` points at,
+ * │  ├─ nex.js                and it execs the bundle under the app's own `node`, so a machine
+ * │  └─ nex.js.map            with no Node on PATH still gets a working CLI.
  * └─ node                    a Node 24 runtime for the daemon (NOT Electron — stack.md's
  *                            "do not use ELECTRON_RUN_AS_NODE")
  * ```
@@ -30,9 +34,16 @@ export const RESOURCE_NAMES = {
     daemon: 'daemon',
     /** The built web client (`index.html` + assets). */
     client: 'client',
+    /** The `nex` CLI payload (`nex` launcher + `nex.js` bundle). */
+    cli: 'cli',
     /** The bundled Node runtime that runs the daemon. */
     node: 'node'
 } as const;
+
+/** The launcher `/usr/local/bin/nex` is symlinked to (`./cli-install.ts`). */
+export const CLI_LAUNCHER_NAME = 'nex';
+/** The esbuild bundle the launcher executes. */
+export const CLI_BUNDLE_NAME = 'nex.js';
 
 /** The daemon entry script inside a packaged app (`daemon.ts` looks here third). */
 export function packagedDaemonEntry(resourcesPath: string): string {
@@ -42,6 +53,17 @@ export function packagedDaemonEntry(resourcesPath: string): string {
 /** The client build inside a packaged app — what the shell hands the daemon as its client dir. */
 export function packagedClientDir(resourcesPath: string): string {
     return path.join(resourcesPath, RESOURCE_NAMES.client);
+}
+
+/** The CLI launcher inside a packaged app — the symlink target `./cli-install.ts` installs. */
+export function packagedCliLauncher(resourcesPath: string): string {
+    return path.join(resourcesPath, RESOURCE_NAMES.cli, CLI_LAUNCHER_NAME);
+}
+
+/** True when `resourcesPath` carries a CLI payload we could install. */
+export function hasCliPayload(resourcesPath: string | undefined): boolean {
+    if (resourcesPath === undefined || resourcesPath.length === 0) return false;
+    return existsSync(packagedCliLauncher(resourcesPath));
 }
 
 /** The bundled Node runtime inside a packaged app (`resolveNodeBinary` looks here second). */

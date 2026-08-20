@@ -43,6 +43,16 @@ export interface MarkdownPaneProps {
     readonly openLink?: LinkOpener | undefined;
     /** Bump to open the preview's find bar (the app's `toggle_search` binding, §3.13). */
     readonly findToken?: number | undefined;
+    /**
+     * CONT-081 — "Open in $EDITOR". Present = the affordance is drawn over the preview.
+     *
+     * It is a separate gesture from ⌘E rather than a hijack of it: the Swift app preferred the
+     * external editor whenever one resolved, but this port ships a real built-in editor the
+     * whole audit exercises, and silently swapping it for `vim` on a machine where `$EDITOR`
+     * happens to be set would be a worse surprise than an extra button. Both routes end in the
+     * same pane state; only the entry points differ (noted in docs/PARITY.md).
+     */
+    readonly onOpenExternalEditor?: ((paneID: string) => void) | undefined;
 }
 
 export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
@@ -77,7 +87,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
         );
     }
 
-    return (
+    const frame = (
         <ContentFrame
             paneID={paneID}
             title={`markdown preview ${paneID}`}
@@ -98,5 +108,30 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             // "Failed to load file" blockquote, so the affordance is simply absent.
             copySource={state.loaded ? state.text : null}
         />
+    );
+
+    if (props.onOpenExternalEditor === undefined) return frame;
+    return (
+        <div className="relative h-full w-full">
+            {frame}
+            <button
+                type="button"
+                data-testid={`open-external-editor-${paneID}`}
+                aria-label="Open in $EDITOR"
+                title="Open this file in your $VISUAL / $EDITOR, hosted in this pane"
+                className="absolute right-2 bottom-2 z-10 rounded text-[11px]"
+                style={{
+                    padding: '3px 8px',
+                    // Inline, like the terminal retry chip: `styles.css` resets `button` outside
+                    // any cascade layer, so an unlayered `padding: 0` would beat Tailwind's.
+                    border: '1px solid var(--nex-border, #24242B)',
+                    color: 'var(--nex-fg-secondary, #9A9AA0)',
+                    backgroundColor: 'var(--nex-header-bg, #13131A)'
+                }}
+                onClick={() => props.onOpenExternalEditor?.(paneID)}
+            >
+                $EDITOR
+            </button>
+        </div>
     );
 }

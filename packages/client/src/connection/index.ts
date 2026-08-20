@@ -41,13 +41,16 @@ export {
     createCommandClient,
     isOkReply,
     replyError,
+    replyNumber,
+    replySearchMatch,
     replyText,
     unwrapReply,
     wirePayload,
     type CommandClientOptions,
     type CommandReply,
     type PaneScope,
-    type SendOptions
+    type SendOptions,
+    type TerminalSearchMatch
 } from './commands';
 
 export {

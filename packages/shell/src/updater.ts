@@ -121,3 +121,60 @@ export async function maybeStartAutoUpdate(
         return { started: false, reason: error instanceof Error ? error.message : String(error) };
     }
 }
+
+// ── the manual check (APP-026) ──────────────────────────────────────────────────────
+
+/**
+ * `Nex ▸ Check for Updates…`.
+ *
+ * The Swift app used Sparkle and disabled the item whenever `canCheckForUpdates == false`
+ * (`CheckForUpdatesView.swift:4-13`). Squirrel exposes no such flag, and — more importantly —
+ * the honest reason a check is unavailable here is not "one is already running" but the three
+ * preconditions this module's header lists. So the item is always ENABLED and always answers:
+ * when updates are off it says so, in the words of the refusal, rather than being a grey row a
+ * user cannot learn anything from.
+ */
+export type UpdateCheckResult =
+    | { readonly kind: 'unavailable'; readonly message: string }
+    | { readonly kind: 'checking' }
+    | { readonly kind: 'failed'; readonly message: string };
+
+/** `electron.autoUpdater`'s two members this needs; injected so the decision stays testable. */
+export interface ManualUpdateBackend {
+    checkForUpdates(): void;
+}
+
+export interface ManualUpdateOptions {
+    readonly host: AutoUpdateHost;
+    readonly env?: NodeJS.ProcessEnv | undefined;
+    /** Absent in tests and in a dev run; production passes Electron's `autoUpdater`. */
+    readonly backend?: ManualUpdateBackend | undefined;
+    /** True once `maybeStartAutoUpdate` has actually initialised the feed. */
+    readonly started?: boolean | undefined;
+}
+
+export function checkForUpdatesNow(options: ManualUpdateOptions): UpdateCheckResult {
+    const settings = readAutoUpdateSettings(options.env ?? process.env);
+    const decision = autoUpdateDecision(settings, options.host);
+    if (!decision.started) {
+        return {
+            kind: 'unavailable',
+            message: `Updates are ${decision.reason}. This build checks for updates only when it is packaged, signed and ${AUTO_UPDATE_ENV}=1 is set.`
+        };
+    }
+    if (options.started !== true || options.backend === undefined) {
+        return {
+            kind: 'unavailable',
+            message: 'The updater has not finished starting yet — try again in a moment.'
+        };
+    }
+    try {
+        options.backend.checkForUpdates();
+        log('auto-update: manual check requested');
+        return { kind: 'checking' };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError('auto-update: manual check failed', error);
+        return { kind: 'failed', message };
+    }
+}

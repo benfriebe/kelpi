@@ -130,6 +130,13 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
     const configPath = path.join(root, 'config');
     fs.writeFileSync(configPath, '');
 
+    // The GHOSTTY config the daemon parses for the terminal palette and now WRITES for
+    // Settings ▸ Appearance (SET-039…041). Pinned explicitly rather than left to resolve under
+    // the sandbox HOME, so an appearance step can read the exact file the daemon touched and a
+    // stray resolution change can never point it at the developer's own.
+    const ghosttyConfigPath = path.join(root, 'ghostty-config');
+    fs.writeFileSync(ghosttyConfigPath, '# audit sandbox ghostty config\nbackground = #0a0a0c\n');
+
     const httpPort = await freePort();
     const controlPort = await freePort();
     const debugPort = await freePort();
@@ -142,6 +149,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         NEXD_TCP_PORT: String(controlPort),
         NEXD_DB_PATH: path.join(root, 'nex.db'),
         NEXD_CONFIG_PATH: configPath,
+        NEXD_GHOSTTY_CONFIG: ghosttyConfigPath,
         NEXD_HTTP_PORT: String(httpPort),
         NEXD_HTTP_HOST: '127.0.0.1',
         NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'),
@@ -155,6 +163,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         env,
         userData,
         configPath,
+        ghosttyConfigPath,
         socketPath,
         httpPort,
         controlPort,

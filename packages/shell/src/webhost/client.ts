@@ -67,6 +67,15 @@ export interface WebHostClient {
     readonly registered: boolean;
     /** Push one `host-event` (console line, URL/title change, picked element, closed tab). */
     sendEvent(event: string, paneID: string, tabID: string | null, payload: JsonObject): void;
+    /**
+     * Ask the UI in this shell's window to run a command, over the daemon's existing
+     * `menu-request` → `menu-command` relay (`daemon/src/ws/desktop.ts` explains why the daemon
+     * is the only channel between the main process and the page: there is no preload).
+     *
+     * The host uses it for exactly one thing — replaying a browser chord an embedded page
+     * swallowed (`./keys.ts`) — but the relay is generic, so nothing new is owed to the wire.
+     */
+    sendWindowCommand(command: string): void;
 }
 
 interface JsonRecord {
@@ -308,6 +317,16 @@ export function createWebHostClient(options: WebHostClientOptions): WebHostClien
                 paneID,
                 ...(tabID === null ? {} : { tabID }),
                 payload
+            });
+        },
+
+        sendWindowCommand(command): void {
+            send({
+                type: 'menu-request',
+                command,
+                // Scoped to this window: a second machine attached to the same daemon must not
+                // act on a chord pressed here.
+                ...(options.windowID === undefined ? {} : { windowID: options.windowID })
             });
         }
     };

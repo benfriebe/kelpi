@@ -47,6 +47,7 @@ import {
 import type { DaemonLocation } from './daemon.js';
 import { shellHello } from './hello.js';
 import { trayIconDataUrl, type IconIndicator } from './icon.js';
+import { parseShellAction, shellActionAppliesHere } from './shell-actions.js';
 import { log, logError, warn } from './log.js';
 
 const RECONNECT_INITIAL_MS = 500;
@@ -65,8 +66,46 @@ export interface StatusHost {
     startDaemon(): void;
     /** Tray "Quit Nex" (goes through the quit gate). */
     quit(): void;
+    /** Tray "Install CLI" — links /usr/local/bin/nex at this bundle (`./cli-install.ts`). */
+    installCLI?(): void;
     /** A notification's default action: activate, switch workspace, focus the pane. */
     revealPane?(workspaceID: string, paneID: string): void;
+    /**
+     * The pane context menu's "Open in Finder" (TERM-110). The daemon has no file manager, so
+     * it broadcasts `reveal-path` and whichever shell is attached runs it — the same
+     * daemon-decides / shell-acts split `notification` and `reveal-pane` already use. `select`
+     * reveals a FILE inside its folder (a markdown/diff pane's path); false opens a directory.
+     */
+    revealPath?(path: string, select: boolean): void;
+    /**
+     * The daemon's config files changed (SET-081's other half).
+     *
+     * `./hotkey.ts` reads `global-hotkey` from the config file, and until now it read it ONCE,
+     * at launch — so a hotkey recorded in Settings did nothing until the app was restarted.
+     * The daemon already broadcasts `settings-changed` to every attached socket and this is
+     * one of them, so the shell learns about the write the same way the window does. The
+     * re-registration itself stays a staged swap (§8.3): the new accelerator is registered
+     * before the old one is dropped, so a rejected hotkey costs the user nothing.
+     *
+     * Deliberately carries no payload. The shell's own parser is the authority on what that
+     * file means — it has to agree with itself across a launch and a re-read — so this is a
+     * signal to RE-READ, not a value to trust.
+     */
+    settingsChanged?(): void;
+    /**
+     * CONT-120's shell half: show the NATIVE open panel and forward the chosen file.
+     *
+     * The client cannot open one itself — a browser `<input type=file>` yields bytes, and the
+     * daemon opens files by PATH on its own machine — so the request travels client → daemon →
+     * here, and the answer goes back out as an ordinary `open` control command
+     * (`daemon/src/ws/desktop.ts`). `paneID` is the pane that asked, so the new markdown pane
+     * lands in that pane's workspace exactly as `nex md` would.
+     */
+    promptOpenFile?(paneID: string | null): void;
+    /** The ••• menu's "Check for Updates…" (APP-026). */
+    checkForUpdates?(): void;
+    /** The ••• menu's "Install CLI" — the same action the tray item runs. */
+    installCLINow?(): void;
 }
 
 export interface StatusController {
@@ -78,6 +117,11 @@ export interface StatusController {
      * half of §8.5 the shell owns.
      */
     revealPane(workspaceID: string, paneID: string): boolean;
+    /**
+     * Ask the UI in this shell's window to run a menu item it owns (`menu-command`): ⌘O's
+     * picker entry point, "Nex Help". Returns false when the socket is not ready.
+     */
+    sendMenuRequest(command: string): boolean;
     /** Re-point at a (re)discovered daemon and redial. */
     setLocation(location: DaemonLocation): void;
     /** Force a redial now (tray "Reconnect"). */
@@ -173,6 +217,11 @@ export function createStatusController(options: StatusOptions): StatusController
                   // (ARCHITECTURE.md). Reconnecting is the honest repair action.
                   { label: 'Reconnect to Daemon', click: () => reconnect() }
                 : { label: 'Start Daemon', click: () => host.startDaemon() },
+            // Only when the shell can actually do it (a packaged build with a CLI payload):
+            // a menu item that always answers "there is nothing to install" is worse than none.
+            ...(host.installCLI === undefined
+                ? []
+                : ([{ label: 'Install CLI', click: () => host.installCLI?.() }] as const)),
             { type: 'separator' },
             { label: 'Quit Nex', click: () => host.quit() }
         ]);
@@ -343,6 +392,34 @@ export function createStatusController(options: StatusOptions): StatusController
             case 'notification':
                 notify(parsed);
                 break;
+            case 'reveal-path': {
+                // TERM-110's shell half. Nothing is validated here beyond "there is a path":
+                // the daemon read it off a pane's own record, and Electron's own APIs are what
+                // refuse a path that does not exist.
+                const path = readString(parsed, 'path');
+                if (path === undefined) break;
+                host.revealPath?.(path, parsed['select'] === true);
+                break;
+            }
+            case 'settings-changed':
+                // SET-081: the global hotkey lives in the config file the daemon owns, so a
+                // Settings write reaches the shell here rather than through a file watcher of
+                // its own. The payload is ignored on purpose — `./hotkey.ts` re-reads.
+                host.settingsChanged?.();
+                break;
+            case 'shell-action': {
+                // The mirror of `reveal-path`: the daemon has no window, no dialogs and no
+                // installer, so it broadcasts and whichever shell is attached acts. The
+                // decoding and the window filter are `./shell-actions.ts` (pure, and therefore
+                // tested); only the side effects are here.
+                const request = parseShellAction(parsed);
+                if (request === null || !shellActionAppliesHere(request.windowID, options.windowID)) break;
+                log(`shell-action: ${request.action}`);
+                if (request.action === 'open-file-dialog') host.promptOpenFile?.(request.paneID);
+                else if (request.action === 'install-cli') host.installCLINow?.();
+                else host.checkForUpdates?.();
+                break;
+            }
             case 'attention-request':
                 if (!host.isWindowFocused()) bounce();
                 break;
@@ -439,6 +516,26 @@ export function createStatusController(options: StatusOptions): StatusController
                 );
             } catch (error) {
                 warn(`reveal request failed: ${error instanceof Error ? error.message : String(error)}`);
+                return false;
+            }
+            return true;
+        },
+        sendMenuRequest(command: string): boolean {
+            const current = socket;
+            if (!ready || current === null || current.readyState !== WebSocket.OPEN) return false;
+            try {
+                current.send(
+                    JSON.stringify({
+                        type: 'menu-request',
+                        command,
+                        // Scoped to this window for the same reason a reveal is: a second
+                        // machine attached to the same daemon must not open Help because
+                        // somebody used the menu bar here.
+                        ...(options.windowID === undefined ? {} : { windowID: options.windowID })
+                    })
+                );
+            } catch (error) {
+                warn(`menu request failed: ${error instanceof Error ? error.message : String(error)}`);
                 return false;
             }
             return true;

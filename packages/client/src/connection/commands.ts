@@ -102,6 +102,39 @@ export function replyText(reply: CommandReply, key: string): string | undefined 
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/** Reads a finite number field off a reply (`active_agents`, `total`, …). */
+export function replyNumber(reply: CommandReply, key: string): number | undefined {
+    const value = reply[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Where a terminal-search reply says the selected match is.
+ *
+ * `linesFromBottom` rather than an absolute buffer line, deliberately: the daemon's headless
+ * emulator keeps 10 000 lines, ghostty-web bounds its scrollback in BYTES, and a fresh client
+ * replays a possibly-capped snapshot — so the two buffers agree on where the BOTTOM is and on
+ * nothing else. `null` when nothing is selected yet (the `-/N` state).
+ */
+export interface TerminalSearchMatch {
+    readonly linesFromBottom: number;
+    readonly col: number;
+    readonly length: number;
+}
+
+export function replySearchMatch(reply: CommandReply): TerminalSearchMatch | null {
+    const raw = reply['match'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const linesFromBottom = record['lines_from_bottom'];
+    const col = record['col'];
+    const length = record['length'];
+    if (typeof linesFromBottom !== 'number' || typeof col !== 'number' || typeof length !== 'number') {
+        return null;
+    }
+    return { linesFromBottom, col, length };
+}
+
 // ── payload construction ────────────────────────────────────────────────────────────
 
 type WireFields = Record<string, JsonValue | undefined>;
@@ -725,6 +758,444 @@ export class CommandClient {
         return this.raw(wirePayload('restart-pane-agent', { pane_id: input.paneID }), options ?? {});
     }
 
+    /**
+     * The pane context menu's Status submenu (agent-lifecycle.md §5.10 / TERM-107). The daemon's
+     * state machine owns the whole rule — shell panes only, the elapsed clock arms on a FRESH
+     * transition into running, the background count is zeroed — so this only names the target
+     * status, and a non-shell pane comes back unchanged rather than as an error.
+     */
+    setPaneStatus(
+        input: { paneID: string; status: 'idle' | 'running' | 'waitingForInput' },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-pane-status', { pane_id: input.paneID, status: input.status }),
+            options ?? {}
+        );
+    }
+
+    // ── pane UX verbs (⇧⌘T, ⇧⌘N, Open in Finder) ──────────────────────────────────
+
+    /**
+     * ⇧⌘T. The daemon pops its own undo stack (`recentlyClosedPanes`), splits the focused pane,
+     * restores the snapshot, spawns a PTY when the pane was a terminal and — 2 seconds later —
+     * types the snapshotted agent's resume command. None of that is client state, which is why
+     * the client names only the workspace; the reply carries the restored pane's id.
+     */
+    reopenClosedPane(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('reopen-closed-pane', { workspace_id: input.workspaceID }),
+            options ?? {}
+        );
+    }
+
+    /** ⇧⌘N — a "Scratchpad" pane split off the focused one, already in edit mode. */
+    createScratchpad(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('create-scratchpad', { workspace_id: input.workspaceID }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * "Open in Finder". The daemon has no file manager, so it broadcasts and whichever Electron
+     * shell is attached runs `shell.showItemInFolder` / `shell.openPath`. `select: true` reveals
+     * a FILE inside its folder (a markdown/diff pane's path); false opens a directory.
+     */
+    revealPath(input: { path: string; select?: boolean }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('reveal-path', { path: input.path, select: input.select === true }),
+            options ?? {}
+        );
+    }
+
+    // ── desktop gestures (`daemon/src/ws/desktop.ts`) ─────────────────────────────
+
+    /**
+     * Ask the attached Electron shell to do something only it can (`shell-action`).
+     *
+     * The shell has no preload, so this is the only route from the page to the main process:
+     * the daemon fans the request out and whichever shell is attached acts. `open-file-dialog`
+     * answers with a NATIVE open panel and then sends the chosen path back as an ordinary
+     * `open` verb — a browser client has no shell to ask, which is why the caller checks
+     * `shellWindowID` first and prompts for a path instead.
+     */
+    shellAction(
+        input: { action: 'open-file-dialog' | 'install-cli' | 'check-for-updates'; windowID?: string | null; paneID?: string | null },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('shell-action', {
+                action: input.action,
+                window_id: input.windowID ?? undefined,
+                pane_id: input.paneID ?? undefined
+            }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * APP-054 — "Restart Socket Server". Closes and re-binds the daemon's control listeners,
+     * clearing a wedged `/tmp/nex.sock` and any client FDs hanging off it. Every PTY survives:
+     * this touches the CLI transport only, never the sessions.
+     */
+    restartControlServer(options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('restart-control-server', {}), options ?? {});
+    }
+
+    /**
+     * CONT-122 / TERM-052 — what a ⌘-click on a terminal cell resolves to.
+     *
+     * The client sends the CELL (computed from the pane's own grid geometry), not a word:
+     * neither renderer exposes a word-under-cursor API, and the daemon holds the authoritative
+     * buffer. The reply's `opened` says what happened — `markdown` (a pane was created),
+     * `external` (a URL for the OS opener), `missing` (a `.md` path that is not there), or
+     * `none`.
+     */
+    openTerminalTarget(
+        input: { paneID: string; row: number; col: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('open-terminal-target', { pane_id: input.paneID, row: input.row, col: input.col }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * CONT-081…091 — host `$VISUAL`/`$EDITOR` on a markdown pane's file, or end that session.
+     *
+     * `open` gives the pane a PTY running the editor (the pane stays a markdown pane; it is
+     * `externalEditorCommand` that makes the client draw a terminal); `close` kills it and the
+     * pane goes back to preview. An editor that exits by itself does the same without a
+     * command, through the daemon's process-exit path.
+     */
+    markdownExternalEditor(
+        input: { paneID: string; action?: 'open' | 'close' },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('markdown-external-editor', {
+                pane_id: input.paneID,
+                action: input.action ?? 'open'
+            }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * TERM-043 — a pasted image, written to a temp file on the DAEMON's machine and typed into
+     * the pane as a shell-escaped path.
+     *
+     * The bytes travel base64 because the file has to exist where the agent reading it runs; a
+     * browser-side write would land on the wrong filesystem (and in a browser there is no
+     * filesystem to write to at all).
+     */
+    pasteImage(
+        input: { paneID: string; data: string; mime?: string },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('paste-image', {
+                pane_id: input.paneID,
+                data: input.data,
+                mime: input.mime ?? 'image/png'
+            }),
+            options ?? {}
+        );
+    }
+
+    // ── terminal search (⌘F over a shell pane) ────────────────────────────────────
+    //
+    // One verb with an `action` field (`daemon/src/ws/search.ts`). The needle, the total and the
+    // selected index are DAEMON state — they ride the delta stream on the workspace, so every
+    // attached window shows the same counter — and the reply adds the one thing that is not
+    // state: where the selected match sits, expressed as `lines_from_bottom` so a renderer whose
+    // scrollback depth differs from the daemon's can still resolve it.
+
+    /** Open the bar on the focused pane, or close it wherever it currently lives. */
+    toggleTerminalSearch(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('terminal-search', { action: 'toggle', workspace_id: input.workspaceID }),
+            options ?? {}
+        );
+    }
+
+    /** A new needle: the daemon recounts and drops any selection (the counter reads `-/N`). */
+    setTerminalSearchNeedle(
+        input: { workspaceID: string; needle: string; caseSensitive?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('terminal-search', {
+                action: 'set',
+                workspace_id: input.workspaceID,
+                needle: input.needle,
+                case_sensitive: input.caseSensitive === true
+            }),
+            options ?? {}
+        );
+    }
+
+    /** Return / ⇧Return. Both directions wrap; the reply names the match to scroll to. */
+    stepTerminalSearch(
+        input: { workspaceID: string; direction: 'next' | 'prev'; caseSensitive?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('terminal-search', {
+                action: input.direction,
+                workspace_id: input.workspaceID,
+                case_sensitive: input.caseSensitive === true
+            }),
+            options ?? {}
+        );
+    }
+
+    /** Escape / the ✕: clears the needle and every count for the workspace. */
+    closeTerminalSearch(input: { workspaceID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('terminal-search', { action: 'close', workspace_id: input.workspaceID }),
+            options ?? {}
+        );
+    }
+
+    // ── bulk workspace verbs (the multi-select context menu) ───────────────────────
+    //
+    // shell-ui.md §5.6's bulk menu variant: ONE dispatch for the whole selection, never N
+    // single-workspace commands, so N rows change in a single delta and a half-applied bulk
+    // action is impossible. `setBulkColor` with one id is also how a single row's "Color ▸"
+    // applies — the store has no single-workspace colour action.
+
+    setBulkColor(
+        input: { workspaceIDs: readonly string[]; color: WorkspaceColor },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-bulk-color', { workspace_ids: [...input.workspaceIDs], color: input.color }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * "Group N Workspaces…" (§WS-058). The CLI's `group-create` is fire-and-forget and cannot
+     * carry members, so this WS-only verb dispatches the same `create-group` action WITH its
+     * `initialWorkspaceIDs` — one atomic change, not a create followed by a move.
+     */
+    createGroupForWorkspaces(
+        input: { name: string; workspaceIDs: readonly string[]; color?: WorkspaceColor },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('create-group-for-workspaces', {
+                name: input.name,
+                workspace_ids: [...input.workspaceIDs],
+                color: input.color
+            }),
+            options ?? {}
+        );
+    }
+
+    /** `apply` is the state every selected workspace ends at, not a per-row toggle. */
+    setBulkLabel(
+        input: { workspaceIDs: readonly string[]; label: string; apply: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-bulk-label', {
+                workspace_ids: [...input.workspaceIDs],
+                label: input.label,
+                apply: input.apply
+            }),
+            options ?? {}
+        );
+    }
+
+    // ── workspace inspector: repos, associations, worktrees ────────────────────────
+    //
+    // WS-only and **asynchronous** daemon-side (`daemon/src/ws/repos.ts` — every one shells out
+    // to git), which changes nothing here: the reply arrives through `command-reply` when the
+    // promise settles, exactly like the content verbs.
+
+    /** The registry plus each repo's RESOLVED worktree base path (the client cannot expand it). */
+    listRepos(options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-registry'), options ?? {});
+    }
+
+    /**
+     * One row per repo association: branch, dirtiness and diff stats. `refresh` re-reads git
+     * before replying (what the inspector asks for on open and after a HEAD moves); without it
+     * the reply is the daemon watcher's last known values, which its 30 s poll keeps warm.
+     */
+    workspaceRepoStatus(
+        input: { workspaceID: string; refresh?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('workspace-repo-status', {
+                workspace_id: input.workspaceID,
+                refresh: input.refresh ?? false
+            }),
+            options ?? {}
+        );
+    }
+
+    /** Associate a path: the daemon resolves its repo root and registers the repo if new. */
+    addRepoAssociation(
+        input: { workspaceID: string; path: string },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('add-repo-association', { workspace_id: input.workspaceID, path: input.path }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * Drop an association. `deleteWorktree` additionally runs a NON-forcing `git worktree
+     * remove`; git's refusal on a dirty or locked worktree comes back as `{ok:false}` and the
+     * association is left in place (a directory nothing points at is worse than a stale row).
+     */
+    removeRepoAssociation(
+        input: { workspaceID: string; associationID: string; deleteWorktree?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('remove-repo-association', {
+                workspace_id: input.workspaceID,
+                association_id: input.associationID,
+                delete_worktree: input.deleteWorktree ?? false
+            }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * `git worktree add` for the CURRENT workspace, then registry + association (GIT-098/099).
+     * The new-workspace half of the same flow is `createWorkspace({worktree})`; both take the
+     * long timeout because `--update-main` fetches.
+     */
+    addWorktree(
+        input: {
+            workspaceID: string;
+            repoID?: string;
+            repoPath?: string;
+            name: string;
+            branch?: string;
+            updateMain?: boolean;
+        },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('workspace-add-worktree', {
+                workspace_id: input.workspaceID,
+                repo_id: input.repoID,
+                repo_path: input.repoPath,
+                name: input.name,
+                branch: input.branch,
+                update_main: input.updateMain ?? false
+            }),
+            { timeoutMs: options?.timeoutMs ?? WORKTREE_COMMAND_TIMEOUT_MS }
+        );
+    }
+
+    // ── the repo registry itself (Settings ▸ Repositories) ─────────────────────────
+    //
+    // graft-git.md §GIT-065…§GIT-072 / §SET-052…§SET-057. These edit the GLOBAL registry the
+    // association verbs above point into: a repo can be registered without being associated
+    // with any workspace, which is what makes the New Worktree flow's picker non-empty.
+
+    /**
+     * Register a repository path. A path already registered as AUTO-DISCOVERED is promoted to
+     * manual (§GIT-068) rather than duplicated, so the auto-detect GC can never collect a repo
+     * the user asked for by hand; an already-manual one answers `ok` unchanged.
+     */
+    addRepo(input: { path: string; name?: string | undefined }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-add', { path: input.path, name: input.name }), options ?? {});
+    }
+
+    /**
+     * Drop a repository. The daemon cascades: every association pointing at it leaves every
+     * workspace, and each vanished association's HEAD watcher and graft session are stopped
+     * (§GIT-052).
+     */
+    removeRepo(input: { repoID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-remove', { repo_id: input.repoID }), options ?? {});
+    }
+
+    /** Rename the registry's display name; the path is identity and never moves (§GIT-072). */
+    renameRepo(input: { repoID: string; name: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-rename', { repo_id: input.repoID, name: input.name }), options ?? {});
+    }
+
+    /**
+     * Walk `path` (depth 3) and register every checkout not registered yet (§GIT-066/§GIT-067).
+     * Takes the long timeout: the walk is filesystem-bound and then runs one `git remote
+     * get-url` per new find.
+     */
+    scanRepos(
+        input: { path: string; maxDepth?: number | undefined },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(wirePayload('repo-scan', { path: input.path, max_depth: input.maxDepth }), {
+            timeoutMs: options?.timeoutMs ?? WORKTREE_COMMAND_TIMEOUT_MS
+        });
+    }
+
+    // ── graft (the inspector's toggle, swap prompt and orphan banner) ───────────────
+    //
+    // graft-git.md §GIT-035…§GIT-051. Association-scoped, unlike the CLI's scope-addressed
+    // `graft start` / `graft stop`: the inspector acts on one row, and needs the failure typed
+    // (`error_kind`, plus `parent_repo_root` on an `alreadyActive`) to raise the swap prompt.
+
+    /**
+     * Live sessions AND interrupted-graft breadcrumbs — the client's initial sync. `refresh`
+     * re-scans the registry's repos for breadcrumbs (excluding roots a live session claims), so
+     * a repo registered after the daemon booted still surfaces its interrupted graft.
+     */
+    graftList(input?: { refresh?: boolean | undefined }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('graft-session-list', { refresh: input?.refresh ?? false }),
+            options ?? {}
+        );
+    }
+
+    /** Start mirroring one association's worktree into its parent checkout. */
+    graftStart(input: { associationID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('graft-session-start', { association_id: input.associationID }), {
+            timeoutMs: options?.timeoutMs ?? WORKTREE_COMMAND_TIMEOUT_MS
+        });
+    }
+
+    /**
+     * Stop + restore. Idempotent daemon-side, which is what makes the retry-an-errored-session
+     * path safe: it unwinds whatever the engine still holds even when this client only ever saw
+     * a start-failure placeholder (§GIT-037).
+     */
+    graftStop(input: { associationID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('graft-session-stop', { association_id: input.associationID }), {
+            timeoutMs: options?.timeoutMs ?? WORKTREE_COMMAND_TIMEOUT_MS
+        });
+    }
+
+    /**
+     * Replay the stop sequence from a crashed session's breadcrumb. A failure (typically a
+     * stash-pop conflict) LEAVES the breadcrumb, so the banner has to come back (§GIT-045).
+     */
+    graftRecoverOrphan(input: { associationID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('graft-orphan-recover', { association_id: input.associationID }), {
+            timeoutMs: options?.timeoutMs ?? WORKTREE_COMMAND_TIMEOUT_MS
+        });
+    }
+
+    /** Delete the breadcrumb only; the parent's working tree and the stash are left alone. */
+    graftDismissOrphan(input: { associationID: string }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('graft-orphan-dismiss', { association_id: input.associationID }),
+            options ?? {}
+        );
+    }
+
     // ── label presets (Settings ▸ Labels) ──────────────────────────────────────────
     //
     // app-state-core.md §6.4, over the same WS-only channel. `color` is §6.2's one-string
@@ -808,6 +1279,29 @@ export class CommandClient {
     ): Promise<CommandReply> {
         return this.raw(
             wirePayload('set-general-setting', { key: input.key, value: String(input.value) }),
+            options ?? {}
+        );
+    }
+
+    /**
+     * One `key = value` in the **ghostty** config (`WS_WRITABLE_GHOSTTY_KEYS`: `background`,
+     * `background-opacity`, `font-family`, `font-size`, `theme`).
+     *
+     * A separate verb from `setGeneralSetting` because it writes a DIFFERENT FILE — one ghostty
+     * owns and from which Nex only borrows five keys. `value: null` REMOVES the key, which is
+     * how "no explicit background, inherit whatever the theme sets" is expressed; the daemon
+     * preserves every unrelated line byte-for-byte and re-reads the file before replying, so a
+     * user's hand-maintained ghostty config survives a colour picker intact.
+     */
+    setGhosttySetting(
+        input: { key: string; value: string | number | null },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-ghostty-setting', {
+                key: input.key,
+                value: input.value === null ? null : String(input.value)
+            }),
             options ?? {}
         );
     }

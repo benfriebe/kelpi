@@ -67,18 +67,22 @@ describe('the action catalog', () => {
 });
 
 describe('the tab list', () => {
-    it('names the five tabs this port ships, keybindings first', () => {
+    it('names the tabs this port ships, keybindings first', () => {
         expect(SETTINGS_TABS.map((tab) => tab.id)).toEqual([
+            'general',
+            'repositories',
             'keybindings',
             'appearance',
             'labels',
             'profiles',
-            'workspaces'
+            'workspaces',
+            // Joined once favourites grew a daemon home; the URL-bar star deep-links here.
+            'web'
         ]);
     });
 
     it('guards a deep-link id', () => {
         expect(isSettingsTabID('labels')).toBe(true);
-        expect(isSettingsTabID('repositories')).toBe(false);
+        expect(isSettingsTabID('downloads')).toBe(false);
     });
 });

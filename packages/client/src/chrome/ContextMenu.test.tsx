@@ -59,6 +59,59 @@ describe('ContextMenu', () => {
         expect(menu.style.top).toBe('168px');
     });
 
+    /**
+     * The submenu side, which is the other half of "placement you notice only when it is wrong".
+     *
+     * `left-full` was unconditional, so a menu opened near the window's right edge put its
+     * submenu past the edge: it rendered, it reported a box, and every click on it landed
+     * outside the window. docs/audit/run-H caught it as an intermittent — the pane-header
+     * Status ▸ submenu only failed in the runs whose target pane sat on the right.
+     *
+     * jsdom gives every element a zero-size rect, so the measurement is stubbed rather than
+     * laid out: what is under test is the DECISION, and `data-submenu-side` is how it is read.
+     */
+    function renderWithSubmenu(right: number): HTMLElement {
+        const original = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function stub(this: Element): DOMRect {
+            if (this.getAttribute('data-testid') !== 'context-submenu') return original.call(this);
+            return { ...new DOMRect(right - 180, 0, 180, 100), right, left: right - 180 } as DOMRect;
+        };
+        try {
+            render(
+                <ContextMenu
+                    x={0}
+                    y={0}
+                    items={[
+                        {
+                            id: 'status',
+                            label: 'Status',
+                            submenu: [{ id: 'idle', label: 'Idle' }]
+                        }
+                    ]}
+                    onClose={() => undefined}
+                />
+            );
+            fireEvent.mouseEnter(screen.getByText('Status'));
+            return screen.getByTestId('context-submenu');
+        } finally {
+            Element.prototype.getBoundingClientRect = original;
+        }
+    }
+
+    it('opens a submenu to the right when there is room', () => {
+        const submenu = renderWithSubmenu(400);
+        expect(submenu.getAttribute('data-submenu-side')).toBe('right');
+        expect(submenu.className).toContain('left-full');
+    });
+
+    it('flips a submenu to the left rather than off the window edge', () => {
+        // `innerWidth` is jsdom's default 1024; a right edge past it must flip.
+        const submenu = renderWithSubmenu(1200);
+        expect(submenu.getAttribute('data-submenu-side')).toBe('left');
+        expect(submenu.className).toContain('right-full');
+        expect(submenu.className).not.toContain('left-full');
+    });
+
     it('closes on Escape', () => {
         let closed = false;
         render(

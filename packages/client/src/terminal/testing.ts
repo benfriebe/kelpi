@@ -10,6 +10,7 @@ import type { PtyStreamHandle, PtySubscription } from '../connection';
 import type {
     CellSize,
     TerminalEngine,
+    TerminalMatchLocation,
     TerminalRenderer,
     TerminalRendererFactory,
     TerminalRendererOptions,
@@ -52,6 +53,8 @@ export class FakeRenderer implements TerminalRenderer {
     focusCount = 0;
     blurCount = 0;
     repaints = 0;
+    /** Every `revealMatch` the search overlay asked for, in order. */
+    readonly revealed: TerminalMatchLocation[] = [];
     disposed = false;
     opened: HTMLElement | null = null;
 
@@ -175,6 +178,10 @@ export class FakeRenderer implements TerminalRenderer {
 
     repaint(): void {
         this.repaints += 1;
+    }
+
+    revealMatch(match: TerminalMatchLocation): void {
+        this.revealed.push(match);
     }
 
     dispose(): void {

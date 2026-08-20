@@ -23,9 +23,20 @@
  * link is handed to the system browser.
  */
 
-import { BrowserWindow, Menu, app, dialog, globalShortcut, screen, session, shell } from 'electron';
+import { BrowserWindow, Menu, Notification, app, dialog, globalShortcut, screen, session, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, unlinkSync } from 'node:fs';
 
+import {
+    bundledCliLauncher,
+    describeCliInstall,
+    healCliSymlink,
+    installCliSymlink,
+    nodeCliFs,
+    resolveCliInstallMode,
+    resolveCliLinkPath,
+    type CliInstallResult
+} from './cli-install.js';
 import { sendControlCommand } from './control.js';
 import {
     DaemonUnavailableError,
@@ -35,9 +46,11 @@ import {
 } from './daemon.js';
 import { readGlobalHotkeySettings, swapGlobalHotkey, type HotkeyRegistrar } from './hotkey.js';
 import { log, logError, warn } from './log.js';
+import { isForwardableOpenPath } from './shell-actions.js';
 import { createStatusController, type StatusController } from './status.js';
-import { maybeStartAutoUpdate } from './updater.js';
+import { checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
+import { readShellSettings, writeShellSettings } from './settings.js';
 import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
 import {
     MIN_WINDOW_HEIGHT,
@@ -64,6 +77,8 @@ let hotkeyAccelerator: string | null = null;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
+/** True once `maybeStartAutoUpdate` actually initialised a feed (APP-026's manual check). */
+let updaterStarted = false;
 /** Files handed to us by Finder before the daemon was ready. */
 const pendingOpens: string[] = [];
 
@@ -312,20 +327,201 @@ function registerGlobalHotkey(): void {
 
 // ── Finder "Open With" ──────────────────────────────────────────────────────────────
 
-function forwardOpen(filePath: string): void {
+function forwardOpen(filePath: string, paneID: string | null = null): void {
     if (daemon === null) {
         pendingOpens.push(filePath);
         return;
     }
-    void sendControlCommand(daemon.paths.socket, { command: 'open', path: filePath }).then((result) => {
+    void sendControlCommand(daemon.paths.socket, {
+        command: 'open',
+        path: filePath,
+        // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
+        // workspace exactly as `nex md` from inside a pane does; Finder's route names none.
+        ...(paneID === null ? {} : { pane_id: paneID })
+    }).then((result) => {
         if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
     });
     showWindow();
 }
 
+/**
+ * CONT-120 — "Preview Markdown…"'s native open panel.
+ *
+ * Byte-for-byte the Swift panel (`AppReducer+SearchNotify.swift:83-99`): `md` only, single
+ * selection, files only, and the same message. The chosen path goes back out as an ordinary
+ * `open` control command, so the daemon sees one file-open route no matter who raised it.
+ */
+function promptOpenFile(paneID: string | null): void {
+    // Audit seam. A native `NSOpenPanel` is an OS window: CDP cannot click it and a screenshot
+    // cannot see it, so `scripts/ui-audit` scripts the ANSWER and lets the rest of the round
+    // trip (client → daemon → shell → `open` → a markdown pane) run for real. The file is
+    // consumed on read, so a second ⌘O in the same run shows the real panel unless the harness
+    // wrote a new answer. Off unless the env var names a path, which no shipped launch does.
+    const scripted = process.env['NEX_AUDIT_OPEN_FILE'];
+    if (scripted !== undefined && scripted !== '') {
+        let answer = '';
+        try {
+            answer = readFileSync(scripted, 'utf8').trim();
+            unlinkSync(scripted);
+        } catch {
+            answer = '';
+        }
+        log(`open-file dialog: scripted answer ${answer === '' ? '(cancelled)' : answer}`);
+        if (answer !== '') forwardOpen(answer, paneID);
+        return;
+    }
+    const parent = mainWindow !== null && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const options: Electron.OpenDialogOptions = {
+        title: 'Open Markdown File',
+        message: 'Choose a Markdown file to open',
+        properties: ['openFile'],
+        filters: [{ name: 'Markdown', extensions: ['md'] }]
+    };
+    const shown = parent === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(parent, options);
+    void shown
+        .then((answer) => {
+            const chosen = answer.canceled ? undefined : answer.filePaths[0];
+            if (chosen === undefined || chosen === '') {
+                log('open-file dialog: cancelled');
+                return;
+            }
+            log(`open-file dialog: ${chosen}`);
+            forwardOpen(chosen, paneID);
+        })
+        .catch((error: unknown) => {
+            logError('open-file dialog failed', error);
+        });
+}
+
+/** APP-026 — the menu's "Check for Updates…", which always answers rather than sitting grey. */
+function checkForUpdates(): void {
+    const result = checkForUpdatesNow({
+        host: { isPackaged: app.isPackaged, platform: process.platform },
+        started: updaterStarted
+    });
+    if (result.kind === 'checking') {
+        void dialog.showMessageBox({
+            type: 'info',
+            message: 'Checking for updates',
+            detail: 'Nex is asking the update feed. If one is available it installs on the next launch.'
+        });
+        return;
+    }
+    void dialog.showMessageBox({
+        type: result.kind === 'failed' ? 'warning' : 'info',
+        message: result.kind === 'failed' ? 'Update check failed' : 'Updates are disabled in this build',
+        detail: result.message
+    });
+}
+
 function drainPendingOpens(): void {
     const queued = pendingOpens.splice(0, pendingOpens.length);
     for (const filePath of queued) forwardOpen(filePath);
+}
+
+// ── the global `nex` CLI (APP-003…005) ──────────────────────────────────────────────
+
+/**
+ * Keep `/usr/local/bin/nex` pointing at THIS bundle's CLI, and offer to create it once.
+ *
+ * The decision logic — what counts as ours, when to touch it, when to give up — is in
+ * `./cli-install.ts` and has no Electron in it. What lives here is the part only the app can do:
+ * ask the user, show a notification, and write the "already asked" flag.
+ *
+ * Everything is best-effort and off the boot path's critical line: a CLI that could not be
+ * installed must never be the reason the window does not open.
+ */
+function cliSettingsFile(): string {
+    return settingsFile(app.getPath('userData'));
+}
+
+function reportCliInstall(result: CliInstallResult, announce: boolean): void {
+    log(describeCliInstall(result));
+    if (result.kind !== 'blocked') return;
+
+    // APP-005: one notification per app build, so a machine where /usr/local/bin is locked down
+    // does not nag on every launch. `announce` is true when the user asked for this explicitly,
+    // and then the dedupe is skipped — they are waiting for an answer.
+    const version = app.getVersion();
+    const settings = readShellSettings(cliSettingsFile());
+    if (!announce && settings.cliInstallNotifiedVersion === version) return;
+    if (!announce) writeShellSettings(cliSettingsFile(), { ...settings, cliInstallNotifiedVersion: version });
+
+    if (!Notification.isSupported()) return;
+    new Notification({
+        title: 'Nex CLI is out of date',
+        body: `Could not update ${result.plan.linkPath}. Run this in a terminal:\n${result.plan.manualCommand}`
+    }).show();
+}
+
+/** The tray's "Install CLI" item, and the accepted first-launch offer. */
+function installCliNow(announce: boolean): void {
+    const target = bundledCliLauncher(process.resourcesPath);
+    const result = installCliSymlink({ linkPath: resolveCliLinkPath(process.env), target }, nodeCliFs);
+    reportCliInstall(result, announce);
+    if (!announce || result.kind === 'blocked') return;
+    const detail =
+        result.kind === 'linked'
+            ? `${result.plan.linkPath} now points at this build. Run \`nex install-hooks\` to wire agent status tracking.`
+            : result.kind === 'ok'
+              ? `${result.plan.linkPath} already points at this build.`
+              : result.reason;
+    void dialog.showMessageBox({
+        type: result.kind === 'skipped' ? 'warning' : 'info',
+        message: result.kind === 'skipped' ? 'Nex did not change the CLI' : 'Nex CLI installed',
+        detail
+    });
+}
+
+function offerCliInstall(): void {
+    const settings = readShellSettings(cliSettingsFile());
+    writeShellSettings(cliSettingsFile(), { ...settings, cliInstallPrompted: true });
+    void dialog
+        .showMessageBox({
+            type: 'question',
+            message: 'Install the nex command line tool?',
+            detail:
+                `This creates a symlink at ${resolveCliLinkPath(process.env)} pointing at the CLI inside Nex.app, ` +
+                'so `nex` works in any terminal and Claude Code hooks can report agent status. ' +
+                'You can do it later from the Nex tray menu.',
+            buttons: ['Install', 'Not Now'],
+            defaultId: 0,
+            cancelId: 1
+        })
+        .then((answer) => {
+            if (answer.response === 0) installCliNow(true);
+            else log('cli-install: offer declined');
+        })
+        .catch((error: unknown) => {
+            logError('cli-install: offer failed', error);
+        });
+}
+
+function runCliInstallPolicy(): void {
+    const settings = readShellSettings(cliSettingsFile());
+    const mode = resolveCliInstallMode({
+        env: process.env,
+        isPackaged: app.isPackaged,
+        alreadyPrompted: settings.cliInstallPrompted
+    });
+    if (mode === 'off') {
+        log('cli-install: disabled for this run');
+        return;
+    }
+    const target = bundledCliLauncher(process.resourcesPath);
+    if (target === '') {
+        log('cli-install: no CLI payload in this build');
+        return;
+    }
+    if (mode === 'auto') {
+        installCliNow(false);
+        return;
+    }
+    // Heal first in every case: a user who already has the CLI installed should never be asked
+    // about it, and the answer to "does one exist?" is the heal's own `absent` result.
+    const healed = healCliSymlink({ linkPath: resolveCliLinkPath(process.env), target }, nodeCliFs);
+    reportCliInstall(healed, false);
+    if (mode === 'prompt' && healed.plan.action === 'absent') offerCliInstall();
 }
 
 // ── application menu ────────────────────────────────────────────────────────────────
@@ -340,6 +536,8 @@ function buildMenu(): void {
                       label: 'Nex',
                       submenu: [
                           { role: 'about' },
+                          // APP-026: directly after About, exactly where Sparkle's item sat.
+                          { label: 'Check for Updates…', click: () => checkForUpdates() },
                           { type: 'separator' },
                           { role: 'hide' },
                           { role: 'hideOthers' },
@@ -354,6 +552,17 @@ function buildMenu(): void {
             label: 'File',
             submenu: [
                 { label: 'New Window', click: () => showWindow() },
+                // CONT-120 / APP-020. It goes to the CLIENT rather than opening the panel here,
+                // so the picker behaves identically however it is raised (⌘O in the window, this
+                // item, the ••• menu) and so the caller pane travels with the request. The
+                // client answers by asking us for the native panel — see `promptOpenFile`.
+                {
+                    label: 'Preview Markdown…',
+                    accelerator: 'CommandOrControl+O',
+                    click: () => {
+                        if (status?.sendMenuRequest('open-file') !== true) promptOpenFile(null);
+                    }
+                },
                 { type: 'separator' },
                 process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
             ]
@@ -369,9 +578,34 @@ function buildMenu(): void {
                 { role: 'togglefullscreen' }
             ]
         },
-        { role: 'windowMenu' }
+        { role: 'windowMenu' },
+        {
+            // APP-027: the Help menu is replaced by a single "Nex Help" item bound to ⌘?. The
+            // window it opens is the client's overlay (`client/src/chrome/HelpOverlay.tsx`),
+            // reached through the daemon because this shell has no preload.
+            role: 'help',
+            submenu: [
+                {
+                    label: 'Nex Help',
+                    accelerator: 'CommandOrControl+?',
+                    click: () => {
+                        if (status?.sendMenuRequest('help') !== true) {
+                            void dialog.showMessageBox({
+                                type: 'info',
+                                message: 'Nex Help',
+                                detail: 'The window is still connecting — try again in a moment.'
+                            });
+                        }
+                    }
+                }
+            ]
+        }
     ];
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // Logged rather than inferred, for the same reason the tray item is: an application menu is
+    // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
+    // "the items are there" becomes a check instead of a hope.
+    log('menu: Nex ▸ Check for Updates… · File ▸ Preview Markdown… (⌘O) · Help ▸ Nex Help (⌘?)');
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
@@ -385,6 +619,10 @@ async function startDaemonAndConnect(): Promise<void> {
     log(`daemon ready ${daemon.url} (spawned=${String(daemon.spawned)})`);
 
     if (status === null) {
+        const cliInstallable = bundledCliLauncher(process.resourcesPath) !== '';
+        // Logged rather than inferred: the tray menu is not observable from outside the process,
+        // and `scripts/packaged-smoke.mjs` asserts this line so "the item is there" is a check.
+        log(`cli-install: tray item ${cliInstallable ? 'enabled' : 'hidden (no CLI payload)'}`);
         status = createStatusController({
             location: daemon,
             windowID: shellWindowID,
@@ -397,6 +635,16 @@ async function startDaemonAndConnect(): Promise<void> {
                     });
                 },
                 quit: () => app.quit(),
+                // Tray ▸ "Install CLI" — offered only when this build actually carries a CLI to
+                // install, and always explicit, so it reports its result in a dialog.
+                ...(cliInstallable ? { installCLI: () => installCliNow(true) } : {}),
+                // The ••• menu's shell rows and ⌘O's native panel, all arriving as
+                // `shell-action` broadcasts (`daemon/src/ws/desktop.ts`). `installCLINow` is
+                // offered unconditionally — unlike the tray item, the menu row already exists
+                // and its answer ("no CLI payload in this build") is worth showing.
+                promptOpenFile: (paneID) => promptOpenFile(paneID),
+                checkForUpdates: () => checkForUpdates(),
+                installCLINow: () => installCliNow(true),
                 revealPane: (workspaceID, paneID) => {
                     // §8.5's ordering, split across the two processes that can each do half:
                     // the shell raises/activates the window FIRST (only it can), then asks the
@@ -411,6 +659,35 @@ async function startDaemonAndConnect(): Promise<void> {
                         `reveal requested for pane ${paneID} in workspace ${workspaceID}` +
                             (routed ? '' : ' (daemon socket not ready; window raised only)')
                     );
+                },
+                /**
+                 * The pane context menu's "Open in Finder" (TERM-110). `showItemInFolder`
+                 * reveals a file *inside* its folder and selects it; `openPath` opens a
+                 * directory as itself. Both are fire-and-forget — Finder's own error surface is
+                 * what a user acts on, so a failure is logged and nothing else.
+                 */
+                revealPath: (target, select) => {
+                    if (select) {
+                        shell.showItemInFolder(target);
+                        log(`reveal-path: revealed ${target}`);
+                        return;
+                    }
+                    void shell.openPath(target).then((error) => {
+                        if (error !== '') logError(`reveal-path failed for ${target}: ${error}`);
+                        else log(`reveal-path: opened ${target}`);
+                    });
+                },
+                /**
+                 * SET-081: Settings can now record the global hotkey, and the write lands in
+                 * the config file THIS process reads. Before this it was read once at launch,
+                 * so a recorded hotkey did nothing until the app was restarted.
+                 *
+                 * Safe to fire on every settings write, including ones that have nothing to do
+                 * with hotkeys: `swapGlobalHotkey` short-circuits when the accelerator has not
+                 * changed, so the common case does not touch `globalShortcut` at all.
+                 */
+                settingsChanged: () => {
+                    registerGlobalHotkey();
                 }
             }
         });
@@ -456,9 +733,23 @@ async function boot(): Promise<void> {
 
     mainWindow = createWindow();
     registerGlobalHotkey();
+    // Best-effort and never blocking: a CLI that could not be linked is a log line (and, when
+    // it is a real repair we could not do, one notification per build), not a failed launch.
+    try {
+        runCliInstallPolicy();
+    } catch (error) {
+        logError('cli-install failed', error);
+    }
     // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
     // signed build) and what it logs when it declines. No network call happens by default.
-    void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform });
+    void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
+        (outcome) => {
+            updaterStarted = outcome.started;
+        },
+        () => {
+            updaterStarted = false;
+        }
+    );
     quitGate = installQuitGate({
         counts: () => status?.counts ?? { running: 0, waiting: 0, workspaces: [], panes: [], waitingPaneIDs: [] },
         settingsPath: settingsFile(app.getPath('userData')),
@@ -479,12 +770,19 @@ if (!app.requestSingleInstanceLock()) {
     app.on('second-instance', (_event, argv) => {
         showWindow();
         for (const arg of argv.slice(1)) {
-            if (!arg.startsWith('-')) forwardOpen(arg);
+            // CONT-124's filter: `open` renders whatever path it is handed AS MARKDOWN, so an
+            // unfiltered forward would turn `open -a Nex.app photo.png` into a pane showing PNG
+            // bytes as markdown source. `AppDelegate.swift:45-51` filtered for the same reason.
+            if (!arg.startsWith('-') && isForwardableOpenPath(arg)) forwardOpen(arg);
         }
     });
 
     app.on('open-file', (event, filePath) => {
         event.preventDefault();
+        if (!isForwardableOpenPath(filePath)) {
+            log(`open-file: ignoring ${filePath} (not a markdown file)`);
+            return;
+        }
         forwardOpen(filePath);
     });
 

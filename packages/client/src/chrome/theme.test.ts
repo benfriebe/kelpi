@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
     CHROME_TOKEN_FALLBACKS,
     DARK_CHROME_THEME,
+    DEFAULT_SIDEBAR_TINT,
     LIGHT_CHROME_THEME,
+    SIDEBAR_TINT_VARS,
     autoTextColor,
     chromeBucket,
     chromeElapsedLabel,
@@ -18,6 +20,8 @@ import {
     presetChromeTheme,
     resolveChromeTheme,
     resolveLabelStyle,
+    sidebarTintCssVars,
+    tintedColor,
     flattenOver,
     withAlpha,
     workspaceColorHex
@@ -179,5 +183,53 @@ describe('chrome formatters', () => {
         expect(clockLabel(new Date(2026, 0, 2, 9, 5))).toBe('09:05');
         expect(middleTruncate('/a/very/long/path/here', 11)).toHaveLength(11);
         expect(middleTruncate('short', 11)).toBe('short');
+    });
+});
+
+// ── sidebar tint knobs (SET-037, SET-038) ───────────────────────────────────────────
+
+describe('sidebarTintCssVars', () => {
+    it('publishes all five knobs as variables', () => {
+        const vars = sidebarTintCssVars(
+            { intensity: 1.4, avatarFill: 0.3, avatarStroke: 0.6, groupFill: 0.25, groupStroke: 0.1 },
+            DARK_CHROME_THEME
+        );
+        expect(vars).toEqual({
+            '--nex-sidebar-intensity': '1.4',
+            '--nex-avatar-fill': '0.3',
+            '--nex-avatar-stroke': '0.6',
+            '--nex-group-fill': '0.25',
+            '--nex-group-stroke': '0.1'
+        });
+    });
+
+    /**
+     * The `-1` sentinel is resolved HERE, not in CSS: "use the appearance preset" is a decision
+     * about the palette, and the two buckets have different band opacities (0.22 dark, 0.3
+     * light) — a CSS fallback could only ever bake in one of them.
+     */
+    it('resolves the -1 group-fill sentinel to the bucket’s preset band opacity', () => {
+        const dark = sidebarTintCssVars({ ...DEFAULT_SIDEBAR_TINT }, DARK_CHROME_THEME);
+        expect(dark['--nex-group-fill']).toBe(String(DARK_CHROME_THEME.groupBandOpacity));
+        const light = sidebarTintCssVars({ ...DEFAULT_SIDEBAR_TINT }, LIGHT_CHROME_THEME);
+        expect(light['--nex-group-fill']).toBe(String(LIGHT_CHROME_THEME.groupBandOpacity));
+    });
+});
+
+describe('tintedColor', () => {
+    it('multiplies the knob by the intensity, in CSS', () => {
+        const expression = tintedColor('#6F9BD8', SIDEBAR_TINT_VARS.avatarFill, 0.2);
+        expect(expression).toContain('#6F9BD8');
+        expect(expression).toContain('var(--nex-avatar-fill, 0.2)');
+        expect(expression).toContain('var(--nex-sidebar-intensity, 1)');
+        // `color-mix` clamps its percentage to 0…100 by spec, which IS `min(1, value ×
+        // intensity)` — so the Swift `effectiveOpacity` rule holds without a clamp of our own.
+        expect(expression.startsWith('color-mix(in srgb,')).toBe(true);
+    });
+
+    it('carries the shipped default as the out-of-provider fallback', () => {
+        expect(tintedColor('#fff', SIDEBAR_TINT_VARS.avatarStroke, 0.45)).toContain(
+            'var(--nex-avatar-stroke, 0.45)'
+        );
     });
 });

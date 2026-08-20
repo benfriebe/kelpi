@@ -9,6 +9,7 @@ const NOOP_ACTIONS: SettingsActions = {
     setKeybinding: vi.fn(),
     resetKeybindings: vi.fn(),
     setGeneralSetting: vi.fn(),
+    setGhosttySetting: vi.fn(),
     setProfiles: vi.fn(),
     addLabelPreset: vi.fn(),
     updateLabelPreset: vi.fn(),
@@ -73,12 +74,15 @@ describe('the Settings window', () => {
         expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
         expect(screen.getByTestId('settings-tab-keybindings')).toBeDefined();
+        // Keybindings is no longer first: General and Repositories precede it, so ArrowUp from
+        // it lands on Repositories rather than wrapping.
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
-        expect(screen.getByTestId('settings-tab-workspaces')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-repositories')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'Home' });
-        expect(screen.getByTestId('settings-tab-keybindings')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-general')).toBeDefined();
+        // End is the LAST tab, which is Web since favourites gained a daemon home.
         fireEvent.keyDown(rail, { key: 'End' });
-        expect(screen.getByTestId('settings-tab-workspaces')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-web')).toBeDefined();
     });
 
     it('keeps a roving tabindex so Tab lands on the selected tab only', () => {

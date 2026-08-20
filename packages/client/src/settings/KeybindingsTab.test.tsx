@@ -12,6 +12,7 @@ function actions(): SettingsActions & { calls: string[] } {
         setKeybinding: (action, trigger) => calls.push(`set:${action}:${trigger ?? 'null'}`),
         resetKeybindings: (action) => calls.push(`reset:${action ?? 'all'}`),
         setGeneralSetting: vi.fn(),
+        setGhosttySetting: vi.fn(),
         setProfiles: vi.fn(),
         addLabelPreset: vi.fn(),
         updateLabelPreset: vi.fn(),

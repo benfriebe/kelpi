@@ -2,11 +2,16 @@
  * The Settings surface (M8): the window behind the gear, ⌘, and the palette's "Settings…".
  *
  *   `SettingsOverlay.tsx` — the modal shell: tab rail, focus trap, Escape, focus hand-back
+ *   `GeneralTab.tsx`      — §13's General tab: worktree base path, repo auto-detect, placement,
+ *                           the TCP listener
  *   `KeybindingsTab.tsx`  — §13.1's table + §13.2's recorder, over `set-keybinding`
- *   `AppearanceTab.tsx`   — the resolved ghostty appearance (read-only, and why)
+ *   `GlobalHotkeySection.tsx` — §8's system-wide hotkey recorder, inside the Keybindings tab
+ *   `AppearanceTab.tsx`   — the chrome palette + presets/share codes (nex config) and the
+ *                           terminal theme/background/font (ghostty config)
  *   `LabelsTab.tsx`       — label presets, over the WS-only preset verbs
  *   `ProfilesTab.tsx`     — §9.5's config-file editor, over `set-profiles`
  *   `WorkspacesTab.tsx`   — the writable general settings (`set-general-setting`)
+ *   `controls.tsx`        — the WRITING controls (debounced colour/slider, segmented, select)
  *   `catalog.ts` / `model.ts` / `recorder.ts` — the pure rules the tabs render
  *
  * Nothing here reads the store or opens a socket: state arrives as props (the daemon's settings
@@ -14,10 +19,38 @@
  */
 
 export { SettingsOverlay, type SettingsOverlayProps } from './SettingsOverlay';
+export { GeneralTab, DEFAULT_TCP_PORT, type GeneralTabProps } from './GeneralTab';
 export { KeybindingsTab, type KeybindingsTabProps } from './KeybindingsTab';
-export { AppearanceTab, type AppearanceTabProps } from './AppearanceTab';
+export {
+    GlobalHotkeySection,
+    WARNING_COLOR,
+    inAppConflict,
+    type GlobalHotkeySectionProps
+} from './GlobalHotkeySection';
+export {
+    AppearanceTab,
+    BUILT_IN_TERMINAL_THEMES,
+    appearancePercentLabel,
+    type AppearanceTabProps
+} from './AppearanceTab';
+export {
+    ColorField,
+    SegmentedField,
+    SelectField,
+    SETTINGS_WRITE_DEBOUNCE_MS,
+    SliderField,
+    TextField,
+    useDebouncedValue
+} from './controls';
 export { LabelsTab, type LabelsTabProps } from './LabelsTab';
+export { WebTab, DEFAULT_FAVOURITES_PATH, type WebTabActions, type WebTabProps } from './WebTab';
 export { ProfilesTab, type ProfilesTabProps } from './ProfilesTab';
+export {
+    RepositoriesTab,
+    filterRepos,
+    type RepositoriesTabProps,
+    type RepositoryEntry
+} from './RepositoriesTab';
 export { WorkspacesTab, FOCUS_DELAY_MAX, FOCUS_DELAY_STEP, type WorkspacesTabProps } from './WorkspacesTab';
 
 export {

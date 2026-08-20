@@ -1,106 +1,713 @@
 /**
- * Settings ▸ Appearance.
+ * Settings ▸ Appearance (SET-023…SET-046).
  *
- * Read-only by design, and the reason is a spec rule rather than an omission:
+ * This tab was read-only through M8 for a reason that has now been fixed rather than argued
+ * with: the daemon parsed `~/.config/ghostty/config` and never wrote it, and the chrome
+ * styling had no daemon-side home at all. Both halves are now writable, and the split between
+ * them is the organising idea of the whole tab:
  *
- *   - the pane colors come from `~/.config/ghostty/config` (content-panes.md §3.1/§3.8), which
- *     ghostty owns — the daemon parses it and never writes it;
- *   - `theme` in `~/.config/nex/config` is, per config-keybindings.md §1.3, "NEVER written back
- *     to this file by the app… a read-at-launch input only". The daemon enforces that: the key
- *     is absent from `WS_WRITABLE_GENERAL_KEYS`, so `set-general-setting theme` is refused with
- *     "'theme' is not a writable general setting". A picker here would be a button that always
- *     fails, so the value is shown with the file that owns it instead.
+ *   - **nex-owned** — the chrome palette, the sidebar tint knobs and the status-bar gauges are
+ *     `key = value` lines in `~/.config/nex/config`, written with `set-general-setting`
+ *     (`@nex/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
+ *     our file.
+ *   - **ghostty-owned** — background, opacity, font and terminal theme belong to ghostty's
+ *     config, written with `set-ghostty-setting`, which touches only the five keys the daemon
+ *     can read back and preserves every other line of a user's file byte-for-byte.
  *
- * What this tab IS, then: the one place a user can see what the client actually resolved —
- * including the daemon's light/dark verdict, which is computed from the background's luminance
- * and drives the chrome bucket, the terminal palette and the daemon-rendered markdown/diff HTML
- * all at once. When those three disagree with expectation, this is the page that says why.
+ * Nothing here holds a copy of the settings. Every control renders from the daemon snapshot
+ * and every gesture is a verb whose result arrives as a `settings-changed` broadcast — so a
+ * hand-edit, a second window and this tab cannot disagree, and the picker you just dragged
+ * settles on whatever the file actually says.
  */
 
 import type { WsSettingsSnapshot } from '@nex/protocol';
-import type { ReactElement } from 'react';
+import { useRef, useState, type ChangeEvent, type ReactElement } from 'react';
 
-import { normalizeHexColor, tokens, withAlpha } from '../chrome';
-import type { SettingsPaths } from './types';
-import { KeyChip, SettingsFooterNote, SettingsRow, SettingsSection } from './ui';
+import {
+    BUILT_IN_CHROME_THEMES,
+    ChromeThemeError,
+    INVALID_THEME_MESSAGE,
+    OVERRIDABLE_CHROME_KEYS,
+    SYSTEM_STAT_KINDS,
+    SYSTEM_STAT_META,
+    builtInStyleTheme,
+    chromeThemeFileJson,
+    chromeThemeShareCode,
+    decodeChromeStyleTheme,
+    normalizeHexColor,
+    parseChromeThemeCode,
+    presetChromeTheme,
+    tokens,
+    withAlpha,
+    type BuiltInChromeTheme,
+    type ChromeBucket,
+    type ChromeStyleTheme,
+    type OverridableChromeKey
+} from '../chrome';
+import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
+import type { SettingsActions, SettingsPaths } from './types';
+import { KeyChip, SettingsButton, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
 export interface AppearanceTabProps {
     readonly settings: WsSettingsSnapshot;
     readonly paths: SettingsPaths;
+    readonly actions: SettingsActions;
+    /** Which override bucket the colour pickers edit — the scheme currently resolved. */
+    readonly bucket?: ChromeBucket | undefined;
 }
 
-function percent(value: number): string {
+/** `ChromeColorKey.displayName`, verbatim. */
+const COLOR_KEY_LABEL: Readonly<Record<OverridableChromeKey, string>> = {
+    windowBackground: 'Window gaps',
+    sidebarBackground: 'Sidebar',
+    footerBackground: 'Status bar / footer',
+    headerBackground: 'Pane header / title bar',
+    surfaceBackground: 'Surface (Settings, sheets, palette)',
+    accent: 'Sidebar highlight',
+    paneFocus: 'Pane focus',
+    divider: 'Dividers / borders',
+    statusRunning: 'Running',
+    statusWaiting: 'Awaiting input',
+    statusInactive: 'Inactive'
+};
+
+/** `ChromeColorKey.isAgentStatus` — the three that get their own section. */
+const AGENT_STATUS_KEYS: readonly OverridableChromeKey[] = ['statusRunning', 'statusWaiting', 'statusInactive'];
+
+function isAgentStatusKey(key: OverridableChromeKey): boolean {
+    return AGENT_STATUS_KEYS.includes(key);
+}
+
+/**
+ * `NexTheme.builtIn` — the ten terminal themes, by their ghostty theme id (which IS the
+ * `theme = <id>` value; the ids are case-sensitive filenames).
+ */
+export const BUILT_IN_TERMINAL_THEMES: readonly { readonly id: string; readonly name: string }[] = [
+    { id: 'Dracula', name: 'Dracula' },
+    { id: 'Catppuccin Mocha', name: 'Catppuccin Mocha' },
+    { id: 'Catppuccin Latte', name: 'Catppuccin Latte' },
+    { id: 'Catppuccin Macchiato', name: 'Catppuccin Macchiato' },
+    { id: 'Catppuccin Frappe', name: 'Catppuccin Frappé' },
+    { id: 'Nord', name: 'Nord' },
+    { id: 'Gruvbox Dark', name: 'Gruvbox Dark' },
+    { id: 'Gruvbox Light', name: 'Gruvbox Light' },
+    { id: 'iTerm2 Solarized Dark', name: 'Solarized Dark' },
+    { id: 'iTerm2 Solarized Light', name: 'Solarized Light' }
+];
+
+function percentLabel(value: number): string {
     return `${String(Math.round(value * 100))}%`;
+}
+
+/**
+ * A compact mock of the chrome — sidebar strip, header bar, three agent dots — painted in a
+ * preset's palette, so the gallery previews how a theme looks before it is applied
+ * (`ThemeSwatch`).
+ */
+function ThemeSwatch(props: { readonly preset: BuiltInChromeTheme }): ReactElement {
+    const palette = props.preset.palette;
+    const hex = (value: string): string => `#${value}`;
+    return (
+        <div
+            aria-hidden
+            className="flex h-[46px] overflow-hidden rounded-md"
+            style={{ background: hex(palette.windowBackground), border: `1px solid ${hex(palette.divider)}` }}
+        >
+            <div
+                className="flex w-[38px] shrink-0 flex-col gap-1 p-1.5"
+                style={{ background: hex(palette.sidebarBackground) }}
+            >
+                <span className="h-1 w-[18px] rounded-full" style={{ background: hex(palette.accent) }} />
+                <span className="h-[3px] w-[13px] rounded-full" style={{ background: hex(palette.divider) }} />
+                <span className="h-[3px] w-[15px] rounded-full" style={{ background: hex(palette.divider) }} />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col" style={{ background: hex(palette.surfaceBackground) }}>
+                <div className="h-[10px] w-full shrink-0" style={{ background: hex(palette.headerBackground) }} />
+                <div className="flex items-center gap-1 px-1.5 pt-1.5">
+                    <span className="h-[5px] w-[5px] rounded-full" style={{ background: hex(palette.statusRunning) }} />
+                    <span className="h-[5px] w-[5px] rounded-full" style={{ background: hex(palette.statusWaiting) }} />
+                    <span className="h-[5px] w-[5px] rounded-full" style={{ background: hex(palette.statusInactive) }} />
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export function AppearanceTab(props: AppearanceTabProps): ReactElement {
     const appearance = props.settings.appearance;
-    const swatch = normalizeHexColor(appearance.backgroundColor);
-    const fill = withAlpha(appearance.backgroundColor, appearance.backgroundOpacity);
+    const chrome = props.settings.chrome;
+    const actions = props.actions;
+    const [status, setStatus] = useState<string | null>(null);
+    const importRef = useRef<HTMLInputElement | null>(null);
+
+    // Which bucket the colour pickers write into. The caller passes the scheme this window is
+    // actually resolved at; without one, fall back to the ghostty background's own verdict —
+    // the same rule that decides the chrome bucket in the first place.
+    const bucket: ChromeBucket = props.bucket ?? (appearance.isDark ? 'dark' : 'light');
+    const preset = presetChromeTheme(bucket);
+
+    /** The resolved value of one overridable key: the override if set, else the preset. */
+    const colorValue = (key: OverridableChromeKey): string => {
+        const override = chrome.colors[`${bucket}:${key}`];
+        const hex = override === undefined ? null : normalizeHexColor(override);
+        return hex ?? (preset[key] as string);
+    };
+
+    const writeColors = (next: Readonly<Record<string, string>>): void => {
+        // The whole map on one line, sorted, so two clients writing the same overrides produce
+        // byte-identical files (`serializeChromeColors`'s contract, mirrored here).
+        const sorted: Record<string, string> = {};
+        for (const key of Object.keys(next).sort()) sorted[key] = next[key] as string;
+        actions.setGeneralSetting('chrome-colors', JSON.stringify(sorted));
+    };
+
+    const setColor = (key: OverridableChromeKey, hex: string): void => {
+        const normalized = normalizeHexColor(hex);
+        if (normalized === null) return;
+        writeColors({ ...chrome.colors, [`${bucket}:${key}`]: normalized.replace(/^#/, '') });
+    };
+
+    /** The current chrome styling captured as a shareable document (`currentTheme`). */
+    const currentTheme = (name?: string): ChromeStyleTheme => ({
+        version: 1,
+        ...(name === undefined ? {} : { name }),
+        colorOverrides: { ...chrome.colors },
+        sidebarColorIntensity: chrome.sidebarColorIntensity,
+        sidebarAvatarFillOpacity: chrome.sidebarAvatarFill,
+        sidebarAvatarStrokeOpacity: chrome.sidebarAvatarStroke,
+        sidebarGroupFillOpacity: chrome.sidebarGroupFill,
+        sidebarGroupStrokeOpacity: chrome.sidebarGroupStroke,
+        sparklineColorHex: chrome.sparklineColor,
+        sparklineWidth: chrome.sparklineWidth,
+        sparklineStyle: chrome.sparklineStyle
+    });
+
+    /**
+     * SET-030: a style theme overwrites the colour overrides (BOTH buckets), the four sidebar
+     * opacities, the intensity and all three sparkline fields — and deliberately leaves the
+     * recipient's chrome appearance mode and terminal background alone.
+     */
+    const applyStyleTheme = (theme: ChromeStyleTheme): void => {
+        writeColors(theme.colorOverrides);
+        actions.setGeneralSetting('sidebar-color-intensity', String(theme.sidebarColorIntensity));
+        actions.setGeneralSetting('sidebar-avatar-fill', String(theme.sidebarAvatarFillOpacity));
+        actions.setGeneralSetting('sidebar-avatar-stroke', String(theme.sidebarAvatarStrokeOpacity));
+        actions.setGeneralSetting('sidebar-group-fill', String(theme.sidebarGroupFillOpacity));
+        actions.setGeneralSetting('sidebar-group-stroke', String(theme.sidebarGroupStrokeOpacity));
+        actions.setGeneralSetting('sparkline-color', theme.sparklineColorHex);
+        actions.setGeneralSetting('sparkline-width', String(Math.round(theme.sparklineWidth)));
+        actions.setGeneralSetting('sparkline-style', theme.sparklineStyle);
+    };
+
+    const applyPreset = (entry: BuiltInChromeTheme): void => {
+        // SET-024: switch to the palette's native mode FIRST, then overwrite the styling.
+        actions.setGeneralSetting('chrome-appearance', entry.appearance);
+        applyStyleTheme(builtInStyleTheme(entry));
+        setStatus(`Applied “${entry.name}” (${entry.appearance === 'dark' ? 'Dark' : 'Light'}).`);
+    };
+
+    const exportTheme = (): void => {
+        const name = 'MyTheme';
+        try {
+            const blob = new Blob([chromeThemeFileJson(currentTheme(name))], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `${name}.nextheme`;
+            anchor.click();
+            // Revoke on the next tick: revoking synchronously can beat the download starting.
+            setTimeout(() => {
+                URL.revokeObjectURL(url);
+            }, 0);
+            setStatus(`Exported “${name}”.`);
+        } catch (error) {
+            setStatus(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+
+    const importTheme = (event: ChangeEvent<HTMLInputElement>): void => {
+        const file = event.target.files?.[0];
+        // Clear the input so re-picking the SAME file fires `change` again.
+        event.target.value = '';
+        if (file === undefined) return;
+        void file
+            .text()
+            .then((text) => {
+                const theme = decodeChromeStyleTheme(JSON.parse(text));
+                applyStyleTheme(theme);
+                const label = theme.name ?? file.name.replace(/\.[^.]+$/, '');
+                setStatus(`Imported “${label}”.`);
+            })
+            .catch((error: unknown) => {
+                setStatus(error instanceof ChromeThemeError ? error.message : INVALID_THEME_MESSAGE);
+            });
+    };
+
+    const copyCode = (): void => {
+        void navigator.clipboard
+            ?.writeText(chromeThemeShareCode(currentTheme()))
+            .then(() => {
+                setStatus('Theme code copied to the clipboard.');
+            })
+            .catch(() => {
+                setStatus("Couldn't generate a theme code.");
+            });
+    };
+
+    const pasteCode = (): void => {
+        void navigator.clipboard
+            ?.readText()
+            .then((text) => {
+                if (text.trim() === '') {
+                    setStatus('The clipboard has no theme code to paste.');
+                    return;
+                }
+                const theme = parseChromeThemeCode(text);
+                applyStyleTheme(theme);
+                setStatus(
+                    `Imported theme from the clipboard${theme.name === undefined ? '' : ` (“${theme.name}”)`}.`
+                );
+            })
+            .catch((error: unknown) => {
+                setStatus(
+                    error instanceof ChromeThemeError ? error.message : "That clipboard text isn't a Nex theme."
+                );
+            });
+    };
+
+    const setStatEnabled = (kind: string, enabled: boolean): void => {
+        const next = new Set(chrome.enabledSystemStats);
+        if (enabled) next.add(kind);
+        else next.delete(kind);
+        // Sorted on the wire, matching the Swift comma-joined sorted string; the FOOTER
+        // re-imposes canonical order, so the two orders never have to agree.
+        actions.setGeneralSetting('system-stats', [...next].sort().join(','));
+    };
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-appearance">
             <SettingsSection
-                title="Terminal surface"
-                hint="Parsed from the ghostty config; every pane — terminal, markdown, diff, scratchpad — is painted with it."
-                testID="appearance-surface"
+                title="Preset themes"
+                hint="One-click chrome palettes based on popular editor themes. Each recolours the sidebar, title bar, status bar and agent dots, and switches Light/Dark to suit. Your terminal theme is unchanged; tweak any colour below afterwards."
+                testID="appearance-presets"
             >
-                <SettingsRow label="Background" detail={appearance.backgroundColor} testID="appearance-background">
-                    <span
-                        data-testid="appearance-swatch"
-                        data-color={swatch}
-                        className="h-5 w-9 rounded"
-                        style={{ background: fill, border: `1px solid ${tokens.divider}` }}
-                        aria-label={`Background ${appearance.backgroundColor}`}
-                        role="img"
+                <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}>
+                    {BUILT_IN_CHROME_THEMES.map((entry) => (
+                        <button
+                            key={entry.name}
+                            type="button"
+                            data-testid={`theme-preset-${entry.name.toLowerCase().replace(/\s+/g, '-')}`}
+                            title={`Apply the ${entry.name} theme (${entry.appearance === 'dark' ? 'Dark' : 'Light'})`}
+                            className="flex flex-col gap-1 text-left"
+                            onClick={() => {
+                                applyPreset(entry);
+                            }}
+                        >
+                            <ThemeSwatch preset={entry} />
+                            <span className="truncate text-[11px]" style={{ color: tokens.textSecondary }}>
+                                {entry.name}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            </SettingsSection>
+
+            <SettingsSection title="Save & share" testID="appearance-share">
+                <div className="flex flex-wrap items-center gap-2">
+                    <SettingsButton testID="theme-export" onClick={exportTheme}>
+                        Export…
+                    </SettingsButton>
+                    <SettingsButton
+                        testID="theme-import"
+                        onClick={() => {
+                            importRef.current?.click();
+                        }}
+                    >
+                        Import…
+                    </SettingsButton>
+                    <span className="flex-1" />
+                    <SettingsButton testID="theme-copy-code" onClick={copyCode}>
+                        Copy Code
+                    </SettingsButton>
+                    <SettingsButton testID="theme-paste-code" onClick={pasteCode}>
+                        Paste Code
+                    </SettingsButton>
+                </div>
+                <input
+                    ref={importRef}
+                    type="file"
+                    accept=".nextheme,.json,application/json"
+                    className="hidden"
+                    data-testid="theme-import-input"
+                    aria-hidden
+                    tabIndex={-1}
+                    onChange={importTheme}
+                />
+                <p className="text-[11px]" style={{ color: tokens.textTertiary }} data-testid="theme-status">
+                    {status ??
+                        'Save your custom chrome colours and sidebar styling as a shareable .nextheme file or a copyable code. Importing restyles the chrome without changing your light/dark mode or terminal background.'}
+                </p>
+            </SettingsSection>
+
+            <SettingsSection
+                title="Chrome"
+                hint="Themes the Nex window chrome (sidebar, title bar, status bar). Independent of the terminal theme below."
+                testID="appearance-chrome"
+            >
+                <SegmentedField
+                    label="Appearance"
+                    testID="chrome-appearance"
+                    value={chrome.appearance}
+                    options={[
+                        { value: 'system', label: 'System' },
+                        { value: 'light', label: 'Light' },
+                        { value: 'dark', label: 'Dark' }
+                    ]}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('chrome-appearance', next);
+                    }}
+                />
+            </SettingsSection>
+
+            <SettingsSection title="Chrome colours" testID="appearance-colors">
+                {OVERRIDABLE_CHROME_KEYS.filter((key) => !isAgentStatusKey(key)).map((key) => (
+                    <ColorField
+                        key={key}
+                        testID={`chrome-color-${key}`}
+                        label={COLOR_KEY_LABEL[key]}
+                        value={colorValue(key)}
+                        onChange={(hex) => {
+                            setColor(key, hex);
+                        }}
                     />
-                </SettingsRow>
-                <SettingsRow
+                ))}
+                <div className="flex items-center justify-between gap-3">
+                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                        Editing the {bucket === 'dark' ? 'Dark' : 'Light'} palette — switch Appearance above to edit
+                        the other.
+                    </span>
+                    <SettingsButton
+                        testID="chrome-colors-reset"
+                        disabled={Object.keys(chrome.colors).length === 0}
+                        onClick={() => {
+                            // SET-034: clears BOTH buckets and blanks the stored JSON.
+                            writeColors({});
+                            setStatus('Chrome colours reset.');
+                        }}
+                    >
+                        Reset
+                    </SettingsButton>
+                </div>
+            </SettingsSection>
+
+            <SettingsSection
+                title="Agent status"
+                hint="The dot / badge colour shown for each agent state across the status bar, sidebar, pane headers, title bar and menu-bar icon."
+                testID="appearance-agent-colors"
+            >
+                {AGENT_STATUS_KEYS.map((key) => (
+                    <ColorField
+                        key={key}
+                        testID={`chrome-color-${key}`}
+                        label={COLOR_KEY_LABEL[key]}
+                        value={colorValue(key)}
+                        onChange={(hex) => {
+                            setColor(key, hex);
+                        }}
+                    />
+                ))}
+            </SettingsSection>
+
+            <SettingsSection
+                title="Sidebar"
+                hint="Fill = colour wash, border = outline. The intensity multiplies both."
+                testID="appearance-sidebar"
+            >
+                <SliderField
+                    label="Colour intensity"
+                    testID="sidebar-intensity"
+                    detail="Scales how vivid the group bands and workspace avatars are."
+                    value={chrome.sidebarColorIntensity}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('sidebar-color-intensity', next.toFixed(2));
+                    }}
+                />
+                <SliderField
+                    label="Avatar fill"
+                    testID="sidebar-avatar-fill"
+                    value={chrome.sidebarAvatarFill}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('sidebar-avatar-fill', next.toFixed(2));
+                    }}
+                />
+                <SliderField
+                    label="Avatar border"
+                    testID="sidebar-avatar-stroke"
+                    value={chrome.sidebarAvatarStroke}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('sidebar-avatar-stroke', next.toFixed(2));
+                    }}
+                />
+                <SliderField
+                    label="Group band fill"
+                    testID="sidebar-group-fill"
+                    // -1 means "use the appearance preset"; the slider shows the preset value it
+                    // stands for rather than an impossible negative percentage.
+                    detail={chrome.sidebarGroupFill < 0 ? 'Following the appearance preset.' : undefined}
+                    value={chrome.sidebarGroupFill < 0 ? preset.groupBandOpacity : chrome.sidebarGroupFill}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('sidebar-group-fill', next.toFixed(2));
+                    }}
+                />
+                <SliderField
+                    label="Group band border"
+                    testID="sidebar-group-stroke"
+                    value={chrome.sidebarGroupStroke}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGeneralSetting('sidebar-group-stroke', next.toFixed(2));
+                    }}
+                />
+            </SettingsSection>
+
+            <SettingsSection
+                title="Terminal"
+                hint="These four keys belong to ghostty and are written to its config file; every other line in it is preserved exactly."
+                testID="appearance-terminal"
+            >
+                <SelectField
+                    label="Theme"
+                    testID="terminal-theme"
+                    detail="A ghostty theme id. Choosing one hands the background to the theme."
+                    value={appearance.theme ?? ''}
+                    options={[
+                        { value: '', label: 'None (Custom)' },
+                        ...BUILT_IN_TERMINAL_THEMES.map((entry) => ({ value: entry.id, label: entry.name }))
+                    ]}
+                    onChange={(next) => {
+                        if (next === '') {
+                            // SET-040's inverse: dropping the theme returns to the custom
+                            // background path, so the key is REMOVED rather than blanked.
+                            actions.setGhosttySetting('theme', null);
+                            return;
+                        }
+                        actions.setGhosttySetting('theme', next);
+                        // SET-040: a theme owns the background, so an explicit `background`
+                        // line would silently win over it. Removing it is what makes the
+                        // picker mean what it says.
+                        actions.setGhosttySetting('background', null);
+                    }}
+                />
+
+                {appearance.theme === null ? (
+                    <ColorField
+                        label="Background colour"
+                        testID="terminal-background"
+                        detail="Painted behind every pane — terminal, markdown, diff, scratchpad."
+                        value={appearance.backgroundColor}
+                        onChange={(hex) => {
+                            const normalized = normalizeHexColor(hex);
+                            if (normalized === null) return;
+                            actions.setGhosttySetting('background', normalized.toLowerCase());
+                        }}
+                    />
+                ) : (
+                    <SettingsRow
+                        label="Background colour"
+                        detail="Hidden while a theme is selected — the theme owns the background. Choose “None (Custom)” to set one."
+                        testID="terminal-background-locked"
+                    >
+                        <span
+                            data-testid="appearance-swatch"
+                            data-color={normalizeHexColor(appearance.backgroundColor)}
+                            role="img"
+                            aria-label={`Background ${appearance.backgroundColor}`}
+                            className="h-5 w-9 rounded"
+                            style={{
+                                background: withAlpha(appearance.backgroundColor, appearance.backgroundOpacity),
+                                border: `1px solid ${tokens.divider}`
+                            }}
+                        />
+                    </SettingsRow>
+                )}
+
+                <SliderField
                     label="Background opacity"
+                    testID="terminal-opacity"
                     detail="Blended into every pane fill as rgba(background, opacity)."
-                    testID="appearance-opacity"
-                >
-                    <KeyChip>{percent(appearance.backgroundOpacity)}</KeyChip>
-                </SettingsRow>
-                <SettingsRow
-                    label="Font"
+                    value={appearance.backgroundOpacity}
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    onChange={(next) => {
+                        actions.setGhosttySetting('background-opacity', next.toFixed(2));
+                    }}
+                />
+
+                <TextField
+                    label="Font family"
+                    testID="terminal-font-family"
                     detail="Blank means the renderer's own default."
-                    testID="appearance-font"
-                >
-                    <KeyChip>{appearance.fontFamily ?? 'default'}</KeyChip>
-                    <KeyChip>{appearance.fontSize === null ? 'default' : `${String(appearance.fontSize)}px`}</KeyChip>
-                </SettingsRow>
+                    placeholder="default"
+                    value={appearance.fontFamily ?? ''}
+                    onCommit={(next) => {
+                        actions.setGhosttySetting('font-family', next.trim() === '' ? null : next.trim());
+                    }}
+                />
+                <SliderField
+                    label="Font size"
+                    testID="terminal-font-size"
+                    value={appearance.fontSize ?? 13}
+                    min={8}
+                    max={32}
+                    step={1}
+                    format={(value) => `${String(Math.round(value))}px`}
+                    onChange={(next) => {
+                        actions.setGhosttySetting('font-size', String(Math.round(next)));
+                    }}
+                />
+
                 <SettingsRow
                     label="Resolved appearance"
-                    detail="The daemon's luminance verdict on the background — it, not the OS setting, picks light or dark."
+                    detail="The daemon's luminance verdict on the background — it, not the OS setting, picks light or dark for panes."
                     testID="appearance-bucket"
                 >
                     <KeyChip>{appearance.isDark ? 'dark' : 'light'}</KeyChip>
                 </SettingsRow>
-                <SettingsRow label="ghostty theme" detail="The theme line in the ghostty config, passed through." testID="appearance-ghostty-theme">
-                    <KeyChip>{appearance.theme ?? 'none'}</KeyChip>
-                </SettingsRow>
             </SettingsSection>
 
             <SettingsSection
-                title="Terminal theme"
-                hint="A built-in theme id, read from the nex config at launch."
-                testID="appearance-theme"
+                title="Status bar"
+                hint="Live system metrics on the right of the bottom status bar. Hover any metric for a detail graph over time."
+                testID="appearance-status-bar"
             >
-                <SettingsRow
-                    label="theme"
-                    detail="Read-only: the app never writes this key back — edit the config file to change it."
-                    testID="appearance-nex-theme"
-                >
-                    <KeyChip>{props.settings.general.theme ?? 'none'}</KeyChip>
+                <SettingsRow label="Show system stats" testID="stats-master-row">
+                    <SettingsToggle
+                        testID="stats-master-toggle"
+                        label="Show system stats"
+                        checked={chrome.showSystemStats}
+                        onChange={(next) => {
+                            actions.setGeneralSetting('show-system-stats', next ? 'true' : 'false');
+                        }}
+                    />
                 </SettingsRow>
+
+                {chrome.showSystemStats ? (
+                    <>
+                        <div className="ml-4 flex flex-col gap-1.5" data-testid="stats-kinds">
+                            {SYSTEM_STAT_KINDS.map((kind) => (
+                                <SettingsRow
+                                    key={kind}
+                                    label={SYSTEM_STAT_META[kind].displayName}
+                                    testID={`stats-kind-${kind}`}
+                                >
+                                    <SettingsToggle
+                                        testID={`stats-kind-toggle-${kind}`}
+                                        label={SYSTEM_STAT_META[kind].displayName}
+                                        checked={chrome.enabledSystemStats.includes(kind)}
+                                        onChange={(next) => {
+                                            setStatEnabled(kind, next);
+                                        }}
+                                    />
+                                </SettingsRow>
+                            ))}
+                        </div>
+
+                        <details className="rounded" data-testid="stats-graphs">
+                            <summary className="cursor-pointer px-2 py-1 text-[12px]" style={{ color: tokens.textPrimary }}>
+                                Mini graphs
+                            </summary>
+                            <div className="mt-1.5 flex flex-col gap-1.5">
+                                <SettingsRow label="Show mini graphs" testID="stats-graphs-row">
+                                    <SettingsToggle
+                                        testID="stats-graphs-toggle"
+                                        label="Show mini graphs"
+                                        checked={chrome.showSystemStatGraphs}
+                                        onChange={(next) => {
+                                            actions.setGeneralSetting(
+                                                'show-system-stat-graphs',
+                                                next ? 'true' : 'false'
+                                            );
+                                        }}
+                                    />
+                                </SettingsRow>
+                                <SegmentedField
+                                    label="Graph style"
+                                    testID="sparkline-style"
+                                    value={chrome.sparklineStyle}
+                                    options={[
+                                        { value: 'line', label: 'Line' },
+                                        { value: 'dots', label: 'Stacked dots' }
+                                    ]}
+                                    onChange={(next) => {
+                                        actions.setGeneralSetting('sparkline-style', next);
+                                    }}
+                                />
+                                <ColorField
+                                    label="Graph colour"
+                                    testID="sparkline-color"
+                                    // An empty stored hex means "adaptive": the picker has to
+                                    // show SOMETHING, so it shows the tone the footer actually
+                                    // draws with, and "Reset" is what puts it back to adaptive.
+                                    value={chrome.sparklineColor === '' ? preset.textSecondary : chrome.sparklineColor}
+                                    onChange={(hex) => {
+                                        const normalized = normalizeHexColor(hex);
+                                        if (normalized === null) return;
+                                        actions.setGeneralSetting('sparkline-color', normalized.toLowerCase());
+                                    }}
+                                />
+                                <SliderField
+                                    label="Graph width"
+                                    testID="sparkline-width"
+                                    value={chrome.sparklineWidth}
+                                    min={16}
+                                    max={80}
+                                    step={2}
+                                    format={(value) => String(Math.round(value))}
+                                    onChange={(next) => {
+                                        actions.setGeneralSetting('sparkline-width', String(Math.round(next)));
+                                    }}
+                                />
+                                <div className="flex justify-end">
+                                    <SettingsButton
+                                        testID="sparkline-color-reset"
+                                        onClick={() => {
+                                            // An empty hex is the documented "adaptive chrome
+                                            // default" value, not a cleared setting.
+                                            actions.setGeneralSetting('sparkline-color', '');
+                                        }}
+                                    >
+                                        Reset graph colour
+                                    </SettingsButton>
+                                </div>
+                            </div>
+                        </details>
+                    </>
+                ) : null}
             </SettingsSection>
 
             <SettingsFooterNote>
-                Colors and fonts: <span className="font-mono">{props.paths.ghosttyConfig}</span>. Theme id:{' '}
-                <span className="font-mono">{props.paths.nexConfig}</span>. Both are watched — save the file and
-                this window follows.
+                Terminal colours and fonts: <span className="font-mono">{props.paths.ghosttyConfig}</span>. Chrome
+                palette, sidebar and status bar: <span className="font-mono">{props.paths.nexConfig}</span>. Both are
+                watched — save either file and this window follows.
             </SettingsFooterNote>
         </div>
     );
 }
+
+/** Re-exported for the tests and the audit: the exact percent readout the sliders show. */
+export { percentLabel as appearancePercentLabel };

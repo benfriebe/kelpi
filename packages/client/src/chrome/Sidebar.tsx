@@ -68,16 +68,26 @@ import {
     type DropTarget,
     type SidebarOrderModel
 } from './sidebar-model';
-import { resolveLabelStyle, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
+import {
+    SIDEBAR_TINT_VARS,
+    resolveLabelStyle,
+    tintedColor,
+    withAlpha,
+    workspaceColorHex,
+    type ChromeBucket
+} from './theme';
 import { tokens } from './tokens';
 import {
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeLabelPreset,
+    type ChromeRepo,
     type ChromeSidebarEntry,
     type ChromeWorkspace,
-    type SidebarCallbacks
+    type SidebarCallbacks,
+    type WorkspaceWorktreeRequest
 } from './types';
+import { worktreePreview } from './worktree';
 
 const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_ROW_HEIGHT = 34;
@@ -164,7 +174,14 @@ function Avatar(props: AvatarProps): ReactElement {
             <span
                 aria-hidden
                 className="absolute inset-0 rounded-[5px]"
-                style={{ background: withAlpha(hex, 0.2), border: `1px solid ${withAlpha(hex, 0.45)}` }}
+                // SET-038: the fill and border opacities are user settings, published as CSS
+                // variables by the theme container (`sidebarTintCssVars`) rather than threaded
+                // down as props — see `tintedColor`. The literals are the shipped defaults and
+                // the fallback for a fixture mounted outside a provider.
+                style={{
+                    background: tintedColor(hex, SIDEBAR_TINT_VARS.avatarFill, 0.2),
+                    border: `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.avatarStroke, 0.45)}`
+                }}
             />
             <span
                 className="relative"
@@ -475,8 +492,13 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                     ? withAlpha('#6F9BD8', 0.18)
                     : group.color === null
                       ? withAlpha('#8A8A92', 0.16)
-                      : withAlpha(hex, 0.22),
-                border: props.dropPreview ? `1px solid ${tokens.accent}` : '1px solid transparent'
+                      // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
+                      // appearance preset's band opacity before it reaches the variable, so the
+                      // default here is the preset value the band has always used.
+                      : tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
+                border: props.dropPreview
+                    ? `1px solid ${tokens.accent}`
+                    : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`
             }}
             onMouseDown={(event) => {
                 props.onDragStart(group.id, event);
@@ -567,6 +589,22 @@ export interface SidebarProps extends SidebarCallbacks {
      * the tab vocabulary lives in `settings/`, not here.
      */
     readonly onOpenSettings?: ((section?: 'labels' | undefined) => void) | undefined;
+    /**
+     * The repo registry, for the New Workspace form's "Create git worktree" section (§WS-078).
+     * Empty (the default) simply hides the section — the form is the plain name field it was.
+     */
+    readonly repos?: readonly ChromeRepo[] | undefined;
+    /**
+     * How many agents a workspace still has running (`activeAgentCount` — visible AND parked
+     * panes). It turns the delete confirmation into `WorkspaceDeleteGate`'s alert: the count in
+     * the message, and a "Don't ask again" that writes `confirm-workspace-delete` (WS-108).
+     * Absent = every delete shows the plain confirmation, which is what it did before.
+     */
+    readonly activeAgentCount?: ((workspaceID: string) => number) | undefined;
+    /** The daemon's `confirm-workspace-delete` setting; default true, as the config's is. */
+    readonly confirmDeleteWhenActive?: boolean | undefined;
+    /** The alert's suppression button — honoured whichever button ended the dialog. */
+    readonly onSuppressDeleteConfirm?: (() => void) | undefined;
 }
 
 interface DragState {
@@ -592,8 +630,20 @@ type MenuState =
 
 type RenameState = { readonly kind: 'workspace' | 'group'; readonly id: string };
 type ConfirmState =
-    | { readonly kind: 'workspace'; readonly id: string; readonly name: string }
-    | { readonly kind: 'group'; readonly id: string; readonly name: string };
+    | {
+          readonly kind: 'workspace';
+          readonly id: string;
+          readonly name: string;
+          /**
+           * Agents this workspace would terminate. > 0 turns the plain confirmation into
+           * `WorkspaceDeleteGate`'s alert — the count in the message plus a "Don't ask again"
+           * (WS-108) — and 0 leaves it exactly as it was.
+           */
+          readonly activeAgents?: number | undefined;
+      }
+    | { readonly kind: 'group'; readonly id: string; readonly name: string }
+    /** §WS-060: one confirmation for the whole selection, never N prompts. */
+    | { readonly kind: 'workspaces'; readonly ids: readonly string[] };
 
 export function Sidebar(props: SidebarProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
@@ -607,7 +657,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [menu, setMenu] = useState<MenuState | null>(null);
     const [rename, setRename] = useState<RenameState | null>(null);
     const [confirm, setConfirm] = useState<ConfirmState | null>(null);
-    const [newForm, setNewForm] = useState<{ kind: 'workspace' | 'group'; groupID: string | null } | null>(null);
+    const [newForm, setNewForm] = useState<{
+        kind: 'workspace' | 'group';
+        groupID: string | null;
+        /** Present for the bulk "Group N Workspaces…" flow: the members to create it around. */
+        workspaceIDs?: readonly string[];
+    } | null>(null);
     const [internalSelection, setInternalSelection] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
     const [dragID, setDragID] = useState<string | null>(null);
     /** The group a preview-only `ontoGroupHeader` target is tinting (§5.5). */
@@ -1059,6 +1114,182 @@ export function Sidebar(props: SidebarProps): ReactElement {
         [props]
     );
 
+    /**
+     * Selected workspaces in SIDEBAR order, with any selected member the sidebar cannot show
+     * (a collapsed group's child) appended. §WS-057: the bulk menu's counts must cover the whole
+     * live selection, not just the rows on screen, or the tri-state would lie the moment a group
+     * is collapsed.
+     */
+    const orderedSelection = useCallback((): string[] => {
+        const visible = visibleOrder.filter((id) => selection.has(id));
+        const hidden = [...selection]
+            .filter((id) => !visible.includes(id) && workspaceByID.has(id))
+            .sort();
+        return [...visible, ...hidden];
+    }, [selection, visibleOrder, workspaceByID]);
+
+    /**
+     * §5.6's bulk menu variant (§WS-055…§WS-060): right-clicking a row that is part of a ≥2
+     * selection swaps the whole menu, headed by an inert "N workspaces selected" caption. Every
+     * action here goes out as ONE command for the whole selection.
+     */
+    const bulkMenuItems = useCallback((): MenuItemSpec[] => {
+        const ids = orderedSelection();
+        const count = ids.length;
+        const total = workspaceByID.size;
+        const inAnyGroup = ids.some((id) => groupIDForWorkspace(id) !== null);
+
+        // §WS-057's tri-state: a preset applied to every selected workspace shows a checkmark
+        // and clicking REMOVES it; applied to some shows the dash; clicking anything not
+        // universally applied applies it to all.
+        const labelCount = (label: string): number =>
+            ids.reduce((sum, id) => sum + ((workspaceByID.get(id)?.labels.includes(label) ?? false) ? 1 : 0), 0);
+        const labelRow = (label: string, swatch: string | undefined): MenuItemSpec => {
+            const applied = labelCount(label);
+            const all = count > 0 && applied === count;
+            const state: boolean | 'mixed' = all ? true : applied > 0 ? 'mixed' : false;
+            return {
+                id: `bulk-label:${label}`,
+                label,
+                checked: state,
+                ...(swatch === undefined ? {} : { swatch }),
+                onSelect: () => {
+                    props.onSetBulkLabel?.(ids, label, !all);
+                }
+            };
+        };
+        // Free-form labels present on ANY selected workspace, deduped in selection order.
+        const presetNames = new Set(presets.map((preset) => preset.name));
+        const freeform: string[] = [];
+        for (const id of ids) {
+            for (const label of workspaceByID.get(id)?.labels ?? []) {
+                if (!presetNames.has(label) && !freeform.includes(label)) freeform.push(label);
+            }
+        }
+
+        return [
+            { id: 'bulk-caption', label: `${String(count)} workspaces selected`, kind: 'caption' },
+            {
+                id: 'bulk-color',
+                label: `Color ${String(count)} Workspaces`,
+                submenu: WORKSPACE_COLORS.map((color) => ({
+                    id: `bulk-color:${color}`,
+                    label: color,
+                    swatch: workspaceColorHex(color, bucket),
+                    onSelect: () => {
+                        props.onSetBulkColor?.(ids, color);
+                    }
+                }))
+            },
+            {
+                id: 'bulk-labels',
+                label: `Label ${String(count)} Workspaces`,
+                submenu: [
+                    ...(presets.length === 0 && freeform.length === 0
+                        ? [{ id: 'bulk-no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
+                        : []),
+                    ...presets.map((preset) =>
+                        labelRow(preset.name, resolveLabelStyle(preset.name, presets, bucket).background)
+                    ),
+                    ...(freeform.length === 0
+                        ? []
+                        : [
+                              { id: 'bulk-label-sep', label: '', kind: 'separator' } satisfies MenuItemSpec,
+                              ...freeform.map((label) => labelRow(label, undefined))
+                          ]),
+                    ...(props.onOpenSettings === undefined
+                        ? []
+                        : [
+                              { id: 'bulk-label-sep2', label: '', kind: 'separator' } satisfies MenuItemSpec,
+                              {
+                                  id: 'bulk-manage-labels',
+                                  label: 'Manage Labels…',
+                                  onSelect: () => {
+                                      props.onOpenSettings?.('labels');
+                                  }
+                              } satisfies MenuItemSpec
+                          ])
+                ]
+            },
+            {
+                id: 'bulk-group',
+                label: `Group ${String(count)} Workspaces…`,
+                disabled: props.onCreateGroupForWorkspaces === undefined,
+                onSelect: () => {
+                    setNewForm({ kind: 'group', groupID: null, workspaceIDs: ids });
+                }
+            },
+            ...(groups.length === 0 && !inAnyGroup
+                ? []
+                : [
+                      {
+                          id: 'bulk-move',
+                          label: `Move ${String(count)} Workspaces to Group`,
+                          submenu: [
+                              ...(inAnyGroup
+                                  ? [
+                                        {
+                                            id: 'bulk-move:top',
+                                            label: 'Remove from Group',
+                                            onSelect: () => {
+                                                props.onMoveWorkspaces?.({
+                                                    workspaceIDs: ids,
+                                                    groupID: null,
+                                                    index: baseModel.topLevel.length
+                                                });
+                                            }
+                                        } satisfies MenuItemSpec,
+                                        { id: 'bulk-move:sep', label: '', kind: 'separator' } satisfies MenuItemSpec
+                                    ]
+                                  : []),
+                              ...groups.map(
+                                  (group): MenuItemSpec => ({
+                                      id: `bulk-move:${group.id}`,
+                                      label: group.name,
+                                      // Disabled only when EVERY selected workspace already lives there.
+                                      disabled: ids.every((id) => groupIDForWorkspace(id) === group.id),
+                                      onSelect: () => {
+                                          props.onMoveWorkspaces?.({
+                                              workspaceIDs: ids,
+                                              groupID: group.id,
+                                              index: (baseModel.children.get(group.id) ?? []).length
+                                          });
+                                      }
+                                  })
+                              )
+                          ]
+                      } satisfies MenuItemSpec
+                  ]),
+            { id: 'bulk-sep', label: '', kind: 'separator' },
+            {
+                id: 'bulk-select-all',
+                label: 'Select All Workspaces',
+                disabled: count >= total,
+                onSelect: () => {
+                    setSelection(new Set(workspaceByID.keys()));
+                }
+            },
+            {
+                id: 'bulk-deselect',
+                label: 'Deselect All',
+                onSelect: () => {
+                    setSelection(EMPTY_SELECTION);
+                }
+            },
+            { id: 'bulk-sep2', label: '', kind: 'separator' },
+            {
+                id: 'bulk-delete',
+                label: `Delete ${String(count)} Workspaces…`,
+                danger: true,
+                // §WS-060: deleting the entire list is refused, not merely discouraged.
+                disabled: count >= total,
+                onSelect: () => {
+                    setConfirm({ kind: 'workspaces', ids });
+                }
+            }
+        ];
+    }, [baseModel, bucket, groupIDForWorkspace, groups, orderedSelection, presets, props, setSelection, workspaceByID]);
+
     const workspaceMenuItems = useCallback(
         (workspaceID: string): MenuItemSpec[] => {
             const workspace = workspaceByID.get(workspaceID);
@@ -1172,18 +1403,65 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     ]
                 },
                 { id: 'sep', label: '', kind: 'separator' },
+                // §WS-053: the single-row menu carries the selection verbs too — "Select All"
+                // dimmed once everything is selected, "Deselect All" only while a selection
+                // exists. Select All covers members hidden inside collapsed groups (§WS-045).
+                {
+                    id: 'select-all',
+                    label: 'Select All Workspaces',
+                    disabled: selection.size >= workspaceByID.size,
+                    onSelect: () => {
+                        setSelection(new Set(workspaceByID.keys()));
+                    }
+                },
+                ...(selection.size === 0
+                    ? []
+                    : [
+                          {
+                              id: 'deselect-all',
+                              label: 'Deselect All',
+                              onSelect: () => {
+                                  setSelection(EMPTY_SELECTION);
+                              }
+                          } satisfies MenuItemSpec
+                      ]),
+                { id: 'sep2', label: '', kind: 'separator' },
                 {
                     id: 'delete',
                     label: 'Delete',
                     danger: true,
                     disabled: workspaceByID.size <= 1,
                     onSelect: () => {
-                        setConfirm({ kind: 'workspace', id: workspaceID, name: workspace.name });
+                        // WS-108: the count only enters the dialog while the daemon's
+                        // `confirm-workspace-delete` is on — with it off, the delete is the
+                        // plain confirmation it has always been, and the alert never fires.
+                        const active =
+                            props.confirmDeleteWhenActive === false
+                                ? 0
+                                : (props.activeAgentCount?.(workspaceID) ?? 0);
+                        setConfirm({
+                            kind: 'workspace',
+                            id: workspaceID,
+                            name: workspace.name,
+                            ...(active > 0 ? { activeAgents: active } : {})
+                        });
                     }
                 }
             ];
         },
-        [baseModel, bucket, groupIDForWorkspace, groups, iconSubmenu, presets, props, shortcut, workspaceByID]
+        [
+            baseModel,
+            bucket,
+            groupIDForWorkspace,
+            groups,
+            iconSubmenu,
+            presets,
+            props,
+            selection,
+            setSelection,
+            shortcut,
+            workspaceByID
+        ]
     );
 
     const groupMenuItems = useCallback(
@@ -1258,10 +1536,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
     const menuItems = useMemo((): readonly MenuItemSpec[] => {
         if (menu === null) return [];
+        // §WS-055: a right-click ON a row that belongs to a ≥2 selection is a BULK gesture.
+        if (menu.kind === 'workspace' && selection.size > 1 && selection.has(menu.id)) return bulkMenuItems();
         if (menu.kind === 'workspace') return workspaceMenuItems(menu.id);
         if (menu.kind === 'group') return groupMenuItems(menu.id);
         return backgroundMenuItems();
-    }, [backgroundMenuItems, groupMenuItems, menu, workspaceMenuItems]);
+    }, [backgroundMenuItems, bulkMenuItems, groupMenuItems, menu, selection, workspaceMenuItems]);
 
     /**
      * The row itself is what the menu must not cover (run-B m7): `currentTarget` is the row
@@ -1605,13 +1885,30 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 ) : (
                     <NewEntryForm
                         kind={newForm.kind}
+                        repos={props.repos ?? EMPTY_REPOS}
+                        {...(newForm.workspaceIDs === undefined
+                            ? {}
+                            : { workspaceCount: newForm.workspaceIDs.length })}
                         onCancel={() => {
                             setNewForm(null);
                         }}
-                        onSubmit={(name) => {
-                            if (newForm.kind === 'workspace') props.onCreateWorkspace?.(name, newForm.groupID);
-                            else props.onCreateGroup?.(name);
+                        onSubmit={async (name, worktree) => {
+                            const members = newForm.workspaceIDs;
+                            if (newForm.kind === 'group') {
+                                // §WS-058: a group raised from the bulk menu is created AROUND
+                                // the selection, in one command, and the selection is released.
+                                if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
+                                    props.onCreateGroupForWorkspaces(name, members);
+                                    setSelection(EMPTY_SELECTION);
+                                } else props.onCreateGroup?.(name);
+                                setNewForm(null);
+                                return null;
+                            }
+                            const result = await props.onCreateWorkspace?.(name, newForm.groupID, worktree);
+                            // §WS-079: a failed worktree create keeps the form open, inline.
+                            if (typeof result === 'string') return result;
                             setNewForm(null);
+                            return null;
                         }}
                     />
                 )}
@@ -1646,12 +1943,20 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {confirm === null ? null : (
                 <ConfirmDialog
                     confirm={confirm}
-                    onCancel={() => {
+                    onCancel={(suppress) => {
+                        // macOS HIG (`WorkspaceDeleteGate.swift:78`): the suppression box is
+                        // honoured whichever button ended the dialog, Cancel included.
+                        if (suppress) props.onSuppressDeleteConfirm?.();
                         setConfirm(null);
                     }}
-                    onConfirm={(cascade) => {
+                    onConfirm={(cascade, suppress) => {
+                        if (suppress) props.onSuppressDeleteConfirm?.();
                         if (confirm.kind === 'workspace') props.onDeleteWorkspace?.(confirm.id);
-                        else props.onDeleteGroup?.(confirm.id, cascade);
+                        else if (confirm.kind === 'group') props.onDeleteGroup?.(confirm.id, cascade);
+                        else if (props.onDeleteWorkspaces !== undefined) props.onDeleteWorkspaces(confirm.ids);
+                        // No bulk callback wired: N single deletes still beat doing nothing.
+                        else for (const id of confirm.ids) props.onDeleteWorkspace?.(id);
+                        if (confirm.kind === 'workspaces') setSelection(EMPTY_SELECTION);
                         setConfirm(null);
                     }}
                 />
@@ -1664,45 +1969,202 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
 interface NewEntryFormProps {
     readonly kind: 'workspace' | 'group';
-    readonly onSubmit: (name: string) => void;
+    /** Registry entries offered by the "Create git worktree" section (§WS-078). */
+    readonly repos?: readonly ChromeRepo[] | undefined;
+    /** Set when the bulk menu raised this form: "New Group for N workspaces". */
+    readonly workspaceCount?: number | undefined;
+    readonly onSubmit: (name: string, worktree?: WorkspaceWorktreeRequest | undefined) => Promise<string | null>;
     readonly onCancel: () => void;
 }
 
+/**
+ * The footer's New Workspace / New Group form, plus §WS-078's inline **Create git worktree**
+ * section — the GUI half of `nex workspace create --worktree`.
+ *
+ * Everything the shipped sheet does, in the port's inline form: the branch mirrors the worktree
+ * name until the branch is hand-edited, "Update main first" rides through as `--update-main`,
+ * the preview shows the SANITIZED folder and branch so an unusable name is visible before git
+ * refuses it (issue #218), Create is disabled until both sanitize, a second submit is refused
+ * while `git worktree add` is running, and a failure is rendered inline with the form still
+ * open and Create live again (§WS-079).
+ */
 function NewEntryForm(props: NewEntryFormProps): ReactElement {
+    const repos = props.repos ?? EMPTY_REPOS;
     const [value, setValue] = useState('');
+    const [worktree, setWorktree] = useState(false);
+    const [repoID, setRepoID] = useState<string>(repos[0]?.id ?? '');
+    const [worktreeName, setWorktreeName] = useState('');
+    const [branch, setBranch] = useState('');
+    const [branchEdited, setBranchEdited] = useState(false);
+    const [updateMain, setUpdateMain] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const ref = useRef<HTMLInputElement | null>(null);
     useEffect(() => {
         ref.current?.focus();
     }, []);
+
+    const repo = repos.find((candidate) => candidate.id === repoID) ?? repos[0] ?? null;
+    const preview = worktreePreview({
+        name: worktreeName,
+        branch,
+        base: repo?.worktreeBase ?? ''
+    });
+    const worktreeOn = props.kind === 'workspace' && worktree && repo !== null;
+    const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
+
+    const submit = async (): Promise<void> => {
+        if (!canSubmit) return;
+        setBusy(true);
+        setError(null);
+        const failure = await props.onSubmit(
+            value.trim(),
+            worktreeOn && repo !== null
+                ? { repoID: repo.id, name: worktreeName, branch, updateMain }
+                : undefined
+        );
+        setBusy(false);
+        if (failure !== null) setError(failure);
+    };
+
     return (
         <form
             data-testid={`new-${props.kind}-form`}
-            className="flex items-center gap-1"
+            className="flex flex-col gap-1"
             onSubmit={(event) => {
                 event.preventDefault();
-                props.onSubmit(value.trim());
+                void submit();
             }}
         >
-            <input
-                ref={ref}
-                aria-label={props.kind === 'workspace' ? 'New workspace name' : 'New group name'}
-                placeholder={props.kind === 'workspace' ? 'Workspace name' : 'Group name'}
-                className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                value={value}
-                onChange={(event) => {
-                    setValue(event.target.value);
-                }}
-                onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                        event.stopPropagation();
-                        props.onCancel();
+            <div className="flex items-center gap-1">
+                <input
+                    ref={ref}
+                    aria-label={props.kind === 'workspace' ? 'New workspace name' : 'New group name'}
+                    placeholder={
+                        props.kind === 'workspace'
+                            ? 'Workspace name'
+                            : props.workspaceCount === undefined
+                              ? 'Group name'
+                              : `Group name (${String(props.workspaceCount)} workspaces)`
                     }
-                }}
-            />
-            <button type="submit" className="text-[12px]" style={{ color: tokens.accent }}>
-                Create
-            </button>
+                    className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    value={value}
+                    onChange={(event) => {
+                        setValue(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                            event.stopPropagation();
+                            props.onCancel();
+                        }
+                    }}
+                />
+                <button
+                    type="submit"
+                    data-testid={`new-${props.kind}-submit`}
+                    disabled={!canSubmit}
+                    className="text-[12px]"
+                    style={{ color: canSubmit ? tokens.accent : tokens.textTertiary }}
+                >
+                    {busy ? 'Creating…' : 'Create'}
+                </button>
+            </div>
+
+            {props.kind === 'workspace' && repos.length > 0 ? (
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
+                    <input
+                        type="checkbox"
+                        data-testid="new-workspace-worktree-toggle"
+                        checked={worktree}
+                        onChange={(event) => {
+                            setWorktree(event.target.checked);
+                        }}
+                    />
+                    Create git worktree
+                </label>
+            ) : null}
+
+            {worktreeOn && repo !== null ? (
+                <div className="flex flex-col gap-1 pl-4" data-testid="new-workspace-worktree">
+                    {repos.length > 1 ? (
+                        <select
+                            aria-label="Worktree repository"
+                            data-testid="new-workspace-worktree-repo"
+                            className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
+                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                            value={repo.id}
+                            onChange={(event) => {
+                                setRepoID(event.target.value);
+                            }}
+                        >
+                            {repos.map((candidate) => (
+                                <option key={candidate.id} value={candidate.id} style={{ color: '#000' }}>
+                                    {candidate.name}
+                                </option>
+                            ))}
+                        </select>
+                    ) : null}
+                    <input
+                        aria-label="Worktree name"
+                        data-testid="new-workspace-worktree-name"
+                        placeholder="Worktree name"
+                        className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
+                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        value={worktreeName}
+                        onChange={(event) => {
+                            const next = event.target.value;
+                            setWorktreeName(next);
+                            if (!branchEdited) setBranch(next);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                                event.stopPropagation();
+                                props.onCancel();
+                            }
+                        }}
+                    />
+                    <input
+                        aria-label="Branch name"
+                        data-testid="new-workspace-worktree-branch"
+                        placeholder="Branch name"
+                        className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
+                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        value={branch}
+                        onChange={(event) => {
+                            setBranch(event.target.value);
+                            setBranchEdited(event.target.value !== worktreeName);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                                event.stopPropagation();
+                                props.onCancel();
+                            }
+                        }}
+                    />
+                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
+                        <input
+                            type="checkbox"
+                            data-testid="new-workspace-worktree-update-main"
+                            checked={updateMain}
+                            onChange={(event) => {
+                                setUpdateMain(event.target.checked);
+                            }}
+                        />
+                        Update main first (fetch + branch off origin)
+                    </label>
+                    <div data-testid="new-workspace-worktree-preview" className="text-[10px]" style={{ color: tokens.textTertiary }}>
+                        <div className="truncate">{preview.path}</div>
+                        <div>{preview.branchLine}</div>
+                    </div>
+                </div>
+            ) : null}
+
+            {error === null ? null : (
+                <div data-testid="new-workspace-error" className="text-[11px]" style={{ color: '#E0655C' }}>
+                    {error}
+                </div>
+            )}
         </form>
     );
 }
@@ -1790,19 +2252,34 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
 
 interface ConfirmDialogProps {
     readonly confirm: ConfirmState;
-    readonly onCancel: () => void;
-    readonly onConfirm: (cascade: boolean) => void;
+    readonly onCancel: (suppress: boolean) => void;
+    readonly onConfirm: (cascade: boolean, suppress: boolean) => void;
 }
 
 function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
+    // Hooks before the container guard: a conditional early return above `useState` would make
+    // the hook order depend on the DOM being present.
+    const [suppress, setSuppress] = useState(false);
     const container = globalThis.document?.body;
     if (container === undefined || container === null) return null;
     const isGroup = props.confirm.kind === 'group';
+    const isBulk = props.confirm.kind === 'workspaces';
+    const count = props.confirm.kind === 'workspaces' ? props.confirm.ids.length : 0;
+    /**
+     * WS-108: a workspace with running agents gets `WorkspaceDeleteGate`'s alert instead of the
+     * plain confirmation — the count in the message and a "Don't ask again" that writes the
+     * daemon's `confirm-workspace-delete`. The caller has already applied the setting (0 when
+     * it is off), so this only renders what it was handed.
+     */
+    const activeAgents = props.confirm.kind === 'workspace' ? (props.confirm.activeAgents ?? 0) : 0;
+    const noun = activeAgents === 1 ? 'agent' : 'agents';
+    const them = activeAgents === 1 ? 'it' : 'them';
     return createPortal(
         <div
             data-testid="confirm-dialog"
+            data-active-agents={String(activeAgents)}
             role="dialog"
-            aria-label={isGroup ? 'Delete group' : 'Delete workspace'}
+            aria-label={isGroup ? 'Delete group' : isBulk ? 'Delete workspaces' : 'Delete workspace'}
             className="fixed left-1/2 top-1/3 z-50 w-[320px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
             style={{
                 background: tokens.surfaceBackground,
@@ -1812,10 +2289,44 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
             }}
         >
             <div className="mb-3">
-                {isGroup ? `Delete the group “${props.confirm.name}”?` : `Delete “${props.confirm.name}”?`}
+                {props.confirm.kind === 'group'
+                    ? `Delete the group “${props.confirm.name}”?`
+                    : props.confirm.kind === 'workspace'
+                      ? `Delete “${props.confirm.name}”?`
+                      : `Delete ${String(count)} workspace${count === 1 ? '' : 's'}?`}
+                {isBulk ? (
+                    <div className="mt-1 text-[11px]" style={{ color: tokens.textSecondary }}>
+                        This cannot be undone. Panes and surfaces in these workspaces will be closed.
+                    </div>
+                ) : null}
+                {activeAgents > 0 ? (
+                    <div
+                        data-testid="confirm-active-agents"
+                        className="mt-1 text-[11px]"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        {`This workspace has ${String(activeAgents)} active ${noun}. Deleting it will terminate ${them}.`}
+                    </div>
+                ) : null}
             </div>
+            {activeAgents > 0 ? (
+                <label className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: tokens.textSecondary }}>
+                    <input
+                        type="checkbox"
+                        data-testid="confirm-suppress"
+                        checked={suppress}
+                        onChange={(event) => setSuppress(event.target.checked)}
+                    />
+                    Don&apos;t ask again
+                </label>
+            ) : null}
             <div className="flex justify-end gap-2">
-                <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
+                <button
+                    type="button"
+                    data-testid="confirm-cancel"
+                    style={{ color: tokens.textSecondary }}
+                    onClick={() => props.onCancel(suppress)}
+                >
                     Cancel
                 </button>
                 {isGroup ? (
@@ -1823,7 +2334,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         type="button"
                         style={{ color: tokens.textSecondary }}
                         onClick={() => {
-                            props.onConfirm(true);
+                            props.onConfirm(true, suppress);
                         }}
                     >
                         Delete + Workspaces
@@ -1831,9 +2342,10 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                 ) : null}
                 <button
                     type="button"
+                    data-testid="confirm-delete"
                     style={{ color: '#E0655C' }}
                     onClick={() => {
-                        props.onConfirm(false);
+                        props.onConfirm(false, suppress);
                     }}
                 >
                     Delete
@@ -1845,5 +2357,6 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
 }
 
 const EMPTY_PRESETS: readonly ChromeLabelPreset[] = [];
+const EMPTY_REPOS: readonly ChromeRepo[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
 const EMPTY_OVERRIDES: ReadonlyMap<string, boolean> = new Map<string, boolean>();

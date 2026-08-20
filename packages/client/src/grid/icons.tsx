@@ -28,7 +28,9 @@ export type IconName =
     | 'rename'
     | 'terminal'
     | 'font-smaller'
-    | 'font-larger';
+    | 'font-larger'
+    | 'chevron-up'
+    | 'chevron-down';
 
 const PATHS: Record<IconName, ReactElement> = {
     document: (
@@ -157,7 +159,11 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M1.6 8.4 3.6 3.6l2 4.8M2.3 6.8h2.6" />
             <path d="M7.2 6.4h3.4M8.9 4.7v3.4" />
         </>
-    )
+    ),
+    // The search overlay's previous/next chevrons (`PaneSearchOverlay.tsx`), the same pair the
+    // Swift overlay drew with SF Symbols `chevron.up` / `chevron.down`.
+    'chevron-up': <path d="m3 7.4 3-3 3 3" />,
+    'chevron-down': <path d="m3 4.6 3 3 3-3" />
 };
 
 export interface IconProps {

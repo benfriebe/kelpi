@@ -11,10 +11,56 @@
  * deep (that is all §5.6/§5.7 use) and open on hover, matching the native menus.
  */
 
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import {
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type ReactElement,
+    type ReactNode,
+    type RefObject
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import { tokens } from './tokens';
+
+/** How close to the window edge a submenu may sit before it flips to the other side. */
+const SUBMENU_EDGE_MARGIN = 8;
+
+/**
+ * A submenu opens to the right of its parent — unless there is no room, in which case it opens
+ * to the left instead.
+ *
+ * The parent panel is clamped into the viewport (`menuAnchorFromEvent` below); the submenu was
+ * not, and `left-full` was unconditional, so a menu opened from a row near the window's right
+ * edge put its submenu past the edge entirely. It rendered, it reported a box, and every click
+ * on it landed outside the window — the pane header's Status ▸ submenu was unreachable on a
+ * right-hand pane. Found by docs/audit/run-H, whose "Status ▸ Running reaches the daemon"
+ * assertion failed only in the runs whose target pane happened to sit on the right.
+ *
+ * Measured, not estimated: a submenu's width depends on its longest label, and a "Move to
+ * Workspace ▸" list of workspace names can be far wider than the 180 px minimum. The flip runs
+ * in a layout effect so it lands before the browser paints — a submenu that visibly jumps
+ * sideways after opening would be its own defect.
+ */
+function useSubmenuFlip(open: boolean): { ref: RefObject<HTMLDivElement | null>; flipped: boolean } {
+    const ref = useRef<HTMLDivElement | null>(null);
+    const [flipped, setFlipped] = useState(false);
+    useLayoutEffect(() => {
+        if (!open) {
+            setFlipped(false);
+            return;
+        }
+        const node = ref.current;
+        if (node === null) return;
+        const width = globalThis.innerWidth ?? 0;
+        if (width === 0) return;
+        // `flipped` was reset to false above, so this box is always the right-hand placement's.
+        const box = node.getBoundingClientRect();
+        setFlipped(box.right > width - SUBMENU_EDGE_MARGIN);
+    }, [open]);
+    return { ref, flipped };
+}
 
 export interface MenuItemSpec {
     readonly id: string;
@@ -157,10 +203,11 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
         };
     }, [onClose]);
 
+    const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
+    const submenu = useSubmenuFlip(openSubmenuID !== null && submenuItems !== undefined);
+
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;
-
-    const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
 
     const menu: ReactNode = (
         <div
@@ -193,10 +240,14 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
                     />
                     {openSubmenuID === item.id && submenuItems !== undefined ? (
                         <div
+                            ref={submenu.ref}
                             role="menu"
                             aria-label={item.label}
                             data-testid="context-submenu"
-                            className="absolute left-full top-0 z-50 ml-1 max-h-[320px] min-w-[180px] overflow-auto rounded-lg p-1"
+                            data-submenu-side={submenu.flipped ? 'left' : 'right'}
+                            className={`absolute top-0 z-50 max-h-[320px] min-w-[180px] overflow-auto rounded-lg p-1 ${
+                                submenu.flipped ? 'right-full mr-1' : 'left-full ml-1'
+                            }`}
                             style={PANEL_STYLE}
                         >
                             {submenuItems.map((child) => (

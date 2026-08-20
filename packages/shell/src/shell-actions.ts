@@ -1,0 +1,71 @@
+/**
+ * The daemon's `shell-action` broadcast, decoded (`daemon/src/ws/desktop.ts`).
+ *
+ * Pure on purpose: `status.ts` imports `electron` and therefore cannot be unit-tested under
+ * plain Node (see `vitest.config.mts`), but the *routing decision* — which actions are ours,
+ * and whether a broadcast is addressed to THIS window — is the part with rules in it. It lives
+ * here so those rules have tests, and `status.ts` is left with the side effects.
+ */
+
+/** The three things a client can ask the shell to do. Anything else is ignored. */
+export const SHELL_ACTIONS = ['open-file-dialog', 'install-cli', 'check-for-updates'] as const;
+export type ShellActionName = (typeof SHELL_ACTIONS)[number];
+
+export interface ShellActionRequest {
+    readonly action: ShellActionName;
+    /** Which shell window the requester meant; absent = whichever shell hears it. */
+    readonly windowID: string | null;
+    /** The pane that asked (the ⌘O route), so the opened file lands in its workspace. */
+    readonly paneID: string | null;
+}
+
+function readString(source: Record<string, unknown>, key: string): string | null {
+    const value = source[key];
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+export function parseShellAction(message: Record<string, unknown>): ShellActionRequest | null {
+    const action = readString(message, 'action');
+    if (action === null || !(SHELL_ACTIONS as readonly string[]).includes(action)) return null;
+    return {
+        action: action as ShellActionName,
+        windowID: readString(message, 'windowID'),
+        paneID: readString(message, 'paneID')
+    };
+}
+
+/**
+ * Whether a broadcast addressed to `target` is this shell's to act on.
+ *
+ * The daemon fans out to every attached shell, so the filter is here — the same
+ * fan-out-and-let-the-receiver-decide rule `reveal-pane` uses. An UNADDRESSED request is
+ * everyone's (a browser-only user with one desktop attached still gets a dialog); an addressed
+ * one is only the named window's, so two open desktops never both pop a panel for one click.
+ */
+export function shellActionAppliesHere(target: string | null, ourWindowID: string | undefined): boolean {
+    if (target === null) return true;
+    if (ourWindowID === undefined) return true;
+    return target === ourWindowID;
+}
+
+// ---------------------------------------------------------------------------
+// Finder "Open With" (CONT-123 / CONT-124)
+// ---------------------------------------------------------------------------
+
+/** The extensions `AppDelegate.swift:45-51` forwards; anything else is ignored outright. */
+export const OPEN_FILE_EXTENSIONS = ['md', 'markdown'] as const;
+
+/**
+ * Whether a file handed to us by Finder (or on argv) should become a markdown pane.
+ *
+ * The Swift delegate filtered before forwarding, and the filter matters: `open` opens whatever
+ * path it is given AS MARKDOWN, so an unfiltered forward turns `open -a Nex.app photo.png` into
+ * a pane rendering PNG bytes as markdown source.
+ */
+export function isForwardableOpenPath(filePath: string): boolean {
+    const name = filePath.split('/').pop() ?? filePath;
+    const dot = name.lastIndexOf('.');
+    if (dot <= 0) return false;
+    const extension = name.slice(dot + 1).toLowerCase();
+    return (OPEN_FILE_EXTENSIONS as readonly string[]).includes(extension);
+}

@@ -256,9 +256,35 @@ Failure strings the daemon can author, all stable:
   until a report from the host's own window moves them, and go straight back there when one says
   `visible:false`. Every automation verb behaves identically in both places, which is what keeps
   the headless surface (and its live smoke) honest.
-- **Not implemented daemon-side yet** (client/shell milestones own them): the batch "element
-  pickup" session (§12) beyond `inspect-result --clear`, favourites (§14 — no wire surface),
-  the find-in-page bar (§10), and page **zoom** (`web_zoom_in|out|reset` are bindable actions
-  with no dispatch target). The host already answers `find` and `zoom` as RPC verbs
-  (`shell/src/webhost/dispatch.ts`), so wiring them is a daemon handler, not a port. They add
-  verbs to this table; they do not change the ones above. Tracked in `docs/PARITY.md`.
+### The GUI-only half (find, zoom, element pickup, favourites, storage writes)
+
+All of it is now wired, and none of it has a CLI verb — the Swift app has none either, so these
+are **WS-only** commands (`daemon/src/ws/web-ui.ts`, matched in `ws/sync.ts` before the wire
+decoder) rather than additions to the `nex web` vocabulary.
+
+New host verbs this adds to the tables above:
+
+| verb | kind | args | notes |
+|---|---|---|---|
+| `find` | rpc | `{paneID, tabID, action, needle}` | Was already implemented host-side; the daemon now drives it (§10). Reply `{ok, total, current}`. |
+| `zoom` | rpc | `{paneID, tabID, factor?/delta?/reset?}` | Ditto (§4.2). The daemon sends ±0.1 per step and `reset` for ⌘0; the host clamps to [0.5, 3.0]. |
+| `cookies-set` | rpc | `{paneID, cookie, original?}` | §13.2's write half. Deletes `original` first so a rename cannot leave a stale twin (WEB-052). |
+| `batch-markers` | notify | `{paneID, tabID, items}` | Replace the numbered badges (§12). An empty list tears the page surfaces down. |
+| `batch-clear` | notify | `{paneID, tabID}` | |
+| `batch-highlight` | notify | `{paneID, tabID, itemID, scrollIntoView}` | Panel-origin focus scrolls; page-origin does not (WEB-130). |
+| `batch-unfocus` | notify | `{paneID, tabID}` | |
+| `batch-comment` | notify | `{paneID, tabID, itemID, comment}` | A panel-side edit; the page refuses it while its textarea has focus (WEB-141). |
+
+And one new host **event**: `batch-marker`, carrying the page's own intents — `{id}` (a badge was
+clicked), `{commentChanged:{id, comment}}`, `{dismiss:{id}}`, `{remove:{id}}`.
+
+**Chord forwarding is not on this socket.** A page in a `WebContentsView` has its own keyboard
+focus, so ⌘F / ⌘L / ⌘T never reach Nex's renderer once a user clicks the page. The host takes
+those chords (`shell/src/webhost/keys.ts`), cancels them in the page, and replays them into its
+own window over the daemon's existing `menu-request` → `menu-command` relay. No new message type,
+and the daemon is not involved beyond fanning the relay out.
+
+Where the state lives: the find needle (`webpane/find.ts`) and the batch session
+(`webpane/batch.ts`) are **daemon** state, because the page-side half lives in a page the host
+owns and two windows must see the same marks and the same numbering. Favourites
+(`webpane/favourites.ts`) persist to `favourites.json` beside the database.

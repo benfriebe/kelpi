@@ -386,6 +386,58 @@ export function effectiveOpacity(value: number, intensity: number): number {
     return Math.min(1, Math.max(0, value * intensity));
 }
 
+/** The CSS variables the sidebar tint knobs publish (SET-037, SET-038). */
+export const SIDEBAR_TINT_VARS = {
+    intensity: '--nex-sidebar-intensity',
+    avatarFill: '--nex-avatar-fill',
+    avatarStroke: '--nex-avatar-stroke',
+    groupFill: '--nex-group-fill',
+    groupStroke: '--nex-group-stroke'
+} as const;
+
+export interface SidebarTint extends SidebarFillStroke {
+    /** 0…2; multiplies every value above (SET-037). */
+    readonly intensity: number;
+}
+
+export const DEFAULT_SIDEBAR_TINT: SidebarTint = { ...DEFAULT_SIDEBAR_FILL_STROKE, intensity: 1 };
+
+/**
+ * The tint knobs as CSS variables, ready for the theme container's inline style.
+ *
+ * **Variables rather than props, and that is the whole design.** The values are read at three
+ * places inside a 100 KB `Sidebar.tsx` — the avatar's fill and border, and the group band —
+ * each several components deep. Threading a `tint` prop down to them would mean editing a
+ * dozen call sites in a file several people work in at once; publishing five numbers on the
+ * container the provider already owns means those three places each change by one expression
+ * and nothing else in the tree learns a new prop.
+ *
+ * The `-1` sentinel is resolved HERE (to the bucket's preset band opacity) rather than in CSS,
+ * because "use the preset" is a decision about the palette and CSS has no way to express it.
+ */
+export function sidebarTintCssVars(tint: SidebarTint, theme: ChromeTheme): Record<string, string> {
+    const groupFill = tint.groupFill < 0 ? theme.groupBandOpacity : tint.groupFill;
+    return {
+        [SIDEBAR_TINT_VARS.intensity]: String(tint.intensity),
+        [SIDEBAR_TINT_VARS.avatarFill]: String(tint.avatarFill),
+        [SIDEBAR_TINT_VARS.avatarStroke]: String(tint.avatarStroke),
+        [SIDEBAR_TINT_VARS.groupFill]: String(groupFill),
+        [SIDEBAR_TINT_VARS.groupStroke]: String(tint.groupStroke)
+    };
+}
+
+/**
+ * `hex` at `var(<name>) × intensity`, as a CSS expression.
+ *
+ * `color-mix` clamps its percentage to 0…100 by spec, which is exactly `min(1, value ×
+ * intensity)` — so `effectiveOpacity`'s rule holds without a clamp of our own, and the browser
+ * recomputes it the instant the variable changes. `fallback` keeps a component correct when it
+ * is mounted outside a provider (a fixture, a test), the same contract `tokens.ts` follows.
+ */
+export function tintedColor(hex: string, variable: string, fallback: number): string {
+    return `color-mix(in srgb, ${hex} calc(var(${variable}, ${String(fallback)}) * var(${SIDEBAR_TINT_VARS.intensity}, 1) * 100%), transparent)`;
+}
+
 // ── label chips (app-state-core.md §6.3) ────────────────────────────────────────────
 
 export interface LabelColorLike {

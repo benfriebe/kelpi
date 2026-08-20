@@ -105,6 +105,22 @@ export interface TerminalRendererOptions {
     readonly allowTransparency?: boolean | undefined;
 }
 
+/**
+ * Where a search match sits, addressed from the BOTTOM of the buffer.
+ *
+ * The daemon holds the buffer that was searched (`daemon/src/ws/search.ts`) and its scrollback
+ * is not this engine's: `@xterm/headless` keeps 10 000 lines, ghostty-web bounds its own in
+ * BYTES, and a fresh client replays a possibly-capped snapshot. Absolute line indices therefore
+ * do not survive the crossing; the bottom does, so that is the anchor.
+ *
+ * `linesFromBottom` is `bufferLength - matchLine`, so 1 is the last line of the buffer.
+ */
+export interface TerminalMatchLocation {
+    readonly linesFromBottom: number;
+    readonly col: number;
+    readonly length: number;
+}
+
 export interface TerminalRenderer {
     readonly engine: TerminalEngine;
     /** Grid size the engine currently holds (the requested size until it is open). */
@@ -141,6 +157,14 @@ export interface TerminalRenderer {
     cellSize(): CellSize;
     /** Best-effort full repaint (visibility regain). No-op where the engine has no hook. */
     repaint(): void;
+    /**
+     * Scroll a search match into view and select it (`grid/PaneSearchOverlay.tsx`).
+     *
+     * Best-effort by contract: an engine with no scroll hook, or a match older than this
+     * renderer's retained scrollback, leaves the viewport where it is. The overlay's counter
+     * stays correct either way, because the count is the daemon's, not the engine's.
+     */
+    revealMatch(match: TerminalMatchLocation): void;
     /**
      * Re-measure the cell after a font has loaded. Optional because a fake or a third engine
      * may have nothing to re-measure; the pane calls it when the bundled face settles AFTER
@@ -193,6 +217,13 @@ export interface EngineHandle {
     remeasure?(): void;
     /** Force a full redraw. */
     repaint?(): void;
+    /**
+     * Scroll a search match into view and select it. Engine-specific on purpose: the two
+     * engines' `scrollToLine` mean different things (xterm.js takes the absolute buffer line to
+     * put at the top of the viewport; ghostty-web takes the number of lines scrolled UP from the
+     * bottom), and their `select()` row is absolute vs viewport-relative respectively.
+     */
+    revealMatch?(match: TerminalMatchLocation): void;
     /** Extra teardown beyond `terminal.dispose()`. */
     dispose?(): void;
 }
@@ -716,6 +747,13 @@ class AdapterRenderer implements TerminalRenderer {
         this.swallow(() => this.handle?.remeasure?.());
     }
 
+    revealMatch(match: TerminalMatchLocation): void {
+        if (this.disposed || this.poisoned) return;
+        // Cosmetic: a scroll or a selection that did not take is not worth poisoning a pane
+        // whose PTY is otherwise fine, and the overlay's counter is unaffected either way.
+        this.swallow(() => this.handle?.revealMatch?.(match));
+    }
+
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
@@ -975,9 +1013,28 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             const wasmTerm = terminal.wasmTerm;
             if (renderer === undefined || wasmTerm === undefined) return;
             renderer.render(wasmTerm, true, terminal.viewportY, terminal);
+        },
+        revealMatch: (match): void => {
+            // ghostty-web's `scrollToLine(n)` sets `viewportY = clamp(n, 0, scrollbackLength)`,
+            // and `viewportY` counts lines scrolled UP FROM THE BOTTOM (`scrollToBottom()` sets
+            // it to 0) — its doc comment says "0 = top of scrollback", which the implementation
+            // contradicts. So `linesFromBottom` is already in its units; centring the match in
+            // the viewport is one subtraction.
+            const scrollback = terminal.getScrollbackLength();
+            const rows = terminal.rows;
+            const viewportY = clamp(match.linesFromBottom - Math.floor(rows / 2), 0, scrollback);
+            terminal.scrollToLine(viewportY);
+            // Its `select(col, row, len)` row is VIEWPORT-relative (it adds `getViewportY()`
+            // itself and clamps to `rows - 1`), so the row has to be derived after the scroll.
+            const row = rows + viewportY - match.linesFromBottom;
+            if (row >= 0 && row < rows) terminal.select(match.col, row, match.length);
         }
     };
 };
+
+function clamp(value: number, low: number, high: number): number {
+    return Math.max(low, Math.min(high, value));
+}
 
 interface XtermRenderDimensions {
     readonly css?: { readonly cell?: { readonly width?: number; readonly height?: number } };
@@ -1026,6 +1083,17 @@ export const loadXtermEngine: EngineLoader = async (options) => {
         },
         repaint: (): void => {
             terminal.refresh(0, Math.max(0, terminal.rows - 1));
+        },
+        revealMatch: (match): void => {
+            // xterm.js is the mirror image of ghostty-web here: `scrollToLine(n)` takes the
+            // ABSOLUTE buffer line to place at the TOP of the viewport, and `select(col, row,
+            // len)`'s row is an absolute buffer row too.
+            const total = terminal.buffer.active.length;
+            const absolute = total - match.linesFromBottom;
+            if (absolute < 0) return;
+            const top = clamp(absolute - Math.floor(terminal.rows / 2), 0, Math.max(0, total - terminal.rows));
+            terminal.scrollToLine(top);
+            terminal.select(match.col, absolute, match.length);
         }
     };
 };

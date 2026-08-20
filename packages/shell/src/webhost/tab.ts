@@ -64,7 +64,13 @@ import {
 } from './console-format.js';
 import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
-import { BINDING_NAME, INSPECT_CHANNEL, injectedScriptSources } from './scripts.js';
+import { forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
+import {
+    BATCH_MARKER_CHANNEL,
+    BINDING_NAME,
+    INSPECT_CHANNEL,
+    injectedScriptSources
+} from './scripts.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -77,6 +83,11 @@ export interface TabEventSink {
     console(paneID: string, tabID: string, payload: ConsoleLinePayload): void;
     pageState(paneID: string, tabID: string, payload: { url?: string; title?: string }): void;
     inspect(paneID: string, tabID: string, payload: Record<string, unknown>): void;
+    /**
+     * §7.3: a batch badge was clicked, a popover comment was typed, or its Done/Remove was
+     * pressed. The daemon owns the batch, so these are intents, not state.
+     */
+    batchMarker(paneID: string, tabID: string, payload: Record<string, unknown>): void;
     /** The tab went away on its own (`window.close()`, a crashed renderer). */
     tabClosed(paneID: string, tabID: string): void;
 }
@@ -93,6 +104,15 @@ export interface TabFactoryOptions {
     /** The pane's storage partition — persistent, or in-memory when the pane is private (§6). */
     readonly sessionFor: (paneID: string, isPrivate: boolean) => Session;
     readonly events: TabEventSink;
+    /**
+     * Replay a browser chord the page just swallowed into Nex's own renderer (`./keys.ts`).
+     *
+     * Without it the web-pane priority key layer is unreachable the moment a user clicks the
+     * page: a `WebContentsView` is a separate renderer with its own keyboard focus, so ⌘F / ⌘L /
+     * ⌘T never reach the window that implements them. The Swift app had no equivalent problem —
+     * its `WKWebView` sat inside the app's own window, behind an NSEvent monitor.
+     */
+    readonly forwardChord?: ((chord: ForwardedChord) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -143,6 +163,8 @@ class ElectronTab implements HostTab {
     private readonly contents: WebContents;
     private readonly events: TabEventSink;
     private readonly onError: ((error: Error, context: string) => void) | undefined;
+    /** `./keys.ts`: replay a chord the page swallowed into Nex's own renderer. */
+    private readonly forwardChord: ((chord: ForwardedChord) => void) | undefined;
 
     /** Resolves once the CDP session is enabled and the scripts are installed. */
     private readonly ready: Promise<void>;
@@ -168,6 +190,7 @@ class ElectronTab implements HostTab {
         this.tabID = input.tabID;
         this.events = options.events;
         this.onError = options.onError;
+        this.forwardChord = options.forwardChord;
         this.lastAttemptedURL = input.url;
 
         const viewport = options.viewport ?? DEFAULT_VIEWPORT;
@@ -314,6 +337,20 @@ class ElectronTab implements HostTab {
     private wireContentsEvents(): void {
         const contents = this.contents;
 
+        const forward = this.forwardChord;
+        if (forward !== undefined) {
+            contents.on('before-input-event', (event, input) => {
+                const chord = forwardedChord(input as unknown as ChordInput);
+                if (chord === null) return;
+                // Taken from the page and given to Nex — both halves matter: without the
+                // `preventDefault` the page would ALSO act on it (⌘F would open Chromium's own
+                // find alongside ours).
+                event.preventDefault();
+                log(`web pane ${this.paneID}: forwarding meta${chord.shift ? '+shift' : ''}+${chord.code} to the Nex window`);
+                forward(chord);
+            });
+        }
+
         contents.setWindowOpenHandler(() => {
             // The daemon mints tab ids, so the host cannot conjure a tab for `window.open`.
             // Denying keeps the tab set exactly what the daemon believes it is; surfacing the
@@ -400,9 +437,15 @@ class ElectronTab implements HostTab {
             return;
         }
         if (!isRecord(envelope)) return;
-        if (envelope['channel'] !== INSPECT_CHANNEL) return; // find counts come off the evaluate
+        const channel = envelope['channel'];
+        // Find counts come off the evaluate, not the binding, so only two channels land here.
+        if (channel !== INSPECT_CHANNEL && channel !== BATCH_MARKER_CHANNEL) return;
         const body = envelope['body'];
         if (!isRecord(body)) return;
+        if (channel === BATCH_MARKER_CHANNEL) {
+            this.events.batchMarker(this.paneID, this.tabID, body);
+            return;
+        }
         this.events.inspect(this.paneID, this.tabID, body);
     }
 

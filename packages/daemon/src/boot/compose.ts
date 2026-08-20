@@ -25,6 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { newUUID } from '@nex/core/codec';
+import { SYSTEM_STATS_INTERVAL_MS } from '@nex/protocol';
 import type { ResumeTuple } from '@nex/core/agent';
 
 import { createContentService, type ContentService } from '../content/index.js';
@@ -45,7 +46,11 @@ import {
     resolveDatabasePath,
     type SqlitePersistence
 } from '../db/index.js';
-import { createGitService, sweepGraftTempIndexes, type GitService } from '../git/index.js';
+import {
+    createGitService,
+    sweepGraftTempIndexes,
+    type GitService
+} from '../git/index.js';
 import {
     createGraftService,
     createRepoAssociationWatch,
@@ -72,6 +77,7 @@ import {
     createTerminalInput,
     type NexPtyManager
 } from '../pty/index.js';
+import { createEditorResolver } from '../content/external-editor.js';
 import type { ControlDispatcher, PersistenceHealth, TerminalInput } from '../seams.js';
 import {
     applyLoadReset,
@@ -79,18 +85,34 @@ import {
     emptyDaemonState,
     fromSnapshot,
     toSnapshot,
+    visiblePane,
+    workspaceContainingVisiblePane,
     type DaemonState,
     type NexStore
 } from '../store/index.js';
+import { createRepoAutoDetect } from '../git/index.js';
+import { createSystemStatsSampler } from '../stats/index.js';
 import { createTerminalStateService, type TerminalStateServiceImpl } from '../term/index.js';
 import {
     createAgentChannel,
+    createGraftOrphanRegistry,
     createPaneAssetsRoute,
+    createPaneLifecycleChannel,
+    createDesktopChannel,
     createWsServer,
     resolveClientDistDir,
+    WEB_BATCH_MESSAGE,
+    WEB_FAVOURITES_MESSAGE,
+    type GraftChannel,
+    type RepoChannel,
     type WsServer
 } from '../ws/index.js';
-import { createWebPaneService, type WebPaneService } from '../webpane/index.js';
+import {
+    createWebPaneService,
+    serializeBatchSession,
+    serializeFavourite,
+    type WebPaneService
+} from '../webpane/index.js';
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
 import { readPortFile, writePortFile } from './port.js';
@@ -238,6 +260,11 @@ function parsePortEnv(raw: string | undefined): number | undefined {
 }
 
 /** Load + `fromSnapshot`, with the fresh-install / unreadable branches folded in (§6.2). */
+/** §14: `favourites.json` sits beside the database, so it follows every sandbox override. */
+function favouritesPath(databasePath: string): string {
+    return join(dirname(databasePath), 'favourites.json');
+}
+
 function initialState(
     persistence: SqlitePersistence,
     home: string
@@ -337,7 +364,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         path: dbPath === ':memory:' ? null : join(dirname(dbPath), GEOMETRY_FILE_NAME),
         onError: (error, context) => report(error, context)
     });
-    const term = createTerminalStateService();
+    /** Assigned once the store, the settings and auto-detect exist (just below `term`). */
+    let onPaneDirectory: (paneID: string, directory: string) => void = () => {};
+    /**
+     * OSC 7 is the port's pwd producer (terminal-panes.md §TERM-048): the shell reports where
+     * it is, the pane's `workingDirectory` follows, and repo auto-detect gets its trigger
+     * (graft-git.md §GIT-075). `autoDetect` is created further down — this closure defers to
+     * it, so the ordering between the two is not load-bearing.
+     */
+    const term = createTerminalStateService({
+        onDirectoryChange: (paneID, directory) => {
+            try {
+                onPaneDirectory(paneID, directory);
+            } catch (error) {
+                report(error, 'pane directory report');
+            }
+        }
+    });
     const input = createTerminalInput({ pty, modes: (paneID) => term.modes(paneID) });
     // M5: content panes. It owns its own git service (diff panes) and file watchers, and its
     // edit buffers are flushed by `stop()` below before the persist gate closes.
@@ -356,6 +399,33 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(onError !== undefined ? { onError } : {}),
         ...(options.now !== undefined ? { now: options.now } : {})
     });
+    /**
+     * The footer's system-stat gauges (APP-078…085). The Swift app samples in the VIEW; a
+     * browser tab cannot read host counters and two clients must not double-sample one
+     * machine, so the daemon samples once and broadcasts (`@nex/protocol` `ws/stats.ts`).
+     *
+     * The loop is gated on `show-system-stats` AND at least one attached client — AGNT-107's
+     * "skipped entirely when the toggle is off", extended by the only honest translation of a
+     * view-layer timer into a headless process: with no window, there was no timer either.
+     */
+    const stats = createSystemStatsSampler({
+        home,
+        ...(onError !== undefined ? { onError } : {})
+    });
+    const offStats = stats.subscribe((snapshot) => {
+        ws?.broadcast({
+            type: 'system-stats',
+            stats: snapshot.stats,
+            history: snapshot.history,
+            intervalMs: snapshot.intervalMs
+        });
+    });
+    let statsGateTimer: NodeJS.Timeout | null = null;
+    const refreshStatsGate = (): void => {
+        const wanted = settings.snapshot.chrome.showSystemStats && (ws?.clients ?? 0) > 0;
+        // A no-op when nothing changed, so this is safe to call as often as we like.
+        stats.setEnabled(wanted);
+    };
     // A ghostty theme change re-renders every live content pane (content-panes.md §3.8) and
     // reaches every attached client as one broadcast.
     const offSettings = settings.subscribe((snapshot) => {
@@ -365,6 +435,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             report(error, 'content appearance');
         }
         ws?.broadcast({ type: 'settings-changed', settings: snapshot });
+        // Toggling `show-system-stats` in Settings starts / stops the sampler itself, not just
+        // the gauges: a disabled toggle must cost nothing, not sample invisibly.
+        refreshStatsGate();
     });
     // M7: one git service shared by the handlers, the graft engine and the HEAD watchers, so
     // every git spawn resolves the same executable and honours the same timeouts.
@@ -386,12 +459,66 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // unless the arm asked for `--submit` (web-pane.md §11.3).
             input.sendText(paneID, text, { bare: !pasteOptions.submit });
         },
+        // §14: favourites live in `favourites.json` beside the database, so a sandboxed daemon
+        // (tests, the packaged smoke) keeps them inside its own dir and an in-memory daemon
+        // keeps them in memory. See `webpane/favourites.ts` for why not the app-state row.
+        ...(dbPath === ':memory:' ? {} : { favourites: { path: favouritesPath(dbPath) } }),
+        // Both surfaces are daemon state that no `DomainEvent` describes, so they reach clients
+        // as their own broadcasts rather than through the delta stream.
+        onBatchChanged: (paneID, session) => {
+            ws?.broadcast({
+                type: WEB_BATCH_MESSAGE,
+                paneID,
+                batch: serializeBatchSession(session)
+            });
+        },
+        onFavouritesChanged: (favourites) => {
+            ws?.broadcast({
+                type: WEB_FAVOURITES_MESSAGE,
+                favourites: favourites.map(serializeFavourite)
+            });
+        },
         ...(options.now !== undefined ? { now: options.now } : {}),
         ...(onError !== undefined ? { onError } : {})
     });
 
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
+
+    /**
+     * `$VISUAL` / `$EDITOR` resolution for the external-editor pane mode (CONT-081…088).
+     *
+     * Warmed at the end of `start()` (CONT-087) so the first "Open in $EDITOR" is instant, and
+     * cached for the daemon's lifetime — the login-shell probe costs 1–2 seconds of rc-file
+     * loading and must never sit on a request path.
+     */
+    const editorResolver = createEditorResolver({
+        onLog: (message) => log(message)
+    });
+
+    /**
+     * APP-054 / AGNT-006 "Restart Socket Server": close and re-bind the control listeners.
+     *
+     * Both listeners are rebuilt with the same dispatcher (a `const` here, the singleton
+     * `onMessage` there), so a command that arrives a millisecond after the rebind reaches the
+     * same handlers. `stop()` unlinks the socket file this daemon bound, which is what clears a
+     * wedged `/tmp/nex.sock` and every client FD hanging off it; `start()`'s stale-socket probe
+     * then finds nothing and binds cleanly.
+     */
+    const restartControlServers = async (): Promise<{ socketPath: string; tcpPort?: number | undefined }> => {
+        if (runControl === undefined) throw new Error('the control server is not running');
+        const previousCompat = compatControl;
+        await runControl.stop();
+        await previousCompat?.stop();
+        await runControl.start();
+        await previousCompat?.start();
+        log(`control server rebound on ${runControl.socketPath}`);
+        const port = previousCompat?.tcpPort ?? runControl.tcpPort;
+        return {
+            socketPath: runControl.socketPath,
+            ...(port === undefined ? {} : { tcpPort: port })
+        };
+    };
     let info: DaemonInfo | undefined;
     let graftOrphans: readonly GraftOrphan[] = [];
     let running = false;
@@ -443,6 +570,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // to persist.
         if (stopping) return;
         store.dispatch({ type: 'pane-process-terminated', paneID });
+        // CONT-091: a markdown pane whose external editor exited is still open — the reducer
+        // flipped it back to preview rather than closing it — so its terminal state has to be
+        // released here or the next `$EDITOR` session would replay the last one's screen.
+        const workspace = workspaceContainingVisiblePane(store.getState(), paneID);
+        const pane = workspace === null ? null : visiblePane(workspace, paneID);
+        if (pane !== null && pane.type !== 'shell') term.dispose(paneID);
     });
 
     // Every spawn path (boot restore, `pane-split`, `pane create`) asks the geometry cache
@@ -485,6 +618,77 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         ...(onError !== undefined ? { onError } : {})
     });
 
+    /**
+     * The workspace inspector's repo verbs (`ws/repos.ts`). It reads dirtiness through the SAME
+     * watcher the sidebar badge uses — one cache, one poll — so opening the inspector cannot
+     * disagree with what the rest of the window already shows.
+     */
+    const repoCommands: RepoChannel = {
+        store,
+        git,
+        // A getter for the same reason the app handlers use one: the template is a live user
+        // setting, and the inspector's worktree verbs must not run on a boot-time copy of it.
+        get worktreeBasePath(): string {
+            return settings.snapshot.general.worktreeBasePath;
+        },
+        uuid: options.uuid ?? newUUID,
+        now: options.now ?? Date.now,
+        status: repoWatch,
+        persist
+    };
+
+    /**
+     * Repo auto-detect (graft-git.md §GIT-074…§GIT-081). Gated on the config file's
+     * `auto-detect-repos`, read through the settings service so a Settings toggle takes effect
+     * on the next pwd report without re-wiring anything.
+     */
+    const autoDetect = createRepoAutoDetect({
+        store,
+        git,
+        enabled: () => settings.snapshot.general.autoDetectRepos,
+        uuid: options.uuid ?? newUUID,
+        persist,
+        ...(options.now !== undefined ? { now: options.now } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
+
+    /**
+     * One OSC 7 report: the pane's working directory moves (which is what `pane list`'s CWD
+     * column, the footer and `--prune-worktree` read), and auto-detect gets its trigger. The
+     * store is the single writer, so a client sees the change as the same delta a spawn does.
+     */
+    onPaneDirectory = (paneID, directory) => {
+        const state = store.getState();
+        const workspace = state.workspaces.find(
+            (candidate) =>
+                candidate.panes.some((pane) => pane.id === paneID) ||
+                candidate.parkedPanes.some((pane) => pane.id === paneID)
+        );
+        if (workspace === undefined) return;
+        const pane =
+            workspace.panes.find((entry) => entry.id === paneID) ??
+            workspace.parkedPanes.find((entry) => entry.id === paneID);
+        if (pane === undefined || pane.workingDirectory === directory) return;
+        store.dispatch({
+            type: 'pane-directory-changed',
+            paneID,
+            directory,
+            now: (options.now ?? Date.now)()
+        });
+        autoDetect.paneDirectoryChanged({ workspaceID: workspace.id, paneID, directory });
+    };
+
+    /**
+     * The interrupted-graft set behind the inspector's banner (§GIT-051 / §WS-145). Boot fills
+     * it; recover/dismiss mutate it; every change re-broadcasts, so a second window's banner
+     * disappears when the first window restores.
+     */
+    const graftOrphanRegistry = createGraftOrphanRegistry(graft);
+    const offOrphans = graftOrphanRegistry.onChange((orphans) => {
+        ws?.broadcast(graftOrphansEvent(orphans));
+    });
+    const graftCommands: GraftChannel = { store, graft, orphans: graftOrphanRegistry };
+
     const appHandlers = createAppHandlers({
         git,
         graft,
@@ -502,6 +706,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // focused. Nothing attached ⇒ false ⇒ headless still notifies (§7 port note 2).
         isAppActive: () => ws?.presence().anyVisible ?? false,
         isPaneFocused: (paneID, workspaceID) => ws?.isPaneAttended(workspaceID, paneID) ?? false,
+        // SET-008 / SET-013: read through the settings service on every command, so changing
+        // the worktree base path or the placement picker in Settings takes effect on the next
+        // `workspace create` without rebuilding the handler table (`resolveAppDeps` turns
+        // these into getters).
+        worktreeBasePath: () => settings.snapshot.general.worktreeBasePath,
+        placement: () => settings.snapshot.general.newWorkspacePlacement,
         ...(options.now !== undefined ? { now: options.now } : {}),
         ...(options.uuid !== undefined ? { uuid: options.uuid } : {})
     });
@@ -591,6 +801,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             offData();
             offExit();
             offSettings();
+            if (statsGateTimer !== null) clearInterval(statsGateTimer);
+            statsGateTimer = null;
+            offStats();
+            stats.dispose();
             settings.dispose();
             content.dispose();
             // Releases the host slot (the shell sees `host-revoked`) and ends every console
@@ -606,6 +820,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 report(error, 'graft shutdown');
             }
             offGraft();
+            offOrphans();
+            // Pending auto-link/auto-unlink timers must not fire into a store nobody will save.
+            autoDetect.stop();
             // SIGTERM contract: write the debounced snapshot before anything else changes.
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).
@@ -680,6 +897,28 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // The pane header's restart button: typing a resume command needs the same
                 // TerminalInput (live VT modes, no sync mirroring) the CLI's `pane send` uses.
                 agents: createAgentChannel({ store, pty, input }),
+                // ⇧⌘T reopen-closed-pane, ⇧⌘N scratchpad, and the context menu's Open in
+                // Finder. All three need the pane handler context (a PTY to spawn into, a
+                // `TerminalInput` for the reopened agent's resume command, the broadcast seam),
+                // which is why they cannot be composed inside `createWsServer`.
+                panes: createPaneLifecycleChannel({
+                    ctx,
+                    ...(onError !== undefined ? { onError } : {})
+                }),
+                // The workspace inspector's repo registry / association / worktree verbs.
+                repos: repoCommands,
+                // The ⌘O picker relay, ⌘-clicking a `.md` path in a terminal, hosting the
+                // user's `$EDITOR` in a markdown pane, and the ••• menu's Restart Socket
+                // Server. Needs the pane handler context AND the control listeners, so — like
+                // `panes` — it can only be composed here.
+                desktop: createDesktopChannel({
+                    ctx,
+                    editor: editorResolver,
+                    restartControl: restartControlServers,
+                    ...(onError !== undefined ? { onError } : {})
+                }),
+                // …and its graft toggle / swap prompt / orphan banner verbs.
+                graftUi: graftCommands,
                 // `/pane-assets/<paneID>/<relpath>` — sibling files of an open markdown file, so
                 // relative `<img src>` resolves (content-panes.md port note 4).
                 routes: createPaneAssetsRoute((paneID, relativePath) =>
@@ -779,6 +1018,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
         // HEAD watchers for every persisted association + the 30 s dirtiness poll (§9.2/§9.3).
         repoWatch.start();
+        // CONT-087: resolve the user's `$EDITOR` in the background now, so the first
+        // "Open in $EDITOR" does not pay for a login-shell init. Failures are cached with a
+        // TTL and simply mean the built-in editor keeps the pane.
+        editorResolver.warmUp();
         // A crashed sync leaks a throw-away index into the temp dir (port note 18); only
         // day-old files are swept, so a concurrent daemon's in-flight sync is never robbed.
         try {
@@ -793,6 +1036,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             graftOrphans = graft.detectOrphans([
                 ...new Set(store.getState().repos.map((repo) => repo.path))
             ]);
+            // The registry is what the inspector's Restore/Dismiss act on; assigning it here
+            // also re-broadcasts, which is harmless for the empty case below.
+            graftOrphanRegistry.replace(graftOrphans);
             if (graftOrphans.length > 0) {
                 log(`graft: ${String(graftOrphans.length)} interrupted session(s) need recovery`);
                 ws?.broadcast(graftOrphansEvent(graftOrphans));
@@ -800,6 +1046,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         } catch (error) {
             report(error, 'graft orphan detection');
         }
+
+        // The stats gate follows the attached-client count, and `WsServer` publishes no
+        // presence event — so it is polled on the sample cadence itself. The poll is an
+        // integer compare (`stats.setEnabled` is a no-op when unchanged), it is `unref`d so it
+        // never holds the process open, and it is the *only* thing running while the gate is
+        // closed: with no window attached, or `show-system-stats = false`, the daemon spawns
+        // nothing and reads nothing.
+        statsGateTimer = setInterval(refreshStatsGate, SYSTEM_STATS_INTERVAL_MS);
+        statsGateTimer.unref?.();
+        refreshStatsGate();
 
         // Steps 4–5 run in the background: the 2 s settle must not delay the listeners.
         runRestore(spawned);

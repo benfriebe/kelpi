@@ -152,10 +152,15 @@ class PtyManagerImpl implements NexPtyManager {
         const file = resolveShell(opts.shell, env);
         const cols = normalizeDimension(opts.cols, DEFAULT_COLS);
         const rows = normalizeDimension(opts.rows, DEFAULT_ROWS);
+        // A hosted command (`$EDITOR <file>`, CONT-081) rides the same shell as `-c`, exactly
+        // as libghostty runs `ghostty_surface_config_s.command`. Empty/whitespace is ignored so
+        // a blank field can never turn an interactive pane into `sh -c ''` (an instant exit).
+        const command = opts.command?.trim();
+        const args = command === undefined || command === '' ? [] : ['-c', command];
 
         let proc: PtyProcessHandle;
         try {
-            proc = this.spawner({ file, args: [], cwd, env, cols, rows, name: term });
+            proc = this.spawner({ file, args, cwd, env, cols, rows, name: term });
         } catch (error) {
             // A broken $SHELL must not cost the user their pane: retry once on /bin/sh.
             if (file === FALLBACK_SHELL) {
@@ -166,7 +171,7 @@ class PtyManagerImpl implements NexPtyManager {
             try {
                 proc = this.spawner({
                     file: FALLBACK_SHELL,
-                    args: [],
+                    args,
                     cwd,
                     env,
                     cols,

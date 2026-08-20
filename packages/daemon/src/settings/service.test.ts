@@ -101,6 +101,10 @@ describe('buildSettingsSnapshot', () => {
             'background = #ffffff\nbackground-opacity = 0.9\nfont-size = 16\n'
         );
         expect(snapshot.general).toEqual({
+            // Spread rather than restated: this assertion is about the three keys the fixture
+            // sets and about `confirmWorkspaceDeleteWhenActive` defaulting on. Listing every
+            // other key would make it a change-detector for the shape instead.
+            ...DEFAULT_WS_SETTINGS.general,
             focusFollowsMouse: true,
             focusFollowsMouseDelay: 250,
             theme: 'Nord',
@@ -402,5 +406,124 @@ describe('createSettingsService (write-through)', () => {
         // The watcher fires shortly after, finds the same snapshot, and stays quiet.
         await tick(400);
         expect(seen).toHaveLength(1);
+    });
+});
+
+// ── set-ghostty-setting (SET-039…SET-041) ───────────────────────────────────────────
+
+/**
+ * The appearance half of Settings writes a file the daemon does not own. The tests that matter
+ * are therefore about the file it did NOT change: a user's ghostty config is large, personal,
+ * and mostly keys this codebase deliberately cannot read.
+ */
+describe('setGhosttySetting', () => {
+    const GHOSTTY = [
+        '# personal ghostty config',
+        'theme = Catppuccin Mocha',
+        'font-size = 13',
+        'keybind = super+t=new_tab',
+        'window-padding-x = 8',
+        ''
+    ].join('\n');
+
+    const readGhostty = (f: Fixture): string =>
+        fs.existsSync(f.ghosttyPath) ? fs.readFileSync(f.ghosttyPath, 'utf8') : '';
+
+    it('writes a key and re-reads it into the snapshot', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const next = f.service.setGhosttySetting('background', '#1a1b26');
+        expect(next.appearance.backgroundColor).toBe('#1a1b26');
+        // The luminance verdict is recomputed from the value actually on disk.
+        expect(next.appearance.isDark).toBe(true);
+        expect(f.service.snapshot).toBe(next);
+    });
+
+    it('preserves every unrelated line byte-for-byte', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        f.service.setGhosttySetting('font-size', '16');
+        const contents = readGhostty(f);
+        expect(contents).toContain('# personal ghostty config');
+        expect(contents).toContain('theme = Catppuccin Mocha');
+        expect(contents).toContain('keybind = super+t=new_tab');
+        expect(contents).toContain('window-padding-x = 8');
+        expect(contents).toContain('font-size = 16');
+        expect(contents).not.toContain('font-size = 13');
+    });
+
+    it('removes the key when the value is null (SET-040’s “no theme”)', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const next = f.service.setGhosttySetting('theme', null);
+        expect(next.appearance.theme).toBeNull();
+        expect(readGhostty(f)).not.toContain('theme =');
+        expect(readGhostty(f)).toContain('font-size = 13');
+    });
+
+    it('creates the ghostty file when there is none', () => {
+        const f = fixture();
+        const next = f.service.setGhosttySetting('background-opacity', '0.8');
+        expect(next.appearance.backgroundOpacity).toBeCloseTo(0.8);
+        expect(readGhostty(f)).toBe('background-opacity = 0.8\n');
+    });
+
+    it('refuses a key it cannot read back, rather than writing something invisible', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        expect(() => f.service.setGhosttySetting('window-padding-x', '16')).toThrow(SettingsError);
+        // Nothing was written.
+        expect(readGhostty(f)).toBe(GHOSTTY);
+    });
+
+    it('collapses accumulating font-family lines to the one that was asked for', () => {
+        const f = fixture({ ghostty: 'font-family = JetBrains Mono\nfont-family = Symbols Nerd Font\n' });
+        const next = f.service.setGhosttySetting('font-family', 'Menlo');
+        // Not "Menlo, Symbols Nerd Font": ghostty ACCUMULATES these lines, so leaving the old
+        // one behind would mean "set the font" silently appended one.
+        expect(next.appearance.fontFamily).toBe('Menlo');
+        expect(readGhostty(f).match(/font-family/g)).toHaveLength(1);
+    });
+
+    it('notifies subscribers exactly once per write', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const seen: SettingsSnapshot[] = [];
+        f.service.subscribe((snapshot) => seen.push(snapshot));
+        const returned = f.service.setGhosttySetting('background', '#ffffff');
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toBe(returned);
+        // A white background flips the daemon's light/dark verdict, which is what the client
+        // chrome and the daemon's own markdown/diff HTML both key off.
+        expect(returned.appearance.isDark).toBe(false);
+    });
+});
+
+// ── the chrome / status-bar settings (SET-023…SET-044) ──────────────────────────────
+
+describe('chrome settings in the snapshot', () => {
+    it('are the shipped defaults when the config names none of them', () => {
+        const f = fixture({ config: '' });
+        expect(f.service.snapshot.chrome).toEqual(DEFAULT_WS_SETTINGS.chrome);
+    });
+
+    it('round-trip through set-general-setting', () => {
+        const f = fixture({ config: 'focus-follows-mouse = true\n' });
+        f.service.setGeneralSetting('chrome-appearance', 'dark');
+        f.service.setGeneralSetting('chrome-colors', '{"dark:accent":"BD93F9"}');
+        f.service.setGeneralSetting('system-stats', 'cpu,network');
+        const next = f.service.setGeneralSetting('sparkline-width', '44');
+        expect(next.chrome.appearance).toBe('dark');
+        expect(next.chrome.colors).toEqual({ 'dark:accent': 'BD93F9' });
+        expect(next.chrome.enabledSystemStats).toEqual(['cpu', 'network']);
+        expect(next.chrome.sparklineWidth).toBe(44);
+        // The unrelated key the file already had is untouched.
+        expect(next.general.focusFollowsMouse).toBe(true);
+    });
+
+    it('carry the General tab’s keys too', () => {
+        const f = fixture({ config: '' });
+        const next = f.service.setGeneralSetting('worktree-base-path', '<repo>/.worktrees');
+        expect(next.general.worktreeBasePath).toBe('<repo>/.worktrees');
+        expect(f.service.setGeneralSetting('new-workspace-placement', 'near-selection').general
+            .newWorkspacePlacement).toBe('near-selection');
+        expect(f.service.setGeneralSetting('global-hotkey', 'ctrl+alt+space').general.globalHotkey).toBe(
+            'ctrl+alt+space'
+        );
     });
 });

@@ -303,7 +303,13 @@ function paneProcessTerminated(workspace: WorkspaceState, paneID: string): Works
             externalEditorCommand: null
         }));
     }
-    // 3. A shell exited.
+    // 3. A shell exited → the pane closes. Only a shell: a content pane that had a PTY (a
+    // markdown pane hosting `$EDITOR`, CONT-081) is already back in preview by the time its
+    // process is reaped, and closing it then would delete the user's document pane because
+    // they pressed ⌘E. The Swift app could not hit this — it destroyed the ghostty surface
+    // explicitly rather than through a process-exit notification — so the guard is new here and
+    // was found by the audit: `⌘E` out of a live editor session made the pane vanish.
+    if (pane !== null && pane.type !== 'shell') return workspace;
     return closePaneInWorkspace(workspace, paneID);
 }
 
@@ -723,7 +729,12 @@ export function reducePaneAction(state: DaemonState, action: DomainAction): Daem
                 return mutateVisiblePane(next, action.paneID, (target) => ({
                     ...target,
                     isEditing: action.editing,
-                    externalEditorCommand: action.editing ? target.externalEditorCommand : null
+                    // CONT-081: an explicit command wins (the pane is about to host a PTY);
+                    // without one the pane keeps whatever it had, and leaving edit mode always
+                    // clears it so the surface teardown and the record agree (CONT-090).
+                    externalEditorCommand: action.editing
+                        ? (action.externalEditorCommand ?? target.externalEditorCommand)
+                        : null
                 }));
             });
         case 'set-markdown-font-size':

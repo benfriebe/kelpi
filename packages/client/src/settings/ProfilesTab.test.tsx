@@ -12,6 +12,7 @@ function actions(): SettingsActions & { readonly writes: (readonly WsProfile[])[
         setKeybinding: vi.fn(),
         resetKeybindings: vi.fn(),
         setGeneralSetting: vi.fn(),
+        setGhosttySetting: vi.fn(),
         setProfiles: (profiles) => writes.push(profiles),
         addLabelPreset: vi.fn(),
         updateLabelPreset: vi.fn(),

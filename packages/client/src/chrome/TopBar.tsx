@@ -15,9 +15,10 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@nex/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@nex/daemon/store';
-import { useState, type ReactElement } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 
 import type { ConnectionStatus } from '../connection';
+import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { ChromeIcon } from './icons';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -40,6 +41,17 @@ export interface TopBarProps {
     readonly onToggleSyncInput?: (() => void) | undefined;
     readonly onToggleSidebar?: (() => void) | undefined;
     readonly sidebarVisible?: boolean | undefined;
+    /** §WS-137/§WS-152: the trailing workspace inspector's toggle. */
+    readonly onToggleInspector?: (() => void) | undefined;
+    readonly inspectorVisible?: boolean | undefined;
+    /**
+     * APP-052/APP-053 — the ••• menu's rows, built by the app (`WindowTitleBar.swift:243-251`).
+     *
+     * Supplied as data rather than as callbacks so the same menu can carry items that only
+     * exist inside the Electron shell (Install CLI, Check for Updates) without this component
+     * knowing what a shell is. Absent or empty = no ••• button at all.
+     */
+    readonly overflowItems?: readonly MenuItemSpec[] | undefined;
 }
 
 const CONNECTION_LABEL: Readonly<Record<ConnectionStatus, string>> = {
@@ -74,9 +86,12 @@ export function identityDotColor(
 export function TopBar(props: TopBarProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
     const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
+    const [overflowAt, setOverflowAt] = useState<{ x: number; y: number } | null>(null);
+    const overflowRef = useRef<HTMLButtonElement | null>(null);
     const hasWorkspace = props.workspaceName !== null;
     const paneCount = props.panes.length;
     const syncable = (props.syncedPaneCount ?? 0) >= 2;
+    const overflowItems = props.overflowItems ?? [];
 
     return (
         <div
@@ -101,7 +116,63 @@ export function TopBar(props: TopBarProps): ReactElement {
                         <ChromeIcon name="sidebar" size={13} />
                     </button>
                 )}
+                {props.onToggleInspector === undefined ? null : (
+                    <button
+                        type="button"
+                        data-testid="toggle-inspector"
+                        aria-label="Toggle inspector"
+                        aria-pressed={props.inspectorVisible ?? false}
+                        title="Toggle inspector (⌘I)"
+                        style={{
+                            color:
+                                props.inspectorVisible === true ? tokens.textPrimary : tokens.textSecondary
+                        }}
+                        onClick={props.onToggleInspector}
+                    >
+                        <ChromeIcon name="stack" size={13} />
+                    </button>
+                )}
+                {overflowItems.length === 0 ? null : (
+                    <button
+                        ref={overflowRef}
+                        type="button"
+                        data-testid="titlebar-menu-toggle"
+                        aria-label="More actions"
+                        aria-haspopup="menu"
+                        aria-expanded={overflowAt !== null}
+                        title="More actions"
+                        style={{ color: tokens.textSecondary }}
+                        onClick={() => {
+                            if (overflowAt !== null) {
+                                setOverflowAt(null);
+                                return;
+                            }
+                            // Anchored under the button, the way a native menu drops: the menu
+                            // is a portal (`ContextMenu`), so it needs viewport coordinates
+                            // rather than a position inside this bar.
+                            const box = overflowRef.current?.getBoundingClientRect();
+                            setOverflowAt(
+                                box === undefined
+                                    ? { x: 8, y: 32 }
+                                    : { x: Math.round(box.left), y: Math.round(box.bottom + 4) }
+                            );
+                        }}
+                    >
+                        <ChromeIcon name="ellipsis" size={13} />
+                    </button>
+                )}
             </div>
+            {overflowAt === null ? null : (
+                <ContextMenu
+                    x={overflowAt.x}
+                    y={overflowAt.y}
+                    items={overflowItems}
+                    label="Window menu"
+                    onClose={() => {
+                        setOverflowAt(null);
+                    }}
+                />
+            )}
 
             <div
                 data-testid="top-bar-identity"

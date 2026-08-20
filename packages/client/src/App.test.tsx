@@ -416,13 +416,31 @@ describe('gestures and keys become wire commands', () => {
     });
 
     it('closes the focused pane on ⌘W', async () => {
+        // A workspace with two panes: ⌘W closes the focused ONE (the last-pane rule below is
+        // what makes the pane count load-bearing here).
+        const h = setup({ markdown: true });
+
+        fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-close' });
+        });
+    });
+
+    /**
+     * TERM-077 / WS-109: ⌘W on the LAST pane deletes the workspace instead of leaving an empty
+     * one behind, and with no running agents nothing is asked first — exactly what
+     * `NexCommands.handleClosePane` does.
+     */
+    it('deletes the workspace when ⌘W closes its last pane', async () => {
         const h = setup();
 
         fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
 
         await waitFor(() => {
-            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-close', pane_id: PANE_A });
+            expect(h.commands().at(-1)).toMatchObject({ command: 'workspace-delete', name: W1, force: true });
         });
+        expect(screen.queryByTestId('agent-delete-gate')).toBeNull();
     });
 
     it('zooms through the WS-only verb from the header button', async () => {

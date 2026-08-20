@@ -64,8 +64,10 @@ export {
     DEFAULT_HELLO_TIMEOUT_MS,
     REVEAL_PANE_MESSAGE,
     REVEAL_REQUEST_MESSAGE,
+    WEB_BATCH_MESSAGE,
     WEB_COMMANDS,
     WEB_CONSOLE_LINE_MESSAGE,
+    WEB_FAVOURITES_MESSAGE,
     WEB_GEOMETRY_REPORT_MESSAGE,
     WEB_HOST_CAPABILITY,
     WS_CLOSE_CODES,
@@ -104,9 +106,70 @@ export {
 export { createAgentChannel, type AgentChannelOptions } from './agents.js';
 
 export {
+    PANE_LIFECYCLE_COMMANDS,
+    REOPEN_RESUME_SETTLE_MS,
+    createPaneLifecycleChannel,
+    isPaneLifecycleCommand,
+    type PaneLifecycleChannel,
+    type PaneLifecycleChannelOptions,
+    type PaneLifecycleCommand
+} from './panes.js';
+
+export {
+    TERMINAL_SEARCH_ACTIONS,
+    TERMINAL_SEARCH_COMMANDS,
+    createTerminalSearchChannel,
+    isTerminalSearchCommand,
+    type TerminalSearchAction,
+    type TerminalSearchBackend,
+    type TerminalSearchChannel,
+    type TerminalSearchChannelOptions,
+    type TerminalSearchCommand
+} from './search.js';
+
+export {
+    REPO_COMMANDS,
+    handleRepoCommand,
+    isRepoCommand,
+    serializeGitStatus,
+    type RepoChannel,
+    type RepoCommand,
+    type RepoCommandGit,
+    type RepoStatusReader
+} from './repos.js';
+
+export {
+    GRAFT_UI_COMMANDS,
+    createGraftOrphanRegistry,
+    handleGraftUiCommand,
+    isGraftUiCommand,
+    type GraftChannel,
+    type GraftOrphanRegistry,
+    type GraftUiCommand
+} from './graft.js';
+
+export {
     DEFAULT_HTTP_HOST,
     createWsServer,
     type WsServer,
     type WsServerAddress,
     type WsServerOptions
 } from './server.js';
+
+export {
+    DESKTOP_COMMANDS,
+    SHELL_ACTIONS,
+    SHELL_ACTION_EVENT,
+    createDesktopChannel,
+    isDesktopCommand,
+    CLIPBOARD_IMAGE_DIR,
+    MAX_PASTE_IMAGE_BYTES,
+    resolveTerminalPath,
+    shellEscapePath,
+    tokenAt,
+    urlFromToken,
+    type DesktopChannel,
+    type DesktopChannelOptions,
+    type DesktopCommand,
+    type ShellAction
+} from './desktop.js';

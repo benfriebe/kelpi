@@ -15,6 +15,7 @@
  *        ├─ app.asar                package.json + dist/main.js + its map, and nothing else
  *        ├─ daemon/                 nexd.js + node_modules/node-pty     ← outside the asar
  *        ├─ client/                 the built web UI                    ← outside the asar
+ *        ├─ cli/                    the `nex` CLI + its launcher        ← outside the asar
  *        └─ node                    a Node 24 runtime for the daemon    ← outside the asar
  *
  * `src/resources.ts` is the single description of that layout: the app reads it back through
@@ -31,7 +32,7 @@
  * ## Staging
  *
  * `prePackage` runs `scripts/stage-resources.mjs`, which lays out `out/staging/{daemon,client,
- * node}` (+ `icon.icns`). Packaging then just copies. The build inputs — the daemon bundle, the
+ * cli,node}` (+ `icon.icns`). Packaging then just copies. The build inputs — the daemon bundle, the
  * client `vite build`, this package's own `dist/` — are NOT built here: `pnpm dist` at the repo
  * root builds all three first, and a missing one fails loudly with the command that fixes it
  * rather than silently packaging something stale.
@@ -65,7 +66,7 @@ const iconFile = path.join(stagingDir, 'icon.icns');
  * evaluated before anything is built; `prePackage` asserts they still match the TypeScript
  * (`RESOURCE_NAMES`), so the two cannot drift silently.
  */
-const RESOURCE_DIRS = ['daemon', 'client', 'node'];
+const RESOURCE_DIRS = ['daemon', 'client', 'cli', 'node'];
 
 /** `dist/packaging.cjs`, with a repair hint instead of a bare MODULE_NOT_FOUND. */
 function packagingHelpers() {
@@ -122,6 +123,41 @@ module.exports = {
         // pnpm's store is a forest of symlinks; an app bundle must carry real files.
         derefSymlinks: true,
         overwrite: true,
+        /**
+         * CONT-123 — Finder "Open With → Nex" for markdown, ported from `Nex/Info.plist:7-21,52-77`.
+         *
+         * Two halves, both required. `CFBundleDocumentTypes` claims the type as an **Editor**
+         * with `LSHandlerRank: Alternate`, which is what puts Nex in *Open With* and makes it
+         * settable as the default WITHOUT hijacking whatever the user already uses.
+         * `UTImportedTypeDeclarations` imports `net.daringfireball.markdown` — an identifier no
+         * system framework declares — so LaunchServices knows the `md`/`markdown` extensions map
+         * to it in the first place. Without the import the document type matches nothing.
+         *
+         * This is also what makes `app.on('open-file')` reachable at all: the handler has shipped
+         * since M4 (`src/main.ts` `forwardOpen`), but with no declared type Finder never sent it
+         * a file (docs/capabilities 06 ▸ CONT-124's "gated behind CONT-123").
+         */
+        extendInfo: {
+            CFBundleDocumentTypes: [
+                {
+                    CFBundleTypeName: 'Markdown Document',
+                    CFBundleTypeRole: 'Editor',
+                    LSHandlerRank: 'Alternate',
+                    LSItemContentTypes: ['net.daringfireball.markdown']
+                }
+            ],
+            UTImportedTypeDeclarations: [
+                {
+                    UTTypeIdentifier: 'net.daringfireball.markdown',
+                    UTTypeDescription: 'Markdown Document',
+                    UTTypeConformsTo: ['public.plain-text'],
+                    UTTypeTagSpecification: {
+                        'public.filename-extension': ['md', 'markdown'],
+                        'public.mime-type': ['text/markdown', 'text/x-markdown']
+                    }
+                }
+            ]
+        },
         ...(signingIdentity.length > 0 ? { osxSign: { identity: signingIdentity } } : {})
     },
 
@@ -170,7 +206,7 @@ module.exports = {
         async prePackage(_forgeConfig, platform, arch) {
             assertBuilt();
             const { RESOURCE_NAMES } = packagingHelpers();
-            const expected = [RESOURCE_NAMES.daemon, RESOURCE_NAMES.client, RESOURCE_NAMES.node];
+            const expected = [RESOURCE_NAMES.daemon, RESOURCE_NAMES.client, RESOURCE_NAMES.cli, RESOURCE_NAMES.node];
             if (expected.join(',') !== RESOURCE_DIRS.join(',')) {
                 throw new Error(
                     `forge.config.cjs stages [${RESOURCE_DIRS.join(', ')}] but src/resources.ts names ` +
@@ -181,7 +217,7 @@ module.exports = {
             const { stageResources } = await import('./scripts/stage-resources.mjs');
             const staged = stageResources({ stagingDir, platform, arch });
             process.stdout.write(
-                `\n  staged for ${platform}/${arch}: daemon + client + node ${staged.node.version} ` +
+                `\n  staged for ${platform}/${arch}: daemon + client + cli + node ${staged.node.version} ` +
                     `(${staged.node.arch}, from ${staged.node.source})\n`
             );
         },
@@ -201,6 +237,8 @@ module.exports = {
                     path.join(resources, RESOURCE_NAMES.daemon, 'nexd.js'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'node_modules', 'node-pty', 'package.json'),
                     path.join(resources, RESOURCE_NAMES.client, 'index.html'),
+                    path.join(resources, RESOURCE_NAMES.cli, 'nex'),
+                    path.join(resources, RESOURCE_NAMES.cli, 'nex.js'),
                     path.join(resources, RESOURCE_NAMES.node)
                 ];
                 const missing = required.filter((file) => !fs.existsSync(file));
@@ -208,6 +246,9 @@ module.exports = {
                     throw new Error(`packaged app is incomplete — missing:\n  ${missing.join('\n  ')}`);
                 }
                 fs.accessSync(path.join(resources, RESOURCE_NAMES.node), fs.constants.X_OK);
+                // The launcher is exec'd directly by a shell through /usr/local/bin/nex, so a
+                // lost exec bit would only surface as "command not found" on a user's machine.
+                fs.accessSync(path.join(resources, RESOURCE_NAMES.cli, 'nex'), fs.constants.X_OK);
                 process.stdout.write(`\n  packaged ${path.join(appPath, 'Nex.app')}\n`);
             }
         }

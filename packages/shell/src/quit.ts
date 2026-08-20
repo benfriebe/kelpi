@@ -102,7 +102,9 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
                 confirming = false;
                 // §10 step 4: honour the suppression checkbox even on Cancel.
                 if (result.checkboxChecked && settings.confirmQuitWhenActive) {
-                    settings = { confirmQuitWhenActive: false };
+                    // Spread, not replace: the same file carries the CLI-install state
+                    // (`./cli-install.ts`), and suppressing the quit dialog must not reset it.
+                    settings = { ...settings, confirmQuitWhenActive: false };
                     writeShellSettings(options.settingsPath, settings);
                 }
                 if (result.response === 0) proceed();

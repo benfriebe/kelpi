@@ -298,6 +298,16 @@ export type DomainAction =
           readonly id: string;
           readonly remoteURL: string | null;
       }
+    /**
+     * graft-git.md §GIT-068: adding a repo that is already registered as AUTO-DISCOVERED
+     * promotes it (`isAutoDiscovered = false`), so the auto-unlink GC can never collect a repo
+     * the user asked for by hand. An already-manual repo is left alone by the caller.
+     */
+    | {
+          readonly type: 'set-repo-auto-discovered';
+          readonly id: string;
+          readonly isAutoDiscovered: boolean;
+      }
     | {
           readonly type: 'add-repo-association';
           readonly workspaceID: string;
@@ -490,6 +500,12 @@ export type DomainAction =
           readonly workspaceID: string;
           readonly paneID: string;
           readonly editing: boolean;
+          /**
+           * CONT-081: entering edit mode with an external `$EDITOR` records the launch command
+           * on the pane, which is what makes it host a PTY instead of the built-in textarea.
+           * Omitted = the built-in editor; leaving edit mode always clears it (CONT-090).
+           */
+          readonly externalEditorCommand?: string | undefined;
       }
     | {
           readonly type: 'set-markdown-font-size';

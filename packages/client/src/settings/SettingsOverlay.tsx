@@ -24,11 +24,15 @@ import type { WsSettingsSnapshot } from '@nex/protocol';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
 
 import { clientKeyBindings, tokens, withAlpha, type ChromeBucket } from '../chrome';
+import type { WebFavourite } from '../webpane';
 import { AppearanceTab } from './AppearanceTab';
+import { GeneralTab } from './GeneralTab';
 import { KeybindingsTab } from './KeybindingsTab';
 import { LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
+import { RepositoriesTab, type RepositoryEntry } from './RepositoriesTab';
 import { SETTINGS_TABS, type SettingsTabID } from './catalog';
+import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
 import {
     DEFAULT_SETTINGS_PATHS,
@@ -47,7 +51,34 @@ export interface SettingsOverlayProps {
     readonly initialTab?: SettingsTabID | undefined;
     readonly paths?: SettingsPaths | undefined;
     readonly bucket?: ChromeBucket | undefined;
+    /**
+     * A global-hotkey registration failure the Electron shell reported (SET-083). A browser
+     * client has no registrar, so this is absent there and the Keybindings tab shows no
+     * warning — correct, because nothing tried to register anything.
+     */
+    readonly globalHotkeyError?: string | null | undefined;
+    /**
+     * Electron's native directory chooser, for Settings ▸ Repositories' Add / Scan (§SET-053 /
+     * §SET-054's `NSOpenPanel`). Absent in a browser, where the path field is the whole input —
+     * which is also the only thing that works against a REMOTE daemon.
+     */
+    readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /**
+     * Settings ▸ Web (§14). Passed as its own prop rather than folded into `SettingsActions`
+     * because favourites are not config-file settings: they are daemon state reached by the
+     * `web-favourite-*` verbs, and a client that has no web-pane host still shows the tab (it
+     * simply shows the empty state).
+     */
+    readonly web?:
+        | {
+              readonly favourites: readonly WebFavourite[];
+              readonly actions: WebTabActions;
+              readonly path?: string | undefined;
+          }
+        | undefined;
 }
+
+const EMPTY_REPOSITORIES: readonly RepositoryEntry[] = [];
 
 const FOCUSABLE =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
@@ -228,10 +259,38 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     data-testid="settings-panel"
                     className="min-w-0 flex-1 overflow-y-auto p-4"
                 >
-                    {tab === 'keybindings' ? (
-                        <KeybindingsTab bindings={bindings} actions={props.actions} configPath={paths.nexConfig} />
+                    {tab === 'general' ? (
+                        <GeneralTab settings={props.settings} actions={props.actions} paths={paths} />
                     ) : null}
-                    {tab === 'appearance' ? <AppearanceTab settings={props.settings} paths={paths} /> : null}
+                    {tab === 'repositories' ? (
+                        <RepositoriesTab
+                            repos={props.domain.repos ?? EMPTY_REPOSITORIES}
+                            actions={props.actions}
+                            paths={paths}
+                            autoDetectRepos={props.settings.general.autoDetectRepos}
+                            {...(props.onBrowseForFolder === undefined
+                                ? {}
+                                : { onBrowse: props.onBrowseForFolder })}
+                        />
+                    ) : null}
+                    {tab === 'keybindings' ? (
+                        <KeybindingsTab
+                            bindings={bindings}
+                            actions={props.actions}
+                            configPath={paths.nexConfig}
+                            globalHotkey={props.settings.general.globalHotkey}
+                            globalHotkeyHideOnRepress={props.settings.general.globalHotkeyHideOnRepress}
+                            globalHotkeyError={props.globalHotkeyError}
+                        />
+                    ) : null}
+                    {tab === 'appearance' ? (
+                        <AppearanceTab
+                            settings={props.settings}
+                            paths={paths}
+                            actions={props.actions}
+                            bucket={props.bucket}
+                        />
+                    ) : null}
                     {tab === 'labels' ? (
                         <LabelsTab
                             presets={props.domain.labelPresets}
@@ -246,8 +305,24 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     {tab === 'workspaces' ? (
                         <WorkspacesTab settings={props.settings} actions={props.actions} paths={paths} />
                     ) : null}
+                    {tab === 'web' ? (
+                        <WebTab
+                            favourites={props.web?.favourites ?? EMPTY_FAVOURITES}
+                            actions={props.web?.actions ?? NO_WEB_ACTIONS}
+                            {...(props.web?.path === undefined ? {} : { path: props.web.path })}
+                        />
+                    ) : null}
                 </div>
             </div>
         </div>
     );
 }
+
+const EMPTY_FAVOURITES: readonly WebFavourite[] = [];
+
+/** A client with no web wiring still renders the tab; its buttons simply do nothing. */
+const NO_WEB_ACTIONS: WebTabActions = {
+    renameFavourite: () => {},
+    removeFavourite: () => {},
+    moveFavourite: () => {}
+};

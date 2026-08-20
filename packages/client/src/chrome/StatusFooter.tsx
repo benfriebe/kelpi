@@ -5,9 +5,11 @@
  * cwd, git branch, then the agent segment (running → `<kind> <elapsed>` in amber with a 1s
  * ticker; waiting → `awaiting input` in the waiting color; idle → nothing).
  *
- * Right cluster = the sparkline slot (system stats are sampled by the DAEMON in this
- * architecture — §15 — so this renders whatever samples assembly hands it and a placeholder
- * until then), then the three global agent counts, then a live `HH:MM` clock.
+ * Right cluster = the system-stat gauges (APP-078…085), then the three global agent counts,
+ * then a live `HH:MM` clock. The stats are sampled by the DAEMON in this architecture (§15 /
+ * `@nex/protocol` `ws/stats.ts`): this renders the broadcast it is handed, in the enabled set's
+ * canonical order, and renders nothing at all when the master toggle is off — the gauge row
+ * simply is not there, exactly as `enabledStatKinds` returning `[]` produces in the Swift view.
  *
  * The counts are exactly agent-lifecycle.md §9.3, and they come from the daemon's own
  * `chromeStatusSummary` via `selectAgentSummary` rather than being recounted here:
@@ -20,6 +22,8 @@ import { useState, type ReactElement } from 'react';
 
 import { useSecondsTicker } from './clock';
 import { ChromeIcon } from './icons';
+import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
+import { visibleStatKinds } from './stats';
 import {
     chromeElapsedLabel,
     clockLabel,
@@ -31,6 +35,7 @@ import {
 import { tokens } from './tokens';
 import type { ChromePane } from './types';
 import type { WorkspaceColor } from '@nex/daemon/store';
+import { SYSTEM_STATS_INTERVAL_MS, ZERO_SYSTEM_STATS, type WsSystemStats } from '@nex/protocol';
 
 export type AgentBucket = 'running' | 'waiting' | 'inactive';
 
@@ -63,8 +68,30 @@ export interface StatusFooterProps {
     /** System-stat samples (daemon-sampled, §15). Empty renders the placeholder. */
     readonly sparklineSamples?: readonly number[] | undefined;
     readonly sparklineLabel?: string | undefined;
+    /**
+     * The daemon's latest `system-stats` broadcast plus the settings that shape it (APP-080).
+     * Absent = no sampler has spoken yet, which renders the same nothing the master toggle
+     * being off renders — a footer must not invent a 0 % CPU it was never told about.
+     */
+    readonly systemStats?: SystemStatsView | undefined;
     /** Frozen clock for tests; defaults to the live 1s ticker. */
     readonly now?: number | undefined;
+}
+
+/** Everything the gauge row needs, assembled by `App.tsx` from the store + settings. */
+export interface SystemStatsView {
+    readonly stats: WsSystemStats;
+    readonly history: Readonly<Record<string, readonly number[]>>;
+    readonly intervalMs: number;
+    /** The master toggle (SET-042). */
+    readonly showSystemStats: boolean;
+    /** The enabled metric ids (SET-043); order is imposed here, not by the caller. */
+    readonly enabled: readonly string[];
+    readonly showGraphs: boolean;
+    readonly graphStyle: SparklineStyle;
+    /** `''` = the adaptive chrome tone. */
+    readonly graphColor: string;
+    readonly graphWidth: number;
 }
 
 const BUCKET_LABEL: Readonly<Record<AgentBucket, string>> = {
@@ -80,12 +107,12 @@ function bucketColor(bucket: AgentBucket): string {
 }
 
 /**
- * A tiny SVG trace. Percentage-bounded metrics scale 0–100; anything else auto-scales to the
- * window max (§8.1). With fewer than two samples the spec keeps the slot but draws nothing —
- * that empty slot is the placeholder, and it is **invisible**: §8.1 gates every gauge on
- * `showSystemStats`, so with no sampler running there is nothing for a user to see. It kept a
- * 6 %-white fill until the visual audit photographed it as an empty chip sitting in the footer
- * (run-B m2); the slot survives so the counts beside it do not jump when a sampler lands.
+ * The standalone sparkline slot that predates the gauge row.
+ *
+ * Kept as a thin wrapper over `Sparkline` (which now owns both styles, the fill and the
+ * percentage-vs-rate rule) rather than deleted: it is the shape `sparklineSamples` feeds, and
+ * the sub-2-sample placeholder behaviour it documents is still the contract every gauge obeys.
+ * A caller that only has a bare series of numbers still has somewhere to put them.
  */
 export function SystemSparkline(props: {
     readonly samples: readonly number[];
@@ -93,41 +120,15 @@ export function SystemSparkline(props: {
     readonly height?: number | undefined;
     readonly label?: string | undefined;
 }): ReactElement {
-    const width = props.width ?? 28;
-    const height = props.height ?? 11;
-    const samples = props.samples;
-    if (samples.length < 2) {
-        return (
-            <span
-                data-testid="sparkline-placeholder"
-                aria-hidden
-                className="inline-block rounded-[2px]"
-                style={{ width, height, background: 'transparent' }}
-            />
-        );
-    }
-    const max = Math.max(...samples, 1);
-    const step = width / (samples.length - 1);
-    const points = samples
-        .map((value, index) => `${(index * step).toFixed(2)},${(height - (value / max) * height).toFixed(2)}`)
-        .join(' ');
     return (
-        <svg
-            data-testid="sparkline"
-            width={width}
-            height={height}
-            viewBox={`0 0 ${width} ${height}`}
-            role={props.label === undefined ? 'presentation' : 'img'}
-            aria-label={props.label}
-        >
-            <polyline
-                points={points}
-                fill="none"
-                stroke={tokens.textSecondary}
-                strokeWidth={1}
-                strokeLinejoin="round"
-            />
-        </svg>
+        <Sparkline
+            values={props.samples}
+            isPercentage={false}
+            color={tokens.textSecondary}
+            width={props.width ?? 28}
+            height={props.height ?? 11}
+            {...(props.label === undefined ? {} : { label: props.label })}
+        />
     );
 }
 
@@ -189,6 +190,15 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 
     const items = openBucket === null ? [] : (props.bucketItems?.(openBucket) ?? []);
 
+    // The enabled set in canonical order, gated by the master toggle (`enabledStatKinds`).
+    const stats = props.systemStats;
+    const gauges = stats === undefined ? [] : visibleStatKinds(stats.showSystemStats, stats.enabled);
+    // SET-044: an empty hex means "the adaptive chrome default", which is the footer's own
+    // secondary tone — so a user who resets the colour follows the palette rather than being
+    // stuck on whatever hex the theme they imported happened to carry.
+    const graphColor =
+        stats === undefined || stats.graphColor === '' ? tokens.textSecondary : stats.graphColor;
+
     return (
         <div
             data-testid="status-footer"
@@ -233,10 +243,27 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
             </div>
 
             <div className="flex shrink-0 items-center gap-3">
-                <SystemSparkline
-                    samples={props.sparklineSamples ?? EMPTY_SAMPLES}
-                    label={props.sparklineLabel}
-                />
+                {gauges.length > 0 ? (
+                    // Spacing-separated, no dot separators — the gaps carry the grouping
+                    // (`rightSection`'s `HStack(spacing: 14)`).
+                    <div data-testid="system-stats" className="flex items-center gap-3.5">
+                        {gauges.map((kind) => (
+                            <SystemStatGauge
+                                key={kind}
+                                kind={kind}
+                                stats={stats?.stats ?? ZERO_SYSTEM_STATS}
+                                history={stats?.history[kind] ?? EMPTY_SAMPLES}
+                                showGraph={stats?.showGraphs === true}
+                                graphColor={graphColor}
+                                graphWidth={stats?.graphWidth ?? 28}
+                                graphStyle={stats?.graphStyle ?? 'line'}
+                                intervalMs={stats?.intervalMs ?? SYSTEM_STATS_INTERVAL_MS}
+                            />
+                        ))}
+                    </div>
+                ) : props.sparklineSamples === undefined ? null : (
+                    <SystemSparkline samples={props.sparklineSamples} label={props.sparklineLabel} />
+                )}
                 <CountItem
                     bucket="running"
                     count={props.summary.running}

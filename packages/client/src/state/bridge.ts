@@ -76,6 +76,16 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // `system-stats` (APP-078): the daemon's 2 s sampler, subscribed here for exactly the
+        // reason above — a fire-and-forget broadcast with no ordering relationship to the
+        // snapshot/delta stream, and the socket layer has no business knowing about gauges.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'system-stats') return;
+            store.getState().applySystemStats(message);
+        })
+    );
+
+    offs.push(
         // `persistence-degraded`: the daemon is running, but its state is NOT reaching disk.
         // This is the one warning that must not live only in a log file — the failure it
         // reports stays invisible until a restart throws a day of workspaces away. The toast

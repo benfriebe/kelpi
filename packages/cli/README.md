@@ -12,8 +12,12 @@ binary: [`docs/compat-status.md`](../../docs/compat-status.md).
 
 ```bash
 pnpm --filter @nex/cli build          # → packages/cli/dist/nex.js (executable, shebang'd)
-ln -sf "$PWD/packages/cli/dist/nex.js" /usr/local/bin/nex
+node packages/cli/dist/nex.js install-hooks --link
 ```
+
+`install-hooks --link` symlinks this binary into `/usr/local/bin` (or `$NEX_INSTALL_DIR` /
+`--install-dir`) and then wires the agent hooks — see [Hooks](#hooks-nex-install-hooks) below.
+The symlink half alone is still just `ln -sf "$PWD/packages/cli/dist/nex.js" /usr/local/bin/nex`.
 
 `dist/nex.js` is a single dependency-free file: `node dist/nex.js …` works from anywhere, and
 so does exec'ing it directly (mode 0755 + `#!/usr/bin/env node`). Nothing needs to be installed
@@ -27,6 +31,52 @@ comes from compiled-in constants, overridable at runtime for a packaging step:
 |---|---|
 | `NEX_CLI_VERSION` | Overrides the reported version (`nex --version`, doctor). |
 | `NEX_CLI_BUILD` | Overrides the reported build id (doctor only). |
+
+## Hooks: `nex install-hooks`
+
+The port of `scripts/install-hooks.sh` + `merge_hooks.py` from the Swift repo, as a subcommand
+(gap #1) — which is also what `nex doctor`'s `hooks` / `codex-hooks` repair lines now name,
+since the port ships no shell script for them to point at.
+
+```
+nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>]
+                  [--link [--install-dir <dir>]] [--dry-run] [--json]
+```
+
+| It writes | Where | Events |
+|---|---|---|
+| 5 Claude Code hooks | `~/.claude/settings.json` (`--claude-dir`) | `Stop`, `Notification`, `SessionStart` (**matcher-less**), `SessionEnd`, `UserPromptSubmit` |
+| 4 Codex CLI hooks, `--agent codex` | `~/.codex/hooks.json` (`--codex-dir`), only when the directory exists | `Stop`, `PermissionRequest`, `SessionStart`, `UserPromptSubmit` |
+
+Behaviour carried over verbatim from the Python, and verified byte-for-byte against goldens it
+generated (`tests/fixtures/hooks/`, regenerable with their `generate.sh`):
+
+- unrelated user hooks are preserved; only nex-managed commands are replaced;
+- dedupe is by the command's **flag-less base** (everything before the first ` --`), and any
+  existing command *containing* that base goes — so `/Applications/Nex.app/Contents/Helpers/nex
+  event stop`, a bare `nex event stop` and `nex event stop --agent codex` are one identity, not
+  three hooks firing three times. The documented trade-off comes too: a composite user command
+  embedding a nex base (`notify.sh && nex event stop`) is swept from that event;
+- an incoming group joins an existing group with the **same matcher**, so the pre-v0.19
+  `"matcher": "startup"` SessionStart group empties, is pruned, and is replaced by a
+  matcher-less one — the issue #181 repair;
+- output is `json.dump(..., indent=2)` + a trailing newline, so a re-run is byte-identical.
+
+Added on top, because a subcommand is re-run more casually than a downloaded script: an
+existing file is copied to `<file>.nex-backup` before it changes; an unchanged result is
+reported as `unchanged` instead of rewritten; `--dry-run` writes nothing; and a file that is
+not valid JSON is **refused**, never overwritten (fatal for Claude, a warning for Codex — the
+Codex section is best-effort by design, exactly as the shell script's was).
+
+### What the hooks invoke, and the PATH assumption
+
+Hook commands run in the *non-interactive* shell the agent CLI spawns: it does not read
+`~/.zshrc` and inherits the agent process's own `PATH`. So the command is resolved rather than
+assumed — `--command` wins if given; otherwise a bare `nex` when a `nex` on `PATH` really
+resolves to this binary (verified, not hoped); otherwise this binary's absolute path,
+shell-quoted. `--link` runs first so a fresh machine can reach the bare form on its first run,
+and warns when the install directory is not on `PATH`. An unwritable directory prints the
+`sudo` command to run by hand: this CLI never escalates privileges itself.
 
 ## Parity statement
 

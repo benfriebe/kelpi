@@ -35,10 +35,16 @@ import {
     CAPTURE_DOM_EXPRESSION,
     CAPTURE_TEXT_EXPRESSION,
     buildActuatorCall,
+    buildBatchClearMarkers,
+    buildBatchHighlight,
+    buildBatchSetMarkers,
+    buildBatchUnfocus,
+    buildBatchUpdateComment,
     buildFindCall,
     buildInspectArm,
     buildInspectDisarm,
     wrapExecScript,
+    type BatchMarkerInput,
     type FindAction
 } from './scripts.js';
 
@@ -77,13 +83,21 @@ export const RPC_VERBS = [
     'cookies-list',
     'cookies-clear',
     'cookies-delete',
-    // Not yet driven by the daemon (HOST_PROTOCOL §7 lists find + zoom as client/shell
-    // milestones). Implemented here so wiring them daemon-side is a handler, not a port.
+    // §13.2's write half: the storage panel's add/edit form (WEB-051/WEB-052). Delete-then-set,
+    // so a renamed cookie cannot leave a stale twin behind.
+    'cookies-set',
     'find',
     'zoom'
 ] as const;
 
-/** The fire-and-forget verbs (HOST_PROTOCOL §3.1 + `inspect-disarm`). */
+/**
+ * The fire-and-forget verbs (HOST_PROTOCOL §3.1 + `inspect-disarm`).
+ *
+ * The `batch-*` family joins them because every one of them is *cosmetic*: a badge position, a
+ * focus ring, a comment written back into a popover. The daemon owns the batch itself, so a
+ * marker sync that arrives after the page navigated away has nothing to report and nothing to
+ * fail — waiting for an ack would only add a round trip to a repaint.
+ */
 export const NOTIFY_VERBS = [
     'pane-open',
     'pane-close',
@@ -91,7 +105,12 @@ export const NOTIFY_VERBS = [
     'tab-open',
     'tab-close',
     'tab-select',
-    'inspect-disarm'
+    'inspect-disarm',
+    'batch-markers',
+    'batch-clear',
+    'batch-highlight',
+    'batch-unfocus',
+    'batch-comment'
 ] as const;
 
 // ── the browser seam ────────────────────────────────────────────────────────────────
@@ -141,6 +160,18 @@ export interface CookieRecord {
     readonly sessionOnly?: boolean | undefined;
 }
 
+/** A cookie the storage panel is asking to write (§13.2's add/edit form). */
+export interface CookieWrite {
+    readonly name: string;
+    readonly value: string;
+    readonly domain: string;
+    readonly path: string;
+    readonly isSecure: boolean;
+    readonly isHttpOnly: boolean;
+    /** Unix **seconds**; absent means a session cookie ("Session only" ticked). */
+    readonly expires?: number | undefined;
+}
+
 /** The pane's cookie/site-data store (§13.2). */
 export interface PaneStorage {
     list(paneID: string): Promise<readonly CookieRecord[]>;
@@ -148,6 +179,16 @@ export interface PaneStorage {
     clearAllSiteData(paneID: string): Promise<void>;
     /** Delete by name and/or canonical domain; returns how many were removed. */
     remove(paneID: string, filter: { name?: string | undefined; domain?: string | undefined }): Promise<number>;
+    /**
+     * WEB-051/WEB-052: write one cookie, deleting `original` first so a *renamed* cookie does
+     * not leave its old self behind. Optional — a host with no write surface simply omits it and
+     * the verb answers honestly rather than pretending.
+     */
+    set?(
+        paneID: string,
+        cookie: CookieWrite,
+        original?: { name: string; domain: string; path?: string | undefined } | undefined
+    ): Promise<void>;
 }
 
 export interface DispatchDeps<V extends TabController = TabController> {
@@ -478,6 +519,49 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         return { ok: true, deleted: await storage.remove(paneID, { domain }) };
     };
 
+    /** §13.2's write: delete the original first (WEB-052), then set the new record. */
+    const cookiesSet = async (args: JsonObject): Promise<JsonObject> => {
+        const write = storage.set?.bind(storage);
+        if (write === undefined) return failure('this host cannot write cookies');
+        const raw = args['cookie'];
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+            return failure('cookie is required');
+        }
+        const cookie = raw as JsonObject;
+        const name = str(cookie, 'name');
+        const domain = str(cookie, 'domain');
+        // The Swift form disables Save until both are non-empty; the host refuses the same pair
+        // so a scripted caller cannot write a cookie no store can address.
+        if (name === '') return failure('cookie name is required');
+        if (domain === '') return failure('cookie domain is required');
+        const rawOriginal = args['original'];
+        const original =
+            typeof rawOriginal === 'object' && rawOriginal !== null && !Array.isArray(rawOriginal)
+                ? {
+                      name: str(rawOriginal as JsonObject, 'name'),
+                      domain: str(rawOriginal as JsonObject, 'domain'),
+                      ...(optionalStr(rawOriginal as JsonObject, 'path') === undefined
+                          ? {}
+                          : { path: optionalStr(rawOriginal as JsonObject, 'path') })
+                  }
+                : undefined;
+        const expires = num(cookie, 'expires');
+        await write(
+            str(args, 'paneID'),
+            {
+                name,
+                value: str(cookie, 'value'),
+                domain,
+                path: str(cookie, 'path') === '' ? '/' : str(cookie, 'path'),
+                isSecure: bool(cookie, 'is_secure'),
+                isHttpOnly: bool(cookie, 'is_http_only'),
+                ...(expires === undefined ? {} : { expires })
+            },
+            original === undefined || original.name === '' ? undefined : original
+        );
+        return { ok: true, name, domain };
+    };
+
     const cookiesDelete = async (args: JsonObject): Promise<JsonObject> => {
         const name = str(args, 'name');
         if (name === '') return failure('cookie name is required');
@@ -502,8 +586,55 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
         }
     };
 
+    /**
+     * The batch surfaces live in the ACTIVE tab's page. `tabOf` falls back to the active view
+     * when no tab is named, which is exactly right here: markers belong to whatever the user is
+     * looking at, and a sync for a pane whose views are gone is a silent no-op.
+     */
+    const batchEval = (args: JsonObject, expression: string): void => {
+        const found = tabOf(args);
+        if ('error' in found) return;
+        void found.tab.evaluate(expression).catch((error: unknown) => {
+            report(error, 'batch-markers');
+        });
+    };
+
+    const batchMarkerItems = (args: JsonObject): readonly BatchMarkerInput[] =>
+        list(args, 'items').flatMap((entry) => {
+            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return [];
+            const record = entry as JsonObject;
+            const selector = str(record, 'selector');
+            if (selector === '') return [];
+            return [
+                {
+                    id: str(record, 'id'),
+                    selector,
+                    label: str(record, 'label'),
+                    comment: str(record, 'comment')
+                }
+            ];
+        });
+
     const runNotify = (verb: string, args: JsonObject): boolean => {
         switch (verb) {
+            case 'batch-markers':
+                batchEval(args, buildBatchSetMarkers(batchMarkerItems(args)));
+                return true;
+            case 'batch-clear':
+                batchEval(args, buildBatchClearMarkers());
+                return true;
+            case 'batch-highlight':
+                batchEval(
+                    args,
+                    buildBatchHighlight(str(args, 'itemID'), args['scrollIntoView'] !== false)
+                );
+                return true;
+            case 'batch-unfocus':
+                batchEval(args, buildBatchUnfocus());
+                return true;
+            case 'batch-comment':
+                batchEval(args, buildBatchUpdateComment(str(args, 'itemID'), str(args, 'comment')));
+                return true;
             case 'pane-open':
                 registry.openPane(paneSpecOf(args));
                 return true;
@@ -582,6 +713,8 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 return await cookiesClear(args);
             case 'cookies-delete':
                 return await cookiesDelete(args);
+            case 'cookies-set':
+                return await cookiesSet(args);
             default:
                 return failure(`unsupported host verb '${verb}'`);
         }

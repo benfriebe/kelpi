@@ -32,7 +32,8 @@ import {
     useState,
     type CSSProperties,
     type PointerEvent as ReactPointerEvent,
-    type ReactElement
+    type ReactElement,
+    type ReactNode
 } from 'react';
 
 import {
@@ -101,6 +102,21 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     readonly homeDirectory?: string | undefined;
     /** Renders a pane's body; the header is the grid's. */
     readonly renderPane: RenderPane;
+    /**
+     * Renders a floating layer OVER a pane's body — the search overlay, and anything else that
+     * must sit above the terminal canvas without being part of it (`PaneSearchOverlay.tsx`).
+     *
+     * A separate slot rather than something `renderPane` returns, because a pane's body belongs
+     * to whatever engine owns it (the terminal canvas, a sandboxed content frame, the measured
+     * hole a web pane's native view is placed into) and none of those can host a sibling.
+     * Return `null` for every pane without an overlay, which is the normal case.
+     */
+    readonly renderPaneOverlay?: ((paneID: string) => ReactNode) | undefined;
+    /**
+     * "Open the inline rename field on this pane" — the context menu's Rename… (TERM-106).
+     * `seq` is bumped on each request so asking twice re-opens the field.
+     */
+    readonly renameRequest?: { readonly paneID: string; readonly seq: number } | null | undefined;
     readonly headerHeight?: number | undefined;
     /** Fixed size instead of measuring — tests and any non-DOM host. */
     readonly size?: PaneGridSize | undefined;
@@ -585,6 +601,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             syncExcluded={excluded.has(pane.id)}
                             homeDirectory={homeDirectory}
                             height={headerHeight}
+                            renameToken={props.renameRequest?.paneID === pane.id ? props.renameRequest.seq : 0}
                             onHeaderPointerDown={startPaneDrag}
                             onClosePane={props.onClosePane}
                             onRenamePane={props.onRenamePane}
@@ -606,6 +623,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                                 zoomed: zoomed === pane.id,
                                 dragging: draggingPaneID === pane.id
                             })}
+                            {props.renderPaneOverlay?.(pane.id) ?? null}
                         </div>
                         <FocusRing focused={focused} />
                         {resizing && visible ? (

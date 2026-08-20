@@ -19,6 +19,7 @@ function actions(): SettingsActions & { readonly log: Recorded } {
         setKeybinding: vi.fn(),
         resetKeybindings: vi.fn(),
         setGeneralSetting: vi.fn(),
+        setGhosttySetting: vi.fn(),
         setProfiles: vi.fn(),
         addLabelPreset: (input) => log.added.push(input),
         updateLabelPreset: (input) => log.updated.push(input),

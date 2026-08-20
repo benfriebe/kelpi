@@ -1,0 +1,36 @@
+{
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/audit.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "say done"
+          },
+          {
+            "type": "command",
+            "command": "notify.sh && nex event stop"
+          }
+        ]
+      }
+    ]
+  }
+}

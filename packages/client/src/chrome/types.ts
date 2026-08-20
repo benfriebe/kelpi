@@ -94,6 +94,37 @@ export interface WorkspacesMoveRequest {
     readonly index: number;
 }
 
+/**
+ * A repo-registry entry as the chrome renders it. `worktreeBase` is the daemon's RESOLVED base
+ * path for this repo (`repo-registry`'s `worktree_base`): `~` and `<repo>` expand against the
+ * daemon host's home directory, which the client mirror deliberately does not carry.
+ */
+export interface ChromeRepo {
+    readonly id: string;
+    readonly name: string;
+    readonly path: string;
+    readonly worktreeBase: string;
+}
+
+/**
+ * The New Workspace form's optional "Create git worktree" section (§WS-078 / §GIT-105). The
+ * whole request rides `workspace-create --worktree` — the same wire path the CLI uses — so the
+ * sanitization, the branch default and `--update-main` all stay daemon-side.
+ */
+export interface WorkspaceWorktreeRequest {
+    readonly repoID: string;
+    readonly name: string;
+    readonly branch: string;
+    readonly updateMain: boolean;
+}
+
+/**
+ * A form submission that can FAIL and stay open: the callback answers with the daemon's message
+ * (`string`) or `null` when it worked. `void` keeps every older call site working — the form
+ * then treats the submit as fire-and-forget and closes immediately.
+ */
+export type SubmitResult = Promise<string | null> | string | null | void | boolean;
+
 /** Top-level group reorder. No wire verb today — assembly decides how to persist it. */
 export interface GroupMoveRequest {
     readonly groupID: string;
@@ -129,6 +160,29 @@ export interface SidebarCallbacks {
     readonly onSetGroupIcon?: ((groupID: string, icon: string | null) => void) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
     readonly onDeleteGroup?: ((groupID: string, cascade: boolean) => void) | undefined;
-    readonly onCreateWorkspace?: ((name: string, groupID: string | null) => void) | undefined;
+    /**
+     * The New Workspace form. `worktree` is present when its "Create git worktree" section is
+     * on (§WS-078); the callback may answer with a message so the form can keep itself open on
+     * a failed `git worktree add` and re-enable Create (§WS-079).
+     */
+    readonly onCreateWorkspace?:
+        | ((name: string, groupID: string | null, worktree?: WorkspaceWorktreeRequest | undefined) => SubmitResult)
+        | undefined;
     readonly onCreateGroup?: ((name: string) => void) | undefined;
+
+    // ── bulk operations (§5.6's multi-select menu variant, §WS-055…§WS-060) ─────────
+    //
+    // Each is ONE command for the whole selection: N single-workspace commands would land as N
+    // deltas the sidebar animates one at a time, and a partial failure would leave the
+    // selection half-changed.
+
+    readonly onSetBulkColor?: ((workspaceIDs: readonly string[], color: WorkspaceColor) => void) | undefined;
+    /** `apply` is the state EVERY selected workspace ends at (the tri-state menu's decision). */
+    readonly onSetBulkLabel?:
+        | ((workspaceIDs: readonly string[], label: string, apply: boolean) => void)
+        | undefined;
+    /** "Group N Workspaces…": create the group with the selection already inside it. */
+    readonly onCreateGroupForWorkspaces?: ((name: string, workspaceIDs: readonly string[]) => void) | undefined;
+    /** "Delete N Workspaces…", after ONE confirmation. Absent = falls back to N single deletes. */
+    readonly onDeleteWorkspaces?: ((workspaceIDs: readonly string[]) => void) | undefined;
 }

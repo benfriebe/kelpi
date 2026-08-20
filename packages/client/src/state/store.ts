@@ -21,10 +21,15 @@
 
 import { applyDomainEvents, type DaemonState, type DomainEvent } from '@nex/daemon/store';
 import {
+    DEFAULT_WS_CHROME_SETTINGS,
     DEFAULT_WS_SETTINGS,
+    SYSTEM_STATS_INTERVAL_MS,
     WS_DELTA_KINDS,
+    ZERO_SYSTEM_STATS,
+    type WsChromeSettings,
     type WsNotificationKind,
-    type WsSettingsSnapshot
+    type WsSettingsSnapshot,
+    type WsSystemStats
 } from '@nex/protocol';
 import { create } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
@@ -161,6 +166,21 @@ export interface SettingsSlice {
     readonly loaded: boolean;
 }
 
+/**
+ * The daemon's latest `system-stats` broadcast (APP-078…085).
+ *
+ * A FOURTH slice for the same reason settings are a third: no `DomainEvent` describes system
+ * stats, nothing persists them, and a delta replay must never touch them. `loaded` is what
+ * separates "the sampler has not spoken" from "the machine reads 0 %" — the footer renders
+ * nothing in the first case, which is the honest thing to draw when you have not been told.
+ */
+export interface SystemStatsSlice {
+    readonly stats: WsSystemStats;
+    readonly history: Readonly<Record<string, readonly number[]>>;
+    readonly intervalMs: number;
+    readonly loaded: boolean;
+}
+
 export interface UiSlice {
     readonly connection: ConnectionStatus;
     readonly connectionError: string | null;
@@ -183,6 +203,8 @@ export interface NexActions {
      * daemon that sends no settings) leaves the defaults in place and stays unloaded.
      */
     applySettings(raw: unknown): void;
+    /** A `system-stats` broadcast. A malformed payload is ignored, never partially applied. */
+    applySystemStats(raw: unknown): void;
     applySnapshot(seq: number, rawState: unknown): void;
     /** False when the batch was out of order (caller must resync the socket). */
     applyDelta(seq: number, rawEvents: unknown): boolean;
@@ -210,6 +232,7 @@ export interface NexState extends NexActions {
     readonly daemon: DaemonSlice;
     readonly ui: UiSlice;
     readonly settings: SettingsSlice;
+    readonly systemStats: SystemStatsSlice;
 }
 
 export const MAX_TOASTS = 5;
@@ -229,6 +252,54 @@ function initialSettingsSlice(): SettingsSlice {
     return { value: DEFAULT_WS_SETTINGS, loaded: false };
 }
 
+function initialSystemStatsSlice(): SystemStatsSlice {
+    return {
+        stats: ZERO_SYSTEM_STATS,
+        history: {},
+        intervalMs: SYSTEM_STATS_INTERVAL_MS,
+        loaded: false
+    };
+}
+
+/** A `system-stats` payload → the slice, or null when the shape is not one. */
+export function hydrateSystemStats(raw: unknown): Omit<SystemStatsSlice, 'loaded'> | null {
+    if (!isRecord(raw)) return null;
+    const rawStats = raw['stats'];
+    if (!isRecord(rawStats)) return null;
+    const number = (value: unknown): number =>
+        typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    const history: Record<string, readonly number[]> = {};
+    const rawHistory = raw['history'];
+    if (isRecord(rawHistory)) {
+        for (const [key, value] of Object.entries(rawHistory)) {
+            if (!Array.isArray(value)) continue;
+            history[key] = (value as unknown[]).filter(
+                (entry): entry is number => typeof entry === 'number' && Number.isFinite(entry)
+            );
+        }
+    }
+    const interval = raw['intervalMs'];
+    return {
+        stats: {
+            cpuPercent: number(rawStats['cpuPercent']),
+            memUsedBytes: number(rawStats['memUsedBytes']),
+            memTotalBytes: number(rawStats['memTotalBytes']),
+            loadAverage1m: number(rawStats['loadAverage1m']),
+            netDownBytesPerSec: number(rawStats['netDownBytesPerSec']),
+            netUpBytesPerSec: number(rawStats['netUpBytesPerSec']),
+            diskReadBytesPerSec: number(rawStats['diskReadBytesPerSec']),
+            diskWriteBytesPerSec: number(rawStats['diskWriteBytesPerSec']),
+            diskUsedBytes: number(rawStats['diskUsedBytes']),
+            diskTotalBytes: number(rawStats['diskTotalBytes'])
+        },
+        history,
+        intervalMs:
+            typeof interval === 'number' && Number.isFinite(interval) && interval > 0
+                ? interval
+                : SYSTEM_STATS_INTERVAL_MS
+    };
+}
+
 /**
  * Structural hydration for a settings payload: anything missing or of the wrong type falls
  * back to the default, so a daemon that grows a field (or loses one) cannot blank the client.
@@ -245,6 +316,11 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
     const num = (value: unknown, fallback: number): number =>
         typeof value === 'number' && Number.isFinite(value) ? value : fallback;
     const nullableText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+    const placement = (
+        value: unknown,
+        fallback: 'end-of-list' | 'near-selection'
+    ): 'end-of-list' | 'near-selection' =>
+        value === 'end-of-list' || value === 'near-selection' ? value : fallback;
     const nullableNum = (value: unknown): number | null =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
 
@@ -274,8 +350,32 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             confirmWorkspaceDeleteWhenActive: bool(
                 general['confirmWorkspaceDeleteWhenActive'],
                 fallbackGeneral.confirmWorkspaceDeleteWhenActive
-            )
+            ),
+            tcpPort: Math.max(0, num(general['tcpPort'], fallbackGeneral.tcpPort)),
+            globalHotkey: nullableText(general['globalHotkey']),
+            globalHotkeyHideOnRepress: bool(
+                general['globalHotkeyHideOnRepress'],
+                fallbackGeneral.globalHotkeyHideOnRepress
+            ),
+            // §GIT-074's gate. A daemon that predates the field sends nothing and the shipped
+            // default (on) stands — the same additive rule every field above follows.
+            autoDetectRepos: bool(general['autoDetectRepos'], fallbackGeneral.autoDetectRepos),
+            // SET-008/013/014. A blank template falls back to the default rather than pointing
+            // worktree creation at the filesystem root.
+            worktreeBasePath:
+                typeof general['worktreeBasePath'] === 'string' && general['worktreeBasePath'] !== ''
+                    ? general['worktreeBasePath']
+                    : fallbackGeneral.worktreeBasePath,
+            newWorkspacePlacement: placement(
+                general['newWorkspacePlacement'],
+                fallbackGeneral.newWorkspacePlacement
+            ),
+            newGroupPlacement: placement(general['newGroupPlacement'], fallbackGeneral.newGroupPlacement)
         },
+        // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
+        // and the shipped palette / gauge set stands — the same additive rule the rest of this
+        // hydrator follows.
+        chrome: hydrateChromeSettings(raw['chrome']),
         appearance: {
             backgroundColor:
                 typeof appearance['backgroundColor'] === 'string' && appearance['backgroundColor'] !== ''
@@ -290,6 +390,60 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             isDark: bool(appearance['isDark'], fallbackAppearance.isDark),
             theme: nullableText(appearance['theme'])
         }
+    };
+}
+
+/**
+ * The `chrome` slice of a settings payload, field by field against the shipped defaults.
+ *
+ * Same discipline as the rest of `hydrateSettings`: a missing or wrong-typed field falls back
+ * rather than propagating, because these values are read straight into a stylesheet — an
+ * `undefined` opacity is a blank sidebar, and a `null` colour map throws inside `resolve`.
+ */
+function hydrateChromeSettings(raw: unknown): WsChromeSettings {
+    const fallback = DEFAULT_WS_CHROME_SETTINGS;
+    if (!isRecord(raw)) return fallback;
+    const number = (value: unknown, min: number, max: number, defaultValue: number): number => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return defaultValue;
+        return Math.min(max, Math.max(min, value));
+    };
+    const colors: Record<string, string> = {};
+    const rawColors = raw['colors'];
+    if (isRecord(rawColors)) {
+        for (const [key, value] of Object.entries(rawColors)) {
+            if (typeof value === 'string') colors[key] = value;
+        }
+    }
+    const appearance = raw['appearance'];
+    const style = raw['sparklineStyle'];
+    return {
+        appearance:
+            appearance === 'light' || appearance === 'dark' || appearance === 'system'
+                ? appearance
+                : fallback.appearance,
+        colors,
+        sidebarColorIntensity: number(raw['sidebarColorIntensity'], 0, 2, fallback.sidebarColorIntensity),
+        sidebarAvatarFill: number(raw['sidebarAvatarFill'], 0, 1, fallback.sidebarAvatarFill),
+        sidebarAvatarStroke: number(raw['sidebarAvatarStroke'], 0, 1, fallback.sidebarAvatarStroke),
+        // -1 is the "use the preset" sentinel, so the floor is -1 rather than 0.
+        sidebarGroupFill: number(raw['sidebarGroupFill'], -1, 1, fallback.sidebarGroupFill),
+        sidebarGroupStroke: number(raw['sidebarGroupStroke'], 0, 1, fallback.sidebarGroupStroke),
+        showSystemStats:
+            typeof raw['showSystemStats'] === 'boolean' ? raw['showSystemStats'] : fallback.showSystemStats,
+        // An EMPTY array is meaningful ("show no gauges") and must survive; only a non-array
+        // falls back to the shipped cpu/memory/load set.
+        enabledSystemStats: Array.isArray(raw['enabledSystemStats'])
+            ? (raw['enabledSystemStats'] as unknown[]).filter(
+                  (value): value is string => typeof value === 'string'
+              )
+            : fallback.enabledSystemStats,
+        showSystemStatGraphs:
+            typeof raw['showSystemStatGraphs'] === 'boolean'
+                ? raw['showSystemStatGraphs']
+                : fallback.showSystemStatGraphs,
+        sparklineStyle: style === 'dots' || style === 'line' ? style : fallback.sparklineStyle,
+        sparklineColor: typeof raw['sparklineColor'] === 'string' ? raw['sparklineColor'] : fallback.sparklineColor,
+        sparklineWidth: Math.round(number(raw['sparklineWidth'], 16, 80, fallback.sparklineWidth))
     };
 }
 
@@ -356,6 +510,13 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
         daemon: initialDaemonSlice(),
         ui: initialUiSlice(),
         settings: initialSettingsSlice(),
+        systemStats: initialSystemStatsSlice(),
+
+        applySystemStats(raw) {
+            const next = hydrateSystemStats(raw);
+            if (next === null) return;
+            set({ systemStats: { ...next, loaded: true } });
+        },
 
         applySettings(raw) {
             const value = hydrateSettings(raw);

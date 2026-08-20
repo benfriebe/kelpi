@@ -94,6 +94,17 @@ describe('the Settings window', () => {
         expect(document.activeElement).toBe(selected);
     });
 
+    // SET-004: the dialog has a toolbar strip of its own (the Swift window's toolbar), and it
+    // names the tab you are on so the window says what it is showing.
+    it('carries a toolbar strip that names the current tab', () => {
+        setup();
+        const toolbar = screen.getByTestId('settings-toolbar');
+        expect(toolbar.textContent).toContain('Settings');
+        expect(toolbar.textContent).toContain('Keybindings');
+        fireEvent.click(screen.getByTestId('settings-tab-button-labels'));
+        expect(screen.getByTestId('settings-toolbar').textContent).toContain('Labels');
+    });
+
     it('closes on Escape, on the Close button, and on a backdrop click', () => {
         const first = setup();
         fireEvent.keyDown(screen.getByTestId('settings-window'), { key: 'Escape' });

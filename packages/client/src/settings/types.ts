@@ -33,16 +33,35 @@ export interface SettingsActions {
     setGhosttySetting(key: string, value: string | null): void;
     /** `set-profiles` — the WHOLE profile set (§1.6's full-replacement write). */
     setProfiles(profiles: readonly WsProfile[]): void;
-    /** `add-label-preset`; `color` is §6.2's one-string encoding (`"blue"` / `"#ff8800"`). */
-    addLabelPreset(input: { readonly name: string; readonly color: string }): void;
+    /**
+     * `add-label-preset`; `color` is §6.2's one-string encoding (`"blue"` / `"#ff8800"`).
+     *
+     * `textColor` is the same encoding plus `null` = AUTO (black/white by luminance). SET-059:
+     * the daemon applies it only when the add really created a preset, so adding a name that
+     * already exists cannot recolour the existing one.
+     */
+    addLabelPreset(input: {
+        readonly name: string;
+        readonly color: string;
+        readonly textColor?: string | null | undefined;
+    }): void;
     /** `update-label-preset`; `id` is the preset's current name. */
     updateLabelPreset(input: {
         readonly id: string;
         readonly name?: string | undefined;
         readonly color?: string | undefined;
+        /** A colour token, `null` for AUTO, absent to leave the stored one alone (SET-062). */
+        readonly textColor?: string | null | undefined;
     }): void;
     /** `remove-label-preset`. §6.4: workspaces keep the label string. */
     removeLabelPreset(id: string): void;
+    /**
+     * `move-label-preset` — SET-065's reorder, as a target index for one preset.
+     *
+     * Optional so a host with no reorder verb wired (a fixture, an embedder) still satisfies
+     * `SettingsActions`; the tab hides the ↑/↓ controls rather than offering dead buttons.
+     */
+    moveLabelPreset?(input: { readonly id: string; readonly index: number }): void;
 
     // ── the repo registry (Settings ▸ Repositories, graft-git.md §GIT-065…§GIT-072) ─
     //

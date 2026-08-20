@@ -48,7 +48,34 @@ export interface ChromeSettings {
     /** `#rrggbb` or `''` for "the adaptive chrome tone". */
     readonly sparklineColor: string;
     readonly sparklineWidth: number;
+    /**
+     * The four search-highlight colours (TERM-021 / SET-219's `NexGhosttyDefaults`).
+     *
+     * The Swift app shipped them as a Nex-managed **ghostty defaults file** laid UNDER the
+     * user's own `~/.config/ghostty/config`, so libghostty resolved `search-background` and
+     * friends with the user's value winning. There is no libghostty here and no layering
+     * mechanism to lay anything under: every search highlight in this port is drawn by us —
+     * the injected markdown/diff find script, the web pane's find script, and the terminal
+     * search reveal — so the Swift file's *purpose* (a Nex default the user can override)
+     * becomes four nex-config keys with exactly the Swift hexes as their defaults.
+     *
+     * Same discipline as every other key here: an unparseable value keeps the default.
+     */
+    readonly searchMatchColor: string;
+    readonly searchMatchTextColor: string;
+    readonly searchMatchCurrentColor: string;
+    readonly searchMatchCurrentTextColor: string;
 }
+
+/**
+ * `NexGhosttyDefaults.swift:12-15`, verbatim: match yellow / black text, current-match orange /
+ * black text. Exported because the client's find palettes and the shell's web-find script both
+ * need the same fallbacks when no daemon snapshot has arrived yet.
+ */
+export const DEFAULT_SEARCH_MATCH_COLOR = '#f2d027';
+export const DEFAULT_SEARCH_MATCH_TEXT_COLOR = '#000000';
+export const DEFAULT_SEARCH_MATCH_CURRENT_COLOR = '#ff7a00';
+export const DEFAULT_SEARCH_MATCH_CURRENT_TEXT_COLOR = '#000000';
 
 export const DEFAULT_CHROME_SETTINGS: ChromeSettings = {
     appearance: 'system',
@@ -63,7 +90,11 @@ export const DEFAULT_CHROME_SETTINGS: ChromeSettings = {
     showSystemStatGraphs: false,
     sparklineStyle: 'line',
     sparklineColor: '',
-    sparklineWidth: 28
+    sparklineWidth: 28,
+    searchMatchColor: DEFAULT_SEARCH_MATCH_COLOR,
+    searchMatchTextColor: DEFAULT_SEARCH_MATCH_TEXT_COLOR,
+    searchMatchCurrentColor: DEFAULT_SEARCH_MATCH_CURRENT_COLOR,
+    searchMatchCurrentTextColor: DEFAULT_SEARCH_MATCH_CURRENT_TEXT_COLOR
 };
 
 const HEX6 = /^#?[0-9a-fA-F]{6}$/;
@@ -214,6 +245,29 @@ export function parseChromeSettings(contents: string): ChromeSettings {
             case 'sparkline-width': {
                 const parsed = parseNumberInRange(value, 16, 80);
                 if (parsed !== null) settings = { ...settings, sparklineWidth: Math.round(parsed) };
+                break;
+            }
+            // The four search-highlight colours. Unlike `sparkline-color` an empty value is NOT
+            // meaningful here (there is no "adaptive" search highlight to fall back to), so a
+            // blank line keeps the Nex default exactly as a malformed one does.
+            case 'search-match-color': {
+                const hex = parseChromeHex(value);
+                if (hex !== null) settings = { ...settings, searchMatchColor: hex };
+                break;
+            }
+            case 'search-match-text-color': {
+                const hex = parseChromeHex(value);
+                if (hex !== null) settings = { ...settings, searchMatchTextColor: hex };
+                break;
+            }
+            case 'search-match-current-color': {
+                const hex = parseChromeHex(value);
+                if (hex !== null) settings = { ...settings, searchMatchCurrentColor: hex };
+                break;
+            }
+            case 'search-match-current-text-color': {
+                const hex = parseChromeHex(value);
+                if (hex !== null) settings = { ...settings, searchMatchCurrentTextColor: hex };
                 break;
             }
             default:

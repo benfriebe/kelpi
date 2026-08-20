@@ -79,6 +79,7 @@ const ROUTES = {
     'web-tab-open': 'web',
     'web-tab-close': 'web',
     'web-tab-select': 'web',
+    'web-tab-reorder': 'web',
     'web-navigate': 'web',
     'web-set-private': 'web',
     'web-tab-state': 'web',

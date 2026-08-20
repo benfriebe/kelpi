@@ -55,6 +55,20 @@ export interface WebPaneCommands {
     /** Tab ref is a tab UUID or a numeric index, exactly as the CLI accepts (§5.1). */
     selectTab(paneID: string, tabRef: string): Promise<CommandReply>;
     closeTab(paneID: string, tabRef: string): Promise<CommandReply>;
+    /**
+     * WEB-016: the tab strip's drag reorder. `order` must be an exact permutation of the pane's
+     * tabs — the daemon drops anything else whole rather than truncating the strip.
+     */
+    reorderTabs(paneID: string, order: readonly string[]): Promise<CommandReply>;
+    /** WEB-032: the reload button's ✕ half — stop the load that is in flight. */
+    stop(paneID: string, tabID?: string | null): Promise<CommandReply>;
+    /**
+     * WEB-043: hand keyboard focus to the page.
+     *
+     * Sent only when no chrome text field has the caret — the URL-bar exemption lives at the
+     * call site (`WebPane.tsx`), exactly as the Swift `claimFirstResponder` guard did.
+     */
+    focusView(paneID: string, tabID?: string | null): Promise<CommandReply>;
     /** `</>`: toggle the docked inspector for the pane's active tab. */
     toggleDevTools(paneID: string, tabID?: string | null): Promise<CommandReply>;
 
@@ -116,6 +130,20 @@ export function createWebPaneCommands(sender: WebCommandSender): WebPaneCommands
         selectTab: (paneID, tabRef) =>
             sender.raw({ command: 'web-tab-select', pane_id: paneID, tab: tabRef }),
         closeTab: (paneID, tabRef) => sender.raw({ command: 'web-tab-close', pane_id: paneID, tab: tabRef }),
+        reorderTabs: (paneID, order) =>
+            sender.raw({ command: 'web-tab-reorder', pane_id: paneID, order: [...order] }),
+        stop: (paneID, tabID) =>
+            sender.raw({
+                command: 'web-stop',
+                pane_id: paneID,
+                ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
+            }),
+        focusView: (paneID, tabID) =>
+            sender.raw({
+                command: 'web-focus-view',
+                pane_id: paneID,
+                ...(tabID === undefined || tabID === null ? {} : { tab_id: tabID })
+            }),
         toggleDevTools: (paneID, tabID) =>
             sender.raw({
                 command: 'web-devtools',

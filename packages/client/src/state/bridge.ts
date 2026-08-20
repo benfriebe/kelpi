@@ -57,7 +57,9 @@ export function connectStore(options: StoreBridgeOptions): () => void {
 
     offs.push(
         connection.on('welcome', (message) => {
-            store.getState().setDaemonIdentity(message.clientID, message.daemon);
+            // §SET-021: `transport` rides the handshake beside `settings`. It is what the
+            // listeners actually DID, which only the daemon knows and the config file cannot say.
+            store.getState().setDaemonIdentity(message.clientID, message.daemon, message.transport ?? null);
             // M8: settings ride the handshake (see `@nex/protocol` `ws/settings.ts`), so they
             // are in the store before the first snapshot renders — no light/dark flash, no
             // window where the key dispatcher is running on the shipped defaults.
@@ -72,6 +74,22 @@ export function connectStore(options: StoreBridgeOptions): () => void {
         connection.on('message', (message) => {
             if (message['type'] !== 'settings-changed') return;
             store.getState().applySettings(message['settings']);
+        })
+    );
+
+    offs.push(
+        // §AGNT-005's live re-bind: the daemon moved (or dropped) a listener while we were
+        // attached. Its own message rather than a field on `settings-changed` because the two
+        // say different things — the file's request vs what the listener actually did — and
+        // Settings ▸ Network shows the second one.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'transport-changed') return;
+            const state = store.getState();
+            state.setDaemonIdentity(
+                state.daemon.clientID,
+                state.daemon.info,
+                (message['transport'] ?? null) as never
+            );
         })
     );
 

@@ -29,7 +29,8 @@ import {
     type WsChromeSettings,
     type WsNotificationKind,
     type WsSettingsSnapshot,
-    type WsSystemStats
+    type WsSystemStats,
+    type WsTransportStatus
 } from '@nex/protocol';
 import { create } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
@@ -132,6 +133,15 @@ export interface DaemonSlice {
     readonly desynced: boolean;
     readonly clientID: string | null;
     readonly info: DaemonInfo | null;
+    /**
+     * §SET-021: what the daemon's control listeners actually did (`welcome.transport`).
+     *
+     * `null` = the daemon did not say (an older one, or we have not connected yet), which
+     * Settings ▸ Network renders as "as of daemon start" rather than claiming anything. A
+     * daemon that DID say but configured no TCP listener sends `{tcp: null}` — a different,
+     * knowable fact.
+     */
+    readonly transport: WsTransportStatus | null;
 }
 
 export interface Toast {
@@ -209,7 +219,16 @@ export interface NexActions {
     /** False when the batch was out of order (caller must resync the socket). */
     applyDelta(seq: number, rawEvents: unknown): boolean;
     markDesynced(): void;
-    setDaemonIdentity(clientID: string | null, info: DaemonInfo | null): void;
+    /**
+     * `transport` is §SET-021's `welcome.transport`; omitting it (an older daemon, or a caller
+     * that has nothing to say) clears it back to "unknown" rather than keeping a stale claim
+     * from the previous connection.
+     */
+    setDaemonIdentity(
+        clientID: string | null,
+        info: DaemonInfo | null,
+        transport?: WsTransportStatus | null
+    ): void;
 
     setConnectionStatus(status: ConnectionStatus, error?: string | null): void;
     setActiveWorkspace(workspaceID: string | null): void;
@@ -244,7 +263,8 @@ function initialDaemonSlice(): DaemonSlice {
         hasSnapshot: false,
         desynced: false,
         clientID: null,
-        info: null
+        info: null,
+        transport: null
     };
 }
 
@@ -351,6 +371,11 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
                 general['confirmWorkspaceDeleteWhenActive'],
                 fallbackGeneral.confirmWorkspaceDeleteWhenActive
             ),
+            // §AGNT-117: the quit suppression's twin, daemon-owned since the quit gate moved.
+            confirmQuitWhenActive: bool(
+                general['confirmQuitWhenActive'],
+                fallbackGeneral.confirmQuitWhenActive
+            ),
             tcpPort: Math.max(0, num(general['tcpPort'], fallbackGeneral.tcpPort)),
             globalHotkey: nullableText(general['globalHotkey']),
             globalHotkeyHideOnRepress: bool(
@@ -370,7 +395,13 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
                 general['newWorkspacePlacement'],
                 fallbackGeneral.newWorkspacePlacement
             ),
-            newGroupPlacement: placement(general['newGroupPlacement'], fallbackGeneral.newGroupPlacement)
+            newGroupPlacement: placement(general['newGroupPlacement'], fallbackGeneral.newGroupPlacement),
+            // SET-011, additive in the same way: an older daemon omits the field and the
+            // shipped default (on) stands.
+            inheritGroupOnNewWorkspace: bool(
+                general['inheritGroupOnNewWorkspace'],
+                fallbackGeneral.inheritGroupOnNewWorkspace
+            )
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this
@@ -443,8 +474,25 @@ function hydrateChromeSettings(raw: unknown): WsChromeSettings {
                 : fallback.showSystemStatGraphs,
         sparklineStyle: style === 'dots' || style === 'line' ? style : fallback.sparklineStyle,
         sparklineColor: typeof raw['sparklineColor'] === 'string' ? raw['sparklineColor'] : fallback.sparklineColor,
-        sparklineWidth: Math.round(number(raw['sparklineWidth'], 16, 80, fallback.sparklineWidth))
+        sparklineWidth: Math.round(number(raw['sparklineWidth'], 16, 80, fallback.sparklineWidth)),
+        // SET-219's four search-highlight colours. They are read straight into a stylesheet and
+        // into the terminal palette, so a non-hex value falls back to the Nex default rather
+        // than reaching a CSS parser as `undefined`.
+        searchMatchColor: hexOr(raw['searchMatchColor'], fallback.searchMatchColor),
+        searchMatchTextColor: hexOr(raw['searchMatchTextColor'], fallback.searchMatchTextColor),
+        searchMatchCurrentColor: hexOr(raw['searchMatchCurrentColor'], fallback.searchMatchCurrentColor),
+        searchMatchCurrentTextColor: hexOr(
+            raw['searchMatchCurrentTextColor'],
+            fallback.searchMatchCurrentTextColor
+        )
     };
+}
+
+/** `#rrggbb` (any case, `#` optional) → lowercase `#rrggbb`; anything else → the fallback. */
+function hexOr(value: unknown, fallback: string): string {
+    if (typeof value !== 'string') return fallback;
+    const trimmed = value.trim().replace(/^#/, '');
+    return /^[0-9a-fA-F]{6}$/.test(trimmed) ? `#${trimmed.toLowerCase()}` : fallback;
 }
 
 function sameSettings(a: WsSettingsSnapshot, b: WsSettingsSnapshot): boolean {
@@ -564,8 +612,8 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
             set({ daemon: { ...get().daemon, desynced: true } });
         },
 
-        setDaemonIdentity(clientID, info) {
-            set({ daemon: { ...get().daemon, clientID, info } });
+        setDaemonIdentity(clientID, info, transport) {
+            set({ daemon: { ...get().daemon, clientID, info, transport: transport ?? null } });
         },
 
         setConnectionStatus(status, error) {

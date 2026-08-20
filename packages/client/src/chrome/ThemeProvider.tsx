@@ -85,6 +85,13 @@ export interface ThemeProviderProps {
     readonly style?: CSSProperties | undefined;
     /** Mirror the tokens onto `document.documentElement` too (assembly's root provider). */
     readonly applyToDocument?: boolean | undefined;
+    /**
+     * APP-012 / SET-049 — the ghostty `background-opacity`. Below 1 the window fill
+     * (`--nex-bg`) is published with alpha, so a shell window created transparent shows the
+     * desktop through the gaps the client does not paint opaquely. 1 (the default) is
+     * byte-identical to what this provider always emitted.
+     */
+    readonly windowOpacity?: number | undefined;
     readonly children?: ReactNode;
 }
 
@@ -100,7 +107,10 @@ export function ThemeProvider(props: ThemeProviderProps): ReactElement {
         return { theme, bucket, appearance };
     }, [appearance, systemDark, props.theme, props.overrides]);
 
-    const vars = useMemo(() => chromeThemeCssVars(value.theme), [value.theme]);
+    const vars = useMemo(
+        () => chromeThemeCssVars(value.theme, { windowOpacity: props.windowOpacity }),
+        [value.theme, props.windowOpacity]
+    );
 
     /**
      * A LAYOUT effect, and that is load-bearing rather than a micro-optimisation.

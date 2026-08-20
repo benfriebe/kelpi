@@ -43,9 +43,28 @@ export const WINDOW_STATE_FILE = 'window-state.json';
 export interface ShellWindowState {
     readonly bounds: Rect | null;
     readonly fullScreen: boolean;
+    /**
+     * §APP-060: is the window assigned to **all** Mission Control desktops?
+     *
+     * The Swift app read the user's Dock "Assign To → All Desktops" choice out of
+     * `com.apple.spaces`'s `app-bindings` and applied it as `.canJoinAllSpaces` when the window
+     * was first parented, so the assignment survived a reboot. That plist is private, undocumented
+     * and version-fragile, and Electron cannot read the Dock's binding at all — so this port owns
+     * the setting instead of borrowing it: the tray offers the toggle, `setVisibleOnAllWorkspaces`
+     * applies it, and it is stored HERE so it survives a relaunch.
+     *
+     * The divergence is recorded rather than hidden: a user who sets the assignment from the DOCK
+     * menu still gets it for that session (macOS applies it to the running app), but only the
+     * in-app toggle persists across launches.
+     */
+    readonly visibleOnAllWorkspaces: boolean;
 }
 
-export const DEFAULT_WINDOW_STATE: ShellWindowState = { bounds: null, fullScreen: false };
+export const DEFAULT_WINDOW_STATE: ShellWindowState = {
+    bounds: null,
+    fullScreen: false,
+    visibleOnAllWorkspaces: false
+};
 
 function overlap(aStart: number, aLength: number, bStart: number, bLength: number): number {
     return Math.max(0, Math.min(aStart + aLength, bStart + bLength) - Math.max(aStart, bStart));
@@ -170,7 +189,10 @@ export function readWindowState(file: string): ShellWindowState {
     const source = parsed as Record<string, unknown>;
     return {
         bounds: readRect(source['bounds']),
-        fullScreen: source['fullScreen'] === true
+        fullScreen: source['fullScreen'] === true,
+        // Opt-IN: a file written before §APP-060 has no such key, and "not stored" means the
+        // ordinary single-desktop window every user starts with.
+        visibleOnAllWorkspaces: source['visibleOnAllWorkspaces'] === true
     };
 }
 

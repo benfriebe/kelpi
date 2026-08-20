@@ -11,6 +11,11 @@
  *     daemon settings store "so Settings UI and dialogs stay in sync across clients", and the
  *     daemon's settings store is the config file. The CLI's `--force` is independent of it, as
  *     in the Swift app.
+ *   - **Confirm before quitting with active agents** — `confirm-quit-when-active`, the other
+ *     half of that same port note (§AGNT-117). It used to live in the Electron shell's
+ *     `shell-settings.json`, so the ⌘Q dialog's "Don't ask again" checkbox wrote a value this
+ *     window could not even read. Both now write this key; the shell learns about a change on
+ *     its own status socket. A browser client has no ⌘Q, which is why the row says so.
  *   - **Focus follows mouse** + its delay — §10, already read by the pane grid. The slider range
  *     is §10's 0–500 in steps of 25, and it only appears while the toggle is on.
  *
@@ -52,6 +57,29 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                         checked={general.confirmWorkspaceDeleteWhenActive}
                         onChange={(next) => {
                             props.actions.setGeneralSetting('confirm-workspace-delete', next ? 'true' : 'false');
+                        }}
+                    />
+                </SettingsRow>
+
+                {/*
+                 * §AGNT-117's missing half. The ⌘Q dialog's "Don't ask again" used to write the
+                 * Electron shell's own `shell-settings.json`, which no Settings window could
+                 * read — so the checkbox and this tab could not agree, and the tab said so. The
+                 * flag is a daemon setting now (`confirm-quit-when-active`), both sides write
+                 * the same key, and the shell picks a change up on its status socket's
+                 * `settings-changed` without a restart.
+                 */}
+                <SettingsRow
+                    label="Confirm before quitting with active agents"
+                    detail="Desktop app only: ⌘Q asks first while agents are running. The dialog's “Don't ask again” checkbox writes this same setting."
+                    testID="confirm-quit-row"
+                >
+                    <SettingsToggle
+                        testID="confirm-quit-toggle"
+                        label="Confirm before quitting with active agents"
+                        checked={general.confirmQuitWhenActive}
+                        onChange={(next) => {
+                            props.actions.setGeneralSetting('confirm-quit-when-active', next ? 'true' : 'false');
                         }}
                     />
                 </SettingsRow>
@@ -97,9 +125,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
             </SettingsSection>
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                Worktree paths, repository auto-detection, sidebar placement and the quit confirmation are not
-                editable here yet — they have no daemon-side key, so this window would only be able to show
-                them, not change them.
+                Worktree paths, repository auto-detection and sidebar placement are on the General tab.
             </p>
 
             <SettingsFooterNote>

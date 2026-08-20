@@ -173,6 +173,15 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                     ...(payload.title === undefined ? {} : { title: payload.title })
                 });
             },
+            navState: (paneID, tabID, payload) => {
+                // WEB-032/WEB-033: three booleans, deduplicated tab-side, so a chatty page
+                // cannot turn the loading bracket into a stream.
+                client?.sendEvent('nav-state', paneID, tabID, {
+                    loading: payload.loading,
+                    can_go_back: payload.canGoBack,
+                    can_go_forward: payload.canGoForward
+                });
+            },
             inspect: (paneID, tabID, payload) => {
                 // Clamped, not reshaped: the nonce and the `cancelled` flag travel untouched (the
                 // daemon compares the nonce for equality and re-sanitises every other field before

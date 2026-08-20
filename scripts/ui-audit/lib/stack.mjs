@@ -135,7 +135,15 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
     // the sandbox HOME, so an appearance step can read the exact file the daemon touched and a
     // stray resolution change can never point it at the developer's own.
     const ghosttyConfigPath = path.join(root, 'ghostty-config');
-    fs.writeFileSync(ghosttyConfigPath, '# audit sandbox ghostty config\nbackground = #0a0a0c\n');
+    // `NEX_AUDIT_GHOSTTY_EXTRA` seeds extra lines BEFORE the shell starts. It exists for the
+    // one setting the shell can only act on at window creation: `background-opacity` decides
+    // whether the BrowserWindow is transparent (APP-012 / SET-049), and no in-run gesture can
+    // change that. Unset (the default) this is a no-op and the sandbox is byte-identical.
+    const extraGhostty = process.env['NEX_AUDIT_GHOSTTY_EXTRA'] ?? '';
+    fs.writeFileSync(
+        ghosttyConfigPath,
+        `# audit sandbox ghostty config\nbackground = #0a0a0c\n${extraGhostty === '' ? '' : `${extraGhostty}\n`}`
+    );
 
     const httpPort = await freePort();
     const controlPort = await freePort();

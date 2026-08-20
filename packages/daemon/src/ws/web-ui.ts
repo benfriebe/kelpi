@@ -37,6 +37,13 @@ export const FAVOURITE_COMMANDS: ReadonlySet<string> = new Set([
 export const WEB_FAVOURITES_MESSAGE = 'web-favourites';
 /** Broadcast type for one pane's batch session (the panel's rows, its focus, its destination). */
 export const WEB_BATCH_MESSAGE = 'web-batch';
+/**
+ * Broadcast type for one TAB's loading + history state (WEB-032/WEB-033/WEB-034).
+ *
+ * Per tab, not per pane: WEB-034's rule is that switching tabs snaps the progress strip to the
+ * newly-active tab's live state, which a pane-keyed message could not express.
+ */
+export const WEB_NAV_STATE_MESSAGE = 'web-nav-state';
 
 function failure(error: string): JsonObject {
     return { ok: false, error };
@@ -141,6 +148,17 @@ function resolveSendTo(store: WebStore, sendTo: string): { ok: true; paneID: str
     return { ok: true, paneID: pane.id };
 }
 
+/** The workspace a pane lives in, for the verbs that dispatch a store action. */
+function workspaceOfPane(store: WebStore, paneID: string): string | null {
+    return findPaneAnywhere(store.getState(), paneID)?.workspaceID ?? null;
+}
+
+/** `{tabID}` when the caller named a tab; `{}` otherwise, so the host uses the active one. */
+function tabArg(payload: Record<string, unknown>): JsonObject {
+    const tabID = text(payload['tab_id']);
+    return tabID === undefined ? {} : { tabID };
+}
+
 export async function webPaneGuiCommand(
     channel: WebPaneChannel,
     store: WebStore,
@@ -149,6 +167,47 @@ export async function webPaneGuiCommand(
     payload: Record<string, unknown>
 ): Promise<JsonObject> {
     switch (command) {
+        // ── tab strip drag reorder (WEB-016) ────────────────────────────────
+        case 'web-tab-reorder': {
+            const raw = payload['order'];
+            if (!Array.isArray(raw)) return failure('web-tab-reorder requires order');
+            const order = raw.filter((entry): entry is string => typeof entry === 'string');
+            if (order.length !== raw.length) return failure('web-tab-reorder order must be tab ids');
+            const workspaceID = workspaceOfPane(store, paneID);
+            if (workspaceID === null) return failure(`pane not found: ${paneID}`);
+            store.dispatch({ type: 'web-tab-reorder', workspaceID, paneID, order });
+            // The post-mutation order, read back out of the store: the reducer drops a
+            // non-permutation whole (WEB-016), and the caller must be able to see that it did.
+            const state = store.getState();
+            const workspace = workspaceByID(state, workspaceID);
+            const tabs = workspace?.webPanes[paneID]?.tabs ?? [];
+            const applied = tabs.map((tab) => tab.id);
+            return {
+                ok: true,
+                pane_id: paneID,
+                order: applied,
+                applied: applied.join(',') === order.join(',')
+            };
+        }
+
+        // ── stop the current load (WEB-032's ✕ glyph) ───────────────────────
+        case 'web-stop': {
+            const envelope = await channel.call('stop', {
+                paneID,
+                ...tabArg(payload)
+            });
+            return { ...envelope, ok: envelope['ok'] === true, pane_id: paneID };
+        }
+
+        // ── hand keyboard focus to the page (WEB-043) ───────────────────────
+        case 'web-focus-view': {
+            const envelope = await channel.call('focus-view', {
+                paneID,
+                ...tabArg(payload)
+            });
+            return { ...envelope, ok: envelope['ok'] === true, pane_id: paneID };
+        }
+
         // ── find (§10) ──────────────────────────────────────────────────────
         case 'web-find': {
             const action = typeof payload['action'] === 'string' ? payload['action'] : 'search';

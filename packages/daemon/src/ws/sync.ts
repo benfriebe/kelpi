@@ -47,10 +47,11 @@ import {
     type WsRejectionCode,
     type WsRejectionReason,
     type WsSettingsCommand,
-    type WsSettingsSnapshot
+    type WsSettingsSnapshot,
+    type WsTransportStatus
 } from '@nex/protocol';
 
-import { formatIconString, newUUID, parseIconString } from '@nex/core/codec';
+import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@nex/core/codec';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
@@ -77,6 +78,7 @@ import {
     FAVOURITE_COMMANDS,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_NAV_STATE_MESSAGE,
     favouritesCommand,
     webPaneGuiCommand
 } from './web-ui.js';
@@ -145,6 +147,12 @@ export interface SyncHubOptions {
     /** Where client `command` messages go — the same dispatcher the control socket uses. */
     readonly dispatcher: ControlDispatcher;
     readonly daemon: { readonly version: string; readonly build: string; readonly pid?: number | undefined };
+    /**
+     * §SET-021: control-listener state for `welcome.transport`. A getter, not a value, because
+     * `restart-control-server` can re-bind while clients are attached and the next handshake has
+     * to report what is true THEN. Absent = nothing to say (a handler-level test).
+     */
+    readonly transport?: (() => WsTransportStatus) | undefined;
     /** Defaults to the protocol's compiled-in version. */
     readonly protocolVersion?: number | undefined;
     /** M5 content panes; absent = the `content-*` verbs answer "not available". */
@@ -299,9 +307,10 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
  *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
- *   add-label-preset     `name`, `color?`                → add-label-preset
- *   update-label-preset  `id`, `name?`, `color`          → update-label-preset
+ *   add-label-preset     `name`, `color?`, `text_color?` → add-label-preset (+ text colour)
+ *   update-label-preset  `id`, `name?`, `color`, `text_color?` → update-label-preset (+ text colour)
  *   remove-label-preset  `id`                            → remove-label-preset
+ *   move-label-preset    `id`, `index`                   → move-label-preset
  *
  * The three label-preset verbs are Settings ▸ Labels (app-state-core.md §6.4). The CLI's
  * `workspace label` back-fill already dispatches `addLabelPreset` daemon-side, but nothing
@@ -315,7 +324,9 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * `icon` is the flat prefix string the DB stores (`"emoji:🔥"` / `"system:star"`), decoded by
  * `@nex/core/codec`'s `parseIconString`; `null` (or anything unparseable) clears the icon back
  * to the letter avatar. An SF Symbol name is therefore an OPAQUE token end to end — a legacy DB
- * value the client cannot draw still round-trips through a client that never touches it.
+ * value the client cannot draw still round-trips through a client that never touches it. An
+ * `emoji:` payload is the one thing NOT taken on trust: it is re-validated against §WS-073's
+ * heuristic here (§WS-074), so no frame can store a letter as an icon.
  */
 export const WS_ONLY_COMMANDS = [
     'toggle-zoom',
@@ -331,7 +342,8 @@ export const WS_ONLY_COMMANDS = [
     'set-pane-status',
     'add-label-preset',
     'update-label-preset',
-    'remove-label-preset'
+    'remove-label-preset',
+    'move-label-preset'
 ] as const;
 export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
 
@@ -358,6 +370,36 @@ export function decodeLabelColorToken(raw: unknown): LabelColor {
         if (HEX_COLOR.test(trimmed)) return { kind: 'custom', hex: trimmed.toLowerCase() };
     }
     return { kind: 'named', color: 'gray' };
+}
+
+/**
+ * §6.2's `textColor` slot (SET-062): the same one-string encoding as `color`, plus two meanings
+ * `color` does not have.
+ *
+ *   absent (`undefined`)  → leave the stored text colour alone
+ *   `null` / `"auto"`     → AUTO: black or white by the background's luminance
+ *   a colour token        → an explicit override
+ *
+ * Returned as a discriminated result rather than `LabelColor | null` because "leave it alone"
+ * and "set it to auto" are different instructions and both have to survive the trip.
+ */
+export function decodeLabelTextColorToken(
+    raw: unknown
+): { readonly present: false } | { readonly present: true; readonly value: LabelColor | null } {
+    if (raw === undefined) return { present: false };
+    if (raw === null) return { present: true, value: null };
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim().toLowerCase();
+        if (trimmed === '' || trimmed === 'auto') return { present: true, value: null };
+        const named = parseWorkspaceColor(raw.trim());
+        if (named !== undefined) return { present: true, value: { kind: 'named', color: named } };
+        if (HEX_COLOR.test(raw.trim())) {
+            return { present: true, value: { kind: 'custom', hex: raw.trim().toLowerCase() } };
+        }
+    }
+    // Anything else is not a colour Nex can store; treat it as "auto" rather than refusing the
+    // whole command, which is what `decodeLabelColorToken` does for the background.
+    return { present: true, value: null };
 }
 
 /** The reply shape all three preset verbs share: the post-mutation list, wire-serialized. */
@@ -401,6 +443,14 @@ export function handleWsOnlyCommand(
         // "Reset to Letter" menu item and the only way back to the avatar.
         const raw = payload['icon'];
         const icon = typeof raw === 'string' ? parseIconString(raw) : null;
+        // §WS-074: an `emoji:` payload is RE-VALIDATED here against the same heuristic the
+        // sheet uses (§WS-073). The client already refuses a letter, but a hand-written frame
+        // would otherwise store `emoji:a` and every client would render a letter that cannot
+        // be told from the avatar it replaced. A refusal leaves the icon untouched, which is
+        // the reducer's "clears the prompt without changing the icon".
+        if (icon !== null && icon.kind === 'emoji' && normalizeIconEmoji(icon.grapheme) !== icon.grapheme) {
+            return failure(`'${icon.grapheme}' is not a usable icon: give one emoji or symbol`);
+        }
         store.dispatch(
             workspaceScoped
                 ? { type: 'set-workspace-icon', id, icon }
@@ -422,6 +472,21 @@ export function handleWsOnlyCommand(
             return failure(`label preset '${name}' already exists`);
         }
         store.dispatch({ type: 'add-label-preset', name, color: decodeLabelColorToken(payload['color']) });
+        // SET-059: the chosen text colour is applied only when the add ACTUALLY created a
+        // preset — the duplicate case returned above, so reaching here means it did. The
+        // reducer normalizes the name (trim + clamp), so the id to address is the normalized
+        // one, which is the name the new preset now carries.
+        const textColor = decodeLabelTextColorToken(payload['text_color']);
+        if (textColor.present) {
+            const created = store.getState().labelPresets.at(-1);
+            if (created !== undefined) {
+                store.dispatch({
+                    type: 'set-label-preset-text-color',
+                    id: created.name,
+                    textColor: textColor.value
+                });
+            }
+        }
         return presetsReply(store, { name });
     }
 
@@ -439,6 +504,12 @@ export function handleWsOnlyCommand(
         const color =
             payload['color'] === undefined ? preset.color : decodeLabelColorToken(payload['color']);
         store.dispatch({ type: 'update-label-preset', id, name, color });
+        // AFTER the rename: a preset's identity is its name, so the text colour has to be
+        // addressed by the name the preset now has, not the one it arrived with.
+        const textColor = decodeLabelTextColorToken(payload['text_color']);
+        if (textColor.present) {
+            store.dispatch({ type: 'set-label-preset-text-color', id: name, textColor: textColor.value });
+        }
         return presetsReply(store, { id, name });
     }
 
@@ -452,6 +523,25 @@ export function handleWsOnlyCommand(
         // its chip simply renders neutral. That is why no workspace is inspected here.
         store.dispatch({ type: 'remove-label-preset', id });
         return presetsReply(store, { id });
+    }
+
+    if (command === 'move-label-preset') {
+        // SET-065's reorder. The wire carries the preset's NAME and a target index rather than
+        // a from/to pair: the client's index can be one delta stale, the name cannot, so the
+        // source position is computed here from the authoritative list.
+        const id = text(payload['id']);
+        if (id === undefined) return failure('move-label-preset requires id');
+        const from = state.labelPresets.findIndex((preset) => preset.name === id);
+        if (from < 0) return failure(`no label preset matches '${id}'`);
+        const raw = payload['index'];
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+            return failure('move-label-preset requires a numeric index');
+        }
+        // Clamped rather than refused: "move the last one down" is a no-op, not an error, and
+        // that is what an ↑/↓ button at the end of the list sends.
+        const to = Math.min(state.labelPresets.length - 1, Math.max(0, Math.round(raw)));
+        store.dispatch({ type: 'move-label-preset', from, to });
+        return presetsReply(store, { id, index: to });
     }
 
     if (command === 'move-workspaces') {
@@ -674,7 +764,31 @@ export interface ContentChannel {
     save(paneID: string): Promise<ContentPaneState>;
     refresh(paneID: string): Promise<ContentPaneState>;
     setFontSize(paneID: string, size: number): Promise<ContentPaneState>;
+    /**
+     * §AGNT-114's step 1, moved to the side that owns the buffers.
+     *
+     * The Swift `applicationShouldTerminate` flushed pending markdown autosaves before showing
+     * the quit dialog, because quitting killed the app that held them. Here the daemon holds
+     * them and outlives the shell — but the shell can still ASK, and it does, so a ⌘Q taken
+     * mid-keystroke has the file on disk *before* the dialog appears rather than 500 ms later.
+     * Synchronous, idempotent, and a no-op with nothing dirty. Structurally the same
+     * `flushSync` the daemon's own SIGTERM path calls, so boot passes the service unchanged.
+     */
+    flushSync?(): void;
 }
+
+/**
+ * `flush-saves-request` → `flush-saves-result`: the quit gate's pre-flight (§AGNT-114).
+ *
+ * Its own message pair rather than a `command` verb for the same reason `reveal-request` is: the
+ * Electron main process's status socket is a near-read-only connection with no command/reply
+ * plumbing, and adding some for one synchronous "write the dirty buffers" would be more
+ * machinery than the thing it carries. `id` is echoed so the shell can await exactly its own
+ * answer, and the shell never blocks on it for more than its own timeout — a quit that hangs on
+ * a flush would be worse than a quit that loses the last 500 ms of typing.
+ */
+export const FLUSH_SAVES_REQUEST_MESSAGE = 'flush-saves-request';
+export const FLUSH_SAVES_RESULT_MESSAGE = 'flush-saves-result';
 
 // ── agent restart (WS-only) ─────────────────────────────────────────────────────────
 
@@ -762,6 +876,12 @@ export const WEB_COMMANDS = [
     // too (⌘F and the ⌘= / ⌘- / ⌘0 layer — there is no `nex web find`).
     'web-find',
     'web-zoom',
+    // WEB-016's tab drag-reorder, WEB-032's stop glyph and WEB-043's focus handoff: three more
+    // GUI gestures with no CLI verb (in the Swift app they were a SwiftUI drag, an NSButton
+    // that called `stopLoading()`, and `makeFirstResponder`).
+    'web-tab-reorder',
+    'web-stop',
+    'web-focus-view',
     // §12 batch "element pickup". All pane-scoped, all direct manipulation.
     'web-batch-state',
     'web-batch-toggle',
@@ -795,6 +915,7 @@ export {
     FAVOURITE_COMMANDS,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_NAV_STATE_MESSAGE,
     favouritesCommand,
     webPaneGuiCommand
 };
@@ -1137,6 +1258,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case MENU_REQUEST_MESSAGE:
                     this.menuRequest(parsed);
                     return;
+                case FLUSH_SAVES_REQUEST_MESSAGE:
+                    this.flushSavesRequest(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -1303,6 +1427,11 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 // Every reconnect re-sends them, so a client is never rendering without.
                 ...(options.settings !== undefined
                     ? { settings: options.settings.snapshot as unknown as JsonObject }
+                    : {}),
+                // §SET-021: the config file says which port was ASKED for; only the daemon
+                // knows whether it bound. Rides here for the same reason settings do.
+                ...(options.transport !== undefined
+                    ? { transport: options.transport() as unknown as JsonObject }
                     : {})
             });
 
@@ -1477,6 +1606,24 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 command,
                 ...(windowID === undefined ? {} : { windowID })
             });
+        }
+
+        /**
+         * `flush-saves-request` → `flush-saves-result`: force out every debounced editor save.
+         *
+         * §AGNT-114's step 1. The reply is unconditional — a daemon with no content service, or
+         * one that threw, still answers, because the shell is holding a quit open waiting for
+         * it and silence would be indistinguishable from a hang.
+         */
+        private flushSavesRequest(message: Record<string, unknown>): void {
+            const id = text(message['id']);
+            let ok = true;
+            try {
+                options.content?.flushSync?.();
+            } catch {
+                ok = false;
+            }
+            this.send({ type: FLUSH_SAVES_RESULT_MESSAGE, ok, ...(id === undefined ? {} : { id }) });
         }
 
         /**
@@ -1929,6 +2076,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 command === 'web-find' ||
                 command === 'web-zoom' ||
                 command === 'web-cookie-set' ||
+                command === 'web-tab-reorder' ||
+                command === 'web-stop' ||
+                command === 'web-focus-view' ||
                 command.startsWith('web-batch-')
             ) {
                 void webPaneGuiCommand(channel, store, command, paneID, payload).then(settle, (error: unknown) => {

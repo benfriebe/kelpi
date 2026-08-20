@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AgentModel, type AgentCounts } from './agents.js';
 import {
     DEFAULT_SHELL_SETTINGS,
+    markQuitConfirmationMigrated,
+    pendingQuitConfirmationMigration,
     quitDialogSpec,
     readShellSettings,
     settingsFile,
@@ -100,5 +102,50 @@ describe('quitDialogSpec', () => {
         expect(spec.checkboxLabel).toBe("Don't ask again");
         expect(spec.message).toBe('Quit Nex?');
         expect(spec.detail).toContain('keep running in the background');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// §AGNT-117 — the suppression moved into the daemon settings; migrate once
+// ---------------------------------------------------------------------------
+
+describe('quit-confirmation migration (§AGNT-117)', () => {
+    it('has something to migrate only for a user who actually suppressed it', () => {
+        expect(pendingQuitConfirmationMigration(DEFAULT_SHELL_SETTINGS)).toBe(false);
+        expect(
+            pendingQuitConfirmationMigration({ ...DEFAULT_SHELL_SETTINGS, confirmQuitWhenActive: false })
+        ).toBe(true);
+    });
+
+    it('never migrates twice, so a later daemon-side re-enable is not undone', () => {
+        const suppressed = { ...DEFAULT_SHELL_SETTINGS, confirmQuitWhenActive: false };
+        const file = settingsFile(tempDir());
+        const migrated = markQuitConfirmationMigrated(file, suppressed);
+        expect(migrated.quitConfirmationMigrated).toBe(true);
+        expect(pendingQuitConfirmationMigration(migrated)).toBe(false);
+        // And it survived the round trip, so the next launch does not push the old value again.
+        expect(readShellSettings(file).quitConfirmationMigrated).toBe(true);
+    });
+
+    it('reads a pre-migration file as "not migrated yet"', () => {
+        const file = path.join(tempDir(), 'legacy.json');
+        fs.writeFileSync(file, JSON.stringify({ confirmQuitWhenActive: false }));
+        const read = readShellSettings(file);
+        expect(read.quitConfirmationMigrated).toBe(false);
+        expect(pendingQuitConfirmationMigration(read)).toBe(true);
+    });
+
+    it('leaves the CLI-install keys alone when it marks the migration done', () => {
+        const file = settingsFile(tempDir());
+        writeShellSettings(file, {
+            ...DEFAULT_SHELL_SETTINGS,
+            confirmQuitWhenActive: false,
+            cliInstallPrompted: true,
+            cliInstallNotifiedVersion: '0.4.2'
+        });
+        markQuitConfirmationMigrated(file, readShellSettings(file));
+        const read = readShellSettings(file);
+        expect(read.cliInstallPrompted).toBe(true);
+        expect(read.cliInstallNotifiedVersion).toBe('0.4.2');
     });
 });

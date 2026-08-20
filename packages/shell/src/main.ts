@@ -37,6 +37,11 @@ import {
     resolveCliLinkPath,
     type CliInstallResult
 } from './cli-install.js';
+import {
+    readSearchPalette,
+    transparencyNeedsRelaunch,
+    windowTransparency
+} from './appearance.js';
 import { sendControlCommand } from './control.js';
 import {
     DaemonUnavailableError,
@@ -50,8 +55,15 @@ import { isForwardableOpenPath } from './shell-actions.js';
 import { createStatusController, type StatusController } from './status.js';
 import { checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
-import { readShellSettings, writeShellSettings } from './settings.js';
+import { EMPTY_COUNTS } from './agents.js';
+import {
+    markQuitConfirmationMigrated,
+    pendingQuitConfirmationMigration,
+    readShellSettings,
+    writeShellSettings
+} from './settings.js';
 import { createWebPaneHost, type WebPaneHost } from './webhost/index.js';
+import { setWebFindPalette } from './webhost/scripts.js';
 import {
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -74,6 +86,14 @@ let status: StatusController | null = null;
 let webHost: WebPaneHost | null = null;
 let quitGate: QuitGate | null = null;
 let hotkeyAccelerator: string | null = null;
+/**
+ * APP-012 / SET-049 — was THIS window created transparent? Electron fixes `transparent` at
+ * creation, so the answer is a property of the window, not of the current settings, and the two
+ * can legitimately disagree until the next launch.
+ */
+let windowIsTransparent = false;
+/** True once the user has been told that a transparency change needs a relaunch (once per run). */
+let relaunchNoticeShown = false;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
@@ -101,7 +121,7 @@ function stateFile(): string {
     return windowStateFile(app.getPath('userData'));
 }
 
-function restoreBounds(): { bounds: Rect; fullScreen: boolean } {
+function restoreBounds(): { bounds: Rect; fullScreen: boolean; visibleOnAllWorkspaces: boolean } {
     const stored = readWindowState(stateFile());
     const displays = screen.getAllDisplays();
     const primary = screen.getPrimaryDisplay();
@@ -109,7 +129,38 @@ function restoreBounds(): { bounds: Rect; fullScreen: boolean } {
         stored.bounds === null
             ? defaultBounds(primary)
             : clampBoundsToDisplays(stored.bounds, displays, primary);
-    return { bounds, fullScreen: stored.fullScreen };
+    return {
+        bounds,
+        fullScreen: stored.fullScreen,
+        visibleOnAllWorkspaces: stored.visibleOnAllWorkspaces
+    };
+}
+
+/**
+ * §APP-060: apply (and optionally persist) "show this window on every desktop".
+ *
+ * Electron's `setVisibleOnAllWorkspaces` is the `.canJoinAllSpaces` collection behaviour the
+ * Swift app set from the Dock's `com.apple.spaces` binding. That plist is private and
+ * unreadable from here, so the toggle is ours and the answer lives in `window-state.json` —
+ * see `ShellWindowState.visibleOnAllWorkspaces` for the divergence note.
+ */
+function applyVisibleOnAllWorkspaces(value: boolean, persist: boolean): void {
+    const window = mainWindow;
+    if (window !== null && !window.isDestroyed()) {
+        try {
+            window.setVisibleOnAllWorkspaces(value, { visibleOnFullScreen: value });
+        } catch (error) {
+            warn(`assign-to-all-desktops failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    if (!persist) return;
+    const stored = readWindowState(stateFile());
+    writeWindowState(stateFile(), { ...stored, visibleOnAllWorkspaces: value });
+    log(`window: assign to all desktops ${value ? 'on' : 'off'}`);
+}
+
+function isVisibleOnAllWorkspaces(): boolean {
+    return readWindowState(stateFile()).visibleOnAllWorkspaces;
 }
 
 function scheduleBoundsSave(window: BrowserWindow): void {
@@ -119,7 +170,14 @@ function scheduleBoundsSave(window: BrowserWindow): void {
         // shell-ui.md §1: never store a fullscreen (or transitioning) frame — the stored one
         // must always be the windowed frame, or restore comes back with a screen-sized window.
         if (window.isDestroyed() || window.isFullScreen() || window.isMinimized()) return;
-        writeWindowState(stateFile(), { bounds: window.getNormalBounds(), fullScreen: false });
+        // Spread the stored state: the frame is not the only thing in this file any more
+        // (§APP-060's all-desktops flag lives here too, and a debounced frame save must not
+        // silently reset it).
+        writeWindowState(stateFile(), {
+            ...readWindowState(stateFile()),
+            bounds: window.getNormalBounds(),
+            fullScreen: false
+        });
     }, SAVE_DEBOUNCE_MS);
     saveTimer.unref?.();
 }
@@ -127,6 +185,7 @@ function scheduleBoundsSave(window: BrowserWindow): void {
 function saveFullScreenFlag(window: BrowserWindow, fullScreen: boolean): void {
     const stored = readWindowState(stateFile());
     writeWindowState(stateFile(), {
+        ...stored,
         bounds: fullScreen ? stored.bounds : window.getNormalBounds(),
         fullScreen
     });
@@ -198,7 +257,12 @@ function loadDaemonUrl(window: BrowserWindow): void {
     // `shellWindow` marks the page as "the UI inside this shell window" — it is what makes the
     // client's web-pane geometry reports actionable and scopes reveal requests to this window.
     // The client keeps it (only `daemon`/`token` are stripped from the visible URL).
-    const target = `${clientUrl(daemon)}&shellWindow=${encodeURIComponent(shellWindowID)}`;
+    const target =
+        `${clientUrl(daemon)}&shellWindow=${encodeURIComponent(shellWindowID)}` +
+        // APP-012: the page cannot know whether the frame around it is transparent, and it must
+        // not paint an rgba window fill in an ordinary browser tab (there it would composite
+        // over white). The window that DOES know says so.
+        (windowIsTransparent ? '&windowTransparent=1' : '');
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -209,14 +273,35 @@ function loadDaemonUrl(window: BrowserWindow): void {
 }
 
 function createWindow(): BrowserWindow {
-    const { bounds, fullScreen } = restoreBounds();
+    const { bounds, fullScreen, visibleOnAllWorkspaces } = restoreBounds();
+    /*
+     * APP-012 / SET-049 — window compositing follows the ghostty `background-opacity`.
+     *
+     * The Swift app set `window.isOpaque = opacity >= 1.0` whenever the slider moved. Electron
+     * has no equivalent: `transparent` is fixed at construction, so the decision is taken HERE,
+     * from the config file, before the window exists. Below 1 the window is created transparent
+     * with a fully transparent `backgroundColor` and the PAGE paints the fill (the client
+     * publishes `--nex-bg` at the same alpha), so the desktop shows through the window fill and
+     * the terminal panes while the sidebar and header stay opaque.
+     *
+     * At opacity 1 nothing changes: an opaque window with the same `#16161a` flash colour it
+     * has always had. A transparent window has no drop shadow on macOS and cannot show one, so
+     * this is opt-in by configuration rather than the default.
+     */
+    const transparency = windowTransparency();
+    windowIsTransparent = transparency.transparent;
+    log(
+        `window: ${windowIsTransparent ? 'transparent' : 'opaque'} ` +
+            `(background-opacity ${transparency.opacity.toFixed(2)})`
+    );
     const window = new BrowserWindow({
         ...bounds,
         minWidth: MIN_WINDOW_WIDTH,
         minHeight: MIN_WINDOW_HEIGHT,
         show: false,
         title: 'Nex',
-        backgroundColor: '#16161a',
+        ...(windowIsTransparent ? { transparent: true } : {}),
+        backgroundColor: windowIsTransparent ? '#00000000' : '#16161a',
         // A standard frame on purpose. `titleBarStyle: 'hiddenInset'` would look closer to the
         // Swift app, but the client's top bar does not reserve the traffic lights' inset yet,
         // so the buttons would sit on top of its controls. Flip this once the client does.
@@ -232,6 +317,18 @@ function createWindow(): BrowserWindow {
     });
 
     if (fullScreen) window.setFullScreen(true);
+    // §APP-060: reapply the stored "all desktops" assignment. `mainWindow` is not assigned until
+    // `createWindow` returns, so this one call targets the new window directly rather than going
+    // through `applyVisibleOnAllWorkspaces`; the persist half has nothing to do (this IS the
+    // stored value).
+    if (visibleOnAllWorkspaces) {
+        try {
+            window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+            log('window: restored assign-to-all-desktops');
+        } catch (error) {
+            warn(`assign-to-all-desktops failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     applySecurityPolicy(window);
 
     window.once('ready-to-show', () => window.show());
@@ -323,6 +420,36 @@ function registerGlobalHotkey(): void {
     // §8.4 launch-path failure: keep the configured value and surface the error rather than
     // silently dropping the user's hotkey.
     else logError(`global-hotkey ${settings.accelerator} could not be registered: ${result.error ?? 'rejected'}`);
+}
+
+// ── appearance (APP-012 / SET-049, SET-219) ─────────────────────────────────────────
+
+/**
+ * Re-read the two appearance facts this process owns after a config write.
+ *
+ * The find palette applies to every context created from now on, which is the same granularity
+ * every injected script has. Transparency cannot be re-applied at all — Electron fixes it at
+ * window creation — so a change that CROSSES the 1.0 boundary is reported instead of pretended:
+ * one notification, once per run, saying it takes effect on the next launch. Recreating the
+ * window under the user would tear down every embedded web view and the renderer's whole state
+ * for a preference change, which is a worse trade than a sentence.
+ */
+function applyAppearanceSettings(): void {
+    setWebFindPalette(readSearchPalette());
+    const { opacity } = windowTransparency();
+    if (!transparencyNeedsRelaunch(windowIsTransparent, opacity)) return;
+    const wanted = opacity < 1 ? 'transparent' : 'opaque';
+    log(`window transparency change to ${wanted} needs a relaunch (background-opacity ${opacity.toFixed(2)})`);
+    if (relaunchNoticeShown || !Notification.isSupported()) return;
+    relaunchNoticeShown = true;
+    new Notification({
+        title: 'Window transparency changes on next launch',
+        body:
+            `background-opacity is now ${opacity.toFixed(2)}. Panes already follow it; ` +
+            'the window itself becomes ' +
+            wanted +
+            ' the next time Nex starts.'
+    }).show();
 }
 
 // ── Finder "Open With" ──────────────────────────────────────────────────────────────
@@ -635,6 +762,13 @@ async function startDaemonAndConnect(): Promise<void> {
                     });
                 },
                 quit: () => app.quit(),
+                // §APP-060: the tray owns the "all desktops" assignment, because the Dock's own
+                // binding lives in a private plist Electron cannot read. `window-state.json`
+                // makes it survive a relaunch.
+                isVisibleOnAllWorkspaces: () => isVisibleOnAllWorkspaces(),
+                setVisibleOnAllWorkspaces: (value) => {
+                    applyVisibleOnAllWorkspaces(value, true);
+                },
                 // Tray ▸ "Install CLI" — offered only when this build actually carries a CLI to
                 // install, and always explicit, so it reports its result in a dialog.
                 ...(cliInstallable ? { installCLI: () => installCliNow(true) } : {}),
@@ -643,6 +777,29 @@ async function startDaemonAndConnect(): Promise<void> {
                 // offered unconditionally — unlike the tray item, the menu row already exists
                 // and its answer ("no CLI payload in this build") is worth showing.
                 promptOpenFile: (paneID) => promptOpenFile(paneID),
+                /**
+                 * §AGNT-117's one-shot migration.
+                 *
+                 * `confirm-quit-when-active` used to live in this process's own
+                 * `shell-settings.json`. A user who ticked "Don't ask again" before the move
+                 * would otherwise get the dialog back on the next launch, so the first
+                 * handshake pushes that old `false` into the daemon settings and marks the file
+                 * migrated. A default install has nothing to push and is marked anyway, so this
+                 * runs once per install and never again.
+                 */
+                daemonSettingsReady: () => {
+                    const file = settingsFile(app.getPath('userData'));
+                    const local = readShellSettings(file);
+                    if (local.quitConfirmationMigrated) return;
+                    if (pendingQuitConfirmationMigration(local)) {
+                        const sent = status?.setGeneralSetting('confirm-quit-when-active', 'false') ?? false;
+                        // Only mark it done when the write actually went out; a socket that was
+                        // not ready must get another chance on the next connect.
+                        if (!sent) return;
+                        log('quit: migrated the local “Don\u2019t ask again” into the daemon settings');
+                    }
+                    markQuitConfirmationMigrated(file, local);
+                },
                 checkForUpdates: () => checkForUpdates(),
                 installCLINow: () => installCliNow(true),
                 revealPane: (workspaceID, paneID) => {
@@ -688,6 +845,7 @@ async function startDaemonAndConnect(): Promise<void> {
                  */
                 settingsChanged: () => {
                     registerGlobalHotkey();
+                    applyAppearanceSettings();
                 }
             }
         });
@@ -731,6 +889,9 @@ async function boot(): Promise<void> {
         return;
     }
 
+    // SET-219: the web pane's find colours live in this process (they are pasted into a page
+    // stylesheet by an injected script), so they are read before the first tab can exist.
+    setWebFindPalette(readSearchPalette());
     mainWindow = createWindow();
     registerGlobalHotkey();
     // Best-effort and never blocking: a CLI that could not be linked is a log line (and, when
@@ -751,9 +912,18 @@ async function boot(): Promise<void> {
         }
     );
     quitGate = installQuitGate({
-        counts: () => status?.counts ?? { running: 0, waiting: 0, workspaces: [], panes: [], waitingPaneIDs: [] },
+        counts: () => status?.counts ?? EMPTY_COUNTS,
         settingsPath: settingsFile(app.getPath('userData')),
         window: () => mainWindow,
+        // §AGNT-117: the suppression is a DAEMON setting now, so the ⌘Q dialog and
+        // Settings ▸ Workspaces are one switch rather than two that drift.
+        confirmWhenActive: () => status?.daemonSettings.confirmQuitWhenActive ?? null,
+        suppress: (value) => status?.setGeneralSetting('confirm-quit-when-active', value ? 'true' : 'false') ?? false,
+        // §AGNT-114 step 1: the daemon holds the markdown buffers, so the pre-flight is a
+        // round trip rather than a local call. Bounded inside the gate.
+        flushPendingSaves: async () => {
+            await status?.flushPendingSaves();
+        },
         onQuit: () => {
             globalShortcut.unregisterAll();
             status?.stop();

@@ -51,6 +51,24 @@ export interface ControlServerOptions {
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
+/**
+ * What actually happened to the optional TCP listener (§SET-021 / §AGNT-005).
+ *
+ * The Swift app surfaced a failed bind as `tcpPortStartFailed` and painted "Port N is
+ * unavailable" in red under Settings ▸ Network; here the same fact has to travel to a client in
+ * another process, so it is a value rather than a log line. `null` on the server means "TCP was
+ * never asked for", which is a different thing from "asked for and failed".
+ */
+export interface ControlTcpStatus {
+    /** The port the config asked for. */
+    readonly requested: number;
+    /** The port actually listening (an ephemeral request resolves to the real one); null on failure. */
+    readonly bound: number | null;
+    /** The bind failure, ready to show a user; null when it bound. */
+    readonly error: string | null;
+    readonly host: string;
+}
+
 export interface ControlServer {
     /** Bind both listeners. Rejects if a live daemon already owns the socket path. */
     start(): Promise<void>;
@@ -60,9 +78,33 @@ export interface ControlServer {
     listen(): Promise<void>;
     /** Alias of `stop()`. */
     close(): Promise<void>;
+    /**
+     * §AGNT-003: drop ONLY the TCP listener, leaving the Unix socket serving.
+     *
+     * The asymmetry is the point — a `tcp-port` change must never take the transport every
+     * local `nex` command, hook and client depends on offline for the duration of a rebind.
+     * Idempotent, and a no-op when TCP was never configured.
+     */
+    stopTCP(): Promise<void>;
+    /**
+     * §AGNT-005: bind (or re-bind) the TCP listener on `port`, live.
+     *
+     * `stopTCP` first, then bind, then report — the same order the Swift `tcpPortStartFailed`
+     * path used. A failed bind leaves the daemon serving its Unix socket and records the error
+     * on `tcpStatus`.
+     *
+     * `undefined` means "no TCP listener" and clears the status entirely rather than leaving a
+     * stale one behind. **`0` is not that**: it is `net.listen`'s "any free port", the same
+     * meaning `ControlServerOptions.tcpPort` gives it. The config file's `tcp-port = 0` means
+     * *disabled*, so the caller that reads the config maps 0 → undefined — the translation
+     * belongs where the config is understood, not in the transport.
+     */
+    startTCP(port: number | undefined): Promise<ControlTcpStatus | null>;
     readonly socketPath: string;
-    /** The port the TCP listener actually bound (undefined when TCP is off). */
+    /** The port the TCP listener actually bound (undefined when TCP is off OR failed). */
     readonly tcpPort: number | undefined;
+    /** §SET-021: requested / bound / error, or null when no TCP listener was configured. */
+    readonly tcpStatus: ControlTcpStatus | null;
     readonly connections: number;
     readonly running: boolean;
 }
@@ -172,6 +214,8 @@ export function createControlServer(options: ControlServerOptions): ControlServe
     let tcpServer: Server | undefined;
     let boundUnixPath: string | undefined;
     let boundTcpPort: number | undefined;
+    /** §SET-021: the last bind failure, kept so a client can be told why TCP is not listening. */
+    let tcpBindError: string | null = null;
     let running = false;
     let starting: Promise<void> | undefined;
 
@@ -247,6 +291,49 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         }
     };
 
+    /**
+     * The port TCP was last ASKED for — `undefined` means "no TCP listener".
+     *
+     * A mutable field rather than `options.tcpPort` because §AGNT-005's live re-bind changes the
+     * answer while the daemon runs, and `tcpStatus` has to report the current request, not the
+     * one boot happened to start with.
+     */
+    let requestedTcpPort: number | undefined = options.tcpPort;
+
+    /**
+     * Bind the TCP listener, or record why it could not be bound (§SET-021 / §AGNT-005).
+     *
+     * A port already in use is NOT fatal. It used to tear the Unix socket down and abort
+     * `start()`, which meant one `tcp-port = 19400` left over from a dev container took the
+     * whole daemon with it — every `nex` command, every hook, every client. The Swift app kept
+     * serving its Unix socket and raised `tcpPortStartFailed` for the Settings pane to show, and
+     * so does this: the failure is recorded on `tcpStatus`, `ping` reports it, `nexd status`
+     * prints it, and Settings ▸ Network says which port is unavailable and why.
+     */
+    const bindTcp = async (port: number | undefined): Promise<void> => {
+        requestedTcpPort = port;
+        tcpBindError = null;
+        boundTcpPort = undefined;
+        if (port === undefined) return;
+        const tcp = net.createServer(handleConnection);
+        tcp.on('error', (error) => report(error, 'tcp-listener'));
+        try {
+            await listenAsync(tcp, { host: tcpHost, port });
+            tcpServer = tcp;
+            const address = tcp.address();
+            boundTcpPort =
+                typeof address === 'object' && address !== null ? (address as AddressInfo).port : port;
+        } catch (error) {
+            tcpBindError = toError(error).message;
+            report(error, 'tcp-listener');
+            try {
+                await closeAsync(tcp);
+            } catch {
+                // Never listened; nothing to close.
+            }
+        }
+    };
+
     const start = async (): Promise<void> => {
         if (running) return;
         if (starting !== undefined) return starting;
@@ -265,28 +352,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
                 report(error, 'socket-chmod');
             }
 
-            if (options.tcpPort !== undefined) {
-                const tcp = net.createServer(handleConnection);
-                tcp.on('error', (error) => report(error, 'tcp-listener'));
-                try {
-                    await listenAsync(tcp, { host: tcpHost, port: options.tcpPort });
-                } catch (error) {
-                    await closeAsync(unix);
-                    unixServer = undefined;
-                    if (boundUnixPath !== undefined) {
-                        try {
-                            fs.unlinkSync(boundUnixPath);
-                        } catch {
-                            // best effort
-                        }
-                        boundUnixPath = undefined;
-                    }
-                    throw error;
-                }
-                tcpServer = tcp;
-                const address = tcp.address();
-                boundTcpPort = typeof address === 'object' && address !== null ? (address as AddressInfo).port : options.tcpPort;
-            }
+            await bindTcp(requestedTcpPort);
 
             running = true;
         })();
@@ -307,6 +373,8 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         unixServer = undefined;
         tcpServer = undefined;
         boundTcpPort = undefined;
+        tcpBindError = null;
+        requestedTcpPort = options.tcpPort;
         // Only unlink a socket file this instance actually bound (§1.1).
         if (boundUnixPath !== undefined) {
             try {
@@ -327,6 +395,29 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         socketPath,
         get tcpPort() {
             return boundTcpPort;
+        },
+        async stopTCP() {
+            // §AGNT-003: ONLY the TCP listener. The unix socket, the connections it is serving
+            // and the socket file are all untouched — that asymmetry is the whole point.
+            const current = tcpServer;
+            tcpServer = undefined;
+            boundTcpPort = undefined;
+            tcpBindError = null;
+            await closeAsync(current);
+        },
+        async startTCP(port) {
+            await this.stopTCP();
+            await bindTcp(port);
+            return this.tcpStatus;
+        },
+        get tcpStatus(): ControlTcpStatus | null {
+            if (requestedTcpPort === undefined) return null;
+            return {
+                requested: requestedTcpPort,
+                bound: boundTcpPort ?? null,
+                error: tcpBindError,
+                host: tcpHost
+            };
         },
         get connections() {
             return connections.size;

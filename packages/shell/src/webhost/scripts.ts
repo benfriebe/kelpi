@@ -32,6 +32,58 @@ export const BATCH_MARKER_CHANNEL = 'nexBatchMarker';
 
 const BINDING_PLACEHOLDER = '__NEX_BINDING__';
 
+/**
+ * SET-219 / TERM-021 — the web pane's find-highlight colours, as placeholders.
+ *
+ * The injected script is a function serialised with `Function.prototype.toString`, so it cannot
+ * close over anything: a configurable colour has to arrive the same way the binding name does,
+ * by substitution at build time. `setWebFindPalette` is what the main process calls once at boot
+ * and again on every `settings-changed`, so a context created after the change carries the new
+ * colours (an already-loaded page keeps the style it installed until it reloads — the same
+ * granularity every other injected script has).
+ */
+const FIND_MATCH_PLACEHOLDER = '__NEX_FIND_MATCH__';
+const FIND_MATCH_TEXT_PLACEHOLDER = '__NEX_FIND_MATCH_TEXT__';
+const FIND_CURRENT_PLACEHOLDER = '__NEX_FIND_CURRENT__';
+const FIND_CURRENT_TEXT_PLACEHOLDER = '__NEX_FIND_CURRENT_TEXT__';
+
+export interface WebFindPalette {
+    readonly match: string;
+    readonly matchText: string;
+    readonly current: string;
+    readonly currentText: string;
+}
+
+/** `NexGhosttyDefaults.swift:12-15` — what a user who never set the keys sees. */
+export const DEFAULT_WEB_FIND_PALETTE: WebFindPalette = {
+    match: '#F2D027',
+    matchText: '#000000',
+    current: '#FF7A00',
+    currentText: '#000000'
+};
+
+let webFindPalette: WebFindPalette = DEFAULT_WEB_FIND_PALETTE;
+
+/** `#rrggbb` only: the value is pasted into a page stylesheet, so anything else is refused. */
+function safeHex(value: unknown, fallback: string): string {
+    return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim() : fallback;
+}
+
+/** Set the palette every subsequently injected find script paints with. */
+export function setWebFindPalette(next: Partial<WebFindPalette> | null | undefined): void {
+    webFindPalette = {
+        match: safeHex(next?.match, DEFAULT_WEB_FIND_PALETTE.match),
+        matchText: safeHex(next?.matchText, DEFAULT_WEB_FIND_PALETTE.matchText),
+        current: safeHex(next?.current, DEFAULT_WEB_FIND_PALETTE.current),
+        currentText: safeHex(next?.currentText, DEFAULT_WEB_FIND_PALETTE.currentText)
+    };
+}
+
+/** The palette in force right now (tests, diagnostics). */
+export function webFindPaletteInUse(): WebFindPalette {
+    return webFindPalette;
+}
+
 type PageGlobal = Record<string, any>;
 
 /**
@@ -1415,9 +1467,9 @@ function batchMarkerMain(): void {
             clearFocusRing();
             hidePopover();
         } else if (focusedID !== null) {
-            syncPopoverContent();
             positionFocusRing();
             positionPopover();
+            syncPopoverContent();
         }
         return true;
     }
@@ -1458,9 +1510,14 @@ function batchMarkerMain(): void {
                 badge.style.transform = 'scale(1)';
             }, 320);
         }
-        syncPopoverContent();
+        // Placement BEFORE content, in both call sites: `positionPopover` is what CREATES the
+        // popover, and `syncPopoverContent` returns early while it does not exist — so syncing
+        // first left every freshly-opened popover with an empty `#<label> <selector>` header
+        // until some later sync happened to fill it in (WEB-140; caught by the visual audit,
+        // which is the first thing that ever read that header).
         positionFocusRing();
         positionPopover();
+        syncPopoverContent();
         // Re-anchor once the smooth scroll has settled.
         if (shouldScroll) setTimeout(refreshAll, 400);
         return true;
@@ -1524,10 +1581,10 @@ function findMain(): void {
         style.textContent =
             'mark.' +
             MARK_CLASS +
-            '{background:#F2D027;color:#000;border-radius:2px}' +
+            '{background:__NEX_FIND_MATCH__;color:__NEX_FIND_MATCH_TEXT__;border-radius:2px}' +
             'mark.' +
             MARK_CLASS +
-            '.nex-webfind-current{background:#FF7A00;color:#000}';
+            '.nex-webfind-current{background:__NEX_FIND_CURRENT__;color:__NEX_FIND_CURRENT_TEXT__}';
         doc.head.appendChild(style);
     }
 
@@ -1653,8 +1710,16 @@ export function inspectorScript(): string {
     return serialize(inspectorMain);
 }
 
-export function findScript(): string {
-    return serialize(findMain);
+export function findScript(palette: WebFindPalette = webFindPalette): string {
+    return serialize(findMain)
+        .split(FIND_MATCH_PLACEHOLDER)
+        .join(safeHex(palette.match, DEFAULT_WEB_FIND_PALETTE.match))
+        .split(FIND_MATCH_TEXT_PLACEHOLDER)
+        .join(safeHex(palette.matchText, DEFAULT_WEB_FIND_PALETTE.matchText))
+        .split(FIND_CURRENT_PLACEHOLDER)
+        .join(safeHex(palette.current, DEFAULT_WEB_FIND_PALETTE.current))
+        .split(FIND_CURRENT_TEXT_PLACEHOLDER)
+        .join(safeHex(palette.currentText, DEFAULT_WEB_FIND_PALETTE.currentText));
 }
 
 export function batchMarkerScript(): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isLocalOrInternalHost, normalizeURLInput } from './reducers/url.js';
+import { isLocalOrInternalHost, isPrivateIPv4, normalizeURLInput } from './reducers/url.js';
 
 describe('normalizeURLInput', () => {
     it('passes through anything carrying a scheme', () => {
@@ -35,5 +35,25 @@ describe('normalizeURLInput', () => {
         expect(isLocalOrInternalHost('::1')).toBe(true);
         expect(isLocalOrInternalHost('app.localhost')).toBe(true);
         expect(isLocalOrInternalHost('example.com')).toBe(false);
+    });
+
+    it('treats RFC 1918 and link-local IPv4 as internal (WEB-023)', () => {
+        expect(normalizeURLInput('192.168.1.5:8080')).toBe('http://192.168.1.5:8080');
+        expect(normalizeURLInput('10.0.0.2/health')).toBe('http://10.0.0.2/health');
+        expect(normalizeURLInput('172.16.0.1')).toBe('http://172.16.0.1');
+        expect(normalizeURLInput('172.31.255.254')).toBe('http://172.31.255.254');
+        expect(normalizeURLInput('169.254.1.1')).toBe('http://169.254.1.1');
+        // …and a PUBLIC address in the same neighbourhood still gets https.
+        expect(normalizeURLInput('172.32.0.1')).toBe('https://172.32.0.1');
+        expect(normalizeURLInput('11.0.0.1')).toBe('https://11.0.0.1');
+    });
+
+    it('only accepts a well-formed dotted quad as a private address', () => {
+        expect(isPrivateIPv4('10.0.0.1')).toBe(true);
+        expect(isPrivateIPv4('192.168.0.256')).toBe(false);
+        expect(isPrivateIPv4('010.0.0.1')).toBe(false);
+        expect(isPrivateIPv4('10.0.0')).toBe(false);
+        expect(isPrivateIPv4('10.0.0.1.2')).toBe(false);
+        expect(isPrivateIPv4('192.168.example.com')).toBe(false);
     });
 });

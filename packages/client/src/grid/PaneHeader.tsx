@@ -30,6 +30,18 @@ import type { PaneActions, PaneModel } from './types';
 /** Header content 20px + 2px vertical padding each side (shell-ui.md §4.2). */
 export const PANE_HEADER_HEIGHT = 24;
 
+/**
+ * The path/title's flex-shrink weight (TERM-102/104).
+ *
+ * The Swift header was an `HStack` of fixed-size badges and buttons around one flexible
+ * middle-truncating `Text`, so narrowing a pane ate the PATH and nothing else until there was
+ * no path left. Flexbox has no notion of "shrink this one first", but it does share negative
+ * space in proportion to `flex-shrink × flex-basis` — so a large weight here reproduces the
+ * order: the title gives ground, then the user-data badges (label, agent, branch), and the
+ * buttons never do.
+ */
+export const TITLE_SHRINK = 100;
+
 // ── display strings ─────────────────────────────────────────────────────────────────
 
 /** `/Users/x` → `~`, `/Users/x/a` → `~/a`; unrelated paths pass through (shell-ui.md §2). */
@@ -145,18 +157,35 @@ interface BadgeProps {
     readonly icon?: IconName | undefined;
     readonly text: string;
     readonly title?: string | undefined;
+    /**
+     * TERM-102/104's truncation priority: a badge whose text is USER data (a pane label, a
+     * branch name, an agent line) may give ground as the header narrows, after the path has;
+     * a fixed-word badge (ZOOM, SYNC) may not, because there is nothing to truncate.
+     *
+     * The order is enforced with flex-shrink *weights* rather than by hiding anything: the
+     * title carries a shrink factor two orders of magnitude larger (see `TITLE_SHRINK`), so it
+     * absorbs essentially all of the first squeeze and these only start to give when it has
+     * run out. The buttons never shrink at all — a header that drops its close ✕ before its
+     * path is the wrong trade.
+     */
+    readonly shrinkable?: boolean | undefined;
     readonly onClick?: (() => void) | undefined;
 }
 
-function Badge({ testID, color, icon, text, title, onClick }: BadgeProps): ReactElement {
+function Badge({ testID, color, icon, text, title, shrinkable, onClick }: BadgeProps): ReactElement {
     const content = (
         <>
             {icon === undefined ? null : <Icon name={icon} size={9} />}
-            <span>{text}</span>
+            <span className={shrinkable === true ? 'min-w-0 truncate' : undefined}>{text}</span>
         </>
     );
-    const style = { color, background: pill(color), borderRadius: 4 };
-    const className = 'flex shrink-0 items-center gap-1 px-1 py-px font-mono text-[10px] leading-none';
+    const style = {
+        color,
+        background: pill(color),
+        borderRadius: 4,
+        ...(shrinkable === true ? { minWidth: 0, maxWidth: '40%' } : {})
+    };
+    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-1 px-1 py-px font-mono text-[10px] leading-none`;
     if (onClick === undefined) {
         return (
             <span data-testid={testID} className={className} style={style} {...(title === undefined ? {} : { title })}>
@@ -364,7 +393,13 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
 
             {/* 2 — label chip */}
             {pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown' ? (
-                <Badge testID={`pane-label-${pane.id}`} color={tokens.accent} icon="tag" text={pane.label} />
+                <Badge
+                    testID={`pane-label-${pane.id}`}
+                    color={tokens.accent}
+                    icon="tag"
+                    text={pane.label}
+                    shrinkable
+                />
             ) : null}
 
             {/* 3 — path / title, or the inline rename field */}
@@ -385,7 +420,11 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <span
                     data-testid={`pane-title-${pane.id}`}
                     className="flex min-w-0 flex-1 font-mono text-[11px] leading-none"
-                    style={{ color: focused ? tokens.textPrimary : tokens.textSecondary }}
+                    // TERM-102/104's truncation priority, expressed the only way flexbox can:
+                    // negative space is shared out in proportion to (shrink factor × base size),
+                    // so a title weighted `TITLE_SHRINK` against the badges' 1 takes effectively
+                    // the whole squeeze first, and the badges only give when it has nothing left.
+                    style={{ color: focused ? tokens.textPrimary : tokens.textSecondary, flexShrink: TITLE_SHRINK }}
                     title={title}
                 >
                     <span className="min-w-0 truncate">{titleParts.head}</span>
@@ -431,6 +470,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     testID={`pane-agent-badge-${pane.id}`}
                     color={badge.tone === 'running' ? tokens.activeAgent : tokens.statusWaiting}
                     text={badge.text}
+                    shrinkable
                 />
             )}
 
@@ -441,6 +481,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     color={tokens.textSecondary}
                     icon="branch"
                     text={pane.gitBranch}
+                    shrinkable
                 />
             )}
 

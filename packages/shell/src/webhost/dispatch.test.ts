@@ -55,6 +55,14 @@ class FakeTab implements TabController {
     reload(hard: boolean): void {
         this.reloads.push(hard);
     }
+    stops = 0;
+    stop(): void {
+        this.stops += 1;
+    }
+    focuses = 0;
+    focusView(): void {
+        this.focuses += 1;
+    }
     evaluate(expression: string): Promise<EvalOutcome> {
         this.evaluated.push(expression);
         const next = this.outcomes.length > 1 ? this.outcomes.shift() : this.outcomes[0];
@@ -199,6 +207,35 @@ describe('navigation', () => {
         await dispatcher.call('reload', { ...scope, hard: true });
         expect(tab.history).toEqual(['back', 'forward']);
         expect(tab.reloads).toEqual([true]);
+    });
+
+    it('stops a load in flight and hands the page keyboard focus (WEB-032/WEB-043)', async () => {
+        const { dispatcher, tab } = harness();
+        await expect(dispatcher.call('stop', scope)).resolves.toEqual({ ok: true });
+        await expect(dispatcher.call('focus-view', scope)).resolves.toEqual({ ok: true });
+        expect(tab.stops).toBe(1);
+        expect(tab.focuses).toBe(1);
+        // Both resolve the ACTIVE tab when the caller names none — the chrome usually does not.
+        await dispatcher.call('focus-view', { paneID: scope.paneID });
+        expect(tab.focuses).toBe(2);
+    });
+
+    it('answers honestly for a host that cannot stop or focus', async () => {
+        const { dispatcher, tab } = harness();
+        // Both are optional on `TabController`: a test double, or a future non-Electron host,
+        // simply does not have them. (Own properties shadowing the prototype's, since `delete`
+        // on an instance would not reach a class method.)
+        const reduced = tab as unknown as { stop?: unknown; focusView?: unknown };
+        reduced.stop = undefined;
+        reduced.focusView = undefined;
+        await expect(dispatcher.call('stop', scope)).resolves.toEqual({
+            ok: false,
+            error: 'this host cannot stop a load'
+        });
+        await expect(dispatcher.call('focus-view', scope)).resolves.toEqual({
+            ok: false,
+            error: 'this host cannot focus a view'
+        });
     });
 
     it('returns the live url and title', async () => {

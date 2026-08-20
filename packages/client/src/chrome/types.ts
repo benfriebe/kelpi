@@ -62,6 +62,13 @@ export interface ChromeLabelPreset {
         | null;
 }
 
+/**
+ * The daemon's `default` profile baseline (`WorkspaceProfilesClient.defaultProfileName`).
+ * Lives here rather than in one surface because BOTH profile pickers lead with it: the
+ * inspector's (§WS-138) and the New Workspace form's (§SET-214).
+ */
+export const DEFAULT_PROFILE_NAME = 'default';
+
 /** The ten palette colors, in menu order (§5.6). */
 export const WORKSPACE_COLORS: readonly WorkspaceColor[] = [
     'red',
@@ -111,6 +118,18 @@ export interface ChromeRepo {
  * whole request rides `workspace-create --worktree` — the same wire path the CLI uses — so the
  * sanitization, the branch default and `--update-main` all stay daemon-side.
  */
+/**
+ * The New Workspace form's non-name fields (§WS-075). They ride together because they are one
+ * gesture: the create verb carries the colour, group and profile, and the repo paths become one
+ * `add-repo-association` each once the workspace id comes back.
+ */
+export interface NewWorkspaceExtras {
+    readonly color?: WorkspaceColor | undefined;
+    /** `null` = the built-in `default` baseline (the daemon's own normalization). */
+    readonly profile?: string | null | undefined;
+    readonly repoPaths?: readonly string[] | undefined;
+}
+
 export interface WorkspaceWorktreeRequest {
     readonly repoID: string;
     readonly name: string;
@@ -164,11 +183,22 @@ export interface SidebarCallbacks {
      * The New Workspace form. `worktree` is present when its "Create git worktree" section is
      * on (§WS-078); the callback may answer with a message so the form can keep itself open on
      * a failed `git worktree add` and re-enable Create (§WS-079).
+     *
+     * `extras` is the rest of what the shipped sheet collects (§WS-075/§SET-214): the chosen
+     * swatch, the profile (`null` = the built-in `default`), and the repo PATHS to associate
+     * once the workspace exists. Every field is optional, so an older two-argument call site
+     * keeps working unchanged.
      */
     readonly onCreateWorkspace?:
-        | ((name: string, groupID: string | null, worktree?: WorkspaceWorktreeRequest | undefined) => SubmitResult)
+        | ((
+              name: string,
+              groupID: string | null,
+              worktree?: WorkspaceWorktreeRequest | undefined,
+              extras?: NewWorkspaceExtras | undefined
+          ) => SubmitResult)
         | undefined;
-    readonly onCreateGroup?: ((name: string) => void) | undefined;
+    /** `color` is the New Group form's swatch; `null`/absent is its "None" option (§WS-082). */
+    readonly onCreateGroup?: ((name: string, color?: WorkspaceColor | null | undefined) => void) | undefined;
 
     // ── bulk operations (§5.6's multi-select menu variant, §WS-055…§WS-060) ─────────
     //
@@ -182,7 +212,9 @@ export interface SidebarCallbacks {
         | ((workspaceIDs: readonly string[], label: string, apply: boolean) => void)
         | undefined;
     /** "Group N Workspaces…": create the group with the selection already inside it. */
-    readonly onCreateGroupForWorkspaces?: ((name: string, workspaceIDs: readonly string[]) => void) | undefined;
+    readonly onCreateGroupForWorkspaces?:
+        | ((name: string, workspaceIDs: readonly string[], color?: WorkspaceColor | null | undefined) => void)
+        | undefined;
     /** "Delete N Workspaces…", after ONE confirmation. Absent = falls back to N single deletes. */
     readonly onDeleteWorkspaces?: ((workspaceIDs: readonly string[]) => void) | undefined;
 }

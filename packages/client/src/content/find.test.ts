@@ -11,7 +11,13 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { CONTENT_BRIDGE_SOURCE, FIND_CURRENT_COLOR, FIND_MATCH_COLOR, contentBridgeScript } from './bridge';
+import {
+    CONTENT_BRIDGE_SOURCE,
+    FIND_CURRENT_COLOR,
+    FIND_CURRENT_TEXT_COLOR,
+    FIND_MATCH_COLOR,
+    contentBridgeScript
+} from './bridge';
 
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
 
@@ -95,6 +101,29 @@ describe('__nexFind', () => {
         expect(style?.textContent).toContain(FIND_MATCH_COLOR);
         expect(style?.textContent).toContain(FIND_CURRENT_COLOR);
         expect(style?.textContent).toContain('mark.nex-find-match');
+    });
+
+    // SET-219 / TERM-021: the Swift app's Nex-managed ghostty defaults, now four nex config
+    // keys — so the same highlight a user overrides in the file has to reach this stylesheet.
+    it('takes an overridden palette, and refuses a value that is not a plain hex', () => {
+        document.head.innerHTML = '';
+        delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
+        new Function(
+            contentBridgeScript(PANE, {
+                match: '#00ff00',
+                matchText: '#101010',
+                current: '#0000ff',
+                currentText: 'red;} body{display:none}'
+            })
+        )();
+        api().search('alpha');
+        const style = document.getElementById('__nex-find-style');
+        expect(style?.textContent).toContain('#00ff00');
+        expect(style?.textContent).toContain('#101010');
+        expect(style?.textContent).toContain('#0000ff');
+        expect(style?.textContent).not.toContain('display:none');
+        expect(style?.textContent).toContain(FIND_CURRENT_TEXT_COLOR);
     });
 
     it('wraps around in both directions', async () => {

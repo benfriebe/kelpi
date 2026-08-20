@@ -128,6 +128,30 @@ function selectTab(
     return syncHeader(withSidecar(workspace, action.paneID, next), action.paneID);
 }
 
+/**
+ * WEB-016: reorder only when the supplied sequence is an **exact permutation** of the pane's
+ * current tabs. A sequence that drops, duplicates or invents an id is dropped whole rather than
+ * applied partially — a truncating reorder would silently destroy tabs (and their live views,
+ * which the host still holds) on a mis-sent drag.
+ */
+function reorderTabs(
+    workspace: WorkspaceState,
+    action: Extract<DomainAction, { type: 'web-tab-reorder' }>
+): WorkspaceState {
+    const web = sidecarOf(workspace, action.paneID);
+    if (web === null) return workspace;
+    const current = web.tabs.map((tab) => tab.id);
+    if (action.order.length !== current.length) return workspace;
+    const wanted = new Set(action.order);
+    // Set sizes catch a duplicate; the membership walk catches an unknown id.
+    if (wanted.size !== current.length) return workspace;
+    if (!current.every((id) => wanted.has(id))) return workspace;
+    if (action.order.every((id, index) => id === current[index])) return workspace;
+    const byID = new Map(web.tabs.map((tab) => [tab.id, tab]));
+    const tabs = action.order.map((id) => byID.get(id) as WebTab);
+    return withSidecar(workspace, action.paneID, { ...web, tabs });
+}
+
 function navigate(
     workspace: WorkspaceState,
     action: Extract<DomainAction, { type: 'web-navigate' }>
@@ -193,6 +217,10 @@ export function reduceWebAction(state: DaemonState, action: DomainAction): Daemo
         case 'web-tab-select':
             return updateWorkspace(state, action.workspaceID, (workspace) =>
                 selectTab(workspace, action)
+            );
+        case 'web-tab-reorder':
+            return updateWorkspace(state, action.workspaceID, (workspace) =>
+                reorderTabs(workspace, action)
             );
         case 'web-navigate':
             return updateWorkspace(state, action.workspaceID, (workspace) =>

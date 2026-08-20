@@ -18,8 +18,10 @@ export {
     AUTO_SCROLL_EDGE_PX,
     AUTO_SCROLL_INTERVAL_MS,
     AUTO_SCROLL_STEP_PX,
+    LANDING_MS,
     SPRING_LOAD_MS,
     Sidebar,
+    type NewEntryDraft,
     type SidebarProps
 } from './Sidebar';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
@@ -47,6 +49,7 @@ export {
     storeSidebarWidth,
     type SidebarResizerProps
 } from './SidebarResizer';
+export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
 export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
 export {
     StatusFooter,
@@ -151,10 +154,12 @@ export {
     applyWorkspaceDrop,
     buildDropZones,
     buildGroupSpans,
+    defaultGroupName,
     filteredRows,
     groupCommit,
     isGroupCollapsed,
     locateWorkspace,
+    nextCreateColor,
     orderModelFromEntries,
     projectEntries,
     renderedRows,
@@ -182,6 +187,7 @@ export {
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeRepo,
+    type NewWorkspaceExtras,
     type SubmitResult,
     type WorkspaceWorktreeRequest,
     type ChromeLabelPreset,

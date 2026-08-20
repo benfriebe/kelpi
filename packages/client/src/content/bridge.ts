@@ -32,9 +32,57 @@ export const CONTENT_HOST_SOURCE = 'nex-host';
 /** §3.10: how long the copy button shows its checkmark. */
 export const COPY_FEEDBACK_MS = 1500;
 
-/** §3.13 highlight palette — ghostty's search-background / search-selected-background. */
+/**
+ * §3.13's highlight palette — the Swift `NexGhosttyDefaults` search colours.
+ *
+ * These are the DEFAULTS, not the values: SET-219/TERM-021 make all four user-overridable
+ * through the nex config (`search-match-color`, `search-match-text-color`,
+ * `search-match-current-color`, `search-match-current-text-color`), and `FindPalette` is how
+ * an override reaches the injected script. A caller that passes none gets exactly these, which
+ * is what the Swift defaults file gave a user who never edited their ghostty config.
+ */
 export const FIND_MATCH_COLOR = '#F2D027';
+export const FIND_MATCH_TEXT_COLOR = '#000000';
 export const FIND_CURRENT_COLOR = '#FF7A00';
+export const FIND_CURRENT_TEXT_COLOR = '#000000';
+
+/** The four colours the injected find script paints its marks with. */
+export interface FindPalette {
+    readonly match: string;
+    readonly matchText: string;
+    readonly current: string;
+    readonly currentText: string;
+}
+
+export const DEFAULT_FIND_PALETTE: FindPalette = {
+    match: FIND_MATCH_COLOR,
+    matchText: FIND_MATCH_TEXT_COLOR,
+    current: FIND_CURRENT_COLOR,
+    currentText: FIND_CURRENT_TEXT_COLOR
+};
+
+/**
+ * A colour safe to interpolate into the injected stylesheet.
+ *
+ * The values arrive from a config FILE the daemon parsed, and they are pasted into a `<style>`
+ * inside a sandboxed document — so anything that is not a plain `#rrggbb` is replaced by the
+ * default rather than escaped. There is no legitimate search colour that needs a `;` in it.
+ */
+function safeCssColor(value: string | undefined, fallback: string): string {
+    if (typeof value !== 'string') return fallback;
+    const trimmed = value.trim();
+    return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed : fallback;
+}
+
+/** The palette with every field validated; unusable entries fall back to the Swift default. */
+export function resolveFindPalette(palette?: Partial<FindPalette> | undefined): FindPalette {
+    return {
+        match: safeCssColor(palette?.match, FIND_MATCH_COLOR),
+        matchText: safeCssColor(palette?.matchText, FIND_MATCH_TEXT_COLOR),
+        current: safeCssColor(palette?.current, FIND_CURRENT_COLOR),
+        currentText: safeCssColor(palette?.currentText, FIND_CURRENT_TEXT_COLOR)
+    };
+}
 
 /** What the host asks the document's `__nexFind` namespace to do (§3.13). */
 export type FindOp = 'search' | 'next' | 'prev' | 'clear';
@@ -152,6 +200,8 @@ export interface PrepareDocumentOptions {
     readonly background?: string | null | undefined;
     /** `dark`/`light` for the frame's `color-scheme` (UA widgets, scrollbars, form controls). */
     readonly colorScheme?: 'dark' | 'light' | undefined;
+    /** SET-219's overridable find-highlight colours; absent = the Swift defaults. */
+    readonly findPalette?: Partial<FindPalette> | undefined;
 }
 
 /**
@@ -229,7 +279,7 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
         else document = style + document;
     }
 
-    const script = `<script>\n${contentBridgeScript(options.paneID)}\n</script>\n`;
+    const script = `<script>\n${contentBridgeScript(options.paneID, options.findPalette)}\n</script>\n`;
     // `lastIndexOf`: a note may legitimately contain the literal text `</body>` inside a code
     // block, and the real end tag is the last one.
     const bodyEnd = document.lastIndexOf('</body>');
@@ -243,8 +293,9 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
  * Written as ES5-flavored plain DOM so it runs unchanged in any engine that renders a pane, and
  * guarded by `__nexContentBridge` so a re-injection is a no-op.
  */
-export function contentBridgeScript(paneID: string): string {
+export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPalette> | undefined): string {
     const id = JSON.stringify(paneID);
+    const find = resolveFindPalette(findPalette);
     return `(function () {
   if (window.__nexContentBridge) return;
   window.__nexContentBridge = true;
@@ -355,8 +406,8 @@ export function contentBridgeScript(paneID: string): string {
     var style = document.createElement('style');
     style.id = FIND_STYLE_ID;
     style.textContent =
-      'mark.nex-find-match{background:${FIND_MATCH_COLOR};color:#000;border-radius:2px;padding:0}' +
-      'mark.nex-find-match.nex-find-current{background:${FIND_CURRENT_COLOR};color:#000}';
+      'mark.nex-find-match{background:${find.match};color:${find.matchText};border-radius:2px;padding:0}' +
+      'mark.nex-find-match.nex-find-current{background:${find.current};color:${find.currentText}}';
     head.appendChild(style);
   };
   var clearMarks = function () {

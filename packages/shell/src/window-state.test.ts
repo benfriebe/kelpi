@@ -102,9 +102,26 @@ describe('window state file', () => {
 
     it('round-trips bounds and the fullscreen flag', () => {
         const file = windowStateFile(tempDir());
-        const state = { bounds: { x: 1, y: 2, width: 800, height: 600 }, fullScreen: true };
+        const state = {
+            bounds: { x: 1, y: 2, width: 800, height: 600 },
+            fullScreen: true,
+            visibleOnAllWorkspaces: false
+        };
         writeWindowState(file, state);
         expect(readWindowState(file)).toEqual(state);
+    });
+
+    // §APP-060: the Dock's own "Assign To → All Desktops" binding lives in a private plist
+    // Electron cannot read, so the port owns the flag and this file is what makes it survive a
+    // relaunch. Opt-in: a state file written before the flag existed reads as "off".
+    it('round-trips the all-desktops assignment, and defaults it off', () => {
+        const file = windowStateFile(tempDir());
+        writeWindowState(file, { bounds: null, fullScreen: false, visibleOnAllWorkspaces: true });
+        expect(readWindowState(file).visibleOnAllWorkspaces).toBe(true);
+
+        const legacy = path.join(tempDir(), 'legacy.json');
+        fs.writeFileSync(legacy, JSON.stringify({ bounds: null, fullScreen: false }));
+        expect(readWindowState(legacy).visibleOnAllWorkspaces).toBe(false);
     });
 
     it('treats a missing or corrupt file as no stored state', () => {
@@ -123,7 +140,7 @@ describe('window state file', () => {
 
     it('creates the directory it writes into', () => {
         const file = path.join(tempDir(), 'nested', 'window-state.json');
-        writeWindowState(file, { bounds: null, fullScreen: false });
+        writeWindowState(file, { bounds: null, fullScreen: false, visibleOnAllWorkspaces: false });
         expect(fs.existsSync(file)).toBe(true);
     });
 });

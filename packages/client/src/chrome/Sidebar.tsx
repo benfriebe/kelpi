@@ -23,6 +23,7 @@
  * Everything else is props/callbacks — the sidebar never reads the store or sends a command.
  */
 
+import { firstGrapheme } from '@nex/core/codec';
 import type { KeyBindingMap, NexAction } from '@nex/core/config';
 import type { IconRef, WorkspaceColor } from '@nex/daemon/store';
 import {
@@ -33,11 +34,13 @@ import {
     useRef,
     useState,
     type CSSProperties,
-    type ReactElement
+    type ReactElement,
+    type ReactNode
 } from 'react';
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
+import { RepoPicker } from './RepoPicker';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -53,10 +56,12 @@ import {
     applyWorkspaceDrop,
     buildDropZones,
     buildGroupSpans,
+    defaultGroupName,
     filteredRows,
     groupCommit,
     isGroupCollapsed,
     locateWorkspace,
+    nextCreateColor,
     orderModelFromEntries,
     projectEntries,
     renderedRows,
@@ -78,6 +83,7 @@ import {
 } from './theme';
 import { tokens } from './tokens';
 import {
+    DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
     type ChromeGroup,
     type ChromeLabelPreset,
@@ -103,6 +109,11 @@ const CONTENT_TOP_PADDING = 4;
  *     because a stationary pointer emits no further mousemove events.
  */
 export const SPRING_LOAD_MS = 650;
+/**
+ * §WS-092's landing: a single row released onto a COLLAPSED group's header is pinned where it
+ * is, shrunk toward the header, and the move commits when the animation ends (~400 ms).
+ */
+export const LANDING_MS = 400;
 export const AUTO_SCROLL_EDGE_PX = 40;
 export const AUTO_SCROLL_STEP_PX = 3;
 export const AUTO_SCROLL_INTERVAL_MS = 15;
@@ -303,6 +314,13 @@ interface WorkspaceRowProps {
     readonly dragHidden?: boolean | undefined;
     /** §5.5 multi-drag: the `+N` capsule on the grabbed row (0 = no capsule). */
     readonly dragExtra?: number | undefined;
+    /**
+     * §WS-089: the row is hovering a group-header (append) target, so it previews the nested
+     * indentation it is ABOUT to have — state still says it is in its old container.
+     */
+    readonly nestPreview?: boolean | undefined;
+    /** §WS-092: the row is playing its "falls into the collapsed group" landing. */
+    readonly landing?: boolean | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -330,15 +348,30 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
           : 'none';
 
     const hidden = props.dragHidden === true;
+    const nested = props.depth === 1 || props.nestPreview === true;
+    const landing = props.landing === true;
     const style: CSSProperties = {
         background,
         outline,
         outlineOffset: '-1px',
-        marginLeft: props.depth === 1 ? 24 : 0,
+        // §WS-089: the indent previews the container the row is being dropped INTO while the
+        // cursor holds a group header, and animates so the nesting reads as a movement.
+        marginLeft: nested ? 24 : 0,
+        transition:
+            landing
+                ? 'transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 380ms ease'
+                : 'margin-left 120ms ease',
         // §5.5: a dragged row lifts to 80% opacity and scales up; the OTHER rows of a
         // multi-selection collapse to zero height so the grid closes over them.
-        opacity: hidden ? 0 : props.dragging ? 0.8 : 1,
-        ...(props.dragging && !hidden ? { transform: 'scale(1.03)' } : {}),
+        // §WS-092: a row landing in a collapsed group shrinks toward the header instead.
+        opacity: hidden ? 0 : landing ? 0.15 : props.dragging ? 0.8 : 1,
+        ...(landing
+            ? { transform: 'scale(0.2)' }
+            : props.dragging && !hidden
+              ? // §WS-084: the lift is scale + opacity + a drop shadow, so the row reads as
+                // picked up off the list rather than merely faded.
+                { transform: 'scale(1.03)', boxShadow: '0 6px 18px rgba(0,0,0,0.45)' }
+              : {}),
         ...(hidden
             ? {
                   height: 0,
@@ -359,6 +392,8 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                 props.registerRow(`ws:${workspace.id}`, element);
             }}
             data-drag-hidden={hidden ? 'true' : undefined}
+            data-nest-preview={props.nestPreview === true ? 'true' : undefined}
+            data-landing={landing ? 'true' : undefined}
             role="option"
             tabIndex={-1}
             aria-selected={props.active}
@@ -582,6 +617,8 @@ export interface SidebarProps extends SidebarCallbacks {
     /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
     readonly springLoadMs?: number | undefined;
     readonly autoScrollIntervalMs?: number | undefined;
+    /** §WS-092's landing duration; 0 commits immediately (no animation). */
+    readonly landingMs?: number | undefined;
     /**
      * The footer's gear and the Labels submenu's "Manage Labels…" deep link (M8 Settings,
      * shell-ui.md §5.7). Absent = neither is rendered, which keeps every existing fixture and
@@ -590,10 +627,18 @@ export interface SidebarProps extends SidebarCallbacks {
      */
     readonly onOpenSettings?: ((section?: 'labels' | undefined) => void) | undefined;
     /**
-     * The repo registry, for the New Workspace form's "Create git worktree" section (§WS-078).
-     * Empty (the default) simply hides the section — the form is the plain name field it was.
+     * The repo registry: the New Workspace form's Repositories section (§WS-075) and its
+     * "Create git worktree" section (§WS-078) both read it. Empty (the default) hides both.
      */
     readonly repos?: readonly ChromeRepo[] | undefined;
+    /** Config-defined profile names for the form's Profile picker (§SET-214); `default` leads. */
+    readonly profiles?: readonly string[] | undefined;
+    /**
+     * SET-011's answer for THIS client: the group a new workspace should join when the form is
+     * opened without an explicit one (the active workspace's group, when the setting is on).
+     * Assembly resolves it because the setting and the active workspace both live there.
+     */
+    readonly inheritGroupID?: string | null | undefined;
     /**
      * How many agents a workspace still has running (`activeAgentCount` — visible AND parked
      * panes). It turns the delete confirmation into `WorkspaceDeleteGate`'s alert: the count in
@@ -651,6 +696,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const rowHeight = props.rowHeight ?? DEFAULT_ROW_HEIGHT;
     const springLoadMs = props.springLoadMs ?? SPRING_LOAD_MS;
     const autoScrollIntervalMs = props.autoScrollIntervalMs ?? AUTO_SCROLL_INTERVAL_MS;
+    const landingMs = props.landingMs ?? LANDING_MS;
 
     const [collapseOverrides, setCollapseOverrides] = useState<ReadonlyMap<string, boolean>>(EMPTY_OVERRIDES);
     const [shadow, setShadow] = useState<SidebarOrderModel | null>(null);
@@ -669,8 +715,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [previewGroupID, setPreviewGroupID] = useState<string | null>(null);
     /** §5.5 spring-loading: a collapsed group held open for the rest of THIS drag. */
     const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
+    /** §WS-092: the row currently playing its "falls into the group" landing, if any. */
+    const [landing, setLanding] = useState<{ workspaceID: string; groupID: string } | null>(null);
     /** The workspace whose icon is being picked in the custom-emoji sheet. */
     const [emojiSheet, setEmojiSheet] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
+    /**
+     * §WS-075's default swatch, drawn ONCE per opening of the form (the dep is the form state's
+     * identity, and every `setNewForm` mints a new object). Re-rolling it on each keystroke
+     * would make the colour flicker as the user types the name.
+     */
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only: the roll belongs
+    // to the OPENING of the form, not to the entries it read on the way past.
+    const newFormColor = useMemo(() => nextCreateColor(props.entries), [newForm]);
 
     const selection = props.selectedWorkspaceIDs ?? internalSelection;
     const collapse: CollapseState = useMemo(
@@ -695,10 +751,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
     /** A finished drag is followed by a `click` on the row; that click must not activate it. */
     const suppressClickRef = useRef(false);
     const shadowRef = useRef<SidebarOrderModel | null>(null);
+    /** Read by `onUp`, which runs from a window listener and cannot close over the render. */
+    const springLoadedRef = useRef<string | null>(null);
+    const landingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    /** The commit a running §WS-092 landing owes; flushed early if a new gesture starts. */
+    const pendingLandingRef = useRef<(() => void) | null>(null);
     const entriesRef = useRef(props.entries);
     const collapseRef = useRef(collapse);
     const rowsRef = useRef(rows);
     shadowRef.current = shadow;
+    springLoadedRef.current = springLoadedGroupID;
     entriesRef.current = props.entries;
     collapseRef.current = collapse;
     rowsRef.current = rows;
@@ -812,9 +874,42 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return heights;
     }, []);
 
+    /**
+     * §WS-093: drag math must never run on stale geometry, so a drag does not START until every
+     * rendered row has been measured.
+     *
+     * The one degradation, stated: an environment with NO box model at all (jsdom, a sidebar
+     * that has never laid out) measures nothing, and there is nothing to be stale about — the
+     * uniform `rowHeight` fallback IS the geometry there. A PARTIAL measurement is the
+     * dangerous case the Swift guard exists for, and that is the case this blocks.
+     */
+    const geometryReady = useCallback((): boolean => {
+        const heights = measuredHeights();
+        if (heights.size === 0) return true;
+        return rowsRef.current.every((row) => heights.has(row.key));
+    }, [measuredHeights]);
+
+    /**
+     * Finish a §WS-092 landing NOW rather than letting its timer race a new gesture. The move
+     * still lands — dropping it would lose a drop the user already made — it simply lands
+     * without the rest of its animation.
+     */
+    const flushLanding = useCallback((): void => {
+        if (landingTimerRef.current !== null) {
+            clearTimeout(landingTimerRef.current);
+            landingTimerRef.current = null;
+        }
+        const pending = pendingLandingRef.current;
+        if (pending === null) return;
+        pendingLandingRef.current = null;
+        setLanding(null);
+        pending();
+    }, []);
+
     const onDragStart = useCallback(
         (kind: 'workspace' | 'group', id: string, event: React.MouseEvent): void => {
             if (event.button !== 0) return;
+            flushLanding();
             if (rename !== null) return;
             const target = event.target as HTMLElement | null;
             if (target !== null && target.closest('input, button') !== null) return;
@@ -837,7 +932,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             };
             setDragID(id);
         },
-        [baseModel, rename, selection, visibleOrder]
+        [baseModel, flushLanding, rename, selection, visibleOrder]
     );
 
     useEffect(() => {
@@ -980,6 +1075,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             drag.clientY = event.clientY;
             if (!drag.active) {
                 if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD_PX) return;
+                // §WS-093: ignore the gesture entirely until the geometry it would be resolved
+                // against is real. The mousedown is kept, so the drag begins the moment the
+                // measurement lands rather than needing a fresh press.
+                if (!geometryReady()) return;
                 drag.active = true;
             }
             syncAutoScroll(drag);
@@ -991,6 +1090,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             dragRef.current = null;
             stopAutoScroll();
             if (drag !== null) cancelSpring(drag);
+            const springLoaded = springLoadedRef.current;
             setDragID(null);
             setPreviewGroupID(null);
             // §5.5: the spring-loaded group stays open through the drop, then collapses.
@@ -998,32 +1098,73 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (drag === null || !drag.active) return;
             suppressClickRef.current = true;
 
-            let final = shadowRef.current ?? drag.originModel;
-            if (drag.preview !== null) final = applyWorkspaceDrop(final, drag.id, drag.preview);
-            if (final !== shadowRef.current) setShadow(final);
+            const commitDrop = (): void => {
+                let final = shadowRef.current ?? drag.originModel;
+                if (drag.preview !== null) final = applyWorkspaceDrop(final, drag.id, drag.preview);
+                if (final !== shadowRef.current) setShadow(final);
 
-            if (drag.kind === 'group') {
-                const index = groupCommit(drag.originModel, final, drag.id);
-                if (index !== null) props.onMoveGroup?.({ groupID: drag.id, index });
-                return;
-            }
-            const commit = workspaceCommit(drag.originModel, final, drag.id);
-            if (commit === null) return;
-            if (drag.ids.length > 1 && props.onMoveWorkspaces !== undefined) {
-                // The grabbed row's landing spot IS the selection's landing spot: the zones it
-                // was resolved against already had every dragged row detached.
-                props.onMoveWorkspaces({
-                    workspaceIDs: drag.ids,
+                if (drag.kind === 'group') {
+                    const index = groupCommit(drag.originModel, final, drag.id);
+                    if (index !== null) props.onMoveGroup?.({ groupID: drag.id, index });
+                    return;
+                }
+                const commit = workspaceCommit(drag.originModel, final, drag.id);
+                if (commit === null) return;
+                if (drag.ids.length > 1 && props.onMoveWorkspaces !== undefined) {
+                    // The grabbed row's landing spot IS the selection's landing spot: the zones
+                    // it was resolved against already had every dragged row detached.
+                    props.onMoveWorkspaces({
+                        workspaceIDs: drag.ids,
+                        groupID: commit.groupID,
+                        index: commit.index
+                    });
+                    return;
+                }
+                props.onMoveWorkspace?.({
+                    workspaceID: drag.id,
                     groupID: commit.groupID,
                     index: commit.index
                 });
-                return;
+            };
+
+            /**
+             * §WS-092: a SINGLE row released onto a collapsed group's header "falls into" it —
+             * pinned where it is, shrunk toward the header — and the move commits when the
+             * animation ends. Skipped for a spring-loaded group, which is visibly OPEN, so the
+             * row already lands in a slot the user can see.
+             *
+             * One term of the Swift predicate has no counterpart here and is stated rather than
+             * faked: the app also skips this when `expandGroupOnWorkspaceDrop` is on. This port
+             * has no such setting — the daemon's drop always expands (`expandOnDrop ?? true`) —
+             * so the group opens right after the landing and the row appears inside it, which
+             * is the motion the animation exists to explain.
+             */
+            const preview = drag.preview;
+            if (
+                drag.kind === 'workspace' &&
+                drag.ids.length === 1 &&
+                preview !== null &&
+                preview.kind === 'ontoGroupHeader' &&
+                preview.groupID !== springLoaded &&
+                landingMs > 0
+            ) {
+                const group = groupsRef.current.find((candidate) => candidate.id === preview.groupID);
+                if (
+                    group !== undefined &&
+                    isGroupCollapsed(group, { overrides: collapseRef.current.overrides })
+                ) {
+                    setLanding({ workspaceID: drag.id, groupID: group.id });
+                    pendingLandingRef.current = commitDrop;
+                    landingTimerRef.current = setTimeout(() => {
+                        landingTimerRef.current = null;
+                        pendingLandingRef.current = null;
+                        setLanding(null);
+                        commitDrop();
+                    }, landingMs);
+                    return;
+                }
             }
-            props.onMoveWorkspace?.({
-                workspaceID: drag.id,
-                groupID: commit.groupID,
-                index: commit.index
-            });
+            commitDrop();
         };
 
         const target = globalThis.window;
@@ -1036,19 +1177,52 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const drag = dragRef.current;
             if (drag !== null) cancelSpring(drag);
         };
-    }, [autoScrollIntervalMs, contentY, dragID, measuredHeights, props, rowHeight, springLoadMs]);
+    }, [
+        autoScrollIntervalMs,
+        contentY,
+        dragID,
+        geometryReady,
+        landingMs,
+        measuredHeights,
+        props,
+        rowHeight,
+        springLoadMs
+    ]);
 
-    // §15: scroll the entry THIS client just created into view, exactly once. A row that has
-    // not rendered yet simply waits for the commit that renders it.
+    // A landing in flight when the sidebar unmounts must not fire into a dead tree.
+    useEffect(
+        () => () => {
+            if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current);
+        },
+        []
+    );
+
+    /**
+     * §15: scroll the entry THIS client just created into view, exactly once.
+     *
+     * §WS-101's resolution, verbatim: a workspace with a visible row is scrolled to directly;
+     * one hidden inside a COLLAPSED group resolves to that group's header instead (the
+     * `workspace-create --group` path can land a workspace in a collapsed group); and a target
+     * this client cannot see AT ALL is DROPPED rather than retried on every `rows` change. A
+     * row that simply has not rendered yet keeps the target pending — that is the one case
+     * worth waiting for, and it resolves on the next commit.
+     */
     const scrollTarget = props.scrollToWorkspaceID ?? null;
     const onScrollHandled = props.onScrollHandled;
     useEffect(() => {
         if (scrollTarget === null) return;
-        const element = rowElements.current.get(`ws:${scrollTarget}`);
+        const located = locateWorkspace(baseModel, scrollTarget);
+        if (located === null) {
+            onScrollHandled?.();
+            return;
+        }
+        const element =
+            rowElements.current.get(`ws:${scrollTarget}`) ??
+            (located.groupID === null ? undefined : rowElements.current.get(`header:${located.groupID}`));
         if (element === undefined) return;
         element.scrollIntoView?.({ block: 'nearest' });
         onScrollHandled?.();
-    }, [scrollTarget, onScrollHandled, rows]);
+    }, [baseModel, scrollTarget, onScrollHandled, rows]);
 
     // ── menus ───────────────────────────────────────────────────────────────────
     const closeMenu = useCallback((): void => {
@@ -1722,6 +1896,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             dragging={dragID === workspace.id}
                             dragHidden={dragCompanions.has(workspace.id)}
                             dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
+                            // §WS-089 / §WS-092: the dragged row previews the nesting it is
+                            // about to get, and plays the landing when it falls into one.
+                            nestPreview={dragID === workspace.id && previewGroupID !== null}
+                            landing={landing?.workspaceID === workspace.id}
                             groupCaption={null}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
@@ -1830,7 +2008,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             </div>
 
             <div
-                className="flex flex-col gap-1 border-t p-2"
+                /* The footer grows into the create form (§WS-075's swatches, pickers, repo rows
+                   and worktree section), so it is capped at half the sidebar and scrolls rather
+                   than pushing its own Create button off the bottom of the window. */
+                className="flex max-h-[50%] shrink-0 flex-col gap-1 overflow-y-auto border-t p-2"
                 style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
             >
                 {newForm === null ? (
@@ -1886,25 +2067,43 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     <NewEntryForm
                         kind={newForm.kind}
                         repos={props.repos ?? EMPTY_REPOS}
+                        groups={groups}
+                        profiles={props.profiles ?? EMPTY_PROFILES}
+                        defaultColor={newFormColor}
+                        // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
+                        // wins; otherwise SET-011's inherited group, which assembly resolves.
+                        defaultGroupID={newForm.groupID ?? props.inheritGroupID ?? null}
+                        {...(newForm.kind === 'group'
+                            ? { defaultName: defaultGroupName(groups.map((group) => group.name)) }
+                            : {})}
                         {...(newForm.workspaceIDs === undefined
                             ? {}
                             : { workspaceCount: newForm.workspaceIDs.length })}
                         onCancel={() => {
                             setNewForm(null);
                         }}
-                        onSubmit={async (name, worktree) => {
+                        onSubmit={async (draft) => {
                             const members = newForm.workspaceIDs;
                             if (newForm.kind === 'group') {
                                 // §WS-058: a group raised from the bulk menu is created AROUND
                                 // the selection, in one command, and the selection is released.
                                 if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
-                                    props.onCreateGroupForWorkspaces(name, members);
+                                    props.onCreateGroupForWorkspaces(draft.name, members, draft.color);
                                     setSelection(EMPTY_SELECTION);
-                                } else props.onCreateGroup?.(name);
+                                } else props.onCreateGroup?.(draft.name, draft.color);
                                 setNewForm(null);
                                 return null;
                             }
-                            const result = await props.onCreateWorkspace?.(name, newForm.groupID, worktree);
+                            const result = await props.onCreateWorkspace?.(
+                                draft.name,
+                                draft.groupID,
+                                draft.worktree,
+                                {
+                                    ...(draft.color === null ? {} : { color: draft.color }),
+                                    profile: draft.profile,
+                                    repoPaths: draft.repoPaths
+                                }
+                            );
                             // §WS-079: a failed worktree create keeps the form open, inline.
                             if (typeof result === 'string') return result;
                             setNewForm(null);
@@ -1967,30 +2166,77 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
 // ── inline forms & dialogs ──────────────────────────────────────────────────────────
 
+/** Everything the New Workspace / New Group form collects, in one submit (§WS-075/§WS-082). */
+export interface NewEntryDraft {
+    readonly name: string;
+    /** `null` = the group form's "None" swatch; a workspace always carries a colour. */
+    readonly color: WorkspaceColor | null;
+    readonly groupID: string | null;
+    /** `null` = the built-in `default` baseline, which the daemon normalizes to "unassigned". */
+    readonly profile: string | null;
+    /** Repo PATHS to associate once the workspace exists (§WS-075's Repositories section). */
+    readonly repoPaths: readonly string[];
+    readonly worktree?: WorkspaceWorktreeRequest | undefined;
+}
+
 interface NewEntryFormProps {
     readonly kind: 'workspace' | 'group';
-    /** Registry entries offered by the "Create git worktree" section (§WS-078). */
+    /** The registry: the Repositories section and the worktree section both read it. */
     readonly repos?: readonly ChromeRepo[] | undefined;
-    /** Set when the bulk menu raised this form: "New Group for N workspaces". */
+    /** Groups for the picker; empty hides it, exactly as the shipped sheet does. */
+    readonly groups?: readonly ChromeGroup[] | undefined;
+    /** Config-defined profile names. `default` leads the list and is never expected in it. */
+    readonly profiles?: readonly string[] | undefined;
+    /** The group the picker opens on: the menu's explicit one, else SET-011's inherited one. */
+    readonly defaultGroupID?: string | null | undefined;
+    /** The swatch the row opens on — `nextCreateColor`, which avoids the neighbour's colour. */
+    readonly defaultColor?: WorkspaceColor | undefined;
+    /** The group form's pre-filled unique default name ("New Group 2", §WS-083). */
+    readonly defaultName?: string | undefined;
+    /** Set when the bulk menu raised this form: "Group N selected workspace(s)." */
     readonly workspaceCount?: number | undefined;
-    readonly onSubmit: (name: string, worktree?: WorkspaceWorktreeRequest | undefined) => Promise<string | null>;
+    readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
     readonly onCancel: () => void;
 }
 
 /**
- * The footer's New Workspace / New Group form, plus §WS-078's inline **Create git worktree**
- * section — the GUI half of `nex workspace create --worktree`.
+ * The footer's New Workspace / New Group form — `NewWorkspaceSheet.swift` and
+ * `NewGroupSheet.swift`, in the shape this port gives them.
  *
- * Everything the shipped sheet does, in the port's inline form: the branch mirrors the worktree
- * name until the branch is hand-edited, "Update main first" rides through as `--update-main`,
- * the preview shows the SANITIZED folder and branch so an unusable name is visible before git
- * refuses it (issue #218), Create is disabled until both sanitize, a second submit is refused
- * while `git worktree add` is running, and a failure is rendered inline with the form still
- * open and Create live again (§WS-079).
+ * Everything the two sheets collect is here: the name, the ten-colour swatch row opening on a
+ * random colour that avoids the trailing workspace's (§WS-075), the Group picker (shown only
+ * when groups exist, preselected by §WS-076's rule), the Profile picker leading with the
+ * built-in `default` (§SET-214), the Repositories section that associates repos at create
+ * (§WS-075) with §GIT-073's multi-select picker behind its Add button, and §WS-078's inline
+ * **Create git worktree** section. The group form adds the bulk flow's "Group N selected
+ * workspace(s)." line, a colour row with a "None" option, and a pre-filled unique default name
+ * (§WS-082/§WS-083).
+ *
+ * §WS-077's Tab loop is driven by hand, for the reason the sheet drives its own: the colour row
+ * is ONE stop (←/→ move within it) rather than ten, and a disabled Create is skipped rather
+ * than landed on. §WS-080's rule is here too — removing a repo row moves focus to the next row
+ * (or to Add Repository) BEFORE the array shrinks, so the loop is never stranded on a control
+ * that no longer exists.
+ *
+ * Divergence from the shipped app, stated: this is an expanding inline form anchored to the
+ * sidebar footer, not a modal sheet — the same divergence §WS-081's rename editor already
+ * carries. Every field, rule and default is the sheet's.
  */
 function NewEntryForm(props: NewEntryFormProps): ReactElement {
     const repos = props.repos ?? EMPTY_REPOS;
-    const [value, setValue] = useState('');
+    const groups = props.groups ?? EMPTY_GROUPS;
+    const profiles = props.profiles ?? EMPTY_PROFILES;
+    const isWorkspace = props.kind === 'workspace';
+
+    const [value, setValue] = useState(props.defaultName ?? '');
+    const [color, setColor] = useState<WorkspaceColor | null>(
+        // The group sheet opens on "None"; the workspace sheet opens on the random colour.
+        isWorkspace ? (props.defaultColor ?? 'blue') : null
+    );
+    const [groupID, setGroupID] = useState<string | null>(props.defaultGroupID ?? null);
+    const [profile, setProfile] = useState<string>(DEFAULT_PROFILE_NAME);
+    const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
+    const [pickerOpen, setPickerOpen] = useState(false);
     const [worktree, setWorktree] = useState(false);
     const [repoID, setRepoID] = useState<string>(repos[0]?.id ?? '');
     const [worktreeName, setWorktreeName] = useState('');
@@ -1999,54 +2245,188 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
     const [updateMain, setUpdateMain] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
     const ref = useRef<HTMLInputElement | null>(null);
+    /** Every focusable stop, by field id — the Tab loop's address book (§WS-077). */
+    const stops = useRef(new Map<string, HTMLElement>());
+    const registerStop = (id: string, element: HTMLElement | null): void => {
+        if (element === null) stops.current.delete(id);
+        else stops.current.set(id, element);
+    };
+
     useEffect(() => {
         ref.current?.focus();
+        ref.current?.select();
     }, []);
 
-    const repo = repos.find((candidate) => candidate.id === repoID) ?? repos[0] ?? null;
+    const chosenRepos = chosenRepoIDs.flatMap((id) => {
+        const repo = repos.find((candidate) => candidate.id === id);
+        return repo === undefined ? [] : [repo];
+    });
+
+    // §WS-078: the worktree is cut from the ONE selected repo when the Repositories section
+    // named exactly one; otherwise the section offers the registry to choose from.
+    const soleChosen = chosenRepos.length === 1 ? chosenRepos[0] : null;
+    const repo = soleChosen ?? repos.find((candidate) => candidate.id === repoID) ?? repos[0] ?? null;
     const preview = worktreePreview({
         name: worktreeName,
         branch,
         base: repo?.worktreeBase ?? ''
     });
-    const worktreeOn = props.kind === 'workspace' && worktree && repo !== null;
+    const worktreeOn = isWorkspace && worktree && repo !== null;
     const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
 
     const submit = async (): Promise<void> => {
         if (!canSubmit) return;
         setBusy(true);
         setError(null);
-        const failure = await props.onSubmit(
-            value.trim(),
-            worktreeOn && repo !== null
-                ? { repoID: repo.id, name: worktreeName, branch, updateMain }
-                : undefined
-        );
+        const failure = await props.onSubmit({
+            name: value.trim(),
+            color,
+            groupID,
+            profile: profile === DEFAULT_PROFILE_NAME ? null : profile,
+            repoPaths: chosenRepos.map((entry) => entry.path),
+            ...(worktreeOn && repo !== null
+                ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain } }
+                : {})
+        });
         setBusy(false);
         if (failure !== null) setError(failure);
     };
+
+    /** Visible stops in reading order. A disabled Create is omitted, never landed on. */
+    const fieldOrder = (): string[] => {
+        const order = ['name', 'colors'];
+        if (isWorkspace) {
+            if (groups.length > 0) order.push('group');
+            order.push('profile');
+            if (repos.length > 0) {
+                for (const entry of chosenRepos) order.push(`repo:${entry.id}`);
+                order.push('add-repo');
+                order.push('worktree-toggle');
+                if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
+            }
+        }
+        if (canSubmit) order.push('submit');
+        return order;
+    };
+
+    const onFormKeyDown = (event: React.KeyboardEvent): void => {
+        if (event.key !== 'Tab') return;
+        const order = fieldOrder();
+        const active = globalThis.document?.activeElement ?? null;
+        const currentIndex = order.findIndex((id) => stops.current.get(id) === active);
+        if (currentIndex < 0) return;
+        event.preventDefault();
+        const nextID = order[(currentIndex + (event.shiftKey ? -1 : 1) + order.length) % order.length];
+        if (nextID !== undefined) stops.current.get(nextID)?.focus();
+    };
+
+    /**
+     * §WS-080: focus the row that will take this one's place BEFORE the array shrinks, so the
+     * Tab loop never points at a control that has just been unmounted.
+     */
+    const removeRepo = (id: string): void => {
+        const index = chosenRepoIDs.indexOf(id);
+        const next = chosenRepoIDs.filter((candidate) => candidate !== id);
+        if (stops.current.get(`repo:${id}`) === globalThis.document?.activeElement) {
+            const successor = next[index] ?? null;
+            stops.current.get(successor === null ? 'add-repo' : `repo:${successor}`)?.focus();
+        }
+        setChosenRepoIDs(next);
+    };
+
+    const swatchRow = (
+        <div
+            ref={(element) => {
+                registerStop('colors', element);
+            }}
+            role="radiogroup"
+            aria-label={isWorkspace ? 'Workspace color' : 'Group color'}
+            tabIndex={0}
+            data-testid={`new-${props.kind}-colors`}
+            className="flex items-center gap-1 rounded outline-none"
+            onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                // The row is a single Tab stop with the arrows cycling inside it (§WS-077).
+                const options: (WorkspaceColor | null)[] = isWorkspace
+                    ? [...WORKSPACE_COLORS]
+                    : [null, ...WORKSPACE_COLORS];
+                const index = options.indexOf(color);
+                const delta = event.key === 'ArrowRight' ? 1 : -1;
+                const next = options[(index + delta + options.length) % options.length];
+                setColor(next ?? null);
+            }}
+        >
+            {isWorkspace ? null : (
+                <button
+                    type="button"
+                    role="radio"
+                    aria-checked={color === null}
+                    aria-label="No color"
+                    tabIndex={-1}
+                    data-testid="new-group-color-none"
+                    className="h-4 w-4 shrink-0 rounded-full text-[8px] leading-none"
+                    style={{
+                        border: `1px solid ${tokens.textTertiary}`,
+                        color: tokens.textSecondary
+                    }}
+                    onClick={() => {
+                        setColor(null);
+                    }}
+                >
+                    {color === null ? '✓' : ''}
+                </button>
+            )}
+            {WORKSPACE_COLORS.map((candidate) => (
+                <button
+                    key={candidate}
+                    type="button"
+                    role="radio"
+                    aria-checked={color === candidate}
+                    aria-label={candidate}
+                    tabIndex={-1}
+                    data-testid={`new-${props.kind}-color-${candidate}`}
+                    data-selected={color === candidate ? 'true' : 'false'}
+                    className="h-4 w-4 shrink-0 rounded-full"
+                    style={{
+                        background: workspaceColorHex(candidate, 'dark'),
+                        outline: color === candidate ? `2px solid ${tokens.textPrimary}` : 'none',
+                        outlineOffset: '1px'
+                    }}
+                    onClick={() => {
+                        setColor(candidate);
+                    }}
+                />
+            ))}
+        </div>
+    );
 
     return (
         <form
             data-testid={`new-${props.kind}-form`}
             className="flex flex-col gap-1"
+            onKeyDown={onFormKeyDown}
             onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
             }}
         >
+            {props.workspaceCount === undefined ? null : (
+                <div data-testid="new-group-count" className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                    Group {props.workspaceCount} selected workspace
+                    {props.workspaceCount === 1 ? '' : 's'}.
+                </div>
+            )}
             <div className="flex items-center gap-1">
                 <input
-                    ref={ref}
-                    aria-label={props.kind === 'workspace' ? 'New workspace name' : 'New group name'}
-                    placeholder={
-                        props.kind === 'workspace'
-                            ? 'Workspace name'
-                            : props.workspaceCount === undefined
-                              ? 'Group name'
-                              : `Group name (${String(props.workspaceCount)} workspaces)`
-                    }
+                    ref={(element) => {
+                        ref.current = element;
+                        registerStop('name', element);
+                    }}
+                    aria-label={isWorkspace ? 'New workspace name' : 'New group name'}
+                    placeholder={isWorkspace ? 'Workspace name' : 'Group name'}
                     className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
                     style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                     value={value}
@@ -2061,6 +2441,9 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                     }}
                 />
                 <button
+                    ref={(element) => {
+                        registerStop('submit', element);
+                    }}
                     type="submit"
                     data-testid={`new-${props.kind}-submit`}
                     disabled={!canSubmit}
@@ -2071,9 +2454,105 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                 </button>
             </div>
 
-            {props.kind === 'workspace' && repos.length > 0 ? (
+            {swatchRow}
+
+            {isWorkspace && groups.length > 0 ? (
+                <select
+                    ref={(element) => {
+                        registerStop('group', element);
+                    }}
+                    aria-label="Group"
+                    data-testid="new-workspace-group"
+                    className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    value={groupID ?? ''}
+                    onChange={(event) => {
+                        setGroupID(event.target.value === '' ? null : event.target.value);
+                    }}
+                >
+                    <option value="" style={{ color: '#000' }}>
+                        No group
+                    </option>
+                    {groups.map((group) => (
+                        <option key={group.id} value={group.id} style={{ color: '#000' }}>
+                            {group.name}
+                        </option>
+                    ))}
+                </select>
+            ) : null}
+
+            {isWorkspace ? (
+                <select
+                    ref={(element) => {
+                        registerStop('profile', element);
+                    }}
+                    aria-label="Profile"
+                    data-testid="new-workspace-profile"
+                    className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    value={profile}
+                    onChange={(event) => {
+                        setProfile(event.target.value);
+                    }}
+                >
+                    {/* The built-in baseline leads, then the config's own (§SET-214). */}
+                    {[DEFAULT_PROFILE_NAME, ...profiles.filter((name) => name !== DEFAULT_PROFILE_NAME)].map(
+                        (name) => (
+                            <option key={name} value={name} style={{ color: '#000' }}>
+                                {name}
+                            </option>
+                        )
+                    )}
+                </select>
+            ) : null}
+
+            {isWorkspace && repos.length > 0 ? (
+                <div className="flex flex-col gap-1" data-testid="new-workspace-repos">
+                    {chosenRepos.map((entry) => (
+                        <div key={entry.id} className="flex items-center gap-1 text-[11px]">
+                            <ChromeIcon name="folder" size={10} />
+                            <span className="min-w-0 flex-1 truncate" style={{ color: tokens.textSecondary }}>
+                                {entry.name}
+                            </span>
+                            <button
+                                ref={(element) => {
+                                    registerStop(`repo:${entry.id}`, element);
+                                }}
+                                type="button"
+                                aria-label={`Remove ${entry.name}`}
+                                data-testid={`new-workspace-repo-remove-${entry.id}`}
+                                style={{ color: tokens.textTertiary }}
+                                onClick={() => {
+                                    removeRepo(entry.id);
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    ))}
+                    <button
+                        ref={(element) => {
+                            registerStop('add-repo', element);
+                        }}
+                        type="button"
+                        data-testid="new-workspace-add-repo"
+                        className="self-start text-[11px]"
+                        style={{ color: tokens.accent }}
+                        onClick={() => {
+                            setPickerOpen(true);
+                        }}
+                    >
+                        + Add Repository
+                    </button>
+                </div>
+            ) : null}
+
+            {isWorkspace && repos.length > 0 ? (
                 <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
                     <input
+                        ref={(element) => {
+                            registerStop('worktree-toggle', element);
+                        }}
                         type="checkbox"
                         data-testid="new-workspace-worktree-toggle"
                         checked={worktree}
@@ -2087,7 +2566,7 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
 
             {worktreeOn && repo !== null ? (
                 <div className="flex flex-col gap-1 pl-4" data-testid="new-workspace-worktree">
-                    {repos.length > 1 ? (
+                    {soleChosen === null && repos.length > 1 ? (
                         <select
                             aria-label="Worktree repository"
                             data-testid="new-workspace-worktree-repo"
@@ -2106,6 +2585,9 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                         </select>
                     ) : null}
                     <input
+                        ref={(element) => {
+                            registerStop('worktree-name', element);
+                        }}
                         aria-label="Worktree name"
                         data-testid="new-workspace-worktree-name"
                         placeholder="Worktree name"
@@ -2125,6 +2607,9 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                         }}
                     />
                     <input
+                        ref={(element) => {
+                            registerStop('worktree-branch', element);
+                        }}
                         aria-label="Branch name"
                         data-testid="new-workspace-worktree-branch"
                         placeholder="Branch name"
@@ -2144,6 +2629,9 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                     />
                     <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
                         <input
+                            ref={(element) => {
+                                registerStop('update-main', element);
+                            }}
                             type="checkbox"
                             data-testid="new-workspace-worktree-update-main"
                             checked={updateMain}
@@ -2165,7 +2653,52 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                     {error}
                 </div>
             )}
+
+            {pickerOpen ? (
+                <SheetOverlay testID="new-workspace-repo-picker" label="Add repositories">
+                    <div className="mb-2 text-[13px] font-semibold">Add Repositories</div>
+                    <RepoPicker
+                        repos={repos}
+                        mode="multiple"
+                        disabledRepoIDs={new Set(chosenRepoIDs)}
+                        onConfirm={(picked) => {
+                            setChosenRepoIDs([...chosenRepoIDs, ...picked.map((entry) => entry.id)]);
+                            setPickerOpen(false);
+                        }}
+                        onCancel={() => {
+                            setPickerOpen(false);
+                        }}
+                    />
+                </SheetOverlay>
+            ) : null}
         </form>
+    );
+}
+
+/** A centred portal panel — the emoji sheet's chrome, reused by the form's repo picker. */
+function SheetOverlay(props: {
+    readonly testID: string;
+    readonly label: string;
+    readonly children: ReactNode;
+}): ReactElement | null {
+    const container = globalThis.document?.body;
+    if (container === undefined || container === null) return null;
+    return createPortal(
+        <div
+            data-testid={props.testID}
+            role="dialog"
+            aria-label={props.label}
+            className="fixed left-1/2 top-1/4 z-50 w-[320px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+            style={{
+                background: tokens.surfaceBackground,
+                border: `1px solid ${tokens.divider}`,
+                color: tokens.textPrimary,
+                boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+            }}
+        >
+            {props.children}
+        </div>,
+        container
     );
 }
 
@@ -2175,14 +2708,25 @@ interface CustomEmojiSheetProps {
 }
 
 /**
- * §5.6's "Custom Emoji…" sheet. The only rule it enforces is the one that matters: exactly one
- * grapheme cluster, checked with `Intl.Segmenter` so a ZWJ family or a flag counts as one and
- * `ab` does not. Submit stays disabled until the field holds one.
+ * §5.6's "Custom Emoji…" sheet (`GroupCustomEmojiSheet.swift`).
+ *
+ * Three rules, all of them the shipped sheet's:
+ *
+ *   - the field TRUNCATES to the first grapheme cluster as you type (§WS-072), so a ZWJ family
+ *     or a flag survives whole and a pasted sentence collapses to its first character rather
+ *     than sitting there refused;
+ *   - that cluster still has to pass §WS-073's emoji heuristic — letters, digits and
+ *     punctuation are rejected, and the same check runs again daemon-side (§WS-074);
+ *   - the OS character palette has no browser equivalent, so the "Browse All Emoji…" button
+ *     becomes the curated quick-pick grid below the field — one click fills it.
  */
 function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
     const [value, setValue] = useState('');
     const container = globalThis.document?.body;
     const normalized = normalizeEmojiInput(value);
+    const setTruncated = (next: string): void => {
+        setValue(firstGrapheme(next) ?? '');
+    };
     if (container === undefined || container === null) return null;
 
     return createPortal(
@@ -2216,7 +2760,7 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                     style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                     value={value}
                     onChange={(event) => {
-                        setValue(event.target.value);
+                        setTruncated(event.target.value);
                     }}
                     onKeyDown={(event) => {
                         if (event.key !== 'Escape') return;
@@ -2226,10 +2770,35 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                 />
                 <div
                     data-testid="emoji-hint"
-                    className="mb-3 h-4 text-[10px]"
+                    className="mb-2 h-4 text-[10px]"
                     style={{ color: value.length > 0 && normalized === null ? '#E0655C' : tokens.textTertiary }}
                 >
-                    {value.length > 0 && normalized === null ? 'Enter exactly one character' : ''}
+                    {value.length > 0 && normalized === null
+                        ? 'Letters, digits and punctuation are not icons'
+                        : ''}
+                </div>
+                {/* The OS character palette's stand-in: one click fills the field (§WS-072). */}
+                <div
+                    data-testid="emoji-browse"
+                    className="mb-3 grid grid-cols-6 gap-1"
+                    role="group"
+                    aria-label="Browse emoji"
+                >
+                    {CURATED_EMOJI.map((grapheme) => (
+                        <button
+                            key={grapheme}
+                            type="button"
+                            aria-label={`Use ${grapheme}`}
+                            data-testid={`emoji-browse-${grapheme}`}
+                            className="rounded py-0.5 text-[16px]"
+                            style={{ background: value === grapheme ? tokens.selectionFill : 'transparent' }}
+                            onClick={() => {
+                                setTruncated(grapheme);
+                            }}
+                        >
+                            {grapheme}
+                        </button>
+                    ))}
                 </div>
                 <div className="flex justify-end gap-2">
                     <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
@@ -2358,5 +2927,8 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
 
 const EMPTY_PRESETS: readonly ChromeLabelPreset[] = [];
 const EMPTY_REPOS: readonly ChromeRepo[] = [];
+const EMPTY_GROUPS: readonly ChromeGroup[] = [];
+const EMPTY_PROFILES: readonly string[] = [];
+const EMPTY_REPO_IDS: readonly string[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
 const EMPTY_OVERRIDES: ReadonlyMap<string, boolean> = new Map<string, boolean>();

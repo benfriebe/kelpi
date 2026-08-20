@@ -35,9 +35,11 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
+import { RepoPicker, type RepoPickerEntry } from './RepoPicker';
 import { resolveLabelStyle, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
+    DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
     type ChromeLabelPreset,
     type ChromePane,
@@ -52,8 +54,7 @@ import {
     type GraftSwapPrompt
 } from '../state/graft';
 
-/** The daemon's `default` baseline (`WorkspaceProfilesClient.defaultProfileName`). */
-export const DEFAULT_PROFILE_NAME = 'default';
+export { DEFAULT_PROFILE_NAME } from './types';
 
 export const INSPECTOR_WIDTH_PX = 280;
 
@@ -119,6 +120,12 @@ export interface InspectorProps {
      * which is the v1 the brief calls for and works everywhere.
      */
     readonly onBrowseForFolder?: (() => Promise<string | null>) | undefined;
+    /**
+     * `repo-scan` from inside the Add Repository picker (§GIT-066/§GIT-073): the daemon walks
+     * the folder and registers what it finds, and the rows arrive with the next `repos` prop.
+     * Absent = the picker offers no scan row, which is what it did before.
+     */
+    readonly onScanForRepos?: ((path: string) => void) | undefined;
 
     // ── graft (§GIT-046…§GIT-051, §WS-143…§WS-145) ────────────────────────────────
     //
@@ -287,6 +294,12 @@ export function Inspector(props: InspectorProps): ReactElement {
     const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
 
     const groups = useMemo(() => groupAssociations(associations), [associations]);
+
+    /** Repos this workspace already points at: dimmed "Added" rows in the picker (§GIT-073). */
+    const associatedRepoIDs = useMemo(
+        () => new Set(associations.map((association) => association.repoID)),
+        [associations]
+    );
 
     const graftSessions = props.graftSessions ?? EMPTY_GRAFT_SESSIONS;
     /**
@@ -624,16 +637,25 @@ export function Inspector(props: InspectorProps): ReactElement {
 
             {sheet?.kind === 'add-repo' ? (
                 <AddRepositorySheet
+                    repos={repos}
+                    associatedRepoIDs={associatedRepoIDs}
                     onCancel={() => {
                         setSheet(null);
                     }}
-                    onSubmit={async (path) => {
-                        const error = await props.onAddAssociation?.(path);
-                        if (typeof error === 'string') return error;
+                    onSubmit={async (paths) => {
+                        // §GIT-082: ONE association per chosen repo, at the repo's own path.
+                        // The first refusal stops the run and keeps the sheet open with the
+                        // daemon's message — a half-applied batch with a generic error would
+                        // leave the user guessing which row failed.
+                        for (const path of paths) {
+                            const error = await props.onAddAssociation?.(path);
+                            if (typeof error === 'string') return error;
+                        }
                         setSheet(null);
                         return null;
                     }}
                     {...(props.onBrowseForFolder === undefined ? {} : { onBrowse: props.onBrowseForFolder })}
+                    {...(props.onScanForRepos === undefined ? {} : { onScan: props.onScanForRepos })}
                 />
             ) : null}
 
@@ -893,20 +915,34 @@ function SheetError({ message }: { readonly message: string | null }): ReactElem
     );
 }
 
+/**
+ * Add ▸ "Add Repository…" (§GIT-082).
+ *
+ * Two ways in, one submit. The typed path is still there — it is the only way to associate a
+ * repo the registry has never seen — and §GIT-073's multi-select picker sits under it for the
+ * ones it HAS seen, with the workspace's existing repos dimmed as "Added". Confirm associates
+ * every chosen repo at its own path plus the typed path if there is one, in order, stopping at
+ * the daemon's first refusal so the message is the one that matters.
+ */
 function AddRepositorySheet(props: {
-    readonly onSubmit: (path: string) => Promise<string | null>;
+    readonly onSubmit: (paths: readonly string[]) => Promise<string | null>;
     readonly onCancel: () => void;
     readonly onBrowse?: (() => Promise<string | null>) | undefined;
+    readonly repos?: readonly InspectorRepo[] | undefined;
+    readonly associatedRepoIDs?: ReadonlySet<string> | undefined;
+    readonly onScan?: ((path: string) => void) | undefined;
 }): ReactElement | null {
     const [value, setValue] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [picked, setPicked] = useState<readonly RepoPickerEntry[]>(EMPTY_PICKED);
+    const repos = props.repos ?? [];
+    const paths = [...picked.map((repo) => repo.path), ...(value.trim() === '' ? [] : [value.trim()])];
     const submit = async (): Promise<void> => {
-        const path = value.trim();
-        if (path === '' || busy) return;
+        if (paths.length === 0 || busy) return;
         setBusy(true);
         setError(null);
-        const failure = await props.onSubmit(path);
+        const failure = await props.onSubmit(paths);
         setBusy(false);
         if (failure !== null) setError(failure);
     };
@@ -952,6 +988,27 @@ function AddRepositorySheet(props: {
                     </button>
                 )}
             </div>
+            {repos.length === 0 ? null : (
+                <>
+                    <div className="mb-1 text-[11px]" style={{ color: tokens.textSecondary }}>
+                        …or pick from the registry
+                    </div>
+                    <div className="mb-3">
+                        <RepoPicker
+                            repos={repos}
+                            mode="multiple"
+                            hideFooter
+                            {...(props.associatedRepoIDs === undefined
+                                ? {}
+                                : { disabledRepoIDs: props.associatedRepoIDs })}
+                            {...(props.onScan === undefined ? {} : { onScan: props.onScan })}
+                            onSelectionChange={setPicked}
+                            onConfirm={() => void submit()}
+                            onCancel={props.onCancel}
+                        />
+                    </div>
+                </>
+            )}
             <SheetError message={error} />
             <div className="flex justify-end gap-2">
                 <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
@@ -960,72 +1017,40 @@ function AddRepositorySheet(props: {
                 <button
                     type="button"
                     data-testid="add-repo-submit"
-                    disabled={value.trim() === '' || busy}
-                    style={{ color: value.trim() === '' || busy ? tokens.textTertiary : tokens.accent }}
+                    disabled={paths.length === 0 || busy}
+                    style={{ color: paths.length === 0 || busy ? tokens.textTertiary : tokens.accent }}
                     onClick={() => void submit()}
                 >
-                    Add
+                    {paths.length > 1 ? `Add ${String(paths.length)}` : 'Add'}
                 </button>
             </div>
         </Sheet>
     );
 }
 
+/**
+ * "Which repo?" for the worktree flow — §GIT-073's picker in `single` mode, so it gains the
+ * search filter, the roving keyboard anchor and double-click-to-choose without this sheet
+ * having to know how any of that works.
+ */
 function RepoPickerSheet(props: {
     readonly repos: readonly InspectorRepo[];
     readonly onChoose: (repoID: string) => void;
     readonly onCancel: () => void;
 }): ReactElement | null {
-    const [selected, setSelected] = useState<string | null>(props.repos[0]?.id ?? null);
     return (
         <Sheet testID="repo-picker-sheet" label="Choose repository">
             <div className="mb-3 text-[13px] font-semibold">Choose a Repository</div>
-            <div className="mb-3 flex max-h-[220px] flex-col gap-1 overflow-y-auto">
-                {props.repos.map((repo) => (
-                    <button
-                        key={repo.id}
-                        type="button"
-                        data-testid={`repo-choice-${repo.id}`}
-                        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-left"
-                        style={{ background: selected === repo.id ? tokens.selectionFill : 'transparent' }}
-                        onClick={() => {
-                            setSelected(repo.id);
-                        }}
-                        onDoubleClick={() => {
-                            props.onChoose(repo.id);
-                        }}
-                    >
-                        <ChromeIcon name="folder" />
-                        <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[12px]">{repo.name}</span>
-                            <span className="block truncate text-[10px]" style={{ color: tokens.textTertiary }}>
-                                {repo.path}
-                            </span>
-                        </span>
-                    </button>
-                ))}
-                {props.repos.length === 0 ? (
-                    <div className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        No repositories are registered yet — add one first.
-                    </div>
-                ) : null}
-            </div>
-            <div className="flex justify-end gap-2">
-                <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
-                    Cancel
-                </button>
-                <button
-                    type="button"
-                    data-testid="repo-picker-choose"
-                    disabled={selected === null}
-                    style={{ color: selected === null ? tokens.textTertiary : tokens.accent }}
-                    onClick={() => {
-                        if (selected !== null) props.onChoose(selected);
-                    }}
-                >
-                    Choose
-                </button>
-            </div>
+            <RepoPicker
+                repos={props.repos}
+                mode="single"
+                confirmLabel="Choose"
+                onConfirm={(chosen) => {
+                    const first = chosen[0];
+                    if (first !== undefined) props.onChoose(first.id);
+                }}
+                onCancel={props.onCancel}
+            />
         </Sheet>
     );
 }
@@ -1174,3 +1199,4 @@ const EMPTY_GRAFT_ORPHANS: readonly GraftOrphanView[] = [];
 const EMPTY_ASSOCIATIONS: readonly InspectorAssociation[] = [];
 const EMPTY_REPOS: readonly InspectorRepo[] = [];
 const EMPTY_PRESETS: readonly ChromeLabelPreset[] = [];
+const EMPTY_PICKED: readonly RepoPickerEntry[] = [];

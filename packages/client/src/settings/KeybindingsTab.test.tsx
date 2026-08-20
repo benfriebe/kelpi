@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { clientKeyBindings } from '../chrome';
-import { KeybindingsTab } from './KeybindingsTab';
+import { CAPTURED_FEEDBACK_MS, KeybindingsTab } from './KeybindingsTab';
 import type { SettingsActions } from './types';
 
 function actions(): SettingsActions & { calls: string[] } {
@@ -20,16 +20,24 @@ function actions(): SettingsActions & { calls: string[] } {
     };
 }
 
-function setup(lines: readonly string[] = []) {
+function setup(lines: readonly string[] = [], globalHotkey?: string | null) {
     const bound = actions();
     render(
         <KeybindingsTab
             bindings={clientKeyBindings(lines)}
             actions={bound}
             configPath="~/.config/nex/config"
+            {...(globalHotkey === undefined ? {} : { globalHotkey })}
         />
     );
     return bound;
+}
+
+/** Run out SET-090's captured-combo beat so the row disarms. */
+function settleCapture(): void {
+    act(() => {
+        vi.advanceTimersByTime(CAPTURED_FEEDBACK_MS + 10);
+    });
 }
 
 afterEach(cleanup);
@@ -73,14 +81,56 @@ describe('the keybindings table', () => {
 });
 
 describe('the recorder', () => {
-    it('captures the next keystroke and binds it', () => {
+    it('captures the next keystroke, SHOWS it, then binds it and closes (SET-090)', () => {
+        vi.useFakeTimers();
+        try {
+            const bound = setup();
+            fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
+            expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Press a key…');
+            fireEvent.keyDown(window, { code: 'KeyJ', ctrlKey: true, altKey: true });
+            expect(bound.calls).toEqual(['set:open_diff:ctrl+alt+j']);
+            // The Swift sheet swapped its label to the captured chord before committing; the
+            // row does the same, so the user sees WHAT was captured.
+            expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('⌃⌥J');
+            // A second keystroke during the beat records nothing — the listener is gone.
+            fireEvent.keyDown(window, { code: 'KeyK', ctrlKey: true, altKey: true });
+            expect(bound.calls).toEqual(['set:open_diff:ctrl+alt+j']);
+            settleCapture();
+            expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Record');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('refuses a combo the global hotkey owns, with the Swift message (SET-091)', () => {
+        const bound = setup([], 'ctrl+alt+space');
+        fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
+        fireEvent.keyDown(window, { code: 'Space', ctrlKey: true, altKey: true });
+        expect(bound.calls).toEqual([]);
+        expect(screen.getByTestId('recorder-message').textContent).toBe('Already bound to the global hotkey');
+        // No row holds it, so there is nothing to click through to.
+        expect(screen.queryByTestId('recorder-conflict-jump')).toBeNull();
+        expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Press a key…');
+    });
+
+    it('clicks through from a conflict to the row that holds the combo (SET-091)', () => {
+        setup();
+        fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
+        fireEvent.keyDown(window, { code: 'KeyD', metaKey: true });
+        fireEvent.click(screen.getByTestId('recorder-conflict-jump'));
+        // The holder's own recorder is now armed, and the one that was refused is not.
+        expect(screen.getByTestId('keybinding-record-split_right').textContent).toBe('Press a key…');
+        expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Record');
+    });
+
+    it('cancels from the Cancel button as well as Escape (SET-094)', () => {
         const bound = setup();
         fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
-        expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Press a key…');
-        fireEvent.keyDown(window, { code: 'KeyJ', ctrlKey: true, altKey: true });
-        expect(bound.calls).toEqual(['set:open_diff:ctrl+alt+j']);
-        // …and closes: the row is back to its Record label.
+        fireEvent.click(screen.getByTestId('keybinding-cancel-open_diff'));
+        expect(bound.calls).toEqual([]);
         expect(screen.getByTestId('keybinding-record-open_diff').textContent).toBe('Record');
+        fireEvent.keyDown(window, { code: 'KeyJ', ctrlKey: true, altKey: true });
+        expect(bound.calls).toEqual([]);
     });
 
     it('refuses a taken combo, stays open, and writes nothing', () => {

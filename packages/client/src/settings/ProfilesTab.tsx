@@ -119,7 +119,40 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                         </SettingsButton>
                     </div>
 
-                    {current === undefined ? null : (
+                    {/*
+                     * SET-080's detail placeholder. The Swift pane distinguished "No workspace
+                     * profiles" (with an inline Add Profile) from "No profile selected", and
+                     * explained what a profile IS in the empty case. The first state is
+                     * unreachable here — the built-in `default` baseline is always synthesized,
+                     * so the list is never empty — so the placeholder covers the reachable one
+                     * (a selection that has gone away under a concurrent write) and says the
+                     * same thing the Swift copy said.
+                     */}
+                    {current === undefined ? (
+                        <div
+                            data-testid="profile-detail-placeholder"
+                            className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded p-4 text-center"
+                            style={{ background: withAlpha('#808080', 0.06) }}
+                        >
+                            <span className="text-[12px]" style={{ color: tokens.textSecondary }}>
+                                No profile selected
+                            </span>
+                            <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                                A profile is a named set of environment variables injected into every pane
+                                that starts in a workspace assigned to it.
+                            </span>
+                            <SettingsButton
+                                testID="profile-add-empty"
+                                onClick={() => {
+                                    const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
+                                    setSelected(next.length - 1);
+                                    commit(next);
+                                }}
+                            >
+                                + Add Profile
+                            </SettingsButton>
+                        </div>
+                    ) : (
                         <div className="flex min-w-0 flex-1 flex-col gap-2" data-testid="profile-detail">
                             <div className="flex items-center gap-2">
                                 <input
@@ -184,6 +217,44 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                 <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                                     Built-in baseline — applies to every workspace without an explicit profile.
                                 </p>
+                            ) : null}
+
+                            {/*
+                             * SET-080's "No workspace profiles" state, in the only shape it can
+                             * take here. The Swift pane could show an EMPTY list; this one never
+                             * can, because the built-in `default` baseline is always synthesized
+                             * (§9.5). The reachable equivalent is "default is all there is": say
+                             * what a profile is for, and offer the same inline Add the Swift
+                             * placeholder carried, so the tab is not a dead end on a fresh config.
+                             */}
+                            {drafts.length === 1 && current.vars.length === 0 ? (
+                                <div
+                                    data-testid="profiles-none-yet"
+                                    className="flex flex-col items-start gap-1 rounded px-2 py-2"
+                                    style={{ background: withAlpha('#808080', 0.06) }}
+                                >
+                                    <span className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                                        No workspace profiles yet.
+                                    </span>
+                                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                                        A profile is a named set of environment variables injected into every
+                                        pane that starts in a workspace assigned to it — one per Claude
+                                        account is the flagship use.
+                                    </span>
+                                    <SettingsButton
+                                        testID="profile-add-inline"
+                                        onClick={() => {
+                                            const next = [
+                                                ...drafts,
+                                                { name: nextProfileName(drafts), vars: [] }
+                                            ];
+                                            setSelected(next.length - 1);
+                                            commit(next);
+                                        }}
+                                    >
+                                        + Add Profile
+                                    </SettingsButton>
+                                </div>
                             ) : null}
 
                             <div

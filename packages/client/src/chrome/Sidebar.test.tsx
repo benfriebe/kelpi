@@ -265,7 +265,8 @@ describe('context menus (portal-based)', () => {
         const input = screen.getByLabelText('New group name') as HTMLInputElement;
         fireEvent.change(input, { target: { value: 'platform' } });
         fireEvent.submit(screen.getByTestId('new-group-form'));
-        expect(onCreateGroup).toHaveBeenCalledWith('platform');
+        // The second argument is the colour row's choice — `null` is its "None" option.
+        expect(onCreateGroup).toHaveBeenCalledWith('platform', null);
     });
 });
 

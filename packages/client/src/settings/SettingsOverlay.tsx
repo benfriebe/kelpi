@@ -20,7 +20,7 @@
  * showing.
  */
 
-import type { WsSettingsSnapshot } from '@nex/protocol';
+import type { WsSettingsSnapshot, WsTransportStatus } from '@nex/protocol';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
 
 import { clientKeyBindings, tokens, withAlpha, type ChromeBucket } from '../chrome';
@@ -51,6 +51,12 @@ export interface SettingsOverlayProps {
     readonly initialTab?: SettingsTabID | undefined;
     readonly paths?: SettingsPaths | undefined;
     readonly bucket?: ChromeBucket | undefined;
+    /**
+     * §SET-021: what the daemon's control listeners actually did (`welcome.transport`), for the
+     * General tab's Network row. Absent = the daemon did not say, which the row renders as
+     * "as of daemon start" rather than claiming a bind either way.
+     */
+    readonly transport?: WsTransportStatus | null | undefined;
     /**
      * A global-hotkey registration failure the Electron shell reported (SET-083). A browser
      * client has no registrar, so this is absent there and the Keybindings tab shows no
@@ -169,7 +175,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                 role="dialog"
                 aria-modal="true"
                 aria-label="Settings"
-                className="flex h-[min(620px,90%)] w-[min(880px,92%)] overflow-hidden rounded-[10px]"
+                className="flex h-[min(620px,90%)] w-[min(880px,92%)] flex-col overflow-hidden rounded-[10px]"
                 style={{
                     background: tokens.surfaceBackground,
                     border: `1px solid ${tokens.divider}`,
@@ -178,6 +184,36 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                 }}
                 onKeyDown={onKeyDown}
             >
+                {/*
+                 * SET-004: the Swift Settings scene paints its BODY with `surfaceBackground` and
+                 * its window toolbar with `headerBackground`, which is what made it read as the
+                 * same app as the main window rather than as a system sheet. This dialog has no
+                 * OS toolbar, so it carries its own: the title strip is the toolbar, painted with
+                 * the same token, and it is where Close lives (a toolbar's job).
+                 */}
+                <div
+                    data-testid="settings-toolbar"
+                    className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
+                    style={{ background: tokens.headerBackground, borderColor: tokens.divider }}
+                >
+                    <span className="text-[12px] font-semibold" style={{ color: tokens.textPrimary }}>
+                        Settings
+                    </span>
+                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                        {SETTINGS_TABS.find((entry) => entry.id === tab)?.label ?? ''}
+                    </span>
+                    <button
+                        type="button"
+                        data-testid="settings-close"
+                        className="ml-auto rounded border px-2 py-1 text-[11px]"
+                        style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
+                        onClick={props.onClose}
+                    >
+                        Close
+                    </button>
+                </div>
+
+                <div className="flex min-h-0 flex-1">
                 <div
                     role="tablist"
                     aria-label="Settings sections"
@@ -207,9 +243,6 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                         }
                     }}
                 >
-                    <div className="px-2 pb-1 pt-0.5 text-[11px] uppercase tracking-wide" style={{ color: tokens.textTertiary }}>
-                        Settings
-                    </div>
                     {SETTINGS_TABS.map((entry) => {
                         const selected = entry.id === tab;
                         return (
@@ -239,17 +272,6 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             </button>
                         );
                     })}
-                    <div className="mt-auto p-1">
-                        <button
-                            type="button"
-                            data-testid="settings-close"
-                            className="w-full rounded border px-2 py-1 text-[11px]"
-                            style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                            onClick={props.onClose}
-                        >
-                            Close
-                        </button>
-                    </div>
                 </div>
 
                 <div
@@ -260,7 +282,12 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     className="min-w-0 flex-1 overflow-y-auto p-4"
                 >
                     {tab === 'general' ? (
-                        <GeneralTab settings={props.settings} actions={props.actions} paths={paths} />
+                        <GeneralTab
+                            settings={props.settings}
+                            actions={props.actions}
+                            paths={paths}
+                            transport={props.transport ?? null}
+                        />
                     ) : null}
                     {tab === 'repositories' ? (
                         <RepositoriesTab
@@ -312,6 +339,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             {...(props.web?.path === undefined ? {} : { path: props.web.path })}
                         />
                     ) : null}
+                </div>
                 </div>
             </div>
         </div>

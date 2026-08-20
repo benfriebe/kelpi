@@ -234,6 +234,54 @@ describe('repository associations (§WS-139…§WS-142)', () => {
         });
         expect(onAddAssociation).toHaveBeenLastCalledWith('/src/app');
     });
+
+    /**
+     * §GIT-082 + §GIT-073: the sheet now carries the multi-select picker beside the typed path,
+     * and Add makes ONE association per chosen repo, at the repo's own path. Repos the
+     * workspace already points at are listed dimmed and cannot be chosen twice.
+     */
+    it('associates several registry repos in one Add, skipping the ones already added', async () => {
+        const onAddAssociation = vi.fn().mockResolvedValue(null);
+        view({ onAddAssociation, associations: [association()] });
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        fireEvent.click(screen.getByText('Add Repository…'));
+
+        const sheet = screen.getByTestId('add-repo-sheet');
+        // r1 IS the workspace's existing association, so it is dimmed and inert.
+        const added = within(sheet).getByTestId('repo-choice-r1');
+        expect(added.dataset['added']).toBe('true');
+        fireEvent.click(added);
+        expect(added.dataset['selected']).toBe('false');
+
+        fireEvent.click(within(sheet).getByTestId('repo-choice-r2'));
+        // …plus a path the registry has never seen, in the same submit.
+        fireEvent.change(within(sheet).getByTestId('add-repo-path'), { target: { value: '/elsewhere/api' } });
+        expect(within(sheet).getByTestId('add-repo-submit').textContent).toBe('Add 2');
+        fireEvent.click(within(sheet).getByTestId('add-repo-submit'));
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('add-repo-sheet')).toBeNull();
+        });
+        expect(onAddAssociation.mock.calls.map((call) => call[0])).toEqual(['/src/infra', '/elsewhere/api']);
+    });
+
+    it('stops the batch at the daemon’s first refusal and keeps the sheet open', async () => {
+        const onAddAssociation = vi.fn().mockResolvedValue('/src/infra is not inside a git repository');
+        view({ onAddAssociation, associations: [] });
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        fireEvent.click(screen.getByText('Add Repository…'));
+
+        const sheet = screen.getByTestId('add-repo-sheet');
+        fireEvent.click(within(sheet).getByTestId('repo-choice-r2'));
+        fireEvent.click(within(sheet).getByTestId('repo-choice-r1'));
+        fireEvent.click(within(sheet).getByTestId('add-repo-submit'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('sheet-error').textContent).toContain('not inside a git repository');
+        });
+        expect(onAddAssociation).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('add-repo-sheet')).toBeTruthy();
+    });
 });
 
 describe('the Create Worktree sheet (§WS-147/§WS-148, §GIT-098/§GIT-099)', () => {

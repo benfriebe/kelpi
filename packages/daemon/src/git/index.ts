@@ -53,6 +53,22 @@ export type {
     RepoAutoDetectService
 } from './autodetect.js';
 
+/**
+ * The pane-branch producer: `git rev-parse --abbrev-ref HEAD` chained behind every path that
+ * moves a pane's working directory, plus a HEAD-change re-resolve (§GIT-091 / §TERM-145).
+ */
+export {
+    BRANCH_CACHE_TTL_MS,
+    BRANCH_RESOLVE_DEBOUNCE_MS,
+    createPaneBranchWatch
+} from './branch.js';
+export type {
+    BranchGit,
+    BranchStore,
+    CreatePaneBranchWatchOptions,
+    PaneBranchWatchService
+} from './branch.js';
+
 export {
     describeRepoState,
     NOTHING_TO_STASH,

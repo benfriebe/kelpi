@@ -13,7 +13,12 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { probeControlPing, type ControlPingPersistence, type ControlPingProbe } from '../control/probe.js';
+import {
+    probeControlPing,
+    type ControlPingPersistence,
+    type ControlPingProbe,
+    type ControlPingTcp
+} from '../control/probe.js';
 import { isProcessAlive, readPidRecord, type PidRecord, type RunPaths } from './rundir.js';
 
 /** Entries with these extensions are run through the Node binary, not exec'd directly. */
@@ -84,6 +89,11 @@ export interface DaemonProbe {
      * (an older daemon) — which is not the same as healthy, and must never be printed as such.
      */
     readonly persistence?: ControlPingPersistence | undefined;
+    /**
+     * §SET-021: did the optional TCP control listener bind? Undefined when none was configured
+     * (or the daemon predates the field) — which must never read as "it bound".
+     */
+    readonly tcp?: ControlPingTcp | undefined;
     readonly reason?: string | undefined;
 }
 
@@ -106,6 +116,7 @@ export async function probeDaemon(paths: RunPaths, options: DaemonProbeOptions =
         ...(record !== undefined ? { record } : {}),
         stalePidRecord: record !== undefined && !isProcessAlive(record.pid),
         ...(ping.persistence !== undefined ? { persistence: ping.persistence } : {}),
+        ...(ping.tcp !== undefined ? { tcp: ping.tcp } : {}),
         ...(ping.reason !== undefined ? { reason: ping.reason } : {})
     };
 }

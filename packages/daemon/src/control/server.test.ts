@@ -382,6 +382,113 @@ describe('control server', () => {
         expect(JSON.parse(result.text)).toEqual({ ok: true, command: 'ping' });
     });
 
+    /**
+     * §SET-021 / §AGNT-005. This used to abort `start()` and tear the Unix socket down with it,
+     * so one stale `tcp-port` took every `nex` command, hook and client offline. The listener
+     * that failed is now a reported fact, not a fatal one.
+     */
+    it('keeps serving the Unix socket when the TCP port is already taken, and says so', async () => {
+        // Occupy a port, then ask a control server for the same one.
+        const squatter = net.createServer();
+        await new Promise<void>((resolve) => squatter.listen({ host: '127.0.0.1', port: 0 }, resolve));
+        const taken = (squatter.address() as net.AddressInfo).port;
+
+        try {
+            const rec = recorder();
+            const server = await startServer(rec.dispatcher, { tcpPort: taken });
+            expect(server.running).toBe(true);
+            expect(server.tcpPort).toBeUndefined();
+
+            const status = server.tcpStatus;
+            expect(status).not.toBeNull();
+            expect(status?.requested).toBe(taken);
+            expect(status?.bound).toBeNull();
+            expect(String(status?.error)).toContain('EADDRINUSE');
+
+            // The point of the change: the Unix socket is still answering.
+            const socket = await client();
+            socket.write('{"command":"ping"}\n');
+            const result = await readAll(socket);
+            expect(JSON.parse(result.text)).toEqual({ ok: true, command: 'ping' });
+        } finally {
+            await new Promise<void>((resolve) => squatter.close(() => resolve()));
+        }
+    });
+
+    it('reports a bound TCP listener, and nothing at all when TCP is off', async () => {
+        const withTcp = await startServer(recorder().dispatcher, { tcpPort: 0 });
+        expect(withTcp.tcpStatus).toMatchObject({ requested: 0, error: null, host: '127.0.0.1' });
+        expect(withTcp.tcpStatus?.bound).toBe(withTcp.tcpPort);
+        await withTcp.stop();
+
+        const withoutTcp = await startServer(recorder().dispatcher);
+        expect(withoutTcp.tcpStatus).toBeNull();
+    });
+
+    /** §AGNT-003: the asymmetric teardown the live re-bind is built on. */
+    it('stopTCP drops only the TCP listener, leaving the Unix socket serving', async () => {
+        const rec = recorder();
+        const server = await startServer(rec.dispatcher, { tcpPort: 0 });
+        const port = server.tcpPort as number;
+        expect(typeof port).toBe('number');
+
+        await server.stopTCP();
+        expect(server.running).toBe(true);
+        expect(server.tcpPort).toBeUndefined();
+
+        // The Unix socket never noticed.
+        const unix = await client();
+        unix.write('{"command":"ping"}\n');
+        expect(JSON.parse((await readAll(unix)).text)).toEqual({ ok: true, command: 'ping' });
+
+        // And the port really is closed.
+        await expect(connect({ port })).rejects.toBeTruthy();
+        // Idempotent.
+        await server.stopTCP();
+        expect(server.running).toBe(true);
+    });
+
+    /** §AGNT-005: `tcp-port` changed while the daemon runs — move the listener, don't restart. */
+    it('startTCP re-binds live, and reports a re-bind that fails', async () => {
+        const rec = recorder();
+        const server = await startServer(rec.dispatcher, { tcpPort: 0 });
+        const first = server.tcpPort as number;
+
+        const moved = await server.startTCP(0);
+        const second = server.tcpPort as number;
+        expect(moved?.bound).toBe(second);
+        expect(moved?.error).toBeNull();
+        expect(second).not.toBe(first);
+
+        const socket = await connect({ port: second });
+        sockets.push(socket);
+        socket.write('{"command":"ping"}\n');
+        expect(JSON.parse((await readAll(socket)).text)).toEqual({ ok: true, command: 'ping' });
+
+        // `undefined` means "no listener at all", which clears the status rather than leaving a
+        // stale one behind. `0` keeps `net.listen`'s meaning (any free port), because that is
+        // what `ControlServerOptions.tcpPort` means — the config file's "0 = disabled" is
+        // translated by the caller that reads the config.
+        expect(await server.startTCP(undefined)).toBeNull();
+        expect(server.tcpStatus).toBeNull();
+
+        // A re-bind onto a taken port reports, and still leaves the daemon serving.
+        const squatter = net.createServer();
+        await new Promise<void>((resolve) => squatter.listen({ host: '127.0.0.1', port: 0 }, resolve));
+        const taken = (squatter.address() as net.AddressInfo).port;
+        try {
+            const failed = await server.startTCP(taken);
+            expect(failed?.bound).toBeNull();
+            expect(String(failed?.error)).toContain('EADDRINUSE');
+            expect(server.running).toBe(true);
+            const stillUp = await client();
+            stillUp.write('{"command":"ping"}\n');
+            expect(JSON.parse((await readAll(stillUp)).text)).toEqual({ ok: true, command: 'ping' });
+        } finally {
+            await new Promise<void>((resolve) => squatter.close(() => resolve()));
+        }
+    });
+
     it('refuses a non-loopback TCP host', () => {
         expect(() =>
             createControlServer({ socketPath, tcpPort: 0, tcpHost: '0.0.0.0', dispatcher: () => undefined })

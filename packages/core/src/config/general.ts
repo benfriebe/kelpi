@@ -26,6 +26,18 @@ export interface GeneralSettings {
      */
     readonly confirmWorkspaceDeleteWhenActive: boolean;
     /**
+     * §10 step 2's "Confirm before quitting while agents are active", default true — the twin
+     * of `confirm-workspace-delete` and, until now, the one suppression flag that was NOT here.
+     *
+     * It lived in the Electron shell's own `shell-settings.json`, which meant the ⌘Q dialog's
+     * "Don't ask again" checkbox and Settings could never agree (Settings could not even show
+     * it: §AGNT-117's missing half). shell-ui.md's port note is explicit that BOTH suppression
+     * settings belong in the daemon store, so this is the second one. Same lenient rule as its
+     * twin: only the literal `false` turns it off, and the shell migrates its old local flag
+     * once on first read.
+     */
+    readonly confirmQuitWhenActive: boolean;
+    /**
      * §13's Settings ▸ General ▸ Repositories "Auto-detect from pane directories", default
      * **true** (`SettingsFeature.State.autoDetectRepos`). It gates BOTH halves of the
      * auto-detect subsystem: the 500 ms auto-link after a pane's pwd changes and the 5 s
@@ -54,6 +66,20 @@ export interface GeneralSettings {
      */
     readonly newWorkspacePlacement: 'end-of-list' | 'near-selection';
     readonly newGroupPlacement: 'end-of-list' | 'near-selection';
+    /**
+     * §13's Workspaces ▸ "Inherit group when creating a new workspace" (SET-011), default
+     * **true** (`SettingsFeature.State.inheritGroupOnNewWorkspace`). When the active workspace
+     * belongs to a group, a new workspace created without an explicit group joins that group;
+     * with it off, every such create lands at top level.
+     *
+     * UserDefaults in the Swift app, a config key here for the same multi-client reason as the
+     * flags above, and lenient in the same way: only the literal `false` turns it off.
+     *
+     * It gates the CLIENT's create gestures — ⌘N, and the New Workspace form's preselected
+     * group — not the wire verb: the Swift app reads it in `NewWorkspaceSheet`, never in the
+     * socket path, so `nex workspace create` without `--group` still lands at top level.
+     */
+    readonly inheritGroupOnNewWorkspace: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -67,10 +93,12 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     globalHotkey: null,
     globalHotkeyHideOnRepress: true,
     confirmWorkspaceDeleteWhenActive: true,
+    confirmQuitWhenActive: true,
     autoDetectRepos: true,
     worktreeBasePath: DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
     newWorkspacePlacement: 'end-of-list',
-    newGroupPlacement: 'end-of-list'
+    newGroupPlacement: 'end-of-list',
+    inheritGroupOnNewWorkspace: true
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -126,6 +154,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
             case 'confirm-workspace-delete':
                 settings = { ...settings, confirmWorkspaceDeleteWhenActive: lowered !== 'false' };
                 break;
+            case 'confirm-quit-when-active':
+                settings = { ...settings, confirmQuitWhenActive: lowered !== 'false' };
+                break;
             case 'auto-detect-repos':
                 settings = { ...settings, autoDetectRepos: lowered !== 'false' };
                 break;
@@ -142,6 +173,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 if (lowered === 'end-of-list' || lowered === 'near-selection') {
                     settings = { ...settings, newGroupPlacement: lowered };
                 }
+                break;
+            case 'inherit-group-on-new-workspace':
+                settings = { ...settings, inheritGroupOnNewWorkspace: lowered !== 'false' };
                 break;
             default:
                 break;

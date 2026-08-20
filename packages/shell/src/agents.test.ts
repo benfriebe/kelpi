@@ -3,12 +3,18 @@ import { describe, expect, it } from 'vitest';
 import type { JsonObject, WsDeltaEvent } from '@nex/protocol';
 
 import {
+    ALL_CLEAR_GLYPH,
     AgentModel,
+    RUNNING_GLYPH,
+    WAITING_GLYPH,
+    activitySummary,
     dockBadgeLabel,
+    middleTruncate,
     newlyWaitingPanes,
     paneDisplayTitle,
     quitConfirmDetail,
     trayIndicator,
+    trayMenuRows,
     traySummaryLines,
     trayTooltip
 } from './agents.js';
@@ -223,5 +229,172 @@ describe('derivations', () => {
         expect(detail).toContain('2 agents across 1 workspace');
         expect(detail).toContain('keep running in the background');
         expect(detail).not.toContain('terminate');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// §AGNT-113 — the quit gate counts PARKED panes; §8.1's badge/tray do not
+// ---------------------------------------------------------------------------
+
+describe('active-agent summary (§AGNT-113)', () => {
+    function withParked(): AgentModel {
+        const model = new AgentModel();
+        model.applySnapshot(
+            snapshot(
+                {
+                    id: 'w1',
+                    name: 'alpha',
+                    panes: [pane('p1', 'running')],
+                    parkedPanes: [pane('p9', 'waitingForInput')]
+                } as JsonObject,
+                // A workspace whose ONLY live agent is parked: invisible to §8.1 entirely.
+                {
+                    id: 'w2',
+                    name: 'beta',
+                    panes: [pane('p2', 'idle')],
+                    parkedPanes: [pane('p8', 'running')]
+                } as JsonObject
+            )
+        );
+        return model;
+    }
+
+    it('keeps parked panes out of the badge and the tray indicator', () => {
+        const counts = withParked().counts();
+        expect(counts.running).toBe(1);
+        expect(counts.waiting).toBe(0);
+        expect(dockBadgeLabel(counts)).toBe('');
+        expect(trayIndicator(counts, true)).toBe('running');
+        expect(counts.workspaces.map((entry) => entry.name)).toEqual(['alpha']);
+    });
+
+    it('counts them for the quit gate, workspaces included', () => {
+        const counts = withParked().counts();
+        expect(counts.parked).toBe(2);
+        expect(activitySummary(counts)).toEqual({ agents: 3, workspaces: 2 });
+        expect(quitConfirmDetail(counts)).toContain('3 agents across 2 workspaces');
+    });
+
+    it('moves a pane between the two lanes without double-counting it', () => {
+        const model = new AgentModel();
+        model.applySnapshot(
+            snapshot({ id: 'w1', name: 'alpha', panes: [pane('p1', 'running')] } as JsonObject)
+        );
+        model.applyDelta({
+            kind: 'pane-upserted',
+            workspaceID: 'w1',
+            paneID: 'p1',
+            lane: 'parked',
+            pane: pane('p1', 'running')
+        } as unknown as WsDeltaEvent);
+        expect(model.counts()).toMatchObject({ running: 0, parked: 1 });
+
+        model.applyDelta({
+            kind: 'pane-upserted',
+            workspaceID: 'w1',
+            paneID: 'p1',
+            lane: 'visible',
+            pane: pane('p1', 'running')
+        } as unknown as WsDeltaEvent);
+        const restored = model.counts();
+        expect(restored).toMatchObject({ running: 1, parked: 0 });
+        expect(activitySummary(restored).agents).toBe(1);
+    });
+
+    it('applies an agent-status change to whichever lane holds the pane', () => {
+        const model = new AgentModel();
+        model.applySnapshot(
+            snapshot({
+                id: 'w1',
+                name: 'alpha',
+                panes: [],
+                parkedPanes: [pane('p9', 'running')]
+            } as JsonObject)
+        );
+        model.applyDelta({
+            kind: 'agent-status-changed',
+            workspaceID: 'w1',
+            paneID: 'p9',
+            status: 'idle'
+        } as unknown as WsDeltaEvent);
+        expect(model.counts().parked).toBe(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// §AGNT-090…093 — the tray menu's per-workspace + per-pane rows
+// ---------------------------------------------------------------------------
+
+describe('tray menu rows (§AGNT-090…093)', () => {
+    function populated(): AgentModel {
+        const model = new AgentModel();
+        model.applySnapshot(
+            snapshot(
+                {
+                    id: 'w2',
+                    name: 'beta',
+                    panes: [pane('p3', 'running', { title: 'server' })]
+                } as JsonObject,
+                {
+                    id: 'w1',
+                    name: 'alpha',
+                    panes: [
+                        pane('p1', 'running', { title: 'build' }),
+                        pane('p2', 'waitingForInput', { title: 'claude' })
+                    ]
+                } as JsonObject
+            )
+        );
+        return model;
+    }
+
+    it('lists one header per workspace and one row per non-idle pane, sorted by name', () => {
+        const rows = trayMenuRows(populated().counts(), true);
+        expect(rows.map((row) => row.kind)).toEqual([
+            'workspace',
+            'pane',
+            'pane',
+            'workspace',
+            'pane'
+        ]);
+        expect(rows[0]).toMatchObject({ kind: 'workspace', workspaceID: 'w1' });
+        expect(rows[0]?.label).toBe(`${WAITING_GLYPH} alpha — 1 waiting, 1 running`);
+        expect(rows[3]?.label).toBe(`${RUNNING_GLYPH} beta — 1 running`);
+    });
+
+    it('gives every pane row its own status glyph and its jump target', () => {
+        const rows = trayMenuRows(populated().counts(), true);
+        const paneRows = rows.filter((row) => row.kind === 'pane');
+        expect(paneRows.map((row) => (row.kind === 'pane' ? row.paneID : ''))).toEqual([
+            'p1',
+            'p2',
+            'p3'
+        ]);
+        expect(paneRows[0]?.label).toContain(RUNNING_GLYPH);
+        expect(paneRows[0]?.label).toContain('build');
+        expect(paneRows[1]?.label).toContain(WAITING_GLYPH);
+        expect(paneRows[1]?.label).toContain('claude');
+        // The click target is the pane AND its workspace: §8.5 switches workspace first.
+        expect(paneRows[2]).toMatchObject({ paneID: 'p3', workspaceID: 'w2' });
+    });
+
+    it('keeps the two placeholder states as single disabled rows, with §AGNT-092’s checkmark', () => {
+        const empty = new AgentModel().counts();
+        expect(trayMenuRows(empty, true)).toEqual([
+            { kind: 'message', label: `${ALL_CLEAR_GLYPH}  All clear` }
+        ]);
+        expect(trayMenuRows(empty, false)).toEqual([
+            { kind: 'message', label: 'Daemon not reachable' }
+        ]);
+    });
+
+    it('truncates a long pane title in the middle, keeping both ends', () => {
+        expect(middleTruncate('short', 40)).toBe('short');
+        const long = 'npm run build:watch --workspace=packages/client --verbose';
+        const cut = middleTruncate(long, 21);
+        expect(cut).toHaveLength(21);
+        expect(cut.startsWith('npm run b')).toBe(true);
+        expect(cut.endsWith('verbose')).toBe(true);
+        expect(cut).toContain('…');
     });
 });

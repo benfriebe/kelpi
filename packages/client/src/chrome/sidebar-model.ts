@@ -20,7 +20,9 @@
  *     post-remove index, because the shadow itself was built by removing then inserting.
  */
 
-import type { ChromeSidebarEntry, ChromeWorkspace } from './types';
+import type { WorkspaceColor } from '@nex/daemon/store';
+
+import { WORKSPACE_COLORS, type ChromeSidebarEntry, type ChromeWorkspace } from './types';
 
 // ── order model ─────────────────────────────────────────────────────────────────────
 
@@ -503,4 +505,42 @@ export function resolveGroupDropIndex(layout: GroupSpanLayout, y: number, dragge
     }
     if (y >= layout.contentBottom) return Math.max(0, layout.tailIndex - 1);
     return null;
+}
+
+// ── create-form defaults (§WS-075, §WS-083) ─────────────────────────────────────────
+
+/**
+ * The colour the New Workspace form opens on: a uniformly random one that is NOT the trailing
+ * workspace's, so an appended row is visually distinct from the neighbour it lands beside.
+ *
+ * The exact rule the daemon applies when a create carries no colour (`store/derived.ts`'s
+ * `nextRandomColor`), restated client-side because the form now always sends one — if the two
+ * disagreed, the form's swatch would not be the colour that appeared.
+ */
+export function nextCreateColor(
+    entries: readonly ChromeSidebarEntry[],
+    random: () => number = Math.random
+): WorkspaceColor {
+    const flattened: ChromeWorkspace[] = [];
+    for (const entry of entries) {
+        if (entry.kind === 'workspace') flattened.push(entry.workspace);
+        else flattened.push(...entry.workspaces);
+    }
+    const last = flattened[flattened.length - 1]?.color;
+    const pool = WORKSPACE_COLORS.filter((color) => color !== last);
+    if (pool.length === 0) return 'blue';
+    return pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))] ?? 'blue';
+}
+
+/**
+ * §WS-083's default new-group name: "New Group", uniquified as "New Group 2", "New Group 3", …
+ * against the names already taken (`NexCommands.swift`'s `defaultGroupName`).
+ */
+export function defaultGroupName(existing: readonly string[]): string {
+    const base = 'New Group';
+    const taken = new Set(existing);
+    if (!taken.has(base)) return base;
+    let suffix = 2;
+    while (taken.has(`${base} ${String(suffix)}`)) suffix += 1;
+    return `${base} ${String(suffix)}`;
 }

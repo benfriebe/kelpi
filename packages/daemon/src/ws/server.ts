@@ -37,6 +37,8 @@ import type { RepoChannel } from './repos.js';
 import type { GraftChannel } from './graft.js';
 import { createTerminalSearchChannel, type TerminalSearchBackend } from './search.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
+import type { WsTransportStatus } from '@nex/protocol';
+
 import {
     createSyncHub,
     type AgentChannel,
@@ -109,6 +111,11 @@ export interface WsServerOptions {
      * Absent = welcome carries no settings and the verbs answer "not available".
      */
     readonly settings?: SettingsChannel | undefined;
+    /**
+     * §SET-021: `welcome.transport` — what the daemon's control listeners actually did. A
+     * getter (a re-bind can happen under an attached client); absent = nothing to report.
+     */
+    readonly transport?: (() => WsTransportStatus) | undefined;
     /** Extra HTTP routes registered before the static catch-all (the pane-asset route). */
     readonly routes?: HttpAppOptions['routes'] | undefined;
     readonly daemonInfo?: { readonly pid?: number | undefined } | undefined;
@@ -215,6 +222,7 @@ export function createWsServer(options: WsServerOptions): WsServer {
         content: options.content,
         webPanes: options.webPanes,
         settings: options.settings,
+        transport: options.transport,
         agents: options.agents,
         repos: options.repos,
         graftUi: options.graftUi,

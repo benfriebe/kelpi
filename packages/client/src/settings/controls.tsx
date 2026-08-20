@@ -322,6 +322,15 @@ export interface TextFieldProps {
     readonly onCommit: (next: string) => void;
     readonly detail?: string | undefined;
     readonly testID?: string | undefined;
+    /**
+     * SET-020: show an "Apply" button, and show it ONLY while the typed text differs from the
+     * committed value — the Swift Network row's affordance, which exists because a port is
+     * something you deliberately apply rather than something that happens as you type.
+     * Blur/Enter still commit, so the button is a second route, not the only one.
+     */
+    readonly apply?: boolean | undefined;
+    /** A narrower, right-aligned input (the Swift port field is 80 pt, right-aligned). */
+    readonly narrow?: boolean | undefined;
 }
 
 /**
@@ -354,13 +363,14 @@ export function TextField(props: TextFieldProps): ReactElement {
                     </span>
                 )}
             </div>
+            <span className="flex shrink-0 items-center gap-2">
             <input
                 type="text"
                 aria-label={props.label}
                 value={shown}
                 placeholder={props.placeholder}
                 {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-input` })}
-                className="w-[180px] shrink-0 rounded border px-1.5 py-1 font-mono text-[11px]"
+                className={`${props.narrow === true ? 'w-[80px] text-right' : 'w-[180px]'} shrink-0 rounded border px-1.5 py-1 font-mono text-[11px]`}
                 style={{
                     borderColor: tokens.divider,
                     background: 'transparent',
@@ -383,6 +393,28 @@ export function TextField(props: TextFieldProps): ReactElement {
                     }
                 }}
             />
+            {props.apply === true && draft !== null && draft !== props.value ? (
+                <button
+                    type="button"
+                    {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-apply` })}
+                    className="rounded border px-2 py-1 text-[11px]"
+                    style={{
+                        borderColor: tokens.accent,
+                        color: tokens.textPrimary,
+                        background: withAlpha(tokens.accent, 0.16)
+                    }}
+                    // `onMouseDown`: a click would blur the field first, which commits and
+                    // removes this button before the click lands on it.
+                    onMouseDown={(event) => {
+                        event.preventDefault();
+                        commit();
+                        setDraft(null);
+                    }}
+                >
+                    Apply
+                </button>
+            ) : null}
+            </span>
         </div>
     );
 }

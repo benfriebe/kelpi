@@ -167,6 +167,22 @@ export interface HandlerContext<State, Action, Event> {
    * boot always supplies it, and `ping` reports "unknown" rather than "fine" without it.
    */
   readonly persistenceHealth?: (() => PersistenceHealth) | undefined;
+  /**
+   * §SET-021 / §AGNT-005: what happened to the optional TCP control listener — the port the
+   * config asked for, the port that is actually listening, and the bind error when there isn't
+   * one. Optional for the same reason `persistenceHealth` is (a handler test composes no
+   * transport); absent means "nothing to say", not "everything is fine".
+   */
+  readonly controlTransport?:
+    | (() => {
+        readonly tcp: {
+          readonly requested: number;
+          readonly bound: number | null;
+          readonly error: string | null;
+          readonly host: string;
+        } | null;
+      })
+    | undefined;
 }
 
 export type CommandHandler<Ctx> = (msg: WireMessage, ctx: Ctx, reply: ReplyHandle | null) => void;

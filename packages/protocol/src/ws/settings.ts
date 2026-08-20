@@ -37,6 +37,17 @@ export interface WsGeneralSettings {
      */
     readonly confirmWorkspaceDeleteWhenActive: boolean;
     /**
+     * §10 step 2 "Confirm before quitting while agents are active" (default true), config key
+     * `confirm-quit-when-active`.
+     *
+     * The OTHER of the two suppression settings the port note names. It used to live in the
+     * Electron shell's own `shell-settings.json`, so the ⌘Q dialog's "Don't ask again" and the
+     * Settings window could not agree — Settings could not even show it. It is here now for the
+     * same multi-client reason as its twin, and the shell reads it off this snapshot (it holds
+     * a status WS of its own) instead of a local file.
+     */
+    readonly confirmQuitWhenActive: boolean;
+    /**
      * §1.3 `tcp-port` — the control socket's optional `127.0.0.1` listener. 0 = disabled.
      *
      * Read-only in practice for a RUNNING daemon (the listener binds at boot), which is why
@@ -74,6 +85,12 @@ export interface WsGeneralSettings {
     /** §13's two "…placement" pickers (SET-013 / SET-014); `end-of-list` is the default. */
     readonly newWorkspacePlacement: 'end-of-list' | 'near-selection';
     readonly newGroupPlacement: 'end-of-list' | 'near-selection';
+    /**
+     * §13's Workspaces ▸ "Inherit group when creating a new workspace" (SET-011), default true.
+     * A CLIENT-side rule (⌘N and the New Workspace form preselect the active workspace's
+     * group); the wire verb is unchanged, so the CLI keeps its top-level default.
+     */
+    readonly inheritGroupOnNewWorkspace: boolean;
 }
 
 /**
@@ -123,6 +140,21 @@ export interface WsChromeSettings {
     readonly sparklineColor: string;
     /** `sparkline-width`: 16…80, default 28. */
     readonly sparklineWidth: number;
+    /**
+     * The four search-highlight colours (SET-219 / TERM-021), each `#rrggbb`.
+     *
+     * The Swift app wrote these as a Nex-managed ghostty defaults FILE loaded before the
+     * user's own config, so libghostty resolved them with the user's value winning. Nothing in
+     * this architecture draws a search highlight inside an engine — the markdown/diff find
+     * script, the web pane's find script and the terminal search reveal are all ours — so the
+     * overridable-default idea becomes four nex-config keys carrying the Swift hexes as their
+     * defaults (`search-match-color` #f2d027, `search-match-text-color` #000000,
+     * `search-match-current-color` #ff7a00, `search-match-current-text-color` #000000).
+     */
+    readonly searchMatchColor: string;
+    readonly searchMatchTextColor: string;
+    readonly searchMatchCurrentColor: string;
+    readonly searchMatchCurrentTextColor: string;
 }
 
 /** The six metrics, in the canonical footer order (`SystemStatKind.allCases`). */
@@ -150,7 +182,12 @@ export const DEFAULT_WS_CHROME_SETTINGS: WsChromeSettings = {
     showSystemStatGraphs: false,
     sparklineStyle: 'line',
     sparklineColor: '',
-    sparklineWidth: 28
+    sparklineWidth: 28,
+    // `NexGhosttyDefaults.swift:12-15`, verbatim.
+    searchMatchColor: '#f2d027',
+    searchMatchTextColor: '#000000',
+    searchMatchCurrentColor: '#ff7a00',
+    searchMatchCurrentTextColor: '#000000'
 };
 
 /**
@@ -226,13 +263,15 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         focusFollowsMouseDelay: 100,
         theme: null,
         confirmWorkspaceDeleteWhenActive: true,
+        confirmQuitWhenActive: true,
         tcpPort: 0,
         globalHotkey: null,
         globalHotkeyHideOnRepress: true,
         autoDetectRepos: true,
         worktreeBasePath: '~/nex/worktrees/<repo>',
         newWorkspacePlacement: 'end-of-list',
-        newGroupPlacement: 'end-of-list'
+        newGroupPlacement: 'end-of-list',
+        inheritGroupOnNewWorkspace: true
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -297,6 +336,9 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // Additive to §1.3's list: the Swift app keeps this suppression flag in UserDefaults, which
     // a multi-client daemon has no equivalent of (shell-ui.md port note "Suppression settings").
     'confirm-workspace-delete',
+    // The quit dialog's twin (§AGNT-117). Writable because BOTH sides now write it: the ⌘Q
+    // dialog's "Don't ask again" checkbox and Settings ▸ Workspaces' toggle.
+    'confirm-quit-when-active',
     // Additive, same reasoning, for the chrome styling + status-bar settings the Swift app also
     // keeps in UserDefaults (`WsChromeSettings` above documents each one).
     'chrome-appearance',
@@ -312,6 +354,12 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'sparkline-style',
     'sparkline-color',
     'sparkline-width',
+    // SET-219 / TERM-021: the Swift app's Nex-managed ghostty search-highlight defaults, as
+    // four overridable nex keys (the Settings ▸ Appearance ▸ Search highlight rows write them).
+    'search-match-color',
+    'search-match-text-color',
+    'search-match-current-color',
+    'search-match-current-text-color',
     // Additive, same reasoning again: §13's Repositories auto-detect toggle is UserDefaults in
     // the Swift app and daemon behaviour here, so the daemon has to be able to read it back.
     'auto-detect-repos',
@@ -319,7 +367,9 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // and the two sidebar placement pickers (SET-008 / SET-013 / SET-014).
     'worktree-base-path',
     'new-workspace-placement',
-    'new-group-placement'
+    'new-group-placement',
+    // …and the third Workspaces control beside them: SET-011's group inheritance.
+    'inherit-group-on-new-workspace'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

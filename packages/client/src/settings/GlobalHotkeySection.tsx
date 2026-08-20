@@ -165,6 +165,19 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                 >
                     {recording ? 'Press a key…' : 'Record'}
                 </SettingsButton>
+                {/* SET-094: the Swift sheet's Cancel, which shared `.cancelAction` with Escape. */}
+                {recording ? (
+                    <SettingsButton
+                        testID="global-hotkey-cancel"
+                        onClick={() => {
+                            setRecording(false);
+                            setMessage(null);
+                            recordRef.current?.focus();
+                        }}
+                    >
+                        Cancel
+                    </SettingsButton>
+                ) : null}
             </SettingsRow>
 
             {message === null ? null : (

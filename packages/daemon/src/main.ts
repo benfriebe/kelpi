@@ -495,6 +495,7 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     const port = record?.http_port ?? readPortFile(paths);
 
     const health = probe.persistence;
+    const tcp = probe.tcp;
 
     if (args.json) {
         io.out(
@@ -521,6 +522,17 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
                               errno: health.errno ?? null,
                               failed_saves: health.failedSaves ?? 0
                           },
+                // §SET-021: null = no TCP listener was configured, which is NOT the same fact
+                // as one that was asked for and failed to bind.
+                tcp:
+                    tcp === undefined
+                        ? null
+                        : {
+                              requested: tcp.requested,
+                              host: tcp.host ?? null,
+                              bound: tcp.bound ?? null,
+                              error: tcp.error ?? null
+                          },
                 ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
             })
         );
@@ -539,6 +551,16 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(`  version: ${probe.version ?? 'unknown'} (build ${probe.build ?? 'unknown'})`);
     io.out(`  protocol: ${String(paths.protocol)}`);
     io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
+    // §SET-021 / §AGNT-005: a `tcp-port` that never bound used to be a log line inside the
+    // daemon, so every `NEX_SOCKET=tcp:…` client just timed out with nothing to read. Printed
+    // only when TCP was actually asked for — silence still means "Unix socket only".
+    if (tcp !== undefined) {
+        io.out(
+            tcp.bound !== undefined
+                ? `  tcp: listening on ${tcp.host ?? '127.0.0.1'}:${String(tcp.bound)}`
+                : `  tcp: UNAVAILABLE — port ${String(tcp.requested)} did not bind${tcp.error === undefined ? '' : ` (${tcp.error})`}`
+        );
+    }
     io.out(`  discovery: ${paths.socket}`);
     if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
     const url = runDirClientURL(env, paths);
@@ -547,6 +569,14 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(
         `  persistence: ${health === undefined ? 'unknown (daemon did not report)' : health.degraded ? `DEGRADED — ${health.path ?? 'unknown path'}` : `ok (${health.path ?? 'unknown path'})`}`
     );
+    if (tcp !== undefined && tcp.bound === undefined) {
+        io.err(
+            `Warning: the TCP control listener on port ${String(tcp.requested)} is not running${tcp.error === undefined ? '' : ` (${tcp.error})`}.`
+        );
+        io.err(
+            '  Repair: free the port or set a different `tcp-port` in ~/.config/nex/config, then restart nexd. Unix-socket clients are unaffected.'
+        );
+    }
     return warnIfDegraded(io, probe) ? 1 : 0;
 }
 

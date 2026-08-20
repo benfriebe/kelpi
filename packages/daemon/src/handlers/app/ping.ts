@@ -19,11 +19,26 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
     return [
         forCommand('ping', (_msg, ctx, reply) => {
             const health = ctx.persistenceHealth?.();
+            // §SET-021 / §AGNT-005: additive for the same reason `persistence` is. A daemon whose
+            // `tcp-port` never bound answers `ping` on the Unix socket perfectly well while every
+            // dev-container `NEX_SOCKET=tcp:…` client times out; the reply is where that stops
+            // being invisible (`nexd status` prints it, Settings ▸ Network shows it).
+            const tcp = ctx.controlTransport?.().tcp ?? null;
             ok(reply, {
                 version: ctx.version.version,
                 build: ctx.version.build,
                 pid: process.pid,
                 protocol: ctx.version.protocol,
+                ...(tcp === null
+                    ? {}
+                    : {
+                          tcp: {
+                              requested: tcp.requested,
+                              host: tcp.host,
+                              ...(tcp.bound !== null ? { bound: tcp.bound } : {}),
+                              ...(tcp.error !== null ? { error: tcp.error } : {})
+                          }
+                      }),
                 ...(health === undefined
                     ? {}
                     : {

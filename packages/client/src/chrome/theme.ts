@@ -305,12 +305,37 @@ export const CHROME_CSS_VAR_ALIASES: Readonly<Record<string, string>> = {
     '--nex-agent': '--nex-active-agent'
 };
 
+export interface ChromeCssVarOptions {
+    /**
+     * The ghostty `background-opacity` (APP-012 / SET-049). Below 1 the WINDOW fill —
+     * `--nex-bg`, which `<body>`, the pane grid's gutters and the app root all paint — is
+     * emitted as `rgba(…, opacity)` rather than an opaque hex, so a window the Electron shell
+     * created transparent lets the desktop through everywhere the client is not deliberately
+     * opaque (the sidebar, the header, popovers, the settings dialog).
+     *
+     * It belongs here rather than in each component for the same reason the sidebar tint knobs
+     * do: `--nex-bg` is read in a dozen places and one assignment reaches all of them. The
+     * default (1, or absent) emits exactly what it always did, byte for byte.
+     */
+    readonly windowOpacity?: number | undefined;
+}
+
 /** The theme as a `{ '--nex-*': value }` map, ready for an inline `style` or `:root` block. */
-export function chromeThemeCssVars(theme: ChromeTheme): Record<string, string> {
+export function chromeThemeCssVars(
+    theme: ChromeTheme,
+    options: ChromeCssVarOptions = {}
+): Record<string, string> {
     const vars: Record<string, string> = {};
     for (const [token, name] of Object.entries(CHROME_CSS_VARS)) {
         const value = theme[token as keyof ChromeTheme];
         vars[name] = typeof value === 'number' ? String(value) : value;
+    }
+    const opacity = options.windowOpacity;
+    if (typeof opacity === 'number' && Number.isFinite(opacity) && opacity < 1) {
+        vars[CHROME_CSS_VARS.windowBackground] = withAlpha(
+            theme.windowBackground,
+            Math.max(0, opacity)
+        );
     }
     for (const [alias, canonical] of Object.entries(CHROME_CSS_VAR_ALIASES)) {
         const value = vars[canonical];

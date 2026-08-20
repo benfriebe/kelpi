@@ -1204,12 +1204,26 @@ export class CommandClient {
     // STATE (`labelPresets` on the mirror, advanced by a `label-presets-changed` delta), so
     // these verbs only push a change — nothing here caches a list.
 
-    /** Append a preset. The daemon refuses a duplicate name rather than no-op'ing silently. */
+    /**
+     * Append a preset. The daemon refuses a duplicate name rather than no-op'ing silently.
+     *
+     * `textColor` is §6.2's other colour slot (SET-062): a colour token for an explicit text
+     * colour, `null` for AUTO (black/white by the background's luminance), absent to leave it
+     * auto. Per SET-059 the daemon applies it only when the add actually created a preset, so a
+     * duplicate name can never recolour the preset that already holds it.
+     */
     addLabelPreset(
-        input: { name: string; color?: string | undefined },
+        input: { name: string; color?: string | undefined; textColor?: string | null | undefined },
         options?: SendOptions
     ): Promise<CommandReply> {
-        return this.raw(wirePayload('add-label-preset', { name: input.name, color: input.color }), options ?? {});
+        return this.raw(
+            wirePayload('add-label-preset', {
+                name: input.name,
+                color: input.color,
+                ...(input.textColor === undefined ? {} : { text_color: input.textColor })
+            }),
+            options ?? {}
+        );
     }
 
     /**
@@ -1217,11 +1231,22 @@ export class CommandClient {
      * keeps it, which is what a palette swatch click sends.
      */
     updateLabelPreset(
-        input: { id: string; name?: string | undefined; color?: string | undefined },
+        input: {
+            id: string;
+            name?: string | undefined;
+            color?: string | undefined;
+            /** A colour token, or `null` for AUTO. Absent leaves the stored one alone. */
+            textColor?: string | null | undefined;
+        },
         options?: SendOptions
     ): Promise<CommandReply> {
         return this.raw(
-            wirePayload('update-label-preset', { id: input.id, name: input.name, color: input.color }),
+            wirePayload('update-label-preset', {
+                id: input.id,
+                name: input.name,
+                color: input.color,
+                ...(input.textColor === undefined ? {} : { text_color: input.textColor })
+            }),
             options ?? {}
         );
     }
@@ -1233,6 +1258,15 @@ export class CommandClient {
      */
     removeLabelPreset(input: { id: string }, options?: SendOptions): Promise<CommandReply> {
         return this.raw(wirePayload('remove-label-preset', { id: input.id }), options ?? {});
+    }
+
+    /**
+     * SET-065's reorder, by NAME and target index. The Swift list reordered by drag; the ↑/↓
+     * buttons that replace it send the same instruction, and the daemon computes the source
+     * position from its own list so a one-delta-stale index cannot scramble the order.
+     */
+    moveLabelPreset(input: { id: string; index: number }, options?: SendOptions): Promise<CommandReply> {
+        return this.raw(wirePayload('move-label-preset', { id: input.id, index: input.index }), options ?? {});
     }
 
     // ── settings verbs (M8) ────────────────────────────────────────────────────────

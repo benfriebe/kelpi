@@ -26,6 +26,9 @@ import { NO_HOST_ERROR } from './host.js';
 import { createWebPaneService, type WebPaneService } from './service.js';
 import { HOME, id, SHELL_PANE, WEB_PANE, WEB_TAB, WORKSPACE, NOW } from './testing.js';
 
+/** A second tab id for the reorder tests (the fixture opens the pane with one). */
+const SECOND_TAB = id('cccccccc', 21);
+
 const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
 
 interface Fixture {
@@ -554,6 +557,158 @@ describe('web-devtools (GUI-only verb)', () => {
             error: NO_HOST_ERROR,
             pane_id: WEB_PANE
         });
+    });
+});
+
+describe('the GUI-only tab/stop/focus verbs (WEB-016 / WEB-032 / WEB-043)', () => {
+    it('reorders the tab strip through the store and answers with the applied order', async () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        // A second tab, so there is an order to change at all.
+        f.store.dispatch({
+            type: 'web-tab-open',
+            workspaceID: WORKSPACE,
+            paneID: WEB_PANE,
+            tabID: SECOND_TAB,
+            url: 'https://second.test',
+            makeActive: false
+        });
+
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-tab-reorder', pane_id: WEB_PANE, order: [SECOND_TAB, WEB_TAB] }
+            })
+        );
+        await Promise.resolve();
+        expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+            ok: true,
+            pane_id: WEB_PANE,
+            order: [SECOND_TAB, WEB_TAB],
+            applied: true
+        });
+        expect(
+            f.store.getState().workspaces[0]?.webPanes[WEB_PANE]?.tabs.map((tab) => tab.id)
+        ).toEqual([SECOND_TAB, WEB_TAB]);
+    });
+
+    it('reports a refused reorder rather than pretending it landed (WEB-016)', async () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                // Not a permutation: the reducer drops it whole.
+                payload: { command: 'web-tab-reorder', pane_id: WEB_PANE, order: [SECOND_TAB] }
+            })
+        );
+        await Promise.resolve();
+        const reply = client.transport.ofType('command-reply').at(-1)?.['reply'] as Record<string, unknown>;
+        expect(reply['ok']).toBe(true);
+        expect(reply['applied']).toBe(false);
+        expect(reply['order']).toEqual([WEB_TAB]);
+    });
+
+    it('refuses a reorder without an order, and one for a pane that does not exist', async () => {
+        const f = fixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c1',
+                payload: { command: 'web-tab-reorder', pane_id: WEB_PANE }
+            })
+        );
+        client.session.handleMessage(
+            JSON.stringify({
+                type: 'command',
+                id: 'c2',
+                payload: { command: 'web-tab-reorder', pane_id: id('ffffffff', 9), order: [WEB_TAB] }
+            })
+        );
+        await Promise.resolve();
+        const replies = client.transport.ofType('command-reply').map((message) => message['reply']);
+        expect(replies.at(-2)).toEqual({ ok: false, error: 'web-tab-reorder requires order' });
+        expect(replies.at(-1)).toEqual({ ok: false, error: `pane not found: ${id('ffffffff', 9)}` });
+    });
+
+    it('forwards stop and focus-view to the host', async () => {
+        const f = fixture();
+        const host = f.connect();
+        host.session.handleMessage(hello({ kind: 'electron', capabilities: [WEB_HOST_CAPABILITY] }));
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+
+        for (const [index, command] of ['web-stop', 'web-focus-view'].entries()) {
+            client.session.handleMessage(
+                JSON.stringify({
+                    type: 'command',
+                    id: `c${String(index)}`,
+                    payload: { command, pane_id: WEB_PANE, tab_id: WEB_TAB }
+                })
+            );
+            const rpc = host.transport.ofType('host-rpc').at(-1) as Record<string, unknown>;
+            expect(rpc['verb']).toBe(command === 'web-stop' ? 'stop' : 'focus-view');
+            expect(rpc['args']).toMatchObject({ paneID: WEB_PANE, tabID: WEB_TAB });
+            host.session.handleMessage(
+                JSON.stringify({ type: 'host-rpc-reply', id: rpc['id'], reply: { ok: true } })
+            );
+            // Two hops: the host reply settles the RPC promise, and the verb's own `await`
+            // settles the command reply after it.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(client.transport.ofType('command-reply').at(-1)?.['reply']).toEqual({
+                ok: true,
+                pane_id: WEB_PANE
+            });
+        }
+    });
+});
+
+describe('nav-state host event (WEB-032 / WEB-033)', () => {
+    it('is handed to the broadcast sink, per tab', () => {
+        const store = createStore(emptyDaemonState(HOME));
+        const seen: unknown[] = [];
+        const service = createWebPaneService({
+            store,
+            now: () => NOW,
+            onNavStateChanged: (state) => seen.push(state)
+        });
+        service.handleHostEvent({
+            event: 'nav-state',
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            payload: { loading: true, can_go_back: true, can_go_forward: false }
+        });
+        expect(seen).toEqual([
+            {
+                paneID: WEB_PANE,
+                tabID: WEB_TAB,
+                loading: true,
+                canGoBack: true,
+                canGoForward: false
+            }
+        ]);
+    });
+
+    it('drops an event with no tab: the strip is a per-tab surface', () => {
+        const store = createStore(emptyDaemonState(HOME));
+        const seen: unknown[] = [];
+        const service = createWebPaneService({
+            store,
+            now: () => NOW,
+            onNavStateChanged: (state) => seen.push(state)
+        });
+        service.handleHostEvent({
+            event: 'nav-state',
+            paneID: WEB_PANE,
+            payload: { loading: true }
+        });
+        expect(seen).toEqual([]);
     });
 });
 

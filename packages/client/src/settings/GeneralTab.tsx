@@ -7,23 +7,27 @@
  * the daemon reads each one through the settings service on every command rather than at boot,
  * and the write is the same `set-general-setting` verb the rest of Settings uses.
  *
- * Two rows are deliberately read-only, and say so rather than pretending:
+ * One row stays read-only, and says so rather than pretending:
  *
  *   - **TCP port** — the control listener binds at daemon start. SET-022's Swift behaviour is
  *     stop → start → *then* write, so a failed bind writes nothing; a daemon cannot rebind a
  *     live control socket under a connected CLI, so the field writes the key and states that
  *     it takes effect on the next daemon start. Claiming a live rebind would be the lie.
- *   - **Confirm before quitting** — quit belongs to the Electron shell, whose own
- *     `shell-settings.json` holds the flag and whose dialog checkbox flips it. A control here
- *     would write a key nothing reads.
  *
- * Panes ▸ focus-follows-mouse and the workspace-delete confirmation live on the Workspaces
- * tab, where this port put them before General existed; the note at the bottom points there
- * rather than duplicating a control in two places (two switches for one value is how they
- * drift).
+ *     What it no longer does is *guess the outcome*. §SET-021 asked for "Port N is unavailable"
+ *     under the Network section, and the daemon now reports what its listener actually did
+ *     (`welcome.transport`, backed by `daemon/src/control/server.ts`'s `tcpStatus`), so the row
+ *     reads "Listening on 127.0.0.1:19400" or "Port 19400 unavailable: …" — the failed-bind
+ *     case that used to be a daemon log line nobody saw while every `NEX_SOCKET=tcp:…` client
+ *     timed out against nothing.
+ *
+ * Panes ▸ focus-follows-mouse and the two confirmation suppressions (workspace delete, quit)
+ * live on the Workspaces tab, where this port put them before General existed; the note at the
+ * bottom points there rather than duplicating a control in two places (two switches for one
+ * value is how they drift).
  */
 
-import type { WsSettingsSnapshot } from '@nex/protocol';
+import type { WsSettingsSnapshot, WsTransportStatus } from '@nex/protocol';
 import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
@@ -35,10 +39,67 @@ export interface GeneralTabProps {
     readonly settings: WsSettingsSnapshot;
     readonly actions: SettingsActions;
     readonly paths: SettingsPaths;
+    /**
+     * §SET-021: what the daemon's listeners actually did. `null`/absent means it did not say
+     * (an older daemon, or not connected yet), which the row renders with the old "as of daemon
+     * start" wording rather than claiming a bind either way.
+     */
+    readonly transport?: WsTransportStatus | null | undefined;
+}
+
+/**
+ * §SET-021's Network detail line: the config's port is what was ASKED for, `transport` is what
+ * happened. Exported so the copy can be asserted directly rather than through a DOM crawl.
+ */
+export function tcpListenerDetail(
+    configuredPort: number,
+    transport: WsTransportStatus | null | undefined
+): string {
+    const tcp = transport?.tcp;
+    // What the listener DID outranks what the file asks for, in both directions: a daemon
+    // started with `NEXD_TCP_PORT` (a dev container, the audit sandbox) is genuinely listening
+    // even though this config file says nothing, and saying "Disabled" there would be false.
+    if (tcp !== null && tcp !== undefined && tcp.bound !== null) {
+        // When the file did not ask for it, say where the port came from — otherwise the switch
+        // below (which reflects the FILE, i.e. what happens next start) reads as being out of
+        // step with a listener that is plainly up.
+        return configuredPort > 0
+            ? `Listening on ${tcp.host}:${String(tcp.bound)}.`
+            : `Listening on ${tcp.host}:${String(tcp.bound)} — this daemon was started with an explicit port, not from this config file.`;
+    }
+    if (tcp !== null && tcp !== undefined) {
+        return `Port ${String(tcp.requested)} unavailable: ${tcp.error ?? 'the listener did not bind'}. Unix-socket clients are unaffected.`;
+    }
+    if (configuredPort <= 0) return 'Disabled — the Unix control socket is the only transport.';
+    if (transport === null || transport === undefined) {
+        return `Listening on 127.0.0.1:${String(configuredPort)} (as of daemon start).`;
+    }
+    // The daemon spoke and has no TCP listener at all: the config changed after it started.
+    return `Port ${String(configuredPort)} takes effect on the next daemon start — this daemon started with no TCP listener.`;
 }
 
 /** The port the Swift Network toggle seeds when it is switched on (SET-019). */
 export const DEFAULT_TCP_PORT = 19400;
+
+/**
+ * §SET-021's "in red". The same literal the sidebar's destructive Delete uses
+ * (`chrome/Sidebar.tsx`) — there is no chrome token for it, and inventing one here would put
+ * two spellings of "destructive" in the palette.
+ */
+const DESTRUCTIVE_TONE = '#E0655C';
+
+/** The failed-bind line, or null when there is nothing to warn about. */
+export function tcpBindError(
+    _configuredPort: number,
+    transport: WsTransportStatus | null | undefined
+): string | null {
+    const tcp = transport?.tcp;
+    // Keyed off the FAILED LISTENER, not off the config value: a listener asked for by
+    // `NEXD_TCP_PORT` fails just as loudly as one asked for by the file, and the user who has to
+    // fix it is the same user either way.
+    if (tcp === null || tcp === undefined || tcp.bound !== null) return null;
+    return `Port ${String(tcp.requested)} is unavailable${tcp.error === null ? '' : ` — ${tcp.error}`}`;
+}
 
 const PLACEMENT_OPTIONS = [
     { value: 'near-selection' as const, label: 'Next to selection' },
@@ -48,6 +109,7 @@ const PLACEMENT_OPTIONS = [
 export function GeneralTab(props: GeneralTabProps): ReactElement {
     const general = props.settings.general;
     const actions = props.actions;
+    const bindError = tcpBindError(general.tcpPort, props.transport);
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-general">
@@ -87,6 +149,22 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
             </SettingsSection>
 
             <SettingsSection title="Workspaces" testID="general-workspaces">
+                {/* SET-011. A CLIENT-side rule: ⌘N and the sidebar's New Workspace form read
+                    it, the wire verb does not, so `nex workspace create` is unaffected. */}
+                <SettingsRow
+                    label="Inherit group when creating a new workspace"
+                    detail="When the active workspace belongs to a group, new workspaces are created inside that same group. Disable to always create at the top level."
+                    testID="inherit-group-row"
+                >
+                    <SettingsToggle
+                        testID="inherit-group-toggle"
+                        label="Inherit group when creating a new workspace"
+                        checked={general.inheritGroupOnNewWorkspace}
+                        onChange={(next) => {
+                            actions.setGeneralSetting('inherit-group-on-new-workspace', next ? 'true' : 'false');
+                        }}
+                    />
+                </SettingsRow>
                 <SegmentedField
                     label="New workspace placement"
                     testID="new-workspace-placement"
@@ -116,11 +194,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
             >
                 <SettingsRow
                     label="TCP listener"
-                    detail={
-                        general.tcpPort > 0
-                            ? `Listening on 127.0.0.1:${String(general.tcpPort)} (as of daemon start).`
-                            : 'Disabled — the Unix control socket is the only transport.'
-                    }
+                    detail={tcpListenerDetail(general.tcpPort, props.transport)}
                     testID="tcp-listener-row"
                 >
                     <SettingsToggle
@@ -136,6 +210,11 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                     <TextField
                         label="Port"
                         testID="tcp-port"
+                        // SET-020: the Swift field is 80 pt and right-aligned, with an Apply
+                        // button that appears only while the typed text differs from the live
+                        // port. Both reproduced; blur/Enter still commit.
+                        narrow
+                        apply
                         value={String(general.tcpPort)}
                         onCommit={(next) => {
                             const parsed = Number.parseInt(next.trim(), 10);
@@ -149,20 +228,24 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         }}
                     />
                 ) : null}
-            </SettingsSection>
-
-            <SettingsSection title="Quit" testID="general-quit">
-                <SettingsRow
-                    label="Confirm before quitting"
-                    detail="Owned by the desktop app, not the daemon: the ⌘Q dialog's “Don't ask again” checkbox is what changes it, and a browser tab has no quit to confirm."
-                    testID="confirm-quit-row"
-                >
-                    <KeyChip>desktop app</KeyChip>
-                </SettingsRow>
+                {/*
+                 * §SET-021: the failed bind, in the destructive tone, under the Network section
+                 * — the one place a user goes looking when `NEX_SOCKET=tcp:…` stops answering.
+                 */}
+                {bindError === null ? null : (
+                    <p
+                        data-testid="tcp-bind-error"
+                        className="text-[11px]"
+                        style={{ color: DESTRUCTIVE_TONE }}
+                    >
+                        {bindError}
+                    </p>
+                )}
             </SettingsSection>
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                Focus-follows-mouse and the workspace-delete confirmation are on the Workspaces tab.
+                Focus-follows-mouse and the two confirmation dialogs (workspace delete, quit) are on the
+                Workspaces tab.
             </p>
 
             <SettingsFooterNote>

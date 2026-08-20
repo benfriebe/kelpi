@@ -67,16 +67,36 @@ export {
     parseBatchSession,
     parseFavourites,
     parseFavouritesMessage,
+    parseNavStateMessage,
     seededDestination,
     truncateMiddle,
     type BatchDestination,
     type DestinationCandidate,
     type WebBatchItem,
     type WebBatchSession,
-    type WebFavourite
+    type WebFavourite,
+    type WebNavState
 } from './state';
 
-export { replyBatch, useWebPaneUI, type WebPaneUIState, type WebUIConnection } from './hooks';
+export {
+    navStateKey,
+    replyBatch,
+    useBlankWebPaneURLFocus,
+    useWebPaneUI,
+    type BlankURLTarget,
+    type WebPaneUIState,
+    type WebUIConnection
+} from './hooks';
+
+export {
+    DEFAULT_PROGRESS_TIMINGS,
+    useLoadProgress,
+    type LoadProgressPhase,
+    type LoadProgressTimings,
+    type LoadProgressView
+} from './progress';
+
+export { orderChanged, reorderedTabs, tabUnderPointer, type PillBox } from './reorder';
 
 export {
     DEFAULT_GEOMETRY_THROTTLE_MS,
@@ -94,6 +114,11 @@ export {
     type RevealTarget
 } from './reveal';
 
-export { SHELL_WINDOW_PARAM, readShellWindowID } from './shell-window';
+export {
+    SHELL_WINDOW_PARAM,
+    WINDOW_TRANSPARENT_PARAM,
+    readShellWindowID,
+    readWindowTransparent
+} from './shell-window';
 
 export { WebPane, resolveActiveTab, tabLabel, type WebPaneProps, type WebPaneTab } from './WebPane';

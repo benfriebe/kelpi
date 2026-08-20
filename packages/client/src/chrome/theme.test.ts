@@ -233,3 +233,35 @@ describe('tintedColor', () => {
         );
     });
 });
+
+// APP-012 / SET-049 — the window fill follows the ghostty opacity so a transparent Electron
+// window shows the desktop through everything the client does not paint opaquely.
+describe('chromeThemeCssVars windowOpacity', () => {
+    it('emits an opaque --nex-bg by default, byte for byte', () => {
+        const theme = presetChromeTheme('dark');
+        expect(chromeThemeCssVars(theme)['--nex-bg']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, {})['--nex-bg']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--nex-bg']).toBe(theme.windowBackground);
+    });
+
+    it('emits rgba below 1, and carries it to the alias the pane grid reads', () => {
+        const theme = presetChromeTheme('dark');
+        const vars = chromeThemeCssVars(theme, { windowOpacity: 0.85 });
+        expect(vars['--nex-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
+        expect(vars['--nex-bg']).toContain('rgba(');
+        // Only the WINDOW fill gains alpha: the sidebar, header and surfaces stay opaque, which
+        // is what keeps chrome legible over an arbitrary desktop.
+        expect(vars['--nex-sidebar-bg']).toBe(theme.sidebarBackground);
+        expect(vars['--nex-surface']).toBe(theme.surfaceBackground);
+    });
+
+    it('clamps a nonsense opacity rather than emitting an invalid colour', () => {
+        const theme = presetChromeTheme('dark');
+        expect(chromeThemeCssVars(theme, { windowOpacity: -3 })['--nex-bg']).toBe(
+            withAlpha(theme.windowBackground, 0)
+        );
+        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--nex-bg']).toBe(
+            theme.windowBackground
+        );
+    });
+});

@@ -62,3 +62,5 @@ export type { WebTab } from './json-columns.js';
 
 export { formatIconString, parseIconString } from './icon.js';
 export type { IconRef } from './icon.js';
+
+export { firstGrapheme, isGraphemeEmoji, normalizeIconEmoji } from './emoji.js';

@@ -148,11 +148,14 @@ describe('bulk context menu', () => {
         openBulkMenu({ onCreateGroupForWorkspaces, onSelectionChange });
         fireEvent.click(screen.getByText('Group 2 Workspaces…'));
         const input = screen.getByLabelText('New group name') as HTMLInputElement;
-        expect(input.getAttribute('placeholder')).toContain('2 workspaces');
+        // §WS-082's line, and §WS-083's pre-filled unique default name.
+        expect(screen.getByTestId('new-group-count').textContent).toBe('Group 2 selected workspaces.');
+        expect(input.value).toBe('New Group');
         fireEvent.change(input, { target: { value: 'Review' } });
         fireEvent.submit(screen.getByTestId('new-group-form'));
         await waitFor(() => {
-            expect(onCreateGroupForWorkspaces).toHaveBeenCalledWith('Review', [W1, W2]);
+            // The third argument is the colour row's choice — "None" unless one is picked.
+            expect(onCreateGroupForWorkspaces).toHaveBeenCalledWith('Review', [W1, W2], null);
         });
         // The new header becomes the anchor, so the selection is released (§5.6).
         expect(onSelectionChange).toHaveBeenLastCalledWith(new Set());
@@ -255,12 +258,19 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
         expect(submit.disabled).toBe(false);
         fireEvent.submit(screen.getByTestId('new-workspace-form'));
         await waitFor(() => {
-            expect(onCreateWorkspace).toHaveBeenCalledWith('Login fix', null, {
-                repoID: 'r1',
-                name: 'login',
-                branch: 'login',
-                updateMain: true
-            });
+            expect(onCreateWorkspace).toHaveBeenCalledWith(
+                'Login fix',
+                null,
+                {
+                    repoID: 'r1',
+                    name: 'login',
+                    branch: 'login',
+                    updateMain: true
+                },
+                // §WS-075's extras ride along: the swatch (a random colour that avoids the
+                // neighbour's), the profile, and the repos chosen for association.
+                { color: expect.any(String) as unknown as string, profile: null, repoPaths: [] }
+            );
         });
     });
 

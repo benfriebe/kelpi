@@ -49,6 +49,17 @@ export interface AgentCounts {
     readonly panes: readonly AgentPane[];
     /** Pane ids currently waiting — the bounce edge is computed against this set. */
     readonly waitingPaneIDs: readonly string[];
+    /**
+     * §AGNT-113: non-idle **parked** panes, counted separately.
+     *
+     * §8.1's aggregation (badge, tray, icon) deliberately excludes parked panes — they have no
+     * visible pane to jump to. §10.3's gates deliberately INCLUDE them, because their PTYs are
+     * still alive and quitting is a decision about processes, not about what is on screen. Two
+     * rules, so two numbers: `running`/`waiting` stay §8.1's, and the quit dialog adds this.
+     */
+    readonly parked: number;
+    /** Workspaces whose ONLY non-idle panes are parked (they widen §10.3's workspace count). */
+    readonly parkedOnlyWorkspaces: number;
 }
 
 export const EMPTY_COUNTS: AgentCounts = {
@@ -56,7 +67,9 @@ export const EMPTY_COUNTS: AgentCounts = {
     waiting: 0,
     workspaces: [],
     panes: [],
-    waitingPaneIDs: []
+    waitingPaneIDs: [],
+    parked: 0,
+    parkedOnlyWorkspaces: 0
 };
 
 // ── defensive JSON readers ──────────────────────────────────────────────────────────
@@ -96,6 +109,11 @@ interface MirrorWorkspace {
     name: string;
     /** Visible, non-idle panes only. */
     readonly panes: Map<string, MirrorPane>;
+    /**
+     * Non-idle PARKED panes (§AGNT-113). Kept apart from `panes` because the two feed different
+     * rules: §8.1's badge/tray reads `panes`, §10.3's quit gate reads both.
+     */
+    readonly parked: Map<string, MirrorPane>;
 }
 
 /**
@@ -121,15 +139,24 @@ export class AgentModel {
             if (id === undefined) continue;
             const workspace: MirrorWorkspace = {
                 name: readString(entry, 'name') ?? id,
-                panes: new Map()
+                panes: new Map(),
+                parked: new Map()
             };
-            // Visible panes only — `parkedPanes` is deliberately not walked (§8.1).
+            // §8.1's aggregation is VISIBLE panes; parked ones go in their own map so the
+            // §10.3 quit gate can see them without the badge or the tray ever counting them.
             for (const paneValue of readArray(entry, 'panes')) {
                 if (!isRecord(paneValue)) continue;
                 const paneID = readString(paneValue, 'id');
                 const status = readStatus(paneValue);
                 if (paneID === undefined || status === undefined) continue;
                 workspace.panes.set(paneID, { title: paneDisplayTitle(paneValue), status });
+            }
+            for (const paneValue of readArray(entry, 'parkedPanes')) {
+                if (!isRecord(paneValue)) continue;
+                const paneID = readString(paneValue, 'id');
+                const status = readStatus(paneValue);
+                if (paneID === undefined || status === undefined) continue;
+                workspace.parked.set(paneID, { title: paneDisplayTitle(paneValue), status });
             }
             this.workspaces.set(id, workspace);
         }
@@ -146,7 +173,8 @@ export class AgentModel {
                 // only refresh the display name.
                 const existing = this.workspaces.get(event.id);
                 const name = readString(event.workspace, 'name') ?? event.id;
-                if (existing === undefined) this.workspaces.set(event.id, { name, panes: new Map() });
+                if (existing === undefined)
+                    this.workspaces.set(event.id, { name, panes: new Map(), parked: new Map() });
                 else existing.name = name;
                 break;
             }
@@ -155,27 +183,42 @@ export class AgentModel {
                 break;
             case 'pane-upserted': {
                 const workspace = this.ensureWorkspace(event.workspaceID);
+                const status = readStatus(event.pane);
                 if (event.lane === 'parked') {
-                    // Parking a pane takes it out of the §8.1 aggregation.
+                    // Parking takes a pane out of the §8.1 aggregation and into §10.3's.
                     workspace.panes.delete(event.paneID);
+                    if (status === undefined) workspace.parked.delete(event.paneID);
+                    else
+                        workspace.parked.set(event.paneID, {
+                            title: paneDisplayTitle(event.pane),
+                            status
+                        });
                     break;
                 }
-                const status = readStatus(event.pane);
+                // Unparking is the same event on the other lane: drop the parked copy first, or
+                // one restored pane would be counted twice by the quit gate.
+                workspace.parked.delete(event.paneID);
                 if (status === undefined) workspace.panes.delete(event.paneID);
                 else workspace.panes.set(event.paneID, { title: paneDisplayTitle(event.pane), status });
                 break;
             }
-            case 'pane-removed':
-                this.workspaces.get(event.workspaceID)?.panes.delete(event.paneID);
+            case 'pane-removed': {
+                const workspace = this.workspaces.get(event.workspaceID);
+                workspace?.panes.delete(event.paneID);
+                workspace?.parked.delete(event.paneID);
                 break;
+            }
             case 'agent-status-changed': {
                 const workspace = this.ensureWorkspace(event.workspaceID);
+                // A parked pane's agent can still change status (its PTY is alive), so the
+                // event has to land on whichever lane already knows the pane.
+                const lane = workspace.parked.has(event.paneID) ? workspace.parked : workspace.panes;
                 if (event.status === 'idle') {
-                    workspace.panes.delete(event.paneID);
+                    lane.delete(event.paneID);
                     break;
                 }
-                const existing = workspace.panes.get(event.paneID);
-                workspace.panes.set(event.paneID, {
+                const existing = lane.get(event.paneID);
+                lane.set(event.paneID, {
                     title: existing?.title ?? 'Shell',
                     status: event.status
                 });
@@ -192,8 +235,14 @@ export class AgentModel {
         const panes: AgentPane[] = [];
         let running = 0;
         let waiting = 0;
+        let parked = 0;
+        let parkedOnlyWorkspaces = 0;
 
         for (const [workspaceID, workspace] of this.workspaces) {
+            parked += workspace.parked.size;
+            // A workspace whose only live agents are parked is invisible to §8.1 but must still
+            // count towards §10.3's "across M workspaces".
+            if (workspace.parked.size > 0 && workspace.panes.size === 0) parkedOnlyWorkspaces += 1;
             let workspaceRunning = 0;
             let workspaceWaiting = 0;
             for (const [paneID, pane] of workspace.panes) {
@@ -228,14 +277,16 @@ export class AgentModel {
             waiting,
             workspaces,
             panes,
-            waitingPaneIDs: panes.filter((pane) => pane.status === 'waitingForInput').map((pane) => pane.paneID)
+            waitingPaneIDs: panes.filter((pane) => pane.status === 'waitingForInput').map((pane) => pane.paneID),
+            parked,
+            parkedOnlyWorkspaces
         };
     }
 
     private ensureWorkspace(id: string): MirrorWorkspace {
         const existing = this.workspaces.get(id);
         if (existing !== undefined) return existing;
-        const created: MirrorWorkspace = { name: id, panes: new Map() };
+        const created: MirrorWorkspace = { name: id, panes: new Map(), parked: new Map() };
         this.workspaces.set(id, created);
         return created;
     }
@@ -274,6 +325,99 @@ export function traySummaryLines(counts: AgentCounts, connected = true): readonl
     });
 }
 
+/**
+ * §AGNT-090/091/092/093: the popover's rows, as a native-menu template.
+ *
+ * The Swift menu-bar extra opened a custom `NSPopover` listing every running/waiting pane,
+ * grouped by workspace, each row clickable to jump straight to that pane. The port's tray is an
+ * Electron `Tray` with a native menu (§AGNT-086's supersession), which changes the *drawing* but
+ * not the information: one header row per workspace, one clickable row per non-idle pane, and a
+ * status marker on each.
+ *
+ * Where the two genuinely differ, and why:
+ *
+ *   - **The dot is a glyph, not a circle.** A native menu item is text plus an optional image;
+ *     there is no per-row swatch and no animation, so §AGNT-091's *pulsing* waiting halo becomes
+ *     `◉` against running's `●`. The distinction survives; the animation cannot.
+ *   - **The workspace colour dot is dropped** (§AGNT-090). The same constraint: a native menu
+ *     cannot tint one glyph per row, and a coloured emoji circle would read as a status, which
+ *     is exactly the thing the marker column already means.
+ *   - **Counts move onto the workspace row.** The Swift header was name-only because the panes
+ *     underneath were visibly countable at a glance in a 280 pt popover; a menu that a user
+ *     opens deliberately is better off saying "2 waiting, 1 running" on the header itself, which
+ *     is also what the port's flattened one-line-per-workspace summary already said.
+ *
+ * Pure and exported so the whole template is asserted in a test — a tray menu cannot be
+ * screenshotted from outside the process, so this function IS the evidence (`agents.test.ts`),
+ * with `status.ts` logging the row count it built as the runtime half.
+ */
+export type TrayMenuRow =
+    /** A disabled placeholder: "All clear" / "Daemon not reachable". */
+    | { readonly kind: 'message'; readonly label: string }
+    /** A disabled workspace header: marker + name + counts. */
+    | { readonly kind: 'workspace'; readonly label: string; readonly workspaceID: string }
+    /** A clickable pane row: reveal this pane in this workspace. */
+    | {
+          readonly kind: 'pane';
+          readonly label: string;
+          readonly paneID: string;
+          readonly workspaceID: string;
+          readonly status: AgentPaneStatus;
+      };
+
+/** §AGNT-091's dot, in the only alphabet a native menu item has. */
+export const WAITING_GLYPH = '◉';
+export const RUNNING_GLYPH = '●';
+/** §AGNT-092's checkmark, for the same reason: a native menu's own checkmark slot means "on". */
+export const ALL_CLEAR_GLYPH = '✓';
+
+/** Widest a pane row gets before its middle is elided (§AGNT-090's `.truncationMode(.middle)`). */
+export const TRAY_PANE_TITLE_MAX = 40;
+
+export function middleTruncate(value: string, max = TRAY_PANE_TITLE_MAX): string {
+    if (max <= 1 || value.length <= max) return value;
+    // The head keeps the command, the tail keeps the argument — the two halves a pane title is
+    // usually made of, and the reason the Swift row truncates in the middle rather than the end.
+    const head = Math.ceil((max - 1) / 2);
+    const tail = max - 1 - head;
+    return `${value.slice(0, head)}…${tail === 0 ? '' : value.slice(value.length - tail)}`;
+}
+
+export function trayMenuRows(counts: AgentCounts, connected = true): readonly TrayMenuRow[] {
+    if (!connected) return [{ kind: 'message', label: 'Daemon not reachable' }];
+    if (counts.workspaces.length === 0) {
+        return [{ kind: 'message', label: `${ALL_CLEAR_GLYPH}  All clear` }];
+    }
+
+    const rows: TrayMenuRow[] = [];
+    for (const workspace of counts.workspaces) {
+        const parts: string[] = [];
+        if (workspace.waiting > 0) parts.push(`${String(workspace.waiting)} waiting`);
+        if (workspace.running > 0) parts.push(`${String(workspace.running)} running`);
+        // §8.2 waiting-wins, applied per workspace so the header marker agrees with the icon.
+        const marker = workspace.waiting > 0 ? WAITING_GLYPH : RUNNING_GLYPH;
+        rows.push({
+            kind: 'workspace',
+            workspaceID: workspace.workspaceID,
+            label: `${marker} ${workspace.name} — ${parts.join(', ')}`
+        });
+        for (const pane of counts.panes) {
+            if (pane.workspaceID !== workspace.workspaceID) continue;
+            const glyph = pane.status === 'waitingForInput' ? WAITING_GLYPH : RUNNING_GLYPH;
+            rows.push({
+                kind: 'pane',
+                paneID: pane.paneID,
+                workspaceID: pane.workspaceID,
+                status: pane.status,
+                // Two leading spaces are the indent a native menu gives us; `panes` is already
+                // sorted by workspace name then title, so this walk preserves that order.
+                label: `    ${glyph}  ${middleTruncate(pane.title)}`
+            });
+        }
+    }
+    return rows;
+}
+
 export function trayTooltip(counts: AgentCounts, connected: boolean): string {
     if (!connected) return 'Nex — daemon not reachable';
     if (counts.waiting === 0 && counts.running === 0) return 'Nex — all clear';
@@ -301,8 +445,20 @@ export interface ActivitySummary {
     readonly workspaces: number;
 }
 
+/**
+ * §AGNT-113's `activeAgentSummary`: an "active agent" is any pane whose status is not idle,
+ * **parked panes included** — their PTYs are alive, and quitting is a decision about processes.
+ *
+ * This is deliberately a different rule from `dockBadgeLabel` / `trayIndicator`, which follow
+ * §8.1 and count visible panes only. The quit dialog is the one surface that must not
+ * under-report: a number lower than the daemon's own `activeAgentCount` (which is what
+ * `workspace-delete` refuses on) would tell the user there is less running than there is.
+ */
 export function activitySummary(counts: AgentCounts): ActivitySummary {
-    return { agents: counts.running + counts.waiting, workspaces: counts.workspaces.length };
+    return {
+        agents: counts.running + counts.waiting + counts.parked,
+        workspaces: counts.workspaces.length + counts.parkedOnlyWorkspaces
+    };
 }
 
 /**

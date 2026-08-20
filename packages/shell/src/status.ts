@@ -40,7 +40,7 @@ import {
     dockBadgeLabel,
     newlyWaitingPanes,
     trayIndicator,
-    traySummaryLines,
+    trayMenuRows,
     trayTooltip,
     type AgentCounts
 } from './agents.js';
@@ -66,6 +66,17 @@ export interface StatusHost {
     startDaemon(): void;
     /** Tray "Quit Nex" (goes through the quit gate). */
     quit(): void;
+    /**
+     * §APP-060: is the window assigned to every Mission Control desktop, and set it.
+     *
+     * The Swift app read the Dock's own "Assign To → All Desktops" binding out of
+     * `com.apple.spaces` and reapplied it when the window was parented. That plist is private
+     * and Electron cannot read it, so the port owns the toggle instead: it lives on the tray
+     * (the one menu that is always available, even with the window closed) and persists in the
+     * shell's `window-state.json`. Absent on a host that has no window to assign.
+     */
+    isVisibleOnAllWorkspaces?(): boolean;
+    setVisibleOnAllWorkspaces?(value: boolean): void;
     /** Tray "Install CLI" — links /usr/local/bin/nex at this bundle (`./cli-install.ts`). */
     installCLI?(): void;
     /** A notification's default action: activate, switch workspace, focus the pane. */
@@ -93,6 +104,14 @@ export interface StatusHost {
      */
     settingsChanged?(): void;
     /**
+     * The handshake delivered a settings payload (§AGNT-117).
+     *
+     * Separate from `settingsChanged`, which fires only on a *write*: this one fires on every
+     * (re)connect, which is when the one-shot "migrate the old local quit suppression into the
+     * daemon" pass can finally run — before that there is nowhere to migrate it to.
+     */
+    daemonSettingsReady?(settings: ShellDaemonSettings): void;
+    /**
      * CONT-120's shell half: show the NATIVE open panel and forward the chosen file.
      *
      * The client cannot open one itself — a browser `<input type=file>` yields bytes, and the
@@ -106,6 +125,18 @@ export interface StatusHost {
     checkForUpdates?(): void;
     /** The ••• menu's "Install CLI" — the same action the tray item runs. */
     installCLINow?(): void;
+}
+
+/**
+ * The slice of the daemon's settings snapshot the MAIN process acts on (§AGNT-117).
+ *
+ * Deliberately not the whole snapshot: everything else in it is the window's business, and a
+ * main process that mirrored all of it would be a second source of truth for the renderer's
+ * settings. Only what the shell's own native surfaces need lives here.
+ */
+export interface ShellDaemonSettings {
+    /** §10 step 2: `confirm-quit-when-active`. Null until the daemon has said. */
+    readonly confirmQuitWhenActive: boolean | null;
 }
 
 export interface StatusController {
@@ -128,6 +159,26 @@ export interface StatusController {
     reconnect(): void;
     readonly counts: AgentCounts;
     readonly connected: boolean;
+    /**
+     * §AGNT-117: the daemon's settings, as far as the main process cares. Every field is null
+     * until a `welcome` (or a `settings-changed`) has delivered one — "not told yet" is a
+     * different state from any value, and the quit gate falls back to its legacy local flag
+     * rather than guessing.
+     */
+    readonly daemonSettings: ShellDaemonSettings;
+    /**
+     * Write one general setting through the daemon (the ⌘Q dialog's "Don't ask again").
+     * Fire-and-forget: the reply is a `command-reply` this connection ignores, and the value
+     * comes back as a `settings-changed` broadcast like any other client's write. False when
+     * the socket is not ready, which is the caller's cue to fall back to the local file.
+     */
+    setGeneralSetting(key: string, value: string): boolean;
+    /**
+     * §AGNT-114 step 1: ask the daemon to write out every pending editor autosave now. Resolves
+     * false when the socket is not ready or the daemon did not answer in time — the caller
+     * treats that as "carry on", never as "block the quit".
+     */
+    flushPendingSaves(timeoutMs?: number): Promise<boolean>;
     /** §8.4: the badge clears the moment the user activates the app. */
     acknowledgeActivation(): void;
     /** Rebuild the tray (host state, e.g. window visibility, changed). */
@@ -183,8 +234,42 @@ export function createStatusController(options: StatusOptions): StatusController
     let lastBounceAt = 0;
     let indicator: IconIndicator | null = null;
     let tray: Tray | null = null;
+    /** Last logged tray-menu shape, so an unchanged menu does not re-log on every delta. */
+    let lastMenuSignature = '';
+    /** §AGNT-117: the daemon's answer, or null until it has given one. */
+    let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null };
+    /** In-flight `flush-saves-request` resolvers, keyed by the id we sent. */
+    const pendingFlushes = new Map<string, (ok: boolean) => void>();
+    let requestSeq = 0;
     /** `nex-<paneID>` replace-on-repost identity (agent-lifecycle.md §7.5). */
     const liveNotifications = new Map<string, Notification>();
+
+    /**
+     * Pull the fields the main process acts on out of a settings payload.
+     *
+     * Defensive field by field, like `AgentModel`: this is a wire object, an older daemon may
+     * not carry the key at all, and a missing key must read as "not told" rather than `false`.
+     */
+    function readDaemonSettings(payload: unknown): void {
+        if (!isRecord(payload)) return;
+        const general = payload['general'];
+        if (!isRecord(general)) return;
+        const value = general['confirmQuitWhenActive'];
+        if (typeof value !== 'boolean') return;
+        daemonSettings = { confirmQuitWhenActive: value };
+    }
+
+    function sendJson(message: Record<string, unknown>, what: string): boolean {
+        const current = socket;
+        if (!ready || current === null || current.readyState !== WebSocket.OPEN) return false;
+        try {
+            current.send(JSON.stringify(message));
+        } catch (error) {
+            warn(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
+        return true;
+    }
 
     // ── native chrome ───────────────────────────────────────────────────────────────
 
@@ -204,13 +289,59 @@ export function createStatusController(options: StatusOptions): StatusController
         }
     }
 
+    /**
+     * §AGNT-093 from the tray: raise the window, then ask this window's UI to switch workspace
+     * and focus the pane. Exactly the sequence a clicked notification already uses — the shell
+     * can only do the raising, the client owns the rest, and the daemon is the channel between
+     * them (`host.revealPane` documents the ordering).
+     */
+    function revealFromTray(workspaceID: string, paneID: string): void {
+        host.showWindow();
+        if (host.revealPane === undefined) {
+            log(`tray reveal for pane ${paneID}: host cannot reveal (window raised only)`);
+            return;
+        }
+        host.revealPane(workspaceID, paneID);
+    }
+
     function trayMenu(): Menu {
         const connected = ready;
-        const summary = traySummaryLines(counts, connected).map((line) => ({ label: line, enabled: false }));
+        // §AGNT-090…093: workspace headers + one clickable row per non-idle pane. The rows
+        // themselves are derived in `./agents.ts` (pure, and therefore tested); only the click
+        // wiring is here.
+        const rows = trayMenuRows(counts, connected).map((row) =>
+            row.kind === 'pane'
+                ? {
+                      label: row.label,
+                      click: () => {
+                          revealFromTray(row.workspaceID, row.paneID);
+                      }
+                  }
+                : { label: row.label, enabled: false }
+        );
         return Menu.buildFromTemplate([
-            ...summary,
+            ...rows,
             { type: 'separator' },
             { label: 'Show Nex', click: () => host.showWindow() },
+            // §APP-060. A checkbox row rather than a submenu: it is one boolean, and the tray is
+            // the only menu that still exists when the window is closed — which is exactly when
+            // a user wants to change where the window will come back.
+            ...(host.setVisibleOnAllWorkspaces === undefined
+                ? []
+                : ([
+                      {
+                          label: 'Show on All Desktops',
+                          type: 'checkbox' as const,
+                          checked: host.isVisibleOnAllWorkspaces?.() ?? false,
+                          click: () => {
+                              const next = !(host.isVisibleOnAllWorkspaces?.() ?? false);
+                              host.setVisibleOnAllWorkspaces?.(next);
+                              // Rebuild so the tick matches immediately rather than at the next
+                              // agent delta (a menu that lags its own click reads as broken).
+                              updateTray();
+                          }
+                      }
+                  ] as const)),
             connected
                 ? // Deliberately NOT a "restart": stopping the daemon would kill every
                   // session, which is the one thing the shell must never do
@@ -239,7 +370,17 @@ export function createStatusController(options: StatusOptions): StatusController
             indicator = next;
         }
         tray.setToolTip(trayTooltip(counts, ready));
+        const rows = trayMenuRows(counts, ready);
         tray.setContextMenu(trayMenu());
+        // A tray menu is not observable from outside the process (no DOM, no screenshot), so the
+        // shape it was built with is logged: `scripts/packaged-smoke.mjs` and the audit assert
+        // this line, which is what makes §AGNT-090's per-pane rows a claim rather than a hope.
+        const paneRows = rows.filter((row) => row.kind === 'pane').length;
+        const signature = `${String(rows.length - paneRows)}w/${String(paneRows)}p`;
+        if (signature !== lastMenuSignature) {
+            lastMenuSignature = signature;
+            log(`tray menu: ${String(rows.length - paneRows)} workspace row(s), ${String(paneRows)} pane row(s)`);
+        }
     }
 
     /** Recompute counts, then push them into every native surface. */
@@ -342,6 +483,12 @@ export function createStatusController(options: StatusOptions): StatusController
             socket = null;
             const wasReady = ready;
             ready = false;
+            // Anything waiting on the daemon gets a definite "no" rather than its own timeout:
+            // a quit held open by a flush must not wait 750 ms for a socket that has gone.
+            for (const resolve of [...pendingFlushes.values()]) resolve(false);
+            pendingFlushes.clear();
+            // `daemonSettings` deliberately survives: the last value the daemon gave is a better
+            // basis for a ⌘Q than falling back to a legacy file the user may never have touched.
             model.reset();
             waiting = new Set();
             primed = false;
@@ -363,6 +510,10 @@ export function createStatusController(options: StatusOptions): StatusController
             case 'welcome': {
                 ready = true;
                 attempt = 0;
+                // §AGNT-117: settings ride the handshake, so the quit gate has the real
+                // `confirm-quit-when-active` before the user can press ⌘Q.
+                readDaemonSettings(parsed['settings']);
+                host.daemonSettingsReady?.(daemonSettings);
                 const daemon = isRecord(parsed['daemon']) ? parsed['daemon'] : {};
                 log(
                     `status ws connected ${wsUrl()} daemon=${String(daemon['version'] ?? '?')} pid=${String(daemon['pid'] ?? '?')}`
@@ -404,9 +555,24 @@ export function createStatusController(options: StatusOptions): StatusController
             case 'settings-changed':
                 // SET-081: the global hotkey lives in the config file the daemon owns, so a
                 // Settings write reaches the shell here rather than through a file watcher of
-                // its own. The payload is ignored on purpose — `./hotkey.ts` re-reads.
+                // its own. `./hotkey.ts` re-reads the file rather than trusting the payload.
+                //
+                // §AGNT-117 is the exception, and deliberately so: `confirm-quit-when-active` is
+                // not a hotkey the shell has its own parser for — it is one boolean whose only
+                // authority is the daemon, and reading it here is what lets a Settings toggle
+                // move the ⌘Q dialog without a restart.
+                readDaemonSettings(parsed['settings']);
                 host.settingsChanged?.();
                 break;
+            case 'flush-saves-result': {
+                const id = readString(parsed, 'id');
+                if (id === undefined) break;
+                const resolve = pendingFlushes.get(id);
+                if (resolve === undefined) break;
+                pendingFlushes.delete(id);
+                resolve(parsed['ok'] !== false);
+                break;
+            }
             case 'shell-action': {
                 // The mirror of `reveal-path`: the daemon has no window, no dialogs and no
                 // installer, so it broadcasts and whichever shell is attached acts. The
@@ -550,6 +716,40 @@ export function createStatusController(options: StatusOptions): StatusController
         },
         get connected(): boolean {
             return ready;
+        },
+        get daemonSettings(): ShellDaemonSettings {
+            return daemonSettings;
+        },
+        setGeneralSetting(key: string, value: string): boolean {
+            requestSeq += 1;
+            // The ordinary client command envelope — `ws/sync.ts` matches the settings verbs
+            // before the wire decoder, so this is the same path Settings ▸ Workspaces uses. The
+            // `command-reply` is ignored: the authoritative echo is `settings-changed`.
+            return sendJson(
+                {
+                    type: 'command',
+                    id: `shell-set-${String(requestSeq)}`,
+                    payload: { command: 'set-general-setting', key, value }
+                },
+                'settings write'
+            );
+        },
+        async flushPendingSaves(timeoutMs = 750): Promise<boolean> {
+            requestSeq += 1;
+            const id = `shell-flush-${String(requestSeq)}`;
+            if (!sendJson({ type: 'flush-saves-request', id }, 'flush request')) return false;
+            return new Promise<boolean>((resolve) => {
+                const settle = (ok: boolean): void => {
+                    clearTimeout(timer);
+                    pendingFlushes.delete(id);
+                    resolve(ok);
+                };
+                const timer = setTimeout(() => {
+                    settle(false);
+                }, timeoutMs);
+                timer.unref?.();
+                pendingFlushes.set(id, settle);
+            });
         },
         acknowledgeActivation(): void {
             setBadge('');

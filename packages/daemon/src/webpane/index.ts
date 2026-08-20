@@ -129,6 +129,7 @@ export {
     type BatchSendOutcome,
     type HostEventInput,
     type WebDomainStore,
+    type WebNavState,
     type WebPaneService,
     type WebPaneServiceOptions,
     type WebPastePort

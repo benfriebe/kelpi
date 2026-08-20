@@ -127,7 +127,9 @@ describe('diff', () => {
         expect(workspace?.panes[1]).toMatchObject({
             type: 'diff',
             workingDirectory: '/code/nex',
-            filePath: 'src/app.ts',
+            // §CONT-131: a relative scope resolves against the CALLER pane's cwd, not the
+            // daemon's. (The CLI absolutises first, so this is the raw-wire path.)
+            filePath: '/Users/test/src/app.ts',
             label: 'app.ts'
         });
     });
@@ -140,6 +142,63 @@ describe('diff', () => {
             label: 'nex',
             title: 'diff: nex'
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// §CONT-130 / §CONT-131 — relative-path resolution
+// ---------------------------------------------------------------------------
+
+describe('relative path resolution (§CONT-130 / §CONT-131)', () => {
+    const CALLER_CWD = '/work/caller';
+    const FOCUSED_CWD = '/work/focused';
+
+    /** One workspace, two panes: P1 is the caller, P2 is the one holding focus. */
+    function twoPanesWithCwds() {
+        const h = harness({ initial: seeded(1), ids: [PNEW] });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'horizontal', now: NOW },
+            { type: 'pane-directory-changed', paneID: P1, directory: CALLER_CWD, now: NOW },
+            { type: 'pane-directory-changed', paneID: P2, directory: FOCUSED_CWD, now: NOW },
+            { type: 'focus-pane', workspaceID: W1, paneID: P2 }
+        );
+        return h;
+    }
+
+    it('resolves a relative open against the ORIGINATING pane’s working directory', () => {
+        const h = twoPanesWithCwds();
+        h.send({ command: 'open', path: 'notes/todo.md', pane_id: P1 });
+        const opened = h.state().workspaces[0]?.panes.find((pane) => pane.id === PNEW);
+        expect(opened?.filePath).toBe('/work/caller/notes/todo.md');
+    });
+
+    it('falls back to the FOCUSED pane’s working directory with no known caller', () => {
+        const h = twoPanesWithCwds();
+        h.send({ command: 'open', path: 'notes/todo.md' });
+        const opened = h.state().workspaces[0]?.panes.find((pane) => pane.id === PNEW);
+        expect(opened?.filePath).toBe('/work/focused/notes/todo.md');
+    });
+
+    it('leaves an absolute path and a ~-path exactly as they came', () => {
+        const h = twoPanesWithCwds();
+        h.send({ command: 'open', path: '/docs/readme.md', pane_id: P1 });
+        expect(
+            h.state().workspaces[0]?.panes.find((pane) => pane.id === PNEW)?.filePath
+        ).toBe('/docs/readme.md');
+
+        const g = twoPanesWithCwds();
+        g.send({ command: 'open', path: '~/notes.md', pane_id: P1 });
+        expect(
+            g.state().workspaces[0]?.panes.find((pane) => pane.id === PNEW)?.filePath
+        ).toBe('~/notes.md');
+    });
+
+    it('applies the same chain to a diff’s repo path and its optional scope', () => {
+        const h = twoPanesWithCwds();
+        h.send({ command: 'diff', repo_path: 'repo', target_path: 'src/app.ts', pane_id: P1 });
+        const opened = h.state().workspaces[0]?.panes.find((pane) => pane.id === PNEW);
+        expect(opened?.workingDirectory).toBe('/work/caller/repo');
+        expect(opened?.filePath).toBe('/work/caller/src/app.ts');
     });
 });
 

@@ -20,7 +20,7 @@
  * settles on whatever the file actually says.
  */
 
-import type { WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_CHROME_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
 import { useRef, useState, type ChangeEvent, type ReactElement } from 'react';
 
 import {
@@ -159,6 +159,18 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
         const sorted: Record<string, string> = {};
         for (const key of Object.keys(next).sort()) sorted[key] = next[key] as string;
         actions.setGeneralSetting('chrome-colors', JSON.stringify(sorted));
+    };
+
+    /**
+     * SET-219's four keys. They are NEX keys (the nex config file), not ghostty ones: the Swift
+     * app shipped them as a ghostty defaults file only because libghostty drew the highlight —
+     * here every search highlight is ours, so they live where the rest of the chrome palette
+     * does. An unparseable value is dropped rather than written.
+     */
+    const writeSearchColor = (key: string, hex: string): void => {
+        const normalized = normalizeHexColor(hex);
+        if (normalized === null) return;
+        actions.setGeneralSetting(key, normalized.toLowerCase());
     };
 
     const setColor = (key: OverridableChromeKey, hex: string): void => {
@@ -548,7 +560,10 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 <SliderField
                     label="Background opacity"
                     testID="terminal-opacity"
-                    detail="Blended into every pane fill as rgba(background, opacity)."
+                    // APP-012 / SET-049: panes follow the value immediately; the WINDOW's own
+                    // transparency is fixed when Electron creates it, so crossing 1.0 takes a
+                    // relaunch. Said here rather than discovered.
+                    detail="Blended into every pane fill as rgba(background, opacity). Below 1 the window itself becomes transparent on the next launch."
                     value={appearance.backgroundOpacity}
                     min={0.1}
                     max={1}
@@ -588,6 +603,91 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 >
                     <KeyChip>{appearance.isDark ? 'dark' : 'light'}</KeyChip>
                 </SettingsRow>
+            </SettingsSection>
+
+            <SettingsSection
+                title="Search highlight"
+                hint="What a search match is painted with — the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Nex ships the Swift app's colours; these override them."
+                testID="appearance-search"
+            >
+                <ColorField
+                    label="Match"
+                    testID="search-match-color"
+                    detail="Every match that is not the current one."
+                    value={chrome.searchMatchColor}
+                    onChange={(hex) => {
+                        writeSearchColor('search-match-color', hex);
+                    }}
+                />
+                <ColorField
+                    label="Match text"
+                    testID="search-match-text-color"
+                    value={chrome.searchMatchTextColor}
+                    onChange={(hex) => {
+                        writeSearchColor('search-match-text-color', hex);
+                    }}
+                />
+                <ColorField
+                    label="Current match"
+                    testID="search-match-current-color"
+                    detail="The one Return jumps to."
+                    value={chrome.searchMatchCurrentColor}
+                    onChange={(hex) => {
+                        writeSearchColor('search-match-current-color', hex);
+                    }}
+                />
+                <ColorField
+                    label="Current match text"
+                    testID="search-match-current-text-color"
+                    value={chrome.searchMatchCurrentTextColor}
+                    onChange={(hex) => {
+                        writeSearchColor('search-match-current-text-color', hex);
+                    }}
+                />
+                <SettingsRow
+                    label="Preview"
+                    detail="A line of text with one ordinary match and the current one, in the colours above."
+                    testID="search-preview-row"
+                >
+                    <span className="flex items-center gap-1 text-[12px]" style={{ color: tokens.textSecondary }}>
+                        <span
+                            data-testid="search-preview-match"
+                            data-color={normalizeHexColor(chrome.searchMatchColor)}
+                            className="rounded px-1"
+                            style={{ background: chrome.searchMatchColor, color: chrome.searchMatchTextColor }}
+                        >
+                            match
+                        </span>
+                        <span
+                            data-testid="search-preview-current"
+                            data-color={normalizeHexColor(chrome.searchMatchCurrentColor)}
+                            className="rounded px-1"
+                            style={{
+                                background: chrome.searchMatchCurrentColor,
+                                color: chrome.searchMatchCurrentTextColor
+                            }}
+                        >
+                            current
+                        </span>
+                    </span>
+                </SettingsRow>
+                <SettingsButton
+                    testID="search-colors-reset"
+                    onClick={() => {
+                        writeSearchColor('search-match-color', DEFAULT_WS_CHROME_SETTINGS.searchMatchColor);
+                        writeSearchColor('search-match-text-color', DEFAULT_WS_CHROME_SETTINGS.searchMatchTextColor);
+                        writeSearchColor(
+                            'search-match-current-color',
+                            DEFAULT_WS_CHROME_SETTINGS.searchMatchCurrentColor
+                        );
+                        writeSearchColor(
+                            'search-match-current-text-color',
+                            DEFAULT_WS_CHROME_SETTINGS.searchMatchCurrentTextColor
+                        );
+                    }}
+                >
+                    Reset search colours
+                </SettingsButton>
             </SettingsSection>
 
             <SettingsSection

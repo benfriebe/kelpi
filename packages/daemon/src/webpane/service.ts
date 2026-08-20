@@ -90,6 +90,24 @@ export interface WebPaneServiceOptions {
     readonly onBatchChanged?: ((paneID: string, session: BatchSession | null) => void) | undefined;
     /** The favourites list changed (a star toggle, a rename, a reorder). */
     readonly onFavouritesChanged?: ((favourites: readonly Favourite[]) => void) | undefined;
+    /**
+     * WEB-032/WEB-033/WEB-034: a tab's live loading + history state, per tab.
+     *
+     * Ephemeral by nature — it is the browser's opinion at this instant, not persisted state and
+     * not a `DomainEvent` — so it takes the same route the batch session does: its own
+     * broadcast, keyed by pane AND tab so a client can snap the strip to whichever tab is
+     * active (WEB-034) instead of stranding a frozen bar from a tab left mid-load.
+     */
+    readonly onNavStateChanged?: ((state: WebNavState) => void) | undefined;
+}
+
+/** One tab's live loading + history state (WEB-032/WEB-033). */
+export interface WebNavState {
+    readonly paneID: string;
+    readonly tabID: string;
+    readonly loading: boolean;
+    readonly canGoBack: boolean;
+    readonly canGoForward: boolean;
 }
 
 /** What `sendBatch` did, so the caller can answer honestly. */
@@ -365,6 +383,24 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (batchState.sessionOf(event.paneID) !== null) publishBatch(event.paneID);
     };
 
+    /**
+     * WEB-032/WEB-033: mirror the host's loading + history report to whoever is drawing chrome.
+     *
+     * Nothing is stored: the client keeps the last report per (pane, tab) and the daemon has no
+     * use for it — a reconnecting client learns the state from the next event, and a tab that is
+     * idle by then simply has no strip to draw, which is the correct picture.
+     */
+    const navStateEvent = (event: HostEventInput): void => {
+        if (event.tabID === undefined || event.tabID === '') return;
+        options.onNavStateChanged?.({
+            paneID: event.paneID,
+            tabID: event.tabID,
+            loading: event.payload['loading'] === true,
+            canGoBack: event.payload['can_go_back'] === true,
+            canGoForward: event.payload['can_go_forward'] === true
+        });
+    };
+
     const inspectEvent = (event: HostEventInput): void => {
         const arm = inspectState.armOf(event.paneID);
         if (arm === null) return;
@@ -609,6 +645,9 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                         return;
                     case 'page-state':
                         pageStateEvent(event);
+                        return;
+                    case 'nav-state':
+                        navStateEvent(event);
                         return;
                     case 'inspect':
                         inspectEvent(event);

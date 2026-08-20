@@ -32,6 +32,21 @@ const WORK: readonly WsProfile[] = [
 
 afterEach(cleanup);
 
+describe('the empty state (SET-080)', () => {
+    it('explains what a profile is and offers an inline Add while only `default` exists', () => {
+        const bound = setup();
+        const block = screen.getByTestId('profiles-none-yet');
+        expect(block.textContent).toContain('No workspace profiles yet.');
+        expect(block.textContent).toContain('environment variables');
+        fireEvent.click(screen.getByTestId('profile-add-inline'));
+        expect(bound.writes).toHaveLength(1);
+        // …and it is gone once a real profile exists.
+        cleanup();
+        setup(WORK);
+        expect(screen.queryByTestId('profiles-none-yet')).toBeNull();
+    });
+});
+
 describe('the profile list', () => {
     it('pins `default` first even for an empty config, and locks its name', () => {
         setup();

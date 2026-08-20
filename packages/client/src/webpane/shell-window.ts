@@ -24,18 +24,40 @@ export const SHELL_WINDOW_PARAM = 'shellWindow';
  * `search` defaults to the live location, so callers just call it; tests pass a string.
  */
 export function readShellWindowID(search?: string): string | null {
+    const value = readParam(SHELL_WINDOW_PARAM, search);
+    if (value === null) return null;
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * "Was the window around me created transparent?" (APP-012 / SET-049).
+ *
+ * Electron fixes `transparent` at window creation, so the shell decides it from the ghostty
+ * `background-opacity` it reads at launch and then TELLS the page, with `?windowTransparent=1`.
+ * The client needs the answer because painting the window fill with alpha is only correct when
+ * something behind it can show through: in an ordinary browser tab the same rgba would
+ * composite over the page's white canvas and wash the whole chrome out. One flag, set by the
+ * only party that knows, consumed by the only party that paints.
+ */
+export const WINDOW_TRANSPARENT_PARAM = 'windowTransparent';
+
+export function readWindowTransparent(search?: string): boolean {
+    const value = readParam(WINDOW_TRANSPARENT_PARAM, search);
+    if (value === null) return false;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed === '1' || trimmed === 'true';
+}
+
+function readParam(name: string, search?: string): string | null {
     const raw =
         search ??
         (globalThis as { location?: { search?: string } }).location?.search ??
         '';
     if (raw.length === 0) return null;
-    let value: string | null;
     try {
-        value = new URLSearchParams(raw).get(SHELL_WINDOW_PARAM);
+        return new URLSearchParams(raw).get(name);
     } catch {
         return null;
     }
-    if (value === null) return null;
-    const trimmed = value.trim();
-    return trimmed.length === 0 ? null : trimmed;
 }

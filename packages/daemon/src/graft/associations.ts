@@ -59,6 +59,15 @@ export interface CreateRepoAssociationWatchOptions {
     readonly pollIntervalMs?: number | undefined;
     /** Injected for tests; defaults to the real HEAD-file watcher. */
     readonly headWatch?: HeadWatchService | undefined;
+    /**
+     * A watched worktree was (re)read — a HEAD change, a new association, or the 30 s poll.
+     *
+     * The pane-branch producer (§GIT-091, `git/branch.ts`) hangs off this rather than opening a
+     * second HEAD watcher on the same files: a `git checkout` in one pane has to move the branch
+     * chip in every pane sitting in that tree, and this watcher is already the thing that knows
+     * a checkout happened.
+     */
+    readonly onWorktreeChanged?: ((worktreePath: string) => void) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -120,6 +129,11 @@ export function createRepoAssociationWatch(
         // Re-locate: the association may have been removed while git ran.
         const current = locate(store.getState(), associationID);
         if (current === null) return;
+        // §GIT-091's trigger: whatever this read learned, the panes inside the tree may need to
+        // learn too. Fired before the branch-label dispatch below because it is independent of
+        // whether the ASSOCIATION's label changed — a pane can be on a different branch to the
+        // association row (a nested worktree), and it still has to re-resolve on a checkout.
+        options.onWorktreeChanged?.(worktreePath);
         if (current.association.branchName === branch) return;
         store.dispatch({
             type: 'set-repo-association-branch',

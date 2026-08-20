@@ -41,8 +41,44 @@ export interface ControlPingProbe {
     readonly build?: string | undefined;
     /** Is the daemon's state actually reaching disk? Undefined = it did not say. */
     readonly persistence?: ControlPingPersistence | undefined;
+    /** Did the optional TCP listener bind? Undefined = no TCP listener was configured. */
+    readonly tcp?: ControlPingTcp | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
+}
+
+/**
+ * The `tcp` block of a `ping` reply, decoded (§SET-021 / §AGNT-005).
+ *
+ * Absent when the daemon configured no TCP listener at all — a different fact from "asked for
+ * one and it failed to bind", and the two must never print the same way.
+ */
+export interface ControlPingTcp {
+    /** The port `tcp-port` asked for. */
+    readonly requested: number;
+    readonly host?: string | undefined;
+    /** The port actually listening; undefined when the bind failed. */
+    readonly bound?: number | undefined;
+    /** The bind failure, verbatim; undefined when it bound. */
+    readonly error?: string | undefined;
+}
+
+/** Decode `ping`'s additive `tcp` block; undefined when absent or malformed. */
+export function readTcpStatus(reply: Record<string, unknown>): ControlPingTcp | undefined {
+    const raw = reply['tcp'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+    const source = raw as Record<string, unknown>;
+    const requested = readNumber(source, 'requested');
+    if (requested === undefined) return undefined;
+    const bound = readNumber(source, 'bound');
+    const host = readString(source, 'host');
+    const error = readString(source, 'error');
+    return {
+        requested,
+        ...(host !== undefined ? { host } : {}),
+        ...(bound !== undefined ? { bound } : {}),
+        ...(error !== undefined ? { error } : {})
+    };
 }
 
 /** Decode `ping`'s additive `persistence` block; undefined when absent or malformed. */
@@ -132,13 +168,15 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const version = readString(reply, 'version');
                 const build = readString(reply, 'build');
                 const persistence = readPersistenceHealth(reply);
+                const tcp = readTcpStatus(reply);
                 finish({
                     alive: true,
                     reply,
                     ...(pid !== undefined ? { pid } : {}),
                     ...(version !== undefined ? { version } : {}),
                     ...(build !== undefined ? { build } : {}),
-                    ...(persistence !== undefined ? { persistence } : {})
+                    ...(persistence !== undefined ? { persistence } : {}),
+                    ...(tcp !== undefined ? { tcp } : {})
                 });
                 return;
             }

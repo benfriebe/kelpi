@@ -124,6 +124,43 @@ describe('icon verbs', () => {
             error: 'set-workspace-icon requires workspace_id'
         });
     });
+
+    /**
+     * §WS-074: the sheet's heuristic is not the only line of defence. A hand-written frame
+     * that names a letter, a digit or a whole word is refused on BOTH icon verbs, and the
+     * refusal leaves the stored icon exactly as it was.
+     */
+    it('re-validates an emoji payload and leaves the icon untouched when it fails', () => {
+        const f = fixture();
+        f.store.dispatch({ type: 'create-group', id: G1, name: 'infra', color: 'blue', now: 1 });
+        const { session, transport } = f.connect();
+
+        ask(session, transport, { command: 'set-workspace-icon', workspace_id: W1, icon: 'emoji:🔥' });
+        for (const bad of ['emoji:a', 'emoji:7', 'emoji:-', 'emoji:hello', 'emoji:Ω']) {
+            const reply = ask(session, transport, { command: 'set-workspace-icon', workspace_id: W1, icon: bad });
+            expect(reply['ok'], bad).toBe(false);
+            expect(String(reply['error'])).toContain('not a usable icon');
+        }
+        // Untouched by every refusal.
+        expect(f.store.state().workspaces[0]?.icon).toEqual({ kind: 'emoji', grapheme: '🔥' });
+
+        // The group verb runs the same check…
+        expect(ask(session, transport, { command: 'set-group-icon', group_id: G1, icon: 'emoji:x' })).toEqual({
+            ok: false,
+            error: "'x' is not a usable icon: give one emoji or symbol"
+        });
+        expect(f.store.state().groups[0]?.icon).toBeNull();
+
+        // …and the symbols the palette really does offer still pass, `system:` tokens included.
+        for (const good of ['emoji:⛙', 'emoji:❤️', 'emoji:1️⃣', 'emoji:🇦🇺']) {
+            expect(ask(session, transport, { command: 'set-group-icon', group_id: G1, icon: good })['ok'], good).toBe(
+                true
+            );
+        }
+        expect(ask(session, transport, { command: 'set-group-icon', group_id: G1, icon: 'system:star' })['ok']).toBe(
+            true
+        );
+    });
 });
 
 describe('move-workspaces', () => {

@@ -190,13 +190,21 @@ export function buildSettingsSnapshot(
             showSystemStatGraphs: chrome.showSystemStatGraphs,
             sparklineStyle: chrome.sparklineStyle,
             sparklineColor: chrome.sparklineColor,
-            sparklineWidth: chrome.sparklineWidth
+            sparklineWidth: chrome.sparklineWidth,
+            searchMatchColor: chrome.searchMatchColor,
+            searchMatchTextColor: chrome.searchMatchTextColor,
+            searchMatchCurrentColor: chrome.searchMatchCurrentColor,
+            searchMatchCurrentTextColor: chrome.searchMatchCurrentTextColor
         },
         general: {
             focusFollowsMouse: general.focusFollowsMouse,
             focusFollowsMouseDelay: general.focusFollowsMouseDelay,
             theme: general.theme,
             confirmWorkspaceDeleteWhenActive: general.confirmWorkspaceDeleteWhenActive,
+            // §AGNT-117: the quit dialog's suppression, now daemon-owned like its twin. The
+            // Electron shell reads it off its own status WS's `welcome.settings`, so the ⌘Q
+            // checkbox and Settings ▸ Workspaces can no longer disagree.
+            confirmQuitWhenActive: general.confirmQuitWhenActive,
             tcpPort: general.tcpPort,
             // The CONFIG STRING, not the parsed trigger — the wire is JSON and the client's
             // recorder speaks this spelling in both directions.
@@ -209,7 +217,10 @@ export function buildSettingsSnapshot(
             autoDetectRepos: general.autoDetectRepos,
             worktreeBasePath: general.worktreeBasePath,
             newWorkspacePlacement: general.newWorkspacePlacement,
-            newGroupPlacement: general.newGroupPlacement
+            newGroupPlacement: general.newGroupPlacement,
+            // SET-011: read by the CLIENT's create gestures (⌘N, the New Workspace form), so
+            // it has to ride the snapshot rather than only being consulted daemon-side.
+            inheritGroupOnNewWorkspace: general.inheritGroupOnNewWorkspace
         },
         appearance: {
             backgroundColor: appearance.backgroundColor,

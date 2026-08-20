@@ -18,7 +18,7 @@ import { useEffect, useRef, type ReactElement } from 'react';
 
 import type { ContentApi } from './client';
 import { ContentFrame, ContentStatus } from './ContentFrame';
-import type { ClipboardWriter, LinkOpener } from './bridge';
+import type { ClipboardWriter, FindPalette, LinkOpener } from './bridge';
 import type { ScrollStore } from './scroll';
 import { useContent } from './useContent';
 
@@ -37,6 +37,8 @@ export interface DiffPaneProps {
     readonly openLink?: LinkOpener | undefined;
     /** Bump to open the find bar (§3.13 — a diff is as searchable as a preview). */
     readonly findToken?: number | undefined;
+    /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
+    readonly findPalette?: Partial<FindPalette> | undefined;
 }
 
 export function DiffPane(props: DiffPaneProps): ReactElement {
@@ -74,6 +76,7 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
             writeClipboard={props.writeClipboard}
             openLink={props.openLink}
             findToken={props.findToken}
+            findPalette={props.findPalette}
         />
     );
 }

@@ -231,6 +231,49 @@ export type WsClientMessage =
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
+/**
+ * What the daemon's optional TCP control listener actually did (§SET-021 / §AGNT-005).
+ *
+ * The config file says which port was ASKED for; only the daemon knows whether the bind
+ * succeeded. Settings ▸ General ▸ Network reads its port field out of the settings snapshot and
+ * its *state* out of this, so the row can say "listening on 19400" or "port 19400 unavailable:
+ * EADDRINUSE" instead of a hopeful "takes effect on the next daemon start".
+ *
+ * Rides on `welcome` for the same reason settings do: it is not domain state, no `DomainEvent`
+ * describes it, and a delta replay must never touch it. It changes only when the daemon
+ * restarts, and every reconnect re-sends it.
+ */
+export interface WsTcpTransportStatus {
+    /** The port `tcp-port` asked for. */
+    readonly requested: number;
+    readonly host: string;
+    /** The port actually listening; null when the bind failed. */
+    readonly bound: number | null;
+    /** The bind failure, ready to show a user; null when it bound. */
+    readonly error: string | null;
+}
+
+export interface WsTransportStatus {
+    /** null = no TCP listener was configured — NOT the same as one that failed to bind. */
+    readonly tcp: WsTcpTransportStatus | null;
+}
+
+/**
+ * `transport-changed`: the daemon re-bound (or dropped) a listener while clients were attached
+ * (§AGNT-005's live re-bind).
+ *
+ * Its own message rather than a field on `settings-changed`, because the two say different
+ * things: `settings-changed` carries what the config FILE says, this carries what the listener
+ * actually DID. A client that predates it ignores an unknown message type, which is exactly the
+ * additive behaviour the protocol assumes everywhere else.
+ */
+export const WS_TRANSPORT_CHANGED_MESSAGE = 'transport-changed';
+
+export interface WsTransportChangedMessage {
+    readonly type: typeof WS_TRANSPORT_CHANGED_MESSAGE;
+    readonly transport: WsTransportStatus;
+}
+
 export interface WsWelcomeMessage {
     readonly type: 'welcome';
     readonly protocolVersion: number;
@@ -246,6 +289,12 @@ export interface WsWelcomeMessage {
      * daemon that predates settings sync; later changes arrive as `settings-changed`.
      */
     readonly settings?: WsSettingsSnapshot;
+    /**
+     * §SET-021: what happened to the control listeners this daemon was configured with.
+     * Additive — absent on a daemon that predates it, which a client must read as "unknown",
+     * never as "everything bound".
+     */
+    readonly transport?: WsTransportStatus;
 }
 
 export const WS_REJECTION_CODES = ['protocol-mismatch', 'unauthorized', 'server-error'] as const;

@@ -26,7 +26,7 @@
  * the app" card — the pane is real daemon state either way.
  */
 
-import type { NexAction } from '@nex/core/config';
+import { parseKeyTrigger, type NexAction } from '@nex/core/config';
 import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@nex/core/layout';
 import type { JsonObject } from '@nex/protocol';
 import {
@@ -64,6 +64,7 @@ import {
 import {
     CommandPalette,
     ContextMenu,
+    DEFAULT_PROFILE_NAME,
     HelpOverlay,
     Inspector,
     Sidebar,
@@ -114,9 +115,11 @@ import { PaneGrid, PaneSearchOverlay, type PaneModel, type RenderPane } from './
 import { SettingsOverlay, type SettingsActions, type SettingsTabID } from './settings';
 import {
     selectActiveWorkspace,
+    selectActiveWorkspaceID,
     selectAgentSummary,
     selectFilteredSidebarEntries,
     selectFocusedPaneID,
+    selectGroupForWorkspace,
     selectPane,
     selectVisibleWorkspaceIDs,
     recentlyClosedCount,
@@ -140,13 +143,17 @@ import {
     chromeTextIsFocused,
     replayChordCommand,
     createWebPanePriority,
+    navStateKey,
+    useBlankWebPaneURLFocus,
     useWebPaneUI,
+    type BlankURLTarget,
     type FocusedWebPane,
     type WebUIConnection,
     createGeometryReporter,
     createWebPaneCommands,
     parseRevealMessage,
     readShellWindowID,
+    readWindowTransparent,
     revealAppliesHere,
     type WebPaneTab
 } from './webpane';
@@ -236,12 +243,22 @@ export function App(props: AppProps): ReactElement {
         return appearance.isDark ? 'dark' : 'light';
     }, [settings.loaded, chromeSettings.appearance, appearance.isDark]);
 
+    /**
+     * APP-012 / SET-049 — the window fill follows the ghostty opacity, but ONLY inside a shell
+     * window the Electron main process actually created transparent (`?windowTransparent=1`).
+     * In a browser tab the same rgba would composite over the page's white canvas and wash the
+     * chrome out, so a browser keeps the opaque fill it has always had.
+     */
+    const windowOpacity =
+        readWindowTransparent() && settings.loaded ? appearance.backgroundOpacity : 1;
+
     return (
         <ThemeProvider
             appearance={chromeAppearance}
             // SET-032/033: `"<bucket>:<key>" → "RRGGBB"`, resolved per bucket by
             // `resolveChromeTheme`. An empty map leaves the shipped preset untouched.
             overrides={chromeSettings.colors}
+            windowOpacity={windowOpacity}
             applyToDocument
             className="contents"
             {...(style !== undefined ? { style } : {})}
@@ -414,6 +431,18 @@ function Shell(props: AppProps): ReactElement {
     const focusedPaneID = useMemo(() => selectFocusedPaneID(nex), [nex]);
     const filteredEntries = useMemo(() => selectFilteredSidebarEntries(nex), [nex]);
     const agentSummary = useMemo(() => selectAgentSummary(nex), [nex]);
+    /**
+     * SET-011: the group the New Workspace form preselects when it was not opened scoped to one
+     * — the active workspace's, while "Inherit group when creating a new workspace" is on. ⌘N
+     * reads the same rule from `act`; this is the form's half (§WS-076).
+     */
+    const inheritGroupID = useMemo(
+        () =>
+            !settings.general.inheritGroupOnNewWorkspace || workspace === null
+                ? null
+                : (selectGroupForWorkspace(nex, workspace.id)?.id ?? null),
+        [nex, settings.general.inheritGroupOnNewWorkspace, workspace]
+    );
 
     /**
      * §WS-137's data feed. The key is a signature of the workspace's associations, so a delta
@@ -550,6 +579,18 @@ function Shell(props: AppProps): ReactElement {
     const [webFindRequest, setWebFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
     const [webURLRequest, setWebURLRequest] = useState<{ paneID: string; seq: number } | null>(null);
 
+    /** WEB-002's input: every web pane on screen, with the URL its active tab is showing. */
+    const blankURLTargets = useMemo<readonly BlankURLTarget[]>(
+        () =>
+            webPaneIDs.map((paneID) => {
+                const web = workspace?.webPanes[paneID];
+                const tabs = web?.tabs ?? [];
+                const tab = tabs.find((candidate) => candidate.id === web?.activeTabID) ?? tabs[0] ?? null;
+                return { paneID, activeTabID: tab?.id ?? null, activeURL: tab?.url ?? '' };
+            }),
+        [webPaneIDs, workspace]
+    );
+
     /**
      * The web verbs, each gated on the focused pane actually being a web pane (WEB-155). They
      * back BOTH the bindable `web_*` actions and the hard-coded priority layer, so the two
@@ -625,6 +666,11 @@ function Shell(props: AppProps): ReactElement {
             }
         };
     }, [store, webCommands]);
+
+    // WEB-002: a web pane (or tab) that arrives BLANK hands the caret to the URL bar; one that
+    // arrives with a URL is loading a page, so focus belongs to the page. Same token the ⌘L
+    // path bumps, so the two cannot disagree about what "focus the URL bar" means.
+    useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar);
 
     /**
      * §7.3's tri-state layer, behind a ref so the key dispatcher (rebuilt only on a keybinding
@@ -717,7 +763,22 @@ function Shell(props: AppProps): ReactElement {
          * attached client as well (`handlers/app/workspaces.ts`) — this is the local, instant
          * half, and the two are idempotent.
          */
-        const runCreateWorkspace = (promise: Promise<CommandReply>): true => {
+        /**
+         * SET-011's group inheritance, as the create gestures read it: the active workspace's
+         * group when the setting is on, else null. Reads `store.getState()` so the value is
+         * whatever the settings snapshot says at the moment of the gesture.
+         */
+        const inheritedGroupID = (): string | null => {
+            const state = store.getState();
+            if (!state.settings.value.general.inheritGroupOnNewWorkspace) return null;
+            const id = selectActiveWorkspaceID(state);
+            return id === null ? null : (selectGroupForWorkspace(state, id)?.id ?? null);
+        };
+
+        const runCreateWorkspace = (
+            promise: Promise<CommandReply>,
+            repoPaths: readonly string[] = []
+        ): true => {
             void promise.then(
                 (reply) => {
                     if (!isOkReply(reply)) {
@@ -728,6 +789,25 @@ function Shell(props: AppProps): ReactElement {
                     if (created !== undefined) {
                         setScrollToWorkspaceID(created);
                         runtime.activateWorkspace(created);
+                        // §WS-075's Repositories section: one association per chosen repo,
+                        // pointing at the repo's own path, once the workspace exists. The
+                        // create verb carries no repo list (only `--worktree` does), so these
+                        // ride the same `add-repo-association` the inspector uses.
+                        for (const path of repoPaths) {
+                            void commands
+                                .addRepoAssociation({ workspaceID: created, path })
+                                .then((association) => {
+                                    if (!isOkReply(association)) {
+                                        notifyFailure('Add repository', replyError(association));
+                                    }
+                                })
+                                .catch((error: unknown) => {
+                                    notifyFailure(
+                                        'Add repository',
+                                        error instanceof Error ? error.message : String(error)
+                                    );
+                                });
+                        }
                     }
                 },
                 (error: unknown) => {
@@ -1124,17 +1204,55 @@ function Shell(props: AppProps): ReactElement {
                 return run('Restart agent', commands.restartPaneAgent({ paneID }));
             },
 
+            /**
+             * ⌘N. SET-011: with "Inherit group when creating a new workspace" on (the default)
+             * and the active workspace inside a group, the new one joins that group — the
+             * preselection `NewWorkspaceSheet.swift:66` makes, applied here because this
+             * gesture has no sheet to preselect in. The wire verb is untouched, so
+             * `nex workspace create` still lands at top level.
+             */
             newWorkspace(): boolean {
-                return runCreateWorkspace(commands.createWorkspace({}));
+                const inherited = inheritedGroupID();
+                return runCreateWorkspace(
+                    commands.createWorkspace(inherited === null ? {} : { group: inherited })
+                );
             },
 
-            createWorkspace(name: string, groupID: string | null): boolean {
+            /**
+             * The New Workspace form's submit. Unlike ⌘N this carries an EXPLICIT group (the
+             * form's picker, itself preselected by the same inheritance rule), so "No group"
+             * is honoured rather than being re-inherited here.
+             *
+             * `options` is what the shipped sheet collects beside the name: the colour swatch,
+             * the profile, and the repositories to associate once the workspace exists
+             * (§WS-075). Every field is optional, so the older two-argument call sites are
+             * unchanged.
+             */
+            createWorkspace(
+                name: string,
+                groupID: string | null,
+                options: {
+                    color?: WorkspaceColor | undefined;
+                    profile?: string | null | undefined;
+                    repoPaths?: readonly string[] | undefined;
+                } = {}
+            ): boolean {
                 const trimmed = name.trim();
+                const repoPaths = options.repoPaths ?? [];
                 return runCreateWorkspace(
                     commands.createWorkspace({
                         ...(trimmed.length > 0 ? { name: trimmed } : {}),
-                        ...(groupID === null ? {} : { group: groupID })
-                    })
+                        ...(groupID === null ? {} : { group: groupID }),
+                        ...(options.color === undefined ? {} : { color: options.color }),
+                        // `default` (or null) means "no assignment" — the daemon's own
+                        // normalization — so it is simply not sent.
+                        ...(options.profile === undefined ||
+                        options.profile === null ||
+                        options.profile === DEFAULT_PROFILE_NAME
+                            ? {}
+                            : { profile: options.profile })
+                    }),
+                    repoPaths
                 );
             },
 
@@ -1198,10 +1316,17 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
 
-            createGroup(name: string): boolean {
+            /** `color` is the New Group form's swatch; `null`/absent is its "None" (§WS-082). */
+            createGroup(name: string, color?: WorkspaceColor | null | undefined): boolean {
                 const trimmed = name.trim();
                 if (trimmed.length === 0) return false;
-                return run('New group', commands.createGroup({ name: trimmed }));
+                return run(
+                    'New group',
+                    commands.createGroup({
+                        name: trimmed,
+                        ...(color === undefined || color === null ? {} : { color })
+                    })
+                );
             },
 
             renameGroup(groupID: string, name: string): boolean {
@@ -1396,10 +1521,21 @@ function Shell(props: AppProps): ReactElement {
                 return run('Label workspaces', commands.setBulkLabel({ workspaceIDs, label, apply }));
             },
 
-            createGroupForWorkspaces(name: string, workspaceIDs: readonly string[]): boolean {
+            createGroupForWorkspaces(
+                name: string,
+                workspaceIDs: readonly string[],
+                color?: WorkspaceColor | null | undefined
+            ): boolean {
                 const trimmed = name.trim();
                 if (trimmed.length === 0) return false;
-                return run('New group', commands.createGroupForWorkspaces({ name: trimmed, workspaceIDs }));
+                return run(
+                    'New group',
+                    commands.createGroupForWorkspaces({
+                        name: trimmed,
+                        workspaceIDs,
+                        ...(color === undefined || color === null ? {} : { color })
+                    })
+                );
             },
 
             /**
@@ -1509,12 +1645,19 @@ function Shell(props: AppProps): ReactElement {
                 name: string,
                 groupID: string | null,
                 worktree: WorkspaceWorktreeRequest,
-                repoPath: string
+                repoPath: string,
+                extras: { color?: WorkspaceColor | undefined; profile?: string | null | undefined } = {}
             ): Promise<string | null> {
                 try {
                     const reply = await commands.createWorkspace({
                         ...(name.trim().length > 0 ? { name: name.trim() } : {}),
                         ...(groupID === null ? {} : { group: groupID }),
+                        ...(extras.color === undefined ? {} : { color: extras.color }),
+                        ...(extras.profile === undefined ||
+                        extras.profile === null ||
+                        extras.profile === DEFAULT_PROFILE_NAME
+                            ? {}
+                            : { profile: extras.profile }),
                         repo: repoPath,
                         worktree: worktree.name,
                         branch: worktree.branch,
@@ -1622,6 +1765,13 @@ function Shell(props: AppProps): ReactElement {
     // opaque hex: ghostty-web's parser maps `rgba()` (and every other non-hex form) to BLACK.
     // The pane container behind the canvas gets the alpha instead — `paneFill` below — which
     // is exactly the Swift split (renderer takes the color, container takes the opacity, §3.8).
+    //
+    // APP-012's limit, stated where the reason lives: under a TRANSPARENT window (see the root
+    // provider's `windowOpacity`) the desktop shows through the window fill, the grid gutters
+    // and the pane padding, but NOT through the terminal's own canvas — the engine paints that
+    // with this opaque hex. The Swift app got the other behaviour because libghostty applied
+    // `background-opacity` inside the surface; no engine here exposes that, and handing
+    // ghostty-web an `rgba()` would paint every terminal black.
     const paneTheme = useMemo<TerminalTheme | undefined>(() => {
         const background = normalizeHexColor(settings.appearance.backgroundColor);
         if (background === null) return terminalTheme;
@@ -1653,6 +1803,41 @@ function Shell(props: AppProps): ReactElement {
                 chromeTheme.windowBackground
             ),
         [settings.appearance.backgroundColor, settings.appearance.backgroundOpacity, chromeTheme.windowBackground]
+    );
+
+    /**
+     * SET-219 / TERM-021 — the user-overridable search-highlight palette.
+     *
+     * The Swift app laid a Nex-managed ghostty defaults file UNDER the user's own config so
+     * libghostty resolved `search-background` and friends with the user's value winning. There
+     * is no libghostty here: every search highlight this app draws is ours, so the same four
+     * colours are nex-config keys and this is where they reach the two surfaces that paint a
+     * match — the content panes' injected find script, and (below) the terminal's search
+     * selection.
+     */
+    const findPalette = useMemo(
+        () => ({
+            match: settings.chrome.searchMatchColor,
+            matchText: settings.chrome.searchMatchTextColor,
+            current: settings.chrome.searchMatchCurrentColor,
+            currentText: settings.chrome.searchMatchCurrentTextColor
+        }),
+        [
+            settings.chrome.searchMatchColor,
+            settings.chrome.searchMatchTextColor,
+            settings.chrome.searchMatchCurrentColor,
+            settings.chrome.searchMatchCurrentTextColor
+        ]
+    );
+
+    /** `paneTheme` with the search-match colours in the selection slots (see `renderPane`). */
+    const searchPaneTheme = useMemo<TerminalTheme>(
+        () => ({
+            ...(paneTheme ?? {}),
+            selectionBackground: findPalette.current,
+            selectionForeground: findPalette.currentText
+        }),
+        [paneTheme, findPalette]
     );
 
     // Memoized so `renderPane`'s dependency list only changes when the FONT changes: the
@@ -1716,6 +1901,7 @@ function Shell(props: AppProps): ReactElement {
             addLabelPreset: (input) => void run('Add label preset', commands.addLabelPreset(input)),
             updateLabelPreset: (input) => void run('Update label preset', commands.updateLabelPreset(input)),
             removeLabelPreset: (id) => void run('Delete label preset', commands.removeLabelPreset({ id })),
+            moveLabelPreset: (input) => void run('Reorder label presets', commands.moveLabelPreset(input)),
             // Settings ▸ Repositories (§GIT-065…§GIT-072). A registry change lands as a
             // `repos-changed` delta, so nothing here caches a list — the tab re-renders from
             // the mirror the way every other settings surface does.
@@ -1833,6 +2019,10 @@ function Shell(props: AppProps): ReactElement {
     settingsOpenRef.current = settingsTab !== null;
     const helpOpenRef = useRef(helpOpen);
     helpOpenRef.current = helpOpen;
+    // SET-187's input, as a ref: the dispatcher is installed once and must see the CURRENT
+    // global hotkey, not the one that was configured when it was built.
+    const globalHotkeyRef = useRef(settings.general.globalHotkey);
+    globalHotkeyRef.current = settings.general.globalHotkey;
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
@@ -1850,6 +2040,20 @@ function Shell(props: AppProps): ReactElement {
             isPaletteOpen: () =>
                 store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current,
             hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null,
+            /*
+             * SET-187 — never dispatch an in-app binding that shadows the system-wide hotkey.
+             *
+             * Electron's `globalShortcut` consumes the combo at the OS level, so this layer is
+             * belt-and-braces exactly as the Swift monitor's was on top of Carbon; it matters
+             * when the OS registration was REFUSED (another app owns the combo, SET-083), where
+             * the app would otherwise be the only thing that reacts to a hotkey the user
+             * believes is global. Read through a ref so a re-recorded hotkey applies without
+             * rebuilding the dispatcher.
+             */
+            globalHotkey: () => {
+                const configured = globalHotkeyRef.current;
+                return configured === null || configured === '' ? null : parseKeyTrigger(configured);
+            },
             // §7.3 / TERM-156: a web pane's browser shortcuts run BEFORE the binding lookup, so
             // every other pane type keeps the global defaults on ⌘W / ⌘R / ⌘= and friends.
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
@@ -2503,6 +2707,7 @@ function Shell(props: AppProps): ReactElement {
                         onFocusRequest={onTerminalFocus}
                         onToggleEdit={act.toggleMarkdownEdit}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                        findPalette={findPalette}
                         onOpenExternalEditor={act.openExternalEditor}
                     />
                 );
@@ -2518,6 +2723,7 @@ function Shell(props: AppProps): ReactElement {
                         documentBackground={contentDocumentFill}
                         onFocusRequest={onTerminalFocus}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                        findPalette={findPalette}
                     />
                 );
             }
@@ -2538,12 +2744,21 @@ function Shell(props: AppProps): ReactElement {
             // (`webpane/WebPane.tsx`), and in a browser that hole holds an honest card.
             if (pane.type === 'web') {
                 const web = workspace?.webPanes[paneID];
+                // WEB-032/WEB-033/WEB-034: the ACTIVE tab's own last report. Reading it per tab
+                // is what makes a switch snap to the new tab's state instead of stranding the
+                // old one's bar.
+                const activeWebTab =
+                    (web?.tabs ?? []).find((tab) => tab.id === web?.activeTabID) ?? web?.tabs[0] ?? null;
+                const nav = webUI.navStates[navStateKey(paneID, activeWebTab?.id ?? null)];
                 return (
                     <WebPane
                         paneID={paneID}
                         tabs={web?.tabs ?? EMPTY_WEB_TABS}
                         activeTabID={web?.activeTabID ?? null}
                         isPrivate={web?.isPrivate ?? false}
+                        loading={nav?.loading ?? false}
+                        canGoBack={nav?.canGoBack ?? false}
+                        canGoForward={nav?.canGoForward ?? false}
                         focused={focused}
                         visible={renderState.visible && !modalOpen}
                         embedded={shellWindowID !== null}
@@ -2566,13 +2781,23 @@ function Shell(props: AppProps): ReactElement {
             if (!mountedSet.has(paneID)) {
                 return <ContentPanePlaceholder pane={pane} variant="detached" />;
             }
+            /*
+             * SET-219 / TERM-021's terminal half. A terminal search match is shown by the
+             * engine SELECTING it (`renderer.revealMatch`), so the selection colours ARE the
+             * search-match colours while a search is open on this pane — which is exactly what
+             * ghostty's `search-selected-background` / `-foreground` did for the Swift app.
+             * Off the search path the palette is untouched, so an ordinary drag-selection keeps
+             * the theme's own colours.
+             */
+            const searching = workspace !== null && workspace.searchingPaneID === paneID;
+            const theme = searching ? searchPaneTheme : paneTheme;
             return (
                 <TerminalPane
                     paneID={paneID}
                     ptyApi={runtime.pty}
                     focused={focused}
                     visible={renderState.visible}
-                    theme={paneTheme}
+                    theme={theme}
                     background={paneFill}
                     {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
                     {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
@@ -2587,6 +2812,7 @@ function Shell(props: AppProps): ReactElement {
             act,
             content,
             findRequest,
+            searchPaneTheme,
             searchReveal,
             paneByID,
             workspace,
@@ -2661,13 +2887,17 @@ function Shell(props: AppProps): ReactElement {
                     onSetGroupIcon={act.setGroupIcon}
                     onRenameGroup={act.renameGroup}
                     onDeleteGroup={act.deleteGroup}
-                    onCreateWorkspace={(name, groupID, worktree) => {
-                        if (worktree === undefined) return act.createWorkspace(name, groupID);
+                    onCreateWorkspace={(name, groupID, worktree, extras) => {
+                        if (worktree === undefined) return act.createWorkspace(name, groupID, extras ?? {});
                         const repo = inspectorData.repos.find((candidate) => candidate.id === worktree.repoID);
                         if (repo === undefined) return 'that repository is no longer registered';
-                        return act.createWorkspaceWithWorktree(name, groupID, worktree, repo.path);
+                        return act.createWorkspaceWithWorktree(name, groupID, worktree, repo.path, extras ?? {});
                     }}
                     onCreateGroup={act.createGroup}
+                    // §WS-075/§SET-214/SET-011: the form's Profile picker and its preselected
+                    // group. Both are assembly's to resolve — the sidebar renders them.
+                    profiles={settings.profiles.map((profile) => profile.name)}
+                    inheritGroupID={inheritGroupID}
                     keyBindings={bindings}
                     scrollToWorkspaceID={scrollToWorkspaceID}
                     onScrollHandled={() => setScrollToWorkspaceID(null)}
@@ -2795,6 +3025,13 @@ function Shell(props: AppProps): ReactElement {
                         if (error === null) inspectorData.refresh();
                         return error;
                     }}
+                    /* §GIT-066 inside §GIT-073's picker: register what a folder holds, then
+                       re-read the registry so the new rows appear in the open sheet. */
+                    onScanForRepos={(path) => {
+                        void commands.scanRepos({ path }).then(() => {
+                            inspectorData.refresh();
+                        });
+                    }}
                     onCreateWorktree={async (request) => {
                         const error = await act.addWorktree(request);
                         if (error === null) inspectorData.refresh();
@@ -2853,6 +3090,8 @@ function Shell(props: AppProps): ReactElement {
                 }}
                 actions={settingsActions}
                 bucket={bucket}
+                /* §SET-021: what the daemon's TCP listener actually did, for Settings ▸ Network. */
+                transport={daemon.transport}
                 onClose={closeSettings}
                 web={{
                     favourites: webUI.favourites,

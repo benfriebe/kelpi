@@ -113,6 +113,18 @@ describe('parseGeneralSettings', () => {
         );
     });
 
+    // SET-011, same UserDefaults→config-key move and the same lenient rule.
+    it('defaults group inheritance to on, off only for the literal false', () => {
+        expect(parseGeneralSettings('').inheritGroupOnNewWorkspace).toBe(true);
+        expect(parseGeneralSettings('inherit-group-on-new-workspace = FALSE').inheritGroupOnNewWorkspace).toBe(
+            false
+        );
+        expect(parseGeneralSettings('inherit-group-on-new-workspace = garbage').inheritGroupOnNewWorkspace).toBe(
+            true
+        );
+        expect(parseGeneralSettings('inherit-group-on-new-workspace = true').inheritGroupOnNewWorkspace).toBe(true);
+    });
+
     it('ignores unknown keys', () => {
         expect(parseGeneralSettings('who-knows = 5\ntheme = Nord').theme).toBe('Nord');
     });

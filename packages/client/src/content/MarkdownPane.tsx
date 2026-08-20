@@ -20,7 +20,7 @@ import { type ReactElement } from 'react';
 
 import type { ContentApi } from './client';
 import { ContentFrame, ContentStatus } from './ContentFrame';
-import type { ClipboardWriter, LinkOpener } from './bridge';
+import type { ClipboardWriter, FindPalette, LinkOpener } from './bridge';
 import type { RichClipboardWriter } from './copy';
 import { PlainTextEditor } from './PlainTextEditor';
 import type { ScrollStore } from './scroll';
@@ -43,6 +43,8 @@ export interface MarkdownPaneProps {
     readonly openLink?: LinkOpener | undefined;
     /** Bump to open the preview's find bar (the app's `toggle_search` binding, §3.13). */
     readonly findToken?: number | undefined;
+    /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
+    readonly findPalette?: Partial<FindPalette> | undefined;
     /**
      * CONT-081 — "Open in $EDITOR". Present = the affordance is drawn over the preview.
      *
@@ -104,6 +106,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             writeRichClipboard={props.writeRichClipboard}
             openLink={props.openLink}
             findToken={props.findToken}
+            findPalette={props.findPalette}
             // §3.14: both copy commands bail on a failed load — you cannot copy the synthetic
             // "Failed to load file" blockquote, so the affordance is simply absent.
             copySource={state.loaded ? state.text : null}

@@ -82,6 +82,21 @@ const REQUEST_CACHE_LIMIT = 512;
 export interface TabEventSink {
     console(paneID: string, tabID: string, payload: ConsoleLinePayload): void;
     pageState(paneID: string, tabID: string, payload: { url?: string; title?: string }): void;
+    /**
+     * WEB-032/WEB-033: the tab's live loading + history state.
+     *
+     * Chromium exposes no `estimatedProgress` (the KVO property the Swift progress strip bound
+     * its width to), so what the host can honestly report is the *bracket* —
+     * `did-start-loading` opens it, `did-stop-loading` closes it — and the client draws the
+     * documented approximation (an indeterminate strip) between the two.
+     * `canGoBack`/`canGoForward` ride the same event because they change at the same moments
+     * and the chrome needs them to dim its nav buttons.
+     */
+    navState(
+        paneID: string,
+        tabID: string,
+        payload: { loading: boolean; canGoBack: boolean; canGoForward: boolean }
+    ): void;
     inspect(paneID: string, tabID: string, payload: Record<string, unknown>): void;
     /**
      * §7.3: a batch badge was clicked, a popover comment was typed, or its Done/Remove was
@@ -175,6 +190,11 @@ class ElectronTab implements HostTab {
     private lastAttemptedURL: string;
     private failedLoad = false;
     private zoomFactor = 1;
+
+    /** WEB-033: true once a real URL has been asked for, so the bootstrap load stays silent. */
+    private navigated = false;
+    /** The last `nav-state` payload, so an unchanged repeat is not put on the wire. */
+    private lastNavState: { loading: boolean; canGoBack: boolean; canGoForward: boolean } | null = null;
 
     /** The pinned automation viewport, re-applied whenever the view returns to the holder. */
     private readonly viewport: { readonly width: number; readonly height: number };
@@ -359,9 +379,21 @@ class ElectronTab implements HostTab {
             return { action: 'deny' as const };
         });
 
+        // WEB-032/WEB-033. The bracket: `did-start-loading` opens it, `did-stop-loading` closes
+        // it, and `did-navigate` re-reports history so back/forward dim at the right moment.
+        // The bootstrap `about:blank` load raises the renderer before any URL is asked for; a
+        // bracket for it would flash a progress strip on a pane the user never navigated, so
+        // nothing is reported until the tab has actually been asked to go somewhere.
+        contents.on('did-start-loading', () => {
+            this.emitNavState(true);
+        });
+        contents.on('did-stop-loading', () => {
+            this.emitNavState(false);
+        });
         contents.on('did-navigate', (_event, url) => {
             this.failedLoad = false;
             this.applyZoom();
+            this.emitNavState(contents.isLoading());
             // The bootstrap `about:blank` load (see `bootstrap`) is not a page state change: the
             // daemon ignores placeholder URLs (§4.4) but would still take the empty title with it,
             // blanking a restored tab's header for the moment before the real load lands.
@@ -384,6 +416,10 @@ class ElectronTab implements HostTab {
             if (!isMainFrame || code === -3) return;
             this.failedLoad = true;
             warn(`web pane ${this.paneID} tab ${this.tabID}: load failed ${url} (${String(code)} ${description})`);
+            // A failure ends the load as surely as a success: without this the strip would sit
+            // at "loading" forever on a dead host (`did-stop-loading` does fire, but only after
+            // Chromium's own error page commits — this is the immediate, honest close).
+            this.emitNavState(false);
         });
         contents.on('render-process-gone', (_event, details) => {
             warn(`web pane ${this.paneID} tab ${this.tabID}: renderer gone (${details.reason})`);
@@ -393,6 +429,35 @@ class ElectronTab implements HostTab {
             if (this.disposed) return; // our own teardown, already mirrored daemon-side
             this.events.tabClosed(this.paneID, this.tabID);
         });
+    }
+
+    /**
+     * Report the tab's loading + history state, suppressing the pre-navigation noise.
+     *
+     * `navigated` flips on the first real `navigate()`, so the renderer-raising `about:blank`
+     * load cannot open a bracket. Identical consecutive reports are dropped — Chromium fires
+     * `did-navigate` and `did-stop-loading` back to back on a fast page, and the Swift
+     * coordinator suppressed duplicate `(progress,isLoading)` posts for the same reason.
+     */
+    private emitNavState(loading: boolean): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        if (!this.navigated) return;
+        const payload = {
+            loading,
+            canGoBack: this.contents.navigationHistory.canGoBack(),
+            canGoForward: this.contents.navigationHistory.canGoForward()
+        };
+        const last = this.lastNavState;
+        if (
+            last !== null &&
+            last.loading === payload.loading &&
+            last.canGoBack === payload.canGoBack &&
+            last.canGoForward === payload.canGoForward
+        ) {
+            return;
+        }
+        this.lastNavState = payload;
+        this.events.navState(this.paneID, this.tabID, payload);
     }
 
     // ── CDP events ──────────────────────────────────────────────────────────────────
@@ -568,6 +633,9 @@ class ElectronTab implements HostTab {
         if (url === '') return;
         this.lastAttemptedURL = url;
         this.failedLoad = false;
+        // From here on the tab has been asked to show something, so its load brackets are real
+        // (WEB-033) — the bootstrap `about:blank` that raised the renderer is not.
+        this.navigated = true;
         void this.ready.then(() => {
             if (this.disposed || this.contents.isDestroyed()) return;
             // §4.2: a `file://` load gets read access to the file's own directory so sibling
@@ -592,6 +660,30 @@ class ElectronTab implements HostTab {
         if (this.disposed || this.contents.isDestroyed()) return;
         this.failedLoad = false;
         if (this.contents.navigationHistory.canGoForward()) this.contents.navigationHistory.goForward();
+    }
+
+    /** WEB-032: the reload button wears a stop glyph mid-load, and that glyph stops the load. */
+    stop(): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        this.contents.stop();
+        this.emitNavState(false);
+    }
+
+    /**
+     * WEB-043: give the page keyboard focus.
+     *
+     * The pane's page is a separate renderer, so focus does not follow the Nex window's own
+     * focus ring — a pane focused by ⌘]/⌘[ or from the sidebar would keep typing into the
+     * client until it was clicked. The URL-bar exemption is the CLIENT's (it only sends this
+     * when no chrome text field has the caret), mirroring the Swift `claimFirstResponder`
+     * guard's `firstResponder is NSText` test.
+     */
+    focusView(): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        // Logged because it is otherwise unobservable from outside: keyboard focus lives in
+        // another renderer, so this line is what the visual audit asserts the handoff by.
+        log(`web pane ${this.paneID}: focusing the page view (tab ${this.tabID})`);
+        this.contents.focus();
     }
 
     reload(hard: boolean): void {

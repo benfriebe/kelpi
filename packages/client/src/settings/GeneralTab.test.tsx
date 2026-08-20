@@ -7,7 +7,7 @@
  * control that would do nothing.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot, type WsTransportStatus } from '@nex/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,9 +33,19 @@ function snapshot(general: Partial<WsSettingsSnapshot['general']> = {}): WsSetti
     return { ...DEFAULT_WS_SETTINGS, general: { ...DEFAULT_WS_SETTINGS.general, ...general } };
 }
 
-function renderTab(general: Partial<WsSettingsSnapshot['general']> = {}) {
+function renderTab(
+    general: Partial<WsSettingsSnapshot['general']> = {},
+    transport: WsTransportStatus | null = null
+) {
     const bound = actions();
-    render(<GeneralTab settings={snapshot(general)} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />);
+    render(
+        <GeneralTab
+            settings={snapshot(general)}
+            actions={bound}
+            paths={DEFAULT_SETTINGS_PATHS}
+            transport={transport}
+        />
+    );
     return bound;
 }
 
@@ -111,22 +121,101 @@ describe('Settings ▸ General', () => {
         expect(bound.writes).toEqual([{ key: 'tcp-port', value: String(DEFAULT_TCP_PORT) }]);
     });
 
+    // SET-020: the Apply button exists only while the typed text differs from the live port —
+    // it is the affordance that makes "this is applied deliberately" legible.
+    it('offers Apply only while the typed port differs from the live one', () => {
+        const bound = renderTab({ tcpPort: 19400 });
+        const input = screen.getByTestId('tcp-port-input') as HTMLInputElement;
+        expect(screen.queryByTestId('tcp-port-apply')).toBeNull();
+        fireEvent.change(input, { target: { value: '20500' } });
+        const apply = screen.getByTestId('tcp-port-apply');
+        fireEvent.mouseDown(apply);
+        expect(bound.writes).toEqual([{ key: 'tcp-port', value: '20500' }]);
+        expect(screen.queryByTestId('tcp-port-apply')).toBeNull();
+    });
+
     it('says the TCP listener applies on the next daemon start rather than pretending it rebinds', () => {
         renderTab({ tcpPort: 19400 });
         expect(screen.getByTestId('general-network').textContent).toContain('next daemon start');
     });
 
-    // SET-018: quit belongs to the desktop app, so the row says who owns it instead of
-    // offering a switch that writes a key nothing reads.
-    it('marks the quit confirmation as desktop-app-owned rather than offering a dead toggle', () => {
+    // SET-018: the quit confirmation moved into the daemon settings store (config key
+    // `confirm-quit-when-active`) and its switch lives on the Workspaces tab beside the
+    // workspace-delete one, so General points there rather than carrying a second copy.
+    it('no longer carries a quit row of its own', () => {
         renderTab();
-        const row = screen.getByTestId('confirm-quit-row');
-        expect(row.querySelector('input')).toBeNull();
-        expect(row.textContent).toContain('desktop app');
+        expect(screen.queryByTestId('confirm-quit-row')).toBeNull();
+        expect(screen.queryByTestId('general-quit')).toBeNull();
     });
 
     it('points at the Workspaces tab for the settings that live there', () => {
         renderTab();
-        expect(screen.getByTestId('settings-tab-general').textContent).toContain('Workspaces tab');
+        const text = screen.getByTestId('settings-tab-general').textContent ?? '';
+        expect(text).toContain('Workspaces tab');
+        expect(text).toContain('quit');
+    });
+
+    // SET-021: the config file says which port was ASKED for; only the daemon knows whether the
+    // bind succeeded, so the row reports what `welcome.transport` said.
+    describe('SET-021 — the TCP bind outcome', () => {
+        it('reports the port that is actually listening', () => {
+            renderTab(
+                { tcpPort: 19400 },
+                { tcp: { requested: 19400, host: '127.0.0.1', bound: 19400, error: null } }
+            );
+            expect(screen.getByTestId('tcp-listener-row').textContent).toContain(
+                'Listening on 127.0.0.1:19400'
+            );
+            expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
+        });
+
+        it('says the port is unavailable, with the daemon’s own error, when the bind failed', () => {
+            renderTab(
+                { tcpPort: 19400 },
+                {
+                    tcp: {
+                        requested: 19400,
+                        host: '127.0.0.1',
+                        bound: null,
+                        error: 'listen EADDRINUSE: address already in use 127.0.0.1:19400'
+                    }
+                }
+            );
+            const error = screen.getByTestId('tcp-bind-error');
+            expect(error.textContent).toContain('Port 19400 is unavailable');
+            expect(error.textContent).toContain('EADDRINUSE');
+            expect(screen.getByTestId('tcp-listener-row').textContent).toContain('unavailable');
+        });
+
+        it('does not claim a bind either way when the daemon said nothing', () => {
+            renderTab({ tcpPort: 19400 });
+            expect(screen.getByTestId('tcp-listener-row').textContent).toContain('as of daemon start');
+            expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
+        });
+
+        // A daemon started with `NEXD_TCP_PORT` (a dev container, the audit sandbox) is really
+        // listening even though this config file says nothing — "Disabled" would be false.
+        it('reports a listener the daemon has even when the config file does not ask for one', () => {
+            renderTab({ tcpPort: 0 }, { tcp: { requested: 52114, host: '127.0.0.1', bound: 52114, error: null } });
+            expect(screen.getByTestId('tcp-listener-row').textContent).toContain(
+                'Listening on 127.0.0.1:52114'
+            );
+        });
+
+        it('warns about a failed env-configured bind too', () => {
+            renderTab(
+                { tcpPort: 0 },
+                { tcp: { requested: 52114, host: '127.0.0.1', bound: null, error: 'listen EADDRINUSE' } }
+            );
+            expect(screen.getByTestId('tcp-bind-error').textContent).toContain('Port 52114 is unavailable');
+        });
+
+        it('separates "this daemon has no TCP listener" from a failed bind', () => {
+            renderTab({ tcpPort: 19400 }, { tcp: null });
+            expect(screen.getByTestId('tcp-listener-row').textContent).toContain(
+                'started with no TCP listener'
+            );
+            expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
+        });
     });
 });

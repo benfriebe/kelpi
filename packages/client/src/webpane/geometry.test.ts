@@ -10,7 +10,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { createGeometryReporter, type GeometryReport } from './geometry';
-import { readShellWindowID, SHELL_WINDOW_PARAM } from './shell-window';
+import {
+    readShellWindowID,
+    readWindowTransparent,
+    SHELL_WINDOW_PARAM,
+    WINDOW_TRANSPARENT_PARAM
+} from './shell-window';
 
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
 
@@ -178,5 +183,24 @@ describe('readShellWindowID', () => {
         expect(readShellWindowID('?token=abc')).toBeNull();
         expect(readShellWindowID(`?${SHELL_WINDOW_PARAM}=`)).toBeNull();
         expect(readShellWindowID(`?${SHELL_WINDOW_PARAM}=%20%20`)).toBeNull();
+    });
+});
+
+// APP-012 / SET-049: only the shell knows whether the frame around the page is transparent
+// (Electron fixes it at window creation), so it says so on the URL. A browser tab must NOT
+// paint an rgba window fill — there it would composite over white.
+describe('readWindowTransparent', () => {
+    it('is true only when the shell marked the window transparent', () => {
+        expect(readWindowTransparent(`?${WINDOW_TRANSPARENT_PARAM}=1`)).toBe(true);
+        expect(readWindowTransparent(`?${SHELL_WINDOW_PARAM}=WIN-1&${WINDOW_TRANSPARENT_PARAM}=true`)).toBe(
+            true
+        );
+    });
+
+    it('is false for a browser tab, an opaque shell window, and junk', () => {
+        expect(readWindowTransparent('')).toBe(false);
+        expect(readWindowTransparent(`?${SHELL_WINDOW_PARAM}=WIN-1`)).toBe(false);
+        expect(readWindowTransparent(`?${WINDOW_TRANSPARENT_PARAM}=0`)).toBe(false);
+        expect(readWindowTransparent(`?${WINDOW_TRANSPARENT_PARAM}=maybe`)).toBe(false);
     });
 });

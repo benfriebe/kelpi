@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { newUUID } from '@nex/core/codec';
-import { SYSTEM_STATS_INTERVAL_MS } from '@nex/protocol';
+import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@nex/protocol';
 import type { ResumeTuple } from '@nex/core/agent';
 
 import { createContentService, type ContentService } from '../content/index.js';
@@ -37,7 +37,8 @@ import {
 import {
     createControlServer,
     resolveControlEndpoints,
-    type ControlServer
+    type ControlServer,
+    type ControlTcpStatus
 } from '../control/index.js';
 import {
     assertPersistenceUsable,
@@ -90,7 +91,11 @@ import {
     type DaemonState,
     type NexStore
 } from '../store/index.js';
-import { createRepoAutoDetect } from '../git/index.js';
+import {
+    createPaneBranchWatch,
+    createRepoAutoDetect,
+    type PaneBranchWatchService
+} from '../git/index.js';
 import { createSystemStatsSampler } from '../stats/index.js';
 import { createTerminalStateService, type TerminalStateServiceImpl } from '../term/index.js';
 import {
@@ -103,6 +108,7 @@ import {
     resolveClientDistDir,
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
+    WEB_NAV_STATE_MESSAGE,
     type GraftChannel,
     type RepoChannel,
     type WsServer
@@ -236,6 +242,8 @@ export interface Daemon {
     readonly graft: GraftService;
     /** M7: HEAD watchers + the git-status poll behind the sidebar badges. */
     readonly repoWatch: RepoAssociationWatchService;
+    /** §GIT-091: the pane-branch producer chained behind pwd changes and HEAD changes. */
+    readonly branchWatch: PaneBranchWatchService;
     /** M7: breadcrumbs a crashed daemon left behind, detected once at start. */
     readonly graftOrphans: readonly GraftOrphan[];
     readonly dispatcher: ControlDispatcher;
@@ -435,6 +443,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             report(error, 'content appearance');
         }
         ws?.broadcast({ type: 'settings-changed', settings: snapshot });
+        // §AGNT-005: `tcp-port` is the one general setting whose effect is a LISTENER, so a
+        // change to it is applied rather than filed away for the next daemon start. It runs
+        // after the broadcast because the re-bind is async and its own result is broadcast
+        // separately (`transport-changed`).
+        void applyTcpPortSetting(snapshot.general.tcpPort);
         // Toggling `show-system-stats` in Settings starts / stops the sampler itself, not just
         // the gauges: a disabled toggle must cost nothing, not sample invisibly.
         refreshStatsGate();
@@ -472,6 +485,19 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 batch: serializeBatchSession(session)
             });
         },
+        // WEB-032/WEB-033: one tab's loading + history state. Ephemeral (no store, no
+        // persistence) — the chrome's progress strip and its dimmed nav buttons are the only
+        // consumers, and a client that missed one learns the truth from the next load.
+        onNavStateChanged: (navState) => {
+            ws?.broadcast({
+                type: WEB_NAV_STATE_MESSAGE,
+                paneID: navState.paneID,
+                tabID: navState.tabID,
+                loading: navState.loading,
+                can_go_back: navState.canGoBack,
+                can_go_forward: navState.canGoForward
+            });
+        },
         onFavouritesChanged: (favourites) => {
             ws?.broadcast({
                 type: WEB_FAVOURITES_MESSAGE,
@@ -484,6 +510,57 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
+
+    /**
+     * §SET-021 / §AGNT-005: whichever control server owns the optional TCP listener, and what
+     * happened to it. Only one of the two ever has TCP configured (`start()` re-creates
+     * `runControl` with the port when the compat path IS the run-dir path), so first-non-null
+     * wins and `null` means "no TCP listener was asked for".
+     */
+    const controlTcpStatus = (): ControlTcpStatus | null =>
+        compatControl?.tcpStatus ?? runControl?.tcpStatus ?? null;
+
+    /**
+     * §AGNT-005's live re-bind: `tcp-port` changed in the config file, so move the listener.
+     *
+     * `stopTCP → startTCP` on the server that owns TCP, never a full restart — the Unix socket
+     * keeps serving throughout, which is what makes this safe to do under a connected CLI. A
+     * failed bind is not an error here either: it lands on `tcpStatus`, rides the broadcast, and
+     * Settings ▸ Network says which port is unavailable.
+     *
+     * The broadcast is separate from `settings-changed` because the two say different things:
+     * that one carries what the FILE says, this one carries what the LISTENER did.
+     */
+    const applyTcpPortSetting = async (port: number): Promise<void> => {
+        // An env override (`NEXD_TCP_PORT`, or an explicit `tcpPort` option) OUTRANKS the config
+        // file at boot — `resolveControlEndpoints` says so — and it has to keep outranking it
+        // afterwards. Without this guard the first unrelated Settings write would read
+        // `tcp-port = 0` out of the file and tear down a listener the operator asked for on the
+        // command line, taking every `NEX_SOCKET=tcp:…` client with it.
+        if (endpoints.source.tcpPort === 'env') return;
+        const owner = compatControl?.tcpStatus !== null && compatControl !== undefined
+            ? compatControl
+            : (runControl ?? compatControl);
+        if (owner === undefined) return;
+        const wanted = port > 0 ? port : undefined;
+        const current = owner.tcpStatus;
+        // Nothing to do when the request is unchanged AND it succeeded; a previous FAILURE is
+        // worth retrying, because "the port is free now" is the common reason to come back here.
+        if ((current?.requested ?? undefined) === wanted && current?.error == null) return;
+        try {
+            const next = await owner.startTCP(wanted);
+            log(
+                next === null
+                    ? 'control tcp listener disabled'
+                    : next.bound !== null
+                      ? `control tcp listener rebound on ${next.host}:${String(next.bound)}`
+                      : `control tcp listener FAILED on port ${String(next.requested)}: ${String(next.error)}`
+            );
+        } catch (error) {
+            report(error, 'tcp rebind');
+        }
+        ws?.broadcast({ type: WS_TRANSPORT_CHANGED_MESSAGE, transport: { tcp: controlTcpStatus() } });
+    };
 
     /**
      * `$VISUAL` / `$EDITOR` resolution for the external-editor pane mode (CONT-081…088).
@@ -596,6 +673,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // `ping` reports this: a daemon that cannot save must never answer a health check as if
         // it could.
         persistenceHealth: () => persistence.health(),
+        // §SET-021: `ping` reports this too — a `tcp-port` that never bound is otherwise a log
+        // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out.
+        controlTransport: () => ({ tcp: controlTcpStatus() }),
         profiles: readProfiles,
         spawn: spawnDefaults,
         ...(options.now !== undefined ? { clock: options.now } : {}),
@@ -610,11 +690,27 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     // Every association-removal path (workspace delete, group cascade, repo removal,
     // auto-unlink) funnels through the store, so the reconciler is where §8.8's unconditional
     // graft force-stop + HEAD-watcher stop live.
+    /**
+     * §GIT-091's producer: `git rev-parse --abbrev-ref HEAD` behind every path that moves a
+     * pane's working directory (OSC 7, split inheritance, markdown/diff open, boot restore).
+     * Declared before `repoWatch` only so the HEAD-change hook below can name it.
+     */
+    const branchWatch = createPaneBranchWatch({
+        store,
+        git,
+        ...(options.now !== undefined ? { now: options.now } : {}),
+        ...(onError !== undefined ? { onError } : {})
+    });
+
     const repoWatch = createRepoAssociationWatch({
         store,
         git,
         graft,
         persist,
+        // A checkout in one pane moves the branch chip in every pane inside that worktree.
+        onWorktreeChanged: (worktreePath) => {
+            branchWatch.repoChanged(worktreePath);
+        },
         ...(onError !== undefined ? { onError } : {})
     });
 
@@ -811,6 +907,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // follow stream; nothing here can block the shutdown.
             webPanes.close();
             repoWatch.dispose();
+            branchWatch.dispose();
             // §5 quit flush: unwind every graft session (2 s cap) so a clean quit never leaves
             // a `nex-graft-active` breadcrumb behind — anything slower falls back to the
             // orphan-recovery banner on the next launch.
@@ -894,6 +991,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 content,
                 webPanes,
                 settings,
+                // §SET-021: `welcome.transport` — Settings ▸ Network shows what the listener
+                // actually did, not what the config file hoped for. A getter, because
+                // `restart-control-server` can re-bind under an attached client.
+                transport: () => ({ tcp: controlTcpStatus() }),
                 // The pane header's restart button: typing a resume command needs the same
                 // TerminalInput (live VT modes, no sync mirroring) the CLI's `pane send` uses.
                 agents: createAgentChannel({ store, pty, input }),
@@ -1018,6 +1119,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
         // HEAD watchers for every persisted association + the 30 s dirtiness poll (§9.2/§9.3).
         repoWatch.start();
+        // §GIT-091: resolve a branch for every restored pane, then keep resolving as panes move.
+        branchWatch.start();
         // CONT-087: resolve the user's `$EDITOR` in the background now, so the first
         // "Open in $EDITOR" does not pay for a login-shell init. Failures are cached with a
         // TTL and simply mean the built-in editor keeps the pane.
@@ -1103,6 +1206,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         webPanes,
         graft,
         repoWatch,
+        branchWatch,
         get graftOrphans() {
             return graftOrphans;
         },

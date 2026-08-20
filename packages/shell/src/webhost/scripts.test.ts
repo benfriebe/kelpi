@@ -23,7 +23,9 @@ import {
     buildInspectArm,
     buildInspectDisarm,
     batchMarkerScript,
+    DEFAULT_WEB_FIND_PALETTE,
     findScript,
+    setWebFindPalette,
     injectedScriptSources,
     inspectorScript,
     wrapExecScript
@@ -126,6 +128,40 @@ describe('injection', () => {
         const source = findScript();
         expect(source).toContain('#F2D027');
         expect(source).toContain('#FF7A00');
+        // No placeholder survives into the page: an unsubstituted token would be an invalid
+        // CSS colour and the marks would render unstyled.
+        expect(source).not.toContain('__NEX_FIND_');
+    });
+
+    // SET-219 / TERM-021: the Swift app shipped these as ghostty defaults a user could override
+    // in their own config; here they are nex config keys, and this is the substitution that
+    // carries one into the page.
+    it('paints with the configured palette, refusing anything that is not a plain hex', () => {
+        const source = findScript({
+            match: '#00ff00',
+            matchText: '#101010',
+            current: '#0000ff',
+            currentText: 'red; } body { display:none } .x{'
+        });
+        expect(source).toContain('#00ff00');
+        expect(source).toContain('#101010');
+        expect(source).toContain('#0000ff');
+        expect(source).not.toContain('display:none');
+        // The refused value falls back to the Swift default rather than to nothing.
+        expect(source).toContain(DEFAULT_WEB_FIND_PALETTE.currentText);
+        expect(source).not.toContain('__NEX_FIND_');
+    });
+
+    it('remembers the palette the main process set, for every later injection', () => {
+        try {
+            setWebFindPalette({ match: '#123456' });
+            expect(findScript()).toContain('#123456');
+            // Unset fields fall back to the shipped defaults, so a partial write is safe.
+            expect(findScript()).toContain(DEFAULT_WEB_FIND_PALETTE.current);
+            expect(injectedScriptSources().join('\n')).toContain('#123456');
+        } finally {
+            setWebFindPalette(DEFAULT_WEB_FIND_PALETTE);
+        }
     });
 
     it('keeps the picker overlay palette and the overlay-passthrough attributes', () => {

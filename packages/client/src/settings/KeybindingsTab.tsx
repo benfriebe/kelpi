@@ -42,7 +42,26 @@ export interface KeybindingsTabProps {
 interface RecordingState {
     readonly action: NexAction;
     readonly message: string | null;
+    /**
+     * SET-091's other half: which action holds the combo that was refused, so the message can
+     * be clicked through to that row's own recorder. `null` for a refusal with no owner (no
+     * modifier) or when the holder is the global hotkey, which has no row.
+     */
+    readonly conflictWith?: NexAction | null | undefined;
+    /**
+     * SET-090: the captured combo, shown for a beat before the row closes.
+     *
+     * The Swift sheet swapped its label to the chord (15 pt medium, primary colour) at the
+     * moment of capture and then committed, so the user saw WHAT was captured rather than only
+     * its consequence. A web row commits and re-renders in the same tick, so the feedback is
+     * held explicitly: the button reads the chord, the write is already in flight, and the row
+     * disarms when the timer fires (or immediately, when the daemon's broadcast lands first).
+     */
+    readonly captured?: string | undefined;
 }
+
+/** How long the captured chord is shown in the row before it disarms (SET-090). */
+export const CAPTURED_FEEDBACK_MS = 700;
 
 export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     const [recording, setRecording] = useState<RecordingState | null>(null);
@@ -50,19 +69,25 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     const bindingsRef = useRef(props.bindings);
     bindingsRef.current = props.bindings;
     const commit = props.actions.setKeybinding;
+    const globalHotkeyRef = useRef(props.globalHotkey);
+    globalHotkeyRef.current = props.globalHotkey;
+    const rowsRef = useRef(new Map<NexAction, HTMLElement>());
 
     // The recorder owns the keyboard while it is open: capture phase + preventDefault, so the
     // browser's own ⌘D/⌘W never fire and the app's dispatcher (already gated by the overlay)
     // cannot see the combo either.
     useEffect(() => {
-        if (recording === null) return;
+        if (recording === null || recording.captured !== undefined) return;
         const action = recording.action;
         const onKeyDown = (event: KeyboardEvent): void => {
             event.preventDefault();
             event.stopPropagation();
             const outcome: RecorderOutcome = recordKeyEvent(event, {
                 bindings: bindingsRef.current,
-                excluding: action
+                excluding: action,
+                // SET-091: a combo the OS already consumes for the global hotkey is refused
+                // with its own message rather than bound to something that will never fire.
+                globalHotkey: globalHotkeyRef.current
             });
             if (outcome.kind === 'ignored') return;
             if (outcome.kind === 'cancelled') {
@@ -70,16 +95,33 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                 return;
             }
             if (outcome.kind === 'rejected' || outcome.kind === 'conflict') {
-                setRecording({ action, message: outcome.reason });
+                setRecording({
+                    action,
+                    message: outcome.reason,
+                    conflictWith: outcome.kind === 'conflict' ? outcome.action : null
+                });
                 return;
             }
-            setRecording(null);
             // §13.2: re-recording the action's own combo is a silent no-op commit.
             if (!outcome.unchanged) commit(action, outcome.config);
+            // SET-090: show WHAT was captured before the row goes back to "Record".
+            setRecording({ action, message: null, captured: outcome.display });
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
     }, [recording, commit]);
+
+    // The captured-combo beat. Its own effect so the listener above is torn down the instant a
+    // capture lands — a second keystroke during the feedback window must not record again.
+    useEffect(() => {
+        if (recording?.captured === undefined) return;
+        const timer = setTimeout(() => {
+            setRecording(null);
+        }, CAPTURED_FEEDBACK_MS);
+        return () => {
+            clearTimeout(timer);
+        };
+    }, [recording]);
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-keybindings">
@@ -130,6 +172,13 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                     key={row.action}
                                     role="row"
                                     data-testid={`keybinding-row-${row.action}`}
+                                    ref={(element) => {
+                                        // The conflict message's click-through needs to scroll
+                                        // the OWNING row into view, which means knowing where
+                                        // it is; a ref map is the smallest way to know.
+                                        if (element === null) rowsRef.current.delete(row.action);
+                                        else rowsRef.current.set(row.action, element);
+                                    }}
                                     className="flex items-center gap-2 border-b px-2 py-1.5 last:border-b-0"
                                     style={{
                                         borderColor: tokens.divider,
@@ -143,12 +192,45 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                         {/* Refusals belong next to the row that was refused, not in a
                                             footer the user has to go looking for. */}
                                         {isRecording && recording.message !== null ? (
-                                            <span
-                                                data-testid="recorder-message"
-                                                className="text-[11px]"
-                                                style={{ color: '#E0685F' }}
-                                            >
-                                                {recording.message}
+                                            <span className="flex items-center gap-2">
+                                                <span
+                                                    data-testid="recorder-message"
+                                                    className="text-[11px]"
+                                                    style={{ color: '#E0685F' }}
+                                                >
+                                                    {recording.message}
+                                                </span>
+                                                {/*
+                                                 * SET-091's click-through. The Swift sheet named
+                                                 * the holder and left the user to find it; the
+                                                 * name is a link here, because the next thing a
+                                                 * user wants after "Already bound to X" is to
+                                                 * go and change X.
+                                                 */}
+                                                {recording.conflictWith === null ||
+                                                recording.conflictWith === undefined ? null : (
+                                                    <button
+                                                        type="button"
+                                                        data-testid="recorder-conflict-jump"
+                                                        className="text-[11px] underline"
+                                                        style={{ color: tokens.accent }}
+                                                        onClick={() => {
+                                                            const owner = recording.conflictWith;
+                                                            if (owner === null || owner === undefined) return;
+                                                            // `?.` on the METHOD too: jsdom
+                                                            // (and any embedder without a
+                                                            // layout) has no scrollIntoView,
+                                                            // and jumping is a nicety — the
+                                                            // arm below is the actual point.
+                                                            rowsRef.current
+                                                                .get(owner)
+                                                                ?.scrollIntoView?.({ block: 'center' });
+                                                            setRecording({ action: owner, message: null });
+                                                        }}
+                                                    >
+                                                        Rebind it
+                                                    </button>
+                                                )}
                                             </span>
                                         ) : null}
                                     </span>
@@ -193,8 +275,25 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                                 );
                                             }}
                                         >
-                                            {isRecording ? 'Press a key…' : 'Record'}
+                                            {isRecording
+                                                ? (recording.captured ?? 'Press a key…')
+                                                : 'Record'}
                                         </SettingsButton>
+                                        {/*
+                                         * SET-094: the sheet's Cancel button, which was bound to
+                                         * `.cancelAction` — so Escape and a click do the same
+                                         * thing. Escape already did; this is the click.
+                                         */}
+                                        {isRecording && recording.captured === undefined ? (
+                                            <SettingsButton
+                                                testID={`keybinding-cancel-${row.action}`}
+                                                onClick={() => {
+                                                    setRecording(null);
+                                                }}
+                                            >
+                                                Cancel
+                                            </SettingsButton>
+                                        ) : null}
                                         <SettingsButton
                                             testID={`keybinding-reset-${row.action}`}
                                             disabled={row.isDefault}

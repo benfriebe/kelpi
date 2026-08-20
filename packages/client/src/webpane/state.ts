@@ -113,6 +113,38 @@ export function parseBatchMessage(
     return { paneID, batch: parseBatchSession(message['batch']) };
 }
 
+// ── WEB-032/WEB-033/WEB-034: the loading + history report ───────────────────────────
+
+/** One tab's live browser state, as the host reports it through the daemon. */
+export interface WebNavState {
+    readonly paneID: string;
+    readonly tabID: string;
+    readonly loading: boolean;
+    readonly canGoBack: boolean;
+    readonly canGoForward: boolean;
+}
+
+/**
+ * A `web-nav-state` broadcast, or null when the message is something else.
+ *
+ * Keyed by TAB, which is what makes WEB-034 possible: the chrome keeps the last report for every
+ * tab it has heard about and reads the ACTIVE one, so switching INTO a tab that is still loading
+ * shows its strip, and switching away from one cannot strand a frozen bar.
+ */
+export function parseNavStateMessage(message: unknown): WebNavState | null {
+    if (!isRecord(message) || message['type'] !== 'web-nav-state') return null;
+    const paneID = str(message, 'paneID');
+    const tabID = str(message, 'tabID');
+    if (paneID === '' || tabID === '') return null;
+    return {
+        paneID,
+        tabID,
+        loading: message['loading'] === true,
+        canGoBack: message['can_go_back'] === true,
+        canGoForward: message['can_go_forward'] === true
+    };
+}
+
 // ── WEB-044: the favourite match ────────────────────────────────────────────────────
 
 /**

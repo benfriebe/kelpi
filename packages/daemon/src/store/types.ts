@@ -468,6 +468,16 @@ export type DomainAction =
           readonly tabID: string;
       }
     | {
+          /**
+           * Drag reorder of the tab strip (WEB-016). `order` must be an exact permutation of
+           * the pane's current tab ids — anything else is dropped, never truncated.
+           */
+          readonly type: 'web-tab-reorder';
+          readonly workspaceID: string;
+          readonly paneID: string;
+          readonly order: readonly string[];
+      }
+    | {
           /** Optimistic URL write on the ACTIVE tab (web-pane.md §4.2). */
           readonly type: 'web-navigate';
           readonly workspaceID: string;

@@ -41,6 +41,7 @@ import {
     writeClipboardText,
     type ClipboardWriter,
     type FindOp,
+    type FindPalette,
     type LinkOpener
 } from './bridge';
 import { stripFrontMatter, writeRichText, type RichClipboardWriter } from './copy';
@@ -99,6 +100,12 @@ export interface ContentFrameProps {
     readonly copySource?: string | null | undefined;
     /** §3.13: set false for a surface with no find bar. */
     readonly findEnabled?: boolean | undefined;
+    /**
+     * SET-219's overridable find-highlight colours, straight off the settings snapshot. Absent
+     * = the Swift `NexGhosttyDefaults` pair (#F2D027 / #FF7A00 on black), which is what a user
+     * who has never touched the keys sees.
+     */
+    readonly findPalette?: Partial<FindPalette> | undefined;
     /** Bump to open the find bar from outside (the app's `toggle_search` binding). */
     readonly findToken?: number | undefined;
     readonly testID?: string | undefined;
@@ -163,9 +170,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 paneID,
                 assetBase: props.assetBase ?? null,
                 background: documentBackground,
-                colorScheme
+                colorScheme,
+                findPalette: props.findPalette
             }),
-        [html, paneID, props.assetBase, documentBackground, colorScheme]
+        [html, paneID, props.assetBase, documentBackground, colorScheme, props.findPalette]
     );
 
     // ── find-in-page (§3.13), per client ────────────────────────────────────────────

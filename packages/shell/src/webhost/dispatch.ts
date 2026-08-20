@@ -133,6 +133,13 @@ export interface TabController {
     forward(): void;
     /** `hard` = bypass cache. A tab showing the error stub retries `lastAttemptedURL` (§4.3). */
     reload(hard: boolean): void;
+    /**
+     * WEB-032's stop half (the chrome's reload button wears an ✕ mid-load) and WEB-043's focus
+     * handoff. Both optional so a test double — or a future non-Electron host — can omit them
+     * and have the verb answer honestly instead of crashing.
+     */
+    stop?(): void;
+    focusView?(): void;
     /** Main frame, page world, `awaitPromise:true, returnByValue:true` (§8.2). */
     evaluate(expression: string): Promise<EvalOutcome>;
     /** Visible-viewport PNG (§8.4). Rejects/throws are turned into the spec's failure envelope. */
@@ -686,6 +693,20 @@ export function createVerbDispatcher<V extends TabController>(deps: DispatchDeps
                 const found = tabOf(args);
                 if ('error' in found) return found.error;
                 found.tab.reload(bool(args, 'hard'));
+                return OK;
+            }
+            case 'stop': {
+                const found = tabOf(args);
+                if ('error' in found) return found.error;
+                if (found.tab.stop === undefined) return failure('this host cannot stop a load');
+                found.tab.stop();
+                return OK;
+            }
+            case 'focus-view': {
+                const found = tabOf(args);
+                if ('error' in found) return found.error;
+                if (found.tab.focusView === undefined) return failure('this host cannot focus a view');
+                found.tab.focusView();
                 return OK;
             }
             case 'url': {

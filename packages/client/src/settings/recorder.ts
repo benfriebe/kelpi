@@ -6,8 +6,18 @@
  *   1. **Acceptance** — the combo must carry ≥1 modifier, UNLESS the key is Escape or an
  *      F-key (F1–F12), which are accepted bare.
  *   2. **Conflict** (§8.5) — if the trigger already belongs to a DIFFERENT action, the sheet
- *      stays open showing `Already bound to "X"`. Re-recording an action's own combo is a
- *      silent no-op commit.
+ *      stays open showing `Already bound to "X"`; if it is the configured GLOBAL hotkey it
+ *      stays open showing `Already bound to the global hotkey`. Both messages are the Swift
+ *      `KeybindingConflict.message` strings verbatim (`Nex/Models/KeyBinding.swift:416-453`),
+ *      and both leave the recorder armed so the user can press another combo. Re-recording an
+ *      action's own combo is a silent no-op commit.
+ *
+ * The global half needs the trigger passed in (`globalHotkey`) because it does not live in the
+ * binding map: it is a `global-hotkey = …` line the shell registers with the OS. Passing it is
+ * what stops the recorder handing an action a combo the OS will swallow before the app ever
+ * sees it — the same trap `KeyRecorderSheet` avoided by taking `globalHotkey:`. The GLOBAL
+ * recorder passes nothing (SET-093's `ignoreGlobalHotkey: true`), so re-recording the hotkey
+ * you already have is a no-op rather than a self-collision.
  *
  * One deliberate difference, and it is the reason bare Escape is unreachable here: the sheet's
  * Cancel is the standard cancel action, so Escape closes the recorder. A user who wants
@@ -22,6 +32,7 @@
 import {
     keyTriggerConfigString,
     keyTriggerDisplayString,
+    parseKeyTrigger,
     type KeyBindingMap,
     type KeyTrigger,
     type NexAction
@@ -29,6 +40,11 @@ import {
 
 import { actionForTrigger, modifiersFromEvent, triggerFromEvent, type KeyEventLike } from '../chrome';
 import { actionLabel } from './catalog';
+
+/** Two triggers are the same combo when their key and their modifier SET match. */
+function sameTrigger(a: KeyTrigger, b: KeyTrigger): boolean {
+    return keyTriggerConfigString(a) === keyTriggerConfigString(b);
+}
 
 /** F1–F12 are accepted without a modifier (§13.2). */
 const FUNCTION_KEY = /^F([1-9]|1[0-2])$/;
@@ -40,12 +56,16 @@ export type RecorderOutcome =
     | { readonly kind: 'ignored' }
     /** Captured, but refused; the sheet stays open with this message in red. */
     | { readonly kind: 'rejected'; readonly reason: string }
-    /** The trigger already belongs to another action (§8.5). Sheet stays open. */
+    /**
+     * The trigger already belongs to another action, or to the global hotkey (§8.5). The
+     * recorder stays open. `action` is the holder, or `null` when the holder is the global
+     * hotkey — which is not an action and has no row to jump to.
+     */
     | {
           readonly kind: 'conflict';
           readonly reason: string;
           readonly trigger: KeyTrigger;
-          readonly action: NexAction;
+          readonly action: NexAction | null;
       }
     /** Commit: bind `config` to the action being recorded, then close. */
     | {
@@ -62,6 +82,12 @@ export interface RecorderOptions {
     readonly bindings: KeyBindingMap;
     /** The action being recorded; its own triggers are not conflicts. */
     readonly excluding?: NexAction | undefined;
+    /**
+     * The configured global hotkey as its config string (`"ctrl+alt+space"`), when the caller
+     * is the ROW recorder. Absent/null = SET-093's `ignoreGlobalHotkey: true`, which is what
+     * the global-hotkey recorder itself passes.
+     */
+    readonly globalHotkey?: string | null | undefined;
 }
 
 /** §13.2's message for a combo that carries no modifier. */
@@ -70,6 +96,9 @@ export const NEEDS_MODIFIER_MESSAGE = 'Add at least one modifier (⌘, ⌃, ⌥ 
 export function conflictMessage(action: NexAction): string {
     return `Already bound to “${actionLabel(action)}”`;
 }
+
+/** `KeybindingConflict.globalHotkey.message`, verbatim. */
+export const GLOBAL_HOTKEY_CONFLICT_MESSAGE = 'Already bound to the global hotkey';
 
 /** One keydown → what the recorder should do. Pure; the caller owns the sheet's state. */
 export function recordKeyEvent(event: KeyEventLike, options: RecorderOptions): RecorderOutcome {
@@ -86,6 +115,22 @@ export function recordKeyEvent(event: KeyEventLike, options: RecorderOptions): R
     const bare = modifiers.length === 0;
     const exempt = event.code === 'Escape' || FUNCTION_KEY.test(event.code);
     if (bare && !exempt) return { kind: 'rejected', reason: NEEDS_MODIFIER_MESSAGE };
+
+    // The global hotkey is checked FIRST, exactly as `KeybindingConflict.check` orders it: the
+    // OS consumes that combo before the app can see it, so binding an action to it would
+    // produce a shortcut that silently never fires.
+    const globalTrigger =
+        typeof options.globalHotkey === 'string' && options.globalHotkey !== ''
+            ? parseKeyTrigger(options.globalHotkey)
+            : null;
+    if (globalTrigger !== null && sameTrigger(globalTrigger, trigger)) {
+        return {
+            kind: 'conflict',
+            reason: GLOBAL_HOTKEY_CONFLICT_MESSAGE,
+            trigger,
+            action: null
+        };
+    }
 
     const owner = actionForTrigger(options.bindings, trigger);
     if (owner !== null && owner !== options.excluding) {

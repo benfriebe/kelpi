@@ -590,6 +590,67 @@ describe('WS-only commands', () => {
             expect(send(f, { command: 'remove-label-preset', id: 'ship' })['ok']).toBe(false);
         });
 
+        // SET-062: the text colour is the other half of §6.2's encoding, with two meanings
+        // `color` does not have — absent leaves it alone, `null`/`auto` is the luminance rule.
+        it('stores a text colour, and takes null (or "auto") back to the luminance rule', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship', color: 'blue', text_color: '#ffffff' });
+            expect(f.store.state().labelPresets[0]?.textColor).toEqual({ kind: 'custom', hex: '#ffffff' });
+            send(f, { command: 'update-label-preset', id: 'ship', text_color: null });
+            expect(f.store.state().labelPresets[0]?.textColor).toBeNull();
+            send(f, { command: 'update-label-preset', id: 'ship', text_color: '#000000' });
+            send(f, { command: 'update-label-preset', id: 'ship', text_color: 'auto' });
+            expect(f.store.state().labelPresets[0]?.textColor).toBeNull();
+            // Absent = unchanged: a recolor must not silently reset the text colour.
+            send(f, { command: 'update-label-preset', id: 'ship', text_color: 'white' });
+            send(f, { command: 'update-label-preset', id: 'ship', color: 'purple' });
+            expect(f.store.state().labelPresets[0]?.textColor).toEqual({ kind: 'named', color: 'white' });
+        });
+
+        // SET-059: "the chosen text colour is only applied when the add actually creates a new
+        // preset", so a duplicate name cannot recolour the preset that already holds it.
+        it('never lets a duplicate add recolour the existing preset', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship', color: 'blue', text_color: '#ffffff' });
+            expect(send(f, { command: 'add-label-preset', name: 'ship', text_color: '#000000' })['ok']).toBe(
+                false
+            );
+            expect(f.store.state().labelPresets[0]?.textColor).toEqual({ kind: 'custom', hex: '#ffffff' });
+        });
+
+        // A rename moves the preset's identity, so the text colour has to follow it.
+        it('applies a text colour to the RENAMED preset when both arrive together', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'ship', color: 'blue' });
+            send(f, { command: 'update-label-preset', id: 'ship', name: 'shipped', text_color: '#ffffff' });
+            expect(f.store.state().labelPresets).toEqual([
+                {
+                    name: 'shipped',
+                    color: { kind: 'named', color: 'blue' },
+                    textColor: { kind: 'custom', hex: '#ffffff' }
+                }
+            ]);
+        });
+
+        // SET-065's reorder: by NAME plus a target index, so a stale client index cannot
+        // scramble the list, and an index off either end clamps rather than failing.
+        it('reorders by name and target index, clamping to the list', () => {
+            const f = fixture();
+            send(f, { command: 'add-label-preset', name: 'a' });
+            send(f, { command: 'add-label-preset', name: 'b' });
+            send(f, { command: 'add-label-preset', name: 'c' });
+            expect(send(f, { command: 'move-label-preset', id: 'c', index: 0 })).toMatchObject({
+                ok: true,
+                id: 'c',
+                index: 0
+            });
+            expect(presets(f).map((preset) => preset.name)).toEqual(['c', 'a', 'b']);
+            send(f, { command: 'move-label-preset', id: 'c', index: 99 });
+            expect(presets(f).map((preset) => preset.name)).toEqual(['a', 'b', 'c']);
+            expect(send(f, { command: 'move-label-preset', id: 'nope', index: 0 })['ok']).toBe(false);
+            expect(send(f, { command: 'move-label-preset', id: 'a' })['ok']).toBe(false);
+        });
+
         it('answers with the post-mutation list so a client can render the reply', () => {
             const f = fixture();
             const reply = send(f, { command: 'add-label-preset', name: 'ship', color: 'blue' });

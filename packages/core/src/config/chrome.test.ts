@@ -147,3 +147,35 @@ describe('parseChromeHex', () => {
         expect(parseChromeHex('rebeccapurple')).toBeNull();
     });
 });
+
+// SET-219 / TERM-021 — the Swift `NexGhosttyDefaults` search colours, as overridable keys.
+describe('search-highlight colours', () => {
+    it('ships the Swift defaults when the file names none', () => {
+        const settings = parseChromeSettings('# nothing here\n');
+        expect(settings.searchMatchColor).toBe('#f2d027');
+        expect(settings.searchMatchTextColor).toBe('#000000');
+        expect(settings.searchMatchCurrentColor).toBe('#ff7a00');
+        expect(settings.searchMatchCurrentTextColor).toBe('#000000');
+    });
+
+    it('takes an override for each of the four, normalizing the hex', () => {
+        const settings = parseChromeSettings(
+            [
+                'search-match-color = #00FF00',
+                'search-match-text-color = 112233',
+                'search-match-current-color = #ff00ff',
+                'search-match-current-text-color = #FFFFFF'
+            ].join('\n')
+        );
+        expect(settings.searchMatchColor).toBe('#00ff00');
+        expect(settings.searchMatchTextColor).toBe('#112233');
+        expect(settings.searchMatchCurrentColor).toBe('#ff00ff');
+        expect(settings.searchMatchCurrentTextColor).toBe('#ffffff');
+    });
+
+    it('keeps the default when a value is not a full hex (one typo cannot blank a highlight)', () => {
+        const settings = parseChromeSettings('search-match-color = yellow\nsearch-match-current-color =\n');
+        expect(settings.searchMatchColor).toBe('#f2d027');
+        expect(settings.searchMatchCurrentColor).toBe('#ff7a00');
+    });
+});

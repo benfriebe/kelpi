@@ -1,7 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PaneHeader, agentBadge, homeAbbreviated, paneDisplayTitle, splitHeaderTitle } from './PaneHeader';
+import {
+    PaneHeader,
+    TITLE_SHRINK,
+    agentBadge,
+    homeAbbreviated,
+    paneDisplayTitle,
+    splitHeaderTitle
+} from './PaneHeader';
 import { firePointer, testPane } from './testing';
 import type { PaneModel } from './types';
 
@@ -268,5 +275,89 @@ describe('PaneHeader rendering', () => {
         act(() => vi.advanceTimersByTime(3000));
         expect(screen.getByTestId('pane-agent-badge-a')).toBe(badge);
         expect(badge.textContent).toBe('claude · 8s');
+    });
+});
+
+describe('truncation priority as the header narrows (TERM-102/104)', () => {
+    /**
+     * jsdom has no layout, so what is assertable HERE is the contract that produces the order —
+     * the shrink weights and the min-widths. The pixels are proved by the visual audit's
+     * `pane-header-truncation` step, which narrows a real pane and measures the boxes.
+     */
+    it('weights the path far above the badges, and pins the buttons at zero', () => {
+        const pane = testPane('a', {
+            label: 'a-very-long-pane-label-that-would-push-the-buttons-off',
+            gitBranch: 'feature/some-extremely-long-branch-name',
+            agentSessionID: 's',
+            status: 'running',
+            agentStartedAt: null,
+            workingDirectory: '/Users/ben/code/nex/packages/client/src/grid'
+        });
+        render(<PaneHeader pane={pane} focused nowSeconds={NOW} />);
+
+        const title = screen.getByTestId('pane-title-a');
+        expect(title.style.flexShrink).toBe(String(TITLE_SHRINK));
+        expect(title.className).toContain('min-w-0');
+
+        // User-data badges give ground second: they may shrink, and they truncate when they do.
+        for (const testID of ['pane-label-a', 'pane-branch-a', 'pane-agent-badge-a']) {
+            const badge = screen.getByTestId(testID);
+            expect(badge.className).toContain('shrink');
+            expect(badge.className).not.toContain('shrink-0');
+            expect(badge.style.minWidth).toBe('0');
+            expect(badge.querySelector('span')?.className).toContain('truncate');
+        }
+
+        // The controls never shrink — a header that drops its ✕ before its path is backwards.
+        for (const testID of ['pane-rename-a', 'pane-split-right-a', 'pane-split-down-a', 'pane-close-a']) {
+            expect(screen.getByTestId(testID).className).toContain('shrink-0');
+        }
+    });
+
+    it('keeps the fixed-word badges unshrinkable — there is nothing in them to truncate', () => {
+        render(
+            <PaneHeader
+                pane={testPane('a')}
+                focused
+                zoomed
+                zoomAvailable
+                syncActive
+                nowSeconds={NOW}
+            />
+        );
+        expect(screen.getByTestId('pane-zoom-badge-a').className).toContain('shrink-0');
+        expect(screen.getByTestId('pane-sync-badge-a').className).toContain('shrink-0');
+    });
+});
+
+describe('the agent badge transition (TERM-104)', () => {
+    it('swaps text and tone across the status transitions, and disappears when idle', () => {
+        const running = testPane('a', {
+            agentSessionID: 's',
+            status: 'running',
+            agentStartedAt: (NOW - 12) * 1000
+        });
+        const view = render(<PaneHeader pane={running} focused nowSeconds={NOW} />);
+        const badge = screen.getByTestId('pane-agent-badge-a');
+        expect(badge.textContent).toBe('claude · 12s');
+
+        view.rerender(
+            <PaneHeader pane={{ ...running, status: 'waitingForInput' }} focused nowSeconds={NOW} />
+        );
+        // Same node, new content: the badge TRANSITIONS rather than remounting, which is what
+        // keeps the swap from flashing an empty gap between the two states.
+        expect(screen.getByTestId('pane-agent-badge-a')).toBe(badge);
+        expect(badge.textContent).toBe('awaiting input');
+
+        view.rerender(<PaneHeader pane={{ ...running, status: 'idle' }} focused nowSeconds={NOW} />);
+        expect(screen.queryByTestId('pane-agent-badge-a')).toBeNull();
+    });
+
+    it('animates the status dot rather than cutting between colours', () => {
+        render(<PaneHeader pane={testPane('a', { status: 'running' })} focused nowSeconds={NOW} />);
+        const dot = screen.getByTestId('pane-status-dot-a');
+        expect(dot.className).toContain('transition-colors');
+        expect(dot.className).toContain('duration-300');
+        expect(dot.getAttribute('data-status')).toBe('running');
     });
 });

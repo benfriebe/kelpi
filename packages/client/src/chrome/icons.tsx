@@ -14,6 +14,7 @@
  *      symbol is. `emoji` icons render as themselves (native colors, never tinted).
  */
 
+import { normalizeIconEmoji } from '@nex/core/codec';
 import type { IconRef } from '@nex/daemon/store';
 import type { ReactElement } from 'react';
 
@@ -341,10 +342,16 @@ export function isSingleGrapheme(value: string): boolean {
     return [...new Segmenter(undefined, { granularity: 'grapheme' }).segment(value)].length === 1;
 }
 
-/** Trim, then accept a single grapheme; anything else is `null` (the field stays invalid). */
+/**
+ * Trim, take the first grapheme cluster, and accept it only when it passes §WS-073's
+ * accept/reject heuristic — the same `normalizeIconEmoji` the daemon re-runs on the verb
+ * (§WS-074), so the field and the wire cannot disagree about what an icon is.
+ *
+ * `null` keeps Set Icon disabled. Before this it was "any single grapheme", which accepted
+ * `a`, `7` and `-` as icons.
+ */
 export function normalizeEmojiInput(value: string): string | null {
-    const trimmed = value.trim();
-    return isSingleGrapheme(trimmed) ? trimmed : null;
+    return normalizeIconEmoji(value);
 }
 
 /** The flat DB spelling the wire carries; `null` clears it (§5.6 "Reset to Letter"). */

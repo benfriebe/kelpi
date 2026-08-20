@@ -13,7 +13,9 @@ import {
     applyWorkspaceDrop,
     buildDropZones,
     buildGroupSpans,
+    defaultGroupName,
     filteredRows,
+    nextCreateColor,
     groupCommit,
     locateWorkspace,
     orderModelFromEntries,
@@ -280,5 +282,42 @@ describe('locateWorkspace', () => {
         expect(locateWorkspace(model, W(3))).toEqual({ groupID: G1, index: 1 });
         expect(locateWorkspace(model, W(4))).toEqual({ groupID: null, index: 1 });
         expect(locateWorkspace(model, 'missing')).toBeNull();
+    });
+});
+
+// ── create-form defaults (§WS-075, §WS-083) ─────────────────────────────────────────
+
+describe('nextCreateColor', () => {
+    /** The trailing workspace here is `blue`, whatever the group nesting. */
+    const entries = entriesFor(daemonState(false));
+
+    it('never returns the trailing workspace’s colour, whatever the roll', () => {
+        const trailing = [...entries]
+            .flatMap((entry) => (entry.kind === 'workspace' ? [entry.workspace] : entry.workspaces))
+            .at(-1)?.color;
+        expect(trailing).toBeDefined();
+        for (let roll = 0; roll < 20; roll += 1) {
+            expect(nextCreateColor(entries, () => roll / 20)).not.toBe(trailing);
+        }
+    });
+
+    it('spreads across the pool rather than always answering the same colour', () => {
+        const seen = new Set([nextCreateColor(entries, () => 0), nextCreateColor(entries, () => 0.99)]);
+        expect(seen.size).toBe(2);
+    });
+
+    it('falls back to blue for an empty sidebar', () => {
+        expect(nextCreateColor([], () => 0)).toBe('red');
+    });
+});
+
+describe('defaultGroupName', () => {
+    it('uniquifies against the names already taken', () => {
+        expect(defaultGroupName([])).toBe('New Group');
+        expect(defaultGroupName(['squad'])).toBe('New Group');
+        expect(defaultGroupName(['New Group'])).toBe('New Group 2');
+        expect(defaultGroupName(['New Group', 'New Group 2'])).toBe('New Group 3');
+        // A gap is filled rather than skipped past.
+        expect(defaultGroupName(['New Group', 'New Group 3'])).toBe('New Group 2');
     });
 });

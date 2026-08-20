@@ -27,10 +27,10 @@ that opened past the window's right edge.
 
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
-domains — found 285 behaviours with no port-side implementation at all; a burn-down closed **250 of
-them**, taking coverage from 73.6% to **91.0%** and doubling the audit to **70 flows, 427
-assertions**. What is still open is ranked in that index's §2, headed by the one dispatcher that
-would light up the pane-header and footer git-branch chips.
+domains — found 285 behaviours with no port-side implementation at all. Two burn-downs took that
+column to **9**, and coverage from 73.6% to **94.4%**, while the audit grew to **87 flows, 570
+assertions**. What is still open is ranked in that index's §2, now headed by an *upstream* finding:
+`ghostty-web@0.4.0` implements no DEC mouse reporting, so a mouse-mode TUI has no mouse in a pane.
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
   **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
@@ -39,20 +39,21 @@ would light up the pane-header and footer git-branch chips.
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-H/`](docs/audit/run-H/index.md) is current
-  (70 flows); the six scoped runs beside it are one per feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-I/`](docs/audit/run-I/index.md) is current
+  (87 flows); the twelve scoped runs beside it are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
   the original ledger.
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-20): `pnpm check` **3933 passed**; the compat suite 103/103 against **both** the
+Gates (2026-08-20): `pnpm check` **4102 passed**; the compat suite 103/103 against **both** the
 shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 32, web 46,
 terminal 19) and the packaged one too, **58/58**; the terminal-renderer start stress **0 stranded in
-48 panes**; the UI audit **427 assertions, 0 failed, 0 step errors** across **70 real user flows**;
-and capability coverage against the shipped app at **91.0%** of 1490 inventoried items, up from
-73.6% before the burn-down. Nothing here is called done without a screenshot that shows it.
+48 panes**; the UI audit **560 of 570 assertions, 0 step errors** across **87 real user flows** —
+the ten failures are three findings, four of them the one upstream mouse-reporting defect; and
+capability coverage against the shipped app at **94.4%** of 1490 inventoried items, up from 73.6%
+before the burn-downs. Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart
 

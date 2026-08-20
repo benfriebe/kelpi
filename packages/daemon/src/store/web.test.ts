@@ -252,3 +252,96 @@ describe('active tab resolution (§17.2)', () => {
         expect(resolvedActiveTab({ tabs: [], activeTabID: null, isPrivate: false })).toBeNull();
     });
 });
+
+describe('tab reorder (WEB-016)', () => {
+    /** Three tabs in a known order, so a permutation is tellable from a truncation. */
+    function threeTabs(): NexStore {
+        const store = harness();
+        for (const [tabID, url] of [
+            [TAB2, 'second.test'],
+            [TAB3, 'third.test']
+        ] as const) {
+            store.dispatch({
+                type: 'web-tab-open',
+                workspaceID: WORKSPACE,
+                paneID: PANE,
+                tabID,
+                url,
+                makeActive: false
+            });
+        }
+        return store;
+    }
+
+    function order(store: NexStore): readonly string[] {
+        return web(store).tabs.map((tab) => tab.id);
+    }
+
+    it('applies an exact permutation', () => {
+        const store = threeTabs();
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: PANE,
+            order: [TAB3, TAB1, TAB2]
+        });
+        expect(order(store)).toEqual([TAB3, TAB1, TAB2]);
+        // Reordering is not a selection: the active tab is untouched.
+        expect(web(store).activeTabID).toBe(TAB1);
+    });
+
+    it('drops a sequence that is missing a tab rather than truncating the strip', () => {
+        const store = threeTabs();
+        const before = store.getState();
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: PANE,
+            order: [TAB3, TAB1]
+        });
+        expect(store.getState()).toBe(before);
+        expect(order(store)).toEqual([TAB1, TAB2, TAB3]);
+    });
+
+    it('drops a sequence with a duplicate, and one naming an unknown tab', () => {
+        const store = threeTabs();
+        const before = store.getState();
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: PANE,
+            order: [TAB1, TAB1, TAB2]
+        });
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: PANE,
+            order: [TAB1, TAB2, 'GHOST']
+        });
+        expect(store.getState()).toBe(before);
+    });
+
+    it('is a no-op when the order did not change', () => {
+        const store = threeTabs();
+        const before = store.getState();
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: PANE,
+            order: [TAB1, TAB2, TAB3]
+        });
+        expect(store.getState()).toBe(before);
+    });
+
+    it('ignores a pane with no web sidecar', () => {
+        const store = threeTabs();
+        const before = store.getState();
+        store.dispatch({
+            type: 'web-tab-reorder',
+            workspaceID: WORKSPACE,
+            paneID: SHELL,
+            order: [TAB1]
+        });
+        expect(store.getState()).toBe(before);
+    });
+});

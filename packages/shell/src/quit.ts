@@ -21,13 +21,15 @@
 
 import { app, dialog, type BrowserWindow } from 'electron';
 
-import type { AgentCounts } from './agents.js';
+import { activitySummary, type AgentCounts } from './agents.js';
 import { log } from './log.js';
 import { quitDialogSpec, readShellSettings, shouldConfirmQuit, writeShellSettings } from './settings.js';
 
 export {
     DEFAULT_SHELL_SETTINGS,
     SETTINGS_FILE,
+    markQuitConfirmationMigrated,
+    pendingQuitConfirmationMigration,
     quitDialogSpec,
     readShellSettings,
     settingsFile,
@@ -45,7 +47,32 @@ export interface QuitGateOptions {
     readonly window?: (() => BrowserWindow | null) | undefined;
     /** Runs after the user confirms, before the app exits — tray teardown, socket close. */
     readonly onQuit?: (() => void) | undefined;
+    /**
+     * §AGNT-117: the DAEMON's `confirm-quit-when-active`, or null when the daemon has not said
+     * (no connection yet, or an older daemon). Null falls back to the local legacy value, so a
+     * quit taken before the status socket is up still honours a user's suppression.
+     */
+    readonly confirmWhenActive?: (() => boolean | null) | undefined;
+    /**
+     * Write the suppression back through the daemon, so Settings ▸ Workspaces and this dialog
+     * are one switch. Absent (or a failed send) falls back to the local file, which keeps ⌘Q
+     * working against a daemon that is already gone.
+     */
+    readonly suppress?: ((value: boolean) => boolean) | undefined;
+    /**
+     * §AGNT-114 step 1: force out pending markdown/scratchpad autosaves before the dialog.
+     *
+     * The daemon holds the buffers and outlives the shell, so this is not the Swift
+     * "or the edits die" flush — it is the "the file on disk matches what you typed *before*
+     * you are asked a question about quitting" flush. Bounded by `flushTimeoutMs`: a quit that
+     * hangs waiting on a flush would be worse than one that loses the last 500 ms of typing.
+     */
+    readonly flushPendingSaves?: (() => Promise<void>) | undefined;
+    readonly flushTimeoutMs?: number | undefined;
 }
+
+/** Long enough for a synchronous daemon-side write and its round trip; short enough to feel instant. */
+export const QUIT_FLUSH_TIMEOUT_MS = 750;
 
 export interface QuitGate {
     /** Menu/tray "Quit Nex". */
@@ -64,6 +91,46 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
     let settings = readShellSettings(options.settingsPath);
     let confirming = false;
     let confirmed = false;
+    const flushTimeoutMs = options.flushTimeoutMs ?? QUIT_FLUSH_TIMEOUT_MS;
+
+    /**
+     * The live policy: the daemon's value when it has one, the legacy local file otherwise.
+     *
+     * The fallback is not decoration — a ⌘Q while the daemon is unreachable must still honour a
+     * suppression the user set, and an unreachable daemon is exactly when the shell has no
+     * snapshot to read.
+     */
+    const policy = (): { confirmQuitWhenActive: boolean } => {
+        const daemonValue = options.confirmWhenActive?.() ?? null;
+        return { confirmQuitWhenActive: daemonValue ?? settings.confirmQuitWhenActive };
+    };
+
+    /** Persist the suppression: through the daemon when possible, locally when not. */
+    const suppress = (): void => {
+        // Local first and always: it is the fallback the policy above reads when the daemon is
+        // unreachable, and writing it costs one small file.
+        if (settings.confirmQuitWhenActive || !settings.quitConfirmationMigrated) {
+            // Spread, not replace: the same file carries the CLI-install state
+            // (`./cli-install.ts`), and suppressing the quit dialog must not reset it.
+            settings = { ...settings, confirmQuitWhenActive: false, quitConfirmationMigrated: true };
+            writeShellSettings(options.settingsPath, settings);
+        }
+        const sent = options.suppress?.(false) ?? false;
+        log(sent ? 'quit: suppression written to the daemon settings' : 'quit: suppression saved locally (daemon unreachable)');
+    };
+
+    /** §AGNT-114 step 1, bounded: never let a flush hold the app hostage. */
+    const flush = async (): Promise<void> => {
+        const run = options.flushPendingSaves;
+        if (run === undefined) return;
+        await Promise.race([
+            run().catch(() => undefined),
+            new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, flushTimeoutMs);
+                timer.unref?.();
+            })
+        ]);
+    };
 
     const proceed = (): void => {
         confirmed = true;
@@ -79,16 +146,36 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
             event.preventDefault();
             return;
         }
-        const counts = options.counts();
-        if (!shouldConfirmQuit(settings, counts)) {
-            confirmed = true;
-            log('quit: leaving the daemon running');
-            return;
-        }
 
+        // §AGNT-114: every termination path is intercepted, and the pre-flight runs on ALL of
+        // them — including the one that will not show a dialog. The Swift order is flush, then
+        // ask; doing it only on the asking path would mean a quit with nothing running silently
+        // skipped the flush, which is the case where the user is least likely to notice a lost
+        // half-second of typing.
         event.preventDefault();
         confirming = true;
-        log(`quit held: ${String(counts.running + counts.waiting)} active agent(s); asking first`);
+        void flush()
+            .then(() => {
+                confirming = false;
+                const counts = options.counts();
+                if (!shouldConfirmQuit(policy(), counts)) {
+                    proceed();
+                    return;
+                }
+                ask(counts);
+            })
+            .catch(() => {
+                confirming = false;
+                proceed();
+            });
+    };
+
+    const ask = (counts: AgentCounts): void => {
+        confirming = true;
+        const summary = activitySummary(counts);
+        log(
+            `quit held: ${String(summary.agents)} active agent(s) across ${String(summary.workspaces)} workspace(s); asking first`
+        );
         const spec = quitDialogSpec(counts);
         const parent = options.window?.() ?? null;
         const request = { ...spec, buttons: [...spec.buttons] };
@@ -101,12 +188,7 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
             .then((result) => {
                 confirming = false;
                 // §10 step 4: honour the suppression checkbox even on Cancel.
-                if (result.checkboxChecked && settings.confirmQuitWhenActive) {
-                    // Spread, not replace: the same file carries the CLI-install state
-                    // (`./cli-install.ts`), and suppressing the quit dialog must not reset it.
-                    settings = { ...settings, confirmQuitWhenActive: false };
-                    writeShellSettings(options.settingsPath, settings);
-                }
+                if (result.checkboxChecked && policy().confirmQuitWhenActive) suppress();
                 if (result.response === 0) proceed();
                 else log('quit cancelled');
             })

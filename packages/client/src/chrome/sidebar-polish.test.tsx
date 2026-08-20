@@ -13,7 +13,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_KEYBINDINGS } from './keys';
-import { Sidebar } from './index';
+import { CURATED_EMOJI, Sidebar, normalizeEmojiInput } from './index';
 import type { ChromePane, ChromeSidebarEntry, ChromeWorkspace } from './types';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001'; // alpha (top level)
@@ -343,7 +343,11 @@ describe('scroll-new-entry-into-view', () => {
         expect(scrolled).toHaveLength(1);
     });
 
-    it('does nothing for a workspace this client cannot see', () => {
+    /**
+     * §WS-101: a target this client cannot see at all is DROPPED, not retried forever — the
+     * Swift `resolvedScrollTarget` returns nil and the pending target is cleared.
+     */
+    it('drops a target for a workspace this client cannot see', () => {
         const onScrollHandled = vi.fn();
         render(
             <Sidebar
@@ -354,7 +358,179 @@ describe('scroll-new-entry-into-view', () => {
             />
         );
         expect(scrolled).toHaveLength(0);
-        expect(onScrollHandled).not.toHaveBeenCalled();
+        expect(onScrollHandled).toHaveBeenCalledTimes(1);
+    });
+
+    /** §WS-101: a workspace hidden inside a collapsed group resolves to that group's header. */
+    it('falls back to the group header when the target is inside a collapsed group', () => {
+        const onScrollHandled = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries({ collapsed: true })}
+                scrollToWorkspaceID={W3}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        expect(scrolled).toHaveLength(1);
+        expect(scrolled[0]?.dataset['testid'] ?? scrolled[0]?.getAttribute('data-testid')).toBe('group-header');
+        expect(onScrollHandled).toHaveBeenCalledTimes(1);
+    });
+});
+
+// ── drag polish (§WS-089, §WS-092, §WS-093) ─────────────────────────────────────────
+
+describe('drag polish', () => {
+    it('previews the nested indentation while the cursor holds a group header (§WS-089)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 58 }); // the header's bottom half → append
+
+        // The ORDER is untouched (a header target is preview-only, §WS-087) …
+        expect(rowIDs()).toEqual([W1, W4, W2, W3]);
+        // … but the row already shows the indentation it is about to have.
+        const row = rowFor(W1);
+        expect(row.dataset['nestPreview']).toBe('true');
+        expect(row.style.marginLeft).toBe('24px');
+        // §WS-084's lift: scale, opacity AND the drop shadow.
+        expect(row.style.transform).toBe('scale(1.03)');
+        expect(row.style.opacity).toBe('0.8');
+        expect(row.style.boxShadow).not.toBe('');
+
+        // Leaving the header for a real drop target takes the preview away again.
+        fireEvent.mouseMove(window, { clientY: 30 });
+        expect(rowFor(W1).dataset['nestPreview']).toBeUndefined();
+        fireEvent.mouseUp(window);
+    });
+
+    it('plays the falls-into-the-group landing before committing (§WS-092)', () => {
+        vi.useFakeTimers();
+        const onMoveWorkspace = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries({ collapsed: true })}
+                springLoadMs={100_000}
+                landingMs={400}
+                onMoveWorkspace={onMoveWorkspace}
+            />
+        );
+
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 58 }); // collapsed group's header
+        fireEvent.mouseUp(window);
+
+        // The row is pinned where it was and shrinks toward the header; nothing has committed.
+        const row = rowFor(W1);
+        expect(row.dataset['landing']).toBe('true');
+        expect(row.style.transform).toBe('scale(0.2)');
+        expect(onMoveWorkspace).not.toHaveBeenCalled();
+
+        act(() => {
+            vi.advanceTimersByTime(400);
+        });
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+        expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 2 });
+        // The shadow applied with the commit, so the row is now inside the collapsed group.
+        expect(rowIDs()).toEqual([W4]);
+    });
+
+    it('a new drag flushes a landing still in flight, so no drop is lost (§WS-092)', () => {
+        vi.useFakeTimers();
+        const onMoveWorkspace = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries({ collapsed: true })}
+                springLoadMs={100_000}
+                landingMs={400}
+                onMoveWorkspace={onMoveWorkspace}
+            />
+        );
+
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 58 });
+        fireEvent.mouseUp(window);
+        expect(onMoveWorkspace).not.toHaveBeenCalled();
+
+        // Grabbing another row mid-animation commits the pending drop immediately rather
+        // than leaving a timer to race the new gesture.
+        fireEvent.mouseDown(rowFor(W4), { clientY: 30 });
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+        expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 2 });
+        fireEvent.mouseUp(window);
+        act(() => {
+            vi.advanceTimersByTime(500);
+        });
+        // …and the flushed timer does not fire a second time.
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the landing for a spring-loaded group, which is visibly open (§WS-092)', () => {
+        vi.useFakeTimers();
+        const onMoveWorkspace = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries({ collapsed: true })}
+                springLoadMs={650}
+                landingMs={400}
+                onMoveWorkspace={onMoveWorkspace}
+            />
+        );
+
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 58 });
+        act(() => {
+            vi.advanceTimersByTime(700); // the group springs open
+        });
+        fireEvent.mouseUp(window);
+        // No landing to wait for: the commit is immediate.
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * §WS-093. jsdom has no box model, so the guard's degradation ("nothing measured at all =
+     * nothing to be stale about") is what every other drag test in this file relies on. The
+     * dangerous case is a PARTIAL measurement, which is what this stubs.
+     */
+    it('ignores drag input until every rendered row has been measured (§WS-093)', () => {
+        const onMoveWorkspace = vi.fn();
+        const original = Element.prototype.getBoundingClientRect;
+        // Only the group header measures: four of the five rendered rows are unknown.
+        Element.prototype.getBoundingClientRect = function stub(this: HTMLElement): DOMRect {
+            const measured = this.dataset['testid'] === 'group-header';
+            return {
+                x: 0,
+                y: 0,
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: measured ? 20 : 0,
+                width: 0,
+                height: measured ? 20 : 0,
+                toJSON: () => ({})
+            } as DOMRect;
+        };
+        try {
+            render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={onMoveWorkspace} />);
+            fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+            fireEvent.mouseMove(window, { clientY: 95 });
+            expect(rowIDs()).toEqual([W1, W4, W2, W3]); // nothing moved: the drag never started
+            fireEvent.mouseUp(window);
+            expect(onMoveWorkspace).not.toHaveBeenCalled();
+        } finally {
+            Element.prototype.getBoundingClientRect = original;
+        }
+
+        // With the geometry back to jsdom's uniform nothing, the same gesture lands.
+        cleanup();
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={onMoveWorkspace} />);
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 95 });
+        fireEvent.mouseUp(window);
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -414,7 +590,7 @@ describe('change icon', () => {
         expect(onSetWorkspaceIcon).toHaveBeenCalledWith(W1, null);
     });
 
-    it('accepts exactly one grapheme in the custom-emoji sheet', () => {
+    it('truncates to one grapheme and rejects a non-emoji one (§WS-072/§WS-073)', () => {
         const onSetWorkspaceIcon = vi.fn();
         render(<Sidebar {...baseProps()} entries={entries()} onSetWorkspaceIcon={onSetWorkspaceIcon} />);
 
@@ -422,21 +598,51 @@ describe('change icon', () => {
         fireEvent.click(submenu.querySelector('[data-menu-item="icon:custom"]') as HTMLElement);
 
         const sheet = screen.getByTestId('emoji-sheet');
-        const input = within(sheet).getByTestId('emoji-input');
+        const input = within(sheet).getByTestId('emoji-input') as HTMLInputElement;
         const submit = within(sheet).getByTestId('emoji-submit') as HTMLButtonElement;
 
         expect(submit.disabled).toBe(true);
+        // The field TRUNCATES rather than refusing a long value — `ab` becomes `a`…
         fireEvent.change(input, { target: { value: 'ab' } });
+        expect(input.value).toBe('a');
+        // …and `a` is still not an icon, so Set Icon stays disabled and says why.
         expect(submit.disabled).toBe(true);
-        expect(within(sheet).getByTestId('emoji-hint').textContent).toContain('exactly one');
+        expect(within(sheet).getByTestId('emoji-hint').textContent).toContain('not icons');
+
+        // Digits and punctuation are rejected for the same reason.
+        for (const rejected of ['7', '-', 'Ω']) {
+            fireEvent.change(input, { target: { value: rejected } });
+            expect(submit.disabled, rejected).toBe(true);
+        }
 
         // A ZWJ sequence is ONE grapheme; `[...value].length` would call it five.
         fireEvent.change(input, { target: { value: '👩‍👩‍👧' } });
+        expect(input.value).toBe('👩‍👩‍👧');
         expect(submit.disabled).toBe(false);
         fireEvent.click(submit);
 
         expect(onSetWorkspaceIcon).toHaveBeenCalledWith(W1, 'emoji:👩‍👩‍👧');
         expect(screen.queryByTestId('emoji-sheet')).toBeNull();
+    });
+
+    it('the browse grid fills the field with a curated emoji (the palette stand-in)', () => {
+        const onSetWorkspaceIcon = vi.fn();
+        render(<Sidebar {...baseProps()} entries={entries()} onSetWorkspaceIcon={onSetWorkspaceIcon} />);
+
+        const submenu = openIconSubmenu(rowFor(W1));
+        fireEvent.click(submenu.querySelector('[data-menu-item="icon:custom"]') as HTMLElement);
+        const sheet = screen.getByTestId('emoji-sheet');
+
+        fireEvent.click(within(sheet).getByTestId('emoji-browse-🚀'));
+        expect((within(sheet).getByTestId('emoji-input') as HTMLInputElement).value).toBe('🚀');
+        fireEvent.click(within(sheet).getByTestId('emoji-submit'));
+        expect(onSetWorkspaceIcon).toHaveBeenCalledWith(W1, 'emoji:🚀');
+    });
+
+    it('every curated emoji the menu offers passes the heuristic', () => {
+        for (const grapheme of CURATED_EMOJI) {
+            expect(normalizeEmojiInput(grapheme), grapheme).toBe(grapheme);
+        }
     });
 
     it('sets a group icon from the group menu', () => {

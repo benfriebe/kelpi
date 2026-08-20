@@ -7,7 +7,7 @@
  * reconnect re-reads, because a daemon restart can have a different list.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { WebPaneCommands } from './commands';
 import {
@@ -15,8 +15,10 @@ import {
     parseBatchSession,
     parseFavourites,
     parseFavouritesMessage,
+    parseNavStateMessage,
     type WebBatchSession,
-    type WebFavourite
+    type WebFavourite,
+    type WebNavState
 } from './state';
 
 /** The slice of `NexConnection` this hook uses — a fixture satisfies it in tests. */
@@ -29,6 +31,16 @@ export interface WebPaneUIState {
     readonly favourites: readonly WebFavourite[];
     /** Per pane; a pane with no live batch is absent (not `null`), so the panel is not drawn. */
     readonly batches: Readonly<Record<string, WebBatchSession>>;
+    /**
+     * WEB-032/WEB-033/WEB-034: the last loading + history report per **tab**, keyed
+     * `<paneID>:<tabID>`. Absent means "never heard from", which the chrome draws as idle.
+     */
+    readonly navStates: Readonly<Record<string, WebNavState>>;
+}
+
+/** The `navStates` key: pane and tab together, because WEB-034 is a per-tab rule. */
+export function navStateKey(paneID: string, tabID: string | null): string {
+    return `${paneID}:${tabID ?? ''}`;
 }
 
 function replyFavourites(reply: unknown): readonly WebFavourite[] | null {
@@ -55,6 +67,7 @@ export function useWebPaneUI(options: {
     const { connection, commands } = options;
     const [favourites, setFavourites] = useState<readonly WebFavourite[]>([]);
     const [batches, setBatches] = useState<Readonly<Record<string, WebBatchSession>>>({});
+    const [navStates, setNavStates] = useState<Readonly<Record<string, WebNavState>>>({});
 
     // Broadcasts. One listener for both, because they arrive on the same channel and the
     // parsers are the discriminator.
@@ -63,6 +76,11 @@ export function useWebPaneUI(options: {
             const list = parseFavouritesMessage(message);
             if (list !== null) {
                 setFavourites(list);
+                return;
+            }
+            const nav = parseNavStateMessage(message);
+            if (nav !== null) {
+                setNavStates((current) => ({ ...current, [navStateKey(nav.paneID, nav.tabID)]: nav }));
                 return;
             }
             const batch = parseBatchMessage(message);
@@ -125,5 +143,56 @@ export function useWebPaneUI(options: {
         };
     }, [paneKey, commands]);
 
-    return { favourites, batches };
+    return { favourites, batches, navStates };
+}
+
+// ── WEB-002: a blank pane / blank tab claims the URL bar ─────────────────────────────
+
+/** What the rule needs to know about one web pane, as the grid already knows it. */
+export interface BlankURLTarget {
+    readonly paneID: string;
+    /** The active tab's id, or null for a pane with no tab at all. */
+    readonly activeTabID: string | null;
+    readonly activeURL: string;
+}
+
+/**
+ * The signature that decides whether a target is NEW: pane + which tab is active.
+ *
+ * A tab's URL filling in (the load landing) must not re-bump — only the arrival of a pane, or
+ * of a tab, can. That is exactly the Swift split: `openWebPanePath` and `webPaneOpenNewTab`
+ * bump `webPaneURLFocusTokens` at creation time and nothing else ever does.
+ */
+function blankTargetKey(target: BlankURLTarget): string {
+    return `${target.paneID}:${target.activeTabID ?? ''}`;
+}
+
+/**
+ * WEB-002: a web pane (or new tab) that arrives with a **blank** URL hands the caret to the URL
+ * bar so the user can type immediately; one that arrives with a URL is loading a page, so focus
+ * belongs to the page instead.
+ *
+ * Written as a pure "which targets are new" diff so the rule is testable without a socket, and
+ * so a re-render caused by anything else (a title arriving, a batch broadcast, the seconds
+ * ticker) cannot move the user's caret.
+ */
+export function useBlankWebPaneURLFocus(
+    targets: readonly BlankURLTarget[],
+    focusURLBar: (paneID: string) => void
+): void {
+    const seen = useRef<Set<string> | null>(null);
+    useEffect(() => {
+        const previous = seen.current;
+        const next = new Set(targets.map(blankTargetKey));
+        seen.current = next;
+        // First pass: adopt whatever is on screen without stealing focus. A client that
+        // reloaded (or attached to a running daemon) is not "opening" these panes, and the
+        // Swift app only ever bumped on the action that created one.
+        if (previous === null) return;
+        for (const target of targets) {
+            if (previous.has(blankTargetKey(target))) continue;
+            if (target.activeURL.trim() !== '') continue;
+            focusURLBar(target.paneID);
+        }
+    }, [targets, focusURLBar]);
 }

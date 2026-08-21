@@ -75,6 +75,7 @@ import {
     type RenderedRow,
     type SidebarOrderModel
 } from './sidebar-model';
+import { animateScrollTop, revealScrollTop } from './sidebar-scroll';
 import {
     SIDEBAR_TINT_VARS,
     resolveLabelStyle,
@@ -127,11 +128,44 @@ export const AUTO_SCROLL_INTERVAL_MS = 15;
  * by a slightly overshooting curve over the response time. Two mechanisms share it: a new row
  * plays `nex-sidebar-row-enter` once (styles.css), and a row that only CHANGED PLACE is moved
  * by the FLIP pass below — measured before/after tops, the delta applied instantly and then
- * transitioned away. Removals are deliberately not animated; see styles.css for why.
+ * transitioned away. Removals are the third mechanism (`ROW_EXIT_MS`), and they animate a
+ * ghost rather than the row, for the reason recorded there.
  */
 export const ROW_ENTER_ANIMATION = 'nex-sidebar-row-enter';
 export const SPRING_EASING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
 export const REORDER_MS = 350;
+
+/**
+ * §WS-008's third mechanism: REMOVAL, on the same response as the other two.
+ *
+ * The constraint that kept this unimplemented is real and unchanged — holding a dead row alive
+ * in the list would put a phantom into the drag geometry §WS-093's measure gate has to trust,
+ * and `measuredHeights()` / `measuredOffsets()` walk exactly the rows that are alive. So the
+ * data model removes the row INSTANTLY (React unmounts it, `registerRow` drops it out of
+ * `rowElements`, and the rows below FLIP up on the spring curve) and what animates is a
+ * *visual-only ghost*: a sanitised clone of the dead row, parked in an absolutely-positioned
+ * layer that is out of flow, never registered, and therefore invisible to every measurement —
+ * see `spawnRemovalGhosts`.
+ *
+ * Collapsing a group takes the same path: a collapse removes the group's child rows (or, for an
+ * EMPTY group, its "No workspaces" row) from the rendered list, so each one ghosts out instead
+ * of cutting.
+ */
+export const ROW_EXIT_MS = REORDER_MS;
+
+/**
+ * §WS-102's reveal: the Swift scrolls the minimum amount over 0.22s. `scrollIntoView` gives the
+ * minimum for free but owns its own timing, so the measured path animates `scrollTop` itself
+ * (`chrome/sidebar-scroll.ts`) and keeps the duration the spec names.
+ */
+export const REVEAL_MS = 220;
+/**
+ * §WS-102's "wait until the newly inserted row has actually measured". The Swift retries off
+ * the height preference change; a browser has no such signal, so the reveal re-checks on
+ * animation frames and gives up after this many — ~0.5s at 60Hz, far longer than a row takes to
+ * lay out, and bounded so a pathological target can never spin forever.
+ */
+export const REVEAL_MEASURE_ATTEMPTS = 30;
 
 // ── small pieces ────────────────────────────────────────────────────────────────────
 
@@ -388,24 +422,36 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
     const branch = workspace.panes.find((pane) => pane.gitBranch !== null)?.gitBranch ?? null;
     const paneCount = workspace.panes.length;
 
-    const background = props.active
-        ? withAlpha(workspaceColorHex(workspace.color, props.bucket), 0.16)
-        : props.selected
-          ? tokens.selectionFill
-          : 'transparent';
+    /**
+     * §WS-027: the two row states are a ZStack in the Swift, not a switch — a selected row that
+     * is ALSO active draws both fills and both strokes, and reads brighter than either alone.
+     * Here that is: the selection fill as the background COLOUR with the active tint layered
+     * over it as a background image (two `rgba` fills cannot share one `background-color`), the
+     * 1.5px accent as the `outline`, and the selection's 1px stroke at 0.7 opacity as an inset
+     * ring — the same order the Swift paints them in, where the thicker accent lands last.
+     */
+    const activeFill = withAlpha(workspaceColorHex(workspace.color, props.bucket), 0.16);
+    const background = props.selected ? tokens.selectionFill : props.active ? activeFill : 'transparent';
+    const backgroundImage =
+        props.active && props.selected ? `linear-gradient(${activeFill}, ${activeFill})` : undefined;
     const outline = props.active
         ? `1.5px solid ${tokens.selectionStroke}`
         : props.selected
           ? `1px solid ${withAlpha('#5276B8', 0.7)}`
           : 'none';
+    /** The selection ring, kept when the accent outline takes the outer edge. */
+    const selectionRing =
+        props.active && props.selected ? `inset 0 0 0 1px ${withAlpha('#5276B8', 0.7)}` : null;
 
     const hidden = props.dragHidden === true;
     const nested = props.depth === 1 || props.nestPreview === true;
     const landing = props.landing === true;
     const style: CSSProperties = {
         background,
+        ...(backgroundImage === undefined ? {} : { backgroundImage }),
         outline,
         outlineOffset: '-1px',
+        ...(selectionRing === null ? {} : { boxShadow: selectionRing }),
         // §WS-089: the indent previews the container the row is being dropped INTO while the
         // cursor holds a group header, and animates so the nesting reads as a movement.
         marginLeft: nested ? 24 : 0,
@@ -424,8 +470,12 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             ? { transform: 'scale(0.2)' }
             : props.dragging && !hidden
               ? // §WS-084: the lift is scale + opacity + a drop shadow, so the row reads as
-                // picked up off the list rather than merely faded.
-                { transform: 'scale(1.03)', boxShadow: '0 6px 18px rgba(0,0,0,0.45)' }
+                // picked up off the list rather than merely faded. The §WS-027 ring rides
+                // along, or a selected row would lose it for the length of the gesture.
+                {
+                    transform: 'scale(1.03)',
+                    boxShadow: `0 6px 18px rgba(0,0,0,0.45)${selectionRing === null ? '' : `, ${selectionRing}`}`
+                }
               : {}),
         ...(hidden
             ? {
@@ -717,22 +767,29 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                     </span>
                 )}
             </span>
-            <button
-                type="button"
-                aria-label={props.collapsed ? `Expand ${group.name}` : `Collapse ${group.name}`}
-                data-testid="group-chevron"
-                className="shrink-0"
-                style={{ color: tokens.textSecondary }}
-                onClick={(event) => {
-                    event.stopPropagation();
-                    props.onToggle(group.id);
-                }}
-                onMouseDown={(event) => {
-                    event.stopPropagation();
-                }}
-            >
-                <ChromeIcon name={props.collapsed ? 'chevron-right' : 'chevron-down'} />
-            </button>
+            {/*
+             * §WS-041: the chevron is HIDDEN while the header is being renamed. The field wants
+             * the whole row — a click-drag inside it selects text — and a collapse control
+             * sitting beside a live editor is a way to lose the edit by half a pixel.
+             */}
+            {props.renaming ? null : (
+                <button
+                    type="button"
+                    aria-label={props.collapsed ? `Expand ${group.name}` : `Collapse ${group.name}`}
+                    data-testid="group-chevron"
+                    className="shrink-0"
+                    style={{ color: tokens.textSecondary }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        props.onToggle(group.id);
+                    }}
+                    onMouseDown={(event) => {
+                        event.stopPropagation();
+                    }}
+                >
+                    <ChromeIcon name={props.collapsed ? 'chevron-right' : 'chevron-down'} />
+                </button>
+            )}
         </div>
     );
 });
@@ -772,7 +829,15 @@ export interface SidebarProps extends SidebarCallbacks {
      * another client must not yank this one's viewport.
      */
     readonly scrollToWorkspaceID?: string | null | undefined;
+    /**
+     * §WS-100's other half: the GROUP a create just landed, revealed the same way (its header
+     * is the row a group HAS). Shares `onScrollHandled` — there is one queued reveal, and
+     * assembly clears both fields with it.
+     */
+    readonly scrollToGroupID?: string | null | undefined;
     readonly onScrollHandled?: (() => void) | undefined;
+    /** §WS-102's 0.22s reveal; overridable so a test does not have to wait it out. */
+    readonly revealMs?: number | undefined;
     /**
      * §SET-153 / §SET-144: "begin inline rename of this row", asked for from outside the
      * sidebar — the `rename_workspace` keybinding on the active workspace, and `new_group`,
@@ -832,6 +897,16 @@ interface DragState {
     preview: DropTarget | null;
     /** The last cursor position, so an auto-scroll tick can re-resolve without a new event. */
     clientY: number;
+    /**
+     * §WS-084's ghost: the row key to clone, and where inside the row the cursor grabbed it, so
+     * the ghost holds the same point under the pointer for the whole gesture instead of
+     * snapping its corner to the cursor. `clientX` is tracked for the ghost only — the drop
+     * math is one-dimensional.
+     */
+    clientX: number;
+    readonly ghostKey: string;
+    readonly grabDX: number;
+    readonly grabDY: number;
     /** The collapsed group the cursor is dwelling over, and when the dwell started. */
     springCandidate: string | null;
     springTimer: ReturnType<typeof setTimeout> | null;
@@ -842,6 +917,67 @@ function groupsInEntries(entries: readonly ChromeSidebarEntry[]): ReadonlySet<st
     const ids = new Set<string>();
     for (const entry of entries) if (entry.kind === 'group') ids.add(entry.group.id);
     return ids;
+}
+
+/**
+ * Attributes a CLONE must never carry.
+ *
+ * Both ghosts in this file (§WS-008's removal ghost and §WS-084's drag ghost) are made with
+ * `cloneNode(true)`, so without this they would duplicate `data-testid="workspace-row"`,
+ * `data-workspace-id`, `role="option"` and the rest — and every query that addresses a row by
+ * one of those (the audit's, the tests', the app's own) would suddenly match two elements, one
+ * of which is a corpse. A ghost is a picture; it answers to nothing.
+ */
+const GHOST_STRIPPED_ATTRIBUTES = [
+    'data-testid',
+    'data-workspace-id',
+    'data-group-id',
+    'data-active',
+    'data-depth',
+    'data-selected',
+    'data-entering',
+    'data-guide',
+    'data-insert-line',
+    'data-nest-preview',
+    'data-landing',
+    'data-drag-hidden',
+    'data-collapsed',
+    'data-drop-preview',
+    'role',
+    'id',
+    'tabindex',
+    'aria-selected',
+    'aria-label',
+    'aria-hidden'
+];
+
+function sanitizeGhost(element: Element): void {
+    for (const name of GHOST_STRIPPED_ATTRIBUTES) element.removeAttribute(name);
+    for (const child of Array.from(element.children)) sanitizeGhost(child);
+}
+
+/**
+ * `prefers-reduced-motion` in a form that survives jsdom (no `matchMedia`) and the Electron
+ * shell alike. Both ghosts consult it: the removal ghost is pure decoration and is skipped
+ * outright, and the drag ghost keeps FOLLOWING (that is information, not motion) without its
+ * lift transform.
+ */
+function prefersReducedMotion(): boolean {
+    const query = globalThis.matchMedia;
+    if (typeof query !== 'function') return false;
+    try {
+        return query.call(globalThis, '(prefers-reduced-motion: reduce)').matches === true;
+    } catch {
+        return false;
+    }
+}
+
+/** The box a row occupied, in the scroller's content space — what a removal ghost inherits. */
+interface RowBox {
+    readonly top: number;
+    readonly left: number;
+    readonly width: number;
+    readonly height: number;
 }
 
 /** A drop target as one short string, for the `data-drag-target` diagnostic (defect N4b). */
@@ -869,7 +1005,18 @@ type ConfirmState =
            */
           readonly activeAgents?: number | undefined;
       }
-    | { readonly kind: 'group'; readonly id: string; readonly name: string }
+    | {
+          readonly kind: 'group';
+          readonly id: string;
+          readonly name: string;
+          /**
+           * §WS-068: how many workspaces the group held when the prompt was RAISED. The Swift
+           * snapshots it for the same reason (`AppReducer.swift:1978-1986`) — the dialog's
+           * shape, its message and one of its button labels are all derived from it, and a
+           * count that moved under the dialog would relabel a destructive button mid-read.
+           */
+          readonly memberCount: number;
+      }
     /** §WS-060: one confirmation for the whole selection, never N prompts. */
     | { readonly kind: 'workspaces'; readonly ids: readonly string[] };
 
@@ -976,9 +1123,35 @@ export function Sidebar(props: SidebarProps): ReactElement {
         setShadow(null);
     }, [props.entries]);
 
+    /**
+     * §WS-008's removal half, in two refs.
+     *
+     * `rowBoxes` is where each row WAS at the last rendered-list change (content space), and
+     * `dyingRows` collects the elements React detached during the commit that is about to run
+     * its layout effect. Both exist because a removal is only observable *after* the node is
+     * gone: by the time the effect can diff the row list, the row it needs to animate has no
+     * geometry and no parent left. Neither map is ever consulted by the drag math — that walks
+     * `rowElements`, which holds the LIVE rows only.
+     */
+    const rowBoxes = useRef(new Map<string, RowBox>());
+    const dyingRows = useRef(new Map<string, HTMLElement>());
+    const ghostLayerRef = useRef<HTMLDivElement | null>(null);
+    /** §WS-084's cursor-following drag ghost: a detached clone parked on `document.body`. */
+    const dragGhostRef = useRef<HTMLElement | null>(null);
+
     const registerRow = useCallback((key: string, element: HTMLElement | null): void => {
-        if (element === null) rowElements.current.delete(key);
-        else rowElements.current.set(key, element);
+        if (element === null) {
+            // React detaches the ref during the mutation phase, while the node still has its
+            // last layout; keep it so the layout effect below can decide whether it deserves a
+            // ghost. It is REMOVED from `rowElements` in the same breath, so nothing that
+            // measures the list can see it from here on.
+            const dying = rowElements.current.get(key);
+            if (dying !== undefined) dyingRows.current.set(key, dying);
+            rowElements.current.delete(key);
+            return;
+        }
+        rowElements.current.set(key, element);
+        dyingRows.current.delete(key);
     }, []);
 
     const workspaceByID = useMemo(() => {
@@ -1207,6 +1380,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
             // legible); the rest are hidden and land together on release.
             const multi = kind === 'workspace' && selection.size >= 2 && selection.has(id);
             const ids = multi ? visibleOrder.filter((candidate) => selection.has(candidate)) : [id];
+            // §WS-084: where inside the row the cursor grabbed it. Measured on the press, from
+            // the row's own box, so the ghost keeps that point under the pointer instead of
+            // jumping its corner there when the gesture crosses the 5px threshold.
+            const grabbed = event.currentTarget as HTMLElement | null;
+            const box = grabbed === null ? null : grabbed.getBoundingClientRect();
             dragRef.current = {
                 kind,
                 id,
@@ -1216,12 +1394,82 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 active: false,
                 preview: null,
                 clientY: event.clientY,
+                clientX: event.clientX,
+                ghostKey: kind === 'group' ? `header:${id}` : `ws:${id}`,
+                grabDX: box === null ? 0 : event.clientX - box.left,
+                grabDY: box === null ? 0 : event.clientY - box.top,
                 springCandidate: null,
                 springTimer: null
             };
             setDragID(id);
         },
         [baseModel, flushLanding, rename, selection, visibleOrder]
+    );
+
+    /**
+     * §WS-084's drag ghost: the row, lifted off the list and following the cursor.
+     *
+     * The shadow-commit model (file header, point 2) means the *real* row cannot leave the flow
+     * — it is the live preview of the order the drop will commit, and it is what the drop zones
+     * are built from. So the thing that follows the cursor is a sanitised clone parked on
+     * `document.body`: fixed-position, `pointer-events: none`, addressable by nothing
+     * (`sanitizeGhost`), and — the point — never registered as a row, so `measuredHeights()`,
+     * `measuredOffsets()` and §WS-093's `geometryReady()` cannot see it. It carries the lift the
+     * item names: 1.03 scale, 0.8-ish opacity and a real drop shadow.
+     *
+     * Position is written straight onto the node from the mousemove handler rather than through
+     * state: a React commit per pointer sample would re-render every row in the sidebar 60
+     * times a second, and the FLIP pass would then have to be taught to ignore its own frames.
+     */
+    const endDragGhost = useCallback((): void => {
+        dragGhostRef.current?.remove();
+        dragGhostRef.current = null;
+    }, []);
+
+    const moveDragGhost = useCallback((drag: DragState): void => {
+        const ghost = dragGhostRef.current;
+        if (ghost === null) return;
+        const x = drag.clientX - drag.grabDX;
+        const y = drag.clientY - drag.grabDY;
+        ghost.style.transform = `translate3d(${String(Math.round(x))}px, ${String(Math.round(y))}px, 0) scale(1.03)`;
+        ghost.dataset['ghostX'] = String(Math.round(x));
+        ghost.dataset['ghostY'] = String(Math.round(y));
+    }, []);
+
+    const startDragGhost = useCallback(
+        (drag: DragState): void => {
+            endDragGhost();
+            const source = rowElements.current.get(drag.ghostKey);
+            const body = globalThis.document?.body;
+            if (source === undefined || body === undefined || body === null) return;
+            const ghost = source.cloneNode(true) as HTMLElement;
+            sanitizeGhost(ghost);
+            ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
+            ghost.setAttribute('aria-hidden', 'true');
+            ghost.style.position = 'fixed';
+            ghost.style.left = '0px';
+            ghost.style.top = '0px';
+            ghost.style.width = `${String(source.offsetWidth)}px`;
+            ghost.style.height = `${String(source.offsetHeight)}px`;
+            ghost.style.margin = '0';
+            ghost.style.zIndex = '2147483000';
+            ghost.style.pointerEvents = 'none';
+            ghost.style.animation = 'none';
+            ghost.style.transition = 'none';
+            ghost.style.opacity = '0.92';
+            // The row itself is usually transparent (its fill comes from the list behind it), so
+            // an unpainted clone over the pane grid would be a floating column of text.
+            ghost.style.background = tokens.sidebarBackground;
+            ghost.style.borderRadius = '7px';
+            ghost.style.outline = `1px solid ${tokens.selectionStroke}`;
+            ghost.style.outlineOffset = '-1px';
+            ghost.style.boxShadow = '0 12px 32px rgba(0,0,0,0.55)';
+            ghost.style.transformOrigin = 'top left';
+            body.appendChild(ghost);
+            dragGhostRef.current = ghost;
+            moveDragGhost(drag);
+        },
+        [endDragGhost, moveDragGhost]
     );
 
     useEffect(() => {
@@ -1386,6 +1634,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const drag = dragRef.current;
             if (drag === null) return;
             drag.clientY = event.clientY;
+            drag.clientX = event.clientX;
             if (!drag.active) {
                 if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD_PX) return;
                 // §WS-093: ignore the gesture entirely until the geometry it would be resolved
@@ -1394,7 +1643,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 if (!geometryReady()) return;
                 drag.active = true;
                 setDragActive(true);
+                // §WS-084: the ghost is minted only once the gesture IS a drag — a press that
+                // never moves must leave no floating row behind it.
+                startDragGhost(drag);
             }
+            moveDragGhost(drag);
             syncAutoScroll(drag);
             resolve(drag);
         };
@@ -1403,6 +1656,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const drag = dragRef.current;
             dragRef.current = null;
             stopAutoScroll();
+            // §WS-084: the ghost dies with the gesture, before any landing animation — what
+            // happens next belongs to the real row.
+            endDragGhost();
             const list = listRef.current;
             if (list !== null) list.dataset['dragActive'] = 'false';
             if (drag !== null) cancelSpring(drag);
@@ -1491,6 +1747,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             target.removeEventListener('mousemove', onMove);
             target.removeEventListener('mouseup', onUp);
             stopAutoScroll();
+            endDragGhost();
             const drag = dragRef.current;
             if (drag !== null) cancelSpring(drag);
         };
@@ -1498,13 +1755,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
         autoScrollIntervalMs,
         contentY,
         dragID,
+        endDragGhost,
         geometryReady,
         landingMs,
         measuredHeights,
         measuredOffsets,
+        moveDragGhost,
         props,
         rowHeight,
-        springLoadMs
+        springLoadMs,
+        startDragGhost
     ]);
 
     // A landing in flight when the sidebar unmounts must not fire into a dead tree.
@@ -1528,24 +1788,109 @@ export function Sidebar(props: SidebarProps): ReactElement {
     // would read the animation's own offset back as a layout change and re-FLIP forever.
     // `offsetTop` is transform-free by definition. jsdom reports 0 for all of them, which is
     // exactly the right degradation — no layout, no movement to animate.
+    /**
+     * §WS-008's removal animation, in the one place it can live without lying to the drag.
+     *
+     * Each dead row is cloned, sanitised (`sanitizeGhost` — a ghost answers to no selector),
+     * pinned at the box it occupied and collapsed to nothing on the spring curve. The layer it
+     * goes into is `position: absolute` inside the scroller, so:
+     *
+     *   - it is OUT OF FLOW — no live row's `offsetTop` moves because a ghost is fading, which
+     *     is what would have poisoned §WS-093's measure gate had the row itself been held alive;
+     *   - it is never handed to `registerRow`, so `measuredHeights()` / `measuredOffsets()` /
+     *     `geometryReady()` cannot see it even by accident;
+     *   - it is `pointer-events: none`, so it cannot swallow the click that follows a delete.
+     *
+     * Reduced motion removes the ghost entirely rather than fading it more slowly: the row is
+     * already gone from the model, and the ghost's only job is to explain the change.
+     */
+    const spawnRemovalGhosts = useCallback(
+        (dead: readonly { key: string; node: HTMLElement | undefined; box: RowBox | undefined }[]): void => {
+            const layer = ghostLayerRef.current;
+            if (layer === null || prefersReducedMotion()) return;
+            for (const { node, box } of dead) {
+                if (node === undefined || box === undefined) continue;
+                const ghost = node.cloneNode(true) as HTMLElement;
+                sanitizeGhost(ghost);
+                ghost.setAttribute('data-testid', 'sidebar-row-ghost');
+                ghost.setAttribute('aria-hidden', 'true');
+                ghost.style.position = 'absolute';
+                ghost.style.top = `${String(box.top)}px`;
+                ghost.style.left = `${String(box.left)}px`;
+                ghost.style.width = `${String(box.width)}px`;
+                ghost.style.height = `${String(box.height)}px`;
+                ghost.style.margin = '0';
+                ghost.style.overflow = 'hidden';
+                ghost.style.pointerEvents = 'none';
+                ghost.style.animation = 'none';
+                ghost.style.transformOrigin = 'top center';
+                ghost.style.opacity = '1';
+                ghost.style.transition =
+                    `opacity ${String(ROW_EXIT_MS)}ms ease, ` +
+                    `height ${String(ROW_EXIT_MS)}ms ${SPRING_EASING}, ` +
+                    `transform ${String(ROW_EXIT_MS)}ms ${SPRING_EASING}`;
+                layer.appendChild(ghost);
+                const collapse = (): void => {
+                    ghost.style.opacity = '0';
+                    ghost.style.height = '0px';
+                    ghost.style.transform = 'scale(0.96)';
+                };
+                // One frame at the starting box, so the transition has something to run FROM.
+                const frame = globalThis.requestAnimationFrame;
+                if (typeof frame === 'function') frame(collapse);
+                else collapse();
+                setTimeout(() => {
+                    ghost.remove();
+                }, ROW_EXIT_MS + 80);
+            }
+        },
+        []
+    );
+
     const previousLayoutRef = useRef<{ keys: ReadonlySet<string>; tops: ReadonlyMap<string, number> } | null>(null);
     const [flip, setFlip] = useState<ReadonlyMap<string, number>>(EMPTY_FLIP);
     const [entering, setEntering] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
     const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useLayoutEffect(() => {
+        // Everything React detached during THIS commit, taken once and dropped: a pending clone
+        // that no longer corresponds to a removed row (the filter swapping the whole list out,
+        // say) is a picture of nothing and must not survive to the next change.
+        const dying = new Map(dyingRows.current);
+        dyingRows.current.clear();
+
         const tops = new Map<string, number>();
+        const boxes = new Map<string, RowBox>();
         for (const row of rows) {
             const element = rowElements.current.get(row.key);
-            if (element !== undefined) tops.set(row.key, element.offsetTop);
+            if (element === undefined) continue;
+            tops.set(row.key, element.offsetTop);
+            boxes.set(row.key, {
+                top: element.offsetTop,
+                left: element.offsetLeft,
+                width: element.offsetWidth,
+                height: element.offsetHeight
+            });
         }
         const previous = previousLayoutRef.current;
+        const previousBoxes = rowBoxes.current;
         previousLayoutRef.current = { keys: new Set(rows.map((row) => row.key)), tops };
+        rowBoxes.current = boxes;
 
         // First commit: everything is "new", and a sidebar that animates its whole contents in
         // on mount is a worse sidebar than one that is simply there.
         if (previous === null) return;
         if (dragRef.current !== null || landingTimerRef.current !== null) return;
+
+        // §WS-008's removals. The rows below have already been FLIPped up by the pass below;
+        // this is the dead row itself, collapsing where it stood.
+        const live = new Set(rows.map((row) => row.key));
+        const gone = [...previous.keys].filter((key) => !live.has(key));
+        if (gone.length > 0 && live.size > 0) {
+            spawnRemovalGhosts(
+                gone.map((key) => ({ key, node: dying.get(key), box: previousBoxes.get(key) }))
+            );
+        }
 
         const fresh = rows.map((row) => row.key).filter((key) => !previous.keys.has(key));
         if (fresh.length > 0) {
@@ -1567,7 +1912,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             moved.set(row.key, delta);
         }
         if (moved.size > 0) setFlip(moved);
-    }, [rows]);
+    }, [rows, spawnRemovalGhosts]);
 
     // Second half of the FLIP: the offset is in the DOM, so release it on the next frame and
     // let the transition carry the row home. Owned by React (rather than written straight onto
@@ -1590,7 +1935,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     /**
-     * §15: scroll the entry THIS client just created into view, exactly once.
+     * §15: scroll the entry THIS client just created — or just activated — into view, once.
      *
      * §WS-101's resolution, verbatim: a workspace with a visible row is scrolled to directly;
      * one hidden inside a COLLAPSED group resolves to that group's header instead (the
@@ -1598,23 +1943,120 @@ export function Sidebar(props: SidebarProps): ReactElement {
      * this client cannot see AT ALL is DROPPED rather than retried on every `rows` change. A
      * row that simply has not rendered yet keeps the target pending — that is the one case
      * worth waiting for, and it resolves on the next commit.
+     *
+     * §WS-020: while the FILTER is active the request is consumed and DROPPED. The filtered
+     * body is a different list of rows registered under the same `ws:<id>` keys, so without
+     * this the queued target yanks the filtered view instead — and the row it wanted is not the
+     * row it would reach.
+     *
+     * §WS-102: with a real box model the reveal WAITS for the row to measure, then moves the
+     * minimum amount over `REVEAL_MS` (`chrome/sidebar-scroll.ts`). Without one — jsdom, or a
+     * sidebar that has never laid out — there is nothing to measure and nothing to animate, so
+     * it falls back to `scrollIntoView({ block: 'nearest' })`, which is the same *decision*
+     * taken by the platform.
      */
     const scrollTarget = props.scrollToWorkspaceID ?? null;
+    const scrollGroupTarget = props.scrollToGroupID ?? null;
     const onScrollHandled = props.onScrollHandled;
+    const filterActive = props.filter.trim().length > 0;
+    const revealMs = props.revealMs ?? REVEAL_MS;
+    /** Bumped by a measure retry, so the effect re-runs without `rows` having changed. */
+    const [revealTick, setRevealTick] = useState(0);
+    const revealAttemptsRef = useRef<{ target: string; attempts: number }>({ target: '', attempts: 0 });
+    const cancelRevealRef = useRef<(() => void) | null>(null);
     useEffect(() => {
-        if (scrollTarget === null) return;
-        const located = locateWorkspace(baseModel, scrollTarget);
-        if (located === null) {
+        const target = scrollGroupTarget ?? scrollTarget;
+        if (target === null) return undefined;
+        if (filterActive) {
             onScrollHandled?.();
-            return;
+            return undefined;
         }
-        const element =
-            rowElements.current.get(`ws:${scrollTarget}`) ??
-            (located.groupID === null ? undefined : rowElements.current.get(`header:${located.groupID}`));
-        if (element === undefined) return;
-        element.scrollIntoView?.({ block: 'nearest' });
+        // A group target resolves to its header; a workspace target to its own row, or to the
+        // header of the collapsed group hiding it (§WS-101).
+        let key: string | null;
+        if (scrollGroupTarget !== null) {
+            key = groups.some((group) => group.id === scrollGroupTarget) ? `header:${scrollGroupTarget}` : null;
+        } else {
+            const located = scrollTarget === null ? null : locateWorkspace(baseModel, scrollTarget);
+            key =
+                located === null
+                    ? null
+                    : rowElements.current.has(`ws:${String(scrollTarget)}`) || located.groupID === null
+                      ? `ws:${String(scrollTarget)}`
+                      : `header:${located.groupID}`;
+        }
+        if (key === null) {
+            onScrollHandled?.();
+            return undefined;
+        }
+        const element = rowElements.current.get(key);
+        if (element === undefined) return undefined;
+
+        const list = listRef.current;
+        const hasLayout = list !== null && list.getBoundingClientRect().height > 0;
+        const handOff = (): void => {
+            element.scrollIntoView?.({ block: 'nearest' });
+            onScrollHandled?.();
+        };
+        if (!hasLayout) {
+            handOff();
+            return undefined;
+        }
+        // §WS-102's wait: a row that exists but has not measured yet would be scrolled to at
+        // its unmeasured height, which is the Swift's "retry from the height preference
+        // change" case. Re-check on the next frame instead, bounded.
+        if (element.getBoundingClientRect().height <= 0) {
+            const seen = revealAttemptsRef.current;
+            const attempts = seen.target === target ? seen.attempts + 1 : 1;
+            revealAttemptsRef.current = { target, attempts };
+            const frame = globalThis.requestAnimationFrame;
+            if (attempts <= REVEAL_MEASURE_ATTEMPTS && typeof frame === 'function') {
+                const id = frame(() => {
+                    setRevealTick((tick) => tick + 1);
+                });
+                return () => {
+                    globalThis.cancelAnimationFrame?.(id);
+                };
+            }
+            // Waited as long as this is worth waiting: reveal it anyway rather than leaving a
+            // one-shot pending forever.
+            handOff();
+            return undefined;
+        }
+        revealAttemptsRef.current = { target: '', attempts: 0 };
+        const to = revealScrollTop({
+            scrollTop: list.scrollTop,
+            viewportHeight: list.clientHeight,
+            rowTop: element.offsetTop,
+            rowHeight: element.offsetHeight,
+            topInset: CONTENT_TOP_PADDING
+        });
+        if (to !== null) {
+            cancelRevealRef.current?.();
+            cancelRevealRef.current = animateScrollTop(list, to, { durationMs: revealMs });
+        }
         onScrollHandled?.();
-    }, [baseModel, scrollTarget, onScrollHandled, rows]);
+        return undefined;
+    }, [
+        baseModel,
+        filterActive,
+        groups,
+        onScrollHandled,
+        revealMs,
+        revealTick,
+        rows,
+        scrollGroupTarget,
+        scrollTarget
+    ]);
+
+    // A reveal still animating when the sidebar goes away must not keep writing `scrollTop`.
+    useEffect(
+        () => () => {
+            cancelRevealRef.current?.();
+            cancelRevealRef.current = null;
+        },
+        []
+    );
 
     /**
      * §SET-153 / §SET-144's one-shot "start renaming this row", same shape as the scroll target
@@ -2163,7 +2605,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Delete Group…',
                     danger: true,
                     onSelect: () => {
-                        setConfirm({ kind: 'group', id: groupID, name: group.name });
+                        const entry = props.entries.find(
+                            (candidate) => candidate.kind === 'group' && candidate.group.id === groupID
+                        );
+                        setConfirm({
+                            kind: 'group',
+                            id: groupID,
+                            name: group.name,
+                            memberCount: entry?.kind === 'group' ? entry.workspaces.length : 0
+                        });
                     }
                 }
             ];
@@ -2492,14 +2942,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     style={{ background: withAlpha('#6F9BD8', 0.12), color: tokens.textSecondary }}
                 >
                     <span className="flex-1">{selection.size} selected</span>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setSelection(new Set(visibleOrder));
-                        }}
-                    >
-                        Select All
-                    </button>
+                    {/* §WS-043: "Select All" disappears once everything already IS selected —
+                        a button whose only effect would be to do nothing. */}
+                    {visibleOrder.every((id) => selection.has(id)) ? null : (
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSelection(new Set(visibleOrder));
+                            }}
+                        >
+                            Select All
+                        </button>
+                    )}
                     <button
                         type="button"
                         onClick={() => {
@@ -2513,12 +2967,28 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
             <div
                 ref={listRef}
-                className="min-h-0 flex-1 overflow-y-auto px-2 pr-3"
+                /* `relative` is load-bearing twice over: it makes the scroller the offset parent
+                   every row's `offsetTop` is measured against (§WS-008's FLIP and §WS-102's
+                   reveal both read that number), and it is the containing block the removal
+                   ghosts are pinned inside. */
+                className="relative min-h-0 flex-1 overflow-y-auto px-2 pr-3"
                 style={{ paddingTop: CONTENT_TOP_PADDING }}
                 onContextMenu={onBackgroundContextMenu}
                 role="listbox"
                 aria-label="Workspaces"
             >
+                {/*
+                 * §WS-008's removal ghosts live here and nowhere else. Zero height, out of flow,
+                 * `pointer-events: none`: the rows around it cannot be moved by what it holds,
+                 * which is the whole reason a dying row can be animated at all (see
+                 * `spawnRemovalGhosts`). React owns this node and never its children.
+                 */}
+                <div
+                    ref={ghostLayerRef}
+                    data-testid="sidebar-ghost-layer"
+                    aria-hidden
+                    className="pointer-events-none absolute left-0 top-0 z-10 h-0 w-full"
+                />
                 {body}
                 <div className="h-8" data-testid="sidebar-spacer" />
             </div>
@@ -3351,6 +3821,14 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     const isBulk = props.confirm.kind === 'workspaces';
     const count = props.confirm.kind === 'workspaces' ? props.confirm.ids.length : 0;
     /**
+     * §WS-068: the group prompt has TWO shapes, and which one it is depends on the membership
+     * snapshotted when it was raised. An empty group is a one-button removal; a populated one
+     * is a choice between two destructive outcomes, with the safer of them named in the message
+     * — never a bare "Delete the group?" that hides what happens to the workspaces inside it.
+     */
+    const members = props.confirm.kind === 'group' ? props.confirm.memberCount : 0;
+    const workspaceNoun = `workspace${members === 1 ? '' : 's'}`;
+    /**
      * WS-108: a workspace with running agents gets `WorkspaceDeleteGate`'s alert instead of the
      * plain confirmation — the count in the message and a "Don't ask again" that writes the
      * daemon's `confirm-workspace-delete`. The caller has already applied the setting (0 when
@@ -3379,6 +3857,18 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     : props.confirm.kind === 'workspace'
                       ? `Delete “${props.confirm.name}”?`
                       : `Delete ${String(count)} workspace${count === 1 ? '' : 's'}?`}
+                {isGroup ? (
+                    <div
+                        data-testid="confirm-group-detail"
+                        data-members={String(members)}
+                        className="mt-1 text-[11px]"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        {members === 0
+                            ? 'This group is empty and will be removed.'
+                            : `Choose whether to also delete the ${String(members)} ${workspaceNoun} inside this group. Moving them to the top level is the safer option.`}
+                    </div>
+                ) : null}
                 {isBulk ? (
                     <div className="mt-1 text-[11px]" style={{ color: tokens.textSecondary }}>
                         This cannot be undone. Panes and surfaces in these workspaces will be closed.
@@ -3414,15 +3904,22 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                 >
                     Cancel
                 </button>
-                {isGroup ? (
+                {/*
+                  * §WS-068: an EMPTY group offers one button, "Delete Group". A populated one
+                  * offers both outcomes, both destructive: promote (the safer one the message
+                  * recommends) and cascade, whose label carries the count so the button says
+                  * what it is about to take with it.
+                  */}
+                {isGroup && members > 0 ? (
                     <button
                         type="button"
-                        style={{ color: tokens.textSecondary }}
+                        data-testid="confirm-delete-cascade"
+                        style={{ color: '#E0655C' }}
                         onClick={() => {
                             props.onConfirm(true, suppress);
                         }}
                     >
-                        Delete + Workspaces
+                        {`Delete Group and ${String(members)} ${workspaceNoun[0]?.toUpperCase() ?? ''}${workspaceNoun.slice(1)}`}
                     </button>
                 ) : null}
                 <button
@@ -3433,7 +3930,7 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         props.onConfirm(false, suppress);
                     }}
                 >
-                    Delete
+                    {isGroup ? (members > 0 ? 'Move Workspaces to Top Level' : 'Delete Group') : 'Delete'}
                 </button>
             </div>
         </div>,

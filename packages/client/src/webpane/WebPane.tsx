@@ -193,6 +193,10 @@ function ChromeButton(props: ChromeButtonProps): ReactElement {
             aria-label={props.label}
             title={props.label}
             disabled={disabled}
+            // The accent is a colour, and a colour is not a readable STATE from outside this
+            // component. WEB-039 and WEB-040 both turn on "is this button lit?", so the flag is
+            // published the way the tab pills publish theirs.
+            data-active={props.active === true ? 'true' : 'false'}
             className="relative flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
             style={{
                 color: props.active === true ? tokens.accent : tokens.textSecondary,

@@ -139,6 +139,19 @@ function settle(ms = 30): Promise<void> {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * A file the parent may be mid-`read-tree` on. `read-tree --reset -u` unlinks and rewrites
+ * paths, so a poll that lands inside a sync pass can see the file missing for a few
+ * milliseconds — "not there yet" is a false predicate, never an exception.
+ */
+function readOrEmpty(file: string): string {
+    try {
+        return fs.readFileSync(file, 'utf8');
+    } catch {
+        return '';
+    }
+}
+
 // Fixed delays race real git subprocesses when the whole suite runs in parallel; poll the
 // condition instead of guessing how long a sync pass takes under load.
 async function waitFor(condition: () => boolean, timeoutMs = 15_000): Promise<void> {
@@ -312,7 +325,7 @@ describe.skipIf(!HAS_GIT)('graft start → sync', () => {
         watch.fire(f.worktree, 'live.txt');
         await waitFor(
             () =>
-                fs.readFileSync(path.join(f.parent, 'live.txt'), 'utf8') === 'v3\n' &&
+                readOrEmpty(path.join(f.parent, 'live.txt')) === 'v3\n' &&
                 graft.session(session.id)?.status.kind === 'watching'
         );
         expect(fs.readFileSync(path.join(f.parent, 'live.txt'), 'utf8')).toBe('v3\n');

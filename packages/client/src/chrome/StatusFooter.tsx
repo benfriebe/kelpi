@@ -42,6 +42,11 @@ export type AgentBucket = 'running' | 'waiting' | 'inactive';
 /** The slice of an inspector association the footer's longest-prefix match needs. */
 export interface FooterAssociation {
     readonly worktreePath: string;
+    /**
+     * `worktreePath` with symlinks resolved, computed daemon-side (`ws/repos.ts` ▸
+     * `serializeAssociation`). Absent / `''` = fall back to `worktreePath`.
+     */
+    readonly worktreePathReal?: string | undefined;
     readonly status: {
         readonly kind: 'unknown' | 'clean' | 'dirty';
         readonly changedFiles: number;
@@ -57,24 +62,80 @@ export interface FooterGitStats {
 }
 
 /**
+ * Trailing separators removed, so `/repo/` and `/repo` are the same root. `/` survives as
+ * itself — it is a legitimate (if silly) worktree root and must not collapse to `''`.
+ */
+function normalizePathForMatch(value: string | undefined): string {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (trimmed === '') return '';
+    const stripped = trimmed.replace(/\/+$/, '');
+    return stripped === '' ? '/' : stripped;
+}
+
+/**
+ * Is `candidate` the directory `root`, or somewhere beneath it?
+ *
+ * Boundary-correct on purpose: `/repo2` is NOT inside `/repo`, which a bare `startsWith` would
+ * claim. Case-sensitive on purpose too — a case-insensitive match would make `/Repo` and
+ * `/repo` the same tree on a case-sensitive volume where they are two different repositories.
+ */
+function isInsideRoot(candidate: string, root: string): boolean {
+    if (candidate === '' || root === '') return false;
+    if (candidate === root) return true;
+    return candidate.startsWith(root === '/' ? '/' : `${root}/`);
+}
+
+/** The distinct, normalized forms of one path — literal and symlink-resolved. */
+function pathForms(literal: string, canonical: string | undefined): readonly string[] {
+    const a = normalizePathForMatch(canonical);
+    const b = normalizePathForMatch(literal);
+    if (a === '') return b === '' ? EMPTY_FORMS : [b];
+    if (b === '' || a === b) return [a];
+    return [a, b];
+}
+
+/**
  * §APP-071 / §GIT-092 — what `doc N +A -B` is computed from.
  *
  * The pane carries no association id, so the Swift matches its cwd to the repo association it
  * sits INSIDE, longest worktree path winning (a workspace can hold a repo and a worktree nested
  * under it; the deeper one is the one the pane is actually in). `null` when the pane is outside
  * every tracked worktree, or the tree it is in is clean — the two cases the Swift hides.
+ *
+ * **The match runs on CANONICAL paths** (audit ledger **N5**). The two sides are produced by
+ * different subsystems and disagree about the same directory: an association carries git's
+ * answer to `rev-parse --show-toplevel`, which is the physical path (`/private/var/…`), while a
+ * pane carries the logical cwd its shell reported (`/var/…`). Every repo under a symlinked
+ * ancestor — all of `/tmp` and `/var` on macOS, a symlinked `$HOME` — therefore failed the
+ * prefix test, and the segment silently drew nothing. The daemon now ships the symlink-resolved
+ * twin of both (`workingDirectoryReal`, `worktree_path_real`), and this compares those.
+ *
+ * Both forms of both sides are still tried, so an unresolvable path on one side (a deleted
+ * directory whose realpath could not be taken) degrades to the old literal comparison rather
+ * than to nothing. Ranking, however, is always on the canonical root: a nested worktree must
+ * beat the repo it sits inside, and mixing `/var/x/wt` against `/private/var/x` would compare
+ * two different measuring sticks.
  */
 export function footerGitStats(
     associations: readonly FooterAssociation[],
-    workingDirectory: string
+    workingDirectory: string,
+    workingDirectoryReal?: string | undefined
 ): FooterGitStats | null {
-    if (workingDirectory === '') return null;
+    const cwds = pathForms(workingDirectory, workingDirectoryReal);
+    if (cwds.length === 0) return null;
     let best: FooterAssociation | null = null;
+    let bestDepth = -1;
     for (const association of associations) {
-        const root = association.worktreePath;
-        if (root === '') continue;
-        if (workingDirectory !== root && !workingDirectory.startsWith(`${root}/`)) continue;
-        if (best === null || root.length > best.worktreePath.length) best = association;
+        const roots = pathForms(association.worktreePath, association.worktreePathReal);
+        if (roots.length === 0) continue;
+        if (!roots.some((root) => cwds.some((cwd) => isInsideRoot(cwd, root)))) continue;
+        // roots[0] is the canonical form when there is one (see `pathForms`).
+        const depth = (roots[0] ?? '').length;
+        if (depth > bestDepth) {
+            best = association;
+            bestDepth = depth;
+        }
     }
     if (best === null || best.status.kind !== 'dirty') return null;
     const { changedFiles, additions, deletions } = best.status;
@@ -264,7 +325,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
     const treeStats =
         pane === null
             ? null
-            : footerGitStats(props.associations ?? EMPTY_ASSOCIATIONS, pane.workingDirectory);
+            : footerGitStats(
+                  props.associations ?? EMPTY_ASSOCIATIONS,
+                  pane.workingDirectory,
+                  pane.workingDirectoryReal
+              );
 
     // The enabled set in canonical order, gated by the master toggle (`enabledStatKinds`).
     const stats = props.systemStats;
@@ -435,3 +500,4 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 
 const EMPTY_SAMPLES: readonly number[] = [];
 const EMPTY_ASSOCIATIONS: readonly FooterAssociation[] = [];
+const EMPTY_FORMS: readonly string[] = [];

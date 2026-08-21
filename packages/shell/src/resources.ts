@@ -60,6 +60,17 @@ export function packagedCliLauncher(resourcesPath: string): string {
     return path.join(resourcesPath, RESOURCE_NAMES.cli, CLI_LAUNCHER_NAME);
 }
 
+/** The bundled Claude Code skill's name — `nex install-hooks` is what installs it. */
+export const BUNDLED_SKILL_NAME = 'nex-agentic';
+
+/**
+ * `Contents/Resources/cli/skills/nex-agentic` — staged beside the CLI bundle by
+ * `scripts/stage-resources.mjs`, because `nex install-hooks` looks for it there first.
+ */
+export function packagedSkillDir(resourcesPath: string): string {
+    return path.join(resourcesPath, RESOURCE_NAMES.cli, 'skills', BUNDLED_SKILL_NAME);
+}
+
 /** True when `resourcesPath` carries a CLI payload we could install. */
 export function hasCliPayload(resourcesPath: string | undefined): boolean {
     if (resourcesPath === undefined || resourcesPath.length === 0) return false;

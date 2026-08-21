@@ -19,6 +19,7 @@
 
 import type { JsonObject, JsonValue } from '@nex/protocol';
 
+import { canonicalizeForClient } from './paths.js';
 import type {
     DaemonState,
     DomainEvent,
@@ -44,9 +45,20 @@ function asJson<T>(value: T): JsonObject {
     return value as unknown as JsonObject;
 }
 
+/**
+ * §APP-071 / §GIT-092 (ledger N5) — the pane's cwd with symlinks resolved, added beside the
+ * literal one rather than replacing it.
+ *
+ * `workingDirectory` stays exactly what the shell reported, because that is what the footer,
+ * `pane list`'s CWD column and `--prune-worktree` display and act on. `workingDirectoryReal`
+ * is the form a git-produced path (`rev-parse --show-toplevel`, always physical) can be
+ * compared against — the comparison the status footer's `doc N +A -B` makes. A browser cannot
+ * call `realpath`, so the daemon does it once, here, for every pane that reaches a client.
+ * `''` = no canonical form was obtainable; consumers fall back to the literal path.
+ */
 export function serializePane(pane: Pane): JsonObject {
     // Panes carry no server-only fields: every column is something a client renders.
-    return asJson({ ...pane });
+    return asJson({ ...pane, workingDirectoryReal: canonicalizeForClient(pane.workingDirectory) });
 }
 
 export function serializeGroup(group: WorkspaceGroup): JsonObject {

@@ -219,6 +219,15 @@ async function makeSandbox(label) {
     // A hotkey the shell will try to register: unusual enough not to fight a real app.
     fs.writeFileSync(configPath, 'global-hotkey = ctrl+alt+shift+f12\nglobal-hotkey-hide-on-repress = true\n');
 
+    /**
+     * §APP-006's fixture: a document this sandbox HOME already carries, laid down so the launch
+     * step that would refresh it can be observed NOT writing (see `src/main.ts` for why that
+     * step is inert). Inside the throwaway HOME, so nothing here can reach a real one.
+     */
+    const installedSkill = path.join(home, '.claude', 'skills', 'nex-agentic');
+    fs.mkdirSync(installedSkill, { recursive: true });
+    fs.writeFileSync(path.join(installedSkill, 'SKILL.md'), '# nex-agentic\n\nlast month\n');
+
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
@@ -239,6 +248,7 @@ async function makeSandbox(label) {
         root,
         env,
         userData,
+        installedSkill,
         runDir: env.NEXD_RUN_DIR,
         socketPath,
         httpPort: Number(env.NEXD_HTTP_PORT),
@@ -382,6 +392,45 @@ function startShell(sandbox) {
     };
 }
 
+/**
+ * Launch the app a SECOND time with files on argv, the way `open -a Nex.app notes.md` does on a
+ * machine where Nex is already running (CONT-124/125, APP-100/101).
+ *
+ * Finder's own `open-file` event cannot be raised from a script — LaunchServices delivers it —
+ * but it and this route end in the same place: the same extension filter, the same `forwardOpen`,
+ * the same `open` control command, the same window raise. This is the half of that path no unit
+ * test can reach; the buffer-then-drain race in front of it is `src/launch.test.ts`.
+ *
+ * Resolves with the second process's own output, which is expected to be one line saying it is
+ * exiting because another shell owns the single-instance lock.
+ */
+async function launchWithFiles(sandbox, files) {
+    const child = spawn(electronBinary(), ['.', ...files, `--user-data-dir=${sandbox.userData}`], {
+        cwd: shellRoot,
+        env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const collect = (chunk) => {
+        output += chunk;
+        if (options.verbose) process.stderr.write(`[second launch] ${chunk}`);
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    const code = await Promise.race([
+        new Promise((resolve) => child.on('exit', (value) => resolve(value ?? -1))),
+        raceTimeout(20_000).then(() => 'timeout')
+    ]);
+    if (code === 'timeout') {
+        child.kill('SIGKILL');
+        return { code: -1, output, timedOut: true };
+    }
+    releaseChild(child);
+    return { code, output, timedOut: false };
+}
+
 // ── phase 1: adopt a running daemon, then quit without taking it down ────────────────
 
 async function adoptPhase() {
@@ -433,6 +482,65 @@ async function adoptPhase() {
         check('the app menu offers "Check for Updates…"', menu.includes('Check for Updates…'), menu.trim());
         check('the File menu offers "Preview Markdown…" on ⌘O', menu.includes('Preview Markdown… (⌘O)'), menu.trim());
         check('the Help menu offers "Nex Help" on ⌘?', menu.includes('Nex Help (⌘?)'), menu.trim());
+
+        /*
+         * §APP-006's launch step is deliberately inert (see `src/main.ts`), so the only thing
+         * there is to assert is that the launch order reaches it and it writes nothing. The
+         * fixture this sandbox lays down beside it stays untouched, which is the check.
+         */
+        const refreshLine = await shell.waitForLine(/skill-refresh:/, 'the skill-refresh step', 20_000);
+        check('the launch order reaches its documentation-refresh slot', refreshLine !== undefined, refreshLine.trim());
+        check(
+            'and that slot writes nothing — the sandbox fixture is byte-for-byte as laid down',
+            fs.readFileSync(path.join(sandbox.installedSkill, 'SKILL.md'), 'utf8').includes('last month'),
+            'fixture unchanged'
+        );
+
+        // ── a file opened from outside the app (CONT-124/125, APP-100/101) ──────────
+        const markdownTarget = path.join(sandbox.env.HOME, 'smoke-open.md');
+        fs.writeFileSync(markdownTarget, '# smoke open\n\nHanded to a second launch on argv.\n');
+        const ignoredTarget = path.join(sandbox.env.HOME, 'smoke-open.png');
+        fs.writeFileSync(ignoredTarget, 'not markdown at all');
+        const beforeOpen = await controlCommand(sandbox.runSocket, { command: 'pane-list' });
+        const relaunch = await launchWithFiles(sandbox, [markdownTarget, ignoredTarget]);
+        check(
+            'a second launch exits instead of starting a second shell (APP-001)',
+            relaunch.code === 0 && !relaunch.timedOut,
+            `exit ${String(relaunch.code)}`
+        );
+        check(
+            'and it says why, naming the single-instance lock',
+            relaunch.output.includes('single-instance lock'),
+            relaunch.output.trim().split('\n').slice(-1)[0] ?? '(no output)'
+        );
+        const openedPane = await waitFor(
+            'the markdown pane the second launch asked for',
+            async () => {
+                const listed = await controlCommand(sandbox.runSocket, { command: 'pane-list' });
+                return (listed?.panes ?? []).find(
+                    (entry) => entry.type === 'markdown' && entry.file_path === markdownTarget
+                );
+            },
+            15_000
+        );
+        check(
+            'a markdown file on a second launch opens as a markdown pane in the running app',
+            openedPane !== undefined,
+            `${String(openedPane?.id)} → ${String(openedPane?.file_path)}`
+        );
+        // CONT-125: the window is raised for a file that goes out. A raise is invisible from
+        // here, so the shell logs it and this is the check.
+        const raised = await shell.waitForLine(/open: raised the window/, 'the window raise', 10_000);
+        check('the app raised its window for the file it was handed (CONT-125)', raised !== undefined, raised.trim());
+        const afterOpen = await controlCommand(sandbox.runSocket, { command: 'pane-list' });
+        // CONT-124: `open` renders whatever it is handed AS MARKDOWN, so the `.png` must never
+        // have been forwarded — one new pane, not two.
+        check(
+            'the non-markdown path beside it was filtered out, not opened (CONT-124)',
+            !(afterOpen?.panes ?? []).some((entry) => String(entry.file_path ?? '').endsWith('.png')) &&
+                (afterOpen?.panes ?? []).length === (beforeOpen?.panes ?? []).length + 1,
+            `${String((beforeOpen?.panes ?? []).length)} → ${String((afterOpen?.panes ?? []).length)} panes`
+        );
 
         // A real agent lifecycle, driven over the control socket exactly as the `nex` CLI's
         // hooks drive it: the deltas have to reach the MAIN process and move the dock badge.

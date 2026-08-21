@@ -297,6 +297,26 @@ function Shell(props: AppProps): ReactElement {
      */
     const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
     const [scrollToWorkspaceID, setScrollToWorkspaceID] = useState<string | null>(null);
+    /** §WS-100's group half: a group this client just created is revealed by its header. */
+    const [scrollToGroupID, setScrollToGroupID] = useState<string | null>(null);
+    /**
+     * §WS-100: **every** path that makes a workspace active queues the reveal.
+     *
+     * The Swift sets `sidebarScrollTarget` inside `setActiveWorkspace` itself, so ⌘1–9,
+     * next/previous, a sidebar or filter click, the menu-bar popover, a notification's "Open"
+     * and the command palette all inherit it; the port's activation is a bridge call, so the
+     * one-shot rides alongside it here and every caller goes through this instead of
+     * `runtime.activateWorkspace`. What is deliberately NOT here is the Swift's exclusion list
+     * — state restore, deletes and move reflow never call this, exactly as `AppReducer` never
+     * sets the target on those paths.
+     */
+    const activateWorkspaceAndReveal = useCallback(
+        (workspaceID: string): void => {
+            runtime.activateWorkspace(workspaceID);
+            setScrollToWorkspaceID(workspaceID);
+        },
+        [runtime]
+    );
     /**
      * §SET-153 / §SET-144: the row the sidebar should open its inline rename field on, set by
      * the `rename_workspace` and `new_group` keybindings (the sidebar owns the field itself).
@@ -420,7 +440,12 @@ function Shell(props: AppProps): ReactElement {
         const off = runtime.connection.on('message', (message) => {
             const target = parseRevealMessage(message);
             if (target === null || !revealAppliesHere(target, shellWindowID)) return;
-            runtime.activateWorkspace(target.workspaceID);
+            // §WS-100: the SOCKET creation paths reach the sidebar here. The daemon reveals
+            // every `workspace create` (and every notification "Open") to its clients, and this
+            // is the client's `setActiveWorkspace` for that message — so it queues the reveal
+            // like the rest, which is what makes `nex workspace create` from a terminal scroll
+            // the new row into view in an already-scrolled sidebar.
+            activateWorkspaceAndReveal(target.workspaceID);
             const timer = setTimeout(() => {
                 timers.delete(timer);
                 runtime.focusPane(target.workspaceID, target.paneID);
@@ -433,7 +458,7 @@ function Shell(props: AppProps): ReactElement {
             for (const timer of timers) clearTimeout(timer);
             timers.clear();
         };
-    }, [runtime, shellWindowID]);
+    }, [activateWorkspaceAndReveal, runtime, shellWindowID]);
 
     // ── derived reads ───────────────────────────────────────────────────────────────
 
@@ -790,6 +815,27 @@ function Shell(props: AppProps): ReactElement {
             return id === null ? null : (selectGroupForWorkspace(state, id)?.id ?? null);
         };
 
+        /**
+         * §WS-100: a group this client created is revealed by its header, the same one-shot the
+         * workspace create path uses. `run` cannot do it — the id is in the reply.
+         */
+        const runCreateGroup = (promise: Promise<CommandReply>): true => {
+            void promise.then(
+                (reply) => {
+                    if (!isOkReply(reply)) {
+                        notifyFailure('New group', replyError(reply));
+                        return;
+                    }
+                    const created = replyText(reply, 'group_id');
+                    if (created !== undefined) setScrollToGroupID(created);
+                },
+                (error: unknown) => {
+                    notifyFailure('New group', error instanceof Error ? error.message : String(error));
+                }
+            );
+            return true;
+        };
+
         const runCreateWorkspace = (
             promise: Promise<CommandReply>,
             repoPaths: readonly string[] = []
@@ -802,8 +848,7 @@ function Shell(props: AppProps): ReactElement {
                     }
                     const created = replyText(reply, 'workspace_id');
                     if (created !== undefined) {
-                        setScrollToWorkspaceID(created);
-                        runtime.activateWorkspace(created);
+                        activateWorkspaceAndReveal(created);
                         // §WS-075's Repositories section: one association per chosen repo,
                         // pointing at the repo's own path, once the workspace exists. The
                         // create verb carries no repo list (only `--worktree` does), so these
@@ -852,15 +897,19 @@ function Shell(props: AppProps): ReactElement {
                 return true;
             },
 
+            // §WS-100: the sidebar's own row/filter clicks land here, and every one of them
+            // queues the reveal — a row activated from the filter is usually somewhere the
+            // main list is not scrolled to.
             activateWorkspace(workspaceID: string): boolean {
-                runtime.activateWorkspace(workspaceID);
+                activateWorkspaceAndReveal(workspaceID);
                 return true;
             },
 
+            /** ⌘1–9 (§WS-100). */
             switchToIndex(index: number): boolean {
                 const id = selectVisibleWorkspaceIDs(store.getState())[index];
                 if (id === undefined) return false;
-                runtime.activateWorkspace(id);
+                activateWorkspaceAndReveal(id);
                 return true;
             },
 
@@ -870,7 +919,9 @@ function Shell(props: AppProps): ReactElement {
                 const at = ids.indexOf(activeWorkspaceID() ?? '');
                 const id = ids[(((at < 0 ? 0 : at) + delta + ids.length) % ids.length)];
                 if (id === undefined) return false;
-                runtime.activateWorkspace(id);
+                // §WS-100: next/previous workspace, which is exactly the case where the row
+                // being activated can be off the bottom of a long sidebar.
+                activateWorkspaceAndReveal(id);
                 return true;
             },
 
@@ -1143,17 +1194,27 @@ function Shell(props: AppProps): ReactElement {
              * all, so a refusal is reported rather than swallowed.
              */
             /**
-             * "New Web Pane" — the header's globe button and the context menu's item.
+             * "New Web Pane" — the header's globe button and the context menu's item (WEB-011).
              *
-             * `web-open` carries no split direction (the daemon always splits horizontally), so
-             * the header's ⇧-click hint is accepted and ignored here rather than silently
-             * pretending a vertical split happened; `pane_id` only scopes which workspace the
-             * new pane lands in.
+             * `target` is the pane the new one splits off and `direction` which way: the globe
+             * splits right on a plain click and DOWN on ⇧-click, and the context menu is always
+             * right. Swift does this in-process (`openWebPanePath(url:fromPaneID:direction:)`);
+             * here the same two arguments ride the `web-open` verb, which is why the ⇧ is a real
+             * vertical split rather than a hint the daemon drops. `pane_id` still scopes which
+             * workspace the pane lands in — it is what a CLI caller sends, and it is the only
+             * routing input when no anchor is named.
              */
-            newWebPane(paneID: string): boolean {
+            newWebPane(paneID: string, direction: 'horizontal' | 'vertical' = 'horizontal'): boolean {
                 return run(
                     'New web pane',
-                    commands.raw({ command: 'web-open', url: 'about:blank', private: false, pane_id: paneID })
+                    commands.raw({
+                        command: 'web-open',
+                        url: 'about:blank',
+                        private: false,
+                        pane_id: paneID,
+                        target: paneID,
+                        direction
+                    })
                 );
             },
 
@@ -1369,8 +1430,7 @@ function Shell(props: AppProps): ReactElement {
             createGroup(name: string, color?: WorkspaceColor | null | undefined): boolean {
                 const trimmed = name.trim();
                 if (trimmed.length === 0) return false;
-                return run(
-                    'New group',
+                return runCreateGroup(
                     commands.createGroup({
                         name: trimmed,
                         ...(color === undefined || color === null ? {} : { color })
@@ -1398,6 +1458,9 @@ function Shell(props: AppProps): ReactElement {
                         const id = reply['group_id'];
                         if (typeof id !== 'string' || id === '') return;
                         setSidebarVisible(true);
+                        // §WS-100: a group creation queues the reveal too, so ⌘⇧G's rename
+                        // field opens on a header the user can actually see.
+                        setScrollToGroupID(id);
                         setSidebarRenameRequest({ kind: 'group', id });
                     },
                     (error: unknown) => {
@@ -1618,8 +1681,7 @@ function Shell(props: AppProps): ReactElement {
             ): boolean {
                 const trimmed = name.trim();
                 if (trimmed.length === 0) return false;
-                return run(
-                    'New group',
+                return runCreateGroup(
                     commands.createGroupForWorkspaces({
                         name: trimmed,
                         workspaceIDs,
@@ -1755,10 +1817,7 @@ function Shell(props: AppProps): ReactElement {
                     });
                     if (!isOkReply(reply)) return replyError(reply);
                     const created = replyText(reply, 'workspace_id');
-                    if (created !== undefined) {
-                        setScrollToWorkspaceID(created);
-                        runtime.activateWorkspace(created);
-                    }
+                    if (created !== undefined) activateWorkspaceAndReveal(created);
                     return null;
                 } catch (error) {
                     return error instanceof Error ? error.message : String(error);
@@ -1774,7 +1833,7 @@ function Shell(props: AppProps): ReactElement {
                 );
             }
         };
-    }, [commands, content, notifyFailure, run, runTask, runtime, store]);
+    }, [activateWorkspaceAndReveal, commands, content, notifyFailure, run, runTask, runtime, store]);
 
     /**
      * `act` reachable from effects that must not re-subscribe when it is rebuilt (the shell's
@@ -2371,15 +2430,14 @@ function Shell(props: AppProps): ReactElement {
             }
             if (item.workspaceID === null) return;
             // §8.5 ordering: activate the workspace, then focus the pane.
-            runtime.activateWorkspace(item.workspaceID);
+            //
+            // §APP-037 / §WS-100: activation queues the sidebar's scroll target, so a workspace
+            // that was off-screen (or inside a collapsed group) scrolls into view rather than
+            // being activated somewhere the user cannot see.
+            activateWorkspaceAndReveal(item.workspaceID);
             if (item.paneID !== null) runtime.focusPane(item.workspaceID, item.paneID);
-            // §APP-037: the Swift sets the sidebar's scroll target when a row is confirmed, so a
-            // workspace that was off-screen (or inside a collapsed group) scrolls into view
-            // rather than being activated somewhere the user cannot see. Same one-shot channel
-            // the create path uses; the sidebar clears it through `onScrollHandled`.
-            setScrollToWorkspaceID(item.workspaceID);
         },
-        [runtime, store]
+        [activateWorkspaceAndReveal, runtime, store]
     );
 
     const onFocusHandoff = useCallback(
@@ -2409,7 +2467,8 @@ function Shell(props: AppProps): ReactElement {
 
     const onSelectStatusPane = useCallback(
         (targetWorkspaceID: string, paneID: string): void => {
-            runtime.activateWorkspace(targetWorkspaceID);
+            // §WS-100: the menu-bar popover is one of the paths the Swift names explicitly.
+            activateWorkspaceAndReveal(targetWorkspaceID);
             runtime.focusPane(targetWorkspaceID, paneID);
             // §APP-076: the popover row is a button that is about to unmount, so the caret has
             // to be handed to the destination explicitly — the same handoff the palette and the
@@ -2423,7 +2482,7 @@ function Shell(props: AppProps): ReactElement {
             if (typeof soon === 'function') soon(again);
             else setTimeout(again, 0);
         },
-        [runtime]
+        [activateWorkspaceAndReveal, runtime]
     );
 
     /**
@@ -3052,7 +3111,11 @@ function Shell(props: AppProps): ReactElement {
                     inheritGroupID={inheritGroupID}
                     keyBindings={bindings}
                     scrollToWorkspaceID={scrollToWorkspaceID}
-                    onScrollHandled={() => setScrollToWorkspaceID(null)}
+                    scrollToGroupID={scrollToGroupID}
+                    onScrollHandled={() => {
+                        setScrollToWorkspaceID(null);
+                        setScrollToGroupID(null);
+                    }}
                     // §SET-153 / §SET-144: the keyboard's "start renaming this row".
                     renameRequest={sidebarRenameRequest}
                     onRenameRequestHandled={() => setSidebarRenameRequest(null)}

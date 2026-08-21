@@ -30,6 +30,20 @@ export {
     type UpgradeDecision
 } from './http.js';
 
+/**
+ * §APP-071 / §GIT-092 — the symlink-resolved twin every client-facing path now ships beside
+ * its literal form, so a git-produced physical path and a shell-reported logical one can meet.
+ */
+export {
+    CANONICAL_PATH_CACHE_LIMIT,
+    CANONICAL_PATH_TTL_MS,
+    canonicalizeForClient,
+    clientPaths,
+    createClientPathResolver,
+    type ClientPathResolver,
+    type ClientPathResolverOptions
+} from './paths.js';
+
 export {
     SERVER_ONLY_APP_FIELDS,
     SERVER_ONLY_WORKSPACE_FIELDS,
@@ -132,6 +146,7 @@ export {
     REPO_COMMANDS,
     handleRepoCommand,
     isRepoCommand,
+    serializeAssociation,
     serializeGitStatus,
     type RepoChannel,
     type RepoCommand,

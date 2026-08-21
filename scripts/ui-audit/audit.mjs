@@ -2935,6 +2935,57 @@ function buildFlows(ctx) {
                 await sleep(1800);
                 const evened = await page.box(`[data-testid="pane-body-${String(web?.id)}"]`);
                 recorder.note(`web pane width after evening the grid: ${String(Math.round(evened?.width ?? 0))}px`);
+
+                /*
+                 * ── WEB-011: the pane header's globe, and its ⇧-click ────────────────────────
+                 *
+                 * Swift opens this one in-process (`openWebPanePath(url:fromPaneID:direction:)`,
+                 * click = split right, ⇧-click = split DOWN), so the port has to say the same
+                 * thing over the wire: `web-open` carries `target` (the pane to split off) and
+                 * `direction`. The assertion is geometric, because that is what "splits down"
+                 * means — the new pane sits UNDER the pane whose globe was pressed, at its
+                 * width, rather than beside it. It is closed again straight away so the steps
+                 * below drive the same wide pane they were written for.
+                 */
+                const globeAnchor = String(web?.id);
+                const anchorBefore = await page.box(`[data-testid="pane-body-${globeAnchor}"]`);
+                const paneIDsBefore = await domPaneIDs(page);
+                await page.click(`[data-testid="pane-new-web-${globeAnchor}"]`, { modifiers: MOD.shift });
+                await sleep(2400);
+                await recorder.shot(page, 'globe-shift-click');
+                const paneIDsAfter = await domPaneIDs(page);
+                const born = paneIDsAfter.find((id) => !paneIDsBefore.includes(id)) ?? null;
+                recorder.note(`⇧-clicking the globe made ${String(born)}`);
+                recorder.check('⇧-clicking the header globe opened a new pane at all (WEB-011)', born !== null);
+                if (born !== null) {
+                    const listed = await cli.json(['pane', 'list', '--json']);
+                    const madePane = listed.find((pane) => pane.id === born);
+                    recorder.check('and it is a WEB pane', madePane?.type === 'web', String(madePane?.type));
+                    const anchorAfter = await page.box(`[data-testid="pane-body-${globeAnchor}"]`);
+                    const bornBox = await page.box(`[data-testid="pane-body-${born}"]`);
+                    recorder.note(
+                        `anchor ${JSON.stringify(anchorBefore)} → ${JSON.stringify(anchorAfter)}; new ${JSON.stringify(bornBox)}`
+                    );
+                    recorder.check(
+                        'the ⇧ split is DOWN: the new pane sits below the pane whose globe was pressed',
+                        (bornBox?.y ?? 0) > (anchorAfter?.y ?? 0) + 10,
+                        `anchor y=${String(Math.round(anchorAfter?.y ?? 0))} new y=${String(Math.round(bornBox?.y ?? 0))}`
+                    );
+                    recorder.check(
+                        'not beside it — the two share a column, so their widths match',
+                        Math.abs((bornBox?.width ?? 0) - (anchorAfter?.width ?? 0)) <= 2,
+                        `${String(Math.round(anchorAfter?.width ?? 0))}px vs ${String(Math.round(bornBox?.width ?? 0))}px`
+                    );
+                    recorder.check(
+                        'and it split THAT pane rather than the grid: the anchor kept its column width',
+                        Math.abs((anchorAfter?.width ?? 0) - (anchorBefore?.width ?? 0)) <= 2,
+                        `${String(Math.round(anchorBefore?.width ?? 0))}px → ${String(Math.round(anchorAfter?.width ?? 0))}px`
+                    );
+                    await cli.run(['pane', 'close', '--target', born]);
+                    await sleep(1400);
+                }
+                await cli.run(['layout', 'select', 'even-horizontal'], { paneID: globeAnchor });
+                await sleep(1600);
             }
         },
 
@@ -3148,7 +3199,7 @@ function buildFlows(ctx) {
         {
             id: 'web-batch-pickup',
             expect:
-                'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; Send pastes one `# nex inspect batch` block into a shell pane.',
+                'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; hiding the panel leaves the button wearing a numeric badge with the pending count; Send pastes one `# nex inspect batch` block into a shell pane.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -3238,6 +3289,61 @@ function buildFlows(ctx) {
                 recorder.note(`panel rows: ${JSON.stringify(rows)}`);
                 recorder.check('the panel lists both picks', (rows?.count ?? 0) === 2, String(rows?.count));
                 recorder.check('each row carries its numbered chip', String(rows?.chips) === '1,2', String(rows?.chips));
+
+                /*
+                 * WEB-039 — the scope button's three states, and the one that needed a number.
+                 *
+                 * Hiding the panel while it holds picks is the state the Swift badge existed to
+                 * disambiguate: without a count, "a hidden batch with two items waiting" and "no
+                 * batch at all" are the same grey glyph. Drive the real three-way toggle
+                 * (start → hide → show) and read the badge, its tooltip and the accent fill off
+                 * the live button in each state.
+                 */
+                const scopeState = async () =>
+                    page.eval(
+                        `(() => {
+                            const button = document.querySelector('[data-testid="web-batch-toggle-${paneID}"]');
+                            const badge = document.querySelector('[data-testid="web-batch-toggle-${paneID}-badge"]');
+                            return { title: button?.getAttribute('title') ?? '',
+                                     active: button?.getAttribute('data-active') ?? '',
+                                     badge: badge === null ? null : (badge.textContent ?? '').trim(),
+                                     panel: document.querySelector('[data-testid="web-batch-panel-${paneID}"]') !== null };
+                        })()`
+                    );
+                const armedScope = await scopeState();
+                recorder.note(`scope button, panel open: ${JSON.stringify(armedScope)}`);
+                recorder.check(
+                    'while the panel is open the button is accent-filled and offers to HIDE it (WEB-039)',
+                    armedScope?.active === 'true' && String(armedScope?.title).includes('Hide'),
+                    `${String(armedScope?.active)} / ${String(armedScope?.title)}`
+                );
+                recorder.check('and it carries no badge while you can see the rows', armedScope?.badge === null);
+
+                await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
+                await sleep(600);
+                const hiddenScope = await scopeState();
+                recorder.note(`scope button, panel hidden with picks: ${JSON.stringify(hiddenScope)}`);
+                await recorder.shot(page, 'scope-badge');
+                recorder.check('hiding the panel really hides it', hiddenScope?.panel === false);
+                recorder.check(
+                    'a hidden batch with items wears a numeric badge with the pending count (WEB-039)',
+                    hiddenScope?.badge === '2',
+                    `badge=${String(hiddenScope?.badge)}`
+                );
+                recorder.check(
+                    'and the tooltip says how many are waiting, not just "show"',
+                    String(hiddenScope?.title).includes('2 items waiting'),
+                    String(hiddenScope?.title)
+                );
+
+                await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
+                await sleep(600);
+                const reopened = await scopeState();
+                recorder.check(
+                    'showing it again clears the badge and restores the rows',
+                    reopened?.panel === true && reopened?.badge === null,
+                    `panel=${String(reopened?.panel)} badge=${String(reopened?.badge)}`
+                );
 
                 // Annotate the first row, then send to the shell pane.
                 const firstComment = await page.eval(
@@ -3661,7 +3767,7 @@ function buildFlows(ctx) {
         {
             id: 'web-tab-strip',
             expect:
-                'A second tab makes the strip appear: the ✕ shows on the active pill and on hover only, dragging a pill reorders the strip (and the daemon agrees), and the pills carry the accent fill/border on the active one.',
+                'A second tab makes the strip appear: the ✕ shows on the active pill and on hover only, dragging a pill reorders the strip (and the daemon agrees), the pills carry the accent fill/border on the active one, clicking an idle pill switches tabs and re-syncs the pane header — and a pane back down to ONE tab has no strip at all, so ⌘W closes the pane, which ⇧⌘T then restores as a web pane carrying its tab.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -3788,6 +3894,231 @@ function buildFlows(ctx) {
                         );
                     }
                 }
+                /*
+                 * ── WEB-014: selecting a tab ────────────────────────────────────────────────
+                 *
+                 * Clicking an idle pill must switch the pane AND re-sync the pane header title
+                 * onto the new active tab; clicking the pill that is already active must do
+                 * nothing at all. Both halves are read from the daemon (`web tabs --json` is its
+                 * own account of which tab is active) and from the header a person looks at.
+                 */
+                const tabsNow = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
+                const activeNow = tabsNow.find((tab) => tab.active === true) ?? null;
+                const idleTab = tabsNow.find((tab) => tab.active !== true) ?? null;
+                recorder.note(
+                    `tabs before the select: ${tabsNow.map((tab) => `${String(tab.id).slice(0, 8)}${tab.active === true ? '*' : ''}`).join(', ')}`
+                );
+                const headerTitle = async () =>
+                    page.eval(
+                        `(document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim()`
+                    );
+                if (activeNow !== null && idleTab !== null) {
+                    // (a) the no-op: re-selecting the active tab changes nothing.
+                    const titleBefore = await headerTitle();
+                    await page.click(`[data-testid="web-tab-select-${String(activeNow.id)}"]`);
+                    await sleep(700);
+                    const unchanged = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
+                    const stillActive = unchanged.find((tab) => tab.active === true) ?? {};
+                    recorder.check(
+                        'clicking the ACTIVE pill is a no-op (WEB-014)',
+                        stillActive.id === activeNow.id && (await headerTitle()) === titleBefore,
+                        `still ${String(stillActive.id).slice(0, 8)}`
+                    );
+
+                    // (b) the switch: the daemon moves, and the pane header follows.
+                    await page.click(`[data-testid="web-tab-select-${String(idleTab.id)}"]`);
+                    await sleep(1100);
+                    await recorder.shot(page, 'tab-selected');
+                    const switched = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
+                    const nowActive = switched.find((tab) => tab.active === true) ?? null;
+                    const titleAfter = await headerTitle();
+                    recorder.note(
+                        `after selecting ${String(idleTab.id).slice(0, 8)}: header reads "${String(titleAfter)}"`
+                    );
+                    recorder.check(
+                        'clicking an idle pill makes it the active tab (WEB-014)',
+                        nowActive?.id === idleTab.id,
+                        `${String(nowActive?.id).slice(0, 8)} vs ${String(idleTab.id).slice(0, 8)}`
+                    );
+                    recorder.check(
+                        'and the pane header re-syncs onto the tab that took over',
+                        String(titleAfter) !== '' &&
+                            (String(idleTab.title ?? '') === '' || String(titleAfter) === String(idleTab.title)),
+                        `header "${String(titleAfter)}" vs tab title "${String(idleTab.title ?? '')}"`
+                    );
+                    const movedStrip = await page.eval(
+                        `Array.from(document.querySelectorAll('[data-testid^="web-tab-"]'))
+                            .filter((el) => !el.getAttribute('data-testid').includes('select-') &&
+                                            !el.getAttribute('data-testid').includes('close-'))
+                            .map((el) => ({ id: el.getAttribute('data-testid').slice('web-tab-'.length),
+                                            active: el.getAttribute('data-active') }))`
+                    );
+                    recorder.check(
+                        'the strip moves its accent fill to the new tab',
+                        (movedStrip ?? []).filter((pill) => pill.active === 'true').length === 1 &&
+                            (movedStrip ?? []).find((pill) => pill.active === 'true')?.id === idleTab.id,
+                        JSON.stringify(movedStrip)
+                    );
+                }
+
+                /*
+                 * ── WEB-013 / WEB-007: the LAST tab, and getting the pane back ───────────────
+                 *
+                 * Neither app draws a ✕ for a lone tab (§WEB-018 hides the strip below two
+                 * tabs) and `web_tab_close` ships unbound in both, so the gesture that closes
+                 * the last tab is ⌘W: the web-pane priority layer claims ⌘W only while there are
+                 * ≥2 tabs and otherwise declines, so the chord reaches the default `close_pane`
+                 * binding. Tab and pane go together — which is exactly what the Swift reducer's
+                 * `webPaneTabClose` does at `tabs.count == 1` (`.send(.closePane(paneID))`).
+                 *
+                 * Then ⇧⌘T, because a web pane's undo is what WEB-007 is about: the restore has
+                 * to bring it back as a WEB pane carrying its snapshotted tab, not as an empty
+                 * terminal. This runs on a pane of its own, so the pane the later steps drive is
+                 * never at risk, and whatever survives is closed by id at the end.
+                 */
+                const lonelyURL = `${site.url}?lonetab`;
+                await cli.ok(['web', 'open', lonelyURL], { timeoutMs: 60_000, paneID });
+                await sleep(2600);
+                const openedPanes = await cli.json(['pane', 'list', '--json']);
+                const lonely = openedPanes.find((pane) => pane.type === 'web' && pane.id !== paneID)?.id ?? null;
+                recorder.check('a second, single-tab web pane exists to close', lonely !== null);
+                if (lonely !== null) {
+                    const lonelyTabs = await cli.json(['web', 'tabs', '--target', lonely, '--json']);
+                    recorder.check('it really has exactly one tab', lonelyTabs.length === 1, String(lonelyTabs.length));
+                    const stripDrawn = await page.eval(
+                        `document.querySelector('[data-testid="web-tabs-${lonely}"]') !== null`
+                    );
+                    recorder.check(
+                        'and with one tab there is no strip, and therefore no ✕ (§WEB-018)',
+                        stripDrawn === false,
+                        `strip present: ${String(stripDrawn)}`
+                    );
+
+                    /*
+                     * The gesture, pressed where a person presses it: INSIDE the page.
+                     *
+                     * Focusing a web pane hands keyboard focus to the shell's native
+                     * `WebContentsView` (WEB-043), so the client renderer is not where ⌘W
+                     * arrives — the same reason `web-url-bar-shortcut` types ⌘L into the view.
+                     * The shell's chord relay (`shell/webhost/keys.ts`) takes ⌘W off the page
+                     * and replays it into the client, where the priority layer declines it for
+                     * a one-tab pane and `close_pane` takes it. Driving it any other way would
+                     * test a path no user is on.
+                     */
+                    await page.click(`[data-testid="pane-header-${lonely}"]`);
+                    await sleep(600);
+                    const paneCountBefore = (await domPaneIDs(page)).length;
+                    const lonelyTargets = await listTargets(sandbox.debugPort);
+                    const lonelyTarget = lonelyTargets.find(
+                        (entry) =>
+                            entry.type === 'page' && typeof entry.url === 'string' && entry.url.includes('lonetab')
+                    );
+                    recorder.check('the lone tab has its own CDP target to press ⌘W in', lonelyTarget !== undefined);
+                    if (lonelyTarget !== undefined) {
+                        const view = await connect(lonelyTarget.webSocketDebuggerUrl, { repoRoot });
+                        await view.clickAt(30, 200);
+                        await sleep(300);
+                        /*
+                         * Fired with a short leash, and the rejection swallowed on purpose.
+                         *
+                         * A successful ⌘W destroys this very `WebContentsView`, so the CDP
+                         * command that carried the keystroke can never be answered — awaiting it
+                         * is waiting for a reply from a renderer the keystroke just killed. The
+                         * first run of this step ERRORED that way (60 s timeout), which is the
+                         * harness reporting success as a crash.
+                         */
+                        await view
+                            .send(
+                                'Input.dispatchKeyEvent',
+                                {
+                                    type: 'rawKeyDown',
+                                    code: 'KeyW',
+                                    key: 'w',
+                                    windowsVirtualKeyCode: 87,
+                                    nativeVirtualKeyCode: 87,
+                                    modifiers: MOD.meta
+                                },
+                                4000
+                            )
+                            .catch(() => {});
+                        try {
+                            view.close();
+                        } catch {
+                            /* the view may already be gone — that is the success case */
+                        }
+                    }
+                    await sleep(2200);
+                    recorder.note(
+                        `shell chord relay: ${(runtime.shell?.lines ?? []).filter((line) => line.includes('forwarding')).slice(-2).join(' | ') || '(none)'}`
+                    );
+                    await recorder.shot(page, 'last-tab-closed');
+                    const afterClose = await cli.json(['pane', 'list', '--json']);
+                    const survived = afterClose.some((pane) => pane.id === lonely);
+                    recorder.note(
+                        `panes after ⌘W: ${afterClose.map((pane) => `${String(pane.id).slice(0, 8)}:${String(pane.type)}`).join(', ')}`
+                    );
+                    recorder.check(
+                        '⌘W on a single-tab web pane closes the PANE (WEB-013)',
+                        !survived,
+                        survived
+                            ? 'the pane is still there'
+                            : `${String(paneCountBefore)} panes → ${String(afterClose.length)}`
+                    );
+                    const goneFromDOM = await page.eval(
+                        `document.querySelector('[data-testid="web-pane-${lonely}"]') === null`
+                    );
+                    recorder.check('and it left the DOM with it', goneFromDOM === true);
+
+                    /*
+                     * ── WEB-007 ──────────────────────────────────────────────────────────────
+                     *
+                     * ⇧⌘T is an ordinary binding, so it has to be pressed where the client
+                     * renderer holds the keyboard: a TERMINAL pane. Pressing it over a web pane
+                     * would send it to the page's own view (WEB-043 again), which relays only
+                     * the browser chords and quite rightly not this one.
+                     */
+                    const undoAnchor = await widestShellPane(page, cli);
+                    if (undoAnchor !== null) await focusPaneBody(page, undoAnchor.id);
+                    await sleep(600);
+                    await page.key('KeyT', { modifiers: MOD.meta | MOD.shift });
+                    await sleep(3000);
+                    await recorder.shot(page, 'web-pane-reopened');
+                    const afterReopen = await cli.json(['pane', 'list', '--json']);
+                    const restored = afterReopen.find((pane) => pane.type === 'web' && pane.id !== paneID) ?? null;
+                    recorder.note(
+                        `panes after ⇧⌘T: ${afterReopen.map((pane) => `${String(pane.id).slice(0, 8)}:${String(pane.type)}`).join(', ')}`
+                    );
+                    recorder.check(
+                        '⇧⌘T restores the closed pane as a WEB pane, not a terminal (WEB-007)',
+                        restored !== null,
+                        String(restored?.type)
+                    );
+                    if (restored !== null) {
+                        recorder.check(
+                            'and it is a NEW pane id — a restore, not an un-delete',
+                            restored.id !== lonely,
+                            `${String(lonely).slice(0, 8)} → ${String(restored.id).slice(0, 8)}`
+                        );
+                        const restoredTabs = await cli.json([
+                            'web',
+                            'tabs',
+                            '--target',
+                            String(restored.id),
+                            '--json'
+                        ]);
+                        recorder.note(`restored tabs: ${JSON.stringify(restoredTabs.map((tab) => tab.url))}`);
+                        recorder.check(
+                            'carrying the snapshotted tab, at the URL it was closed on (WEB-007)',
+                            restoredTabs.length === 1 && String(restoredTabs[0]?.url).includes('lonetab'),
+                            restoredTabs.map((tab) => String(tab.url)).join(', ')
+                        );
+                        await cli.run(['pane', 'close', '--target', String(restored.id)]);
+                        await sleep(1200);
+                    }
+                }
+                await cli.run(['layout', 'select', 'even-horizontal'], { paneID });
+                await sleep(1400);
+
                 recorder.eyes('tab strip: pill spacing, the hovered ✕ over the masked label, the accent fill/border on the active pill');
             }
         },
@@ -4004,7 +4335,7 @@ function buildFlows(ctx) {
         {
             id: 'web-favourite',
             expect:
-                'The URL-bar star saves the current page: it fills, the favourite appears in the bookmarks menu and in Settings ▸ Web, and clicking it again removes it.',
+                'The URL-bar star saves the current page: it fills, the favourite appears in the bookmarks menu and in Settings ▸ Web, its title renames in place, a second favourite can be DRAGGED past it (and the daemon writes the new order to favourites.json), and clicking the star again removes it.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -4076,6 +4407,126 @@ function buildFlows(ctx) {
 
                 await page.click('[data-testid="settings-close"]');
                 await sleep(700);
+
+                /*
+                 * ── WEB-046: reorder is a DRAG, and it is a move rather than a swap ──────────
+                 *
+                 * Needs two rows, so star a second page first. The drag is dispatched as real
+                 * `dragstart`/`dragover`/`drop` events on the rows: that is the exact event path
+                 * a mouse drag produces, and it is the only one available here for the reason
+                 * WEB-016 records for the tab strip — `Input.dispatchMouseEvent` cannot start
+                 * Chromium's native drag-and-drop session, so a pointer stream would never
+                 * become a drag at all. The daemon's own `favourites.json` is then read off
+                 * disk, which is the half no DOM assertion could fake.
+                 */
+                // Remember the exact page the star above was pressed for: the un-star at the end
+                // has to happen on THAT page, and which tab a scoped run leaves active is not
+                // something this step gets to assume.
+                const starredURL = await page.eval(
+                    `document.querySelector('[data-testid="web-url-${paneID}"]')?.value ?? ''`
+                );
+                recorder.note(`the starred page is ${String(starredURL)}`);
+                await cli.run(['web', 'navigate', `${site.url}?second`, '--target', paneID], { timeoutMs: 40_000 });
+                await sleep(2000);
+                await page.click(`[data-testid="web-favourite-star-${paneID}"]`);
+                await sleep(900);
+                await page.click(`[data-testid="web-favourites-menu-${paneID}"]`);
+                await sleep(400);
+                await page.click(`[data-testid="web-favourites-manage-${paneID}"]`);
+                await sleep(900);
+
+                const rowIDs = async () =>
+                    page.eval(
+                        `Array.from(document.querySelectorAll('[data-testid^="settings-favourite-title-"]'))
+                            .map((node) => node.getAttribute('data-testid').slice('settings-favourite-title-'.length))`
+                    );
+                const before = (await rowIDs()) ?? [];
+                recorder.note(`Settings ▸ Web rows before the drag: ${JSON.stringify(before)}`);
+                recorder.check('there are two favourites to reorder', before.length === 2, String(before.length));
+                const draggable = await page.eval(
+                    `${JSON.stringify(before)}.map((id) =>
+                        document.querySelector('[data-testid="settings-favourite-' + id + '"]')?.getAttribute('draggable') ?? '(no row)')`
+                );
+                recorder.note(`row draggable attributes: ${JSON.stringify(draggable)}`);
+                recorder.check(
+                    'every favourite row is draggable, which is the Swift gesture (WEB-046)',
+                    Array.isArray(draggable) && draggable.length >= 2 && draggable.every((value) => value === 'true'),
+                    JSON.stringify(draggable)
+                );
+
+                if (before.length === 2) {
+                    await recorder.shot(page, 'favourites-before-drag');
+                    /*
+                     * The grab and the drop are two evals on purpose.
+                     *
+                     * `dragstart` records the row being dragged in React state, and the `drop`
+                     * handler reads it out of its own closure — so a drop dispatched in the SAME
+                     * synchronous script still sees the pre-render value (`null`) and declines.
+                     * That is not a defect in the list, it is how React commits: a real drag has
+                     * many event turns between the grab and the release, and this reproduces
+                     * that by letting the render land in between.
+                     */
+                    const grabbed = await page.eval(
+                        `(() => {
+                            const from = document.querySelector('[data-testid="settings-favourite-${String(before[0])}"]');
+                            if (from === null) return 'missing row';
+                            window.__nexAuditDrag = new DataTransfer();
+                            from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: window.__nexAuditDrag }));
+                            return 'grabbed';
+                        })()`
+                    );
+                    await sleep(500);
+                    const dragged = await page.eval(
+                        `(() => {
+                            const to = document.querySelector('[data-testid="settings-favourite-${String(before[1])}"]');
+                            if (to === null) return 'missing row';
+                            const data = window.__nexAuditDrag ?? new DataTransfer();
+                            to.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
+                            to.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+                            return 'dropped';
+                        })()`
+                    );
+                    recorder.note(`drag dispatch: ${String(grabbed)} → ${String(dragged)}`);
+                    await sleep(1200);
+                    await recorder.shot(page, 'favourites-after-drag');
+                    const after = (await rowIDs()) ?? [];
+                    recorder.note(`Settings ▸ Web rows after the drag: ${JSON.stringify(after)}`);
+                    recorder.check(
+                        'dragging the first row onto the second moved it there (WEB-046)',
+                        JSON.stringify(after) === JSON.stringify([before[1], before[0]]),
+                        `${JSON.stringify(before)} → ${JSON.stringify(after)}`
+                    );
+                    let onDisk = [];
+                    try {
+                        const raw = fs.readFileSync(path.join(sandbox.root, 'favourites.json'), 'utf8');
+                        const parsed = JSON.parse(raw);
+                        onDisk = Array.isArray(parsed) ? parsed.map((entry) => String(entry.id)) : [];
+                    } catch (error) {
+                        recorder.note(`favourites.json unreadable: ${String(error)}`);
+                    }
+                    recorder.note(`favourites.json order: ${JSON.stringify(onDisk)}`);
+                    recorder.check(
+                        'and the daemon wrote the new order to favourites.json, not just the DOM',
+                        JSON.stringify(onDisk) === JSON.stringify(after),
+                        `${JSON.stringify(onDisk)} vs ${JSON.stringify(after)}`
+                    );
+                    // Drop the second favourite again; the pane's own one is un-starred below.
+                    const spare = after.find((id) => id !== String(before[0])) ?? String(before[1]);
+                    await page.click(`[data-testid="settings-favourite-remove-${spare}"]`);
+                    await sleep(700);
+                    const left = (await rowIDs()) ?? [];
+                    recorder.check('the trash button removed it', left.length === 1, String(left.length));
+                }
+
+                await page.click('[data-testid="settings-close"]');
+                await sleep(700);
+                // Back on the page the star was first pressed for, so the un-star below removes
+                // the same favourite the step created.
+                await cli.run(
+                    ['web', 'navigate', String(starredURL) === '' ? site.url : String(starredURL), '--target', paneID],
+                    { timeoutMs: 40_000 }
+                );
+                await sleep(2000);
                 await page.click(`[data-testid="web-favourite-star-${paneID}"]`);
                 await sleep(800);
                 recorder.check('clicking the filled star removed the favourite', String(await starState()) === 'false', String(await starState()));
@@ -4085,7 +4536,7 @@ function buildFlows(ctx) {
         {
             id: 'web-cookie-panel',
             expect:
-                'The storage button lists the fixture\'s cookie grouped under its domain, and the private-session toggle asks before switching.',
+                'The storage button lists the fixture\'s cookie grouped under its domain, the private-session toggle asks before switching, and going private swaps the button\'s glyph and tooltip (open padlock → closed padlock).',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -4093,6 +4544,36 @@ function buildFlows(ctx) {
                     recorder.check('a web pane exists', false);
                     return;
                 }
+                /*
+                 * WEB-040 — the storage button in its two modes.
+                 *
+                 * Read the idle button FIRST, before the panel opens: with the panel shut, the
+                 * accent can only come from private mode, so this is the reading that proves
+                 * "persistent" is the state it is showing.
+                 */
+                const storageButton = async () =>
+                    page.eval(
+                        `(() => {
+                            const button = document.querySelector('[data-testid="web-storage-toggle-${paneID}"]');
+                            const icon = button?.querySelector('[data-icon]');
+                            return { title: button?.getAttribute('title') ?? '',
+                                     active: button?.getAttribute('data-active') ?? '',
+                                     glyph: icon?.getAttribute('data-icon') ?? '' };
+                        })()`
+                    );
+                const persistent = await storageButton();
+                recorder.note(`storage button, persistent session: ${JSON.stringify(persistent)}`);
+                recorder.check(
+                    'a persistent pane shows the OPEN padlock, unlit (WEB-040)',
+                    persistent?.glyph === 'lock-open' && persistent?.active === 'false',
+                    `${String(persistent?.glyph)} / active=${String(persistent?.active)}`
+                );
+                recorder.check(
+                    'and its tooltip is the plain one',
+                    String(persistent?.title) === 'Cookies and site data',
+                    String(persistent?.title)
+                );
+
                 await page.click(`[data-testid="web-storage-toggle-${paneID}"]`);
                 await sleep(1200);
                 await recorder.shot(page, 'panel');
@@ -4144,8 +4625,51 @@ function buildFlows(ctx) {
                 );
                 await page.click(`[data-testid="web-storage-confirm-cancel-${paneID}"]`);
                 await sleep(300);
+
+                /*
+                 * WEB-040, the other half: actually GO private and read the button again.
+                 *
+                 * Cancelling proves the prompt; only confirming proves the glyph. The pane's
+                 * tabs reload against the ephemeral store (that is the whole cost the warning
+                 * names), so this is done last and flipped straight back.
+                 */
+                await page.click(`[data-testid="web-private-toggle-${paneID}"]`);
+                await sleep(400);
+                await page.click(`[data-testid="web-storage-confirm-ok-${paneID}"]`);
+                await sleep(2200);
+                const isPrivate = await storageButton();
+                recorder.note(`storage button, private session: ${JSON.stringify(isPrivate)}`);
+                await recorder.shot(page, 'private');
+                recorder.check(
+                    'going private swaps the glyph to the CLOSED padlock (WEB-040)',
+                    isPrivate?.glyph === 'lock',
+                    `${String(persistent?.glyph)} → ${String(isPrivate?.glyph)}`
+                );
+                recorder.check(
+                    'the button lights even with the panel open-or-shut, because the pane itself is private',
+                    isPrivate?.active === 'true',
+                    String(isPrivate?.active)
+                );
+                recorder.check(
+                    'and the tooltip names the mode rather than repeating "Cookies and site data"',
+                    String(isPrivate?.title).toLowerCase().includes('private'),
+                    String(isPrivate?.title)
+                );
+                // …and back, so the pane the audit leaves behind is the one it found.
+                await page.click(`[data-testid="web-private-toggle-${paneID}"]`);
+                await sleep(400);
+                await page.click(`[data-testid="web-storage-confirm-ok-${paneID}"]`);
+                await sleep(2200);
+                const restored = await storageButton();
+                recorder.note(`storage button, back on the persistent store: ${JSON.stringify(restored)}`);
+                recorder.check(
+                    'leaving private mode puts the open padlock back',
+                    restored?.glyph === 'lock-open' && String(restored?.title) === 'Cookies and site data',
+                    `${String(restored?.glyph)} / ${String(restored?.title)}`
+                );
+
                 await page.click(`[data-testid="web-storage-close-${paneID}"]`);
-                recorder.eyes('storage panel: accordion rows, cookie name/value truncation, the confirmation block and the two buttons');
+                recorder.eyes('storage panel: accordion rows, cookie name/value truncation, the confirmation block and the two buttons — and the padlock glyph in the "private" shot');
             }
         },
 
@@ -6067,23 +6591,26 @@ function buildFlows(ctx) {
                  */
                 recorder.note(
                     'MOVED, NOT SKIPPED: IME composition / marked text (TERM-024, TERM-032) now has its own step, ' +
-                        '`terminal-ime`. The engine is `ghostty-web 0.4.0-nex.1` (vendor/ghostty-web-patched), which carries ' +
+                        '`terminal-ime`. The engine is `ghostty-web 0.4.0-nex.2` (vendor/ghostty-web-patched), which carries ' +
                         'upstream PR #120: the composition listeners live on the hidden `<textarea>`, `handleCompositionEnd` ' +
-                        'writes the committed string to the PTY and replays the pending key, and a preview chip renders the ' +
-                        'preedit. CDP still has no input-method channel — `Input.imeSetComposition` drives Chromium\'s own ' +
+                        'writes the committed string to the PTY and replays the pending key, and the preedit renders as ' +
+                        'marked text on the cursor cell (`-nex.2`, replacing PR #120\'s corner chip). CDP still has no ' +
+                        'input-method channel — `Input.imeSetComposition` drives Chromium\'s own ' +
                         'IME widget, not the engine\'s — so `terminal-ime` dispatches real `CompositionEvent`s at the hidden ' +
                         '`<textarea>` the engine focuses (the element a macOS IME would target), from which they bubble to ' +
                         'the engine\'s listeners — the same event stream a macOS IME produces. What that does NOT cover is ' +
                         'the OS side of the pipeline (candidate window, layout dead keys); see that step\'s own notes.'
                 );
                 recorder.note(
-                    'NOT IMPLEMENTABLE IN THIS LAYER: the IME caret rect (TERM-033). The candidate window follows the ' +
-                        'focused input, and even at `0.4.0-nex.1` the hidden 1×1 `<textarea>` sits at `left:0; top:0` of the ' +
-                        'pane container and never moves to the cursor; PR #120\'s preview chip is pinned at ' +
-                        '`top:4px; right:4px`, not at the caret either. Composition is therefore still unpositioned by ' +
-                        'construction. Fixing it from the port would mean writing to the engine\'s private `textarea` AND ' +
-                        'streaming the cursor cell to every client on every output chunk; the honest fix is upstream, in ' +
-                        'the engine that already owns the element.'
+                    'FIXED IN THE ENGINE FORK, NOT HERE: the IME caret rect (TERM-033). This note used to read "not ' +
+                        'implementable in this layer" — and that was right about the LAYER: the candidate window follows ' +
+                        'the focused input, and at `0.4.0-nex.1` the hidden 1×1 `<textarea>` sat at `left:0; top:0` of the ' +
+                        'pane container while PR #120\'s chip sat at `top:4px; right:4px`, so composition was unpositioned ' +
+                        'by construction and no port-side code could move an element it does not own. `0.4.0-nex.2` moves ' +
+                        'it in the engine instead (`syncImeCaret`, one cached box per rendered frame): the textarea is on ' +
+                        'the cursor cell and sized to it, and the preedit is marked text there. Measured in the ' +
+                        '`terminal-ime` step against a cell set by a CUP escape; what is still NOT observable from here is ' +
+                        'the OS drawing its candidate window against that box.'
                 );
                 recorder.note(
                     'STILL NO MECHANISM: dead keys / option-composed characters (TERM-023, and TERM-024\'s layout half). A ' +
@@ -6149,6 +6676,13 @@ function buildFlows(ctx) {
              *   3. THE WIDE-CELL SELECTION FIX. PR #120 also fixes selection over a
              *      double-width glyph emitting a space for the continuation cell. 26 cells of
              *      `WSTART` + 8×漢 + `WEND` must copy as 18 characters, not 26.
+             *   4. WHERE IT ALL HAPPENS. `0.4.0-nex.2` — this repo's own change on top of the
+             *      two PRs — moves the hidden textarea and the preedit onto the CURSOR CELL,
+             *      replacing PR #120's chip in the container's corner. That is a claim about
+             *      pixels, so it is measured in pixels: the cursor is parked on a known cell by
+             *      a CUP escape and both elements' measured origins are compared against
+             *      arithmetic this file does from the pane's published cell metrics. Nothing
+             *      the engine says about its own caret is taken as the answer.
              *
              * And PR #159's half, which is the same vendored change: every keydown now goes
              * through ghostty's WASM encoder, so Shift+Tab is `ESC [ Z` (TERM-029 names it and
@@ -6156,15 +6690,20 @@ function buildFlows(ctx) {
              * fixterms sequence. Those are ASCII, so `cat -v` reads them back byte for byte.
              *
              * NOT covered, and the notes at the end say so: anything the OS owns before the
-             * browser sees it — a layout dead key, the candidate window, the caret rect the
-             * candidate window would position against.
+             * browser sees it — a layout dead key, and the candidate window itself, which the
+             * input method draws against the caret box measured here, in a surface CDP can
+             * neither screenshot nor query.
              */
             id: 'terminal-ime',
             expect:
-                'Real `CompositionEvent`s on the engine\'s hidden textarea compose CJK into the PTY exactly once: a preview ' +
-                'chip shows the preedit mid-composition and is withdrawn on commit, a composition terminated by Space commits ' +
+                'Real `CompositionEvent`s on the engine\'s hidden textarea compose CJK into the PTY exactly once: the preedit ' +
+                'is shown mid-composition and withdrawn on commit, a composition terminated by Space commits ' +
                 'the text plus exactly one space, and one terminated by Enter emits at most a carriage return — never the ' +
-                'literal key name. The same vendored patch\'s wide-cell fix is read back out of the clipboard: 26 cells of ' +
+                'literal key name. Both halves of the IME are anchored to the CARET rather than the container: with the ' +
+                'cursor parked on a cell by a CUP escape, the hidden textarea (the box the OS positions a candidate window ' +
+                'against) and the marked-text preedit both measure within a cell of that cell\'s origin, at two different ' +
+                'cells, and the preedit is gone the moment the composition commits. The same vendored patch\'s wide-cell fix ' +
+                'is read back out of the clipboard: 26 cells of ' +
                 '`WSTART`+8×漢+`WEND` copy as 18 characters with no spaces injected between the glyphs. And with every keydown ' +
                 'routed through ghostty\'s WASM encoder, Shift+Tab is `ESC [ Z`, Home/End follow DECCKM (`ESC [ H` vs `ESC O H`) ' +
                 'and Shift+Enter is the fixterms sequence.',
@@ -6297,10 +6836,12 @@ function buildFlows(ctx) {
                     chip !== undefined && chip.text.includes(HANGUL_PREEDIT),
                     chip?.text ?? '(no visible chip)'
                 );
-                // Where it lands, in numbers, because TERM-033 is about position: the chip is
-                // styled `top:4px; right:4px` on the engine container and never follows the
-                // cursor cell, so it sits against the pane's top edge wherever the caret is.
-                recorder.note(`preview chip origin: ${JSON.stringify(chip?.rect ?? null)} (the caret is not consulted — TERM-033)`);
+                // Where it lands, in numbers, because TERM-033 is about position. Until
+                // `0.4.0-nex.2` this line printed the origin of a chip styled `top:4px;
+                // right:4px` on the container, which is why the item was open; the preedit is
+                // now marked text on the cursor cell, and the arithmetic that judges it is the
+                // caret block further down. This is the raw origin, unjudged.
+                recorder.note(`preedit origin: ${JSON.stringify(chip?.rect ?? null)} (judged against the cursor cell below)`);
                 await recorder.shot(page, 'composing');
 
                 /**
@@ -6401,6 +6942,235 @@ function buildFlows(ctx) {
 
                 await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
                 await sleep(500);
+
+                // ── TERM-032 / TERM-033: the IME is anchored to the CARET ────────────
+                //
+                // Everything above proves the composed text is RIGHT. This proves it is in the
+                // right PLACE, which is the half `0.4.0-nex.1` did not have: PR #120 pinned
+                // both the preedit chip (`top:4px; right:4px`) and the hidden textarea
+                // (`left:0; top:0`, 1×1) to the container, so the preedit — and the OS
+                // candidate window, which the browser positions from the focused editable
+                // element's box — sat in the pane's corner no matter where the user was typing.
+                //
+                // The expected rect is arithmetic the HARNESS does: the cursor is moved to a
+                // cell the terminal is TOLD to move to (a CUP escape) and parked there by a
+                // reader that prints nothing (`cat`), so the anchor is the escape sequence and
+                // never a coordinate the engine reported about itself. Two different cells,
+                // because one cell proves placement and two prove tracking.
+                const readCaretGeometry = async () =>
+                    await page.eval(
+                        `(() => {
+                            const root = document.querySelector('${paneRoot}');
+                            if (root === null) return { error: 'no pane root' };
+                            const host = root.querySelector('[data-terminal-host]');
+                            if (host === null) return { error: 'no terminal host' };
+                            const box = (node) => {
+                                if (node === null || node === undefined) return null;
+                                const r = node.getBoundingClientRect();
+                                return {
+                                    x: Math.round(r.x * 10) / 10,
+                                    y: Math.round(r.y * 10) / 10,
+                                    width: Math.round(r.width * 10) / 10,
+                                    height: Math.round(r.height * 10) / 10
+                                };
+                            };
+                            const pre = host.querySelector('[data-ime-preedit]');
+                            const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
+                            return {
+                                canvas: box(host.querySelector('canvas')),
+                                textarea: box(host.querySelector('textarea')),
+                                preedit: box(pre),
+                                preeditText: pre === null ? null : pre.textContent,
+                                preeditDisplay: pre === null ? 'missing' : getComputedStyle(pre).display,
+                                preeditUnderline:
+                                    pre === null
+                                        ? ''
+                                        : getComputedStyle(pre).borderBottomWidth +
+                                          ' ' +
+                                          getComputedStyle(pre).borderBottomStyle,
+                                cellWidth: Number(cell[0] ?? 0),
+                                cellHeight: Number(cell[1] ?? 0)
+                            };
+                        })()`
+                    );
+                const composeAtCaret = async (text) =>
+                    await page.eval(
+                        `(() => {
+                            const ta = document.querySelector(${JSON.stringify(textarea)});
+                            if (ta === null) return { error: 'no textarea' };
+                            ta.focus();
+                            const fire = (type, data) =>
+                                ta.dispatchEvent(new CompositionEvent(type, { data, bubbles: true, cancelable: true }));
+                            fire('compositionstart', '');
+                            fire('compositionupdate', ${JSON.stringify(text)});
+                            return 'ok';
+                        })()`
+                    );
+                const endComposition = async (text) =>
+                    await page.eval(
+                        `(() => {
+                            const ta = document.querySelector(${JSON.stringify(textarea)});
+                            if (ta === null) return { error: 'no textarea' };
+                            ta.dispatchEvent(
+                                new CompositionEvent('compositionend', {
+                                    data: ${JSON.stringify(text)},
+                                    bubbles: true,
+                                    cancelable: true
+                                })
+                            );
+                            return 'ok';
+                        })()`
+                    );
+
+                const caretGeom = await readCaretGeometry();
+                const cellW = caretGeom?.cellWidth ?? 0;
+                const cellH = caretGeom?.cellHeight ?? 0;
+                const canvasBox = caretGeom?.canvas ?? null;
+                recorder.note(
+                    `caret anchor inputs: canvas ${JSON.stringify(canvasBox)} · cell ${String(cellW)}×${String(cellH)}px`
+                );
+                if (!(cellW > 0) || !(cellH > 0) || canvasBox === null) {
+                    recorder.check(
+                        'the pane publishes a canvas and cell metrics to anchor the IME against',
+                        false,
+                        JSON.stringify(caretGeom)
+                    );
+                } else {
+                    const cols = Math.max(1, Math.floor(canvasBox.width / cellW));
+                    const rows = Math.max(1, Math.floor(canvasBox.height / cellH));
+                    // 1-based, the way CUP counts, and kept six cells clear of the right edge —
+                    // further than the preedit is wide (한 and 테 are double-width) — so the
+                    // engine's "keep a long preedit inside the pane" clamp can never be the
+                    // thing being measured.
+                    const cellA = {
+                        row: Math.max(1, Math.min(3, rows - 1)),
+                        col: Math.max(1, Math.min(10, cols - 6))
+                    };
+                    const cellB = {
+                        row: Math.max(1, Math.min(7, rows - 1)),
+                        col: Math.max(1, Math.min(24, cols - 6))
+                    };
+                    recorder.note(
+                        `pane grid: ${String(cols)}×${String(rows)} cells · probing CUP(${String(cellA.row)},${String(cellA.col)}) then CUP(${String(cellB.row)},${String(cellB.col)})`
+                    );
+                    const expectedOrigin = (cell) => ({
+                        x: Math.round((canvasBox.x + (cell.col - 1) * cellW) * 10) / 10,
+                        y: Math.round((canvasBox.y + (cell.row - 1) * cellH) * 10) / 10
+                    });
+                    // "Within ~1 cell": one whole cell of slack per axis plus a pixel for
+                    // rounding — wide enough that a half-cell disagreement about where a cell
+                    // starts is not a failure, narrow enough that the behaviour this replaces
+                    // fails it at every probe (cellA alone is 9 cells right and 2 rows down
+                    // from the container corner both elements used to sit in).
+                    const nearCell = (box, cell) => {
+                        if (box === null || box === undefined) return false;
+                        const want = expectedOrigin(cell);
+                        return Math.abs(box.x - want.x) <= cellW + 1 && Math.abs(box.y - want.y) <= cellH + 1;
+                    };
+                    const offBy = (box, cell) => {
+                        if (box === null || box === undefined) return 'no element measured';
+                        const want = expectedOrigin(cell);
+                        const dx = Math.round((box.x - want.x) * 10) / 10;
+                        const dy = Math.round((box.y - want.y) * 10) / 10;
+                        return (
+                            `measured ${JSON.stringify(box)} vs cell origin ${JSON.stringify(want)} — ` +
+                            `off by ${String(dx)}×${String(dy)}px ` +
+                            `(${String(Math.round((dx / cellW) * 100) / 100)}×${String(Math.round((dy / cellH) * 100) / 100)} cells)`
+                        );
+                    };
+
+                    // Probe A — the caret at a known cell, measured BEFORE any composition
+                    // exists. This is the half the OS needs: an input method opens its
+                    // candidate window against the focused element's box at the moment
+                    // composition STARTS, so the textarea has to be at the caret already.
+                    await runInTerminal(page, `clear; printf '\\033[${String(cellA.row)};${String(cellA.col)}H'; cat`, {
+                        settleMs: 900
+                    });
+                    const idleA = await readCaretGeometry();
+                    recorder.check(
+                        'with the caret parked at a known cell, the hidden textarea is ON that cell before composition starts — the box the OS positions a candidate window against (TERM-033)',
+                        nearCell(idleA?.textarea ?? null, cellA),
+                        offBy(idleA?.textarea ?? null, cellA)
+                    );
+                    recorder.check(
+                        'and it is a whole cell, not the 1px point in the container corner it used to be',
+                        (idleA?.textarea?.width ?? 0) >= cellW - 1 && (idleA?.textarea?.height ?? 0) >= cellH - 1,
+                        JSON.stringify(idleA?.textarea ?? null)
+                    );
+
+                    await composeAtCaret(HANGUL_PREEDIT);
+                    await sleep(250);
+                    const composingA = await readCaretGeometry();
+                    recorder.note(
+                        `composing at CUP(${String(cellA.row)},${String(cellA.col)}): preedit ${JSON.stringify(composingA?.preedit ?? null)} · ` +
+                            `textarea ${JSON.stringify(composingA?.textarea ?? null)} · underline ${JSON.stringify(composingA?.preeditUnderline ?? '')}`
+                    );
+                    recorder.check(
+                        'the preedit is drawn AT the cursor cell, not pinned to the container corner (TERM-032)',
+                        nearCell(composingA?.preedit ?? null, cellA),
+                        offBy(composingA?.preedit ?? null, cellA)
+                    );
+                    recorder.check(
+                        'it looks like marked text: the in-flight string, one cell tall, under a solid underline',
+                        composingA?.preeditText === HANGUL_PREEDIT &&
+                            (composingA?.preedit?.height ?? 0) >= cellH &&
+                            (composingA?.preedit?.height ?? 0) <= cellH * 1.5 &&
+                            (composingA?.preeditUnderline ?? '').includes('solid'),
+                        `text ${JSON.stringify(composingA?.preeditText ?? null)} · height ${String(composingA?.preedit?.height ?? 0)} of ${String(cellH)} · border ${JSON.stringify(composingA?.preeditUnderline ?? '')}`
+                    );
+                    await recorder.shot(page, 'preedit-at-caret');
+                    await endComposition('');
+                    await sleep(300);
+
+                    // Probe B — a DIFFERENT cell. One probe cannot tell "follows the caret"
+                    // from "happens to be offset from the container by exactly that much".
+                    await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(500);
+                    await runInTerminal(page, `clear; printf '\\033[${String(cellB.row)};${String(cellB.col)}H'; cat`, {
+                        settleMs: 900
+                    });
+                    await composeAtCaret(TEST_PREEDIT);
+                    await sleep(250);
+                    const composingB = await readCaretGeometry();
+                    recorder.note(
+                        `composing at CUP(${String(cellB.row)},${String(cellB.col)}): preedit ${JSON.stringify(composingB?.preedit ?? null)} · ` +
+                            `textarea ${JSON.stringify(composingB?.textarea ?? null)}`
+                    );
+                    recorder.check(
+                        'move the caret and BOTH follow: at a second cell the preedit and the textarea are on the new cell, not the old one',
+                        nearCell(composingB?.preedit ?? null, cellB) && nearCell(composingB?.textarea ?? null, cellB),
+                        `preedit ${offBy(composingB?.preedit ?? null, cellB)} · textarea ${offBy(composingB?.textarea ?? null, cellB)}`
+                    );
+                    recorder.check(
+                        'and the two probes really are two places — the anchor moved by the cells the CUP escapes moved the cursor',
+                        Math.abs((composingB?.preedit?.x ?? 0) - (composingA?.preedit?.x ?? 0)) >= cellW &&
+                            Math.abs((composingB?.preedit?.y ?? 0) - (composingA?.preedit?.y ?? 0)) >= cellH,
+                        `A ${JSON.stringify(composingA?.preedit ?? null)} → B ${JSON.stringify(composingB?.preedit ?? null)}`
+                    );
+                    await recorder.shot(page, 'preedit-tracked');
+
+                    await endComposition(TEST);
+                    await sleep(800);
+                    const afterB = await readCaretGeometry();
+                    recorder.note(
+                        `after commit: preedit ${String(afterB?.preeditDisplay ?? 'missing')} ${JSON.stringify(afterB?.preeditText ?? null)} · ` +
+                            `textarea ${JSON.stringify(afterB?.textarea ?? null)}`
+                    );
+                    recorder.check(
+                        'the commit takes the preedit away completely — no marked text left painted over the cells the committed glyphs now occupy',
+                        afterB?.preeditDisplay === 'none' && (afterB?.preeditText ?? '') === '',
+                        `display ${String(afterB?.preeditDisplay ?? 'missing')} · text ${JSON.stringify(afterB?.preeditText ?? null)}`
+                    );
+                    recorder.check(
+                        'and the textarea walks on with the caret, landing to the RIGHT of where it composed once the committed text is echoed',
+                        (afterB?.textarea?.x ?? 0) >= (composingB?.textarea?.x ?? 0) + cellW,
+                        `composed at ${String(composingB?.textarea?.x ?? 0)} → now ${String(afterB?.textarea?.x ?? 0)} ` +
+                            `(${String(Math.round((((afterB?.textarea?.x ?? 0) - (composingB?.textarea?.x ?? 0)) / cellW) * 100) / 100)} cells)`
+                    );
+
+                    await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(500);
+                }
 
                 // ── PR #159: every keydown through ghostty's WASM encoder ────────────
                 //
@@ -6586,17 +7356,22 @@ function buildFlows(ctx) {
                 recorder.note(
                     'WHAT THIS STEP DOES NOT PROVE. The composition events are SYNTHETIC: they are the same type, on the ' +
                         'same element, in the same order a macOS IME produces, and the engine cannot tell the difference — ' +
-                        'but the OS half of the pipeline is untouched. Not covered: the candidate window (drawn by the ' +
-                        'input method, positioned against a caret rect the engine never reports — TERM-033), layout dead ' +
-                        'keys and Option-composed characters (resolved by the keyboard layout before the browser sees a ' +
-                        'keydown — TERM-023), and modifier press/release (TERM-030: the bundle still registers zero `keyup` ' +
-                        'listeners and never calls `setKittyFlags()`). A run under a real Korean or Japanese IME remains ' +
-                        'the only way to close those, and no CI can host one.'
+                        'but the OS half of the pipeline is untouched. On the CARET: what is measured is the box the ' +
+                        'browser derives the composition rect FROM — the focused textarea, now on the cursor cell, ' +
+                        'asserted against a cell the terminal was told to move to. Where the input method then chooses ' +
+                        'to draw its candidate window is the OS\'s decision, made in a surface CDP cannot screenshot or ' +
+                        'query, so the textarea rect is the honest proxy for TERM-033 and not the window itself. Also ' +
+                        'not covered: layout dead keys and Option-composed characters (resolved by the keyboard layout ' +
+                        'before the browser sees a keydown — TERM-023), and modifier press/release (TERM-030: the bundle ' +
+                        'still registers zero `keyup` listeners and never calls `setKittyFlags()`). A run under a real ' +
+                        'Korean or Japanese IME remains the only way to close those, and no CI can host one.'
                 );
                 recorder.eyes(
-                    'the "composing" and "composed" shots: is the preedit chip legible and is 한글 painted as two real ' +
-                        'Hangul syllables (not tofu, not a doubled 한글한글)? And in "wide-selection", does the highlight ' +
-                        'cover whole 漢 glyphs rather than splitting one down the middle?'
+                    'the "composing" and "composed" shots: is the preedit legible and is 한글 painted as two real ' +
+                        'Hangul syllables (not tofu, not a doubled 한글한글)? In "preedit-at-caret" and ' +
+                        '"preedit-tracked", does the marked text sit ON the cursor cell — underlined, over the cells it ' +
+                        'is about to fill — and did it move with the caret between the two? And in "wide-selection", ' +
+                        'does the highlight cover whole 漢 glyphs rather than splitting one down the middle?'
                 );
             }
         },
@@ -7900,6 +8675,37 @@ function buildFlows(ctx) {
                     fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.'),
                     fs.readFileSync(path.join(repo, 'README.md'), 'utf8').trim().slice(0, 80)
                 );
+                // GIT-044: the inspector's graft state is fed by the daemon's `graft-changed`
+                // broadcast, not by this client's optimism about its own click. Nothing is
+                // clicked below - the session is started and stopped from the CLI, so the dot
+                // can only appear (and clear) if the boot-time subscription delivered it.
+                const cliStart = await cli.run(['graft', 'start', '--repo', path.basename(wt)]);
+                recorder.note(`nex graft start --repo ${path.basename(wt)}: code=${String(cliStart.code)} ${String(cliStart.stdout).trim()} ${String(cliStart.stderr).trim()}`.trim());
+                if (cliStart.code !== 0) {
+                    recorder.check('a CLI-started graft reaches the daemon (\u00a7GIT-044)', false, `${cliStart.stdout}${cliStart.stderr}`.slice(0, 200));
+                } else {
+                    const appeared = await page
+                        .waitFor(
+                            `document.querySelector('[data-testid="graft-dot-${associationID}"]')?.getAttribute('data-status') === 'watching'`,
+                            { timeoutMs: 25_000, label: 'the dot to light from the broadcast alone' }
+                        )
+                        .then(() => true, () => false);
+                    await sleep(300);
+                    await recorder.shot(page, 'broadcast');
+                    recorder.check('a graft started from the CLI lights the inspector dot with no gesture (\u00a7GIT-044)', appeared === true);
+                    const cliStop = await cli.run(['graft', 'stop', '--repo', path.basename(wt)]);
+                    const cleared = await page
+                        .waitFor(`document.querySelector('[data-testid="graft-dot-${associationID}"]') === null`, {
+                            timeoutMs: 25_000,
+                            label: 'the dot to clear from the broadcast alone'
+                        })
+                        .then(() => true, () => false);
+                    recorder.check('and stopping it from the CLI clears the dot the same way', cleared === true && cliStop.code === 0, `stop code ${String(cliStop.code)} ${String(cliStop.stderr).trim()}`);
+                    recorder.check(
+                        'the parent checkout is whole again after the CLI round trip',
+                        !fs.existsSync(mirrored) && fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.')
+                    );
+                }
                 recorder.eyes('is the dot legible at 5 px in the button\u2019s corner \u2014 and is the running state obvious at a glance?');
             }
         },
@@ -8105,6 +8911,48 @@ function buildFlows(ctx) {
                 recorder.check(
                     'and leaves the parent\u2019s working tree alone',
                     fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.')
+                );
+                // GIT-032's other half: a Restore that FAILS must leave the breadcrumb (and the
+                // stash) exactly where they are, and put the banner back - it is the only
+                // affordance the user has to try again. This breadcrumb names a branch the repo
+                // no longer has, so the restore's first step (`git checkout -f <branch>`) fails
+                // before anything in the parent is touched.
+                fs.writeFileSync(
+                    breadcrumbPath(),
+                    JSON.stringify({
+                        assocId: associationID,
+                        branch: 'graft-branch',
+                        preGraftBranch: 'branch-deleted-while-nex-was-down',
+                        preGraftSha: git(['rev-parse', 'HEAD']).trim(),
+                        stashRef: null,
+                        stashed: false,
+                        version: 1,
+                        worktreePath: String(worktreePath),
+                        worktreePreGraftSha: null
+                    })
+                );
+                await reopenInspector();
+                await page.waitFor(
+                    `document.querySelector('[data-testid="graft-orphan-restore-${associationID}"]') !== null`,
+                    { timeoutMs: 20_000, label: 'the banner for the un-restorable breadcrumb' }
+                );
+                await page.click(`[data-testid="graft-orphan-restore-${associationID}"]`);
+                await sleep(2_500);
+                await recorder.shot(page, 'restore-failed');
+                const stillThere = await page.eval(
+                    `document.querySelector('[data-testid="graft-orphan-restore-${associationID}"]') !== null`
+                );
+                recorder.check('a Restore that fails puts the banner back for a retry (\u00a7GIT-032)', stillThere === true, String(stillThere));
+                recorder.check('\u2026and leaves the breadcrumb on disk', fs.existsSync(breadcrumbPath()));
+                recorder.check(
+                    '\u2026having changed nothing in the parent checkout',
+                    fs.readFileSync(path.join(repo, 'README.md'), 'utf8').includes('Edited line.'),
+                    fs.readFileSync(path.join(repo, 'README.md'), 'utf8').trim().slice(0, 80)
+                );
+                await page.click(`[data-testid="graft-orphan-dismiss-${associationID}"]`);
+                await page.waitFor(
+                    `document.querySelector('[data-testid^="graft-orphan-"]') === null`,
+                    { timeoutMs: 20_000, label: 'the retry banner to clear after Dismiss' }
                 );
                 recorder.eyes('does the banner read as a warning without shouting \u2014 and are Restore/Dismiss obviously the two answers?');
             }
@@ -9235,7 +10083,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-drag-affordances',
             expect:
-                'The drag affordances the sidebar was missing: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), and the entry animation a newly created row plays (§WS-007/§WS-008/§WS-088).',
+                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), a cursor-following drag ghost with a drop shadow, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
             needsEyes: true,
             async run(recorder) {
                 // Expand the group this run has been dropping into, so it has visible children.
@@ -9359,14 +10207,89 @@ function buildFlows(ctx) {
                         `document.querySelectorAll('[data-testid="drop-insert-line"]').length`
                     );
                     recorder.check('a press with no movement draws no insertion line', onPress === 0, String(onPress));
+                    // §WS-084: and no ghost either — a press is not a drag.
+                    const ghostOnPress = await page.eval(
+                        `document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`
+                    );
+                    recorder.check('nor lifts a drag ghost (§WS-084)', ghostOnPress === 0, String(ghostOnPress));
+                    // Every row on screen before a ghost exists — the number the ghost must not
+                    // change, since it is not a row.
+                    const rowsBeforeGhost = Number(
+                        await page.eval(`document.querySelectorAll('[data-testid="workspace-row"]').length`)
+                    );
 
+                    /**
+                     * §WS-084's ghost, sampled at two cursor positions on the way.
+                     *
+                     * The row itself CANNOT follow the cursor here — it is the live preview of
+                     * the order the drop will commit (the shadow-commit model), and it is what
+                     * the drop zones are measured from. So the thing that follows is a clone on
+                     * `document.body`, and the two facts worth proving are that it moves with
+                     * the pointer and that it is not a row: it must not be measured, and it must
+                     * not answer to a row selector, or §WS-093's gate would be reading a corpse.
+                     */
+                    const readGhost = async () =>
+                        JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const el = document.querySelector('[data-testid="sidebar-drag-ghost"]');
+                                        if (el === null) return JSON.stringify({ present: false });
+                                        const r = el.getBoundingClientRect();
+                                        const style = getComputedStyle(el);
+                                        return JSON.stringify({
+                                            present: true,
+                                            x: Math.round(r.x),
+                                            y: Math.round(r.y),
+                                            width: Math.round(r.width),
+                                            position: style.position,
+                                            shadow: style.boxShadow,
+                                            pointerEvents: style.pointerEvents,
+                                            parent: el.parentElement?.tagName ?? null,
+                                            workspaceID: el.getAttribute('data-workspace-id'),
+                                            rows: document.querySelectorAll('[data-testid="workspace-row"]').length
+                                        });
+                                    })()`
+                                )
+                            )
+                        );
+
+                    let ghostA = { present: false };
+                    let ghostB = { present: false };
                     for (let step = 1; step <= 10; step++) {
                         await page.mouse('mouseMoved', from.x + ((to.x - from.x) * step) / 10, from.y + ((to.y - from.y) * step) / 10, {
                             button: 'left',
                             buttons: 1
                         });
                         await sleep(20);
+                        if (step === 3) ghostA = await readGhost();
+                        if (step === 8) ghostB = await readGhost();
                     }
+                    recorder.note(`drag ghost: ${JSON.stringify(ghostA)} → ${JSON.stringify(ghostB)}`);
+                    await recorder.shot(page, 'drag-ghost');
+                    recorder.check(
+                        'the drag lifts a ghost of the row (§WS-084)',
+                        ghostA.present === true && ghostB.present === true,
+                        JSON.stringify([ghostA.present, ghostB.present])
+                    );
+                    recorder.check(
+                        'and it FOLLOWS the cursor — it is somewhere else two thirds of the way up',
+                        ghostA.present === true && ghostB.present === true && Math.abs(ghostB.y - ghostA.y) >= 10,
+                        `Δy ${String(ghostB.y - ghostA.y)} over ${String(Math.round(((to.y - from.y) * 5) / 10))}px of cursor travel`
+                    );
+                    recorder.check(
+                        'it is a fixed, shadowed, click-through picture (§WS-084)',
+                        ghostB.position === 'fixed' &&
+                            typeof ghostB.shadow === 'string' &&
+                            ghostB.shadow !== 'none' &&
+                            ghostB.pointerEvents === 'none',
+                        JSON.stringify([ghostB.position, ghostB.shadow, ghostB.pointerEvents])
+                    );
+                    recorder.check(
+                        'and it is NOT a row: it answers to no row selector and adds nothing to the list',
+                        ghostB.workspaceID === null && ghostB.rows === rowsBeforeGhost,
+                        `${String(ghostB.workspaceID)} · ${String(ghostB.rows)} rows of ${String(rowsBeforeGhost)}`
+                    );
                     await sleep(250);
                     const line = JSON.parse(
                         String(
@@ -9406,6 +10329,10 @@ function buildFlows(ctx) {
                     await sleep(900);
                     const gone = await page.eval(`document.querySelectorAll('[data-testid="drop-insert-line"]').length`);
                     recorder.check('the line goes away on release', gone === 0, String(gone));
+                    const ghostGone = await page.eval(
+                        `document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`
+                    );
+                    recorder.check('and so does the ghost (§WS-084)', ghostGone === 0, String(ghostGone));
                 }
 
                 // ── §WS-008: a newly inserted row plays its entry ────────────────────
@@ -9462,7 +10389,464 @@ function buildFlows(ctx) {
                     `${String(state.reorderable)} of ${String(state.total)}`
                 );
                 await recorder.shot(page, 'settled');
-                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, and is the insertion line legible against the row fill?');
+
+                /**
+                 * §WS-008's third mechanism: REMOVAL.
+                 *
+                 * This is the half the sweep recorded as declined, and the constraint behind
+                 * that decision is real — a dead row held alive in the list would be measured
+                 * by §WS-093's gate. So the row leaves the model at once and a clone animates
+                 * in a layer that is out of flow. The assertions are written around exactly
+                 * that: the ghost must be MID-FLIGHT (a fractional opacity, or a height already
+                 * shrinking) while the list underneath has ALREADY lost the row.
+                 */
+                const beforeDelete = Number(
+                    await page.eval(`document.querySelectorAll('[data-testid="workspace-row"]').length`)
+                );
+                void cli.run(['workspace', 'delete', 'Slot B', '--force']);
+                let exit = { present: false };
+                for (let tick = 0; tick < 80; tick++) {
+                    const seen = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="sidebar-row-ghost"]');
+                                    if (el === null) return JSON.stringify({ present: false });
+                                    const style = getComputedStyle(el);
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        present: true,
+                                        opacity: Number(style.opacity),
+                                        height: Math.round(r.height * 10) / 10,
+                                        position: style.position,
+                                        transition: style.transitionDuration,
+                                        layer: el.parentElement?.getAttribute('data-testid') ?? null,
+                                        text: (el.innerText ?? '').split('\\n')[0],
+                                        workspaceID: el.getAttribute('data-workspace-id'),
+                                        rows: document.querySelectorAll('[data-testid="workspace-row"]').length,
+                                        named: Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                            .filter(row => (row.innerText ?? '').includes('Slot B')).length
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    if (seen.present === true) {
+                        // Mid-flight is the point: keep sampling until the frame that is
+                        // actually between the two ends, rather than the one it was appended
+                        // on. `full` is the height it started at, so "shrinking" is measured
+                        // against the row's own size instead of a magic number.
+                        if (exit.present !== true) seen.full = seen.height;
+                        else seen.full = exit.full;
+                        exit = seen;
+                        if (seen.opacity < 1 || seen.height < seen.full) break;
+                    }
+                    await sleep(10);
+                }
+                /**
+                 * A second sample, a beat later. The first one only proves the transition was
+                 * declared and had begun; two samples that DISAGREE prove it is running — which
+                 * is the difference between an animation and a stylesheet.
+                 */
+                // Photograph it half-gone rather than at either end: at ~60ms into a 350ms
+                // collapse the ghost is still legible AND visibly lighter/shorter than the row
+                // it replaced, which is the only frame a still can make the point in.
+                await sleep(80);
+                const exitLater = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('[data-testid="sidebar-row-ghost"]');
+                                if (el === null) return JSON.stringify({ present: false });
+                                return JSON.stringify({
+                                    present: true,
+                                    opacity: Number(getComputedStyle(el).opacity),
+                                    height: Math.round(el.getBoundingClientRect().height * 10) / 10
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`removal ghost: ${JSON.stringify(exit)} → +80ms ${JSON.stringify(exitLater)}`);
+                // The still is taken LAST: a CDP screenshot costs a couple of hundred
+                // milliseconds, which is most of a 350ms collapse, so photographing between the
+                // two samples would end the animation before the second read.
+                await recorder.shot(page, 'row-exiting');
+                recorder.check(
+                    'and it is really MOVING: 80ms later it is fainter and shorter still (§WS-008)',
+                    exitLater.present === true &&
+                        exitLater.opacity < exit.opacity &&
+                        exitLater.height < exit.height,
+                    `${String(exit.opacity)} → ${String(exitLater.opacity)} · ${String(exit.height)} → ${String(exitLater.height)}`
+                );
+                recorder.check(
+                    'a removed row leaves a ghost behind instead of cutting (§WS-008)',
+                    exit.present === true,
+                    JSON.stringify(exit)
+                );
+                recorder.check(
+                    'and it is caught MID-FLIGHT: opacity or height already on the way to zero',
+                    exit.present === true && (exit.opacity < 1 || exit.height < exit.full),
+                    `opacity ${String(exit.opacity)} · height ${String(exit.height)} of ${String(exit.full)}`
+                );
+                recorder.check(
+                    'on the spring response the other two mechanisms use (350ms)',
+                    typeof exit.transition === 'string' && exit.transition.includes('0.35s'),
+                    String(exit.transition)
+                );
+                recorder.check(
+                    'the ghost is OUT OF FLOW in its own layer, so §WS-093’s geometry never sees it',
+                    exit.position === 'absolute' &&
+                        exit.layer === 'sidebar-ghost-layer' &&
+                        exit.workspaceID === null,
+                    JSON.stringify([exit.position, exit.layer, exit.workspaceID])
+                );
+                recorder.check(
+                    'and the row is ALREADY gone from the list while its ghost is still fading',
+                    exit.named === 0 && exit.rows === beforeDelete - 1,
+                    `${String(exit.rows)} rows, was ${String(beforeDelete)}; matches named "Slot B": ${String(exit.named)}`
+                );
+                await sleep(700);
+                const cleared = await page.eval(
+                    `document.querySelectorAll('[data-testid="sidebar-row-ghost"]').length`
+                );
+                recorder.check('the ghost is collected when it finishes', cleared === 0, String(cleared));
+
+                /**
+                 * §WS-008's other named case: collapsing an EMPTY group, which the sweep
+                 * recorded as still snapping. A collapse takes the group's "No workspaces" row
+                 * out of the rendered list, so it ghosts on the same path.
+                 */
+                await cli.run(['group', 'create', 'Hollow']);
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('[data-testid="group-empty"]')).length > 0`,
+                    { timeoutMs: 20_000, label: 'the empty group’s placeholder row' }
+                );
+                await sleep(500);
+                const chevron = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const header = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                    .find(node => (node.innerText ?? '').includes('Hollow'));
+                                if (header === undefined) return JSON.stringify({ found: false });
+                                const r = header.getBoundingClientRect();
+                                return JSON.stringify({ found: true, x: r.x + r.width / 2, y: r.y + r.height / 2 });
+                            })()`
+                        )
+                    )
+                );
+                recorder.check('the empty group is on screen to collapse', chevron.found === true, JSON.stringify(chevron));
+                if (chevron.found === true) {
+                    await page.clickAt(chevron.x, chevron.y);
+                    let emptyExit = { present: false };
+                    for (let tick = 0; tick < 60; tick++) {
+                        const seen = JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const el = document.querySelector('[data-testid="sidebar-row-ghost"]');
+                                        if (el === null) return JSON.stringify({ present: false });
+                                        const style = getComputedStyle(el);
+                                        return JSON.stringify({
+                                            present: true,
+                                            opacity: Number(style.opacity),
+                                            height: Math.round(el.getBoundingClientRect().height * 10) / 10,
+                                            text: (el.innerText ?? '').split('\\n')[0],
+                                            empties: document.querySelectorAll('[data-testid="group-empty"]').length
+                                        });
+                                    })()`
+                                )
+                            )
+                        );
+                        if (seen.present === true) {
+                            seen.full = emptyExit.present === true ? emptyExit.full : seen.height;
+                            emptyExit = seen;
+                            if (seen.opacity < 1 || seen.height < seen.full) break;
+                        }
+                        await sleep(10);
+                    }
+                    await sleep(80);
+                    const emptyLater = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="sidebar-row-ghost"]');
+                                    if (el === null) return JSON.stringify({ present: false });
+                                    return JSON.stringify({
+                                        present: true,
+                                        opacity: Number(getComputedStyle(el).opacity),
+                                        height: Math.round(el.getBoundingClientRect().height * 10) / 10
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(
+                        `empty-group collapse: ${JSON.stringify(emptyExit)} → +80ms ${JSON.stringify(emptyLater)}`
+                    );
+                    await recorder.shot(page, 'empty-group-collapsing');
+                    recorder.check(
+                        'and that collapse is running, not merely declared',
+                        emptyLater.present === true &&
+                            emptyLater.opacity < emptyExit.opacity &&
+                            emptyLater.height < emptyExit.height,
+                        `${String(emptyExit.opacity)} → ${String(emptyLater.opacity)} · ${String(emptyExit.height)} → ${String(emptyLater.height)}`
+                    );
+                    recorder.check(
+                        'collapsing an EMPTY group animates too, rather than cutting (§WS-008)',
+                        emptyExit.present === true && (emptyExit.opacity < 1 || emptyExit.height < emptyExit.full),
+                        JSON.stringify(emptyExit)
+                    );
+                }
+
+                /**
+                 * §WS-093 with a ghost on screen: the gate that the removal animation was
+                 * designed around must still pass. A press-and-drag right after a removal
+                 * becomes a real drag — `data-drag-active` is the gate's own diagnostic.
+                 */
+                const dragAfter = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                    .filter(el => el.getAttribute('data-depth') === '0');
+                                if (rows.length < 2) return JSON.stringify({ enough: false });
+                                const r = rows[rows.length - 1].getBoundingClientRect();
+                                const t = rows[0].getBoundingClientRect();
+                                return JSON.stringify({
+                                    enough: true,
+                                    fromX: r.x + r.width / 2,
+                                    fromY: r.y + r.height / 2,
+                                    toY: t.y + t.height / 2
+                                });
+                            })()`
+                        )
+                    )
+                );
+                if (dragAfter.enough === true) {
+                    /*
+                     * One more removal, for the PICTURE. A CDP screenshot costs most of a 350ms
+                     * collapse, so the two samples above had to be taken with no capture between
+                     * them; this one is shot the instant the ghost appears, and is the frame a
+                     * reader can actually see a row leaving in.
+                     */
+                    void cli.run(['workspace', 'delete', 'Slot A', '--force']);
+                    for (let tick = 0; tick < 80; tick++) {
+                        const seen = await page.eval(
+                            `document.querySelectorAll('[data-testid="sidebar-row-ghost"]').length`
+                        );
+                        if (Number(seen) > 0) break;
+                        await sleep(10);
+                    }
+                    await recorder.shot(page, 'row-exiting-frame');
+                    await page.mouse('mouseMoved', dragAfter.fromX, dragAfter.fromY, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', dragAfter.fromX, dragAfter.fromY, { button: 'left', clickCount: 1 });
+                    for (let step = 1; step <= 6; step++) {
+                        await page.mouse('mouseMoved', dragAfter.fromX, dragAfter.fromY + ((dragAfter.toY - dragAfter.fromY) * step) / 6, {
+                            button: 'left',
+                            buttons: 1
+                        });
+                        await sleep(20);
+                    }
+                    const gate = await page.eval(
+                        `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-active') ?? 'null'`
+                    );
+                    await page.mouse('mouseReleased', dragAfter.fromX, dragAfter.toY, { button: 'left', clickCount: 1 });
+                    await sleep(600);
+                    recorder.check(
+                        '§WS-093 stays green: a drag started around a removal still measures and starts',
+                        String(gate) === 'true',
+                        String(gate)
+                    );
+                }
+
+                /**
+                 * §WS-100 / §WS-102 — the reveal, on a sidebar that is actually scrolled away
+                 * from the row being activated.
+                 *
+                 * The one-shot used to be set by exactly one path (this client's own
+                 * `workspace-create` reply), so ⌘1–9, next/previous and a row click activated a
+                 * workspace and left the viewport where it was. Twelve bulk rows make the list
+                 * overflow; scrolling to the end puts the FIRST row off-screen; ⌘1 activates it.
+                 * The proof is that the scroller moved and the row is fully visible after it.
+                 */
+                /*
+                 * Remembered by ID, not by the row's first line.
+                 *
+                 * This block activates other workspaces (twelve creates each reveal their own,
+                 * then ⌘1 activates the first row), so it MUST hand the run back on the
+                 * workspace it found. The first attempt remembered the row's leading text line
+                 * — which is the avatar initial, not the name — and restored with an
+                 * `innerText.includes()` search, so it re-activated whichever row happened to
+                 * share that letter. In `run-L` that silently handed steps 88 and 90 a
+                 * different workspace than they were written against (`repo-picker-multiselect`
+                 * found four repos already associated instead of two, and `search-colors` found
+                 * a live markdown pane whose document has no "alpha" in it, and timed out on the
+                 * find count). A workspace id cannot be ambiguous.
+                 */
+                const activeBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                await cli.run(['group', 'create', 'Overflow']);
+                for (let n = 1; n <= 12; n++) {
+                    await cli.run(['workspace', 'create', '--name', `Bulk ${String(n)}`, '--group', 'Overflow']);
+                }
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Bulk 12'))`,
+                    { timeoutMs: 40_000, label: 'the twelfth bulk row' }
+                );
+                await sleep(900);
+                const overflowed = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                if (list === null) return JSON.stringify({ overflow: 0 });
+                                list.scrollTop = list.scrollHeight;
+                                const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                const first = rows[0];
+                                const lr = list.getBoundingClientRect();
+                                const fr = first === undefined ? null : first.getBoundingClientRect();
+                                return JSON.stringify({
+                                    overflow: Math.round(list.scrollHeight - list.clientHeight),
+                                    scrollTop: Math.round(list.scrollTop),
+                                    firstVisible: fr === null ? null : fr.top >= lr.top - 1 && fr.bottom <= lr.bottom + 1,
+                                    first: first === undefined ? null : (first.innerText ?? '').split('\\n')[0]
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`scrolled to the end: ${JSON.stringify(overflowed)}`);
+                recorder.check(
+                    'the sidebar overflows and its first row is off-screen, so a reveal has work to do',
+                    overflowed.overflow > 0 && overflowed.scrollTop > 0 && overflowed.firstVisible === false,
+                    JSON.stringify(overflowed)
+                );
+                await recorder.shot(page, 'reveal-before');
+                await page.key('Digit1', { modifiers: MOD.meta, key: '1', keyCode: 49 });
+                let revealed = { scrollTop: overflowed.scrollTop, visible: false, active: null };
+                for (let tick = 0; tick < 80; tick++) {
+                    revealed = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                    const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                    const first = rows[0];
+                                    if (list === null || first === undefined) return JSON.stringify({ visible: false });
+                                    const lr = list.getBoundingClientRect();
+                                    const fr = first.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        scrollTop: Math.round(list.scrollTop),
+                                        visible: fr.top >= lr.top - 1 && fr.bottom <= lr.bottom + 1,
+                                        active: first.getAttribute('data-active'),
+                                        name: (first.innerText ?? '').split('\\n')[0]
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    if (revealed.visible === true) break;
+                    await sleep(25);
+                }
+                recorder.note(`after ⌘1: ${JSON.stringify(revealed)}`);
+                await recorder.shot(page, 'reveal-after');
+                recorder.check(
+                    'activating an off-screen workspace scrolls its row into view (§WS-100)',
+                    revealed.visible === true && revealed.scrollTop < overflowed.scrollTop,
+                    `scrollTop ${String(overflowed.scrollTop)} → ${String(revealed.scrollTop)}`
+                );
+                recorder.check(
+                    'and the row it revealed is the one that became active',
+                    revealed.active === 'true' && revealed.name === overflowed.first,
+                    `${String(revealed.name)} · active=${String(revealed.active)}`
+                );
+                /*
+                 * §WS-102's minimum: the poll above breaks the moment the row is fully visible,
+                 * which is BEFORE the 220ms reveal has finished — so the two numbers together
+                 * say "animated, and it stopped where the minimum is", rather than "jumped".
+                 */
+                await sleep(600);
+                const rest = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                const first = document.querySelector('[data-testid="workspace-row"]');
+                                if (list === null || first === null) return JSON.stringify({ found: false });
+                                return JSON.stringify({
+                                    found: true,
+                                    scrollTop: Math.round(list.scrollTop),
+                                    rowTop: Math.round(first.offsetTop),
+                                    inset: Math.round(Number.parseFloat(getComputedStyle(list).paddingTop) || 0)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                // The minimum that leaves the row fully visible with the list's own content
+                // padding above it: `offsetTop - paddingTop`, never less than zero.
+                const expectedRest = rest.found === true ? Math.max(0, rest.rowTop - rest.inset) : -1;
+                recorder.note(
+                    `at rest: ${JSON.stringify(rest)} → minimum ${String(expectedRest)} (caught at ${String(revealed.scrollTop)} mid-reveal)`
+                );
+                recorder.check(
+                    'it animates rather than jumping, and comes to rest on the MINIMUM scroll (§WS-102)',
+                    rest.found === true &&
+                        rest.scrollTop === expectedRest &&
+                        revealed.scrollTop > rest.scrollTop,
+                    `${String(revealed.scrollTop)} when the row first fit, ${String(rest.scrollTop)} at rest, minimum ${String(expectedRest)}`
+                );
+
+                // Put the list back the way the rest of the run expects to find it — same
+                // workspace active, by id, and ASSERTED rather than hoped for, because the two
+                // steps behind this one both read the active workspace's contents.
+                /*
+                 * The cascade delete takes the ACTIVE workspace with it (the last Bulk row), so
+                 * the daemon picks its own fallback and broadcasts it. A single click raced that
+                 * broadcast and lost — the click landed, the daemon's own activation arrived
+                 * after it, and the run carried on with a workspace nobody asked for. So: wait
+                 * for the list to settle, then click and CONFIRM, retrying a few times.
+                 */
+                await cli.run(['group', 'delete', 'Overflow', '--cascade']);
+                await page.waitFor(
+                    `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
+                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Bulk '))`,
+                    { timeoutMs: 25_000, label: 'the bulk rows to leave the sidebar' }
+                );
+                await sleep(900);
+                let restored = false;
+                let handedBack = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    restored =
+                        (await page.eval(
+                            `(() => {
+                                const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                                if (row === null) return false;
+                                row.click();
+                                return true;
+                            })()`
+                        )) === true;
+                    await sleep(700);
+                    handedBack = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (handedBack === activeBefore) break;
+                }
+                recorder.note(`bulk rows cleaned up; re-activated ${activeBefore}: ${String(restored)}`);
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    activeBefore !== '' && handedBack === activeBefore,
+                    `${String(activeBefore)} → ${String(handedBack)}`
+                );
+
+                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, is the insertion line legible against the row fill, and does the drag ghost read as a row lifted off the list?');
             }
         },
         {
@@ -9558,6 +10942,130 @@ function buildFlows(ctx) {
                 await sleep(300);
                 const stillEmpty = await selected();
                 recorder.check('a second Escape is a no-op, not an error', stillEmpty.length === 0, JSON.stringify(stillEmpty));
+
+                /**
+                 * §WS-027 / §WS-043, measured on a clean selection.
+                 *
+                 * The Swift draws the row's two states as a ZStack — a row that is selected AND
+                 * active carries both fills and both strokes — where the port used to make them
+                 * ternaries and let `active` win outright, so the row a bulk action is about to
+                 * act on lost the ring saying so. These are the numbers the spec names: a 1.5px
+                 * accent outline, a 1px selection stroke at 0.7 alpha, and a fill that is really
+                 * two fills.
+                 */
+                const activeBox = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('[data-testid="workspace-row"][data-active="true"]');
+                                if (el === null) return JSON.stringify({ found: false });
+                                const r = el.getBoundingClientRect();
+                                return JSON.stringify({ found: true, x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
+                            })()`
+                        )
+                    )
+                );
+                if (activeBox.found === true) {
+                    await page.clickAt(activeBox.x, activeBox.y, { modifiers: MOD.meta });
+                    await sleep(400);
+                    const paint = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="workspace-row"][data-active="true"][data-selected="true"]');
+                                    const plain = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                        .find(node => node.getAttribute('data-active') !== 'true' && node.getAttribute('data-selected') !== 'true');
+                                    if (el === null) return JSON.stringify({ found: false });
+                                    const style = getComputedStyle(el);
+                                    const bare = plain === undefined ? null : getComputedStyle(plain);
+                                    return JSON.stringify({
+                                        found: true,
+                                        outlineWidth: style.outlineWidth,
+                                        outlineColor: style.outlineColor,
+                                        boxShadow: style.boxShadow,
+                                        background: style.backgroundColor,
+                                        layered: style.backgroundImage !== 'none',
+                                        plainBackground: bare === null ? null : bare.backgroundColor,
+                                        plainOutline: bare === null ? null : bare.outlineStyle
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`selected+active row: ${JSON.stringify(paint)}`);
+                    await recorder.shot(page, 'selected-and-active');
+                    recorder.check(
+                        'a row that is selected AND active exists to measure',
+                        paint.found === true,
+                        JSON.stringify(paint)
+                    );
+                    recorder.check(
+                        'it wears the 1.5px accent stroke (§WS-027)',
+                        paint.outlineWidth === '1.5px' && paint.outlineColor !== 'rgba(0, 0, 0, 0)',
+                        `${String(paint.outlineWidth)} ${String(paint.outlineColor)}`
+                    );
+                    recorder.check(
+                        'AND keeps the selection’s 1px stroke at 0.7 opacity, instead of losing it',
+                        typeof paint.boxShadow === 'string' &&
+                            paint.boxShadow.includes('inset') &&
+                            paint.boxShadow.includes('0.7'),
+                        String(paint.boxShadow)
+                    );
+                    recorder.check(
+                        'and both fills stack, so it reads brighter than either state alone',
+                        paint.layered === true && paint.background !== paint.plainBackground,
+                        `${String(paint.background)} + image vs plain ${String(paint.plainBackground)}`
+                    );
+
+                    // §WS-043: "Select All" is hidden once everything already IS selected.
+                    const banners = async () =>
+                        JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const strip = document.querySelector('[data-testid="selection-header"]');
+                                        if (strip === null) return JSON.stringify({ present: false });
+                                        return JSON.stringify({
+                                            present: true,
+                                            text: (strip.innerText ?? '').replace(/\\n/g, ' '),
+                                            buttons: Array.from(strip.querySelectorAll('button')).map(b => (b.innerText ?? '').trim())
+                                        });
+                                    })()`
+                                )
+                            )
+                        );
+                    const partial = await banners();
+                    recorder.check(
+                        'a partial selection offers Select All and Clear (§WS-043)',
+                        partial.present === true &&
+                            partial.buttons.includes('Select All') &&
+                            partial.buttons.includes('Clear'),
+                        JSON.stringify(partial)
+                    );
+                    await page.eval(
+                        `(() => {
+                            const strip = document.querySelector('[data-testid="selection-header"]');
+                            const button = strip === null ? undefined : Array.from(strip.querySelectorAll('button'))
+                                .find(b => (b.innerText ?? '').trim() === 'Select All');
+                            button?.click();
+                            return button !== undefined;
+                        })()`
+                    );
+                    await sleep(400);
+                    const complete = await banners();
+                    recorder.note(`banner after Select All: ${JSON.stringify(complete)}`);
+                    await recorder.shot(page, 'select-all');
+                    recorder.check(
+                        'and it disappears once everything is selected, leaving only Clear (§WS-043)',
+                        complete.present === true &&
+                            !complete.buttons.includes('Select All') &&
+                            complete.buttons.includes('Clear'),
+                        JSON.stringify(complete)
+                    );
+                    await page.key('Escape');
+                    await sleep(400);
+                }
+
                 recorder.eyes('does the selection strip appear and disappear cleanly, with no half-selected rows left behind?');
             }
         },
@@ -10210,6 +11718,32 @@ function buildFlows(ctx) {
                 recorder.note(`before: ${String(beforePanes.length)} panes, ${String(beforeWorkspaces.length)} workspaces`);
                 const marker = `REATTACH-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
                 /**
+                 * Bare the window before aiming at a pane. This step runs LAST, so it inherits
+                 * whatever chrome the flow in front of it left on screen.
+                 *
+                 * This is the whole of the run-I/J/K failure, and none of it was the daemon.
+                 * `keybinding-conflict` (and the two settings flows before it) leave the
+                 * Settings overlay open; its backdrop is `absolute inset-0`, so a click at a
+                 * pane's coordinates lands on the BACKDROP, which closes the overlay and hands
+                 * focus back to the pane the user came from — a markdown pane in run-K. Both
+                 * `runInTerminal` calls below then typed into a preview, the shell pane never
+                 * saw a byte, and the post-relaunch read found `0 occurrences` of a marker that
+                 * had never been printed. Reproduced in three flows
+                 * (`docs/audit/reattach-diagnosis/`, `fresh-boot,keybinding-conflict,` this
+                 * step) and green in the same three with this dismissal in front of them
+                 * (`docs/audit/reattach-fixed/`). "The window is bare" is a precondition of
+                 * typing into a pane, not an assumption to inherit from another flow.
+                 */
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                        timeoutMs: 5000,
+                        label: 'the settings overlay an earlier flow left open to close'
+                    });
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+                /**
                  * The marker goes into a pane that is ON SCREEN, not into `state.firstPane`.
                  *
                  * By the time this last step runs, the workspace-creating flows above have moved
@@ -10228,6 +11762,24 @@ function buildFlows(ctx) {
                 // buffer the marker is the only thing there and the assertion means what it says.
                 await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
                 await runInTerminal(page, `printf '%s\\n' ${marker}`, { settleMs: 700 });
+
+                /**
+                 * Prove the marker LANDED, before anything is quit.
+                 *
+                 * Without this gate the post-relaunch read cannot tell "the daemon lost the
+                 * scrollback across a reattach" from "the keystrokes never reached the PTY in
+                 * the first place" — and for three consecutive full runs it was written up as
+                 * the former while being the latter. The daemon's own capture is the same
+                 * surface the assertion at the end reads, so a pass here makes that one mean
+                 * exactly what it says.
+                 */
+                const preQuitCapture = await cli.ok(['pane', 'capture', '--target', String(markerPane), '--scrollback']);
+                const preQuitHits = (preQuitCapture.match(new RegExp(marker, 'g')) ?? []).length;
+                recorder.check(
+                    'the marker reached the pane BEFORE the quit (so the read after it means what it says)',
+                    preQuitHits >= 1,
+                    `${String(preQuitHits)} occurrences of ${marker} pre-quit`
+                );
 
                 page.close();
                 await runtime.shell.quit();

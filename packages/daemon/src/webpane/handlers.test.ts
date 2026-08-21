@@ -152,6 +152,93 @@ describe('web-open (§3.3)', () => {
             error: 'no active workspace'
         });
     });
+
+    /**
+     * WEB-011 — the GUI's anchor and direction.
+     *
+     * Swift performs the globe-button open in-process with `fromPaneID` + `direction`; the port
+     * has to say the same thing on the wire, so `web-open` accepts `target` (the pane to split)
+     * and `direction`. The CLI sends neither, which is what keeps `nex web open` splitting the
+     * FOCUSED pane exactly as before.
+     */
+    describe('the GUI anchor (WEB-011)', () => {
+        /** The split node that has `paneID` as one of its two leaves, or null. */
+        const enclosing = (
+            layout: unknown,
+            paneID: string
+        ): { kind: string; direction: string; first: unknown; second: unknown } | null => {
+            if (typeof layout !== 'object' || layout === null) return null;
+            const node = layout as { kind?: string; first?: unknown; second?: unknown; direction?: string };
+            if (node.kind !== 'split') return null;
+            const isLeaf = (child: unknown): boolean =>
+                typeof child === 'object' &&
+                child !== null &&
+                (child as { kind?: string; paneID?: string }).kind === 'leaf' &&
+                (child as { paneID?: string }).paneID === paneID;
+            if (isLeaf(node.first) || isLeaf(node.second)) {
+                return node as { kind: string; direction: string; first: unknown; second: unknown };
+            }
+            return enclosing(node.first, paneID) ?? enclosing(node.second, paneID);
+        };
+
+        it('splits the named pane DOWN when the globe was ⇧-clicked', () => {
+            const h = webHarness();
+            const reply = h.reply({
+                command: 'web-open',
+                url: 'about:blank',
+                pane_id: SHELL_PANE,
+                target: SHELL_PANE,
+                direction: 'vertical'
+            });
+            expect(reply).toMatchObject({ ok: true });
+            const created = String(reply['pane_id']);
+            const split = enclosing(h.state().workspaces[0]?.layout, SHELL_PANE);
+            expect(split?.direction).toBe('vertical');
+            expect(split?.second).toEqual({ kind: 'leaf', paneID: created });
+        });
+
+        it('splits the named pane RIGHT on a plain click, whoever holds focus', () => {
+            const h = webHarness();
+            // The seeded web pane is the focused one; the anchor must win over it.
+            expect(h.state().workspaces[0]?.focusedPaneID).toBe(WEB_PANE);
+            const reply = h.reply({
+                command: 'web-open',
+                url: 'about:blank',
+                pane_id: SHELL_PANE,
+                target: SHELL_PANE,
+                direction: 'horizontal'
+            });
+            const created = String(reply['pane_id']);
+            const split = enclosing(h.state().workspaces[0]?.layout, SHELL_PANE);
+            expect(split?.direction).toBe('horizontal');
+            expect(split?.second).toEqual({ kind: 'leaf', paneID: created });
+        });
+
+        it('without an anchor it splits the FOCUSED pane, the way `nex web open` always has', () => {
+            const h = webHarness();
+            const reply = h.reply({ command: 'web-open', url: 'about:blank', pane_id: SHELL_PANE });
+            const created = String(reply['pane_id']);
+            const split = enclosing(h.state().workspaces[0]?.layout, WEB_PANE);
+            expect(split?.direction).toBe('horizontal');
+            expect(split?.second).toEqual({ kind: 'leaf', paneID: created });
+        });
+
+        it('ignores an anchor that is not a visible pane of the routed workspace', () => {
+            const h = webHarness();
+            const reply = h.reply({
+                command: 'web-open',
+                url: 'about:blank',
+                pane_id: SHELL_PANE,
+                target: id('99999999', 7),
+                direction: 'vertical'
+            });
+            const created = String(reply['pane_id']);
+            // Falls back to the focused pane rather than opening against a pane nobody named.
+            const split = enclosing(h.state().workspaces[0]?.layout, WEB_PANE);
+            expect(split?.second).toEqual({ kind: 'leaf', paneID: created });
+            expect(split?.direction).toBe('vertical');
+        });
+    });
 });
 
 describe('tabs (§5)', () => {

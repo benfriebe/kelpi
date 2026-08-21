@@ -33,10 +33,15 @@ import {
     healCliSymlink,
     installCliSymlink,
     nodeCliFs,
-    resolveCliInstallMode,
     resolveCliLinkPath,
     type CliInstallResult
 } from './cli-install.js';
+import {
+    createOpenFileQueue,
+    runCliInstallPolicy,
+    runDaemonConnectSequence,
+    runLaunchSequence
+} from './launch.js';
 import {
     readSearchPalette,
     transparencyNeedsRelaunch,
@@ -99,8 +104,10 @@ let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
 /** True once `maybeStartAutoUpdate` actually initialised a feed (APP-026's manual check). */
 let updaterStarted = false;
-/** Files handed to us by Finder before the daemon was ready. */
-const pendingOpens: string[] = [];
+/**
+ * Files handed to us by Finder before the daemon was ready live in `openFiles` (declared with
+ * the rest of the Finder route below, because it needs `showWindow`).
+ */
 
 /**
  * This shell window's identity, minted once per process.
@@ -454,21 +461,38 @@ function applyAppearanceSettings(): void {
 
 // ── Finder "Open With" ──────────────────────────────────────────────────────────────
 
-function forwardOpen(filePath: string, paneID: string | null = null): void {
-    if (daemon === null) {
-        pendingOpens.push(filePath);
-        return;
+/**
+ * The two-stage cold-launch queue (CONT-125/127, APP-101). The sequencing — park while there is
+ * no connection, replay in arrival order, snapshot-and-clear, raise the window only where a file
+ * actually goes out — lives in `./launch.ts` so it can be tested without Electron; what is here
+ * is the three effects it drives.
+ */
+const openFiles = createOpenFileQueue({
+    ready: () => daemon !== null,
+    send: ({ path: filePath, paneID }) => {
+        if (daemon === null) return;
+        void sendControlCommand(daemon.paths.socket, {
+            command: 'open',
+            path: filePath,
+            // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
+            // workspace exactly as `nex md` from inside a pane does; Finder's route names none.
+            ...(paneID === null ? {} : { pane_id: paneID })
+        }).then((result) => {
+            if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
+        });
+    },
+    activate: () => {
+        showWindow();
+        // CONT-125 is "an open while minimised/hidden becomes visible", and a window raise is
+        // not observable from outside this process — so it is logged rather than inferred, the
+        // same way the tray item and the application menu are, and `scripts/smoke.mjs` asserts
+        // the line after handing the app a file.
+        log('open: raised the window for the file just forwarded');
     }
-    void sendControlCommand(daemon.paths.socket, {
-        command: 'open',
-        path: filePath,
-        // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
-        // workspace exactly as `nex md` from inside a pane does; Finder's route names none.
-        ...(paneID === null ? {} : { pane_id: paneID })
-    }).then((result) => {
-        if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
-    });
-    showWindow();
+});
+
+function forwardOpen(filePath: string, paneID: string | null = null): void {
+    openFiles.forward(filePath, paneID);
 }
 
 /**
@@ -542,8 +566,7 @@ function checkForUpdates(): void {
 }
 
 function drainPendingOpens(): void {
-    const queued = pendingOpens.splice(0, pendingOpens.length);
-    for (const filePath of queued) forwardOpen(filePath);
+    openFiles.drain();
 }
 
 // ── the global `nex` CLI (APP-003…005) ──────────────────────────────────────────────
@@ -624,31 +647,39 @@ function offerCliInstall(): void {
         });
 }
 
-function runCliInstallPolicy(): void {
-    const settings = readShellSettings(cliSettingsFile());
-    const mode = resolveCliInstallMode({
+/**
+ * The launch-time CLI policy. The ordering — heal first in every case, so a user who already has
+ * the CLI installed is never asked about it, and the answer to "does one exist?" is the heal's
+ * own `absent` result — is `runCliInstallPolicy` in `./launch.ts`, where it has tests.
+ */
+/**
+ * §APP-006's launch step — **deliberately inert, and the reason is a scar.**
+ *
+ * The Swift app re-copied its bundled agent documentation into the user's config directory at
+ * launch. A port of that ran here once and landed in a REAL home while every harness in this
+ * repo was pointed at a throwaway one, because Electron's `app.getPath('home')` asks the OS and
+ * ignores `$HOME`. Anything reinstating this step must resolve the destination from `$HOME`
+ * (what the CLI, `install-hooks` and Claude Code itself all use) and must be provable in a
+ * sandbox before it is wired. Until then the step exists so the launch order has a named slot,
+ * and it writes nothing.
+ */
+function applySkillRefreshIfEnabled(): void {
+    log('skill-refresh: not enabled in this build');
+}
+
+function applyCliInstallPolicy(): void {
+    runCliInstallPolicy({
         env: process.env,
         isPackaged: app.isPackaged,
-        alreadyPrompted: settings.cliInstallPrompted
+        alreadyPrompted: readShellSettings(cliSettingsFile()).cliInstallPrompted,
+        target: bundledCliLauncher(process.resourcesPath),
+        linkPath: resolveCliLinkPath(process.env),
+        heal: (options) => healCliSymlink(options, nodeCliFs),
+        installNow: () => installCliNow(false),
+        report: (result) => reportCliInstall(result, false),
+        offer: () => offerCliInstall(),
+        log
     });
-    if (mode === 'off') {
-        log('cli-install: disabled for this run');
-        return;
-    }
-    const target = bundledCliLauncher(process.resourcesPath);
-    if (target === '') {
-        log('cli-install: no CLI payload in this build');
-        return;
-    }
-    if (mode === 'auto') {
-        installCliNow(false);
-        return;
-    }
-    // Heal first in every case: a user who already has the CLI installed should never be asked
-    // about it, and the answer to "does one exist?" is the heal's own `absent` result.
-    const healed = healCliSymlink({ linkPath: resolveCliLinkPath(process.env), target }, nodeCliFs);
-    reportCliInstall(healed, false);
-    if (mode === 'prompt' && healed.plan.action === 'absent') offerCliInstall();
 }
 
 // ── application menu ────────────────────────────────────────────────────────────────
@@ -737,21 +768,25 @@ function buildMenu(): void {
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
 
-async function startDaemonAndConnect(): Promise<void> {
+async function connectDaemon(): Promise<void> {
     daemon = await ensureDaemon({
         env: process.env,
         appDir: app.getAppPath(),
         resourcesPath: process.resourcesPath
     });
     log(`daemon ready ${daemon.url} (spawned=${String(daemon.spawned)})`);
+}
 
+function startStatusController(): void {
+    const location = daemon;
+    if (location === null) return;
     if (status === null) {
         const cliInstallable = bundledCliLauncher(process.resourcesPath) !== '';
         // Logged rather than inferred: the tray menu is not observable from outside the process,
         // and `scripts/packaged-smoke.mjs` asserts this line so "the item is there" is a check.
         log(`cli-install: tray item ${cliInstallable ? 'enabled' : 'hidden (no CLI payload)'}`);
         status = createStatusController({
-            location: daemon,
+            location,
             windowID: shellWindowID,
             host: {
                 showWindow,
@@ -851,15 +886,19 @@ async function startDaemonAndConnect(): Promise<void> {
         });
         status.start();
     } else {
-        status.setLocation(daemon);
+        status.setLocation(location);
     }
+}
 
-    // The web-pane host claims the daemon's `web-pane` role and owns one WebContentsView per
-    // tab (`./webhost/`). It is a separate connection from the status socket on purpose: losing
-    // one role must not disturb the other, and both work while the window is closed.
+// The web-pane host claims the daemon's `web-pane` role and owns one WebContentsView per
+// tab (`./webhost/`). It is a separate connection from the status socket on purpose: losing
+// one role must not disturb the other, and both work while the window is closed.
+function startWebPaneHost(): void {
+    const location = daemon;
+    if (location === null) return;
     if (webHost === null) {
         webHost = createWebPaneHost({
-            location: daemon,
+            location,
             version: app.getVersion(),
             // Embedding: the host places a pane's view in THIS window when the UI running in it
             // (same `windowID`) reports where it drew the page area. Looked up lazily — the
@@ -869,66 +908,89 @@ async function startDaemonAndConnect(): Promise<void> {
         });
         webHost.start();
     } else {
-        webHost.setLocation(daemon);
+        webHost.setLocation(location);
     }
-    drainPendingOpens();
 }
 
+/**
+ * Steps 2 and 4 of the launch order, plus the cold-launch drain. The order is
+ * `runDaemonConnectSequence` in `./launch.ts` (and tested there): the drain is last, because a
+ * file replayed before the sockets exist would be sent into a connection nobody is listening on,
+ * and it is unconditional, because this function also runs on a reconnect.
+ */
+async function startDaemonAndConnect(): Promise<void> {
+    await runDaemonConnectSequence({
+        connect: connectDaemon,
+        startStatus: startStatusController,
+        startWebHost: startWebPaneHost,
+        drainPendingOpens
+    });
+}
+
+/**
+ * The launch order itself lives in `runLaunchSequence` (`./launch.ts`), where it is tested; this
+ * is the effects it drives, one per step, in the same order the file header describes.
+ */
 async function boot(): Promise<void> {
-    applyPermissionPolicy();
-    buildMenu();
-
-    try {
-        await startDaemonAndConnect();
-    } catch (error) {
-        const repair = error instanceof DaemonUnavailableError ? error.repair : '';
-        const message = error instanceof Error ? error.message : String(error);
-        logError(`daemon unavailable: ${message}${repair === '' ? '' : ` — ${repair}`}`);
-        dialog.showErrorBox('Nex cannot reach its daemon', `${message}\n\n${repair}`);
-        app.exit(1);
-        return;
-    }
-
-    // SET-219: the web pane's find colours live in this process (they are pasted into a page
-    // stylesheet by an injected script), so they are read before the first tab can exist.
-    setWebFindPalette(readSearchPalette());
-    mainWindow = createWindow();
-    registerGlobalHotkey();
-    // Best-effort and never blocking: a CLI that could not be linked is a log line (and, when
-    // it is a real repair we could not do, one notification per build), not a failed launch.
-    try {
-        runCliInstallPolicy();
-    } catch (error) {
-        logError('cli-install failed', error);
-    }
-    // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
-    // signed build) and what it logs when it declines. No network call happens by default.
-    void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
-        (outcome) => {
-            updaterStarted = outcome.started;
+    await runLaunchSequence({
+        applyPermissionPolicy,
+        buildMenu,
+        connectDaemon: startDaemonAndConnect,
+        reportDaemonUnavailable: (error) => {
+            const repair = error instanceof DaemonUnavailableError ? error.repair : '';
+            const message = error instanceof Error ? error.message : String(error);
+            logError(`daemon unavailable: ${message}${repair === '' ? '' : ` — ${repair}`}`);
+            dialog.showErrorBox('Nex cannot reach its daemon', `${message}\n\n${repair}`);
+            app.exit(1);
         },
-        () => {
-            updaterStarted = false;
-        }
-    );
-    quitGate = installQuitGate({
-        counts: () => status?.counts ?? EMPTY_COUNTS,
-        settingsPath: settingsFile(app.getPath('userData')),
-        window: () => mainWindow,
-        // §AGNT-117: the suppression is a DAEMON setting now, so the ⌘Q dialog and
-        // Settings ▸ Workspaces are one switch rather than two that drift.
-        confirmWhenActive: () => status?.daemonSettings.confirmQuitWhenActive ?? null,
-        suppress: (value) => status?.setGeneralSetting('confirm-quit-when-active', value ? 'true' : 'false') ?? false,
-        // §AGNT-114 step 1: the daemon holds the markdown buffers, so the pre-flight is a
-        // round trip rather than a local call. Bounded inside the gate.
-        flushPendingSaves: async () => {
-            await status?.flushPendingSaves();
+        // SET-219: the web pane's find colours live in this process (they are pasted into a page
+        // stylesheet by an injected script), so they are read before the first tab can exist.
+        applyFindPalette: () => {
+            setWebFindPalette(readSearchPalette());
         },
-        onQuit: () => {
-            globalShortcut.unregisterAll();
-            status?.stop();
-            webHost?.stop();
-        }
+        createWindow: () => {
+            mainWindow = createWindow();
+        },
+        registerGlobalHotkey,
+        // Best-effort and never blocking: a CLI that could not be linked is a log line (and, when
+        // it is a real repair we could not do, one notification per build), not a failed launch.
+        runCliInstallPolicy: applyCliInstallPolicy,
+        refreshBundledSkill: applySkillRefreshIfEnabled,
+        // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
+        // signed build) and what it logs when it declines. No network call happens by default.
+        startUpdater: () => {
+            void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
+                (outcome) => {
+                    updaterStarted = outcome.started;
+                },
+                () => {
+                    updaterStarted = false;
+                }
+            );
+        },
+        installQuitGate: () => {
+            quitGate = installQuitGate({
+                counts: () => status?.counts ?? EMPTY_COUNTS,
+                settingsPath: settingsFile(app.getPath('userData')),
+                window: () => mainWindow,
+                // §AGNT-117: the suppression is a DAEMON setting now, so the ⌘Q dialog and
+                // Settings ▸ Workspaces are one switch rather than two that drift.
+                confirmWhenActive: () => status?.daemonSettings.confirmQuitWhenActive ?? null,
+                suppress: (value) =>
+                    status?.setGeneralSetting('confirm-quit-when-active', value ? 'true' : 'false') ?? false,
+                // §AGNT-114 step 1: the daemon holds the markdown buffers, so the pre-flight is a
+                // round trip rather than a local call. Bounded inside the gate.
+                flushPendingSaves: async () => {
+                    await status?.flushPendingSaves();
+                },
+                onQuit: () => {
+                    globalShortcut.unregisterAll();
+                    status?.stop();
+                    webHost?.stop();
+                }
+            });
+        },
+        logError
     });
 }
 

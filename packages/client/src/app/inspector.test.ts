@@ -31,6 +31,7 @@ describe('parsing', () => {
                     repo_name: 'app',
                     repo_path: '/src/app',
                     worktree_path: '/src/app',
+                    worktree_path_real: '/private/src/app',
                     branch: 'main',
                     is_worktree: false,
                     status: { kind: 'dirty', changed_files: 3, additions: 27, deletions: 12 }
@@ -44,11 +45,23 @@ describe('parsing', () => {
                 repoName: 'app',
                 repoPath: '/src/app',
                 worktreePath: '/src/app',
+                // §APP-071 / §GIT-092: the symlink-resolved twin, which is what the status
+                // footer actually matches a pane's cwd against.
+                worktreePathReal: '/private/src/app',
                 branch: 'main',
                 isWorktree: false,
                 status: { kind: 'dirty', changedFiles: 3, additions: 27, deletions: 12 }
             }
         ]);
+    });
+
+    /** An older daemon does not send it; every consumer then falls back to `worktreePath`. */
+    it('leaves the canonical worktree path blank when the daemon omits it', () => {
+        const parsed = parseAssociations({
+            ok: true,
+            associations: [{ id: 'a1', worktree_path: '/src/app' }]
+        });
+        expect(parsed[0]?.worktreePathReal).toBe('');
     });
 
     it('treats anything unexpected as unknown rather than throwing', () => {

@@ -63,6 +63,7 @@ import {
     type RepoGitStatus
 } from '../git/index.js';
 import { canonicalizeUserPath } from '../graft/index.js';
+import { canonicalizeForClient } from './paths.js';
 import { workspaceByID } from '../store/derived.js';
 import type { DaemonState, DomainAction, DomainEvent, Repo, RepoAssociation } from '../store/types.js';
 import type { DomainStore } from '../seams.js';
@@ -152,7 +153,7 @@ function serializeRepo(repo: Repo, home: string, template: string): JsonObject {
     };
 }
 
-function serializeAssociation(
+export function serializeAssociation(
     association: RepoAssociation,
     repo: Repo | undefined,
     home: string,
@@ -166,6 +167,17 @@ function serializeAssociation(
         repo_name: repo?.name ?? path.basename(association.worktreePath),
         repo_path: repo?.path ?? null,
         worktree_path: association.worktreePath,
+        /**
+         * §APP-071 / §GIT-092 (ledger **N5**): the same root with symlinks resolved.
+         *
+         * The status footer matches a PANE's cwd against this rather than against
+         * `worktree_path`, because the two are produced by different subsystems — git answers
+         * with the physical path (`rev-parse --show-toplevel` → `/private/var/…`) while a pane
+         * carries the logical one it was spawned with (`/var/…`) — and under a symlinked
+         * ancestor (`/tmp`, `/var`, a symlinked `$HOME`) the raw strings never meet. `''` =
+         * unresolvable; the client falls back to `worktree_path`.
+         */
+        worktree_path_real: canonicalizeForClient(association.worktreePath),
         branch: association.branchName,
         is_auto_detected: association.isAutoDetected,
         // The inspector groups by repo and renders the MAIN checkout first, worktrees indented

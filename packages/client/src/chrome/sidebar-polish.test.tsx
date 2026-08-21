@@ -9,7 +9,7 @@
  * as `Sidebar.test.tsx` already relies on.
  */
 
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_KEYBINDINGS } from './keys';
@@ -930,5 +930,592 @@ describe('group drag', () => {
         expect(onToggleGroupCollapse).not.toHaveBeenCalled();
         expect(onMoveGroup).toHaveBeenCalledTimes(1);
         expect(onMoveGroup).toHaveBeenCalledWith({ groupID: G1, index: 0 });
+    });
+});
+
+// ── §WS-008 removals / §WS-084 the drag ghost / §WS-020 + §WS-102 the reveal ────────
+
+/**
+ * A box model for jsdom, which has none.
+ *
+ * Rows are laid out at 4 · 24 · 44 · 64 · 84 with a height of 20 — the same arithmetic the drag
+ * tests above already read the zones off — and both `getBoundingClientRect` and the `offset*`
+ * family are stubbed, because the sidebar measures with both: the drag geometry and §WS-093's
+ * gate read rects, while the FLIP pass and §WS-102's reveal read `offsetTop` (which no
+ * transform can move).
+ */
+function stubRowGeometry(options: { unmeasured?: readonly HTMLElement[] } = {}): void {
+    const list = screen.getByRole('listbox');
+    const rows = Array.from(list.querySelectorAll('[data-testid="sidebar-list"] > *'));
+    rows.forEach((node, index) => {
+        const element = node as HTMLElement;
+        const zero = options.unmeasured?.includes(element) === true;
+        const top = 4 + index * 20;
+        const height = zero ? 0 : 20;
+        Object.defineProperty(element, 'getBoundingClientRect', {
+            configurable: true,
+            value: () => ({
+                x: 8,
+                y: top,
+                left: 8,
+                top,
+                right: 208,
+                bottom: top + height,
+                width: 200,
+                height,
+                toJSON: () => ({})
+            })
+        });
+        for (const [name, value] of [
+            ['offsetTop', top],
+            ['offsetLeft', 8],
+            ['offsetWidth', 200],
+            ['offsetHeight', height]
+        ] as const) {
+            Object.defineProperty(element, name, { configurable: true, value });
+        }
+    });
+}
+
+/** The scroller: a real viewport, and a `scrollTop` that actually remembers what it is told. */
+function stubViewport(height: number): HTMLElement {
+    const list = screen.getByRole('listbox');
+    Object.defineProperty(list, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 220,
+            bottom: height,
+            width: 220,
+            height,
+            toJSON: () => ({})
+        })
+    });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: height });
+    Object.defineProperty(list, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    return list;
+}
+
+describe('row removal animates (§WS-008)', () => {
+    /**
+     * The constraint this is designed around: a dead row may not be held alive in the list,
+     * because §WS-093's measure gate trusts the rendered rows and a phantom would be measured
+     * as one. So the model loses the row instantly and a CLONE animates in a layer that is out
+     * of flow — which is what these assertions are really checking.
+     */
+    it('leaves a collapsing ghost behind, while the row itself is gone at once', () => {
+        vi.useFakeTimers();
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+        expect(screen.queryAllByTestId('sidebar-row-ghost')).toHaveLength(0);
+
+        const shrunk = entries().filter((entry) => entry.kind !== 'workspace' || entry.workspace.id !== W4);
+        act(() => {
+            rerender(<Sidebar {...baseProps()} entries={shrunk} />);
+        });
+
+        // The data model is already without it: the row is not a row any more.
+        expect(rowIDs()).not.toContain(W4);
+        expect(screen.getAllByTestId('workspace-row')).toHaveLength(3);
+
+        const ghost = screen.getByTestId('sidebar-row-ghost');
+        // A ghost answers to nothing: no workspace id, no role, no row testid.
+        expect(ghost.getAttribute('data-workspace-id')).toBeNull();
+        expect(ghost.getAttribute('role')).toBeNull();
+        expect(ghost.parentElement?.dataset['testid']).toBe('sidebar-ghost-layer');
+        // Out of flow and untouchable — the two properties that keep it out of the geometry.
+        expect(ghost.style.position).toBe('absolute');
+        expect(ghost.style.pointerEvents).toBe('none');
+        expect(ghost.style.transition).toContain('350ms');
+        expect(ghost.style.opacity).toBe('1');
+
+        // One frame later it is collapsing: opacity and height are both on their way to zero,
+        // and the node is still mounted while they get there.
+        act(() => {
+            vi.advanceTimersByTime(20);
+        });
+        expect(ghost.style.opacity).toBe('0');
+        expect(ghost.style.height).toBe('0px');
+        expect(screen.queryAllByTestId('sidebar-row-ghost')).toHaveLength(1);
+
+        // …and then it is gone, with nothing left in the layer.
+        act(() => {
+            vi.advanceTimersByTime(500);
+        });
+        expect(screen.queryAllByTestId('sidebar-row-ghost')).toHaveLength(0);
+        expect(screen.getByTestId('sidebar-ghost-layer').children).toHaveLength(0);
+    });
+
+    it('animates the collapse of an EMPTY group, which used to cut (§WS-008)', () => {
+        vi.useFakeTimers();
+        const withEmpty: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+            {
+                kind: 'group',
+                group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+                workspaces: []
+            }
+        ];
+        render(<Sidebar {...baseProps()} entries={withEmpty} />);
+        expect(screen.getByTestId('group-empty')).toBeTruthy();
+
+        act(() => {
+            fireEvent.click(screen.getByTestId('group-header'));
+        });
+        expect(screen.queryByTestId('group-empty')).toBeNull();
+        const ghost = screen.getByTestId('sidebar-row-ghost');
+        expect(ghost.textContent).toContain('No workspaces');
+        act(() => {
+            vi.advanceTimersByTime(20);
+        });
+        expect(ghost.style.opacity).toBe('0');
+    });
+
+    it('collapsing a POPULATED group ghosts every child it takes away', () => {
+        vi.useFakeTimers();
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        expect(rowIDs()).toEqual([W1, W4, W2, W3]);
+
+        act(() => {
+            fireEvent.click(screen.getByTestId('group-header'));
+        });
+        expect(rowIDs()).toEqual([W1, W4]);
+        expect(screen.getAllByTestId('sidebar-row-ghost')).toHaveLength(2);
+    });
+
+    it('skips the ghost entirely under prefers-reduced-motion', () => {
+        const media = globalThis.matchMedia;
+        Object.defineProperty(globalThis, 'matchMedia', {
+            configurable: true,
+            writable: true,
+            value: () => ({ matches: true }) as unknown as MediaQueryList
+        });
+        try {
+            const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+            const shrunk = entries().filter((entry) => entry.kind !== 'workspace' || entry.workspace.id !== W4);
+            act(() => {
+                rerender(<Sidebar {...baseProps()} entries={shrunk} />);
+            });
+            expect(screen.queryAllByTestId('sidebar-row-ghost')).toHaveLength(0);
+            expect(rowIDs()).not.toContain(W4);
+        } finally {
+            Object.defineProperty(globalThis, 'matchMedia', { configurable: true, writable: true, value: media });
+        }
+    });
+
+    /**
+     * §WS-093's gate, with a ghost on screen. This is the assertion the whole design exists for:
+     * a drag started while a removal is still animating resolves against the LIVE rows only.
+     */
+    it('keeps a ghost out of the drag geometry, so the measure gate still passes', () => {
+        const onMoveWorkspace = vi.fn();
+        const { rerender } = render(
+            <Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={onMoveWorkspace} />
+        );
+        const shrunk = entries().filter((entry) => entry.kind !== 'workspace' || entry.workspace.id !== W4);
+        act(() => {
+            rerender(<Sidebar {...baseProps()} entries={shrunk} onMoveWorkspace={onMoveWorkspace} />);
+        });
+        expect(screen.getAllByTestId('sidebar-row-ghost')).toHaveLength(1);
+        // rows are now alpha 4–24 · header 24–44 · beta 44–64 · gamma 64–84.
+        stubRowGeometry();
+
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        fireEvent.mouseMove(window, { clientY: 78 }); // gamma's bottom half → after gamma
+        expect(screen.getByRole('listbox').dataset['dragActive']).toBe('true');
+        fireEvent.mouseUp(window);
+        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('the dragged row follows the cursor (§WS-084)', () => {
+    function grab(): HTMLElement {
+        const row = rowFor(W1);
+        fireEvent.mouseDown(row, { clientX: 30, clientY: 10 });
+        return row;
+    }
+
+    it('lifts a ghost with a drop shadow that tracks the pointer, and drops it on release', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+        stubRowGeometry();
+        grab();
+
+        // A press is not a drag: nothing has been lifted yet (§WS-084's 5px threshold).
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+
+        fireEvent.mouseMove(window, { clientX: 34, clientY: 30 });
+        const ghost = screen.getByTestId('sidebar-drag-ghost');
+        expect(ghost.style.position).toBe('fixed');
+        expect(ghost.style.boxShadow).not.toBe('');
+        expect(ghost.style.pointerEvents).toBe('none');
+        // The grab point stays under the cursor: the press was 22px right of the row's left
+        // edge and 6px below its top, so the ghost sits at (34-22, 30-6).
+        expect(ghost.style.transform).toBe('translate3d(12px, 24px, 0) scale(1.03)');
+
+        fireEvent.mouseMove(window, { clientX: 90, clientY: 120 });
+        expect(ghost.style.transform).toBe('translate3d(68px, 114px, 0) scale(1.03)');
+
+        // It is a picture, not a row: it must not answer to any row selector.
+        expect(screen.getAllByTestId('workspace-row')).toHaveLength(4);
+        expect(ghost.getAttribute('data-workspace-id')).toBeNull();
+
+        fireEvent.mouseUp(window);
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+    });
+
+    it('lifts a ghost for a dragged GROUP header too', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveGroup={vi.fn()} />);
+        stubRowGeometry();
+        fireEvent.mouseDown(screen.getByTestId('group-header'), { clientX: 30, clientY: 50 });
+        fireEvent.mouseMove(window, { clientX: 30, clientY: 10 });
+        expect(screen.getByTestId('sidebar-drag-ghost').textContent).toContain('squad');
+        fireEvent.mouseUp(window);
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+    });
+
+    it('leaves nothing behind when the gesture never becomes a drag', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+        stubRowGeometry();
+        grab();
+        fireEvent.mouseMove(window, { clientX: 31, clientY: 12 }); // 2px: below the threshold
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+        fireEvent.mouseUp(window);
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+    });
+});
+
+describe('the reveal, measured (§WS-020, §WS-102)', () => {
+    let scrolled: HTMLElement[] = [];
+
+    beforeEach(() => {
+        scrolled = [];
+        Element.prototype.scrollIntoView = function scrollIntoView(this: HTMLElement): void {
+            scrolled.push(this);
+        };
+    });
+
+    /** §WS-020: only the main list has a live scroll view, so a queued request is dropped. */
+    it('consumes and DROPS a scroll request while the filter is active', () => {
+        const onScrollHandled = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                filter="gam"
+                entries={entries()}
+                scrollToWorkspaceID={W3}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        // The filtered row is on screen under the same key…
+        expect(screen.getAllByTestId('workspace-row')).toHaveLength(1);
+        // …and it is deliberately NOT scrolled to; the one-shot is cleared instead.
+        expect(scrolled).toHaveLength(0);
+        expect(onScrollHandled).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for the row to measure, then animates the minimum scroll (§WS-102)', async () => {
+        const onScrollHandled = vi.fn();
+        const view = render(<Sidebar {...baseProps()} entries={entries()} onScrollHandled={onScrollHandled} />);
+        const list = stubViewport(100);
+        const gamma = rowFor(W3);
+        stubRowGeometry({ unmeasured: [gamma] });
+
+        view.rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                scrollToWorkspaceID={W3}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        // Not yet: the row exists but has no height, so the reveal would scroll to a position
+        // nothing has measured. The one-shot stays pending rather than being spent.
+        expect(onScrollHandled).not.toHaveBeenCalled();
+        expect(list.scrollTop).toBe(0);
+        expect(scrolled).toHaveLength(0);
+
+        // It lays out; the next frame retries and the reveal goes ahead.
+        stubRowGeometry();
+        await waitFor(() => {
+            expect(onScrollHandled).toHaveBeenCalledTimes(1);
+        });
+
+        // gamma occupies 84–104 in a 100px viewport, so the minimum move is 4px — and it is
+        // ANIMATED: the target is not there the moment the reveal is dispatched.
+        expect(list.scrollTop).toBeLessThan(4);
+        await waitFor(() => {
+            expect(Math.round(list.scrollTop)).toBe(4);
+        });
+    });
+
+    it('no-ops when the row is already fully visible, and still reports it handled', async () => {
+        const onScrollHandled = vi.fn();
+        const view = render(<Sidebar {...baseProps()} entries={entries()} onScrollHandled={onScrollHandled} />);
+        const list = stubViewport(400);
+        stubRowGeometry();
+
+        view.rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                scrollToWorkspaceID={W3}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        await waitFor(() => {
+            expect(onScrollHandled).toHaveBeenCalledTimes(1);
+        });
+        expect(list.scrollTop).toBe(0);
+        // The measured path took it, so the platform's own scroller was never asked.
+        expect(scrolled).toHaveLength(0);
+    });
+
+    /** §WS-100's other half: a group target resolves to the header a group actually has. */
+    it('reveals a newly created GROUP by its header', () => {
+        const onScrollHandled = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                scrollToGroupID={G1}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        expect(scrolled).toHaveLength(1);
+        expect(scrolled[0]?.getAttribute('data-testid')).toBe('group-header');
+        expect(onScrollHandled).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a group target this client cannot see', () => {
+        const onScrollHandled = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                scrollToGroupID="not-a-group"
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        expect(scrolled).toHaveLength(0);
+        expect(onScrollHandled).toHaveBeenCalledTimes(1);
+    });
+});
+
+// ── §WS-027 / §WS-031 / §WS-041 / §WS-043 / §WS-068: row states, rename, prompts ────
+
+describe('row background states stack (§WS-027)', () => {
+    /**
+     * The Swift draws these as a ZStack, not a switch: a row that is BOTH selected and active
+     * carries both fills and both strokes, and reads brighter than either state alone. The port
+     * used to make them ternaries, so an active row silently lost its selection ring — the one
+     * state where losing it matters, because that is the row a bulk action is about to act on.
+     */
+    it('a row that is selected AND active keeps both fills and both strokes', () => {
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                activeWorkspaceID={W1}
+                selectedWorkspaceIDs={new Set([W1])}
+            />
+        );
+        const row = rowFor(W1);
+        // The 1.5px accent takes the outer edge …
+        expect(row.style.outline).toBe('1.5px solid var(--nex-selection-stroke, #5276B8)');
+        // … and the selection's 1px stroke at 0.7 opacity survives as the inner ring.
+        expect(row.style.boxShadow).toBe('inset 0 0 0 1px rgba(82, 118, 184, 0.7)');
+        // Both fills: the selection fill as the colour, the active tint layered over it.
+        expect(row.style.background).toContain('--nex-selection-fill');
+        expect(row.style.backgroundImage).toContain('linear-gradient');
+    });
+
+    it('and either state alone is unchanged', () => {
+        const { rerender } = render(
+            <Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />
+        );
+        expect(rowFor(W1).style.outline).toBe('1.5px solid var(--nex-selection-stroke, #5276B8)');
+        expect(rowFor(W1).style.boxShadow).toBe('');
+        expect(rowFor(W1).style.backgroundImage).toBe('');
+
+        rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                activeWorkspaceID={W2}
+                selectedWorkspaceIDs={new Set([W1])}
+            />
+        );
+        expect(rowFor(W1).style.outline).toBe('1px solid rgba(82, 118, 184, 0.7)');
+        expect(rowFor(W1).style.boxShadow).toBe('');
+    });
+});
+
+describe('rename commits when the focus leaves (§WS-031)', () => {
+    /** Stable across renders: a fresh literal would re-arm the one-shot on every commit. */
+    const renameSquad = { kind: 'group', id: G1 } as const;
+
+    /**
+     * jsdom does not implement click→focus, so the focus move a real click performs is done
+     * explicitly here; what is being tested is the rule the Swift states as "resigning first
+     * responder commits" — the field is not abandoned just because the user clicked elsewhere.
+     */
+    it('clicking another row commits the group rename in flight', () => {
+        const onRenameGroup = vi.fn();
+        // The entry list is hoisted for the same reason as the request above: a fresh array on
+        // every render re-runs the one-shot effect and re-opens the field behind the assertion.
+        const list = entries();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={list}
+                renameRequest={renameSquad}
+                onRenameGroup={onRenameGroup}
+            />
+        );
+        const field = screen.getByLabelText('Rename squad') as HTMLInputElement;
+        fireEvent.change(field, { target: { value: 'platform' } });
+
+        const other = rowFor(W1);
+        fireEvent.mouseDown(other);
+        // `focus()` is a raw DOM call, so the blur handler's state update needs flushing.
+        act(() => {
+            other.focus();
+        });
+
+        expect(onRenameGroup).toHaveBeenCalledWith(G1, 'platform');
+        expect(screen.queryByLabelText('Rename squad')).toBeNull();
+    });
+
+    it('an unchanged or empty value cancels instead of committing', () => {
+        const onRenameGroup = vi.fn();
+        const list = entries();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={list}
+                renameRequest={renameSquad}
+                onRenameGroup={onRenameGroup}
+            />
+        );
+        const field = screen.getByLabelText('Rename squad') as HTMLInputElement;
+        fireEvent.change(field, { target: { value: '   ' } });
+        act(() => {
+            rowFor(W1).focus();
+        });
+        expect(onRenameGroup).not.toHaveBeenCalled();
+        expect(screen.queryByLabelText('Rename squad')).toBeNull();
+    });
+});
+
+describe('the chevron is hidden while a group is renamed (§WS-041)', () => {
+    it('drops the collapse control for the length of the edit', () => {
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+        expect(screen.getByTestId('group-chevron')).toBeTruthy();
+
+        rerender(
+            <Sidebar {...baseProps()} entries={entries()} renameRequest={{ kind: 'group', id: G1 }} />
+        );
+        expect(screen.getByLabelText('Rename squad')).toBeTruthy();
+        expect(screen.queryByTestId('group-chevron')).toBeNull();
+        // The context menu is still reachable — the item is explicit that only the drag and the
+        // chevron go away.
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        expect(screen.getByTestId('context-menu')).toBeTruthy();
+    });
+});
+
+describe('the selection header hides Select All once everything is selected (§WS-043)', () => {
+    it('shows it for a partial selection and drops it for a complete one', () => {
+        const { rerender } = render(
+            <Sidebar {...baseProps()} entries={entries()} selectedWorkspaceIDs={new Set([W1])} />
+        );
+        const header = screen.getByTestId('selection-header');
+        expect(header.textContent).toContain('1 selected');
+        expect(within(header).getByText('Select All')).toBeTruthy();
+        expect(within(header).getByText('Clear')).toBeTruthy();
+
+        rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                selectedWorkspaceIDs={new Set([W1, W2, W3, W4])}
+            />
+        );
+        const full = screen.getByTestId('selection-header');
+        expect(full.textContent).toContain('4 selected');
+        expect(within(full).queryByText('Select All')).toBeNull();
+        // Clear stays: it is the only way out.
+        expect(within(full).getByText('Clear')).toBeTruthy();
+    });
+});
+
+describe('the group delete prompt takes its shape from membership (§WS-068)', () => {
+    function openGroupDelete(entryList: ChromeSidebarEntry[], onDeleteGroup = vi.fn()) {
+        render(<Sidebar {...baseProps()} entries={entryList} onDeleteGroup={onDeleteGroup} />);
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.click(screen.getByText('Delete Group…'));
+        return onDeleteGroup;
+    }
+
+    it('a POPULATED group offers both outcomes, counted, with the safer one named', () => {
+        const onDeleteGroup = openGroupDelete(entries());
+        const dialog = screen.getByTestId('confirm-dialog');
+        expect(within(dialog).getByTestId('confirm-group-detail').dataset['members']).toBe('2');
+        expect(dialog.textContent).toContain('also delete the 2 workspaces inside this group');
+        expect(dialog.textContent).toContain('safer option');
+
+        const cascade = screen.getByTestId('confirm-delete-cascade');
+        const promote = screen.getByTestId('confirm-delete');
+        expect(cascade.textContent).toBe('Delete Group and 2 Workspaces');
+        expect(promote.textContent).toBe('Move Workspaces to Top Level');
+        // Both outcomes are destructive, so both are styled that way.
+        expect(cascade.style.color).toBe('rgb(224, 101, 92)');
+        expect(promote.style.color).toBe('rgb(224, 101, 92)');
+
+        fireEvent.click(cascade);
+        expect(onDeleteGroup).toHaveBeenCalledWith(G1, true);
+    });
+
+    it('an EMPTY group offers one button and says so', () => {
+        const empty: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+            {
+                kind: 'group',
+                group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+                workspaces: []
+            }
+        ];
+        const onDeleteGroup = openGroupDelete(empty);
+        const dialog = screen.getByTestId('confirm-dialog');
+        expect(dialog.textContent).toContain('This group is empty and will be removed.');
+        expect(screen.queryByTestId('confirm-delete-cascade')).toBeNull();
+        const only = screen.getByTestId('confirm-delete');
+        expect(only.textContent).toBe('Delete Group');
+
+        fireEvent.click(only);
+        expect(onDeleteGroup).toHaveBeenCalledWith(G1, false);
+    });
+
+    it('the count is SNAPSHOTTED when the prompt is raised, not read live', () => {
+        const onDeleteGroup = vi.fn();
+        const view = render(
+            <Sidebar {...baseProps()} entries={entries()} onDeleteGroup={onDeleteGroup} />
+        );
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.click(screen.getByText('Delete Group…'));
+        expect(screen.getByTestId('confirm-delete-cascade').textContent).toBe('Delete Group and 2 Workspaces');
+
+        // Another client empties the group while the prompt is up: the button the user is
+        // reading must not relabel itself under their cursor.
+        const emptied = entries();
+        emptied[2] = {
+            kind: 'group',
+            group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+            workspaces: []
+        };
+        view.rerender(<Sidebar {...baseProps()} entries={emptied} onDeleteGroup={onDeleteGroup} />);
+        expect(screen.getByTestId('confirm-delete-cascade').textContent).toBe('Delete Group and 2 Workspaces');
     });
 });

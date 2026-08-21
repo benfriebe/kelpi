@@ -30,7 +30,9 @@ const WEB_PANE = 'DDDDDDDD-0000-4000-8000-000000000009';
 const WEB_TAB = 'EEEEEEEE-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
 
-function snapshotState(options: { web?: boolean } = {}): JsonObject {
+const WEB_TAB_2 = 'EEEEEEEE-0000-4000-8000-000000000002';
+
+function snapshotState(options: { web?: boolean; tabs?: number } = {}): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({
         type: 'create-workspace',
@@ -49,6 +51,16 @@ function snapshotState(options: { web?: boolean } = {}): JsonObject {
             url: 'https://example.com',
             now: NOW
         });
+        if ((options.tabs ?? 1) > 1) {
+            store.dispatch({
+                type: 'web-tab-open',
+                workspaceID: W1,
+                paneID: WEB_PANE,
+                tabID: WEB_TAB_2,
+                url: 'https://second.example',
+                makeActive: true
+            });
+        }
     }
     return store.getState() as unknown as JsonObject;
 }
@@ -77,7 +89,10 @@ interface Harness {
     idOf(command: string): string | undefined;
 }
 
-function setup(keybindLines: readonly string[] = [], fixture: { web?: boolean } = {}): Harness {
+function setup(
+    keybindLines: readonly string[] = [],
+    fixture: { web?: boolean; tabs?: number } = {}
+): Harness {
     const sockets = createFakeSocketFactory();
     const store = createNexStore();
     const runtime = createNexRuntime({
@@ -261,5 +276,48 @@ describe('web_tab_close on the only tab (§WEB-013)', () => {
         });
         // And NOT the tab verb, which the wire refuses for a single tab by design.
         expect(h.commands().some((command) => command['command'] === 'web-tab-close')).toBe(false);
+    });
+
+    /**
+     * The gesture a default install actually has — and the one Swift has (§WEB-013).
+     *
+     * `web_tab_close` ships UNBOUND in both apps, and neither draws a ✕ for a lone tab (the
+     * strip is hidden below two tabs, §WEB-018). So the keystroke that closes the last tab is
+     * plain ⌘W: the web-pane priority layer claims ⌘W only while there are ≥2 tabs and returns
+     * `null` otherwise, which drops the chord into the normal binding map where ⌘W is
+     * `close_pane`. The tab and the pane die together, exactly as
+     * `NexCommands.swift:300-307`'s `guard … webState.tabs.count > 1 … else { return nil }`
+     * arranges it.
+     */
+    it('⌘W on a lone tab falls through the priority layer to close_pane', async () => {
+        const h = setup([], { web: true });
+        await waitFor(() => {
+            expect(screen.getByTestId(`web-pane-${WEB_PANE}`)).toBeTruthy();
+        });
+
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+        });
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-close', pane_id: WEB_PANE });
+        });
+        expect(h.commands().some((command) => command['command'] === 'web-tab-close')).toBe(false);
+    });
+
+    it('…and with a SECOND tab the same ⌘W closes the tab instead, leaving the pane alone', async () => {
+        const h = setup([], { web: true, tabs: 2 });
+        await waitFor(() => {
+            expect(screen.getByTestId(`web-pane-${WEB_PANE}`)).toBeTruthy();
+        });
+
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+        });
+
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'web-tab-close', pane_id: WEB_PANE });
+        });
+        expect(h.commands().some((command) => command['command'] === 'pane-close')).toBe(false);
     });
 });

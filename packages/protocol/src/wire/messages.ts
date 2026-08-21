@@ -309,6 +309,17 @@ export interface WebOpenMessage {
     private: boolean;
     /** Informational only: scopes which workspace the new pane lands in. */
     pane_id?: string | undefined;
+    /**
+     * WEB-011: the pane the new one splits off, and which way it splits.
+     *
+     * The CLI never sends either — `nex web open` splits the *focused* pane, exactly as Swift's
+     * `handleWebOpen` does. They exist for the two GUI gestures Swift performs in-process and
+     * this port has to express on the wire: the pane header's globe button (click = split right,
+     * ⇧-click = split down) and the pane context menu's "New Web Pane". Both names are already
+     * in the wire field dictionary (§7), so nothing new rides the protocol.
+     */
+    target?: string | undefined;
+    direction?: SplitDirection | undefined;
 }
 
 export interface WebNavigateMessage extends PaneTargetScope {

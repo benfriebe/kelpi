@@ -408,7 +408,17 @@ function decodeCommand(
         case 'web-open': {
             const url = fields.nonEmpty('url');
             if (url === undefined) return guard(command, 'web-open requires a non-empty url', 'url');
-            return { command, url, private: fields.flag('private', false), pane_id: paneId };
+            // WEB-011: `target` names the pane to split off and `direction` which way. Both are
+            // optional and only the GUI sends them; an unrecognized direction reads as absent
+            // (the reducer's own default is horizontal), so a typo can never drop the open.
+            return {
+                command,
+                url,
+                private: fields.flag('private', false),
+                pane_id: paneId,
+                target: fields.text('target'),
+                direction: parseSplitDirection(fields.text('direction'))
+            };
         }
         case 'web-navigate': {
             const failure = requireTargetable();

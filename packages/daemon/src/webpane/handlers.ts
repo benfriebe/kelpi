@@ -179,11 +179,29 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
     return [
         // ── open ────────────────────────────────────────────────────────────
         forCommand('web-open', (msg, ctx, reply) => {
-            const workspaceID = routeWorkspace(ctx.store.getState(), msg.pane_id);
+            const state = ctx.store.getState();
+            const workspaceID = routeWorkspace(state, msg.pane_id);
             if (workspaceID === null) {
                 fail(reply, NO_ACTIVE_WORKSPACE_ERROR);
                 return;
             }
+            /*
+             * WEB-011: the GUI names the pane it splits off, and which way.
+             *
+             * The header globe (click = right, ⇧-click = down) and the pane context menu send
+             * `target` + `direction`; the CLI sends neither, so `nex web open` keeps splitting
+             * the FOCUSED pane exactly as Swift's `handleWebOpen` does. An anchor that is not a
+             * visible pane of the routed workspace is ignored rather than honoured —
+             * `openWebPane` splits ONE workspace's layout, so a cross-workspace anchor would
+             * put the pane somewhere nobody pointed at.
+             */
+            const workspace = workspaceByID(state, workspaceID);
+            const sourcePaneID =
+                msg.target !== undefined &&
+                workspace !== null &&
+                visiblePane(workspace, msg.target) !== null
+                    ? msg.target
+                    : undefined;
             const paneID = uuid();
             const tabID = uuid();
             // §3.3: the reply goes out BEFORE the pane exists, carrying the real ids.
@@ -201,7 +219,9 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 tabID,
                 url: msg.url,
                 now: now(),
-                isPrivate: msg.private
+                isPrivate: msg.private,
+                sourcePaneID,
+                direction: msg.direction
             });
             // The pane itself is daemon state; the host learns about it through the store
             // subscription in `./service.ts` (and on its next registration).

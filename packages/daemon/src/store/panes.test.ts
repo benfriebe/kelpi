@@ -342,6 +342,75 @@ describe('content panes', () => {
         expect(ws(h.state()).recentlyClosedPanes.at(-1)?.webState).not.toBeNull();
     });
 
+    /**
+     * WEB-004 — the `reusePaneID` park-and-replace branch, for a WEB pane.
+     *
+     * This is the `--here` machinery markdown uses, carried by `openWebPane` for the same reason
+     * the Swift reducer carries it: the branch is written, correct, and — in **both** apps — has
+     * no caller (`docs/current/web-pane.md` §3.2 step 4 says so verbatim: "currently no caller
+     * passes it"). What has to hold is that a web pane taking a terminal's slot PARKS it rather
+     * than destroying it, arrives with its own sidecar, and hands the slot back on close. A
+     * silent regression here would lose a live PTY, so it is pinned even though the branch is
+     * only reachable by dispatching the action directly.
+     */
+    it('parks the source pane when a web pane takes its slot, and unparks it on close (WEB-004)', () => {
+        const h = harness(seededState());
+        h.dispatch({
+            type: 'open-web-pane',
+            workspaceID: W1,
+            paneID: PA,
+            tabID: PB,
+            url: 'example.com',
+            reusePaneID: P0,
+            now: NOW
+        });
+        let workspace = ws(h.state());
+        // The terminal is parked, not closed: out of `panes`, out of the layout, and with no
+        // reopen snapshot taken (it never "closed").
+        expect(workspace.parkedPanes.map((pane) => pane.id)).toEqual([P0]);
+        expect(workspace.panes.map((pane) => pane.id)).toEqual([PA]);
+        expect(workspace.layout).toEqual({ kind: 'leaf', paneID: PA });
+        expect(workspace.panes[0]?.parkedSourcePaneID).toBe(P0);
+        expect(workspace.panes[0]?.type).toBe('web');
+        expect(workspace.recentlyClosedPanes).toHaveLength(0);
+        // …and the web pane arrived with the same sidecar the split path builds.
+        expect(workspace.webPanes[PA]).toEqual({
+            tabs: [{ id: PB, url: 'https://example.com', title: '' }],
+            activeTabID: PB,
+            isPrivate: false
+        });
+
+        h.dispatch({ type: 'close-pane', workspaceID: W1, paneID: PA });
+        workspace = ws(h.state());
+        expect(workspace.parkedPanes).toHaveLength(0);
+        expect(workspace.panes.map((pane) => pane.id)).toEqual([P0]);
+        expect(workspace.layout).toEqual({ kind: 'leaf', paneID: P0 });
+        expect(workspace.focusedPaneID).toBe(P0);
+        // QUIRK, and a deliberate one: the UNPARK branch returns before the sidecar drop, so
+        // `webPanes[PA]` outlives the pane. Swift does exactly the same — its unpark branch
+        // (WorkspaceFeature.swift:1235-1260) returns before the `state.webPanes.removeValue`
+        // the normal close performs at :1299-1301 — and since neither app can reach this branch
+        // from a caller, the port keeps the shared behaviour rather than inventing a divergence.
+        expect(workspace.webPanes[PA]).toBeDefined();
+    });
+
+    it('WEB-004: a reuse anchor that is not a visible pane falls back to a split', () => {
+        const h = harness(seededState());
+        h.dispatch({
+            type: 'open-web-pane',
+            workspaceID: W1,
+            paneID: PA,
+            tabID: PB,
+            url: 'example.com',
+            reusePaneID: PC,
+            now: NOW
+        });
+        const workspace = ws(h.state());
+        expect(workspace.parkedPanes).toHaveLength(0);
+        expect(workspace.panes.map((pane) => pane.id)).toEqual([P0, PA]);
+        expect(workspace.panes[1]?.parkedSourcePaneID).toBeNull();
+    });
+
     it('QUIRK: a private web pane reopens without a sidecar', () => {
         const h = harness(seededState());
         h.dispatch(

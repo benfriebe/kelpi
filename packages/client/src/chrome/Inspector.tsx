@@ -72,6 +72,12 @@ export interface InspectorAssociation {
     readonly repoName: string;
     readonly repoPath: string | null;
     readonly worktreePath: string;
+    /**
+     * §APP-071 / §GIT-092 — `worktreePath` with symlinks resolved, computed daemon-side
+     * (`ws/repos.ts` ▸ `serializeAssociation`). The status footer matches a pane's canonical
+     * cwd against this; absent or `''` means "no canonical form", fall back to `worktreePath`.
+     */
+    readonly worktreePathReal?: string | undefined;
     readonly branch: string | null;
     /** False = this row IS the registered repo's main checkout. */
     readonly isWorktree: boolean;

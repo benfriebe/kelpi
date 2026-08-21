@@ -29,7 +29,23 @@ export type ChromePane = Pick<
     | 'agentKind'
     | 'agentStartedAt'
     | 'backgroundTaskCount'
->;
+> & {
+    /**
+     * §APP-071 / §GIT-092 (audit ledger **N5**) — `workingDirectory` with symlinks resolved.
+     *
+     * Derived by the DAEMON (`ws/serialize.ts` ▸ `serializePane`, backed by `ws/paths.ts`) and
+     * carried on the mirror beside the literal path, because a browser cannot call `realpath`
+     * and the two paths the footer has to compare come from different producers: a repo
+     * association holds git's PHYSICAL answer (`/private/var/…`), a pane holds the LOGICAL cwd
+     * its shell reported (`/var/…`). Comparing the literal strings misses for every repo under
+     * a symlinked ancestor, which is why `doc N +A -B` drew nothing at all.
+     *
+     * Optional because it is a wire-derived projection rather than a stored pane column: a
+     * hand-built fixture (or an older daemon) simply does not carry it, and every consumer
+     * falls back to `workingDirectory`.
+     */
+    readonly workingDirectoryReal?: string | undefined;
+};
 
 /** The workspace fields the sidebar/top bar read. */
 export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'icon' | 'labels'> & {

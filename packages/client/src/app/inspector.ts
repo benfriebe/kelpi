@@ -71,6 +71,9 @@ export function parseAssociations(reply: CommandReply): readonly InspectorAssoci
             repoName: text(row['repo_name']),
             repoPath: typeof row['repo_path'] === 'string' ? row['repo_path'] : null,
             worktreePath: text(row['worktree_path']),
+            // §APP-071 / §GIT-092: the symlink-resolved twin the daemon computes for us. An
+            // older daemon omits it and every consumer falls back to `worktreePath`.
+            worktreePathReal: text(row['worktree_path_real']),
             branch: typeof row['branch'] === 'string' && row['branch'] !== '' ? row['branch'] : null,
             isWorktree: row['is_worktree'] === true,
             status: parseGitStatus(row['status'])

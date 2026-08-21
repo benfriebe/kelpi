@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ZERO_SYSTEM_STATS } from '@nex/protocol';
 
@@ -171,6 +175,15 @@ function association(worktreePath: string, status: FooterAssociation['status']):
     return { worktreePath, status };
 }
 
+/** An association as the DAEMON now ships it: literal root plus its symlink-resolved twin. */
+function canonicalAssociation(
+    worktreePath: string,
+    worktreePathReal: string,
+    status: FooterAssociation['status']
+): FooterAssociation {
+    return { worktreePath, worktreePathReal, status };
+}
+
 describe('working-tree diff stats', () => {
     it('matches the pane cwd to the LONGEST worktree prefix', () => {
         const stats = footerGitStats(
@@ -227,6 +240,166 @@ describe('working-tree diff stats', () => {
             />
         );
         expect(screen.queryByTestId('footer-git-stats')).toBeNull();
+    });
+});
+
+// ── §APP-071 / §GIT-092, audit ledger N5: symlinked ancestors ───────────────────────
+//
+// The defect that made this item's four green tests worthless: the association's root is git's
+// PHYSICAL path (`rev-parse --show-toplevel` → `/private/var/…`) and the pane's cwd is the
+// LOGICAL one its shell reported (`/var/…`). Every repo under a symlinked ancestor — all of
+// `/tmp` and `/var` on macOS, a symlinked `$HOME` — failed the prefix test and the segment drew
+// nothing at all. The fixture below is a REAL symlink on disk rather than two hand-typed
+// strings, because two hand-typed strings are precisely what shipped last time.
+
+describe('a repository under a symlinked ancestor (N5)', () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nex-footer-n5-')));
+    fs.mkdirSync(path.join(base, 'tree', 'repo', 'packages'), { recursive: true });
+    fs.symlinkSync(path.join(base, 'tree'), path.join(base, 'link'), 'dir');
+
+    /** What the shell reports / the pane was spawned with. */
+    const logicalCwd = path.join(base, 'link', 'repo');
+    /** What `git rev-parse --show-toplevel` answers, and what the association stores. */
+    const physicalRoot = fs.realpathSync(logicalCwd);
+
+    afterAll(() => {
+        fs.rmSync(base, { recursive: true, force: true });
+    });
+
+    it('is genuinely the same directory reached by two different strings', () => {
+        expect(physicalRoot).not.toBe(logicalCwd);
+        expect(fs.realpathSync(logicalCwd)).toBe(physicalRoot);
+    });
+
+    // BEFORE: only the literal strings existed on the wire, and this is what the footer did.
+    it('MISSES when only the literal paths are available — the shipped defect', () => {
+        expect(footerGitStats([association(physicalRoot, DIRTY)], logicalCwd)).toBeNull();
+    });
+
+    // AFTER: the daemon ships the symlink-resolved twin of both sides and they meet.
+    it('MATCHES once the daemon supplies the canonical form of both sides', () => {
+        expect(
+            footerGitStats(
+                [canonicalAssociation(physicalRoot, physicalRoot, DIRTY)],
+                logicalCwd,
+                fs.realpathSync(logicalCwd)
+            )
+        ).toEqual({ changedFiles: 3, additions: 27, deletions: 12 });
+    });
+
+    it('matches a pane DEEPER inside the symlinked tree too', () => {
+        const nested = path.join(logicalCwd, 'packages');
+        expect(
+            footerGitStats(
+                [canonicalAssociation(physicalRoot, physicalRoot, DIRTY)],
+                nested,
+                fs.realpathSync(nested)
+            )
+        ).toEqual({ changedFiles: 3, additions: 27, deletions: 12 });
+    });
+
+    it('renders the segment end to end for the symlinked pane', () => {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                focusedPane={pane({
+                    workingDirectory: logicalCwd,
+                    workingDirectoryReal: physicalRoot
+                })}
+                associations={[canonicalAssociation(physicalRoot, physicalRoot, DIRTY)]}
+            />
+        );
+        expect(screen.getByTestId('footer-git-stats').textContent).toBe('3+27-12');
+        // …and the DISPLAYED cwd is still the logical one the user typed.
+        expect(screen.getByTestId('footer-cwd').textContent).toContain('repo');
+    });
+
+    it('a sibling of the repo inside the same symlinked tree still shows nothing', () => {
+        const sibling = path.join(base, 'link', 'repo-other');
+        fs.mkdirSync(path.join(base, 'tree', 'repo-other'), { recursive: true });
+        expect(
+            footerGitStats(
+                [canonicalAssociation(physicalRoot, physicalRoot, DIRTY)],
+                sibling,
+                fs.realpathSync(sibling)
+            )
+        ).toBeNull();
+    });
+});
+
+describe('canonical-path matching rules', () => {
+    const LOGICAL = '/var/folders/ab/T/audit/repo';
+    const PHYSICAL = '/private/var/folders/ab/T/audit/repo';
+
+    it('falls back to the literal comparison when neither side has a canonical form', () => {
+        // An older daemon, or a path realpath could not resolve at all: the pre-N5 behaviour
+        // is preserved rather than replaced, so nothing that used to work stops working.
+        expect(footerGitStats([association('/Users/test/code/nex', DIRTY)], '/Users/test/code/nex/x')).toEqual({
+            changedFiles: 3,
+            additions: 27,
+            deletions: 12
+        });
+    });
+
+    it('matches when only ONE side resolved', () => {
+        // Association canonical, pane not (its directory was deleted mid-session): the literal
+        // root still matches the literal cwd, so the segment survives.
+        expect(
+            footerGitStats([canonicalAssociation(LOGICAL, PHYSICAL, DIRTY)], `${LOGICAL}/src`)
+        ).toEqual({ changedFiles: 3, additions: 27, deletions: 12 });
+    });
+
+    it('ranks nested worktrees by their CANONICAL depth, not by whichever string is longer', () => {
+        // The repo's canonical root is LONGER than the nested worktree's logical path, so a
+        // naive `.length` race between mixed forms would hand the pane the parent repo's stats.
+        const stats = footerGitStats(
+            [
+                canonicalAssociation(LOGICAL, PHYSICAL, DIRTY),
+                canonicalAssociation(`${LOGICAL}/wt`, `${PHYSICAL}/wt`, {
+                    kind: 'dirty',
+                    changedFiles: 1,
+                    additions: 2,
+                    deletions: 3
+                })
+            ],
+            `${LOGICAL}/wt/src`,
+            `${PHYSICAL}/wt/src`
+        );
+        expect(stats).toEqual({ changedFiles: 1, additions: 2, deletions: 3 });
+    });
+
+    it('treats a trailing slash as the same root', () => {
+        expect(
+            footerGitStats([canonicalAssociation(`${LOGICAL}/`, `${PHYSICAL}/`, DIRTY)], `${LOGICAL}/src`)
+        ).toEqual({ changedFiles: 3, additions: 27, deletions: 12 });
+        expect(
+            footerGitStats([canonicalAssociation(LOGICAL, PHYSICAL, DIRTY)], `${LOGICAL}/`, `${PHYSICAL}/`)
+        ).toEqual({ changedFiles: 3, additions: 27, deletions: 12 });
+    });
+
+    it('keeps the prefix boundary: `/repo` never matches `/repo2`', () => {
+        expect(
+            footerGitStats([canonicalAssociation(LOGICAL, PHYSICAL, DIRTY)], `${LOGICAL}2/src`, `${PHYSICAL}2/src`)
+        ).toBeNull();
+        expect(
+            footerGitStats([canonicalAssociation(`${LOGICAL}/`, `${PHYSICAL}/`, DIRTY)], `${LOGICAL}2`)
+        ).toBeNull();
+    });
+
+    it('stays case-sensitive — `/Repo` and `/repo` are two repositories', () => {
+        expect(
+            footerGitStats([canonicalAssociation('/srv/Repo', '/srv/Repo', DIRTY)], '/srv/repo/src')
+        ).toBeNull();
+    });
+
+    it('is null for a pane with no cwd at all, canonical or otherwise', () => {
+        expect(footerGitStats([canonicalAssociation(LOGICAL, PHYSICAL, DIRTY)], '')).toBeNull();
+        expect(footerGitStats([canonicalAssociation(LOGICAL, PHYSICAL, DIRTY)], '', '')).toBeNull();
+    });
+
+    it('ignores an association with no usable root', () => {
+        expect(footerGitStats([canonicalAssociation('', '', DIRTY)], LOGICAL, PHYSICAL)).toBeNull();
     });
 });
 

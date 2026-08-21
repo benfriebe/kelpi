@@ -338,6 +338,7 @@ export function createFakePtyApi(): FakePtyApi {
                         bracketedPaste: false,
                         mouseTracking: 'none',
                         mouseFormat: 'x10',
+                        kittyKeyboardFlags: 0,
                         ...modes
                     });
                 }

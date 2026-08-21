@@ -213,6 +213,36 @@ export interface WsHostEventMessage {
     readonly payload: JsonObject;
 }
 
+/**
+ * §SET-200 / §SET-201: what the OS said when the shell registered the global hotkey.
+ *
+ * The Swift reducer keeps the reason string in state and Settings ▸ Keybindings renders it as an
+ * inline warning. Here the registrar is a different PROCESS (Electron `globalShortcut`), so the
+ * outcome has to travel — shell → daemon → every client — before Settings can show it. The
+ * shell reports after every attempt: the one at launch (`source: 'launch'`, §8.4's config-load
+ * path, where the failing value is deliberately KEPT so the user can see and edit it) and every
+ * re-registration a config write triggers (`source: 'settings'`).
+ *
+ * `ok: true` clears a standing warning, so re-recording a chord that works removes the message
+ * without anything having to remember it was there.
+ *
+ * Both a client → daemon report and, re-broadcast unchanged, a daemon → client push: the shell
+ * is a WS client like any other, and the daemon is the only thing every window shares.
+ */
+export interface WsHotkeyStatusMessage {
+    readonly type: 'hotkey-status';
+    /** The accelerator actually registered; null when the hotkey is unset or was rejected. */
+    readonly accelerator: string | null;
+    /** The config-file spelling that was asked for (`"ctrl+alt+space"`); null when unset. */
+    readonly configString: string | null;
+    readonly ok: boolean;
+    /** The OS's reason on a failure ("This shortcut is already claimed by another app."). */
+    readonly error: string | null;
+    readonly source: 'launch' | 'settings';
+}
+
+export const WS_HOTKEY_STATUS_MESSAGE = 'hotkey-status';
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -227,7 +257,8 @@ export type WsClientMessage =
     | WsHostRegisterMessage
     | WsHostUnregisterMessage
     | WsHostRpcReplyMessage
-    | WsHostEventMessage;
+    | WsHostEventMessage
+    | WsHotkeyStatusMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -494,12 +525,19 @@ export type WsMouseFormat = (typeof WS_MOUSE_FORMATS)[number];
  * neither renderer this port ships implements DEC mouse reporting (`ghostty-web@0.4.0` parses
  * 9/1000/1002/1003/1006 and then ignores them), so the client encodes the reports itself and
  * needs the modes as state rather than as engine behaviour.
+ *
+ * `kittyKeyboardFlags` is the third member of that family and lands for the same reason: the
+ * engine registers one `keydown` listener and zero `keyup` listeners, so the kitty keyboard
+ * protocol — whose whole subject is press/repeat/release — is encoded in the port's own layer
+ * against flags the daemon negotiated off the VT stream (`daemon/src/term/kitty-keyboard.ts`).
  */
 export interface WsVtModes {
     readonly applicationCursorKeys: boolean;
     readonly bracketedPaste: boolean;
     readonly mouseTracking: WsMouseTrackingMode;
     readonly mouseFormat: WsMouseFormat;
+    /** Kitty keyboard protocol flags for the active screen. `0` = off (legacy encoding). */
+    readonly kittyKeyboardFlags: number;
 }
 
 export const WS_PANE_MODES_MESSAGE = 'pane-modes';
@@ -608,6 +646,7 @@ export type WsServerMessage =
     | WsHostRpcMessage
     | WsHostNotifyMessage
     | WsWebConsoleLineMessage
-    | WsRevealPaneMessage;
+    | WsRevealPaneMessage
+    | WsHotkeyStatusMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

@@ -32,6 +32,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
     WS_CLIENT_KINDS,
+    WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
@@ -52,6 +53,7 @@ import {
 } from '@nex/protocol';
 
 import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@nex/core/codec';
+import { ratioAtPath } from '@nex/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
@@ -300,6 +302,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * wire's snake_case convention so a client speaks one dialect for both kinds of command.
  *
  *   toggle-zoom          `pane_id`                       → focus-pane (if needed) + toggle-zoom
+ *   set-split-ratio      `workspace_id`, `split_path`, `ratio` → update-split-ratio
  *   set-group-collapsed  `group_id`, `collapsed`         → set-group-collapsed
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace
  *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon
@@ -331,6 +334,13 @@ function parseClientInfo(value: unknown): WsClientInfo {
  */
 export const WS_ONLY_COMMANDS = [
     'toggle-zoom',
+    // §LAY-061: the GUI divider drag, addressed the way the LAYOUT MODEL addresses a resize —
+    // by split path. `pane-resize` can only name a pane, and `enclosingSplitPath` only ever
+    // resolves the split whose direct child is that pane's leaf, so a divider whose BOTH
+    // children are splits (the root divider of a 2×2 `tiled` layout) had no spelling on the
+    // wire at all: the grid previewed the drag and the daemon never heard about it. Swift's
+    // GUI dispatches `updateSplitRatio(splitPath:ratio:)` directly, which is what this is.
+    'set-split-ratio',
     'set-group-collapsed',
     'rename-workspace',
     'set-workspace-icon',
@@ -720,6 +730,34 @@ export function handleWsOnlyCommand(
             pane_id: paneID,
             workspace_id: workspace.id,
             zoomed_pane_id: after?.zoomedPaneID ?? null
+        };
+    }
+
+    if (command === 'set-split-ratio') {
+        const workspaceID = text(payload['workspace_id']);
+        if (workspaceID === undefined) return failure('set-split-ratio requires workspace_id');
+        const workspace = workspaceByID(state, workspaceID);
+        if (workspace === null) return failure(`no workspace matches '${workspaceID}'`);
+        const splitPath = text(payload['split_path']);
+        if (splitPath === undefined) return failure('set-split-ratio requires split_path');
+        const ratio = payload['ratio'];
+        if (typeof ratio !== 'number' || !Number.isFinite(ratio)) {
+            return failure('set-split-ratio requires a numeric ratio');
+        }
+        // A stale path is a no-op in the model (§9.1: "never an error"), which over a wire
+        // would look like a silent success. Refuse it here instead: the client has just
+        // previewed a drag against a tree it can now be told it no longer shares.
+        if (ratioAtPath(workspace.layout, splitPath) === null) {
+            return failure(`no split at path '${splitPath}'`);
+        }
+        store.dispatch({ type: 'update-split-ratio', workspaceID, splitPath, ratio });
+        const after = workspaceByID(store.getState(), workspaceID);
+        return {
+            ok: true,
+            workspace_id: workspaceID,
+            split_path: splitPath,
+            // The STORED ratio, post-clamp — the drag can ask for 0.02 and get 0.1 back.
+            ratio: after === null ? ratio : (ratioAtPath(after.layout, splitPath) ?? ratio)
         };
     }
 
@@ -1157,6 +1195,12 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
     const sessions = new Set<SessionImpl>();
     let seq = 0;
     let closed = false;
+    /**
+     * §SET-200/§SET-201: the last `hotkey-status` the shell reported, replayed to every client
+     * that attaches afterwards. Null until a shell has registered anything — a browser-only
+     * daemon has no registrar, so there is nothing to say and Settings shows no warning.
+     */
+    let lastHotkeyStatus: JsonObject | null = null;
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(toError(error), context);
@@ -1284,6 +1328,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     return;
                 case FLUSH_SAVES_REQUEST_MESSAGE:
                     this.flushSavesRequest(parsed);
+                    return;
+                case WS_HOTKEY_STATUS_MESSAGE:
+                    hotkeyStatusReport(parsed);
                     return;
                 case 'ping': {
                     const id = text(parsed['id']);
@@ -1477,6 +1524,18 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
             // Deltas only start flowing once the snapshot they extend has been written, so
             // the client can never see delta N before the snapshot anchored at N.
             this.ready = true;
+
+            /*
+             * §SET-200 / §SET-201: the last global-hotkey registration outcome the shell
+             * reported.
+             *
+             * It cannot ride `welcome`, because the shell reports it over its OWN connection —
+             * which may well attach after this window did — so the daemon keeps the last one
+             * and replays it here. A window opened an hour after a rejected registration still
+             * shows the warning, which is the point: a claimed hotkey is a standing condition,
+             * not an event that happened once.
+             */
+            if (lastHotkeyStatus !== null) this.send(lastHotkeyStatus);
 
             // Sugar for the Electron shell: claiming the host role in the handshake saves a
             // round-trip and removes the window where the daemon has a client but no host.
@@ -2227,6 +2286,30 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         for (const session of sessions) {
             if (session.ready) session.send(message);
         }
+    }
+
+    /**
+     * §SET-200 / §SET-201: `hotkey-status` from the shell → every client, and remembered.
+     *
+     * The daemon does not interpret it — it registers nothing itself and has no opinion about
+     * accelerators. It is the only party every window shares, so it is where the last outcome
+     * is kept so a window that attaches later can still be told (see the replay in `hello`).
+     * A malformed report is dropped rather than stored: a remembered bad frame would be
+     * re-sent to every future client.
+     */
+    function hotkeyStatusReport(message: Record<string, unknown>): void {
+        if (typeof message['ok'] !== 'boolean') return;
+        const source = text(message['source']);
+        const relayed: JsonObject = {
+            type: WS_HOTKEY_STATUS_MESSAGE,
+            accelerator: text(message['accelerator']) ?? null,
+            configString: text(message['configString']) ?? null,
+            ok: message['ok'],
+            error: text(message['error']) ?? null,
+            source: source === 'launch' || source === 'settings' ? source : 'settings'
+        };
+        lastHotkeyStatus = relayed;
+        revealPane(relayed);
     }
 
     const unsubscribe = store.subscribe((events) => {

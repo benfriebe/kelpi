@@ -18,8 +18,9 @@
  *     going into edit mode and not coming back out.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
+import { cachedLineStarts, visibleLineWindow, type LineWindow } from './gutter';
 import { contentScrollStore, type ScrollStore } from './scroll';
 import { editorTextColor } from './types';
 
@@ -35,13 +36,17 @@ export const GUTTER_TEXT_PADDING = 4;
 const EDITOR_PADDING = 12;
 const LINE_HEIGHT = 1.5;
 
-/** §4.2: `\n` count + 1 — a trailing newline shows one extra number, an empty document "1". */
+/** The rendered height of one row, shared by the textarea and the gutter. */
+export const EDITOR_LINE_PX = EDITOR_FONT_SIZE * LINE_HEIGHT;
+
+/**
+ * §4.2: `\n` count + 1 — a trailing newline shows one extra number, an empty document "1".
+ *
+ * Reads it off the cached line-start array (`./gutter`), so a re-render that did not change the
+ * buffer costs a string comparison instead of a scan.
+ */
 export function lineCount(text: string): number {
-    let lines = 1;
-    for (let index = 0; index < text.length; index += 1) {
-        if (text[index] === '\n') lines += 1;
-    }
-    return lines;
+    return cachedLineStarts(text).length;
 }
 
 /**
@@ -143,6 +148,43 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     // textarea's own `scrollTop` so the numbers cannot drift out of step with the rows.
     const gutterRef = useRef<HTMLDivElement | null>(null);
 
+    const showGutter = props.showGutter === true;
+    /**
+     * §4.2 / §CONT-078: the cached line-start array. A re-render that did not change the buffer
+     * reuses it (the port of the ruler's `lineStarts` cache), and its LENGTH is the line count.
+     */
+    const starts = useMemo(() => cachedLineStarts(showGutter ? value : ''), [showGutter, value]);
+    const lines = showGutter ? starts.length : 1;
+
+    /**
+     * Only the numbers over the visible rows are in the DOM — the ruler draws for the visible
+     * rect, and a 200k-line document must not become 200k nodes. `null` until the textarea has
+     * been measured, which renders the whole document (short buffers, and the first paint).
+     */
+    const [lineWindow, setWindow] = useState<LineWindow | null>(null);
+    const measureWindow = useCallback((): void => {
+        const area = areaRef.current;
+        if (area === null) return;
+        const next = visibleLineWindow({
+            starts,
+            scrollTop: area.scrollTop,
+            viewportHeight: area.clientHeight,
+            lineHeight: EDITOR_LINE_PX,
+            paddingTop: EDITOR_PADDING
+        });
+        setWindow((current) =>
+            current !== null && current.first === next.first && current.last === next.last
+                ? current
+                : next
+        );
+    }, [starts]);
+
+    // Re-clamp when the buffer changes (typing at the end grows the document under the window).
+    useEffect(() => {
+        if (!showGutter) return;
+        measureWindow();
+    }, [measureWindow, showGutter]);
+
     const onScroll = useCallback((): void => {
         const area = areaRef.current;
         if (area === null) return;
@@ -150,10 +192,11 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
         store.set(paneID, { top: area.scrollTop, fraction: max > 0 ? area.scrollTop / max : 0 });
         const gutter = gutterRef.current;
         if (gutter !== null) gutter.style.transform = `translateY(${String(-area.scrollTop)}px)`;
-    }, [paneID, store]);
+        if (showGutter) measureWindow();
+    }, [measureWindow, paneID, showGutter, store]);
 
-    const showGutter = props.showGutter === true;
-    const lines = showGutter ? lineCount(value) : 1;
+    const firstLine = lineWindow === null ? 1 : Math.min(lineWindow.first, lines);
+    const lastLine = lineWindow === null ? lines : Math.min(lineWindow.last, lines);
     const gutterPx = showGutter ? gutterWidth(lines) : 0;
 
     return (
@@ -172,6 +215,9 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                     aria-hidden
                     data-testid={`content-gutter-${paneID}`}
                     data-lines={lines}
+                    // The window actually drawn, so a test can tell "all of it" from "the rows
+                    // over the viewport" without measuring the DOM.
+                    data-window={`${String(firstLine)}-${String(lastLine)}`}
                     className="h-full shrink-0 select-none overflow-hidden"
                     style={{
                         width: gutterPx,
@@ -186,18 +232,21 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         ref={gutterRef}
                         className="text-right"
                         style={{
-                            paddingTop: EDITOR_PADDING,
+                            // The window's own top edge: the rows above it are not drawn, so
+                            // the padding stands in for their height and row N stays on the
+                            // same baseline as the text it numbers.
+                            paddingTop: EDITOR_PADDING + (firstLine - 1) * EDITOR_LINE_PX,
                             paddingRight: GUTTER_TEXT_PADDING,
                             color: 'var(--nex-fg-tertiary, #6A6A72)',
                             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                             fontSize: `${GUTTER_FONT_SIZE}px`,
                             // The numbers must ride the TEXT's line box, not their own, or the
                             // two columns diverge a fraction of a pixel per line.
-                            lineHeight: `${String(EDITOR_FONT_SIZE * LINE_HEIGHT)}px`
+                            lineHeight: `${String(EDITOR_LINE_PX)}px`
                         }}
                     >
-                        {Array.from({ length: lines }, (_unused, index) => (
-                            <div key={index}>{index + 1}</div>
+                        {Array.from({ length: Math.max(0, lastLine - firstLine + 1) }, (_unused, index) => (
+                            <div key={firstLine + index}>{firstLine + index}</div>
                         ))}
                     </div>
                 </div>

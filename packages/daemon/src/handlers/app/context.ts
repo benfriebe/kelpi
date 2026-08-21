@@ -67,6 +67,12 @@ export interface AppHandlerOptions {
     readonly worktreeBasePath?: string | (() => string) | undefined;
     /** Settings `newWorkspacePlacement`. Same live-value reasoning as above. */
     readonly placement?: NewWorkspacePlacement | (() => NewWorkspacePlacement) | undefined;
+    /**
+     * SET-012's `expand-group-on-workspace-drop`, default true. Same live-getter reasoning as
+     * the two above: a Settings write has to reach the very next `workspace-move` without a
+     * daemon restart, which is what makes the toggle a behaviour rather than a stored string.
+     */
+    readonly expandGroupOnDrop?: boolean | (() => boolean) | undefined;
     /** Debounced full-state save (§5 persistState). */
     readonly persist?: (() => void) | undefined;
     /** Immediate save — `session-end` only (issue #178). Defaults to `persist`. */
@@ -98,6 +104,7 @@ export interface AppDeps {
     readonly random: () => number;
     readonly worktreeBasePath: string;
     readonly placement: NewWorkspacePlacement;
+    readonly expandGroupOnDrop: boolean;
     readonly persist: () => void;
     readonly persistNow: () => void;
     readonly spawnPane: (request: SpawnPaneRequest, ctx: AppContext) => void;
@@ -136,6 +143,13 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
             const value = options.placement;
             if (typeof value === 'function') return value();
             return value ?? 'end-of-list';
+        },
+        get expandGroupOnDrop(): boolean {
+            const value = options.expandGroupOnDrop;
+            if (typeof value === 'function') return value();
+            // Absent = the Swift default and the behaviour this verb had before the setting
+            // existed, so a daemon composed without the option is unchanged.
+            return value ?? true;
         },
         persist,
         persistNow: options.persistNow ?? persist,

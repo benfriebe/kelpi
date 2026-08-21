@@ -67,5 +67,16 @@ export interface PaneHandlerContext
     readonly random?: (() => number) | undefined;
     /** Profile definitions, re-read per spawn. */
     readonly profiles?: (() => readonly Profile[]) | undefined;
+    /**
+     * Diagnostics sink for the spawn path (§SET-209).
+     *
+     * `WorkspaceProfilesClient.resolveEnv` warns when a workspace resolves a NON-`default`
+     * profile that the config file does not define — the marker is still injected, but nothing
+     * else is, and without the warning a typo in `nex workspace profile` looks exactly like a
+     * working assignment. The daemon has no `os_log`, so the warning goes where every other
+     * daemon diagnostic goes: `createDaemon`'s `onLog`, i.e. the `nexd` log. Unset in tests
+     * that do not care, which is why it is optional.
+     */
+    readonly onLog?: ((message: string) => void) | undefined;
     readonly spawn?: PaneSpawnDefaults | undefined;
 }

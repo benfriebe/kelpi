@@ -94,6 +94,18 @@ export function connectStore(options: StoreBridgeOptions): () => void {
     );
 
     offs.push(
+        // §SET-200/§SET-201: `hotkey-status` — the Electron shell's registrar, reporting through
+        // the daemon. Its own message rather than a settings field for the same reason
+        // `transport-changed` is: the config file says which chord was ASKED for; this says what
+        // the OS did with it. A browser with no shell attached never sees one, and shows no
+        // warning, which is correct — nothing tried to register anything.
+        connection.on('message', (message) => {
+            if (message['type'] !== 'hotkey-status') return;
+            store.getState().applyHotkeyStatus(message);
+        })
+    );
+
+    offs.push(
         // `system-stats` (APP-078): the daemon's 2 s sampler, subscribed here for exactly the
         // reason above — a fire-and-forget broadcast with no ordering relationship to the
         // snapshot/delta stream, and the socket layer has no business knowing about gauges.

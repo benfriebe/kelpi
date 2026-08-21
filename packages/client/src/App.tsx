@@ -82,8 +82,13 @@ import {
     createKeyDispatcher,
     defaultGroupName,
     flattenOver,
+    isSidebarMounted,
     normalizeHexColor,
     presetChromeTheme,
+    sidebarPhaseAfterSettle,
+    sidebarPhaseFor,
+    sidebarSettleDelayMs,
+    sidebarSlideStyle,
     sidebarTintCssVars,
     installKeyDispatcher,
     shortcutForAction,
@@ -98,12 +103,14 @@ import {
     type KeyActionRegistry,
     type MenuItemSpec,
     type PaletteItem,
+    type SidebarPhase,
     type StatusBarItem,
     type SystemStatsView,
     type WorkspaceWorktreeRequest
 } from './chrome';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
+import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     isOkReply,
     replyError,
@@ -112,7 +119,7 @@ import {
     type CommandReply
 } from './connection';
 import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient, type FontSizeStep } from './content';
-import { PaneGrid, PaneSearchOverlay, type PaneModel, type RenderPane } from './grid';
+import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
 import { SettingsOverlay, type SettingsActions, type SettingsTabID } from './settings';
 import {
     selectActiveWorkspace,
@@ -277,15 +284,36 @@ function Shell(props: AppProps): ReactElement {
 
     const nex = useStore(store);
     const daemon = nex.daemon;
+    /** The DAEMON's home, for `~/…` abbreviation (§APP-069) and §TERM-036's accessible name. */
+    const daemonHome = daemon.info?.home ?? '';
     const ui = nex.ui;
     const settings = nex.settings.value;
+    /** §SET-200/§SET-201: the shell's last global-hotkey registration outcome, or null. */
+    const hotkeyStatus = nex.settings.hotkeyStatus;
 
     const [sidebarVisible, setSidebarVisible] = useState(true);
+    /**
+     * §WS-001: the show/hide SLIDE. `sidebarVisible` is still the one boolean everything writes
+     * (the keybinding, the top-bar button, the View menu, every gesture that reveals the sidebar
+     * before opening a rename field); `sidebarPhase` is the animation's own state, derived from
+     * it by `sidebar-reveal.ts`, and it is what keeps the panel mounted while a close plays out.
+     * The two are married by the effect below rather than by every caller.
+     */
+    const [sidebarPhase, setSidebarPhase] = useState<SidebarPhase>(() => (sidebarVisible ? 'open' : 'hidden'));
     /**
      * §WS-002 / §APP-065: the sidebar's width is client-local UI state (the shipped app keeps it
      * in a view-local `@State`), clamped to 180–300 and remembered across reloads.
      */
     const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
+    /**
+     * True while §WS-002's edge handle is being dragged.
+     *
+     * §WS-001's slide animates the slot's `width` — the same property this drag writes on every
+     * pointer move — so with the transition always attached the edge chases the cursor on a
+     * 250 ms ease instead of tracking it. The gesture takes the transition off for its length,
+     * which is the split SwiftUI makes too: only the visibility toggle is inside `withAnimation`.
+     */
+    const [sidebarResizing, setSidebarResizing] = useState(false);
     /** §WS-137: the trailing inspector, opened from the top bar or `toggle_inspector`. */
     const [inspectorVisible, setInspectorVisible] = useState(false);
     const [terminalTheme, setTerminalTheme] = useState<TerminalTheme | undefined>(undefined);
@@ -300,6 +328,19 @@ function Shell(props: AppProps): ReactElement {
     /** §WS-100's group half: a group this client just created is revealed by its header. */
     const [scrollToGroupID, setScrollToGroupID] = useState<string | null>(null);
     /**
+     * §APP-037's second half: the forced `git status` a workspace switch owes.
+     *
+     * The Swift merges `.refreshGitStatus` into `setActiveWorkspace`'s effects and the palette's
+     * confirm sends it inline, so arriving anywhere re-reads git rather than trusting whatever
+     * the watcher last knew. Carried as `{ workspaceID, seq }` rather than a bare counter because
+     * the mirror's active workspace lags the local activation by a round trip — see
+     * `app/inspector.ts` ▸ `forceRefreshFor`, which spends the token only once the named
+     * workspace is the one being read.
+     */
+    const [gitRefreshRequest, setGitRefreshRequest] = useState<{ workspaceID: string; seq: number } | null>(
+        null
+    );
+    /**
      * §WS-100: **every** path that makes a workspace active queues the reveal.
      *
      * The Swift sets `sidebarScrollTarget` inside `setActiveWorkspace` itself, so ⌘1–9,
@@ -309,11 +350,19 @@ function Shell(props: AppProps): ReactElement {
      * `runtime.activateWorkspace`. What is deliberately NOT here is the Swift's exclusion list
      * — state restore, deletes and move reflow never call this, exactly as `AppReducer` never
      * sets the target on those paths.
+     *
+     * §APP-037: the same funnel carries the forced git refresh, for the same reason — the Swift
+     * puts it inside `setActiveWorkspace`, so every gesture that lands on a workspace inherits
+     * it, the palette's confirm included.
      */
     const activateWorkspaceAndReveal = useCallback(
         (workspaceID: string): void => {
             runtime.activateWorkspace(workspaceID);
             setScrollToWorkspaceID(workspaceID);
+            setGitRefreshRequest((previous) => ({
+                workspaceID,
+                seq: (previous?.seq ?? 0) + 1
+            }));
         },
         [runtime]
     );
@@ -360,6 +409,38 @@ function Shell(props: AppProps): ReactElement {
     const [helpOpen, setHelpOpen] = useState(false);
     /** Pending §8.5 focus hand-offs, cleared on unmount so none fires into a dead tree. */
     const revealTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+
+    // ── §WS-001: the sidebar's show/hide slide ──────────────────────────────────────
+    //
+    // Two effects, because the animation has two clocks. The first turns a visibility change
+    // into a phase; the second is the phase's own settle — one frame for `opening` (the browser
+    // needs a paint at the collapsed geometry to transition FROM) and the full slide for
+    // `closing` (the panel stays mounted until it has finished travelling).
+
+    useEffect(() => {
+        setSidebarPhase((phase) => sidebarPhaseFor(phase, sidebarVisible));
+    }, [sidebarVisible]);
+
+    useEffect(() => {
+        const delay = sidebarSettleDelayMs(sidebarPhase);
+        if (delay === null) return;
+        const advance = (): void => setSidebarPhase((phase) => sidebarPhaseAfterSettle(phase));
+        // `requestAnimationFrame` for the mount frame — a 0ms timeout can be coalesced into the
+        // same paint as the mount, which is precisely the frame the transition needs to see.
+        if (delay === 0) {
+            if (typeof requestAnimationFrame !== 'function') {
+                const immediate = setTimeout(advance, 0);
+                return () => clearTimeout(immediate);
+            }
+            const frame = requestAnimationFrame(() => requestAnimationFrame(advance));
+            return () => cancelAnimationFrame(frame);
+        }
+        const timer = setTimeout(advance, delay);
+        return () => clearTimeout(timer);
+    }, [sidebarPhase]);
+
+    const sidebarMounted = isSidebarMounted(sidebarPhase);
+    const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing);
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
 
@@ -504,6 +585,10 @@ function Shell(props: AppProps): ReactElement {
         // `git status` (`refreshOnRead`), so an always-visible footer costs no extra git.
         enabled: inspectorVisible || associationsKey !== '',
         refreshOnRead: inspectorVisible,
+        // §APP-037: …except on arrival. Activating a workspace — from the palette, ⌘1–9, a
+        // sidebar click, the status popover — forces one real `git status`, exactly as the Swift
+        // reducer's `.refreshGitStatus` does, so a switch never lands on a stale badge.
+        forceRefreshFor: gitRefreshRequest,
         associationsKey,
         registryKey
     });
@@ -562,6 +647,9 @@ function Shell(props: AppProps): ReactElement {
         },
         [store]
     );
+    /** §TERM-116's scheduler is built once, before `notifyFailure` can be closed over. */
+    const notifyFailureRef = useRef(notifyFailure);
+    notifyFailureRef.current = notifyFailure;
 
     /** Fire a command and surface a failure as a toast; never throw into an event handler. */
     const run = useCallback(
@@ -772,6 +860,35 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => () => content.dispose(), [content]);
 
     /**
+     * §TERM-116's timer, owned by the window rather than by the overlay: the bar is unmounted
+     * and remounted as it moves between panes, and a debounce that died with it would let a
+     * short needle escape the cancel. One scheduler, `store`-scoped, cancelled on unmount.
+     */
+    const searchNeedleRef = useRef<SearchNeedleScheduler>(
+        createSearchNeedleScheduler({
+            send: (needle: string) => {
+                const id = selectActiveWorkspaceID(store.getState());
+                if (id === null) return;
+                void commands.setTerminalSearchNeedle({ workspaceID: id, needle }).then(
+                    (reply) => {
+                        if (!isOkReply(reply)) notifyFailureRef.current('Search', replyError(reply));
+                    },
+                    (error: unknown) => {
+                        notifyFailureRef.current(
+                            'Search',
+                            error instanceof Error ? error.message : String(error)
+                        );
+                    }
+                );
+            }
+        })
+    );
+    useEffect(() => {
+        const scheduler = searchNeedleRef.current;
+        return () => scheduler.cancel();
+    }, []);
+
+    /**
      * Every intent the UI can raise, bound once. Each reads the CURRENT mirror through
      * `store.getState()` rather than closing over a render's values, so the object is stable
      * and the key dispatcher / menus never go stale.
@@ -819,7 +936,10 @@ function Shell(props: AppProps): ReactElement {
          * §WS-100: a group this client created is revealed by its header, the same one-shot the
          * workspace create path uses. `run` cannot do it — the id is in the reply.
          */
-        const runCreateGroup = (promise: Promise<CommandReply>): true => {
+        const runCreateGroup = (
+            promise: Promise<CommandReply>,
+            options: { readonly rename?: boolean } = {}
+        ): true => {
             void promise.then(
                 (reply) => {
                     if (!isOkReply(reply)) {
@@ -827,7 +947,15 @@ function Shell(props: AppProps): ReactElement {
                         return;
                     }
                     const created = replyText(reply, 'group_id');
-                    if (created !== undefined) setScrollToGroupID(created);
+                    if (created === undefined) return;
+                    setScrollToGroupID(created);
+                    // §WS-052 / §APP-019: the gestures that mint a PLACEHOLDER name drop
+                    // straight into inline rename on the header the reply named — the id
+                    // exists nowhere else, so this is the only place the request can be made.
+                    if (options.rename === true) {
+                        setSidebarVisible(true);
+                        setSidebarRenameRequest({ kind: 'group', id: created });
+                    }
                 },
                 (error: unknown) => {
                     notifyFailure('New group', error instanceof Error ? error.message : String(error));
@@ -1004,6 +1132,21 @@ function Shell(props: AppProps): ReactElement {
                 return run('Resize pane', commands.setSplitRatio(paneID, share));
             },
 
+            /**
+             * §LAY-061 — the same drag, addressed by SPLIT PATH. Used for the dividers
+             * `setSplitRatio` cannot express: `pane-resize` names a pane and only ever resolves
+             * that pane's *enclosing* split, so a divider whose two children are both splits
+             * (the root of a 2×2 `tiled` layout) is unreachable through it.
+             */
+            setSplitRatioAtPath(splitPath: string, ratio: number): boolean {
+                const id = activeWorkspaceID();
+                if (id === null) return false;
+                return run(
+                    'Resize pane',
+                    commands.setSplitRatioAtPath({ workspaceID: id, splitPath, ratio })
+                );
+            },
+
             cycleLayout(): boolean {
                 const paneID = focused();
                 if (paneID === null) return false;
@@ -1064,12 +1207,18 @@ function Shell(props: AppProps): ReactElement {
              * counts are per client (they live in the pane's iframe and its host component), so
              * this only nudges the pane that has focus; a terminal pane declines and the
              * binding falls through to whatever the terminal search will be.
+             *
+             * §CONT-051: a markdown pane in EDIT mode declines, exactly as the Swift reducer
+             * does — the find bar searches the rendered preview, and there is no preview while
+             * the editor is up. The keystroke falls through to the host's own find, which is
+             * the port's stand-in for `NSTextView`'s native find bar (§CONT-072).
              */
             openFind(): boolean {
                 const paneID = focused();
                 if (paneID === null) return false;
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null || (pane.type !== 'markdown' && pane.type !== 'diff')) return false;
+                if (pane.type === 'markdown' && pane.isEditing) return false;
                 setFindRequest((current) =>
                     current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
                 );
@@ -1106,6 +1255,11 @@ function Shell(props: AppProps): ReactElement {
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null) return false;
                 if (pane.type === 'markdown' || pane.type === 'diff') {
+                    // §CONT-051: preview only. A markdown pane in edit mode declines and the
+                    // keystroke falls through to the host's own find (§CONT-072) — the same
+                    // split the daemon reducer makes in `canHostSearch`, which admits a
+                    // markdown pane only while `!pane.isEditing`.
+                    if (pane.type === 'markdown' && pane.isEditing) return false;
                     setFindRequest((current) =>
                         current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
                     );
@@ -1122,21 +1276,23 @@ function Shell(props: AppProps): ReactElement {
             closeSearch(): boolean {
                 const workspace = activeWorkspace();
                 if (workspace === null || workspace.searchingPaneID === null) return false;
+                // §TERM-116: a deferred short needle must not land after the bar has gone.
+                searchNeedleRef.current.cancel();
                 setSearchReveal(null);
                 return run('Search', commands.closeTerminalSearch({ workspaceID: workspace.id }));
             },
 
+            /**
+             * §TERM-116. The needle is DEBOUNCED below three characters (300 ms), exactly as
+             * `WorkspaceFeature.swift:1775-1781` does, because the port's search is a socket
+             * round trip that flushes the pane's write queue and scans up to 10 000 lines: a
+             * one-character needle typed into a full buffer used to cost one full scan per
+             * keystroke. `search-needle.ts` owns the rule (and the shared cancel-in-flight);
+             * the field itself never lags, because the overlay echoes the draft locally.
+             */
             setSearchNeedle(needle: string): boolean {
-                const id = activeWorkspaceID();
-                if (id === null) return false;
-                void commands.setTerminalSearchNeedle({ workspaceID: id, needle }).then(
-                    (reply) => {
-                        if (!isOkReply(reply)) notifyFailure('Search', replyError(reply));
-                    },
-                    (error: unknown) => {
-                        notifyFailure('Search', error instanceof Error ? error.message : String(error));
-                    }
-                );
+                if (activeWorkspaceID() === null) return false;
+                searchNeedleRef.current.push(needle);
                 return true;
             },
 
@@ -1687,6 +1843,29 @@ function Shell(props: AppProps): ReactElement {
                         workspaceIDs,
                         ...(color === undefined || color === null ? {} : { color })
                     })
+                );
+            },
+
+            /**
+             * §WS-052 — a row's "Move to Group ▸ New Group…".
+             *
+             * The Swift sends ONE `createGroup` carrying `initialWorkspaceIDs: [workspaceID]`
+             * and `autoRename: true`; the port's equivalent is the `create-group-for-workspaces`
+             * verb (which is `create-group` WITH members, atomically) plus the reply-driven
+             * rename. A create followed by a move would show the row jumping twice and could
+             * half-apply, which is the whole reason that verb exists.
+             *
+             * The name is the same placeholder the ⌘⇧G path mints, so a second one is
+             * "New Group 2" rather than a duplicate-name refusal.
+             */
+            newGroupForWorkspace(workspaceID: string): boolean {
+                const existing = store.getState().daemon.state.groups.map((group) => group.name);
+                return runCreateGroup(
+                    commands.createGroupForWorkspaces({
+                        name: defaultGroupName(existing),
+                        workspaceIDs: [workspaceID]
+                    }),
+                    { rename: true }
                 );
             },
 
@@ -2298,6 +2477,10 @@ function Shell(props: AppProps): ReactElement {
             if (command === 'help') setHelpOpen(true);
             else if (command === 'open-file') actRef.current.openFile();
             else if (command === 'settings') setSettingsTab((current) => current ?? 'keybindings');
+            // §WS-001: View ▸ Show/Hide Sidebar. It lands on the SAME `act.toggleSidebar` the
+            // ⌘⇧S binding and the top-bar button use, so the menu item and the chord are one
+            // state, and the shell never has to know whether the sidebar is out.
+            else if (command === 'toggle-sidebar') actRef.current.toggleSidebar();
             // A browser chord an embedded page swallowed, relayed back by the shell
             // (`shell/webhost/keys.ts`). Replayed as a real `keydown`, so the page-focused path
             // and the chrome-focused path go through the very same interceptor.
@@ -2885,6 +3068,8 @@ function Shell(props: AppProps): ReactElement {
                         ptyApi={runtime.pty}
                         focused={focused}
                         visible={renderState.visible}
+                        // §TERM-036: the accessible name is what the header shows, not the id.
+                        accessibilityName={paneDisplayTitle(pane, daemonHome)}
                         theme={paneTheme}
                         background={paneFill}
                         {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
@@ -3000,6 +3185,8 @@ function Shell(props: AppProps): ReactElement {
                     ptyApi={runtime.pty}
                     focused={focused}
                     visible={renderState.visible}
+                    // §TERM-036: the accessible name is what the header shows, not the id.
+                    accessibilityName={paneDisplayTitle(pane, daemonHome)}
                     theme={theme}
                     background={paneFill}
                     {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
@@ -3024,6 +3211,8 @@ function Shell(props: AppProps): ReactElement {
             workspace,
             mountedSet,
             runtime,
+            // §TERM-036: the accessible name is home-abbreviated, so it moves with the answer.
+            daemonHome,
             paneTheme,
             paneFill,
             contentDocumentFill,
@@ -3065,9 +3254,29 @@ function Shell(props: AppProps): ReactElement {
             onDrop={onDrop}
             onClickCapture={onRootClickCapture}
         >
-            {sidebarVisible ? (
-                <div className="flex h-full shrink-0" style={{ width: sidebarWidth }}>
-                    <div className="h-full min-w-0 flex-1">
+            {sidebarMounted ? (
+                /* §WS-001: the slot animates its WIDTH (that is what the pane grid is pushed
+                   by); the panel inside keeps its full width and translates, so a 220px
+                   sidebar never relayouts to 3px and back on the way out. The clip lives on
+                   the middle div so the resizer's ±3px overhang is not shaved off with it. */
+                <div
+                    data-testid="sidebar-slot"
+                    data-sidebar-phase={sidebarPhase}
+                    className="flex h-full shrink-0"
+                    style={{ width: sidebarSlide.slot.width, transition: sidebarSlide.slot.transition }}
+                >
+                    <div className="h-full min-w-0 flex-1 overflow-hidden">
+                    <div
+                        data-testid="sidebar-panel"
+                        className="h-full"
+                        style={{
+                            width: sidebarSlide.panel.width,
+                            opacity: sidebarSlide.panel.opacity,
+                            transform: sidebarSlide.panel.transform,
+                            transition: sidebarSlide.panel.transition,
+                            pointerEvents: sidebarSlide.panel.pointerEvents
+                        }}
+                    >
                 <Sidebar
                     entries={filteredEntries}
                     activeWorkspaceID={workspace?.id ?? null}
@@ -3126,18 +3335,27 @@ function Shell(props: AppProps): ReactElement {
                     onSetBulkColor={act.setBulkColor}
                     onSetBulkLabel={act.setBulkLabel}
                     onCreateGroupForWorkspaces={act.createGroupForWorkspaces}
+                    // §WS-052: "Move to Group ▸ New Group…" — one gesture from a row to a new
+                    // group with that row already in it, then straight into inline rename.
+                    onCreateGroupWithWorkspace={act.newGroupForWorkspace}
                     onDeleteWorkspaces={act.deleteWorkspaces}
                     repos={inspectorData.repos}
                 />
                     </div>
-                    {/* §WS-002: the invisible 6 px handle straddling the sidebar's edge. */}
-                    <SidebarResizer
-                        width={sidebarWidth}
-                        onResize={setSidebarWidth}
-                        onCommit={(width) => {
-                            storeSidebarWidth(width);
-                        }}
-                    />
+                    </div>
+                    {/* §WS-002: the invisible 6 px handle straddling the sidebar's edge. It is
+                        rendered only at rest — mid-slide there is no edge to grab. */}
+                    {sidebarPhase === 'closing' ? null : (
+                        <SidebarResizer
+                            width={sidebarWidth}
+                            onResizeStart={() => setSidebarResizing(true)}
+                            onResize={setSidebarWidth}
+                            onCommit={(width) => {
+                                setSidebarResizing(false);
+                                storeSidebarWidth(width);
+                            }}
+                        />
+                    )}
                 </div>
             ) : null}
 
@@ -3193,10 +3411,16 @@ function Shell(props: AppProps): ReactElement {
                         onDwellClear={act.dwellClear}
                         onMovePane={act.movePaneAdjacent}
                         onCreatePane={act.createPane}
-                        onSetRatio={(_splitPath, _ratio, commit) => {
-                            // No wire verb addresses a split whose children are both splits;
-                            // the grid still previewed it, so silently keep the daemon's tree.
-                            if (commit.paneID === null) return;
+                        onSetRatio={(splitPath, ratio, commit) => {
+                            // A divider whose two children are BOTH splits has no pane whose
+                            // enclosing split it is, so `pane-resize` cannot name it (§LAY-061);
+                            // it goes by split path instead, which is what the layout model and
+                            // Swift's own GUI use. Everything else keeps the pane spelling, so
+                            // a GUI drag and `nex pane resize` stay one pipeline.
+                            if (commit.paneID === null) {
+                                act.setSplitRatioAtPath(splitPath, ratio);
+                                return;
+                            }
                             act.setSplitRatio(commit.paneID, commit.share);
                         }}
                     />
@@ -3316,6 +3540,15 @@ function Shell(props: AppProps): ReactElement {
                 bucket={bucket}
                 /* §SET-021: what the daemon's TCP listener actually did, for Settings ▸ Network. */
                 transport={daemon.transport}
+                /*
+                 * §SET-200/§SET-201: the shell's registration failure, for Settings ▸
+                 * Keybindings ▸ Global. Undefined (no warning) until a shell has reported, and
+                 * cleared the moment one reports success — so re-recording a chord that works
+                 * takes the message away without anything having to remember it was there.
+                 */
+                globalHotkeyError={
+                    hotkeyStatus === null || hotkeyStatus.ok ? null : hotkeyStatus.error
+                }
                 onClose={closeSettings}
                 web={{
                     favourites: webUI.favourites,

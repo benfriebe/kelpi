@@ -80,6 +80,20 @@ export interface GeneralSettings {
      * socket path, so `nex workspace create` without `--group` still lands at top level.
      */
     readonly inheritGroupOnNewWorkspace: boolean;
+    /**
+     * §13's Workspaces ▸ "Expand group when a workspace is dropped into it" (SET-012), default
+     * **true** (`SettingsFeature.State.expandGroupOnWorkspaceDrop`). When a workspace is dropped
+     * onto a COLLAPSED group the group opens so the row it just swallowed is visible; with it
+     * off the group stays shut and the row is filed away out of sight.
+     *
+     * UserDefaults in the Swift app, a config key here for the same multi-client reason as the
+     * flags above, and lenient in the same way: only the literal `false` turns it off.
+     *
+     * Like SET-011 it gates the CLIENT's gesture, not the wire verb: the drop sends the value on
+     * `workspace-move` (`expand_on_drop`), and a `workspace-move` that says nothing — every CLI
+     * one — keeps the always-expand behaviour it has always had.
+     */
+    readonly expandGroupOnWorkspaceDrop: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -98,7 +112,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     worktreeBasePath: DEFAULT_WORKTREE_BASE_PATH_TEMPLATE,
     newWorkspacePlacement: 'end-of-list',
     newGroupPlacement: 'end-of-list',
-    inheritGroupOnNewWorkspace: true
+    inheritGroupOnNewWorkspace: true,
+    expandGroupOnWorkspaceDrop: true
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -176,6 +191,9 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'inherit-group-on-new-workspace':
                 settings = { ...settings, inheritGroupOnNewWorkspace: lowered !== 'false' };
+                break;
+            case 'expand-group-on-workspace-drop':
+                settings = { ...settings, expandGroupOnWorkspaceDrop: lowered !== 'false' };
                 break;
             default:
                 break;

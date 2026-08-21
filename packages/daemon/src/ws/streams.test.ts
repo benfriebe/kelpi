@@ -305,7 +305,10 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
                     applicationCursorKeys: true,
                     bracketedPaste: false,
                     mouseTracking: 'drag',
-                    mouseFormat: 'sgr'
+                    mouseFormat: 'sgr',
+                    // The wire form is total: a mode the seam left absent is sent as its
+                    // default, never omitted, so a client never has to guess (§TERM-030).
+                    kittyKeyboardFlags: 0
                 }
             }
         ]);
@@ -320,6 +323,25 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
 
         expect(h.transport.ofType('pane-modes').at(0)).toMatchObject({
             modes: { mouseTracking: 'none', mouseFormat: 'x10', bracketedPaste: true }
+        });
+    });
+
+    it('carries the kitty keyboard flags to the client (§TERM-030)', async () => {
+        // Same reason as the mouse pair, one wave later: the client encodes key events itself
+        // because the engine has no `keyup` listener, so the negotiated flags have to cross the
+        // socket as state rather than stay inside the daemon's VT.
+        const h = harness();
+        h.term.setModes({
+            applicationCursorKeys: false,
+            bracketedPaste: false,
+            mouseTracking: 'none',
+            mouseFormat: 'x10',
+            kittyKeyboardFlags: 11
+        });
+        await h.session.attach(PANE_A);
+
+        expect(h.transport.ofType('pane-modes').at(0)).toMatchObject({
+            modes: { kittyKeyboardFlags: 11 }
         });
     });
 
@@ -347,7 +369,8 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
                     applicationCursorKeys: false,
                     bracketedPaste: false,
                     mouseTracking: 'any',
-                    mouseFormat: 'urxvt'
+                    mouseFormat: 'urxvt',
+                    kittyKeyboardFlags: 0
                 }
             }
         ]);

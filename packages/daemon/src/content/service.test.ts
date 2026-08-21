@@ -467,6 +467,199 @@ describe('diff panes', () => {
     });
 });
 
+/**
+ * §CONT-107 (cancellation) and §CONT-106 (reacting to a moved scope).
+ *
+ * Both need a `git diff` that does NOT resolve on its own, so this block runs its own service
+ * against a scriptable git: every call parks, hands back its abort signal, and is resolved (or
+ * left hanging) by the test. The fixture above deliberately answers instantly, which is the
+ * wrong instrument for "what happens while git is still running".
+ */
+describe('diff panes: cancellation and rescoping', () => {
+    interface PendingDiff {
+        readonly repoPath: string;
+        readonly targetPath: string | null;
+        readonly signal: AbortSignal | undefined;
+        resolve(text: string): void;
+        reject(error: Error): void;
+    }
+
+    interface SlowFixture {
+        readonly store: ReturnType<typeof harness>;
+        readonly service: ContentService;
+        readonly dir: string;
+        readonly calls: PendingDiff[];
+        readonly seen: ContentPaneState[];
+        dispose(): void;
+    }
+
+    function slowFixture(): SlowFixture {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-content-slow-'));
+        dirs.push(dir);
+        const store = harness(seededState(W1, SHELL));
+        const calls: PendingDiff[] = [];
+        const git: ContentGit = {
+            getDiff: (repoPath, targetPath, options) =>
+                new Promise<string>((resolve, reject) => {
+                    calls.push({
+                        repoPath,
+                        targetPath: targetPath ?? null,
+                        signal: options?.signal,
+                        resolve,
+                        reject
+                    });
+                })
+        };
+        const service = createContentService({
+            store: store.store,
+            git,
+            watch: false,
+            appearance: { backgroundColor: '#101010' }
+        });
+        return { store, service, dir, calls, seen: [], dispose: () => service.dispose() };
+    }
+
+    function openDiffAt(f: SlowFixture, repoPath: string): void {
+        f.store.dispatch({ type: 'open-diff-pane', workspaceID: W1, paneID: DIFF, repoPath, now: NOW });
+    }
+
+    it('CONT-107: a newer load aborts the running git diff, and the stale answer is dropped', async () => {
+        const f = slowFixture();
+        openDiffAt(f, f.dir);
+        const first = f.service.state(DIFF);
+        expect(f.calls).toHaveLength(1);
+        f.calls[0]?.resolve('diff --git a/one b/one\n@@ -1 +1 @@\n-a\n+b\n');
+        await first;
+
+        const subscription = await f.service.subscribe(DIFF, (state) => f.seen.push(state));
+        // Two refreshes in a row — the second supersedes the first while it is still running.
+        const slow = f.service.refresh(DIFF);
+        await tick(0);
+        expect(f.calls).toHaveLength(2);
+        expect(f.calls[1]?.signal?.aborted).toBe(false);
+        const fresh = f.service.refresh(DIFF);
+        await tick(0);
+        expect(f.calls).toHaveLength(3);
+        // The superseded run is cancelled: the signal is what kills the real child process.
+        expect(f.calls[1]?.signal?.aborted).toBe(true);
+        expect(f.calls[2]?.signal?.aborted).toBe(false);
+
+        // The newer run answers first, then the stale one finally comes back with older text.
+        f.calls[2]?.resolve('diff --git a/new b/new\n@@ -1 +1 @@\n-c\n+d\n');
+        await fresh;
+        f.calls[1]?.resolve('diff --git a/stale b/stale\n@@ -1 +1 @@\n-e\n+f\n');
+        await slow;
+        await tick(0);
+
+        const state = await f.service.state(DIFF);
+        expect(state.html).toContain('new</span>');
+        expect(state.html).not.toContain('stale</span>');
+        // …and the pane was told about the new diff exactly once, not once per run.
+        expect(f.seen.filter((entry) => entry.html?.includes('new</span>') === true)).toHaveLength(1);
+        expect(f.seen.some((entry) => entry.html?.includes('stale</span>') === true)).toBe(false);
+        subscription.unsubscribe();
+        f.dispose();
+    });
+
+    it('CONT-107: a cancelled run cannot paint its failure either', async () => {
+        const f = slowFixture();
+        openDiffAt(f, f.dir);
+        const first = f.service.state(DIFF);
+        f.calls[0]?.resolve('diff --git a/one b/one\n@@ -1 +1 @@\n-a\n+b\n');
+        await first;
+
+        const slow = f.service.refresh(DIFF);
+        await tick(0);
+        const fresh = f.service.refresh(DIFF);
+        await tick(0);
+        f.calls[2]?.resolve('diff --git a/new b/new\n@@ -1 +1 @@\n-c\n+d\n');
+        await fresh;
+        // A killed child rejects; that rejection is the caller's own doing, so it is not the
+        // "Failed to run git diff" page.
+        f.calls[1]?.reject(new Error('The operation was aborted'));
+        await slow;
+        await tick(0);
+
+        const state = await f.service.state(DIFF);
+        expect(state.loaded).toBe(true);
+        expect(state.error).toBeNull();
+        expect(state.html).not.toContain('Failed to run git diff');
+        f.dispose();
+    });
+
+    it('CONT-107: closing the pane kills the git diff still running for it', async () => {
+        const f = slowFixture();
+        openDiffAt(f, f.dir);
+        const first = f.service.state(DIFF);
+        f.calls[0]?.resolve('');
+        await first;
+        const subscription = await f.service.subscribe(DIFF, (state) => f.seen.push(state));
+
+        const pending = f.service.refresh(DIFF);
+        await tick(0);
+        expect(f.calls[1]?.signal?.aborted).toBe(false);
+        f.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: DIFF });
+        expect(f.calls[1]?.signal?.aborted).toBe(true);
+
+        f.calls[1]?.reject(new Error('The operation was aborted'));
+        await pending;
+        expect(f.seen).toEqual([]);
+        subscription.unsubscribe();
+        f.dispose();
+    });
+
+    it('CONT-106: a repo path that moves under a live subscription re-runs git at once', async () => {
+        const f = slowFixture();
+        openDiffAt(f, f.dir);
+        const first = f.service.state(DIFF);
+        f.calls[0]?.resolve('diff --git a/old b/old\n@@ -1 +1 @@\n-a\n+b\n');
+        await first;
+        const subscription = await f.service.subscribe(DIFF, (state) => f.seen.push(state));
+
+        const moved = path.join(f.dir, 'other-repo');
+        fs.mkdirSync(moved);
+        // Nothing calls `ensure()` here: the scope change alone has to trigger the re-read.
+        f.store.dispatch({
+            type: 'pane-directory-changed',
+            paneID: DIFF,
+            directory: moved,
+            now: NOW
+        });
+        await tick(0);
+        expect(f.calls).toHaveLength(2);
+        expect(f.calls[1]?.repoPath).toBe(moved);
+
+        f.calls[1]?.resolve('diff --git a/moved b/moved\n@@ -1 +1 @@\n-c\n+d\n');
+        await tick(0);
+        expect(f.seen.at(-1)?.html).toContain('moved</span>');
+        expect((await f.service.state(DIFF)).html).toContain('moved</span>');
+        subscription.unsubscribe();
+        f.dispose();
+    });
+
+    it('CONT-106: a pane change that is NOT a move leaves git alone', async () => {
+        const f = slowFixture();
+        openDiffAt(f, f.dir);
+        const first = f.service.state(DIFF);
+        f.calls[0]?.resolve('diff --git a/one b/one\n@@ -1 +1 @@\n-a\n+b\n');
+        await first;
+        const subscription = await f.service.subscribe(DIFF, (state) => f.seen.push(state));
+
+        // A branch update rides the same `pane-upserted` event as a moved path; only the
+        // SCOPE fields may re-run git, or every pane heartbeat would spawn a process.
+        f.store.dispatch({
+            type: 'pane-branch-changed',
+            paneID: DIFF,
+            branch: 'feature/x'
+        });
+        await tick(0);
+        expect(f.calls).toHaveLength(1);
+        expect(f.seen).toEqual([]);
+        subscription.unsubscribe();
+        f.dispose();
+    });
+});
+
 // ---------------------------------------------------------------------------
 // Assets + appearance
 // ---------------------------------------------------------------------------

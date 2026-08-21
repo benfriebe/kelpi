@@ -26,6 +26,13 @@ const HEADER = 24;
 const SIDE_BY_SIDE = split('horizontal', 0.5, leaf('a'), leaf('b'));
 /** `a | (b / c)` — the nested fixture the frame test walks. */
 const NESTED = split('horizontal', 0.5, leaf('a'), split('vertical', 0.5, leaf('b'), leaf('c')));
+/** `(a / b) | (c / d)` — the `tiled` shape whose ROOT divider has no pane to name it. */
+const TILED_2X2 = split(
+    'horizontal',
+    0.5,
+    split('vertical', 0.5, leaf('a'), leaf('b')),
+    split('vertical', 0.5, leaf('c'), leaf('d'))
+);
 
 function renderGrid(overrides: Partial<PaneGridProps> = {}) {
     const props: PaneGridProps = {
@@ -244,6 +251,33 @@ describe('PaneGrid divider drag', () => {
         expect(commit.direction).toBe('horizontal');
         expect(commit.paneID).toBe('a');
         expect(commit.share).toBeCloseTo((399 + 60) / 798, 12);
+    });
+
+    /**
+     * §LAY-061 — the 2×2 `tiled` root divider: BOTH children are splits, so no pane's
+     * enclosing split is `"d"` and the commit carries no pane at all. The split path is the
+     * only spelling that can move it, and it is the one the daemon's `set-split-ratio` takes.
+     */
+    it('hands a both-children-are-splits divider a split path and no pane', () => {
+        const onSetRatio = vi.fn();
+        renderGrid({
+            onSetRatio,
+            ratioCommitIntervalMs: 0,
+            layout: TILED_2X2,
+            panes: [testPane('a'), testPane('b'), testPane('c'), testPane('d')]
+        });
+        const divider = screen.getByTestId('divider-d');
+        // Pressed ON the root bar and clear of the two column dividers' bands, so the
+        // T-junction re-resolution cannot hand the gesture to one of them.
+        act(() => firePointer(divider, 'pointerdown', { clientX: 399, clientY: 100 }));
+        act(() => firePointer(window, 'pointermove', { clientX: 459, clientY: 100 }));
+        const commit = onSetRatio.mock.calls[0]?.[2] as DividerRatioCommit;
+        expect(commit.splitPath).toBe('d');
+        expect(commit.paneID).toBeNull();
+        // The path-addressed ratio is still the drag's own arithmetic, and `share` degrades to
+        // it so a caller that only knows the pane spelling cannot send a nonsense number.
+        expect(onSetRatio.mock.calls[0]?.[1]).toBeCloseTo((399 + 60) / 798, 12);
+        expect(commit.share).toBeCloseTo(commit.ratio, 12);
     });
 
     it('previews the new frames locally, matching updatingSplitRatio', () => {

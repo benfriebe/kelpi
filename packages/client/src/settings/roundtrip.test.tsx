@@ -231,6 +231,49 @@ describe('a recorded keybinding, end to end', () => {
         expect((screen.getByTestId('keybinding-reset-open_diff') as HTMLButtonElement).disabled).toBe(false);
     });
 
+    /*
+     * §SET-200 / §SET-201: a rejected registration is a WARNING IN SETTINGS, not a log line.
+     *
+     * Assembly is the only place this can be proven. The reason string is produced in the
+     * Electron shell, relayed by the daemon, parked in a store slice and rendered by a section
+     * four components down — every half of that existed already and the chain still did
+     * nothing, because `App` never passed the prop to the overlay.
+     */
+    it('shows the shell’s registration failure on Keybindings, and clears it on success', () => {
+        const h = setup();
+        act(() => {
+            fireEvent.click(screen.getByTestId('sidebar-settings'));
+        });
+        expect(screen.queryByTestId('global-hotkey-failure')).toBeNull();
+
+        act(() => {
+            h.socket().emit({
+                type: 'hotkey-status',
+                accelerator: null,
+                configString: 'ctrl+alt+n',
+                ok: false,
+                error: 'This shortcut is already claimed by another app.',
+                source: 'launch'
+            });
+        });
+        expect(screen.getByTestId('global-hotkey-failure').textContent).toBe(
+            'This shortcut is already claimed by another app.'
+        );
+
+        // …and re-recording something that works takes it away again.
+        act(() => {
+            h.socket().emit({
+                type: 'hotkey-status',
+                accelerator: 'Control+Alt+N',
+                configString: 'ctrl+alt+n',
+                ok: true,
+                error: null,
+                source: 'settings'
+            });
+        });
+        expect(screen.queryByTestId('global-hotkey-failure')).toBeNull();
+    });
+
     it('rebinding also rebuilds the live dispatcher, not just the table', () => {
         const h = setup();
         h.push({ keybindLines: ['ctrl+alt+t=split_right'] });

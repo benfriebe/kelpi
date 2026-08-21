@@ -24,12 +24,19 @@ import headless from '@xterm/headless';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
 
 import type { TerminalStateService, VtModes } from '../seams.js';
+import { trackKittyKeyboard, type KittyKeyboardTracker } from './kitty-keyboard.js';
 import {
     DEFAULT_MOUSE_FORMAT,
     trackMouseFormat,
     type MouseFormatTracker,
     type MouseTrackingMode
 } from './mouse-modes.js';
+import {
+    OSC_NOTIFY_CODE,
+    OSC_NOTIFY_URXVT_CODE,
+    parseOscNotification,
+    type OscNotification
+} from './osc-notify.js';
 import { DEFAULT_RING_CAPACITY_BYTES, RawRingBuffer } from './ring.js';
 import { searchTerminal, type SearchOptions, type TerminalMatch } from './search.js';
 
@@ -81,6 +88,21 @@ export interface TerminalStateOptions {
      */
     readonly onTitleChange?: ((paneID: string, title: string) => void) | undefined;
     /**
+     * **OSC 9 / OSC 777** — a desktop notification raised by the program in the pane
+     * (terminal-panes.md §TERM-050).
+     *
+     * The port's equivalent of libghostty's `GHOSTTY_ACTION_DESKTOP_NOTIFICATION`. Parsed here
+     * for the same reason OSC 7 is: every PTY byte already passes through this emulator, so a
+     * sequence split across two chunks is reassembled by the parser rather than missed by a
+     * scanner. `./osc-notify.ts` owns the grammar; boot owns the suppression matrix and the
+     * broadcast.
+     *
+     * Fires once per well-formed sequence; a malformed or empty one never reaches the callback.
+     */
+    readonly onOscNotification?:
+        | ((paneID: string, notification: OscNotification) => void)
+        | undefined;
+    /**
      * A pane's VT modes changed (`modes()`'s value is not what it was).
      *
      * Exists for the mouse-reporting modes, which the CLIENT acts on: the port encodes DEC
@@ -91,6 +113,19 @@ export interface TerminalStateOptions {
      * Fires only on a REAL transition, after the chunk that caused it has been parsed.
      */
     readonly onModesChange?: ((paneID: string, modes: VtModes) => void) | undefined;
+    /**
+     * Bytes this terminal owes its PTY (§TERM-030).
+     *
+     * A real terminal ANSWERS `CSI ? u` with `CSI ? {flags} u` — that reply is how an
+     * application discovers the kitty keyboard protocol exists and which of its enhancements
+     * this terminal supports (`kitty-keyboard.ts`). It is the only case in this service where
+     * parsing output produces input, so it is a callback rather than a PTY reference: boot owns
+     * the manager, and it writes the reply with `writeDirect` so a device answer is never
+     * mirrored into a synchronise-input sibling.
+     *
+     * Fires synchronously while the chunk that asked is being parsed.
+     */
+    readonly onKittyReply?: ((paneID: string, reply: Uint8Array) => void) | undefined;
 }
 
 export interface GridSize {
@@ -108,7 +143,8 @@ const IDLE_MODES: VtModes = {
     applicationCursorKeys: false,
     bracketedPaste: false,
     mouseTracking: 'none',
-    mouseFormat: DEFAULT_MOUSE_FORMAT
+    mouseFormat: DEFAULT_MOUSE_FORMAT,
+    kittyKeyboardFlags: 0
 };
 
 /** Value equality for the modes object, so `onModesChange` only fires on a real transition. */
@@ -117,7 +153,8 @@ export function sameModes(a: VtModes, b: VtModes): boolean {
         a.applicationCursorKeys === b.applicationCursorKeys &&
         a.bracketedPaste === b.bracketedPaste &&
         (a.mouseTracking ?? 'none') === (b.mouseTracking ?? 'none') &&
-        (a.mouseFormat ?? DEFAULT_MOUSE_FORMAT) === (b.mouseFormat ?? DEFAULT_MOUSE_FORMAT)
+        (a.mouseFormat ?? DEFAULT_MOUSE_FORMAT) === (b.mouseFormat ?? DEFAULT_MOUSE_FORMAT) &&
+        (a.kittyKeyboardFlags ?? 0) === (b.kittyKeyboardFlags ?? 0)
     );
 }
 
@@ -167,6 +204,8 @@ interface PaneTerminal {
     readonly ring: RawRingBuffer;
     /** DEC mouse FORMAT (1005/1006/1015/1016) — the half `IModes` does not expose. */
     readonly mouseFormat: MouseFormatTracker;
+    /** Kitty keyboard protocol flags + per-screen push/pop stacks (`kitty-keyboard.ts`). */
+    readonly kitty: KittyKeyboardTracker;
     /** Last value handed to `onModesChange`, so a repeat DECSET costs no broadcast. */
     lastModes: VtModes;
     /** Writes handed to xterm. */
@@ -209,7 +248,11 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly snapshotScrollbackLines: number | undefined;
     private readonly onDirectoryChange: ((paneID: string, directory: string) => void) | undefined;
     private readonly onTitleChange: ((paneID: string, title: string) => void) | undefined;
+    private readonly onOscNotification:
+        | ((paneID: string, notification: OscNotification) => void)
+        | undefined;
     private readonly onModesChange: ((paneID: string, modes: VtModes) => void) | undefined;
+    private readonly onKittyReply: ((paneID: string, reply: Uint8Array) => void) | undefined;
 
     constructor(options: TerminalStateOptions = {}) {
         this.scrollback = Math.max(0, Math.floor(options.scrollback ?? DEFAULT_SCROLLBACK_LINES));
@@ -222,7 +265,9 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 : Math.max(0, Math.floor(options.snapshotScrollbackLines));
         this.onDirectoryChange = options.onDirectoryChange;
         this.onTitleChange = options.onTitleChange;
+        this.onOscNotification = options.onOscNotification;
         this.onModesChange = options.onModesChange;
+        this.onKittyReply = options.onKittyReply;
     }
 
     // ── lifecycle ───────────────────────────────────────────────────────────────────
@@ -263,6 +308,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         for (const settle of [...entry.settlers]) settle();
         entry.settlers.clear();
         entry.mouseFormat.dispose();
+        entry.kitty.dispose();
         entry.serializer.dispose();
         entry.term.dispose();
         entry.ring.clear();
@@ -515,15 +561,37 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 report(paneID, title);
             });
         }
+        if (this.onOscNotification !== undefined) {
+            const report = this.onOscNotification;
+            // §TERM-050. `false` again — a notification is an observation, not a claim on the
+            // sequence, so xterm's own bookkeeping and any later handler still see it.
+            const notify = (code: number) => (data: string): boolean => {
+                const parsed = parseOscNotification(code, data);
+                if (parsed !== null) report(paneID, parsed);
+                return false;
+            };
+            term.parser.registerOscHandler(OSC_NOTIFY_CODE, notify(OSC_NOTIFY_CODE));
+            term.parser.registerOscHandler(OSC_NOTIFY_URXVT_CODE, notify(OSC_NOTIFY_URXVT_CODE));
+        }
         // Mouse FORMAT has no `IModes` member, so it is tracked off the parser (`mouse-modes.ts`).
         // Registered unconditionally: `modes()` is a synchronous read for every caller, and a
         // pane that starts life without a mode listener can still be attached to later.
         const mouseFormat = trackMouseFormat(term);
+        // §TERM-030. Registered unconditionally for the same reason as the mouse format —
+        // `modes()` is a synchronous read for every caller — but the query REPLY is only wired
+        // when boot supplied a sink, so a service built without one answers nothing rather than
+        // pretending to be a terminal that cannot talk back.
+        const kitty = trackKittyKeyboard(term, {
+            ...(this.onKittyReply === undefined
+                ? {}
+                : { onReply: (reply: Uint8Array) => this.onKittyReply?.(paneID, reply) })
+        });
         const entry: PaneTerminal = {
             term,
             serializer,
             ring: new RawRingBuffer(this.ringCapacityBytes),
             mouseFormat,
+            kitty,
             lastModes: IDLE_MODES,
             issued: 0,
             done: 0,
@@ -543,7 +611,8 @@ function readModes(entry: PaneTerminal): VtModes {
         applicationCursorKeys: modes.applicationCursorKeysMode,
         bracketedPaste: modes.bracketedPasteMode,
         mouseTracking: modes.mouseTrackingMode as MouseTrackingMode,
-        mouseFormat: entry.mouseFormat.format
+        mouseFormat: entry.mouseFormat.format,
+        kittyKeyboardFlags: entry.kitty.flags
     };
 }
 

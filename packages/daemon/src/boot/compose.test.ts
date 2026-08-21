@@ -249,4 +249,42 @@ describe('createDaemon', () => {
         expect(fallback.httpPort).toBeGreaterThan(1024);
         await third.stop();
     }, 30_000);
+
+    /*
+     * §SET-022 / §AGNT-005: `tcp-port` is the one general setting whose effect is a LISTENER,
+     * so a Settings write has to move it NOW rather than being filed away for the next boot.
+     *
+     * Driven through the settings service (the same `set-general-setting` path Settings ▸
+     * General ▸ Network uses), against a daemon with no `NEXD_TCP_PORT` in its environment —
+     * an env-supplied port deliberately outranks the file and is not re-bound (a dev container
+     * asked for that port on the command line).
+     */
+    it('binds, re-binds and tears down the control TCP listener from a live settings write', async () => {
+        const paths = scratch();
+        fs.writeFileSync(paths.configPath, 'tcp-port = 0\n');
+        const daemon = daemonFor(paths);
+        await daemon.start();
+        // Read through the same accessor `ping`, `nexd status` and Settings ▸ Network read, so
+        // this asserts what those three report rather than which server object holds it.
+        const tcp = (): { requested: number; bound: number | null } | null =>
+            (daemon.ctx.controlTransport?.().tcp ?? null) as { requested: number; bound: number | null } | null;
+        expect(tcp()).toBeNull();
+
+        daemon.settings.setGeneralSetting('tcp-port', '49222');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const bound = tcp();
+        // A port that is already taken on the runner is a legitimate outcome of the same call:
+        // what must be true either way is that the daemon TRIED, now, for the new port.
+        expect(bound?.requested).toBe(49222);
+        if (bound?.bound !== null) expect(bound?.bound).toBe(49222);
+
+        // …and turning it off closes it, without a restart.
+        daemon.settings.setGeneralSetting('tcp-port', '0');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(tcp()).toBeNull();
+
+        // The file is the store, in both directions: the last write is what a hand-edit sees.
+        expect(fs.readFileSync(paths.configPath, 'utf8')).toContain('tcp-port = 0');
+        await daemon.stop();
+    }, 30_000);
 });

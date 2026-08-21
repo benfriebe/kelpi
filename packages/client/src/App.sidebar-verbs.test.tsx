@@ -1,0 +1,296 @@
+/**
+ * Assembly tests for the four sidebar row/selection verbs whose *wiring* was the open half —
+ * §WS-048 (a row's Color ▸), §WS-052 (Move to Group ▸ New Group…), §WS-054 (the active-agents
+ * gate on a row delete) and §WS-062 (the bulk-delete confirmation).
+ *
+ * Each of them has a component test already (`Sidebar.test.tsx`, `sidebar-delete-gate.test.tsx`,
+ * `Sidebar.bulk.test.tsx`), and a component test is exactly what could not settle them: they
+ * assert that a callback fires, and the gap in every case was whether assembly passes a callback
+ * at all and whether it reaches the daemon. So these drive the WHOLE client against a scripted
+ * socket and assert the wire frame that comes out the other end — the same shape as
+ * `App.openflow.test.tsx`.
+ */
+
+import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { App } from './App';
+import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
+import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createFakeRendererFactory } from './terminal/testing';
+
+const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
+const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
+const W3 = 'AAAAAAAA-0000-4000-8000-000000000003';
+const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
+const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const PANE_C = 'DDDDDDDD-0000-4000-8000-000000000003';
+const NOW = 1_755_500_000_000;
+
+const NEW_GROUP = 'CCCCCCCC-0000-4000-8000-000000000009';
+
+/**
+ * alpha (idle) · beta (one running agent) · gamma — enough for a gate, a bulk and a group.
+ *
+ * `group` adds the group the daemon would have broadcast, so a test can put the mirror in the
+ * state the reply is about to refer to. (Pushed as a fresh `snapshot`, not a hand-built delta: a
+ * delta the client cannot apply makes it resync, which drops the in-flight command with it.)
+ */
+function snapshotState(options: { group?: { id: string; name: string; members?: string[] } } = {}): JsonObject {
+    const store = createDaemonStore(emptyDaemonState('/Users/test'));
+    store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'alpha', color: 'blue', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'beta', color: 'green', now: NOW });
+    store.dispatch({ type: 'create-workspace', id: W3, paneID: PANE_C, name: 'gamma', color: 'red', now: NOW });
+    // §WS-054's precondition: beta has an agent mid-turn, which is what the gate counts.
+    store.dispatch({
+        type: 'pane-agent-event',
+        paneID: PANE_B,
+        workspaceID: W2,
+        event: { type: 'agentStarted', agent: 'claude' },
+        now: NOW
+    });
+    if (options.group !== undefined) {
+        store.dispatch({
+            type: 'create-group',
+            id: options.group.id,
+            name: options.group.name,
+            now: NOW,
+            initialWorkspaceIDs: options.group.members ?? []
+        });
+    }
+    store.dispatch({ type: 'set-active-workspace', id: W1, now: NOW });
+    return store.getState() as unknown as JsonObject;
+}
+
+interface Harness {
+    readonly runtime: NexRuntime;
+    socket(): FakeWebSocket;
+    commands(): Record<string, unknown>[];
+    lastCommand(name: string): Record<string, unknown> | undefined;
+    /** Answer the newest in-flight command with `{ok:true, ...extra}`. */
+    reply(extra: Record<string, unknown>): void;
+}
+
+function setup(): Harness {
+    const sockets = createFakeSocketFactory();
+    const store = createNexStore();
+    const runtime = createNexRuntime({
+        url: 'ws://daemon.test/ws',
+        token: 'tok',
+        socketFactory: sockets.factory,
+        store,
+        notifications: null,
+        tokenStorage: null,
+        heartbeatIntervalMs: 0,
+        backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
+    });
+    render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} />);
+    act(() => {
+        completeHandshake(sockets.last(), { state: snapshotState() });
+    });
+
+    const frames = (): Record<string, unknown>[] =>
+        sockets
+            .last()
+            .messages()
+            .filter((message) => message['type'] === 'command');
+    return {
+        runtime,
+        socket: () => sockets.last(),
+        commands: () => frames().map((message) => message['payload'] as Record<string, unknown>),
+        lastCommand: (name) =>
+            [...frames()]
+                .reverse()
+                .map((message) => message['payload'] as Record<string, unknown>)
+                .find((payload) => payload['command'] === name),
+        reply(extra) {
+            const frame = [...frames()].reverse()[0];
+            if (frame === undefined) throw new Error('no command in flight');
+            act(() => {
+                sockets.last().emit({ type: 'command-reply', id: frame['id'], reply: { ok: true, ...extra } });
+            });
+        }
+    };
+}
+
+function row(name: string): HTMLElement {
+    const found = screen.getAllByTestId('workspace-row').find((entry) => entry.textContent?.includes(name));
+    if (found === undefined) throw new Error(`no sidebar row for "${name}"`);
+    return found;
+}
+
+/** Right-click a row and hover a submenu parent, returning the submenu panel. */
+function submenuOn(name: string, parent: string): HTMLElement {
+    fireEvent.contextMenu(row(name));
+    fireEvent.mouseEnter(screen.getByText(parent));
+    return screen.getByTestId('context-submenu');
+}
+
+afterEach(cleanup);
+
+describe('a row’s Color ▸ (§WS-048)', () => {
+    it('reaches the daemon as one `set-bulk-color` naming just that workspace', () => {
+        const h = setup();
+        fireEvent.click(within(submenuOn('alpha', 'Color')).getByText('purple'));
+        expect(h.lastCommand('set-bulk-color')).toMatchObject({
+            command: 'set-bulk-color',
+            workspace_ids: [W1],
+            color: 'purple'
+        });
+    });
+
+    it('ticks the colour the workspace already has, rather than nothing', () => {
+        setup();
+        const submenu = submenuOn('beta', 'Color');
+        const ticked = [...submenu.querySelectorAll('[data-menu-item]')].filter(
+            (item) => item.getAttribute('data-checked') === 'true'
+        );
+        expect(ticked.map((item) => item.getAttribute('data-menu-item'))).toEqual(['color:green']);
+    });
+});
+
+describe('Move to Group ▸ New Group… (§WS-052)', () => {
+    it('creates the group WITH the workspace in one command, not a create then a move', () => {
+        const h = setup();
+        fireEvent.click(within(submenuOn('alpha', 'Move to Group')).getByText('New Group…'));
+
+        expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({
+            command: 'create-group-for-workspaces',
+            name: 'New Group',
+            workspace_ids: [W1]
+        });
+        // The half that would have shown the row jumping twice: no separate move goes out.
+        expect(h.lastCommand('workspace-move')).toBeUndefined();
+    });
+
+    it('opens inline rename on the header the REPLY named', async () => {
+        const h = setup();
+        fireEvent.click(within(submenuOn('alpha', 'Move to Group')).getByText('New Group…'));
+
+        // The daemon broadcasts the new group, then answers the command — in that order, which
+        // is what makes the reply's id addressable at all.
+        act(() => {
+            h.socket().emit({
+                type: 'snapshot',
+                seq: 1,
+                state: snapshotState({ group: { id: NEW_GROUP, name: 'New Group', members: [W1] } })
+            });
+        });
+        h.reply({ group_id: NEW_GROUP, name: 'New Group', workspace_ids: [W1] });
+
+        // The rename field opens on the new header — the id existed nowhere but the reply.
+        await waitFor(() => {
+            expect(screen.getByLabelText('Rename New Group')).toBeTruthy();
+        });
+    });
+
+    it('mints "New Group 2" once the placeholder name is taken', () => {
+        const h = setup();
+        act(() => {
+            h.socket().emit({
+                type: 'snapshot',
+                seq: 1,
+                state: snapshotState({ group: { id: NEW_GROUP, name: 'New Group' } })
+            });
+        });
+        fireEvent.click(within(submenuOn('alpha', 'Move to Group')).getByText('New Group…'));
+        expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({ name: 'New Group 2' });
+    });
+});
+
+describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
+    it('names the running agent before deleting a busy workspace', async () => {
+        const h = setup();
+        fireEvent.contextMenu(row('beta'));
+        fireEvent.click(screen.getByText('Delete'));
+
+        const dialog = screen.getByTestId('confirm-dialog');
+        expect(dialog.getAttribute('data-active-agents')).toBe('1');
+        expect(dialog.textContent).toContain('This workspace has 1 active agent');
+        // Nothing has gone out yet: the gate is a gate, not a notice.
+        expect(h.lastCommand('workspace-delete')).toBeUndefined();
+
+        fireEvent.click(within(dialog).getByText('Delete'));
+        await waitFor(() => {
+            expect(h.lastCommand('workspace-delete')).toMatchObject({
+                command: 'workspace-delete',
+                name: W2,
+                // The sidebar's own gate has already asked; the wire guard would ask twice.
+                force: true
+            });
+        });
+    });
+
+    it('shows the plain confirmation for an idle workspace', () => {
+        setup();
+        fireEvent.contextMenu(row('alpha'));
+        fireEvent.click(screen.getByText('Delete'));
+        const dialog = screen.getByTestId('confirm-dialog');
+        expect(dialog.getAttribute('data-active-agents')).toBe('0');
+        expect(dialog.textContent).not.toContain('active agent');
+    });
+
+    it('“Don’t ask again” writes the shared `confirm-workspace-delete` setting (§WS-110)', async () => {
+        const h = setup();
+        fireEvent.contextMenu(row('beta'));
+        fireEvent.click(screen.getByText('Delete'));
+        const dialog = screen.getByTestId('confirm-dialog');
+        fireEvent.click(within(dialog).getByTestId('confirm-suppress'));
+        fireEvent.click(within(dialog).getByText('Delete'));
+
+        await waitFor(() => {
+            expect(h.commands().some((payload) => payload['command'] === 'set-general-setting')).toBe(true);
+        });
+        expect(
+            h
+                .commands()
+                .filter((payload) => payload['command'] === 'set-general-setting')
+                .at(-1)
+        ).toMatchObject({ key: 'confirm-workspace-delete', value: 'false' });
+    });
+});
+
+describe('the bulk-delete confirmation (§WS-062 / §WS-060)', () => {
+    it('raises ONE dialog for the selection and then deletes every row in it', async () => {
+        const h = setup();
+        // ⌘-click builds the selection; alpha + beta, leaving gamma so the guard is not tripped.
+        fireEvent.click(row('alpha'), { metaKey: true });
+        fireEvent.click(row('beta'), { metaKey: true });
+
+        fireEvent.contextMenu(row('alpha'));
+        fireEvent.click(screen.getByText('Delete 2 Workspaces…'));
+
+        const dialogs = screen.getAllByTestId('confirm-dialog');
+        expect(dialogs.length).toBe(1);
+        expect(dialogs[0]?.textContent).toContain('Delete 2 workspaces?');
+        expect(dialogs[0]?.textContent).toContain('This cannot be undone.');
+        expect(h.lastCommand('workspace-delete')).toBeUndefined();
+
+        fireEvent.click(within(dialogs[0] as HTMLElement).getByText('Delete'));
+        await waitFor(() => {
+            expect(
+                h.commands().filter((payload) => payload['command'] === 'workspace-delete').length
+            ).toBe(2);
+        });
+        expect(
+            h
+                .commands()
+                .filter((payload) => payload['command'] === 'workspace-delete')
+                .map((payload) => payload['name'])
+        ).toEqual([W1, W2]);
+        // And the prompt is gone rather than left standing over an already-deleted selection.
+        expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    });
+
+    it('refuses a selection that is every workspace (§WS-060’s guard)', () => {
+        setup();
+        fireEvent.click(row('alpha'), { metaKey: true });
+        fireEvent.click(row('beta'), { metaKey: true });
+        fireEvent.click(row('gamma'), { metaKey: true });
+        fireEvent.contextMenu(row('alpha'));
+        const item = screen.getByText('Delete 3 Workspaces…').closest('[data-menu-item]') as HTMLElement;
+        expect(item.getAttribute('aria-disabled')).toBe('true');
+    });
+});

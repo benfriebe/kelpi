@@ -71,6 +71,45 @@ function check(name, condition, detail = '') {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ── $HOME safety (§APP-006) ─────────────────────────────────────────────────────────
+
+/**
+ * The one thing this smoke must never do.
+ *
+ * The first port of the launch-time skill refresh wrote into the DEVELOPER'S home while this
+ * harness had `HOME` pointed at a throwaway directory, because Electron's `app.getPath('home')`
+ * asks the OS and ignores `$HOME`. The state of the machine's own document is therefore
+ * captured before anything launches, and re-checked after every phase that could have written:
+ * a regression that reintroduces an OS-level home lookup fails here, loudly, instead of being
+ * discovered by the person who lost the file.
+ */
+function readIfPresent(file) {
+    try {
+        return fs.readFileSync(file, 'utf8');
+    } catch {
+        return null;
+    }
+}
+
+const realHome = process.env.HOME ?? os.homedir();
+const realHomeSkillDir = path.join(realHome, '.claude', 'skills', 'nex-agentic');
+const realHomeSkillFile = path.join(realHomeSkillDir, 'SKILL.md');
+const realHomeSkillBefore = readIfPresent(realHomeSkillFile);
+const realHomeMarkerBefore = readIfPresent(path.join(realHomeSkillDir, '.nex-skill.json'));
+
+function assertRealHomeUntouched(label) {
+    check(
+        `${label}: the machine's own ~/.claude/skills document is untouched`,
+        readIfPresent(realHomeSkillFile) === realHomeSkillBefore,
+        realHomeSkillBefore === null ? 'absent before, absent after' : `${realHomeSkillFile} unchanged`
+    );
+    check(
+        `${label}: and nothing was written beside it`,
+        readIfPresent(path.join(realHomeSkillDir, '.nex-skill.json')) === realHomeMarkerBefore,
+        'no marker appeared in the real home'
+    );
+}
+
 /**
  * A deadline that never keeps the process alive on its own — used in `Promise.race` against a
  * child's exit, where the timer is the loser 99% of the time and would otherwise hold the
@@ -205,7 +244,7 @@ async function ensureBuilds() {
  * Every path the daemon and the shell touch, inside one temp directory. `NEXD_SOCKET_PATH`
  * is asserted to not be the production socket — a bug here would reach the user's real app.
  */
-async function makeSandbox(label) {
+async function makeSandbox(label, { skill = 'modified' } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexshell-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -220,17 +259,29 @@ async function makeSandbox(label) {
     fs.writeFileSync(configPath, 'global-hotkey = ctrl+alt+shift+f12\nglobal-hotkey-hide-on-repress = true\n');
 
     /**
-     * §APP-006's fixture: a document this sandbox HOME already carries, laid down so the launch
-     * step that would refresh it can be observed NOT writing (see `src/main.ts` for why that
-     * step is inert). Inside the throwaway HOME, so nothing here can reach a real one.
+     * §APP-006's fixture, inside the throwaway HOME so nothing here can reach a real one.
+     *
+     *   - `modified`: the user has the skill installed AND has edited it (no ownership marker).
+     *     The launch must leave it byte-for-byte alone.
+     *   - `empty`: the directory exists — the user opted in — but the document is missing. The
+     *     launch must fill it in from the bundle.
+     *
+     * The third case, a HOME with no skill directory at all, is `skill.test.ts`'s: it needs an
+     * absence to assert, and a smoke phase that installed nothing would be indistinguishable
+     * from one where the step never ran.
      */
     const installedSkill = path.join(home, '.claude', 'skills', 'nex-agentic');
     fs.mkdirSync(installedSkill, { recursive: true });
-    fs.writeFileSync(path.join(installedSkill, 'SKILL.md'), '# nex-agentic\n\nlast month\n');
+    const skillFile = path.join(installedSkill, 'SKILL.md');
+    if (skill === 'modified') fs.writeFileSync(skillFile, '# nex-agentic\n\nlast month\n');
 
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
+        // The unpackaged shell has no `Contents/Resources/cli/skills`, so the launch step is
+        // pointed at the checkout's copy — the same escape hatch `--skill-source` gives the CLI.
+        // It only names a SOURCE; the destination still comes from the HOME above.
+        NEX_SKILL_SOURCE: path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic'),
         NEXD_RUN_DIR: path.join(root, 'run'),
         NEXD_SOCKET_PATH: socketPath,
         NEXD_TCP_PORT: String(await freePort()),
@@ -249,6 +300,8 @@ async function makeSandbox(label) {
         env,
         userData,
         installedSkill,
+        skillFile,
+        skillFixture: skill,
         runDir: env.NEXD_RUN_DIR,
         socketPath,
         httpPort: Number(env.NEXD_HTTP_PORT),
@@ -484,17 +537,29 @@ async function adoptPhase() {
         check('the Help menu offers "Nex Help" on ⌘?', menu.includes('Nex Help (⌘?)'), menu.trim());
 
         /*
-         * §APP-006's launch step is deliberately inert (see `src/main.ts`), so the only thing
-         * there is to assert is that the launch order reaches it and it writes nothing. The
-         * fixture this sandbox lays down beside it stays untouched, which is the check.
+         * §APP-006, the half that matters most: this HOME carries a skill document the user
+         * EDITED (no ownership marker beside it), and the launch step must leave it exactly as
+         * it found it. `phase 2` asserts the other half — an opted-in directory with no
+         * document gets one.
          */
         const refreshLine = await shell.waitForLine(/skill-refresh:/, 'the skill-refresh step', 20_000);
         check('the launch order reaches its documentation-refresh slot', refreshLine !== undefined, refreshLine.trim());
         check(
-            'and that slot writes nothing — the sandbox fixture is byte-for-byte as laid down',
-            fs.readFileSync(path.join(sandbox.installedSkill, 'SKILL.md'), 'utf8').includes('last month'),
+            'it declines to touch a document it cannot prove it wrote',
+            refreshLine.includes('skipped (user-modified)'),
+            refreshLine.trim()
+        );
+        check(
+            'and the edited fixture is byte-for-byte as laid down',
+            fs.readFileSync(sandbox.skillFile, 'utf8') === '# nex-agentic\n\nlast month\n',
             'fixture unchanged'
         );
+        check(
+            'no ownership marker was written beside it either — no write means no write',
+            !fs.existsSync(path.join(sandbox.installedSkill, '.nex-skill.json')),
+            'no marker'
+        );
+        assertRealHomeUntouched('phase 1');
 
         // ── a file opened from outside the app (CONT-124/125, APP-100/101) ──────────
         const markdownTarget = path.join(sandbox.env.HOME, 'smoke-open.md');
@@ -627,7 +692,9 @@ async function adoptPhase() {
 
 async function spawnPhase() {
     process.stdout.write('\nphase 2 — spawn a daemon when none is running\n');
-    const sandbox = await makeSandbox('spawn');
+    // §APP-006's other half: this HOME has opted into the skill (the directory is there) but
+    // carries no document, so the launch step has to fill it in from the bundle.
+    const sandbox = await makeSandbox('spawn', { skill: 'empty' });
     let shell;
     let spawnedPid;
     try {
@@ -650,6 +717,33 @@ async function spawnPhase() {
         );
         spawnedPid = record.pid;
         check('the daemon recorded its pid and port', typeof spawnedPid === 'number' && record.http_port > 0, JSON.stringify(record));
+
+        /*
+         * §APP-006 — the install case. The sandbox HOME has the skill directory and no
+         * document; the launch writes the bundled one into it, byte for byte, plus the
+         * ownership marker that is what lets a LATER launch tell its own copy from a user's.
+         */
+        const refreshLine = await shell.waitForLine(/skill-refresh:/, 'the skill-refresh step', 20_000);
+        check(
+            'the launch installs the bundled skill into an opted-in HOME',
+            refreshLine.includes('installed (absent)'),
+            refreshLine.trim()
+        );
+        const bundledSkill = readIfPresent(
+            path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic', 'SKILL.md')
+        );
+        check(
+            'and what landed is byte-for-byte the bundled document',
+            bundledSkill !== null && readIfPresent(sandbox.skillFile) === bundledSkill,
+            sandbox.skillFile
+        );
+        const marker = JSON.parse(readIfPresent(path.join(sandbox.installedSkill, '.nex-skill.json')) ?? 'null');
+        check(
+            'with an ownership marker recording the hash it wrote',
+            marker !== null && typeof marker.installedHash === 'string' && marker.by === 'nex-shell',
+            JSON.stringify(marker)
+        );
+        assertRealHomeUntouched('phase 2');
 
         await shell.quit('SIGTERM');
         const ping = await controlPing(sandbox.runSocket);

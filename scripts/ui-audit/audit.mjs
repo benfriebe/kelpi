@@ -351,9 +351,50 @@ function makeRepo(sandbox) {
     return repo;
 }
 
+/**
+ * The markers the cross-origin-iframe console step looks for (WEB-073).
+ *
+ * Deliberately unmistakable strings: the step asserts they arrive in the pane's console buffer,
+ * and a substring that could also come from Chromium's own logging would prove nothing.
+ */
+const OOPIF_MARKERS = {
+    top: 'NEX-OOPIF-TOP',
+    child: 'NEX-OOPIF-LOG',
+    thrown: 'NEX-OOPIF-THROW'
+};
+
 /** A local site for the web pane — a real origin beats `about:blank` for judging embedding. */
 async function startFixtureSite() {
     const port = await freePort();
+    /**
+     * A SECOND server, on a second host name, for WEB-073's cross-origin iframe.
+     *
+     * A second PORT would not have been enough: to Chromium a "site" is scheme + eTLD+1 and the
+     * port is not part of it, so `127.0.0.1:A` embedding `127.0.0.1:B` is same-site and stays in
+     * one renderer. `localhost` and the IP literal `127.0.0.1` ARE different sites, so this is
+     * the loopback-only way to get a frame Chromium will put in its own process (and therefore
+     * its own CDP target) when site isolation is on. Both listeners stay on the loopback.
+     */
+    const framePort = await freePort();
+    const frameOrigin = `http://localhost:${String(framePort)}`;
+    const frameBody = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Nex cross-origin child</title></head>
+<body style="font:14px/1.4 -apple-system,system-ui,sans-serif;background:#134e4a;color:#ccfbf1;margin:0;padding:12px">
+  <p id="child-frame-body">A child frame from a second origin.</p>
+  <script>
+    // Both halves of WEB-073 in one script: the console line comes first, then the uncaught
+    // throw ends the script — so the log has already happened when the exception is raised.
+    console.log('${OOPIF_MARKERS.child} child frame speaking');
+    throw new Error('${OOPIF_MARKERS.thrown} raised inside the child frame');
+  </script>
+</body></html>`;
+    const oopifBody = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Nex cross-origin host</title></head>
+<body style="font:15px/1.5 -apple-system,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:16px">
+  <h1 style="font-size:18px;margin:0 0 12px">Cross-origin embed</h1>
+  <iframe id="child" src="${frameOrigin}/frame" width="560" height="120" style="border:1px solid #334155;border-radius:8px"></iframe>
+  <script>console.log('${OOPIF_MARKERS.top} top document speaking');</script>
+</body></html>`;
     const body = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Nex UI Audit Fixture</title>
 <style>
@@ -404,6 +445,12 @@ async function startFixtureSite() {
             }, 2500).unref?.();
             return;
         }
+        /** WEB-073's host page: origin A embedding origin B. No cookie, so nothing else moves. */
+        if ((request.url ?? '').startsWith('/oopif')) {
+            response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+            response.end(oopifBody);
+            return;
+        }
         response.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             // The cookie panel needs a real cookie to list, and a page that sets one through a
@@ -414,11 +461,49 @@ async function startFixtureSite() {
     });
     await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
     server.unref();
+
+    const frameHandler = (_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end(frameBody);
+    };
+    const frameServer = http.createServer(frameHandler);
+    await new Promise((resolve) => frameServer.listen(framePort, '127.0.0.1', resolve));
+    frameServer.unref();
+    /**
+     * …and the same port on `::1`.
+     *
+     * `localhost` resolves to BOTH loopback families on macOS and Chromium may try either
+     * first. A v4-only listener usually still works (it falls back), but "usually" is not what
+     * a fixture is for — a second listener makes the hostname answer whichever it picks.
+     */
+    const frameServer6 = http.createServer(frameHandler);
+    frameServer6.on('error', () => {
+        // No IPv6 loopback on this machine: the v4 listener above is the whole fixture then.
+    });
+    await new Promise((resolve) => {
+        frameServer6.once('error', resolve);
+        frameServer6.listen(framePort, '::1', resolve);
+    });
+    frameServer6.unref();
+
     return {
         port,
         url: `http://127.0.0.1:${String(port)}/`,
         slowURL: `http://127.0.0.1:${String(port)}/slow`,
-        close: () => server.close()
+        /** WEB-073: origin A's page whose iframe comes from origin B. */
+        oopifURL: `http://127.0.0.1:${String(port)}/oopif`,
+        frameOrigin,
+        frameURL: `${frameOrigin}/frame`,
+        markers: OOPIF_MARKERS,
+        close: () => {
+            server.close();
+            frameServer.close();
+            try {
+                frameServer6.close();
+            } catch {
+                // never bound
+            }
+        }
     };
 }
 
@@ -2110,6 +2195,137 @@ function buildFlows(ctx) {
             }
         },
         {
+            /**
+             * §LAY-061 — the divider that no PANE can address.
+             *
+             * `pane-resize` names a pane and resolves that pane's *enclosing* split, so the root
+             * divider of a 2×2 `tiled` grid (both children are splits) had no spelling on the
+             * wire at all: the grid previewed the drag and the daemon never heard about it. The
+             * discriminator is therefore NOT "did the panes move" — a local preview moves them
+             * either way — but whether the DAEMON'S tree agrees afterwards. So this drags the
+             * root divider and then makes the daemon send a fresh layout (a CLI resize of a
+             * DIFFERENT split), which discards any local preview, and re-measures.
+             */
+            id: 'layout-nested-divider',
+            expect:
+                'In a 2×2 tiled grid, dragging the ROOT divider widens the left column — and the widths survive a layout broadcast from the daemon, because the daemon stored the ratio.',
+            needsEyes: true,
+            async run(recorder) {
+                const anchorPane = (await domPaneIDs(page))[0];
+                const initialIDs = await domPaneIDs(page);
+                for (let count = initialIDs.length; count < 4; count++) {
+                    // Direction is irrelevant — `layout select tiled` rebuilds the tree below.
+                    await cli.run(['pane', 'split', '--target', anchorPane]);
+                    await sleep(900);
+                }
+                recorder.note(`panes: ${String((await domPaneIDs(page)).length)}`);
+                await cli.run(['layout', 'select', 'tiled'], { paneID: anchorPane });
+                await sleep(1400);
+                await recorder.shot(page, 'tiled');
+
+                const dividers = await page.eval(
+                    `Array.from(document.querySelectorAll('[data-testid^="divider-"]')).map(el => {
+                        const r = el.getBoundingClientRect();
+                        return { id: el.getAttribute('data-testid').slice(8), x: r.x + r.width/2, y: r.y + r.height/2, w: r.width, h: r.height, top: r.y, height: r.height };
+                    })`
+                );
+                recorder.note(`dividers: ${JSON.stringify(dividers)}`);
+                const root = (dividers ?? []).find((divider) => divider.id === 'd');
+                const children = (dividers ?? []).filter((divider) => divider.id !== 'd').map((divider) => divider.id);
+                // The premise of the item: the root's two children are splits of their own
+                // ("dL" and "dR" both exist), so no pane's enclosing split IS the root.
+                recorder.check(
+                    'the root divider has a split on BOTH sides (no pane can name it)',
+                    root !== undefined && children.includes('dL') && children.includes('dR'),
+                    `dividers: ${JSON.stringify((dividers ?? []).map((divider) => divider.id))}`
+                );
+                if (root === undefined) return;
+
+                // Grab a point on the root bar that is clear of the column dividers' strips.
+                let grabY = root.top + root.height * 0.12;
+                let owner = null;
+                for (const fraction of [0.12, 0.2, 0.8, 0.88, 0.5]) {
+                    const candidate = root.top + root.height * fraction;
+                    owner = await page.eval(
+                        `(() => { const el = document.elementFromPoint(${String(root.x)}, ${String(candidate)});
+                                  return el?.closest?.('[data-testid^="divider-"]')?.getAttribute('data-testid') ?? String(el?.tagName ?? 'none'); })()`
+                    );
+                    if (owner === 'divider-d') {
+                        grabY = candidate;
+                        break;
+                    }
+                }
+                recorder.check(
+                    'the root divider is grabbable clear of the T-junctions',
+                    owner === 'divider-d',
+                    `elementFromPoint at x=${String(Math.round(root.x))} resolved to ${String(owner)}`
+                );
+
+                const columnExpr = `(() => {
+                    const boxes = Array.from(document.querySelectorAll('[data-testid^="pane-header-"]'))
+                        .map(el => el.parentElement.getBoundingClientRect());
+                    const left = boxes.filter(b => b.x < ${String(root.x)});
+                    return { left: left.length,
+                             divider: Math.round((document.querySelector('[data-testid="divider-d"]')?.getBoundingClientRect().x) ?? -1) };
+                })()`;
+                const before = await page.eval(columnExpr);
+                await page.mouse('mouseMoved', root.x, grabY, { button: 'none', buttons: 0 });
+                await page.mouse('mousePressed', root.x, grabY, { button: 'left', clickCount: 1 });
+                for (let step = 1; step <= 10; step++) {
+                    await page.mouse('mouseMoved', root.x + step * 14, grabY, { button: 'left', buttons: 1 });
+                    await sleep(25);
+                }
+                await page.mouse('mouseReleased', root.x + 140, grabY, { button: 'left', clickCount: 1 });
+                await sleep(1000);
+                const dragged = await page.eval(columnExpr);
+                await recorder.shot(page, 'dragged');
+                recorder.note(`root divider x: ${String(before?.divider)} → ${String(dragged?.divider)}`);
+                recorder.check(
+                    'the drag moved the root divider right',
+                    (dragged?.divider ?? 0) - (before?.divider ?? 0) > 60,
+                    `${String(before?.divider)} → ${String(dragged?.divider)} (dragged +140px)`
+                );
+
+                /**
+                 * Now make the daemon speak. A `pane resize` on one of the COLUMN splits sends a
+                 * whole new layout down the delta stream, and a client preview is dropped the
+                 * moment a newer layout arrives — so a root ratio that only ever lived in this
+                 * client would snap back to the middle here.
+                 */
+                const inLeft = await page.eval(
+                    `Array.from(document.querySelectorAll('[data-testid^="pane-header-"]'))
+                        .filter(el => el.parentElement.getBoundingClientRect().x < ${String(root.x)})
+                        .map(el => el.getAttribute('data-testid').slice(12))`
+                );
+                const victim = (inLeft ?? [])[0];
+                if (victim === undefined) {
+                    recorder.check('a pane in the left column to resize', false, JSON.stringify(inLeft));
+                    return;
+                }
+                await cli.run(['pane', 'resize', '--target', victim, '--ratio', '0.35']);
+                await sleep(1400);
+                const echoed = await page.eval(columnExpr);
+                await recorder.shot(page, 'after-broadcast');
+                recorder.note(`root divider after a daemon layout broadcast: ${String(echoed?.divider)}`);
+                recorder.check(
+                    'the daemon has the root ratio: a fresh layout keeps the dragged columns',
+                    Math.abs((echoed?.divider ?? 0) - (dragged?.divider ?? 0)) <= 8,
+                    `dragged ${String(dragged?.divider)} → after broadcast ${String(echoed?.divider)} ` +
+                        `(a client-only ratio would return to ~${String(before?.divider)})`
+                );
+                recorder.eyes(
+                    'two unequal columns, the left one wider, with the left column’s own row split ' +
+                        'resized by the CLI — and nothing snapped back to 50/50.'
+                );
+
+                // Hand the grid back roughly as it was found: close the panes this step added.
+                for (const id of (await domPaneIDs(page)).filter((paneID) => !initialIDs.includes(paneID))) {
+                    await cli.run(['pane', 'close', '--target', id]);
+                    await sleep(700);
+                }
+            }
+        },
+        {
             id: 'close-pane',
             expect: '⌘W closes the focused pane and the survivors re-flow to fill the space.',
             async run(recorder) {
@@ -2664,6 +2880,144 @@ function buildFlows(ctx) {
                 );
                 recorder.check('⌘E returned to preview', back === 0, `${String(back)} textareas remain`);
                 recorder.eyes('is the editor monospaced and legible, and does the header pencil/eye icon flip?');
+            }
+        },
+        {
+            /**
+             * §CONT-078 — the ruler's cache and its visible-rect drawing, on a document big
+             * enough for the difference to matter.
+             *
+             * `LineNumberRulerView` keeps a cached line-start array and draws numbers only for
+             * the visible character range; the port used to recount the buffer on every render
+             * and emit one `<div>` per line, so a 4,000-line file was 4,000 nodes. Both halves
+             * have to hold on screen: the node count stays bounded, AND the numbers are still
+             * the right ones — a window that drifts is worse than no window.
+             */
+            id: 'content-gutter-window',
+            expect:
+                'A 4,000-line file opened in the editor draws only the gutter numbers over the viewport, and after scrolling those numbers are the lines actually on screen.',
+            needsEyes: true,
+            async run(recorder) {
+                const LINES = 4000;
+                const file = path.join(work, 'LONG.md');
+                fs.writeFileSync(
+                    file,
+                    `${Array.from({ length: LINES }, (_unused, index) => `line ${String(index + 1)} of the gutter fixture`).join('\n')}\n`
+                );
+                const opened = await cli.ok(['md', file]);
+                recorder.note(`cli: ${opened.trim()}`);
+                await sleep(2200);
+                const panes = await cli.json(['pane', 'list', '--json']);
+                const pane = panes.filter((entry) => entry.type === 'markdown').at(-1);
+                recorder.check(
+                    'the long file opened in a markdown pane',
+                    pane !== undefined,
+                    panes.map((entry) => entry.type).join(', ')
+                );
+                if (pane === undefined) return;
+
+                await page.click(`[data-testid="pane-header-${pane.id}"]`);
+                await sleep(400);
+                await page.key('KeyE', { modifiers: MOD.meta });
+                await sleep(1600);
+                await recorder.shot(page, 'top');
+
+                const gutterExpr = `(() => {
+                    const gutter = document.querySelector('[data-testid="content-gutter-${pane.id}"]');
+                    const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
+                    if (gutter === null || area === null) return null;
+                    const rows = Array.from(gutter.firstElementChild?.children ?? []).map(el => el.textContent.trim());
+                    const box = area.getBoundingClientRect();
+                    return { lines: gutter.getAttribute('data-lines'),
+                             window: gutter.getAttribute('data-window'),
+                             nodes: rows.length,
+                             first: rows[0] ?? null,
+                             last: rows[rows.length - 1] ?? null,
+                             scrollTop: Math.round(area.scrollTop),
+                             viewport: Math.round(box.height) };
+                })()`;
+
+                const top = await page.eval(gutterExpr);
+                recorder.note(`gutter at the top: ${JSON.stringify(top)}`);
+                if (top === null) {
+                    recorder.check('the editor and its gutter are on screen', false, 'no gutter element');
+                    return;
+                }
+                recorder.check(
+                    'the gutter knows the whole document',
+                    top.lines === String(LINES + 1),
+                    `data-lines=${String(top.lines)} for a ${String(LINES)}-line file with a trailing newline`
+                );
+                recorder.check(
+                    'it draws a viewport-sized window, not one node per line',
+                    top.nodes > 0 && top.nodes < 200,
+                    `${String(top.nodes)} number nodes for ${String(top.lines)} lines (window ${String(top.window)})`
+                );
+                recorder.check('the first number is 1 at the top', top.first === '1', String(top.first));
+
+                // Scroll a long way down and re-read: the window has to MOVE with the text.
+                const jump = 2000;
+                await page.eval(
+                    `(() => { const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
+                              area.scrollTop = ${String(jump)} * 19.5;
+                              area.dispatchEvent(new Event('scroll', { bubbles: true }));
+                              return area.scrollTop; })()`
+                );
+                await sleep(700);
+                await recorder.shot(page, 'scrolled');
+                const scrolled = await page.eval(gutterExpr);
+                recorder.note(`gutter after scrolling to ~line ${String(jump)}: ${JSON.stringify(scrolled)}`);
+                const firstDrawn = Number(scrolled?.first ?? 0);
+                recorder.check(
+                    'the drawn numbers follow the scroll instead of staying at 1',
+                    firstDrawn > jump - 40 && firstDrawn <= jump + 2,
+                    `first drawn number ${String(scrolled?.first)} at scrollTop ${String(scrolled?.scrollTop)}`
+                );
+                recorder.check(
+                    'the window stays bounded after scrolling',
+                    (scrolled?.nodes ?? 0) > 0 && (scrolled?.nodes ?? 0) < 200,
+                    `${String(scrolled?.nodes)} nodes (window ${String(scrolled?.window)})`
+                );
+
+                /**
+                 * Alignment is the half a node count cannot show: number N has to sit on the row
+                 * it numbers. The gutter block is translated by the textarea's own scrollTop, so
+                 * what is checked is that the first drawn row lands where its line's text is.
+                 */
+                const aligned = await page.eval(
+                    `(() => {
+                        const gutter = document.querySelector('[data-testid="content-gutter-${pane.id}"]');
+                        const inner = gutter?.firstElementChild ?? null;
+                        const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
+                        if (inner === null || area === null) return null;
+                        const rows = Array.from(inner.children);
+                        const firstNumber = Number(rows[0]?.textContent.trim() ?? '0');
+                        const rowTop = rows[0]?.getBoundingClientRect().top ?? 0;
+                        const areaTop = area.getBoundingClientRect().top;
+                        const lineHeight = rows.length > 1
+                            ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top
+                            : 0;
+                        // Where that line's text sits: padding (12) + (n-1) rows, minus scroll.
+                        const expected = areaTop + 12 + (firstNumber - 1) * lineHeight - area.scrollTop;
+                        return { firstNumber, lineHeight: Math.round(lineHeight * 100) / 100,
+                                 delta: Math.round((rowTop - expected) * 100) / 100 };
+                    })()`
+                );
+                recorder.note(`gutter alignment: ${JSON.stringify(aligned)}`);
+                recorder.check(
+                    'the first drawn number sits on the row it numbers',
+                    aligned !== null && Math.abs(aligned.delta) <= 1.5,
+                    `off by ${String(aligned?.delta)} px (row height ${String(aligned?.lineHeight)})`
+                );
+                recorder.eyes(
+                    'the gutter should read as a continuous column of four-digit line numbers beside the ' +
+                        'text they belong to — no gaps, no numbers restarting at 1, nothing clipped.'
+                );
+
+                // Leave the grid as it was found: this pane is this step's fixture, not a later
+                // step's (`state.mdPane` is untouched).
+                await cli.run(['pane', 'close', '--target', pane.id]);
+                await sleep(900);
             }
         },
         {
@@ -4673,6 +5027,196 @@ function buildFlows(ctx) {
             }
         },
 
+        {
+            /**
+             * WEB-073: the console lines of a frame that is NOT in the tab's renderer.
+             *
+             * The Swift host injected its console script `forMainFrameOnly:false`, so an iframe's
+             * lines rode the same message handler into the pane's ring buffer. The CDP branch only
+             * gets that for free while the frame shares the tab's process; a cross-SITE frame is a
+             * separate target with a separate session, and nothing reaches the buffer unless the
+             * host attaches to it (`packages/shell/src/webhost/frames.ts`).
+             *
+             * So the fixture serves origin B (`localhost:<port>`) inside origin A
+             * (`127.0.0.1:<port>`) — different sites to Chromium, which is what a second port
+             * alone would not have been — and this step asserts BOTH halves land: the child
+             * frame's `console.log` and its uncaught `throw`, in the hosting pane's buffer, under
+             * the hosting TAB's id.
+             */
+            id: 'web-console-frames',
+            expect:
+                'A cross-origin iframe\'s console.log AND its uncaught exception both reach `nex web console` for the pane that embeds it, attributed to that pane\'s tab (WEB-073).',
+            needsEyes: true,
+            async run(recorder) {
+                const opened = await cli.ok(['web', 'open', site.oopifURL], { timeoutMs: 60_000 });
+                recorder.note(`cli: ${opened.trim()}`);
+                const paneID = (/open ok:\s*([0-9a-f-]{36})/i.exec(opened) ?? [])[1] ?? null;
+                recorder.check('the cross-origin host page opened in a web pane', paneID !== null, opened.trim());
+                if (paneID === null) return;
+                // The child frame has to be fetched, attached, run its script and throw before
+                // any of it can be in the buffer.
+                await sleep(4000);
+                await recorder.shot(page);
+
+                const tabs = await cli.json(['web', 'tabs', '--target', paneID, '--json'], { timeoutMs: 40_000 });
+                const activeTab = (Array.isArray(tabs) ? tabs : []).find((tab) => tab.active === true) ?? tabs[0];
+                recorder.note(`tab: ${String(activeTab?.id)} ${String(activeTab?.url)}`);
+
+                /**
+                 * Was the frame actually out of process? Two independent answers.
+                 *
+                 * The host's own: it logs every child CDP session it attaches. The browser's:
+                 * an OOPIF gets its own entry in the target list. If BOTH say no, the mechanism
+                 * under test was never exercised and the assertions below would be passing on
+                 * the same-process path that already worked — which is why this is asserted and
+                 * not merely noted.
+                 */
+                const attachLines = (runtime.shell?.lines ?? []).filter((line) =>
+                    line.includes('attached child cdp session')
+                );
+                const forThisPane = attachLines.filter((line) => line.includes(paneID));
+                recorder.block(
+                    'shell: child cdp sessions',
+                    (attachLines.length === 0 ? '(none)' : attachLines.join('\n')).slice(0, 1200)
+                );
+                const targets = await listTargets(sandbox.debugPort);
+                const frameTarget = targets.find(
+                    (entry) => typeof entry.url === 'string' && entry.url.startsWith(site.frameOrigin)
+                );
+                recorder.note(
+                    `browser targets for ${site.frameOrigin}: ${frameTarget === undefined ? 'none' : `${String(frameTarget.type)} ${String(frameTarget.url)}`}`
+                );
+                /*
+                 * The attach line carries the type but usually NOT the URL: Chromium announces
+                 * the target before the frame commits its document, so `targetInfo.url` is `""`
+                 * at that instant. That is precisely why `frames.ts` keeps the URL current from
+                 * `Target.targetInfoChanged` and falls back to the tab's URL — and the last
+                 * assertion in this step (the frame's own url on the forwarded line) is what
+                 * proves the update happened.
+                 */
+                recorder.check(
+                    'the host attached a child CDP session for this pane\'s cross-origin frame',
+                    forThisPane.some((line) => line.includes('(iframe)')),
+                    forThisPane.join(' | ').slice(0, 400) || '(no child session attached)'
+                );
+                recorder.check(
+                    'and Chromium really put that frame out of process — it has its own `iframe` target',
+                    frameTarget?.type === 'iframe',
+                    `${String(frameTarget?.type)} ${String(frameTarget?.url)}`
+                );
+
+                /**
+                 * A liveness check on the page itself — and an honest note about its limits.
+                 *
+                 * The hazard this step was written around is that a tab whose renderer is left
+                 * "waiting for the debugger" passes every non-visual assertion (scripts run,
+                 * `Runtime.evaluate` answers, layout is right to the device pixel) and renders
+                 * nothing at all. `performance.getEntriesByType('paint')` is the closest
+                 * programmatic signal: a `first-contentful-paint` entry means the renderer got as
+                 * far as painting content.
+                 *
+                 * It is NOT a substitute for the screenshot. Blank panes photographed twice
+                 * during this item's work, and when the configuration that produced them was
+                 * re-run under this check the pages rendered — so the check has never been seen
+                 * to fail, and what settles "is the page visible" is the shot plus the eyes
+                 * prompt at the end of this step.
+                 */
+                const hostTarget = targets.find(
+                    (entry) =>
+                        entry.type === 'page' && typeof entry.url === 'string' && entry.url.startsWith(site.oopifURL)
+                );
+                if (hostTarget === undefined) {
+                    recorder.check('the embedded host page has its own CDP target', false, `${String(targets.length)} targets`);
+                } else {
+                    const view = await connect(hostTarget.webSocketDebuggerUrl, { repoRoot });
+                    const paints = await view.eval(
+                        `performance.getEntriesByType('paint').map((entry) => entry.name).join(',')`
+                    );
+                    view.close();
+                    recorder.note(`paint timeline: ${String(paints) === '' ? '(none)' : String(paints)}`);
+                    recorder.check(
+                        'the embedded page reported a first paint (necessary, not sufficient — the shot below is the visual claim)',
+                        String(paints).includes('first-contentful-paint'),
+                        String(paints) === '' ? '(no paint entries)' : String(paints)
+                    );
+                }
+
+                const drain = await cli.json(['web', 'console', '--target', paneID, '--json'], { timeoutMs: 40_000 });
+                const lines = Array.isArray(drain.lines) ? drain.lines : [];
+                recorder.block(
+                    'nex web console --json',
+                    lines
+                        .map((line) => `${String(line.level)} [${String(line.tab_id).slice(0, 8)}] ${String(line.url)} — ${String(line.message)}`)
+                        .join('\n')
+                        .slice(0, 2000) || '(no lines)'
+                );
+                const withMarker = (marker) => lines.filter((line) => String(line.message).includes(marker));
+
+                // The control: the TOP document's line, which the tab's own session always saw.
+                recorder.check(
+                    'the top document\'s console line is in the buffer',
+                    withMarker(site.markers.top).length > 0,
+                    site.markers.top
+                );
+                const childLines = withMarker(site.markers.child);
+                recorder.check(
+                    'the CROSS-ORIGIN frame\'s console.log reached the pane\'s ring buffer (WEB-073)',
+                    childLines.length > 0,
+                    `${String(childLines.length)} line(s) matching ${site.markers.child}`
+                );
+                const thrownLines = withMarker(site.markers.thrown);
+                recorder.check(
+                    'the cross-origin frame\'s uncaught exception reached it too, as an error',
+                    thrownLines.some((line) => line.level === 'error'),
+                    thrownLines.map((line) => `${String(line.level)}: ${String(line.message)}`).join(' | ').slice(0, 300) || '(none)'
+                );
+                recorder.check(
+                    'every forwarded frame line is attributed to the hosting TAB, not to a frame id',
+                    [...childLines, ...thrownLines].length > 0 &&
+                        [...childLines, ...thrownLines].every((line) => line.tab_id === activeTab?.id),
+                    `tab ${String(activeTab?.id).slice(0, 8)} vs ${[...childLines, ...thrownLines].map((line) => String(line.tab_id).slice(0, 8)).join(',')}`
+                );
+                recorder.check(
+                    '…and carries the FRAME\'s own url, so the line can still be placed',
+                    childLines.every((line) => String(line.url).startsWith(site.frameOrigin)),
+                    childLines.map((line) => String(line.url)).join(' | ') || '(none)'
+                );
+
+                /**
+                 * Churn: navigate the pane away and back. The child target detaches and a new one
+                 * attaches, and the second load's lines must land exactly like the first — a
+                 * session map that leaked or a detach that killed the pipeline shows up here.
+                 */
+                await cli.run(['web', 'navigate', site.url, '--target', paneID], { timeoutMs: 40_000 });
+                await sleep(2500);
+                await cli.run(['web', 'navigate', site.oopifURL, '--target', paneID], { timeoutMs: 40_000 });
+                await sleep(4000);
+                const after = await cli.json(
+                    ['web', 'console', '--target', paneID, '--since', String(drain.next_since ?? 0), '--json'],
+                    { timeoutMs: 40_000 }
+                );
+                const afterLines = Array.isArray(after.lines) ? after.lines : [];
+                recorder.block(
+                    'nex web console --json (after re-navigating)',
+                    afterLines.map((line) => `${String(line.level)} ${String(line.message)}`).join('\n').slice(0, 1200) || '(no lines)'
+                );
+                recorder.check(
+                    'a re-navigated pane still forwards the new frame\'s lines (no leaked/killed session)',
+                    afterLines.some((line) => String(line.message).includes(site.markers.child)) &&
+                        afterLines.some((line) => String(line.message).includes(site.markers.thrown)),
+                    `${String(afterLines.length)} new line(s)`
+                );
+
+                recorder.eyes(
+                    'the web pane\'s page is VISIBLE (dark host page, "Cross-origin embed", and the child frame\'s green card painted inside it) — a black pane means the tab\'s renderer was left waiting for the debugger'
+                );
+
+                // Leave the grid as this step found it.
+                await cli.run(['pane', 'close', '--target', paneID], { timeoutMs: 40_000 });
+                await sleep(600);
+            }
+        },
+
         // ── settings ────────────────────────────────────────────────────────────────
         {
             id: 'settings-open',
@@ -4698,6 +5242,68 @@ function buildFlows(ctx) {
                     recorder.check(`the ${label} tab is present`, (shape.tabs ?? []).includes(label), (shape.tabs ?? []).join(', '));
                 }
                 recorder.check('a close affordance exists', shape.close === true);
+                /*
+                 * §SET-004: the Swift Settings scene paints its BODY `surfaceBackground` and its
+                 * window TOOLBAR `headerBackground` — which is what made it read as the same app
+                 * rather than a system sheet. This dialog has no OS toolbar, so it draws its own
+                 * title strip, and the claim is that the strip and the window's own top bar are
+                 * the SAME tone. Compared as computed colours against the real chrome, not
+                 * against a token name a stylesheet might not define.
+                 */
+                const chromeTones = await page.eval(
+                    `(() => {
+                        const paint = (selector) => {
+                            const el = document.querySelector(selector);
+                            return el === null ? null : getComputedStyle(el).backgroundColor;
+                        };
+                        /*
+                         * What a chrome TOKEN resolves to right now, measured the one way that
+                         * cannot be fooled: paint a throwaway element with it and read the
+                         * computed colour back. Comparing against a hard-coded hex would also
+                         * pass for a dialog that ignores the palette and happens to match the
+                         * shipped dark preset.
+                         */
+                        const tokenColor = (name, fallback) => {
+                            const probe = document.createElement('div');
+                            probe.style.background = 'var(' + name + ', ' + fallback + ')';
+                            probe.style.position = 'fixed';
+                            probe.style.left = '-9999px';
+                            document.body.appendChild(probe);
+                            const value = getComputedStyle(probe).backgroundColor;
+                            probe.remove();
+                            return value;
+                        };
+                        return {
+                            body: paint('[data-testid="settings-window"]'),
+                            toolbar: paint('[data-testid="settings-toolbar"]'),
+                            rail: paint('[data-testid="settings-tabs"]'),
+                            headerToken: tokenColor('--nex-header-bg', '#13131A'),
+                            surfaceToken: tokenColor('--nex-surface', '#101013'),
+                            sidebarToken: tokenColor('--nex-sidebar-bg', '#0C0C10')
+                        };
+                    })()`
+                );
+                recorder.block('settings chrome tones', JSON.stringify(chromeTones));
+                recorder.check(
+                    'the dialog carries a toolbar strip of its own (§SET-004)',
+                    chromeTones !== null && chromeTones.toolbar !== null,
+                    String(chromeTones?.toolbar)
+                );
+                recorder.check(
+                    'painted from the chrome HEADER token, not a system sheet colour (§SET-004)',
+                    chromeTones !== null && chromeTones.toolbar === chromeTones.headerToken,
+                    `${String(chromeTones?.toolbar)} vs --nex-header-bg ${String(chromeTones?.headerToken)}`
+                );
+                recorder.check(
+                    'the dialog BODY is painted from the chrome surface token (§SET-004)',
+                    chromeTones !== null && chromeTones.body === chromeTones.surfaceToken,
+                    `${String(chromeTones?.body)} vs --nex-surface ${String(chromeTones?.surfaceToken)}`
+                );
+                recorder.check(
+                    'and the tab rail from the sidebar token, so all three are app chrome',
+                    chromeTones !== null && chromeTones.rail === chromeTones.sidebarToken,
+                    `${String(chromeTones?.rail)} vs --nex-sidebar-bg ${String(chromeTones?.sidebarToken)}`
+                );
                 recorder.eyes('overlay elevation, padding, tab affordance, whether the panel is centred and readable');
             }
         },
@@ -5371,6 +5977,241 @@ function buildFlows(ctx) {
                 recorder.check('the footer shows zero running', /0\s*running/.test(String(footer)), String(footer));
             }
         },
+        {
+            /**
+             * §APP-076 — the count popover's cross-workspace jump.
+             *
+             * The Swift makes the destination surface first responder while the popover still
+             * holds key (`StatusBarView.swift:303-316`) so the window's own responder
+             * restoration cannot revert the selection. The port's equivalent is a double
+             * hand-off in `onSelectStatusPane`, and its load-bearing half is the deferred one:
+             * a jump that CROSSES workspaces has no destination pane mounted when the row is
+             * clicked, so a single synchronous `focus()` finds nothing and the caret is left
+             * wherever it was.
+             *
+             * Nothing exercised it — no test drove the popover and no flow photographed it —
+             * so this does the whole gesture: park a running agent in a workspace the client is
+             * NOT looking at, click its row in the footer's popover, and then ask the three
+             * questions that make it a jump rather than a switch: did the workspace change, is
+             * the pane focused, and does what I type next land in THAT pane.
+             */
+            id: 'status-popover',
+            expect:
+                'Clicking a row in the footer’s agent-count popover for a pane in ANOTHER workspace switches to that workspace, focuses the pane, and leaves the caret in it — typing immediately afterwards lands in that pane’s terminal, with no click in between.',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * By id, never by row text: a row's first line is the workspace AVATAR INITIAL,
+                 * and restoring by text re-activated whichever row shared that letter — the
+                 * targeting bug that failed two unrelated steps in run-L (docs/audit/README.md).
+                 */
+                const activeBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                recorder.check('there is an active workspace to jump away from', activeBefore !== '', activeBefore);
+                if (activeBefore === '') return;
+
+                const created = await cli.json(['workspace', 'create', '--name', 'Popover Jump', '--json']);
+                const targetWorkspaceID = String(created.workspace_id ?? '');
+                recorder.check('a second workspace to jump TO', targetWorkspaceID !== '', JSON.stringify(created));
+                if (targetWorkspaceID === '') return;
+                // The daemon reveals its own `workspace create` to every client (§WS-100), so
+                // the client has just followed it there. Go back — the jump has to CROSS.
+                await sleep(1500);
+                const panes = await cli.json(['pane', 'list', '--json']);
+                const targetPane = panes.find((pane) => pane.workspace_id === targetWorkspaceID && pane.type === 'shell');
+                recorder.check('the new workspace opened with a shell pane', targetPane !== undefined, String(targetPane?.id));
+                if (targetPane === undefined) return;
+
+                // An agent in that pane is what puts a row in the popover at all.
+                const sessionID = 'audit-popover-0000-0001';
+                await cli.ok(['event', 'session-start'], {
+                    paneID: targetPane.id,
+                    stdin: JSON.stringify({ session_id: sessionID })
+                });
+                await cli.ok(['event', 'start'], {
+                    paneID: targetPane.id,
+                    stdin: JSON.stringify({ session_id: sessionID })
+                });
+                await sleep(1200);
+
+                let handedBack = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await page.eval(
+                        `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(700);
+                    handedBack = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (handedBack === activeBefore) break;
+                }
+                recorder.check(
+                    'the client is back on the workspace it started on, so the jump crosses one',
+                    handedBack === activeBefore,
+                    `${activeBefore} → ${handedBack}`
+                );
+                const mountedBefore = await page.eval(
+                    `document.querySelectorAll('[data-pane-id="${String(targetPane.id)}"] [data-terminal-host]').length`
+                );
+                recorder.check(
+                    'the destination pane is not on screen at all before the jump',
+                    mountedBefore === 0,
+                    `${String(mountedBefore)} hosts mounted`
+                );
+
+                // The gesture: open the running bucket, find the row for the other workspace.
+                await page.click('[data-testid="count-running"]');
+                await page.waitFor(`document.querySelector('[data-testid="bucket-popover"]') !== null`, {
+                    timeoutMs: 5000,
+                    label: 'the agent-count popover'
+                });
+                await sleep(300);
+                await recorder.shot(page, 'popover');
+                const rows = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="bucket-row"]')).map((el, index) => ({
+                                index,
+                                text: (el.innerText || '').split('\\n').join(' | ')
+                            })))`
+                        )
+                    )
+                );
+                recorder.note(`popover rows: ${JSON.stringify(rows)}`);
+                const target = rows.find((row) => String(row.text).includes('Popover Jump'));
+                recorder.check(
+                    'the popover lists the agent running in the OTHER workspace',
+                    target !== undefined,
+                    JSON.stringify(rows)
+                );
+                if (target === undefined) return;
+
+                const rowBox = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const row = Array.from(document.querySelectorAll('[data-testid="bucket-row"]'))[${String(target.index)}];
+                                if (row === undefined) return JSON.stringify(null);
+                                const r = row.getBoundingClientRect();
+                                return JSON.stringify({ cx: r.x + r.width / 2, cy: r.y + r.height / 2 });
+                            })()`
+                        )
+                    )
+                );
+                recorder.check('its row has a clickable box', rowBox !== null, JSON.stringify(rowBox));
+                if (rowBox === null) return;
+                await page.clickAt(rowBox.cx, rowBox.cy);
+                await sleep(1600);
+                await recorder.shot(page);
+
+                const landed = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify({
+                                active: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? '',
+                                popover: document.querySelector('[data-testid="bucket-popover"]') !== null,
+                                hosts: document.querySelectorAll('[data-pane-id="${String(targetPane.id)}"] [data-terminal-host]').length
+                            })`
+                        )
+                    )
+                );
+                recorder.note(`after the jump: ${JSON.stringify(landed)}`);
+                recorder.check(
+                    'the click switched the client to the destination workspace',
+                    landed.active === targetWorkspaceID,
+                    `${String(landed.active)} vs ${targetWorkspaceID}`
+                );
+                recorder.check('the popover closed behind it', landed.popover === false, String(landed.popover));
+                recorder.check('the destination pane is now mounted', landed.hosts > 0, String(landed.hosts));
+
+                const daemonPanes = await cli.json(['pane', 'list', '--json']);
+                const focusedThere = daemonPanes.find((pane) => pane.id === targetPane.id);
+                recorder.check(
+                    'the daemon has the destination pane as the focused one',
+                    focusedThere?.is_focused === true,
+                    `is_focused=${String(focusedThere?.is_focused)}`
+                );
+
+                /*
+                 * The assertion the item is really about. No click, no tab — type straight into
+                 * the window the way a person continues after a jump, and read the destination
+                 * pane's own screen back through the CLI. If the caret never left the pane the
+                 * user came from, this echo lands in the wrong terminal (or nowhere) and the
+                 * capture below is empty.
+                 */
+                await page.type('echo popover-caret-landed');
+                await page.key('Enter');
+                await sleep(1500);
+                const capture = await cli.ok(['pane', 'capture', '--target', String(targetPane.id)]);
+                recorder.artifact('destination-capture.txt', capture);
+                recorder.check(
+                    'what was typed after the jump reached the DESTINATION pane',
+                    capture.includes('popover-caret-landed'),
+                    capture.split('\n').filter((line) => line.trim() !== '').slice(-3).join(' / ')
+                );
+                // …and did NOT reach the pane the caret was in when the row was clicked, which
+                // is the failure mode the Swift's "while the popover still holds key" is about.
+                const sourcePane = panes.find(
+                    (pane) => pane.workspace_id === activeBefore && pane.type === 'shell' && pane.is_focused === true
+                );
+                if (sourcePane === undefined) {
+                    recorder.note('the workspace jumped FROM has no focused shell pane to compare against');
+                } else {
+                    const sourceCapture = await cli.ok(['pane', 'capture', '--target', String(sourcePane.id)]);
+                    recorder.check(
+                        'and not the pane it was typed from',
+                        !sourceCapture.includes('popover-caret-landed'),
+                        sourceCapture.split('\n').filter((line) => line.trim() !== '').slice(-2).join(' / ')
+                    );
+                }
+
+                // Hand the run back exactly as it was found: the extra workspace goes away
+                // (agent and all, hence --force) and the original workspace is re-activated by
+                // id, CONFIRMED rather than hoped for — the daemon broadcasts its own fallback
+                // when the active workspace is deleted, and a single click can race it.
+                await cli.ok(['workspace', 'delete', targetWorkspaceID, '--force']);
+                await page.waitFor(
+                    `!Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText || '').includes('Popover Jump'))`,
+                    { timeoutMs: 20_000, label: 'the popover-jump workspace to leave the sidebar' }
+                );
+                await sleep(700);
+                let restored = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await page.eval(
+                        `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(700);
+                    restored = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (restored === activeBefore) break;
+                }
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    restored === activeBefore,
+                    `${activeBefore} → ${restored}`
+                );
+                await recorder.shot(page, 'restored');
+                recorder.eyes('does the popover read as a list of jumpable panes — workspace dot, name, pane title, elapsed — and does the destination pane look focused after the jump?');
+            }
+        },
 
         // ── the workspace inspector, bulk operations, and the sidebar's width ───────
         {
@@ -5542,7 +6383,7 @@ function buildFlows(ctx) {
              */
             id: 'footer-git-stats',
             expect:
-                'A pane whose cwd is inside the fixture repo puts `doc 2 +A -B` in the status footer beside the path — file count in the tertiary tone, additions green, deletions red, with an accessibility label spelling the counts out. A pane outside every tracked worktree shows none of it.',
+                'A pane whose cwd is inside the fixture repo puts `doc 2 +A -B` in the status footer beside the path — file count in the tertiary tone, additions green, deletions red, with an accessibility label spelling the counts out. Squeezed narrow, the path is what gives way: the branch chip and the stats keep their size and NOTHING in the left cluster is painted over the system-stat gauges (ledger N6). A pane outside every tracked worktree shows none of it.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -5623,6 +6464,167 @@ function buildFlows(ctx) {
                     /\d+ files? changed, \d+ added, \d+ removed/.test(String(info.label)),
                     String(info.label)
                 );
+
+                /*
+                 * §N6 — the left cluster CLIPS, it never spills over the right one.
+                 *
+                 * The fourth re-score found `⑂ main 🗎 2 +5 -5` drawn on top of the CPU chip in
+                 * this very step's screenshot (`run-L/52-footer-git-stats.png`): the row is a
+                 * flex box whose left half can shrink, but its segments were fixed-size inside a
+                 * container with no `overflow-hidden`, so at a crowded width they simply left
+                 * the box and painted over whatever was beside them.
+                 *
+                 * A screenshot cannot decide that, and neither can a jsdom test — it is two
+                 * rectangles. So: squeeze the window and MEASURE. The invariant that must hold
+                 * at every width is that nothing the left cluster paints reaches the system-stat
+                 * block; the intent on top of that is that the PATH is what gives way, while the
+                 * little `doc N +A -B` segment keeps its size.
+                 */
+                const readFooterLayout = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const box = (el) => {
+                                        if (el === null) return null;
+                                        const r = el.getBoundingClientRect();
+                                        return { x: r.x, right: r.right, w: r.width };
+                                    };
+                                    const left = document.querySelector('[data-testid="footer-left"]');
+                                    const segments = left === null
+                                        ? []
+                                        : Array.from(left.children).map((el) => {
+                                              const r = el.getBoundingClientRect();
+                                              return {
+                                                  id: el.getAttribute('data-testid') || el.tagName.toLowerCase(),
+                                                  x: r.x,
+                                                  right: r.right,
+                                                  w: r.width
+                                              };
+                                          });
+                                    return JSON.stringify({
+                                        innerWidth: window.innerWidth,
+                                        left: box(left),
+                                        stats: box(document.querySelector('[data-testid="system-stats"]')),
+                                        right: box(document.querySelector('[data-testid="footer-right"]')),
+                                        segments
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                const wideLayout = await readFooterLayout();
+                recorder.note(`footer layout at ${String(wideLayout.innerWidth)} px: ${JSON.stringify(wideLayout)}`);
+                recorder.check(
+                    'the footer exposes both clusters to measure',
+                    wideLayout.left !== null && wideLayout.right !== null,
+                    JSON.stringify({ left: wideLayout.left, right: wideLayout.right })
+                );
+
+                let originalBounds = null;
+                try {
+                    originalBounds = (await windowBounds(page)).bounds;
+                } catch {
+                    recorder.note('Browser domain unavailable; squeezing with viewport emulation');
+                }
+                const layouts = [wideLayout];
+                for (const width of [1060, 880]) {
+                    const resized = await resizeWindow(page, width, 760);
+                    recorder.note(
+                        `squeezed to ${String(width)} px · ${resized.mechanism} · innerWidth ${String(resized.inner?.w)}`
+                    );
+                    await sleep(400);
+                    const layout = await readFooterLayout();
+                    layouts.push(layout);
+                    recorder.note(`footer layout at ${String(layout.innerWidth)} px: ${JSON.stringify(layout)}`);
+                    if (width === 880) await recorder.shot(page, 'narrow');
+                }
+
+                // The block the overflow used to be painted over. It is absent only if the
+                // gauges are switched off, in which case the whole right cluster is the target.
+                const rightOf = (layout) => layout.stats ?? layout.right;
+                const overlaps = layouts
+                    .filter((layout) => layout.left !== null && rightOf(layout) !== null)
+                    .map((layout) => {
+                        const target = rightOf(layout);
+                        // `overflow-hidden` means the painted right edge of a segment is its own
+                        // edge or the cluster's, whichever comes first.
+                        const painted = layout.segments.map((segment) => ({
+                            id: segment.id,
+                            paintedRight: Math.min(segment.right, layout.left.right)
+                        }));
+                        return {
+                            width: layout.innerWidth,
+                            clusterGap: target.x - layout.left.right,
+                            spilling: painted.filter((segment) => segment.paintedRight > target.x + 0.5)
+                        };
+                    });
+                recorder.check(
+                    'the left cluster never reaches the system stats, at any width',
+                    overlaps.length > 0 && overlaps.every((entry) => entry.clusterGap >= -0.5),
+                    overlaps.map((entry) => `${String(entry.width)}px: gap ${entry.clusterGap.toFixed(1)}`).join(' · ')
+                );
+                recorder.check(
+                    'and no segment of it is painted over them either (§N6)',
+                    overlaps.length > 0 && overlaps.every((entry) => entry.spilling.length === 0),
+                    overlaps
+                        .map(
+                            (entry) =>
+                                `${String(entry.width)}px: ${
+                                    entry.spilling.map((segment) => segment.id).join(',') || 'none'
+                                }`
+                        )
+                        .join(' · ')
+                );
+
+                const segmentWidth = (layout, id) =>
+                    layout.segments.find((segment) => segment.id === id)?.w ?? null;
+                const narrowLayout = layouts[layouts.length - 1];
+                const cwdWide = segmentWidth(wideLayout, 'footer-cwd');
+                const cwdNarrow = segmentWidth(narrowLayout, 'footer-cwd');
+                const statsWide = segmentWidth(wideLayout, 'footer-git-stats');
+                const statsNarrow = segmentWidth(narrowLayout, 'footer-git-stats');
+                recorder.check(
+                    'squeezing the window takes the width out of the PATH first',
+                    cwdWide !== null && cwdNarrow !== null && cwdNarrow < cwdWide,
+                    `${String(cwdWide?.toFixed(1))} → ${String(cwdNarrow?.toFixed(1))} px`
+                );
+                recorder.check(
+                    'while `doc N +A -B` keeps its full size — it is what the row is for',
+                    statsWide !== null && statsNarrow !== null && Math.abs(statsNarrow - statsWide) <= 0.5,
+                    `${String(statsWide?.toFixed(1))} → ${String(statsNarrow?.toFixed(1))} px`
+                );
+                /*
+                 * Recorded, not asserted, because it is a DIFFERENT cluster and a different
+                 * defect from N6: the right half is `shrink-0` and the footer row itself cannot
+                 * carry `overflow-hidden` (the bucket popover is positioned outside its box), so
+                 * once the middle column is narrower than the gauges + counts + clock, the RIGHT
+                 * cluster is what leaves the footer — sideways, under the inspector. Measured
+                 * here so the number is on the record for whoever ledgers it.
+                 */
+                const columnRight = Number(
+                    await page.eval(
+                        `(() => {
+                            const footer = document.querySelector('[data-testid="status-footer"]');
+                            return footer === null ? 0 : footer.getBoundingClientRect().right;
+                        })()`
+                    )
+                );
+                const rightOverflow = narrowLayout.right === null ? 0 : narrowLayout.right.right - columnRight;
+                recorder.note(
+                    `at ${String(narrowLayout.innerWidth)} px the RIGHT cluster ends ${rightOverflow.toFixed(1)} px past the footer's own box ` +
+                        `(> 0 means the gauges/counts run under the inspector — separate from N6, which is the LEFT cluster)`
+                );
+
+                // Hand the rest of the run the window it started with.
+                if (originalBounds !== null) {
+                    await resizeWindow(page, originalBounds.width, originalBounds.height);
+                } else {
+                    await page.send('Emulation.clearDeviceMetricsOverride');
+                    await sleep(1200);
+                }
+                await sleep(500);
 
                 // …and a pane OUTSIDE the repo shows nothing, which is the other half of the rule.
                 const panes = await cli.json(['pane', 'list', '--json']);
@@ -6619,16 +7621,18 @@ function buildFlows(ctx) {
                         'now (`terminal-ime`); layout-level dead keys are not, and cannot be from this harness.'
                 );
                 recorder.note(
-                    'NOT IMPLEMENTABLE IN THIS LAYER: modifier press/release reporting (TERM-030, the Kitty keyboard ' +
-                        'protocol). Re-read against the VENDORED bundle (`0.4.0-nex.1`, which took PR #159 and routes every ' +
-                        'keydown through the WASM encoder), and both facts survive: it registers ONE `keydown` listener and ' +
-                        'ZERO `keyup` listeners (so no key release of any kind reaches its encoder), and its ' +
-                        '`setKittyFlags()` — which does exist, forwarding to the real ghostty key encoder in WASM — has no ' +
-                        'call site at all, so the VT\'s Kitty flag stack never reaches the encoder. The port could parse ' +
-                        '`CSI > flags u` itself the way it now parses the mouse modes, but acting on it means taking over ' +
-                        'the encoding of EVERY key, not just the modifiers: under the Kitty protocol every key changes ' +
-                        'shape, and a terminal where half the keys are Kitty-encoded is worse than one where none are. ' +
-                        'Scored missing rather than untested, deliberately.'
+                    'MOVED, NOT MISSING (corrected by the burn-down-5 re-score): modifier press/release reporting ' +
+                        '(TERM-030, the Kitty keyboard protocol) has its own step now, `terminal-kitty`. This note used to ' +
+                        'end "Scored missing rather than untested, deliberately", and its measurement of the ENGINE is ' +
+                        'still exactly true — `0.4.0-nex.2` registers ONE `keydown` listener and ZERO `keyup` listeners, ' +
+                        'and its `setKittyFlags()` still has no call site — but the conclusion drawn from it has expired: ' +
+                        'the port stopped waiting for the engine and took the protocol into its own layer, the way ' +
+                        '§TERM-037 took DEC mouse reporting. The daemon parses `CSI > u` / `CSI < u` / `CSI = u` off the VT ' +
+                        'stream and ANSWERS `CSI ? u` (`daemon/src/term/kitty-keyboard.ts`); the client encodes the key ' +
+                        'events above the engine\'s own listener (`client/src/terminal/kitty-keyboard.ts`). The worry this ' +
+                        'note raised — "acting on it means taking over the encoding of EVERY key" — is answered by ' +
+                        '`encodeKittyKey` returning null for every key whose legacy encoding is already correct, which is ' +
+                        'why the assertions ABOVE are unchanged and still pass with the protocol off.'
                 );
                 recorder.note(
                     'IMPLEMENTED THIS WAVE (TERM-034): the terminal selection is readable — `TerminalRenderer.selection()` ' +
@@ -7362,9 +8366,10 @@ function buildFlows(ctx) {
                         'to draw its candidate window is the OS\'s decision, made in a surface CDP cannot screenshot or ' +
                         'query, so the textarea rect is the honest proxy for TERM-033 and not the window itself. Also ' +
                         'not covered: layout dead keys and Option-composed characters (resolved by the keyboard layout ' +
-                        'before the browser sees a keydown — TERM-023), and modifier press/release (TERM-030: the bundle ' +
-                        'still registers zero `keyup` listeners and never calls `setKittyFlags()`). A run under a real ' +
-                        'Korean or Japanese IME remains the only way to close those, and no CI can host one.'
+                        'before the browser sees a keydown — TERM-023). Modifier press/release (TERM-030) is NO LONGER on ' +
+                        'that list — the engine measurement is unchanged (zero `keyup` listeners, `setKittyFlags()` never ' +
+                        'called) but the port now encodes the protocol itself, and `terminal-kitty` drives it. A run under ' +
+                        'a real Korean or Japanese IME remains the only way to close the OS half, and no CI can host one.'
                 );
                 recorder.eyes(
                     'the "composing" and "composed" shots: is the preedit legible and is 한글 painted as two real ' +
@@ -7372,6 +8377,991 @@ function buildFlows(ctx) {
                         '"preedit-tracked", does the marked text sit ON the cursor cell — underlined, over the cells it ' +
                         'is about to fill — and did it move with the caret between the two? And in "wide-selection", ' +
                         'does the highlight cover whole 漢 glyphs rather than splitting one down the middle?'
+                );
+            }
+        },
+        {
+            id: 'terminal-host-edges',
+            expect:
+                'The host edges around the terminal surface: a real ⌘V of MULTI-LINE text arrives at the PTY wrapped in DEC 2004 brackets when the program asked for bracketed paste and bare when it did not, and mirrors to a sync-input peer; the surface is an accessibility element (AXTextArea + "Terminal content area") named after the pane rather than its uuid; a shell in a BACKGROUND workspace still moves its title (OSC 2), its directory (OSC 7) and raises an OSC 9 desktop notification; opening a pane un-zooms first (and an ordinary markdown open deliberately does not); a one-character search needle waits out the 300 ms debounce; and the dispatcher defers to Settings while letting an unclaimed Escape fall through to the PTY.',
+            needsEyes: true,
+            async run(recorder) {
+                /**
+                 * Bare the window first — `reattach-after-relaunch`'s lesson, paid forward.
+                 *
+                 * This step clicks sidebar rows and pane bodies. An overlay an earlier flow left
+                 * open turns every one of those clicks into a dismissal, and the failure looks
+                 * like a product defect rather than a targeting one.
+                 */
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                        timeoutMs: 5000,
+                        label: 'the settings overlay an earlier flow left open to close'
+                    });
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+
+                const activeRow = async () =>
+                    String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                /** Click a workspace row BY ID and confirm — never by its visible text (run-L). */
+                const activateWorkspace = async (workspaceID) => {
+                    for (let attempt = 0; attempt < 6; attempt++) {
+                        await page.eval(
+                            `(() => { const row = document.querySelector('[data-workspace-id="${workspaceID}"]');
+                                      if (row === null) return false; row.click(); return true; })()`
+                        );
+                        await sleep(700);
+                        if ((await activeRow()) === workspaceID) return true;
+                    }
+                    return false;
+                };
+
+                const cameFrom = await activeRow();
+                recorder.note(`arrived with workspace ${cameFrom || '(none)'} active`);
+                recorder.check('a workspace to hand the run back to', cameFrom !== '');
+                if (cameFrom === '') return;
+
+                /**
+                 * Everything below happens in a workspace this step creates and deletes, so no
+                 * later flow inherits a pane in bracketed-paste mode, a sync group, or a zoom.
+                 */
+                const created = await cli.json(['workspace', 'create', '--name', 'Host Edges', '--json']);
+                const edgesID = String(created?.workspace_id ?? '');
+                recorder.check('a scratch workspace to work in', edgesID !== '', JSON.stringify(created));
+                if (edgesID === '') return;
+                const onEdges = await activateWorkspace(edgesID);
+                recorder.check('the scratch workspace is the one on screen', onEdges, `active=${await activeRow()}`);
+
+                const paneIn = async (workspaceID) =>
+                    (await cli.json(['pane', 'list', '--json'])).filter(
+                        (pane) => pane.workspace_id === workspaceID && pane.type === 'shell'
+                    );
+                const panes = await paneIn(edgesID);
+                const paneID = panes[0]?.id ?? null;
+                recorder.check('…with a shell pane in it', paneID !== null, JSON.stringify(panes.map((p) => p.id)));
+                if (paneID === null) return;
+                recorder.note(`scratch pane: ${paneID}`);
+                await focusPaneBody(page, paneID);
+                await sleep(300);
+
+                // ── §TERM-036: the surface is an accessibility element ──────────────
+                //
+                // Read out of CHROMIUM's accessibility tree, not off the DOM attributes: the
+                // claim is `SurfaceView`'s `accessibilityRole() == .textArea`, and what decides
+                // whether `role="textbox" + aria-multiline` becomes `AXTextArea` is Blink's own
+                // mapping. `Accessibility.getPartialAXTree` is the same computation a screen
+                // reader consumes, so an attribute that never reached the AX node fails here.
+                //
+                // The PANE ROOT is the node under test, and this read is why: the first run of
+                // this step aimed at `[data-terminal-host]` and read the name back as
+                // ghostty-web's static "Terminal input", because the engine's `open(parent)`
+                // sets `role`/`aria-label`/`aria-multiline` on the host it is handed and its
+                // `dispose()` removes them again. The identity moved to the element the port
+                // owns; this assertion is what caught the difference.
+                await page.send('Accessibility.enable').catch(() => null);
+                const axNode = await (async () => {
+                    try {
+                        const doc = await page.send('DOM.getDocument', { depth: -1, pierce: false });
+                        const found = await page.send('DOM.querySelector', {
+                            nodeId: doc.root.nodeId,
+                            selector: `[data-pane-id="${paneID}"][data-terminal-status]`
+                        });
+                        if (!found?.nodeId) return null;
+                        const tree = await page.send('Accessibility.getPartialAXTree', {
+                            nodeId: found.nodeId,
+                            fetchRelatives: false
+                        });
+                        return (tree?.nodes ?? []).find((node) => node.backendDOMNodeId !== undefined) ?? null;
+                    } catch (error) {
+                        recorder.note(`AX read failed: ${String(error?.message ?? error)}`);
+                        return null;
+                    }
+                })();
+                const axValue = (node, key) => {
+                    if (node === null) return null;
+                    const property = (node.properties ?? []).find((entry) => entry.name === key);
+                    return property?.value?.value ?? null;
+                };
+                recorder.note(
+                    `AX node: role=${String(axNode?.role?.value)} name=${JSON.stringify(axNode?.name?.value)} ` +
+                        `description=${JSON.stringify(axNode?.description?.value)} multiline=${String(axValue(axNode, 'multiline'))}`
+                );
+                recorder.check(
+                    'the terminal surface is an accessibility element with a TEXT AREA role (SurfaceView `.textArea`)',
+                    axNode?.role?.value === 'textbox' && axValue(axNode, 'multiline') === true,
+                    `role=${String(axNode?.role?.value)} multiline=${String(axValue(axNode, 'multiline'))}`
+                );
+                recorder.check(
+                    'it carries the help text "Terminal content area" as its AX description',
+                    String(axNode?.description?.value ?? '') === 'Terminal content area',
+                    JSON.stringify(axNode?.description?.value)
+                );
+                const axName = String(axNode?.name?.value ?? '');
+                // The expected name is the pane HEADER's own string, so this asserts the two
+                // agree rather than that the label is merely non-empty: `paneDisplayTitle`
+                // home-abbreviates a shell pane's cwd, which for a fresh pane is exactly `~`.
+                const paneCwd = String(panes[0]?.working_directory ?? '');
+                const expectedTitle =
+                    paneCwd === sandbox.home
+                        ? '~'
+                        : paneCwd.startsWith(`${sandbox.home}/`)
+                          ? `~${paneCwd.slice(sandbox.home.length)}`
+                          : paneCwd;
+                const headerTitleNow = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? ''`
+                    )
+                );
+                recorder.note(`pane header title: ${JSON.stringify(headerTitleNow)}`);
+                recorder.check(
+                    'and it is NAMED after the pane — the same string its header shows — never after its uuid',
+                    axName === `Terminal — ${expectedTitle}` && !axName.includes(paneID),
+                    `${JSON.stringify(axName)} vs expected ${JSON.stringify(`Terminal — ${expectedTitle}`)}`
+                );
+
+                // ── §TERM-042 / §TERM-035: a real ⌘V, and the bytes it produces ─────
+                //
+                // The Swift item is "a paste request first tries the pasteboard's string content
+                // and completes the clipboard request with it". Here the chord is pressed the way
+                // a person presses it — `Input.dispatchKeyEvent` with the macOS editing command
+                // `paste` attached, which is what Chromium turns a real ⌘V into — so what is
+                // exercised is the browser's own clipboard path into the engine's textarea, not a
+                // synthetic `ClipboardEvent` this harness invented.
+                //
+                // The assertion is on BYTES, read back through `cat -v` exactly as
+                // `terminal-input-matrix` reads the key encodings: the payload is multi-line, and
+                // under DEC 2004 it must arrive wrapped in `ESC [ 2 0 0 ~` … `ESC [ 2 0 1 ~`.
+                const PASTE_A = 'NEXPASTE-ALPHA';
+                const PASTE_B = 'NEXPASTE-BETA';
+                const PASTE_C = 'NEXPASTE-GAMMA';
+                const payload = `${PASTE_A}\n${PASTE_B}\n${PASTE_C}`;
+                const seedClipboard = async () =>
+                    String(
+                        await page.eval(
+                            `navigator.clipboard.writeText(${JSON.stringify(payload)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                        )
+                    );
+                recorder.check('the clipboard holds the multi-line payload', (await seedClipboard()) === 'ok');
+
+                /**
+                 * ⌘V as Chromium delivers it on macOS: the chord AND the editing command.
+                 *
+                 * The clipboard is re-seeded on every call, and that is not belt-and-braces —
+                 * it is a real property of the surface this step had to learn. ghostty-web
+                 * copies the selection on mouse-up, and the click that FOCUSES a pane is a
+                 * mouse-up over a cell, so focusing a pane that has text under the pointer
+                 * replaces the system clipboard with that one character. First run: a focus
+                 * click landed on the `E` of `NEXPASTE-BETA` and the paste under test faithfully
+                 * pasted `E`. Seeding after the last click is what makes the payload the thing
+                 * being measured rather than the pointer's position.
+                 */
+                const pressPaste = async () => {
+                    await seedClipboard();
+                    await page.send('Input.dispatchKeyEvent', {
+                        type: 'keyDown',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta,
+                        commands: ['paste']
+                    });
+                    await sleep(40);
+                    await page.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        code: 'KeyV',
+                        key: 'v',
+                        windowsVirtualKeyCode: 86,
+                        nativeVirtualKeyCode: 86,
+                        modifiers: MOD.meta
+                    });
+                };
+
+                await runInTerminal(page, 'clear', { settleMs: 500 });
+                // Bracketed paste ON, then a reader that prints what the PTY received verbatim.
+                await runInTerminal(page, `printf '\\033[?2004h'`, { settleMs: 500 });
+                await runInTerminal(page, 'cat -v', { settleMs: 700 });
+                await focusPaneBody(page, paneID);
+                await pressPaste();
+                await sleep(700);
+                await page.key('Enter');
+                await sleep(800);
+                await recorder.shot(page, 'bracketed-paste');
+                const bracketed = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                recorder.block('after ⌘V with DEC 2004 set (cat -v)', bracketed.slice(-800));
+                recorder.check(
+                    'the ⌘V chord reached the engine at all (the pasted text is at the PTY)',
+                    bracketed.includes(PASTE_A) && bracketed.includes(PASTE_C),
+                    `alpha=${String(bracketed.includes(PASTE_A))} gamma=${String(bracketed.includes(PASTE_C))}`
+                );
+                recorder.check(
+                    'every line of a MULTI-LINE paste arrived, not just the first',
+                    bracketed.includes(PASTE_A) && bracketed.includes(PASTE_B) && bracketed.includes(PASTE_C),
+                    [PASTE_A, PASTE_B, PASTE_C].filter((line) => !bracketed.includes(line)).join(',') || 'all three'
+                );
+                recorder.check(
+                    'and it is WRAPPED: `^[[200~` before it and `^[[201~` after it (DEC 2004)',
+                    bracketed.includes('^[[200~') && bracketed.includes('^[[201~'),
+                    `open=${String(bracketed.includes('^[[200~'))} close=${String(bracketed.includes('^[[201~'))}`
+                );
+                // The exact envelope, in one string: `^[[200~` immediately precedes the payload.
+                recorder.check(
+                    'the opening bracket sits immediately before the pasted text (byte for byte)',
+                    bracketed.includes(`^[[200~${PASTE_A}`),
+                    JSON.stringify(
+                        bracketed.split('\n').find((line) => line.includes('^[[200~')) ?? '(no bracketed line)'
+                    )
+                );
+
+                // …and the contrast: with 2004 OFF the SAME chord sends the text bare.
+                await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                await sleep(500);
+                await runInTerminal(page, `printf '\\033[?2004l'`, { settleMs: 500 });
+                await runInTerminal(page, 'clear', { settleMs: 400 });
+                await runInTerminal(page, 'cat -v', { settleMs: 700 });
+                await focusPaneBody(page, paneID);
+                await pressPaste();
+                await sleep(700);
+                await page.key('Enter');
+                await sleep(800);
+                const bare = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.block('after ⌘V with DEC 2004 cleared (cat -v)', bare.slice(-500));
+                recorder.check(
+                    'with bracketed paste OFF the same chord sends the text with no envelope',
+                    bare.includes(PASTE_A) && !bare.includes('^[[200~'),
+                    `text=${String(bare.includes(PASTE_A))} envelope=${String(bare.includes('^[[200~'))}`
+                );
+                await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                await sleep(500);
+
+                // ── §TERM-035: text arriving outside a keyDown mirrors to sync peers ──
+                //
+                // A paste IS the port's "outside a keyDown" source (dictation and the Services
+                // menu are macOS-only and have no browser equivalent). The Swift claim's second
+                // half is that such text is mirrored to the synchronise-input group, and here
+                // that is structural — every byte a client sends goes through `pty.write`, which
+                // fans out — so the honest way to show it is to pass a paste through a real sync
+                // group and read the SIBLING's screen.
+                const split = await cli.json(['pane', 'split', '--target', paneID, '--json']);
+                const siblingID = String(split?.pane_id ?? '');
+                recorder.check('a sibling pane to mirror into', siblingID !== '', JSON.stringify(split));
+                if (siblingID !== '') {
+                    const syncOn = await cli.json(['pane', 'sync', 'on', '--workspace', edgesID, '--json']);
+                    recorder.note(`sync on: ${JSON.stringify(syncOn)}`);
+                    await sleep(400);
+                    await focusPaneBody(page, paneID);
+                    await runInTerminal(page, 'clear', { settleMs: 400 });
+                    await pressPaste();
+                    await sleep(900);
+                    await recorder.shot(page, 'sync-paste');
+                    const source = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const mirror = await cli.ok(['pane', 'capture', '--target', siblingID]);
+                    recorder.block('sync sibling after the paste', mirror.slice(-400));
+                    recorder.check(
+                        'the pasted text reached the pane it was pasted into',
+                        source.includes(PASTE_A),
+                        source.slice(-160)
+                    );
+                    recorder.check(
+                        'and was MIRRORED to its synchronise-input peer (§TERM-035)',
+                        mirror.includes(PASTE_A),
+                        mirror.slice(-160)
+                    );
+                    await cli.run(['pane', 'sync', 'off', '--workspace', edgesID]);
+                    // Clear both composed command lines so nothing runs when a later Enter lands.
+                    await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(300);
+                    await cli.run(['pane', 'close', '--target', siblingID]);
+                    await sleep(700);
+                }
+
+                // ── §TERM-090: opening a pane un-zooms first ────────────────────────
+                await focusPaneBody(page, paneID);
+                const zoomBinding = await pressBoundAction(page, 'toggle_zoom');
+                recorder.note(`toggle_zoom is bound to ${String(zoomBinding.display) || '(nothing)'}`);
+                await sleep(700);
+                const zoomedPanes = await page.eval(
+                    `document.querySelectorAll('[data-testid^="pane-header-"]').length`
+                );
+                await recorder.shot(page, 'zoomed');
+                await cli.run(['pane', 'split', '--target', paneID]);
+                await sleep(1200);
+                const afterOpen = await page.eval(
+                    `document.querySelectorAll('[data-testid^="pane-header-"]').length`
+                );
+                await recorder.shot(page, 'unzoomed-by-open');
+                recorder.note(`panes on screen: zoomed=${String(zoomedPanes)} after a split=${String(afterOpen)}`);
+                recorder.check(
+                    'opening a pane while zoomed silently un-zooms, so the new pane is visible (§TERM-090)',
+                    afterOpen > 1,
+                    `${String(zoomedPanes)} → ${String(afterOpen)} pane headers`
+                );
+                // Tidy: leave exactly one pane in the scratch workspace again.
+                for (const extra of (await paneIn(edgesID)).filter((pane) => pane.id !== paneID)) {
+                    await cli.run(['pane', 'close', '--target', extra.id]);
+                }
+                await sleep(800);
+
+                // ── §TERM-116: a one-character needle waits out the debounce ────────
+                //
+                // The 300 ms is a transient, so it is TIMED rather than photographed: the search
+                // counter cannot render until the daemon has answered, and the daemon is a local
+                // socket away, so the first count for a 1-character needle arriving no sooner
+                // than the debounce is the debounce.
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, 'clear', { settleMs: 400 });
+                await runInTerminal(
+                    page,
+                    `printf 'NEEDLEPROBE %s\\n' 1 2 3 4`,
+                    { settleMs: 800 }
+                );
+                const searchBinding = await pressBoundAction(page, 'toggle_search');
+                recorder.note(`toggle_search is bound to ${String(searchBinding.display) || '(nothing)'}`);
+                await sleep(700);
+                const barUp = await page.eval(
+                    `document.querySelector('[data-testid="pane-search-${paneID}"]') !== null`
+                );
+                recorder.check('the search bar opened on the pane', barUp === true);
+                if (barUp === true) {
+                    const countText = async () =>
+                        String(
+                            await page.eval(
+                                `document.querySelector('[data-testid="pane-search-count-${paneID}"]')?.textContent ?? ''`
+                            )
+                        );
+                    await page.click(`[data-testid="pane-search-input-${paneID}"]`);
+                    const started = Date.now();
+                    // `insertText`, not `type`: the needle field is a real <input>, and a
+                    // synthetic key event inserts the character TWICE there (once from
+                    // `keyDown.text`, once from the `char` event) — the first run typed `NN`.
+                    await page.insertText('N');
+                    let firstCountAt = null;
+                    for (let waited = 0; waited < 4000; waited += 40) {
+                        if ((await countText()).trim() !== '') {
+                            firstCountAt = Date.now() - started;
+                            break;
+                        }
+                        await sleep(40);
+                    }
+                    await recorder.shot(page, 'search-debounce');
+                    recorder.note(
+                        `a 1-character needle's first count arrived after ${String(firstCountAt)} ms (debounce 300 ms)`
+                    );
+                    recorder.check(
+                        'a one-character needle is debounced rather than searched on the keystroke (§TERM-116)',
+                        firstCountAt !== null && firstCountAt >= 250,
+                        `${String(firstCountAt)} ms`
+                    );
+                    recorder.check(
+                        '…and it does eventually search (the debounce defers, it does not swallow)',
+                        (await countText()).trim() !== '',
+                        JSON.stringify(await countText())
+                    );
+                    // A needle of three characters or more skips the timer entirely, and the
+                    // count it lands on is the real one — the debounce defers the request, it
+                    // does not change the answer.
+                    await page.insertText('EEDLEPROBE');
+                    await sleep(1200);
+                    const fullCount = (await countText()).trim();
+                    const total = Number(/\/(\d+)$/.exec(fullCount)?.[1] ?? '0');
+                    recorder.note(`the full needle NEEDLEPROBE counts ${fullCount}`);
+                    recorder.check(
+                        'a needle of three characters or more counts every match in the scrollback',
+                        total >= 4,
+                        fullCount
+                    );
+                    await page.key('Escape');
+                    await sleep(500);
+                    recorder.check(
+                        'Escape closes the bar it opened',
+                        (await page.eval(
+                            `document.querySelector('[data-testid="pane-search-${paneID}"]') === null`
+                        )) === true
+                    );
+                }
+
+                // ── §TERM-155: an unclaimed Escape falls THROUGH to the PTY ─────────
+                //
+                // The fall-through contract is only observable at the far end: `close_search`
+                // declines when no bar is open, the dispatcher leaves the event alone, and the
+                // keystroke reaches the program in the pane. `cat -v` prints it as `^[`.
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, 'clear', { settleMs: 400 });
+                await runInTerminal(page, 'cat -v', { settleMs: 700 });
+                await page.key('Escape');
+                await sleep(200);
+                await page.key('Enter');
+                await sleep(700);
+                const escaped = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.block('after Escape with no search open (cat -v)', escaped.slice(-300));
+                recorder.check(
+                    'Escape with no search open is NOT consumed — it reaches the PTY (§TERM-155)',
+                    escaped.includes('^['),
+                    escaped.slice(-160)
+                );
+                await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                await sleep(500);
+
+                // ── §TERM-154: the dispatcher defers to a key secondary window ──────
+                // The trigger is read BEFORE Settings opens: `liveShortcut` reaches the live
+                // binding map through the ••• menu, and that menu is behind the modal backdrop.
+                const splitBinding = await liveShortcut(page, 'split_right');
+                const beforeSettings = await page.eval(paneCountExpr);
+                await page.click(PAGE.settingsButton);
+                await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') !== null`, {
+                    timeoutMs: 8000,
+                    label: 'the Settings overlay'
+                });
+                await sleep(600);
+                if (splitBinding.key !== null) {
+                    await page.key(splitBinding.key.code, { modifiers: splitBinding.key.modifiers });
+                    await sleep(900);
+                }
+                const duringSettings = await page.eval(paneCountExpr);
+                await recorder.shot(page, 'settings-swallows-chord');
+                recorder.check(
+                    `${String(splitBinding.display)} does not split a pane while Settings is the key window (§TERM-154)`,
+                    duringSettings === beforeSettings,
+                    `${String(beforeSettings)} → ${String(duringSettings)} panes`
+                );
+                await page.click('[data-testid="settings-close"]');
+                await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                    timeoutMs: 8000,
+                    label: 'Settings to close'
+                });
+                await sleep(600);
+                await focusPaneBody(page, paneID);
+                if (splitBinding.key !== null) {
+                    await page.key(splitBinding.key.code, { modifiers: splitBinding.key.modifiers });
+                    await sleep(1200);
+                }
+                const afterSettings = await page.eval(paneCountExpr);
+                recorder.check(
+                    '…and the very same chord DOES split once Settings is gone (so the check above means something)',
+                    afterSettings > duringSettings,
+                    `${String(duringSettings)} → ${String(afterSettings)} panes`
+                );
+                for (const extra of (await paneIn(edgesID)).filter((pane) => pane.id !== paneID)) {
+                    await cli.run(['pane', 'close', '--target', extra.id]);
+                }
+                await sleep(800);
+
+                // ── §TERM-047 / §TERM-048 / §TERM-050 in a BACKGROUND workspace ─────
+                //
+                // The clause every one of the three items was still missing. The scratch
+                // workspace goes to the background, and the reports are driven into its pane
+                // from outside — which is exactly the situation a long-running build or agent is
+                // in while the user works somewhere else.
+                //
+                // The OSC notification is read off the daemon's own broadcast, because a native
+                // notification is not in any DOM: a second WS client attaches with the run dir's
+                // token and listens. It never reports visibility or focus, so it cannot change
+                // the suppression matrix it is observing.
+                const tokenFile = fs
+                    .readdirSync(sandbox.runDir)
+                    .find((entry) => entry.endsWith('.token'));
+                const token =
+                    tokenFile === undefined
+                        ? null
+                        : fs.readFileSync(path.join(sandbox.runDir, tokenFile), 'utf8').trim();
+                const seenNotifications = [];
+                let observer = null;
+                if (token !== null) {
+                    observer = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                    observer.addEventListener('open', () => {
+                        observer.send(
+                            JSON.stringify({
+                                type: 'hello',
+                                protocolVersion: 1,
+                                token,
+                                client: { kind: 'browser', name: 'audit-notification-observer' }
+                            })
+                        );
+                    });
+                    observer.addEventListener('message', (event) => {
+                        try {
+                            const parsed = JSON.parse(String(event.data));
+                            if (parsed?.type === 'notification') seenNotifications.push(parsed);
+                        } catch {
+                            /* a binary frame (a PTY stream) — not ours */
+                        }
+                    });
+                    await sleep(1200);
+                }
+                recorder.check('an observer is attached to the daemon’s broadcast', observer !== null);
+
+                const handedBack = await activateWorkspace(cameFrom);
+                recorder.check(
+                    'the scratch workspace is now in the BACKGROUND',
+                    handedBack && (await activeRow()) !== edgesID,
+                    `active=${await activeRow()} scratch=${edgesID}`
+                );
+                const beforeReports = (await cli.json(['pane', 'list', '--json'])).find(
+                    (pane) => pane.id === paneID
+                );
+                recorder.note(
+                    `background pane before: title=${JSON.stringify(beforeReports?.title)} cwd=${String(beforeReports?.working_directory)}`
+                );
+
+                const BG_TITLE = 'NEX-BG-TITLE-9F3';
+                const bgDir = path.join(work, 'bg-cwd');
+                fs.mkdirSync(bgDir, { recursive: true });
+                // OSC 2 (title) and OSC 7 (pwd) written by the shell itself, driven from outside
+                // the window — `pane send` types the line and submits it.
+                await cli.ok(['pane', 'send', '--target', paneID, `printf '\\033]2;${BG_TITLE}\\007'`]);
+                await sleep(900);
+                await cli.ok([
+                    'pane',
+                    'send',
+                    '--target',
+                    paneID,
+                    `cd ${bgDir} && printf '\\033]7;file://%s%s\\007' "$(hostname)" "$PWD"`
+                ]);
+                await sleep(1400);
+
+                const afterReports = (await cli.json(['pane', 'list', '--json'])).find(
+                    (pane) => pane.id === paneID
+                );
+                recorder.note(
+                    `background pane after: title=${JSON.stringify(afterReports?.title)} cwd=${String(afterReports?.working_directory)}`
+                );
+                recorder.check(
+                    'a pane in a NON-active workspace follows its shell’s OSC 2 title (§TERM-047)',
+                    String(afterReports?.title ?? '') === BG_TITLE,
+                    JSON.stringify(afterReports?.title)
+                );
+                recorder.check(
+                    'and its OSC 7 working directory (§TERM-048)',
+                    String(afterReports?.working_directory ?? '').endsWith('bg-cwd'),
+                    String(afterReports?.working_directory)
+                );
+                const bgWorkspace = (await cli.json(['workspace', 'list', '--json'])).find(
+                    (workspace) => workspace.id === edgesID
+                );
+                recorder.note(`background workspace row: ${JSON.stringify(bgWorkspace)}`);
+                recorder.check(
+                    'the background workspace’s own activity clock advanced with it',
+                    typeof bgWorkspace?.last_activity_at === 'string',
+                    String(bgWorkspace?.last_activity_at)
+                );
+
+                // §TERM-050: an OSC 9 desktop notification from the same background pane.
+                const BG_BODY = 'NEX-BG-OSC-NOTIFY';
+                await cli.ok(['pane', 'send', '--target', paneID, `printf '\\033]9;${BG_BODY}\\007'`]);
+                await sleep(1500);
+                const oscNotifications = seenNotifications.filter((message) => message.kind === 'osc');
+                recorder.block('notifications the daemon broadcast', JSON.stringify(seenNotifications, null, 2));
+                recorder.check(
+                    'an OSC 9 from a background pane raises a desktop notification (§TERM-050)',
+                    oscNotifications.some((message) => String(message.body) === BG_BODY),
+                    JSON.stringify(oscNotifications.map((message) => message.body))
+                );
+                recorder.check(
+                    '…attributed to that pane, in that workspace, with the pane’s dedup identity',
+                    oscNotifications.some(
+                        (message) =>
+                            message.paneID === paneID &&
+                            message.workspaceID === edgesID &&
+                            message.dedupeKey === `nex-${paneID}`
+                    ),
+                    JSON.stringify(oscNotifications.at(-1) ?? null)
+                );
+                observer?.close();
+
+                // The reports are visible when the workspace comes back — the header shows the
+                // title the background shell set, which is what a person actually sees.
+                await activateWorkspace(edgesID);
+                await sleep(900);
+                await recorder.shot(page, 'background-reports-visible');
+                const headerTitle = await page.eval(
+                    `document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? ''`
+                );
+                recorder.note(`pane header after switching back: ${JSON.stringify(headerTitle)}`);
+                recorder.check(
+                    'switching to the background workspace shows the title it took while it was away',
+                    String(headerTitle).includes(BG_TITLE),
+                    String(headerTitle)
+                );
+                const footer = await page.eval(
+                    `(document.querySelector('${PAGE.footer}')?.innerText ?? '').replace(/\\n/g, ' | ')`
+                );
+                recorder.note(`status footer: ${footer}`);
+
+                // ── put the world back ──────────────────────────────────────────────
+                await cli.run(['workspace', 'delete', edgesID, '--force']);
+                await sleep(1200);
+                const restored = await activateWorkspace(cameFrom);
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    restored && (await activeRow()) === cameFrom,
+                    `${cameFrom} → ${await activeRow()}`
+                );
+                recorder.eyes(
+                    'in "bracketed-paste", do the three pasted lines read as ONE pasted block (no shell prompt between them)? ' +
+                        'In "zoomed" vs "unzoomed-by-open", did the grid really go from one pane to two? And in ' +
+                        '"background-reports-visible", does the pane header show the title rather than a path?'
+                );
+            }
+        },
+        {
+            /**
+             * The kitty keyboard protocol, end to end (§TERM-030).
+             *
+             * This is the one input capability the port did not have at all: the engine
+             * registers ONE `keydown` listener, ZERO `keyup` listeners, and never calls its own
+             * `setKittyFlags`, so press/repeat/release could not be produced from inside it. The
+             * port therefore does what it did for DEC mouse reporting — daemon negotiates,
+             * client encodes — and this step is where that claim is settled in bytes.
+             *
+             * `cat -v` is the instrument again, for the same reason `terminal-input-matrix`
+             * uses it: it prints what the PTY *received*, so an escape comes back as `^[` and a
+             * control byte as `^X`, and the whole assertion can be an exact string rather than
+             * a shape. Two things are read through it that nothing else in this file reads:
+             * the terminal's own REPLY to a query (bytes the daemon writes INTO the PTY), and a
+             * key RELEASE.
+             *
+             * The harness needs one thing it has never needed before: an interrupt that does
+             * not go through the keyboard. Under the protocol, ctrl+c is `CSI 99;5u` and the
+             * tty never sees 0x03 — which is correct, and which would wedge every later step if
+             * the only way out were a keystroke. `nex pane send-key ctrl-c` writes the raw byte
+             * from the DAEMON side, below the client encoder entirely.
+             */
+            id: 'terminal-kitty',
+            expect:
+                'A real application negotiates the kitty keyboard protocol and the pane obeys it, byte for byte. With the ' +
+                'protocol off the four probe keys are `^[` · `^[[105;5u` · `^I` · `^[[A` (Esc, ctrl+i, Tab, ArrowUp) — ' +
+                'measured, not assumed: this engine already disambiguates ctrl+i from Tab in its legacy path. After ' +
+                '`CSI > 3 u` the daemon ANSWERS a `CSI ? u` query with `^[[?3u` — bytes it writes INTO the PTY, read back ' +
+                'through `cat -vt` — the client publishes the flags on the pane, and the same four keys become ' +
+                '`^[[27u^[[27;1:3u^[[105;5u^[[105;5:3u^I^[[A^[[1;1:3A`: Esc gains its CSI u form, every key gains a `:3` ' +
+                'RELEASE the engine has no listener for, and Tab and the ArrowUp press are deliberately unchanged. Asking ' +
+                'for all five flags is answered with `^[[?11u`, because a terminal may only advertise what it implements; ' +
+                'under those flags the SHIFT KEY ITSELF reports `^[[57441;2u` on press and `^[[57441;1:3u` on release, ' +
+                'left and right apart. Popping the stack restores the legacy bytes exactly.',
+            needsEyes: true,
+            async run(recorder) {
+                const target = await widestShellPane(page, cli);
+                const paneID = target?.id ?? state.firstPane;
+                if (paneID === null || paneID === undefined) {
+                    recorder.check('a shell pane to negotiate in', false);
+                    return;
+                }
+                recorder.note(`target pane: ${String(paneID)} (${String(Math.round(target?.width ?? 0))}px)`);
+                await focusPaneBody(page, paneID);
+
+                const paneRoot = `[data-pane-id="${paneID}"][data-terminal-status]`;
+                const readFlags = async () =>
+                    await page.eval(
+                        `(() => document.querySelector('${paneRoot}')?.getAttribute('data-terminal-kitty') ?? null)()`
+                    );
+                const waitForFlags = async (want) => {
+                    try {
+                        return (
+                            (await page.waitFor(
+                                `(() => document.querySelector('${paneRoot}')?.getAttribute('data-terminal-kitty') === ${JSON.stringify(String(want))})()`,
+                                { timeoutMs: 5000, label: `data-terminal-kitty=${String(want)}` }
+                            )) === true
+                        );
+                    } catch {
+                        return false;
+                    }
+                };
+                const capture = async () =>
+                    await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                /** SIGINT from the DAEMON side — see the block comment above. */
+                const interrupt = async () => {
+                    await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
+                    await sleep(600);
+                };
+                /** The four probe keys, pressed and released, then a Return to flush the line. */
+                const pressProbes = async () => {
+                    await page.key('Escape', { key: 'Escape' });
+                    await sleep(90);
+                    await page.key('KeyI', { modifiers: MOD.ctrl, key: 'i' });
+                    await sleep(90);
+                    await page.key('Tab', { key: 'Tab' });
+                    await sleep(90);
+                    await page.key('ArrowUp', { key: 'ArrowUp' });
+                    await sleep(90);
+                    // Return through the daemon: under `report all keys` an Enter keystroke is
+                    // `CSI 13u` and would never flush the tty's line buffer.
+                    await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
+                    await sleep(900);
+                };
+
+                // ── 1. the legacy baseline, with the protocol off ───────────────────
+                //
+                // Asserted FIRST and from the same keystrokes, because it is the regression this
+                // whole feature could plausibly cause: an encoder that took keys unconditionally
+                // would change the bytes of every pane that never asked for the protocol.
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 500 });
+                await runInTerminal(page, 'cat -vt', { settleMs: 800 });
+                const startFlags = await readFlags();
+                recorder.check(
+                    'the pane starts with the protocol off (data-terminal-kitty="0")',
+                    startFlags === '0',
+                    `data-terminal-kitty=${String(startFlags)}`
+                );
+                await pressProbes();
+                const legacy = await capture();
+                recorder.block('flags 0 — the legacy encodings (cat -vt)', legacy.slice(-400));
+                /**
+                 * The legacy run, MEASURED rather than assumed — and the first draft of this
+                 * step got it wrong, which is worth leaving in the record.
+                 *
+                 * `^[` for Escape and `^[[A` for ArrowUp are what anyone would predict. The
+                 * middle is not: this engine already emits the fixterms `^[[105;5u` for ctrl+i
+                 * with NO protocol negotiated, because 0x09 would be indistinguishable from Tab
+                 * and ghostty's encoder disambiguates it in the legacy path too (the same
+                 * encoder that produces `ESC [ 27;2;13 ~` for shift+Enter — `terminal-ime`).
+                 * So ctrl+i is NOT a discriminator here, and the honest claim is the stronger
+                 * one: the port's encoder reproduces the engine's own ctrl+i bytes exactly, and
+                 * what the protocol adds on top is Escape's CSI u form and the release events.
+                 */
+                const LEGACY_RUN = '^[^[[105;5u^I^[[A';
+                recorder.note(`looking for the legacy run ${JSON.stringify(LEGACY_RUN)}`);
+                recorder.note(
+                    'ctrl+i is already `^[[105;5u` with the protocol OFF — the engine disambiguates it from Tab in its ' +
+                        'own legacy path, so the discriminating changes below are Esc and the releases, not this.'
+                );
+                recorder.check(
+                    'with the protocol off, Esc / ctrl+i / Tab / ArrowUp are their legacy bytes',
+                    legacy.includes(LEGACY_RUN),
+                    legacy.includes(LEGACY_RUN) ? LEGACY_RUN : 'the legacy run is not in the capture'
+                );
+                recorder.check(
+                    'Esc is a bare escape and Tab is a bare tab — nothing kitty-shaped was sent',
+                    !legacy.includes('^[[27u') && !legacy.includes('^[[9u') && !legacy.includes(':3'),
+                    'no CSI u form for Esc or Tab, and no event-type sub-parameters at all'
+                );
+
+                // ── 2. negotiate CSI > 3 u, and make the terminal ANSWER ────────────
+                await interrupt();
+                // The query rides the SAME command as the push, before `cat` starts: the reply
+                // the daemon writes into the PTY sits in the tty input buffer and is the first
+                // thing `cat -v` reads, which is how a byte the TERMINAL produced ends up on
+                // screen where `pane capture` can quote it.
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H\\033[>3u\\033[?u'; cat -vt", {
+                    settleMs: 1200
+                });
+                const negotiated = await waitForFlags(3);
+                recorder.check(
+                    'CSI > 3 u reaches the CLIENT as live pane state (pane-modes)',
+                    negotiated,
+                    negotiated
+                        ? 'data-terminal-kitty="3"'
+                        : `data-terminal-kitty=${String(await readFlags())}`
+                );
+                const replied = await capture();
+                recorder.block('flags 3 — the query reply (cat -vt)', replied.slice(-400));
+                recorder.check(
+                    'the daemon ANSWERS CSI ? u with CSI ? 3 u, written into the PTY',
+                    replied.includes('^[[?3u'),
+                    replied.includes('^[[?3u') ? '^[[?3u' : 'no reply arrived at the PTY'
+                );
+                await recorder.shot(page, 'kitty-negotiated');
+
+                // ── 3. the same four keys, now under the protocol ───────────────────
+                await pressProbes();
+                const kitty = await capture();
+                recorder.block('flags 3 — the same four keys (cat -vt)', kitty.slice(-500));
+                const expectations = [
+                    ['Esc is CSI 27 u, not a bare escape', '^[[27u'],
+                    ['and its RELEASE is the :3 event-type form', '^[[27;1:3u'],
+                    ['ctrl+i keeps the bytes the engine gave it, now from the port s encoder', '^[[105;5u'],
+                    ['and ctrl+i gains a RELEASE, which the legacy path had no form for', '^[[105;5:3u'],
+                    ['ArrowUp RELEASE is CSI 1;1:3 A, an event the engine has no listener for', '^[[1;1:3A']
+                ];
+                for (const [label, bytes] of expectations) {
+                    recorder.check(
+                        label,
+                        kitty.includes(bytes),
+                        kitty.includes(bytes) ? bytes : `missing ${bytes}`
+                    );
+                }
+                // The whole run in one string, which also pins the two keys that must NOT have
+                // moved: Tab is still `^I` (a program that asked only for disambiguation still
+                // gets `\t`), and the ArrowUp PRESS is still `^[[A` — only the engine knows
+                // whether DECCKM is on, so that press is deliberately left to it.
+                const KITTY_RUN = '^[[27u^[[27;1:3u^[[105;5u^[[105;5:3u^I^[[A^[[1;1:3A';
+                recorder.note(`looking for the full run ${JSON.stringify(KITTY_RUN)}`);
+                recorder.check(
+                    'the four keys encode as one exact run — Tab still legacy, ArrowUp press still legacy',
+                    kitty.includes(KITTY_RUN),
+                    kitty.includes(KITTY_RUN) ? KITTY_RUN : 'the run did not match byte for byte'
+                );
+
+                // ── 4. progressive enhancement, and the modifier keys ───────────────
+                //
+                // Ask for all five flags. A terminal may only advertise what it implements, so
+                // the answer must be 11 (disambiguate + event types + report-all-keys) and not
+                // 31 — this port declines `report alternate keys` and `report associated text`
+                // because a browser hands out one key identity per event, never three.
+                await interrupt();
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H\\033[>31u\\033[?u'; cat -vt", {
+                    settleMs: 1200
+                });
+                const masked = await waitForFlags(11);
+                recorder.check(
+                    'asking for all five flags stores only the three this port implements',
+                    masked,
+                    masked ? 'data-terminal-kitty="11"' : `data-terminal-kitty=${String(await readFlags())}`
+                );
+                const maskedCapture = await capture();
+                recorder.block('flags 31 → 11 — the masked query reply (cat -vt)', maskedCapture.slice(-300));
+                recorder.check(
+                    'and the query reply says so: CSI ? 11 u, never CSI ? 31 u',
+                    maskedCapture.includes('^[[?11u') && !maskedCapture.includes('^[[?31u'),
+                    maskedCapture.includes('^[[?11u') ? '^[[?11u' : 'no masked reply arrived'
+                );
+
+                /**
+                 * A modifier key on its own, which is §TERM-030's literal subject.
+                 *
+                 * `page.key` sends the same modifier mask for the down and the up, and a real
+                 * Shift press carries the shift bit on the way down and not on the way up — so
+                 * the two events are dispatched by hand. `location` is the browser's equivalent
+                 * of the device-side mask bits the Swift `flagsChanged` reads, and it is what
+                 * tells left Shift (57441) from right (57447).
+                 */
+                const modifierKey = async (key, code, location, downModifiers) => {
+                    await page.send('Input.dispatchKeyEvent', {
+                        type: 'rawKeyDown',
+                        key,
+                        code,
+                        location,
+                        modifiers: downModifiers,
+                        windowsVirtualKeyCode: 0,
+                        nativeVirtualKeyCode: 0
+                    });
+                    await sleep(90);
+                    await page.send('Input.dispatchKeyEvent', {
+                        type: 'keyUp',
+                        key,
+                        code,
+                        location,
+                        modifiers: 0,
+                        windowsVirtualKeyCode: 0,
+                        nativeVirtualKeyCode: 0
+                    });
+                    await sleep(90);
+                };
+                await modifierKey('Shift', 'ShiftLeft', 1, MOD.shift);
+                await modifierKey('Shift', 'ShiftRight', 2, MOD.shift);
+                // And an ordinary letter, which under `report all keys` is an escape code too.
+                await page.key('KeyA', { key: 'a', text: 'a' });
+                await sleep(150);
+                await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
+                await sleep(900);
+
+                const modifiers = await capture();
+                recorder.block('flags 11 — modifier keys and a letter (cat -vt)', modifiers.slice(-500));
+                const modifierExpectations = [
+                    ['left Shift PRESS is reported as CSI 57441;2 u', '^[[57441;2u'],
+                    ['left Shift RELEASE is CSI 57441;1:3 u — the modifier is up by then', '^[[57441;1:3u'],
+                    ['right Shift is a DIFFERENT key: CSI 57447;2 u', '^[[57447;2u'],
+                    ['and report-all-keys turns a plain `a` into CSI 97 u', '^[[97u']
+                ];
+                for (const [label, bytes] of modifierExpectations) {
+                    recorder.check(
+                        label,
+                        modifiers.includes(bytes),
+                        modifiers.includes(bytes) ? bytes : `missing ${bytes}`
+                    );
+                }
+                await recorder.shot(page, 'kitty-modifier-keys');
+
+                // ── 5. pop the stack, and prove the legacy bytes came back ──────────
+                //
+                // The pop is sent from the DAEMON side, and it has to be: under flags 11 every
+                // keystroke is an escape code, so a shell command typed on the keyboard would
+                // arrive as `CSI 112u CSI 114u …` and never run. That is correct behaviour, and
+                // it is exactly why the protocol has a stack.
+                await interrupt();
+                await cli.run(['pane', 'send', '--target', paneID, "printf '\\033[<2u'"]);
+                await sleep(900);
+                const popped = await waitForFlags(0);
+                recorder.check(
+                    'CSI < 2 u pops both pushes and the client sees the protocol go off',
+                    popped,
+                    popped ? 'data-terminal-kitty="0"' : `data-terminal-kitty=${String(await readFlags())}`
+                );
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 500 });
+                await runInTerminal(page, 'cat -vt', { settleMs: 800 });
+                await pressProbes();
+                const restored = await capture();
+                recorder.block('after the pop — the legacy encodings again (cat -vt)', restored.slice(-400));
+                recorder.check(
+                    'popping restores the legacy encoding byte for byte',
+                    restored.includes(LEGACY_RUN),
+                    restored.includes(LEGACY_RUN) ? LEGACY_RUN : 'the legacy run did not come back'
+                );
+                // The screen (and its scrollback) was erased with `ED 2` + `ED 3` before this
+                // block, so the capture holds nothing but post-pop bytes: an `^[[27u` or a `:3`
+                // here would mean the encoder is still running against stale flags.
+                recorder.check(
+                    'and no CSI u code or release event survives the pop',
+                    !restored.includes('^[[27u') && !restored.includes(':3'),
+                    'nothing kitty-shaped after the pop'
+                );
+                await recorder.shot(page, 'kitty-popped');
+
+                /**
+                 * Hand the pane back with a live shell, the same way `terminal-input-matrix`
+                 * does and for the same reason: this step leaves a reader (`cat -v`) on the tty,
+                 * and a `cat` that survives turns every later step that types here into an echo
+                 * test. The interrupt and the extra pop both go through the daemon so the
+                 * cleanup works whatever the flags ended up as.
+                 */
+                let handedBack = false;
+                for (let attempt = 0; attempt < 3 && !handedBack; attempt++) {
+                    await interrupt();
+                    await cli.run(['pane', 'send', '--target', paneID, "printf '\\033[<10u'"]);
+                    await sleep(600);
+                    await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+                    const probe = `KITTYOK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 800 });
+                    const back = await cli.run(['pane', 'capture', '--target', paneID]);
+                    handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                }
+                recorder.check('the pane is handed back with a live shell, not a reader on the tty', handedBack);
+                const finalFlags = await readFlags();
+                recorder.check(
+                    'and with the protocol off, so no later step inherits it',
+                    finalFlags === '0',
+                    `data-terminal-kitty=${String(finalFlags)}`
+                );
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+
+                recorder.note(
+                    'WHERE THE MECHANISM IS. Nothing here is the engine\'s. `ghostty-web 0.4.0-nex.2` still registers one ' +
+                        '`keydown` listener, zero `keyup` listeners, and never calls its own `setKittyFlags` — the ' +
+                        'measurement `terminal-ime` records is unchanged and still true of the ENGINE. What changed is ' +
+                        'that the port stopped waiting for it: the daemon parses the negotiation off the VT stream it ' +
+                        'already owns and answers the query (`daemon/src/term/kitty-keyboard.ts`), and the client encodes ' +
+                        'the key events in a CAPTURE-phase listener above the engine\'s own ' +
+                        '(`client/src/terminal/kitty-keyboard.ts`) — the same shape §TERM-037 used to take DEC mouse ' +
+                        'reporting off the engine two waves ago.'
+                );
+                recorder.note(
+                    'WHAT THIS STEP DOES NOT PROVE. `report alternate keys` (0b100) and `report associated text` ' +
+                        '(0b10000) are not implemented and are deliberately not advertised — the `^[[?11u` assertion above ' +
+                        'is the evidence that they are DECLINED rather than silently wrong. Auto-repeat (`:2`) is not ' +
+                        'driven: CDP dispatches discrete key events and the OS repeat rate is not something the harness ' +
+                        'can ask for, so the `:2` form is covered by unit tests only. The lock modifiers (caps 64 / num ' +
+                        '128) are not reported at all, by design — the browser exposes lock STATE, not a held modifier, ' +
+                        'and folding it in would change the bytes of every unmodified key for a caps-locked user.'
+                );
+                recorder.eyes(
+                    'the three shots: in "kitty-negotiated" the reply `^[[?3u` should be visible on screen as text the ' +
+                        'terminal itself produced; in "kitty-modifier-keys" the 57441 / 57447 codes should read as ' +
+                        'distinct left and right Shift keys; and "kitty-popped" should look like an ordinary shell again.'
                 );
             }
         },
@@ -9457,6 +11447,64 @@ function buildFlows(ctx) {
                     initial.every((row) => row.text.includes('/')),
                     JSON.stringify(initial[0]?.text)
                 );
+                /*
+                 * §SET-056's type scale: name 13 pt medium, path 11 pt, remote URL 10 pt — the
+                 * three sizes that make a row scan as one thing with two subtitles rather than
+                 * three equal lines. Read back as COMPUTED styles, so this is what is on the
+                 * screen and not what a class name says.
+                 */
+                const scale = await page.eval(
+                    `(() => {
+                        const row = document.querySelector('[data-testid^="repo-row-"]');
+                        if (row === null) return null;
+                        const spans = Array.from(row.querySelectorAll('span'))
+                            .filter((el) => (el.textContent ?? '').trim().length > 0);
+                        const read = (el) => {
+                            const style = getComputedStyle(el);
+                            return {
+                                text: (el.textContent ?? '').trim().slice(0, 40),
+                                size: style.fontSize,
+                                weight: style.fontWeight,
+                                overflow: style.textOverflow,
+                                direction: style.direction
+                            };
+                        };
+                        return spans.map(read);
+                    })()`
+                );
+                recorder.block('repo row type scale', JSON.stringify(scale));
+                const nameSpan = (scale ?? [])[0];
+                const pathSpan = (scale ?? []).find((entry) => entry.text.includes('/'));
+                recorder.check(
+                    'the name is 13px and medium-weight (§SET-056)',
+                    nameSpan?.size === '13px' && Number(nameSpan?.weight ?? 400) >= 500,
+                    `${String(nameSpan?.size)} / ${String(nameSpan?.weight)}`
+                );
+                recorder.check(
+                    'the path is 11px and truncated rather than wrapped (§SET-056)',
+                    pathSpan?.size === '11px' && pathSpan?.overflow === 'ellipsis',
+                    `${String(pathSpan?.size)} / ${String(pathSpan?.overflow)}`
+                );
+                recorder.check(
+                    'and the path truncates at the FRONT, keeping the leaf directory readable',
+                    pathSpan?.direction === 'rtl',
+                    String(pathSpan?.direction)
+                );
+                // The remote line only exists for a repo that HAS an origin, and the sandbox's
+                // fixture repos are local. Asserted when one is there, reported when not —
+                // inventing a remote to photograph would be inventing the evidence.
+                const remoteSpan = (scale ?? []).find(
+                    (entry) => entry.text.includes('://') || entry.text.includes('@')
+                );
+                if (remoteSpan === undefined) {
+                    recorder.note('no registered repo has an origin, so the 10px remote line is not on screen');
+                } else {
+                    recorder.check(
+                        'a remote URL, when there is one, is the smallest line (§SET-056)',
+                        remoteSpan.size === '10px',
+                        `${remoteSpan.text} @ ${remoteSpan.size}`
+                    );
+                }
 
                 await page.click('[data-testid="repo-path"]');
                 await page.insertText(extra);
@@ -9534,6 +11582,200 @@ function buildFlows(ctx) {
                 await page.key('Escape');
                 await sleep(500);
                 recorder.eyes('is the tab legible \u2014 rows readable at this width, buttons discoverable, the empty state honest?');
+            }
+        },
+        {
+            id: 'settings-live-apply',
+            expect:
+                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225).',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * Two halves, because "a setting applies live" has two halves:
+                 *
+                 *   1. the WRITE — a click in the window becomes a line in the user's config
+                 *      file, and the control then renders from the daemon's broadcast rather
+                 *      than from its own optimism;
+                 *   2. the APPLY — the daemon that is already running behaves differently on
+                 *      the very next command, with no restart. That is asserted on the worktree
+                 *      base path because its effect is a real directory on disk, which nothing
+                 *      about the window can fake.
+                 */
+                const pidOf = async () => Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                const pidBefore = await pidOf();
+                recorder.check('a running daemon to apply the change to', pidBefore > 0, String(pidBefore));
+
+                // \u2500\u2500 1. the write: \u00a7SET-012's toggle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                await openSettingsTab(page, 'workspaces');
+                await recorder.shot(page, 'workspaces-tab');
+                const toggleState = async () =>
+                    page.eval(
+                        `document.querySelector('[data-testid="expand-group-on-drop-toggle"]')?.checked === true`
+                    );
+                recorder.check('the toggle exists and ships ON (\u00a7SET-012)', (await toggleState()) === true);
+                const configBefore = fs.readFileSync(sandbox.configPath, 'utf8');
+                await page.click('[data-testid="expand-group-on-drop-toggle"]');
+                await sleep(1000);
+                const configOff = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.block('config file after turning it off', configOff.trim().slice(-200) || '(empty)');
+                recorder.check(
+                    'clicking it writes `expand-group-on-workspace-drop = false` to the config file',
+                    /expand-group-on-workspace-drop\s*=\s*false/.test(configOff) && configOff !== configBefore,
+                    configOff.trim().slice(-120)
+                );
+                recorder.check(
+                    'and the switch follows the daemon\u2019s broadcast, not a local echo',
+                    (await toggleState()) === false,
+                    String(await toggleState())
+                );
+                await page.click('[data-testid="expand-group-on-drop-toggle"]');
+                await sleep(1000);
+                recorder.check(
+                    'turning it back on round-trips through the same file',
+                    /expand-group-on-workspace-drop\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    fs.readFileSync(sandbox.configPath, 'utf8').trim().slice(-120)
+                );
+
+                // \u2500\u2500 2. the apply: a NEW base path, used by the very next create \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                await openSettingsTab(page, 'general');
+                const liveBase = path.join(sandbox.root, 'live-worktrees', '<repo>');
+                // The testid sits on the ROW; the field itself is `<testid>-input` (controls.tsx).
+                await page.click('[data-testid="worktree-base-path-input"]');
+                await page.eval(
+                    `(() => {
+                        const input = document.querySelector('[data-testid="worktree-base-path-input"]');
+                        if (input === null) return false;
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, ${JSON.stringify(liveBase)});
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                    })()`
+                );
+                await page.enter();
+                await sleep(1000);
+                await recorder.shot(page, 'general-tab');
+                const configBase = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.check(
+                    'the base-path field writes `worktree-base-path` (\u00a7SET-008)',
+                    configBase.includes(`worktree-base-path = ${liveBase}`),
+                    configBase.trim().slice(-160)
+                );
+                await page.key('Escape');
+                await sleep(600);
+
+                const created = await cli.json([
+                    'workspace',
+                    'create',
+                    '--name',
+                    'Live Apply WT',
+                    '--worktree',
+                    'live apply',
+                    '--repo',
+                    repo,
+                    '--json'
+                ]);
+                recorder.block('workspace create --worktree', JSON.stringify(created ?? null));
+                const worktreePath = String(created?.worktree_path ?? '');
+                recorder.check(
+                    'the worktree the RUNNING daemon just built sits under the new base path',
+                    worktreePath.startsWith(path.join(sandbox.root, 'live-worktrees')),
+                    worktreePath || '(no worktree_path)'
+                );
+                recorder.check(
+                    'and it is a real directory, not just a reply field',
+                    worktreePath !== '' && fs.existsSync(worktreePath),
+                    worktreePath
+                );
+                const pidAfter = await pidOf();
+                recorder.check(
+                    'with no restart in between \u2014 the same daemon process throughout',
+                    pidAfter === pidBefore && pidAfter > 0,
+                    `${String(pidBefore)} \u2192 ${String(pidAfter)}`
+                );
+
+                // \u2500\u2500 put the world back \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                const workspaceID = String(created?.workspace_id ?? '');
+                const cameFrom = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                if (workspaceID !== '') {
+                    await cli.run(['workspace', 'delete', workspaceID, '--force', '--prune-worktree']);
+                    await sleep(1200);
+                }
+                await openSettingsTab(page, 'general');
+                // The testid sits on the ROW; the field itself is `<testid>-input` (controls.tsx).
+                await page.click('[data-testid="worktree-base-path-input"]');
+                await page.eval(
+                    `(() => {
+                        const input = document.querySelector('[data-testid="worktree-base-path-input"]');
+                        if (input === null) return false;
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(input, '~/nex/worktrees/<repo>');
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                    })()`
+                );
+                await page.enter();
+                await sleep(900);
+                await page.key('Escape');
+                await sleep(500);
+                recorder.check(
+                    'the step puts the base path back where it found it',
+                    /worktree-base-path\s*=\s*~\/nex\/worktrees\/<repo>/.test(
+                        fs.readFileSync(sandbox.configPath, 'utf8')
+                    ),
+                    fs.readFileSync(sandbox.configPath, 'utf8').trim().slice(-160)
+                );
+                /*
+                 * CLOSE THE OVERLAY, and prove it closed.
+                 *
+                 * Added by the burn-down-5 re-score: the first run of this step ended with the
+                 * Settings overlay still up (the Escape above dismisses the base-path FIELD, not
+                 * the window), and its backdrop is `absolute inset-0`. Everything downstream then
+                 * clicked the backdrop instead of the app — `workspace-create-full` timed out
+                 * waiting for a form it could not reach and three sidebar flows failed on rows
+                 * they could not press. Every other settings flow in this file ends with this;
+                 * the rule is `docs/audit/README.md`'s "the window is bare" precondition, and the
+                 * cheapest place to keep it is where the overlay was opened.
+                 */
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    try {
+                        await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                            timeoutMs: 5000,
+                            label: 'the settings overlay to close'
+                        });
+                    } catch {
+                        await page.key('Escape');
+                        await sleep(500);
+                    }
+                }
+                recorder.check(
+                    'the step leaves the window bare for the flows after it',
+                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'settings overlay closed'
+                );
+                if (cameFrom !== '') {
+                    for (let attempt = 0; attempt < 6; attempt++) {
+                        const active = String(
+                            await page.eval(
+                                `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                            )
+                        );
+                        if (active === cameFrom) break;
+                        await page.eval(
+                            `(() => { const row = document.querySelector('[data-workspace-id="${cameFrom}"]');
+                                      if (row === null) return false; row.click(); return true; })()`
+                        );
+                        await sleep(600);
+                    }
+                }
+                recorder.eyes(
+                    'the Workspaces tab: does the new "Expand group when a workspace is dropped into it" row read as a ' +
+                        'peer of the two confirmation toggles \u2014 same label weight, same detail tone, switch aligned?'
+                );
             }
         },
         {
@@ -11704,6 +13946,574 @@ function buildFlows(ctx) {
                     createdTransparent
                         ? 'DESKTOP-THROUGH CHECK — and the one thing no capture here can settle: a CDP screenshot composites the PAGE, not the screen behind the window, so whether the desktop is visible through the window fill has to be looked at on a real screen. The DOM + shell-log assertions above are what can be automated.'
                         : 'the opaque window as shipped; run with NEX_AUDIT_GHOSTTY_EXTRA="background-opacity = 0.85" to photograph the transparent case.'
+                );
+            }
+        },
+        {
+            id: 'sidebar-remaining',
+            expect:
+                'The last five sidebar gestures the sweep had open: the shell’s real View ▸ Toggle Sidebar item (⌘⇧S) and the SLIDE the toggle plays in both directions (§WS-001); a row’s "Color ▸" reaching the daemon and coming back ticked (§WS-048); "Move to Group ▸ New Group…" creating a group AROUND the row and dropping into its rename (§WS-052); the active-agents gate on a row delete (§WS-054); and the single confirmation a multi-select delete raises (§WS-062).',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * BARE THE WINDOW FIRST — the precondition this step's slot demands.
+                 *
+                 * Added by the burn-down-5 re-score. This flow sits immediately after
+                 * `window-transparency`, and `docs/audit/README.md` already records that the
+                 * settings flows around here leave the overlay open: with it up, the dispatcher
+                 * defers to Settings (§TERM-154, which is correct behaviour) and ⌘⇧S never
+                 * reaches `act.toggleSidebar` — the first run of this step read the sidebar as
+                 * still open in every sample and then timed out waiting for it to leave. Same
+                 * dismissal `reattach-after-relaunch` learned to do, for the same reason.
+                 */
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    try {
+                        await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                            timeoutMs: 5000,
+                            label: 'the settings overlay an earlier flow left open to close'
+                        });
+                    } catch {
+                        await page.key('Escape');
+                    }
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+                recorder.check(
+                    'the window is bare, so the ⌘⇧S below is not swallowed by an overlay',
+                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'no settings overlay'
+                );
+                const activeBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                recorder.note(`active workspace on entry: ${activeBefore}`);
+
+                // ── §WS-001a: the item exists in the RUNNING shell's menu bar ────────
+                //
+                // A native macOS menu row cannot be clicked through CDP (the same limit the ⌘O
+                // item lives with), so what is asserted here is that this shell process built
+                // the row — `main.ts` logs the menu it installed precisely because an
+                // application menu is not observable from outside the process. The click's own
+                // behaviour (→ `menu-request` → the client's `act.toggleSidebar`) is pinned by
+                // `packages/shell/src/menu.test.ts` and `App.openflow.test.tsx`.
+                const menuLine = (runtime.shell?.text() ?? '')
+                    .split('\n')
+                    .reverse()
+                    .find((line) => line.includes('menu: Nex '));
+                recorder.note(`shell menu line: ${String(menuLine)}`);
+                recorder.check(
+                    'the running shell installed View ▸ Toggle Sidebar on ⌘⇧S (§WS-001)',
+                    typeof menuLine === 'string' && menuLine.includes('View ▸ Toggle Sidebar (⌘⇧S)'),
+                    String(menuLine)
+                );
+
+                // ── §WS-001b: and the toggle SLIDES, in both directions ──────────────
+                //
+                // The chord pressed here is the very accelerator that menu row carries, and it
+                // lands on the same `act.toggleSidebar`. Focus is put in a terminal first, so
+                // this is also the hostile case (a canvas with its own key handling).
+                const focusTarget = (await widestShellPane(page, cli))?.id ?? state.firstPane;
+                if (focusTarget !== null && focusTarget !== undefined) await focusPaneBody(page, focusTarget);
+                await sleep(400);
+
+                const readSlot = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="sidebar-slot"]');
+                                    const grid = document.querySelector('${PAGE.grid}');
+                                    const gridX = grid === null ? null : Math.round(grid.getBoundingClientRect().x);
+                                    if (el === null) return JSON.stringify({ present: false, gridX });
+                                    const panel = el.querySelector('[data-testid="sidebar-panel"]');
+                                    return JSON.stringify({
+                                        present: true,
+                                        phase: el.getAttribute('data-sidebar-phase'),
+                                        width: Math.round(el.getBoundingClientRect().width * 10) / 10,
+                                        transition: getComputedStyle(el).transitionDuration,
+                                        panelX: panel === null ? null : Math.round(panel.getBoundingClientRect().x),
+                                        panelOpacity: panel === null ? null : Number(getComputedStyle(panel).opacity),
+                                        gridX
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                const atRest = await readSlot();
+                recorder.note(`sidebar at rest: ${JSON.stringify(atRest)}`);
+                recorder.check(
+                    'the sidebar starts out, in its own animatable slot',
+                    atRest.present === true && atRest.phase === 'open' && atRest.width > 100,
+                    JSON.stringify(atRest)
+                );
+                const fullWidth = Number(atRest.width ?? 0);
+
+                /*
+                 * Mid-flight is the point. Poll until the frame that is actually BETWEEN the two
+                 * ends — the one where the slot has begun to collapse but has not arrived — and
+                 * then read again a beat later: two samples that DISAGREE are what separates an
+                 * animation from a stylesheet that merely declares one. No capture in between,
+                 * because a CDP screenshot costs most of a 250ms slide.
+                 */
+                await page.key('KeyS', { modifiers: MOD.meta | MOD.shift });
+                let closing = { present: false };
+                for (let tick = 0; tick < 120; tick++) {
+                    const seen = await readSlot();
+                    if (seen.present !== true) break;
+                    if (seen.phase === 'closing') {
+                        closing = seen;
+                        if (seen.width < fullWidth - 1) break;
+                    }
+                    await sleep(8);
+                }
+                // A beat, then a SECOND sample. One reading only proves the transition was
+                // declared and had begun; two that disagree prove it is running.
+                await sleep(60);
+                const closingLater = await readSlot();
+                recorder.note(`closing: ${JSON.stringify(closing)} → later ${JSON.stringify(closingLater)}`);
+                recorder.check(
+                    'hiding the sidebar catches it MID-SLIDE, not snapped shut (§WS-001)',
+                    closing.present === true && closing.width > 0 && closing.width < fullWidth - 1,
+                    `${String(closing.width)} of ${String(fullWidth)} · phase ${String(closing.phase)}`
+                );
+                recorder.check(
+                    'and it is really MOVING: the next sample is narrower still',
+                    closing.present === true &&
+                        (closingLater.present !== true || Number(closingLater.width) < Number(closing.width)),
+                    `${String(closing.width)} → ${closingLater.present === true ? String(closingLater.width) : 'unmounted'}`
+                );
+                recorder.check(
+                    'on the ~0.25s default-ease curve the shipped app animates with',
+                    typeof closing.transition === 'string' && closing.transition.includes('0.25s'),
+                    String(closing.transition)
+                );
+                recorder.check(
+                    'the panel travels off the leading edge rather than shrinking in place',
+                    closing.present === true &&
+                        Number(closing.panelX) < Number(atRest.panelX) &&
+                        Number(closing.panelOpacity) < 1,
+                    `panelX ${String(atRest.panelX)} → ${String(closing.panelX)} · opacity ${String(closing.panelOpacity)}`
+                );
+
+                await sleep(700);
+                const hidden = await readSlot();
+                recorder.note(`hidden: ${JSON.stringify(hidden)}`);
+                recorder.check(
+                    'it ends fully gone, with the grid holding the space it left',
+                    hidden.present === false && Number(hidden.gridX) < Number(atRest.gridX),
+                    `gridX ${String(atRest.gridX)} → ${String(hidden.gridX)}`
+                );
+
+                // …and back the other way, which is the half a conditional mount cannot do.
+                await page.key('KeyS', { modifiers: MOD.meta | MOD.shift });
+                let opening = { present: false };
+                for (let tick = 0; tick < 120; tick++) {
+                    const seen = await readSlot();
+                    if (seen.present === true) {
+                        opening = seen;
+                        if (seen.width > 1 && seen.width < fullWidth - 1) break;
+                    }
+                    await sleep(8);
+                }
+                await sleep(60);
+                const openingLater = await readSlot();
+                recorder.note(`opening: ${JSON.stringify(opening)} → later ${JSON.stringify(openingLater)}`);
+                recorder.check(
+                    'showing it again slides it back out rather than popping (§WS-001)',
+                    opening.present === true && opening.width > 0 && opening.width < fullWidth - 1,
+                    `${String(opening.width)} of ${String(fullWidth)} · phase ${String(opening.phase)}`
+                );
+                recorder.check(
+                    'and that direction is moving too: the next sample is wider',
+                    openingLater.present === true && Number(openingLater.width) > Number(opening.width),
+                    `${String(opening.width)} → ${String(openingLater.width)}`
+                );
+
+                await page.waitFor(
+                    `document.querySelector('[data-testid="sidebar-slot"]')?.getAttribute('data-sidebar-phase') === 'open'`,
+                    { timeoutMs: 10_000, label: 'the sidebar to settle back open' }
+                );
+                await sleep(400);
+                const settled = await readSlot();
+                recorder.check(
+                    'and it comes to rest at exactly the width it started from',
+                    Math.abs(Number(settled.width) - fullWidth) < 1 && Number(settled.panelOpacity) === 1,
+                    `${String(settled.width)} vs ${String(fullWidth)}`
+                );
+
+                /*
+                 * The PICTURE, on a separate toggle — and with one stated intervention.
+                 *
+                 * A CDP capture costs more than a 250ms slide: the first version of this block
+                 * photographed a sidebar that had already arrived, which is a picture of nothing.
+                 * So the still is taken of the SAME transition with its duration temporarily
+                 * stretched to 2s by a stylesheet this step installs and then removes. The only
+                 * thing that changes is how long it lasts — the geometry, the curve and the
+                 * phases in the still are the ones measured above at their real 250ms. It
+                 * photographs the OPENING direction because nothing unmounts partway through it.
+                 */
+                await page.key('KeyS', { modifiers: MOD.meta | MOD.shift });
+                await page.waitFor(`document.querySelector('[data-testid="sidebar-slot"]') === null`, {
+                    timeoutMs: 10_000,
+                    label: 'the sidebar to leave before the still'
+                });
+                await page.eval(
+                    `(() => {
+                        const style = document.createElement('style');
+                        style.id = 'audit-slow-sidebar';
+                        style.textContent = '[data-testid="sidebar-slot"],[data-testid="sidebar-panel"]{transition-duration:2000ms !important}';
+                        document.head.appendChild(style);
+                        return true;
+                    })()`
+                );
+                await page.key('KeyS', { modifiers: MOD.meta | MOD.shift });
+                let still = { present: false };
+                for (let tick = 0; tick < 250; tick++) {
+                    still = await readSlot();
+                    if (
+                        still.present === true &&
+                        still.width > fullWidth * 0.2 &&
+                        still.width < fullWidth * 0.8
+                    ) {
+                        break;
+                    }
+                    await sleep(10);
+                }
+                recorder.note(
+                    `still caught at ${String(still.width)} of ${String(fullWidth)} — the same transition, stretched to 2s for the capture only`
+                );
+                await recorder.shot(page, 'sidebar-sliding');
+                recorder.check(
+                    'the still is of a sidebar genuinely half-way out, not of either end',
+                    still.present === true && still.width > fullWidth * 0.2 && still.width < fullWidth * 0.8,
+                    `${String(still.width)} of ${String(fullWidth)}`
+                );
+                await sleep(2200);
+                await page.eval(`(() => { document.getElementById('audit-slow-sidebar')?.remove(); return true; })()`);
+                await page.waitFor(
+                    `document.querySelector('[data-testid="sidebar-slot"]')?.getAttribute('data-sidebar-phase') === 'open'`,
+                    { timeoutMs: 10_000, label: 'the sidebar to come back for the row work' }
+                );
+                await sleep(600);
+
+                // ── the rows this step owns, provisioned rather than inherited ───────
+                for (const name of ['Remain A', 'Remain B', 'Remain C']) {
+                    await cli.ok(['workspace', 'create', '--name', name]);
+                }
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Remain C'))`,
+                    { timeoutMs: 25_000, label: 'the three Remain rows' }
+                );
+                await sleep(900);
+
+                // ── §WS-048: a row's Color ▸ ────────────────────────────────────────
+                const colourBefore = (await cli.json(['workspace', 'list', '--json'])).find(
+                    (workspace) => workspace.name === 'Remain A'
+                );
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Remain A');
+                const colours = await openSubmenu(page, 'Color');
+                recorder.note(`colour submenu: ${JSON.stringify(colours.map((entry) => entry.label))}`);
+                recorder.check(
+                    'a workspace row offers all ten palette colours (§WS-048)',
+                    colours.length === 10,
+                    `${String(colours.length)} rows`
+                );
+                recorder.check(
+                    'with the one it already has ticked',
+                    colours.find((entry) => entry.label === String(colourBefore?.color))?.checked === 'true',
+                    `${String(colourBefore?.color)} · ${JSON.stringify(colours.map((entry) => [entry.label, entry.checked]))}`
+                );
+                await clickSubmenuItem(page, 'color:orange');
+                await sleep(1200);
+                let recoloured = null;
+                for (let attempt = 0; attempt < 10; attempt++) {
+                    recoloured = (await cli.json(['workspace', 'list', '--json'])).find(
+                        (workspace) => workspace.name === 'Remain A'
+                    );
+                    if (recoloured?.color === 'orange') break;
+                    await sleep(400);
+                }
+                recorder.check(
+                    'choosing one reaches the daemon rather than being inert (§WS-048)',
+                    recoloured?.color === 'orange',
+                    `${String(colourBefore?.color)} → ${String(recoloured?.color)}`
+                );
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Remain A');
+                const reTicked = await openSubmenu(page, 'Color');
+                recorder.check(
+                    'and the tick follows it when the menu is rebuilt, so it PERSISTED',
+                    reTicked.find((entry) => entry.label === 'orange')?.checked === 'true',
+                    JSON.stringify(reTicked.map((entry) => [entry.label, entry.checked]))
+                );
+                await recorder.shot(page, 'colour-persisted');
+                await page.key('Escape');
+                await sleep(300);
+
+                // ── §WS-052: Move to Group ▸ New Group… ─────────────────────────────
+                const groupsBefore = await cli.json(['group', 'list', '--json']);
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Remain A');
+                const destinations = await openSubmenu(page, 'Move to Group');
+                recorder.note(`move submenu: ${JSON.stringify(destinations.map((entry) => entry.label))}`);
+                recorder.check(
+                    'the Move to Group submenu ends with "New Group…" (§WS-052)',
+                    destinations.at(-1)?.label === 'New Group…',
+                    destinations.map((entry) => entry.label).join(', ')
+                );
+                await clickSubmenuItem(page, 'move:new');
+                await page.waitFor(
+                    `document.querySelector('input[aria-label="Rename New Group"]') !== null`,
+                    { timeoutMs: 20_000, label: 'the new group’s inline rename field' }
+                );
+                const field = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('input[aria-label="Rename New Group"]');
+                                if (el === null) return JSON.stringify({ open: false });
+                                return JSON.stringify({
+                                    open: true,
+                                    focused: document.activeElement === el,
+                                    value: el.value,
+                                    selected: el.selectionEnd - el.selectionStart
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`rename field: ${JSON.stringify(field)}`);
+                recorder.check(
+                    'creating it drops straight into inline rename, focused and selected (§WS-052)',
+                    field.open === true && field.focused === true && field.selected === String(field.value).length,
+                    JSON.stringify(field)
+                );
+                await recorder.shot(page, 'new-group-rename');
+                await page.insertText('Remain Group');
+                await sleep(200);
+                const typed = String(
+                    await page.eval(`document.querySelector('input[aria-label="Rename New Group"]')?.value ?? ''`)
+                );
+                recorder.check('the field takes a new name', typed === 'Remain Group', typed);
+                await page.key('Enter');
+                await sleep(1400);
+
+                let created = null;
+                for (let attempt = 0; attempt < 10; attempt++) {
+                    created =
+                        (await cli.json(['group', 'list', '--json'])).find(
+                            (group) => group.name === 'Remain Group'
+                        ) ?? null;
+                    if (created !== null) break;
+                    await sleep(400);
+                }
+                recorder.note(`groups: ${String(groupsBefore.length)} → ${JSON.stringify(created)}`);
+                recorder.check(
+                    'the group exists WITH the workspace already in it — one gesture, not two (§WS-052)',
+                    created !== null && (created.workspaces ?? []).some((member) => member.name === 'Remain A'),
+                    JSON.stringify(created)
+                );
+
+                // ── §WS-054: the active-agents gate on a row delete ──────────────────
+                const remainB = (await cli.json(['pane', 'list', '--json'])).find(
+                    (pane) => pane.workspace_name === 'Remain B' && pane.type === 'shell'
+                );
+                recorder.check(
+                    'Remain B has a pane to run an agent in',
+                    remainB !== undefined,
+                    JSON.stringify(remainB ?? null)
+                );
+                if (remainB !== undefined) {
+                    const sessionID = 'remain-0000-1111-2222';
+                    await cli.ok(['event', 'session-start'], {
+                        paneID: remainB.id,
+                        stdin: JSON.stringify({ session_id: sessionID })
+                    });
+                    await cli.ok(['event', 'start'], {
+                        paneID: remainB.id,
+                        stdin: JSON.stringify({ session_id: sessionID })
+                    });
+                    await sleep(1800);
+                }
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Remain B');
+                await clickMenuItem(page, 'Delete');
+                await sleep(500);
+                const gate = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('[data-testid="confirm-dialog"]');
+                                if (el === null) return JSON.stringify({ open: false });
+                                return JSON.stringify({
+                                    open: true,
+                                    agents: el.getAttribute('data-active-agents'),
+                                    text: (el.innerText ?? '').split('\\n').join(' | '),
+                                    suppress: el.querySelector('[data-testid="confirm-suppress"]') !== null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`delete gate: ${JSON.stringify(gate)}`);
+                await recorder.shot(page, 'delete-gate');
+                recorder.check(
+                    'deleting a workspace with a live agent warns before it acts (§WS-054)',
+                    gate.open === true && gate.agents === '1',
+                    JSON.stringify(gate)
+                );
+                recorder.check(
+                    'the warning names the count and what will happen to it',
+                    /1 active agent/.test(String(gate.text)) && /terminate/.test(String(gate.text)),
+                    String(gate.text)
+                );
+                recorder.check(
+                    'and carries the "Don’t ask again" that writes the setting the CLI’s --force parallels',
+                    gate.suppress === true,
+                    String(gate.suppress)
+                );
+                const stillThere = (await cli.json(['workspace', 'list', '--json'])).some(
+                    (workspace) => workspace.name === 'Remain B'
+                );
+                recorder.check('nothing was deleted while the gate stood', stillThere === true, String(stillThere));
+                await page.click('[data-testid="confirm-delete"]');
+                await page.waitFor(
+                    `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Remain B'))`,
+                    { timeoutMs: 20_000, label: 'Remain B to leave the sidebar' }
+                );
+                const goneB = (await cli.json(['workspace', 'list', '--json'])).some(
+                    (workspace) => workspace.name === 'Remain B'
+                );
+                recorder.check('confirming it goes through', goneB === false, `still listed: ${String(goneB)}`);
+
+                // ── §WS-062: one confirmation for the whole selection ────────────────
+                await sleep(700);
+                const picked = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify(Array.from(document.querySelectorAll('${PAGE.workspaceRows}'))
+                                .filter(el => ['Remain A', 'Remain C'].some(name => (el.innerText ?? '').includes(name)))
+                                .map(el => {
+                                    const r = el.getBoundingClientRect();
+                                    return { id: el.getAttribute('data-workspace-id'), x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 };
+                                }))`
+                        )
+                    )
+                );
+                recorder.check('both survivors are on screen to select', picked.length === 2, JSON.stringify(picked));
+                if (picked.length === 2) {
+                    // RE-MEASURED between clicks: a delete two lines above has just left the
+                    // list, and a stale box is how `sidebar-escape-clears-selection` learned to
+                    // ⌘-click the wrong row.
+                    for (const name of ['Remain A', 'Remain C']) {
+                        const box = JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const el = Array.from(document.querySelectorAll('${PAGE.workspaceRows}'))
+                                            .find(node => (node.innerText ?? '').includes(${JSON.stringify(name)}));
+                                        if (el === undefined) return JSON.stringify({ found: false });
+                                        const r = el.getBoundingClientRect();
+                                        return JSON.stringify({ found: true, x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
+                                    })()`
+                                )
+                            )
+                        );
+                        if (box.found !== true) continue;
+                        await page.clickAt(box.x, box.y, { modifiers: MOD.meta });
+                        await sleep(300);
+                    }
+                    const selected = await page.eval(
+                        `document.querySelectorAll('${PAGE.workspaceRows}[data-selected="true"]').length`
+                    );
+                    recorder.check('⌘-click builds a two-row selection', Number(selected) === 2, String(selected));
+                    await openSidebarMenu(page, PAGE.workspaceRows, 'Remain A');
+                    await clickMenuItem(page, 'Delete 2 Workspaces');
+                    await sleep(500);
+                    const bulk = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const nodes = document.querySelectorAll('[data-testid="confirm-dialog"]');
+                                    if (nodes.length === 0) return JSON.stringify({ open: false, count: 0 });
+                                    return JSON.stringify({
+                                        open: true,
+                                        count: nodes.length,
+                                        text: (nodes[0].innerText ?? '').split('\\n').join(' | '),
+                                        parent: nodes[0].parentElement?.tagName ?? null
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`bulk confirm: ${JSON.stringify(bulk)}`);
+                    await recorder.shot(page, 'bulk-delete-confirm');
+                    recorder.check(
+                        'a multi-select delete raises exactly ONE destructive dialog (§WS-062)',
+                        bulk.open === true && bulk.count === 1,
+                        JSON.stringify(bulk)
+                    );
+                    recorder.check(
+                        'it names the count and says the panes go with them (§WS-060)',
+                        /Delete 2 workspaces\?/.test(String(bulk.text)) && /cannot be undone/.test(String(bulk.text)),
+                        String(bulk.text)
+                    );
+                    // §WS-062's own property: mounted on the BODY, so the sidebar's filter cannot
+                    // swap it away and leave a stale destructive prompt behind.
+                    recorder.check(
+                        'and it is mounted at the body, clear of the filter-swapped list (§WS-062)',
+                        bulk.parent === 'BODY',
+                        String(bulk.parent)
+                    );
+                    const beforeBulk = (await cli.json(['workspace', 'list', '--json'])).length;
+                    await page.click('[data-testid="confirm-delete"]');
+                    await page.waitFor(
+                        `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => ['Remain A', 'Remain C'].some(name => (el.innerText ?? '').includes(name)))`,
+                        { timeoutMs: 25_000, label: 'both selected rows to leave' }
+                    );
+                    await sleep(900);
+                    const remaining = await cli.json(['workspace', 'list', '--json']);
+                    recorder.check(
+                        'one confirmation deletes the WHOLE selection',
+                        remaining.length === beforeBulk - 2 &&
+                            !remaining.some((workspace) => String(workspace.name).startsWith('Remain ')),
+                        `${String(beforeBulk)} → ${String(remaining.length)}: ${remaining.map((workspace) => workspace.name).join(', ')}`
+                    );
+                }
+
+                // ── hand the run back where it found it ──────────────────────────────
+                await cli.run(['group', 'delete', 'Remain Group']);
+                await page.waitFor(`document.querySelectorAll('${PAGE.workspaceRows}').length > 0`, {
+                    timeoutMs: 20_000,
+                    label: 'the sidebar to settle after the deletes'
+                });
+                await sleep(900);
+                let handedBack = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await page.eval(
+                        `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(700);
+                    handedBack = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (handedBack === activeBefore) break;
+                }
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    activeBefore !== '' && handedBack === activeBefore,
+                    `${activeBefore} → ${handedBack}`
+                );
+                recorder.eyes(
+                    'does the sidebar SLIDE (the mid-flight still) rather than jump, does the recoloured row read as orange, and do the two delete dialogs look like the destructive alerts they are?'
                 );
             }
         },

@@ -642,3 +642,49 @@ describe('group glyph and menus', () => {
         expect(within(screen.getByTestId('context-submenu')).getByText('Reset to Letter')).toBeTruthy();
     });
 });
+
+// ── §WS-052: "Move to Group ▸ New Group…" ───────────────────────────────────────────
+
+describe('move to group', () => {
+    /** Open the Move to Group submenu on a row and hand back its scope. */
+    function openMoveSubmenu(rowIndex: number, extra: Record<string, unknown> = {}): HTMLElement {
+        render(<Sidebar {...noopProps()} entries={entries()} {...extra} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[rowIndex] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Move to Group'));
+        return screen.getByTestId('context-submenu');
+    }
+
+    it('offers "New Group…" after the existing destinations', () => {
+        const onCreateGroupWithWorkspace = vi.fn();
+        // Row 0 is `alpha`, a top-level workspace: no "Remove from Group", one group to move to.
+        const submenu = openMoveSubmenu(0, { onCreateGroupWithWorkspace });
+        expect(menuLabels(submenu)).toEqual(['squad', 'New Group…']);
+
+        fireEvent.click(within(submenu).getByText('New Group…'));
+        expect(onCreateGroupWithWorkspace).toHaveBeenCalledWith(W1);
+        // It is a real menu activation: the whole menu closes behind it, like every other row.
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+    });
+
+    it('keeps "Remove from Group" first for a grouped row, with New Group… still last', () => {
+        // Row 2 is `beta`, inside `squad` — so the un-group verb leads and `squad` is dimmed.
+        const submenu = openMoveSubmenu(2, { onCreateGroupWithWorkspace: vi.fn() });
+        expect(menuLabels(submenu)).toEqual(['Remove from Group', 'squad', 'New Group…']);
+        expect(
+            (within(submenu).getByText('squad').closest('[data-menu-item]') as HTMLElement).getAttribute(
+                'aria-disabled'
+            )
+        ).toBe('true');
+    });
+
+    it('separates the destinations from the two verbs either side of them', () => {
+        const submenu = openMoveSubmenu(2, { onCreateGroupWithWorkspace: vi.fn() });
+        // One rule under "Remove from Group", one over "New Group…" — the Swift's own dividers.
+        expect(submenu.querySelectorAll('[role="separator"]').length).toBe(2);
+    });
+
+    it('drops the entry entirely when assembly has not wired it', () => {
+        // The submenu is then exactly what it was before §WS-052, rather than an inert row.
+        expect(menuLabels(openMoveSubmenu(0))).toEqual(['squad']);
+    });
+});

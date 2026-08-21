@@ -495,7 +495,20 @@ function handleWorkspaceMove(
         type: 'move-workspace-to-group',
         id: workspace.id,
         groupID,
-        ...(index !== undefined ? { index } : {})
+        ...(index !== undefined ? { index } : {}),
+        /*
+         * SET-012. The sidebar's drag-and-drop IS this verb, so the setting is applied at the
+         * verb rather than at the gesture: `expand-group-on-workspace-drop = false` leaves a
+         * collapsed target group shut around the row it just swallowed.
+         *
+         * Stated divergence: in the Swift app the flag is read in the sidebar's drop handler,
+         * so it governs the GUI only. The wire field that would have kept that split
+         * (`expand_on_drop`) does not exist in wire-protocol.md §7 and inventing one would put
+         * this port's decoder out of conformance with the spec, so `nex workspace move --group`
+         * into a collapsed group honours the same setting. Default (on) is unchanged behaviour
+         * for both callers.
+         */
+        expandOnDrop: deps.expandGroupOnDrop
     });
     deps.persist();
 }

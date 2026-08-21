@@ -16,7 +16,11 @@
  *     returns a Promise and a plain evaluate would serialise it as `{}` (§8.2's bug class).
  *   - **Console** is the CDP branch (`Runtime.consoleAPICalled` / `exceptionThrown`,
  *     `Log.entryAdded`, `Network.loadingFailed` / `responseReceived`) formatted by
- *     `./console-format.ts` into the spec's own message strings.
+ *     `./console-format.ts` into the spec's own message strings. The tab's own session covers
+ *     the top document and every frame that shares its renderer; **out-of-process frames have
+ *     their own CDP target**, so `./frames.ts` auto-attaches to them and funnels their lines
+ *     into the same sink with the same tab attribution (WEB-073, the `forMainFrameOnly:false`
+ *     flag's job in the Swift host).
  *   - **Background tabs keep running JS** (`backgroundThrottling: false`): agents race a `wait`
  *     in one tab while another is the visible one.
  *   - **`did-fail-load` ignores `-3` (ERR_ABORTED)**: a navigation the user (or a redirect)
@@ -64,6 +68,7 @@ import {
 } from './console-format.js';
 import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
 import { isWebErrorPageURL, webErrorPageDataURL } from './error-page.js';
+import { createFrameSessions, type FrameSessions } from './frames.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
 import { forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
 import {
@@ -205,6 +210,8 @@ class ElectronTab implements HostTab {
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
     private readonly requests = new Map<string, NetworkRequestInfo & { frameId?: string }>();
+    /** WEB-073: the child CDP sessions of this tab's out-of-process frames (`./frames.ts`). */
+    private readonly frames: FrameSessions;
 
     constructor(input: CreateTabInput, options: TabFactoryOptions) {
         this.paneID = input.paneID;
@@ -233,6 +240,24 @@ class ElectronTab implements HostTab {
             }
         });
         this.contents = this.view.webContents;
+        // Built before `bootstrap` so the very first `Target.attachedToTarget` has somewhere to
+        // land: auto-attach is armed inside the bootstrap and Chromium can answer immediately.
+        this.frames = createFrameSessions({
+            transport: {
+                send: (method, params, sessionID) => this.send(method, params, sessionID)
+            },
+            // The same sink the tab's own session uses: one ring buffer, one tab id (§9.1).
+            console: (payload) => {
+                this.emitConsole(payload);
+            },
+            fallbackURL: () => this.url(),
+            onError: (error, context) => {
+                this.report(error, context);
+            },
+            log: (message) => {
+                log(`web pane ${this.paneID} tab ${this.tabID}: ${message}`);
+            }
+        });
 
         this.view.setBounds({ x: 0, y: 0, width: viewport.width, height: viewport.height });
         this.view.setVisible(false);
@@ -253,11 +278,15 @@ class ElectronTab implements HostTab {
         this.onError?.(error instanceof Error ? error : new Error(String(error)), context);
     }
 
-    private send(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    /**
+     * One CDP command. `sessionID` addresses a child target's flattened session (`./frames.ts`);
+     * omitted, it is the tab's own session, which is every other caller in this file.
+     */
+    private send(method: string, params?: Record<string, unknown>, sessionID?: string): Promise<unknown> {
         if (this.disposed || this.contents.isDestroyed() || !this.attached) {
             return Promise.reject(new Error(`web pane has no live tab ${this.tabID}`));
         }
-        return this.contents.debugger.sendCommand(method, params ?? {}) as Promise<unknown>;
+        return this.contents.debugger.sendCommand(method, params ?? {}, sessionID) as Promise<unknown>;
     }
 
     /**
@@ -286,10 +315,18 @@ class ElectronTab implements HostTab {
         this.attached = true;
         this.contents.debugger.on('detach', () => {
             this.attached = false;
+            // The child sessions went with it; keeping their ids would leak a map that can never
+            // be told about a detach again.
+            this.frames.clear();
         });
-        this.contents.debugger.on('message', (_event, method: string, params: unknown) => {
+        this.contents.debugger.on('message', (_event, method: string, params: unknown, sessionID?: string) => {
             try {
-                this.onCdpEvent(method, isRecord(params) ? params : {});
+                const body = isRecord(params) ? params : {};
+                // WEB-073: target bookkeeping and every child session's traffic belong to
+                // `./frames.ts`. A child's `Page.frameNavigated` is NOT this tab's main frame
+                // moving, so a consumed message must not fall through to the root handler.
+                if (this.frames.handle(method, body, sessionID)) return;
+                this.onCdpEvent(method, body);
             } catch (error) {
                 this.report(error, `cdp ${method}`);
             }
@@ -312,6 +349,10 @@ class ElectronTab implements HostTab {
         await this.send('Runtime.enable');
         await this.send('Log.enable');
         await this.send('Network.enable');
+        // WEB-073, and before the real navigation on purpose: an out-of-process frame that the
+        // first page creates must find auto-attach already armed, or its document-start lines
+        // are gone before anyone could subscribe. Failures are absorbed inside `start()`.
+        await this.frames.start();
         await this.send('Runtime.addBinding', { name: BINDING_NAME });
         for (const source of injectedScriptSources()) {
             await this.send('Page.addScriptToEvaluateOnNewDocument', { source });
@@ -355,6 +396,33 @@ class ElectronTab implements HostTab {
         });
     }
 
+    /**
+     * Let the tab's OWN frame go if `Target.setAutoAttach {waitForDebuggerOnStart}` caught it.
+     *
+     * Setting that flag is a promise to resume whatever it pauses, and `frames.ts` keeps that
+     * promise for every target it is *told* about. The gap this covers is the target nobody
+     * announces: the tab's own main frame across a cross-process navigation (every
+     * `about:blank` → `http://…` load, i.e. every navigate) comes up in a new renderer, and no
+     * `Target.attachedToTarget` arrives for it because we are already attached to that target.
+     * A frame left in the "waiting for debugger" state cannot composite, which is invisible to
+     * every non-visual assertion — scripts run, `Runtime.evaluate` answers, layout is right to
+     * the device pixel — and shows up only as a pane photographing black.
+     *
+     * **What was and was not measured**, because the honest version is shorter than the story:
+     * two consecutive runs during this work did photograph a blank pane while the flag was set
+     * and nothing resumed the root (`web-pane` passed all 22 of its own assertions in one of
+     * them). Later runs in the same configuration rendered normally, so that particular blank
+     * was probably environmental and the causal link is NOT proven. This stays because it is
+     * the cheap, correct discharge of the flag's obligation: a no-op when nothing is waiting,
+     * one command per committed navigation, and the ordering is causal rather than lucky — the
+     * renderer is created (and paused) before it commits, and `did-navigate` is the commit.
+     */
+    private resumeIfWaiting(): void {
+        void this.send('Runtime.runIfWaitingForDebugger').catch(() => {
+            // Not attached (yet, or any more) — then nothing of ours is waiting either.
+        });
+    }
+
     private wireContentsEvents(): void {
         const contents = this.contents;
 
@@ -392,6 +460,9 @@ class ElectronTab implements HostTab {
             this.emitNavState(false);
         });
         contents.on('did-navigate', (_event, url) => {
+            // WEB-073, and BEFORE the error-page early return below, because the error card is a
+            // navigation like any other: let the tab's own frame go if auto-attach caught it.
+            this.resumeIfWaiting();
             // §WEB-029: our own error card is not a page. Clearing `failedLoad` here would break
             // §WEB-028's retry (reload would redraw the card instead of re-trying the address),
             // and reporting it as `pageState` would put a data URL in the URL bar.
@@ -821,6 +892,7 @@ class ElectronTab implements HostTab {
     dispose(reason: DestroyReason): void {
         if (this.disposed) return;
         this.disposed = true;
+        this.frames.clear();
         try {
             if (this.attached) this.contents.debugger.detach();
         } catch {

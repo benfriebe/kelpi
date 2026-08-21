@@ -32,6 +32,7 @@ import {
     DEFAULT_KEYBINDINGS,
     isNexAction,
     keyTriggerConfigString,
+    namedTerminalTheme,
     parseChromeSettings,
     parseGeneralSettings,
     parseKeyTrigger,
@@ -157,6 +158,29 @@ export function keybindLinesFrom(contents: string): string[] {
     );
 }
 
+/**
+ * §SET-105 / §SET-216: which terminal theme is actually selected.
+ *
+ * The Swift app read `theme = <name>` out of ITS config at launch and resolved it through
+ * `NexTheme.named(id)` — a built-in or nothing — and the resolved theme is what the terminal
+ * ended up using. Two rules follow, and both are here:
+ *
+ *   1. **ghostty's own file wins.** A `theme` line the user put in `~/.config/ghostty/config` is
+ *      the theme ghostty resolves, and Nex never overrode it (§SET-217/§SET-218: the user's file
+ *      beats our defaults). So the nex key is a FALLBACK, consulted only when ghostty says
+ *      nothing.
+ *   2. **A non-built-in selects nothing** (§SET-216). `namedTerminalTheme` matches exactly,
+ *      case included, so `theme = dracula` or a typo leaves the answer null and the terminal
+ *      keeps whatever ghostty already resolved — rather than the port guessing at a filename.
+ */
+export function resolveTerminalTheme(
+    ghosttyTheme: string | null,
+    nexTheme: string | null
+): string | null {
+    if (ghosttyTheme !== null && ghosttyTheme !== '') return ghosttyTheme;
+    return namedTerminalTheme(nexTheme)?.id ?? null;
+}
+
 export function buildSettingsSnapshot(
     nexConfig: string,
     ghosttyConfig: string
@@ -220,7 +244,10 @@ export function buildSettingsSnapshot(
             newGroupPlacement: general.newGroupPlacement,
             // SET-011: read by the CLIENT's create gestures (⌘N, the New Workspace form), so
             // it has to ride the snapshot rather than only being consulted daemon-side.
-            inheritGroupOnNewWorkspace: general.inheritGroupOnNewWorkspace
+            inheritGroupOnNewWorkspace: general.inheritGroupOnNewWorkspace,
+            // SET-012: the same shape for the sidebar's drop gesture — the client reads it and
+            // puts the answer on `workspace-move` (`expand_on_drop`).
+            expandGroupOnWorkspaceDrop: general.expandGroupOnWorkspaceDrop
         },
         appearance: {
             backgroundColor: appearance.backgroundColor,
@@ -230,7 +257,9 @@ export function buildSettingsSnapshot(
             // The luminance rule, computed once by the authority so the daemon's rendered
             // HTML and the client's chrome cannot disagree (content-panes.md port note 9).
             isDark: isDarkBackground(appearance.backgroundColor),
-            theme: appearance.theme
+            // §SET-105: ghostty's own `theme` line, or — when it has none — the nex config's
+            // `theme` key, but only when it names one of the ten built-ins (§SET-216).
+            theme: resolveTerminalTheme(appearance.theme, general.theme)
         }
     };
 }

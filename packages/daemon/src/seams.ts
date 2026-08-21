@@ -85,6 +85,15 @@ export interface VtModes {
   readonly mouseTracking?: MouseTrackingMode | undefined;
   /** Coordinate encoding (1005 / 1006 / 1015 / 1016). Absent reads as `'x10'`. */
   readonly mouseFormat?: MouseFormat | undefined;
+  /**
+   * Kitty keyboard protocol flags negotiated for the ACTIVE screen (§TERM-030).
+   *
+   * Streamed to clients for the same reason as the mouse pair: the port encodes key events in
+   * its own layer because the engine registers no `keyup` listener at all, so the client has to
+   * be told which enhancements the application asked for. Optional so every existing `VtModes`
+   * literal stays valid; absent reads as `0` — "protocol off, legacy encoding".
+   */
+  readonly kittyKeyboardFlags?: number | undefined;
 }
 
 export interface TerminalStateService {

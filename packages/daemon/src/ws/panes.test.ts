@@ -64,6 +64,37 @@ describe('reopen-closed-pane', () => {
         expect(String(reply['error'])).toContain('no recently closed pane');
     });
 
+    /**
+     * LAY-017 — the reopen splits the FOCUSED pane, and Swift's guard order means a workspace
+     * with nothing focused eats the snapshot rather than restoring it
+     * (WorkspaceFeature.swift:1906-1908: `popLast()` runs before the focus guard). The channel
+     * reports that honestly instead of acking a pane id that was never created.
+     */
+    it('LAY-017: with nothing focused it fails, and the snapshot is consumed', () => {
+        const f = fixture();
+        const SECOND = testID('E', 3);
+        f.h.store.dispatch({
+            type: 'split-pane',
+            workspaceID: W1,
+            paneID: SECOND,
+            direction: 'horizontal',
+            sourcePaneID: P0,
+            label: 'gone',
+            now: 1
+        });
+        f.h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: SECOND });
+        f.h.store.dispatch({ type: 'focus-pane', workspaceID: W1, paneID: null });
+        const before = f.h.pty.spawns.length;
+
+        const reply = f.channel.run('reopen-closed-pane', { workspace_id: W1 });
+        expect(reply).toMatchObject({ ok: false });
+        expect(String(reply['error'])).toContain('nothing is focused');
+        const workspace = workspaceByID(f.h.state(), W1);
+        expect(visiblePane(workspace!, NEW)).toBeNull();
+        expect(workspace?.recentlyClosedPanes).toHaveLength(0);
+        expect(f.h.pty.spawns).toHaveLength(before);
+    });
+
     it('restores the pane, spawns its PTY and refreshes the sync group', () => {
         const f = fixture();
         const SECOND = testID('E', 1);

@@ -203,7 +203,8 @@ describe('TerminalStateServiceImpl — modes', () => {
             applicationCursorKeys: true,
             bracketedPaste: true,
             mouseTracking: 'none',
-            mouseFormat: 'x10'
+            mouseFormat: 'x10',
+            kittyKeyboardFlags: 0
         });
     });
 
@@ -213,7 +214,8 @@ describe('TerminalStateServiceImpl — modes', () => {
             applicationCursorKeys: false,
             bracketedPaste: false,
             mouseTracking: 'none',
-            mouseFormat: 'x10'
+            mouseFormat: 'x10',
+            kittyKeyboardFlags: 0
         });
     });
 });

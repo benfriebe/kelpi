@@ -221,9 +221,10 @@ export interface LaunchSteps {
     /** APP-003/004. Best-effort: a throw here must not cost the user their window. */
     readonly runCliInstallPolicy: () => void;
     /**
-     * §APP-006's slot: refreshing the bundled agent documentation. Inert in this build (see
-     * `main.ts`), and best-effort for the same reason the CLI policy is — whatever fills it
-     * touches a directory outside the app.
+     * §APP-006: refresh the bundled agent documentation into `$HOME/.claude/skills/…`
+     * (`./skill.ts` owns every rule about when that is allowed). Best-effort for the same
+     * reason the CLI policy is — it writes outside the app, and a home that cannot be written
+     * to must cost a log line rather than the launch.
      */
     readonly refreshBundledSkill: () => void;
     readonly startUpdater: () => void;

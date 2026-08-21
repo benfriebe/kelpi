@@ -122,6 +122,23 @@ export interface UseInspectorDataInput {
      */
     readonly refreshOnRead?: boolean | undefined;
     /**
+     * §APP-037 — "and refreshes git status", the clause a workspace SWITCH owes.
+     *
+     * The Swift's `setActiveWorkspace` merges `.refreshGitStatus` into its effects, and the
+     * command palette's confirm does the same thing inline (`AppReducer.swift:1434-1452`,
+     * `AppReducer+CommandPalette.swift:76-114`) — so arriving in a workspace always re-runs
+     * `git status` rather than showing whatever the watcher last happened to know. Here that is
+     * one forced read: assembly hands over the workspace it just activated plus a sequence
+     * number, and the first read taken with that workspace actually MOUNTED goes out with
+     * `refresh: true` even when the panel is shut and `refreshOnRead` is false.
+     *
+     * The workspace id is part of the token on purpose. Activation is optimistic locally but the
+     * mirror swaps a moment later, so a bare nonce would spend the force on a read of the
+     * workspace being LEFT and leave the destination reading stale values — exactly the bug this
+     * clause is about. The `seq` is what lets a return trip to the same workspace force again.
+     */
+    readonly forceRefreshFor?: { readonly workspaceID: string; readonly seq: number } | null | undefined;
+    /**
      * A signature of the mirror's repo registry (its ids). The REGISTRY is read even while the
      * inspector is closed — it is a cheap, git-free read, and the New Workspace form's "Create
      * git worktree" section needs each repo's resolved base path to preview a path at all
@@ -155,6 +172,17 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
     const [nonce, setNonce] = useState(0);
     /** Guards a late reply from a workspace the user has already left. */
     const generation = useRef(0);
+    /**
+     * §APP-037: the force token this hook has already spent. `<workspaceID>#<seq>`, so the same
+     * workspace activated twice forces twice, and a token for a workspace that is not mounted
+     * yet is simply not spent until it is.
+     */
+    const forceToken =
+        input.forceRefreshFor === null || input.forceRefreshFor === undefined
+            ? ''
+            : `${input.forceRefreshFor.workspaceID}#${String(input.forceRefreshFor.seq)}`;
+    const forceWorkspaceID = input.forceRefreshFor?.workspaceID ?? null;
+    const spentForceToken = useRef('');
 
     const refresh = useCallback(() => {
         setNonce((value) => value + 1);
@@ -186,10 +214,17 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
         generation.current += 1;
         const mine = generation.current;
         let cancelled = false;
-        const read = async (): Promise<void> => {
+        // Spend the switch's forced read here, once, and only for the workspace it names.
+        const forced =
+            forceToken !== '' && forceWorkspaceID === workspaceID && spentForceToken.current !== forceToken;
+        if (forced) spentForceToken.current = forceToken;
+        const read = async (options: { force?: boolean } = {}): Promise<void> => {
             setRefreshing(true);
             try {
-                const status = await commands.workspaceRepoStatus({ workspaceID, refresh: refreshOnRead });
+                const status = await commands.workspaceRepoStatus({
+                    workspaceID,
+                    refresh: refreshOnRead || options.force === true
+                });
                 if (cancelled || generation.current !== mine) return;
                 if (status['ok'] === true) setAssociations(parseAssociations(status));
             } catch {
@@ -198,12 +233,14 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
                 if (!cancelled && generation.current === mine) setRefreshing(false);
             }
         };
-        void read();
+        void read({ force: forced });
         if (pollMs <= 0) {
             return () => {
                 cancelled = true;
             };
         }
+        // The POLL is never forced: it is the background top-up, and forcing it would double the
+        // git the daemon's own 30 s poll is already running.
         const timer = setInterval(() => {
             void read();
         }, pollMs);
@@ -211,7 +248,17 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
             cancelled = true;
             clearInterval(timer);
         };
-    }, [commands, enabled, workspaceID, associationsKey, nonce, pollMs, refreshOnRead]);
+    }, [
+        commands,
+        enabled,
+        workspaceID,
+        associationsKey,
+        nonce,
+        pollMs,
+        refreshOnRead,
+        forceToken,
+        forceWorkspaceID
+    ]);
 
     return { associations, repos, refreshing, refresh };
 }

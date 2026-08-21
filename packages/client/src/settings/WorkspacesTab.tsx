@@ -69,6 +69,30 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                  * the same key, and the shell picks a change up on its status socket's
                  * `settings-changed` without a restart.
                  */}
+                {/*
+                 * SET-012. A CLIENT-side gesture rule, like SET-011's group inheritance: the
+                 * sidebar's drop puts this answer on `workspace-move` (`expand_on_drop`), so
+                 * `nex workspace move --group X` still opens a collapsed group and only the
+                 * drag-and-drop in the window is governed by the toggle.
+                 */}
+                <SettingsRow
+                    label="Expand group when a workspace is dropped into it"
+                    detail="Dropping a workspace onto a collapsed group opens the group so you can see where the row landed. Off leaves it collapsed."
+                    testID="expand-group-on-drop-row"
+                >
+                    <SettingsToggle
+                        testID="expand-group-on-drop-toggle"
+                        label="Expand group when a workspace is dropped into it"
+                        checked={general.expandGroupOnWorkspaceDrop}
+                        onChange={(next) => {
+                            props.actions.setGeneralSetting(
+                                'expand-group-on-workspace-drop',
+                                next ? 'true' : 'false'
+                            );
+                        }}
+                    />
+                </SettingsRow>
+
                 <SettingsRow
                     label="Confirm before quitting with active agents"
                     detail="Desktop app only: ⌘Q asks first while agents are running. The dialog's “Don't ask again” checkbox writes this same setting."

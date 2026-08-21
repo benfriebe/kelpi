@@ -167,6 +167,140 @@ describe('useInspectorData', () => {
         unmount();
     });
 
+    /**
+     * §APP-037 — "and refreshes git status". The Swift's `setActiveWorkspace` (and the command
+     * palette's confirm, inline) merge `.refreshGitStatus` into their effects; here that is one
+     * forced read on arrival, which has to survive the fact that the panel is usually SHUT
+     * (`refreshOnRead: false`) when a user jumps between workspaces.
+     */
+    describe('the forced read a workspace switch owes (§APP-037)', () => {
+        it('forces `git status` on arrival even with the inspector closed', async () => {
+            const commands = reader();
+            const { rerender } = renderHook(
+                (props: { force: { workspaceID: string; seq: number } | null }) =>
+                    useInspectorData({
+                        commands,
+                        workspaceID: 'w1',
+                        enabled: true,
+                        refreshOnRead: false,
+                        forceRefreshFor: props.force,
+                        associationsKey: 'k',
+                        pollMs: 0
+                    }),
+                { initialProps: { force: null as { workspaceID: string; seq: number } | null } }
+            );
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(1);
+            });
+            // The footer's ambient feed: the watcher's last known values, no git run.
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: false });
+
+            rerender({ force: { workspaceID: 'w1', seq: 1 } });
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(2);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: true });
+        });
+
+        /**
+         * The reason the token names a workspace. Activation is local and instant; the mirror's
+         * active workspace arrives a round trip later, so for one render the hook is still
+         * reading the workspace being LEFT. A bare nonce would spend the force there and the
+         * destination — the one the user is looking at — would read stale values.
+         */
+        it('spends the force on the DESTINATION, not on the workspace being left', async () => {
+            const commands = reader();
+            const { rerender } = renderHook(
+                (props: { workspaceID: string; force: { workspaceID: string; seq: number } | null }) =>
+                    useInspectorData({
+                        commands,
+                        workspaceID: props.workspaceID,
+                        enabled: true,
+                        refreshOnRead: false,
+                        forceRefreshFor: props.force,
+                        associationsKey: 'k',
+                        pollMs: 0
+                    }),
+                { initialProps: { workspaceID: 'w1', force: null as { workspaceID: string; seq: number } | null } }
+            );
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(1);
+            });
+
+            // The click has happened; the mirror has not caught up yet.
+            rerender({ workspaceID: 'w1', force: { workspaceID: 'w2', seq: 1 } });
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(2);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: false });
+
+            // …and now it has.
+            rerender({ workspaceID: 'w2', force: { workspaceID: 'w2', seq: 1 } });
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(3);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w2', refresh: true });
+        });
+
+        it('is spent once, and again on a return trip to the same workspace', async () => {
+            const commands = reader();
+            const { rerender } = renderHook(
+                (props: { key: string; force: { workspaceID: string; seq: number } }) =>
+                    useInspectorData({
+                        commands,
+                        workspaceID: 'w1',
+                        enabled: true,
+                        refreshOnRead: false,
+                        forceRefreshFor: props.force,
+                        associationsKey: props.key,
+                        pollMs: 0
+                    }),
+                { initialProps: { key: 'k', force: { workspaceID: 'w1', seq: 1 } } }
+            );
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(1);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: true });
+
+            // An ordinary re-read (a delta moved a branch) is NOT forced — one switch, one git.
+            rerender({ key: 'k2', force: { workspaceID: 'w1', seq: 1 } });
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(2);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: false });
+
+            // Leaving and coming back is a new activation, so it forces again.
+            rerender({ key: 'k2', force: { workspaceID: 'w1', seq: 2 } });
+            await waitFor(() => {
+                expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(3);
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: true });
+        });
+
+        it('never forces the background poll', async () => {
+            vi.useFakeTimers();
+            const commands = reader();
+            renderHook(() =>
+                useInspectorData({
+                    commands,
+                    workspaceID: 'w1',
+                    enabled: true,
+                    refreshOnRead: false,
+                    forceRefreshFor: { workspaceID: 'w1', seq: 1 },
+                    associationsKey: 'k',
+                    pollMs: 1000
+                })
+            );
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: true });
+            await act(async () => {
+                vi.advanceTimersByTime(2000);
+                await Promise.resolve();
+            });
+            expect(commands.workspaceRepoStatus).toHaveBeenCalledTimes(3);
+            expect(commands.workspaceRepoStatus).toHaveBeenLastCalledWith({ workspaceID: 'w1', refresh: false });
+        });
+    });
+
     it('keeps the last good values when a read fails', async () => {
         const commands = reader();
         commands.workspaceRepoStatus.mockResolvedValueOnce({

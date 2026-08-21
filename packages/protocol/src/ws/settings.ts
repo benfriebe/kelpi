@@ -91,6 +91,13 @@ export interface WsGeneralSettings {
      * group); the wire verb is unchanged, so the CLI keeps its top-level default.
      */
     readonly inheritGroupOnNewWorkspace: boolean;
+    /**
+     * §13's Workspaces ▸ "Expand group when a workspace is dropped into it" (SET-012), default
+     * true. A CLIENT-side rule like its neighbour above: the sidebar's drop carries the value on
+     * `workspace-move` as `expand_on_drop`, so a CLI move (which never sets the field) keeps the
+     * always-expand behaviour and only the window's gesture is governed by the toggle.
+     */
+    readonly expandGroupOnWorkspaceDrop: boolean;
 }
 
 /**
@@ -271,7 +278,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         worktreeBasePath: '~/nex/worktrees/<repo>',
         newWorkspacePlacement: 'end-of-list',
         newGroupPlacement: 'end-of-list',
-        inheritGroupOnNewWorkspace: true
+        inheritGroupOnNewWorkspace: true,
+        expandGroupOnWorkspaceDrop: true
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -369,7 +377,9 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'new-workspace-placement',
     'new-group-placement',
     // …and the third Workspaces control beside them: SET-011's group inheritance.
-    'inherit-group-on-new-workspace'
+    'inherit-group-on-new-workspace',
+    // SET-012, the last of §13's six behaviour keys: the drop-into-a-collapsed-group rule.
+    'expand-group-on-workspace-drop'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

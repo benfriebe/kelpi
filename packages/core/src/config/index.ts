@@ -68,3 +68,6 @@ export type {
     SystemStatID
 } from './chrome.js';
 export { ghosttyColorValue, ghosttyFontFamilyValue, setGhosttySetting } from './ghostty-write.js';
+// §SET-215/§SET-105/§SET-216: the ten built-in terminal themes and the exact-match lookup.
+export { BUILT_IN_TERMINAL_THEMES, namedTerminalTheme } from './themes.js';
+export type { TerminalTheme } from './themes.js';

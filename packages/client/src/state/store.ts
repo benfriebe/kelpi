@@ -167,6 +167,22 @@ export interface FocusEcho {
 }
 
 /**
+ * §SET-200/§SET-201: what the Electron shell's registrar said about the global hotkey.
+ *
+ * `null` means nobody has reported — a browser client with no desktop shell attached, or a
+ * daemon that has not been told yet — and Settings shows no warning, which is correct: nothing
+ * tried to register anything. A report with `ok: true` is kept rather than collapsed to null so
+ * a stale failure is positively cleared instead of merely forgotten.
+ */
+export interface HotkeyStatus {
+    readonly accelerator: string | null;
+    readonly configString: string | null;
+    readonly ok: boolean;
+    readonly error: string | null;
+    readonly source: 'launch' | 'settings';
+}
+
+/**
  * The daemon's config-file settings (M8).
  *
  * A THIRD slice, deliberately not folded into `daemon`: settings are not domain state, they
@@ -180,6 +196,8 @@ export interface SettingsSlice {
     readonly value: WsSettingsSnapshot;
     /** True once a `welcome` (or a `settings-changed`) delivered a payload. */
     readonly loaded: boolean;
+    /** The last `hotkey-status` the daemon relayed from a shell (§SET-200/§SET-201). */
+    readonly hotkeyStatus: HotkeyStatus | null;
 }
 
 /**
@@ -219,6 +237,11 @@ export interface NexActions {
      * daemon that sends no settings) leaves the defaults in place and stays unloaded.
      */
     applySettings(raw: unknown): void;
+    /**
+     * A `hotkey-status` relay (§SET-200/§SET-201). A malformed payload is ignored rather than
+     * partially applied — a half-read report would either invent a warning or erase a real one.
+     */
+    applyHotkeyStatus(raw: unknown): void;
     /** A `system-stats` broadcast. A malformed payload is ignored, never partially applied. */
     applySystemStats(raw: unknown): void;
     applySnapshot(seq: number, rawState: unknown): void;
@@ -275,7 +298,25 @@ function initialDaemonSlice(): DaemonSlice {
 }
 
 function initialSettingsSlice(): SettingsSlice {
-    return { value: DEFAULT_WS_SETTINGS, loaded: false };
+    return { value: DEFAULT_WS_SETTINGS, loaded: false, hotkeyStatus: null };
+}
+
+function textOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** §SET-200: the relay's payload, or null when it is not a report this client can trust. */
+export function hydrateHotkeyStatus(raw: unknown): HotkeyStatus | null {
+    if (!isRecord(raw)) return null;
+    if (typeof raw['ok'] !== 'boolean') return null;
+    const source = raw['source'];
+    return {
+        accelerator: textOrNull(raw['accelerator']),
+        configString: textOrNull(raw['configString']),
+        ok: raw['ok'],
+        error: textOrNull(raw['error']),
+        source: source === 'launch' ? 'launch' : 'settings'
+    };
 }
 
 function initialSystemStatsSlice(): SystemStatsSlice {
@@ -407,6 +448,12 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             inheritGroupOnNewWorkspace: bool(
                 general['inheritGroupOnNewWorkspace'],
                 fallbackGeneral.inheritGroupOnNewWorkspace
+            ),
+            // SET-012, the sibling gesture rule: an older daemon omits it and the drop keeps
+            // expanding, which is what it did before the setting existed.
+            expandGroupOnWorkspaceDrop: bool(
+                general['expandGroupOnWorkspaceDrop'],
+                fallbackGeneral.expandGroupOnWorkspaceDrop
             )
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
@@ -579,7 +626,30 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
             // Identity stability matters: every consumer of this slice is a memo dependency,
             // and a fresh object per broadcast would rebuild the key dispatcher for nothing.
             if (settings.loaded && sameSettings(settings.value, value)) return;
-            set({ settings: { value, loaded: true } });
+            // The hotkey report is carried over: it comes from the shell on its own schedule
+            // and has nothing to do with a config-file change (§SET-200).
+            set({ settings: { value, loaded: true, hotkeyStatus: settings.hotkeyStatus } });
+        },
+
+        applyHotkeyStatus(raw) {
+            const status = hydrateHotkeyStatus(raw);
+            if (status === null) return;
+            const settings = get().settings;
+            const current = settings.hotkeyStatus;
+            // Identity stability, same rule as `applySettings`: the shell re-reports on every
+            // reconnect and on every settings write, and an unchanged report must not re-render
+            // Settings or invalidate a memo that depends on this slice.
+            if (
+                current !== null &&
+                current.ok === status.ok &&
+                current.error === status.error &&
+                current.accelerator === status.accelerator &&
+                current.configString === status.configString &&
+                current.source === status.source
+            ) {
+                return;
+            }
+            set({ settings: { ...settings, hotkeyStatus: status } });
         },
 
         applySnapshot(seq, rawState) {

@@ -40,6 +40,13 @@ export interface PaneVtModes {
     readonly bracketedPaste: boolean;
     readonly mouseTracking: MouseTrackingMode;
     readonly mouseFormat: MouseFormat;
+    /**
+     * Kitty keyboard protocol flags (§TERM-030), read by `./kitty-keyboard.ts` rather than by
+     * this module — it rides here because the daemon sends one modes object per pane. Optional
+     * so every existing `PaneVtModes` literal stays valid; absent reads as `0`, which is
+     * "protocol off, legacy encoding".
+     */
+    readonly kittyKeyboardFlags?: number | undefined;
 }
 
 /** A pane nothing has reported modes for yet: no tracking, so nothing is intercepted. */
@@ -47,7 +54,8 @@ export const IDLE_PANE_MODES: PaneVtModes = {
     applicationCursorKeys: false,
     bracketedPaste: false,
     mouseTracking: 'none',
-    mouseFormat: 'x10'
+    mouseFormat: 'x10',
+    kittyKeyboardFlags: 0
 };
 
 export type MouseAction = 'press' | 'release' | 'motion';

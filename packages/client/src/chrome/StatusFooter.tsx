@@ -350,25 +350,63 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                 color: tokens.textSecondary
             }}
         >
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            {/*
+              * §N6 — the left cluster CLIPS, it does not spill.
+              *
+              * This row is `flex-1 min-w-0` so it can shrink, but its children were fixed-size
+              * (`shrink-0`, or text with no `min-w-0` to shrink into) inside a box with no
+              * `overflow-hidden`. At the width the full audit run gives the footer — sidebar and
+              * inspector open, six system stats on — the segments simply overflowed the box and
+              * were PAINTED OVER the system-stat gauges beside them: `⑂ main 🗎 2 +5 -5` on top
+              * of the CPU chip (docs/audit/run-L/52-footer-git-stats.png).
+              *
+              * Two rules fix it, and both are needed:
+              *   1. `overflow-hidden` here — the hard guarantee. Whatever does not fit is
+              *      clipped at this box's edge and can never reach the right cluster.
+              *   2. an explicit shrink ORDER among the children, so the clipping is a last
+              *      resort rather than the normal state: the path gives up its width first
+              *      (it is the one segment that is already middle-truncated and still readable
+              *      shortened), then the branch name, and the fixed little `doc N +A -B` and
+              *      agent segments hold their size. That is the same priority SwiftUI's
+              *      `HStack` + `.lineLimit(1)` produces for `leftSection` in the shipped app.
+              */}
+            <div
+                data-testid="footer-left"
+                className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+            >
                 {pane === null ? null : (
                     <>
-                        <span data-testid="footer-cwd" className="truncate">
+                        <span
+                            data-testid="footer-cwd"
+                            className="min-w-0 truncate"
+                            // Shrinks ~100× faster than the branch chip beside it, so the path
+                            // is what gives way when the footer runs out of room. It is also the
+                            // only segment that survives being shortened — hence the tooltip,
+                            // which is where the whole path goes once the row is crowded.
+                            style={{ flexShrink: 100 }}
+                            title={homeAbbreviated(pane.workingDirectory, home)}
+                        >
                             {middleTruncate(homeAbbreviated(pane.workingDirectory, home), 48)}
                         </span>
                         {pane.gitBranch === null ? null : (
                             <span
                                 data-testid="footer-branch"
-                                className="flex items-center gap-1"
-                                style={{ color: tokens.textTertiary }}
+                                className="flex min-w-0 items-center gap-1"
+                                style={{ color: tokens.textTertiary, flexShrink: 1 }}
                             >
-                                <ChromeIcon name="branch" size={10} />
-                                {pane.gitBranch}
+                                <span className="flex shrink-0 items-center">
+                                    <ChromeIcon name="branch" size={10} />
+                                </span>
+                                <span className="truncate">{pane.gitBranch}</span>
                             </span>
                         )}
                         {treeStats === null ? null : <GitStats stats={treeStats} />}
                         {pane.agentSessionID === null ? null : paneRunning ? (
-                            <span data-testid="footer-agent" style={{ color: tokens.activeAgent }}>
+                            <span
+                                data-testid="footer-agent"
+                                className="shrink-0 whitespace-nowrap"
+                                style={{ color: tokens.activeAgent }}
+                            >
                                 {/* §AGNT-063 / §APP-072: the Swift's literal default is "claude". */}
                                 {pane.agentKind ?? 'claude'}
                                 {pane.agentStartedAt === null || pane.agentStartedAt === undefined
@@ -377,7 +415,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                                 {pane.backgroundTaskCount > 0 ? ` · ${pane.backgroundTaskCount} running` : ''}
                             </span>
                         ) : pane.status === 'waitingForInput' ? (
-                            <span data-testid="footer-agent" style={{ color: tokens.statusWaiting }}>
+                            <span
+                                data-testid="footer-agent"
+                                className="shrink-0 whitespace-nowrap"
+                                style={{ color: tokens.statusWaiting }}
+                            >
                                 awaiting input
                             </span>
                         ) : null}
@@ -385,7 +427,9 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                 )}
             </div>
 
-            <div className="flex shrink-0 items-center gap-3">
+            {/* The fixed half of the row: gauges, counts, clock. Named so the audit can measure
+              * the left cluster against it and prove §N6's overlap cannot come back. */}
+            <div data-testid="footer-right" className="flex shrink-0 items-center gap-3">
                 {gauges.length > 0 ? (
                     // Spacing-separated, no dot separators — the gaps carry the grouping
                     // (`rightSection`'s `HStack(spacing: 14)`).

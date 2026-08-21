@@ -598,3 +598,81 @@ describe('system-stat gauges', () => {
         expect(screen.getByTestId('stat-sparkline-cpu').getAttribute('width')).toBe('60');
     });
 });
+
+/**
+ * §N6 — the left cluster must CLIP, never spill over the system stats.
+ *
+ * jsdom has no layout engine, so nothing here can measure an overlap; what it can pin down is
+ * the pair of rules that make one impossible, and which were both absent when the defect was
+ * found in `run-L/52-footer-git-stats.png` (`⑂ main 🗎 2 +5 -5` painted on top of the CPU
+ * chip). The measurement itself belongs to the audit's `footer-git-stats` step, which compares
+ * this cluster's bounding rect — and every segment inside it — against the system-stat block's
+ * at a deliberately narrow window width.
+ */
+describe('the left cluster clips instead of overflowing (N6)', () => {
+    function renderCrowded(): void {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                homeDirectory="/Users/test"
+                focusedPane={pane({
+                    workingDirectory: '/Users/test/code/nex/packages/client/src/chrome/deeply/nested',
+                    gitBranch: 'feature/a-branch-name-long-enough-to-crowd-the-row',
+                    status: 'running',
+                    agentSessionID: 'session',
+                    agentKind: 'claude',
+                    agentStartedAt: NOW - 9_000
+                })}
+                associations={[
+                    {
+                        worktreePath: '/Users/test/code/nex',
+                        status: { kind: 'dirty', changedFiles: 2, additions: 5, deletions: 5 }
+                    }
+                ]}
+                systemStats={statsView({ enabled: ['cpu', 'memory', 'load'] })}
+            />
+        );
+    }
+
+    it('hides its own overflow, so nothing can be painted over the right cluster', () => {
+        renderCrowded();
+        const left = screen.getByTestId('footer-left');
+        expect(left.className).toContain('overflow-hidden');
+        // …while still being the flexible half of the row: it has to be able to shrink at all.
+        expect(left.className).toContain('min-w-0');
+        expect(left.className).toContain('flex-1');
+    });
+
+    it('gives the path the largest shrink factor, so it truncates first', () => {
+        renderCrowded();
+        const cwd = screen.getByTestId('footer-cwd');
+        const branch = screen.getByTestId('footer-branch');
+        expect(cwd.className).toContain('truncate');
+        expect(cwd.className).toContain('min-w-0');
+        expect(Number(cwd.style.flexShrink)).toBeGreaterThan(Number(branch.style.flexShrink));
+        expect(Number(branch.style.flexShrink)).toBeGreaterThan(0);
+    });
+
+    it('lets the branch NAME truncate rather than holding the chip at its full width', () => {
+        renderCrowded();
+        const branch = screen.getByTestId('footer-branch');
+        expect(branch.className).toContain('min-w-0');
+        const name = Array.from(branch.querySelectorAll('span')).find((node) =>
+            node.textContent?.includes('feature/')
+        );
+        expect(name?.className).toContain('truncate');
+        // The chip still reads as one label, glyph included (§APP-070).
+        expect(branch.textContent).toContain('feature/a-branch-name-long-enough-to-crowd-the-row');
+    });
+
+    it('keeps the two fixed segments whole — they are the ones worth reading at any width', () => {
+        renderCrowded();
+        expect(screen.getByTestId('footer-git-stats').className).toContain('shrink-0');
+        expect(screen.getByTestId('footer-agent').className).toContain('shrink-0');
+        // …and they still say exactly what they said before the layout change (§APP-071).
+        expect(screen.getByTestId('footer-git-stats').getAttribute('aria-label')).toBe(
+            '2 files changed, 5 added, 5 removed'
+        );
+    });
+});

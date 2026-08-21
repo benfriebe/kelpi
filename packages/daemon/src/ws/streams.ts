@@ -56,7 +56,8 @@ function wireModes(modes: VtModes): WsVtModes {
         applicationCursorKeys: modes.applicationCursorKeys,
         bracketedPaste: modes.bracketedPaste,
         mouseTracking: (modes.mouseTracking ?? 'none') as WsMouseTrackingMode,
-        mouseFormat: (modes.mouseFormat ?? 'x10') as WsMouseFormat
+        mouseFormat: (modes.mouseFormat ?? 'x10') as WsMouseFormat,
+        kittyKeyboardFlags: modes.kittyKeyboardFlags ?? 0
     };
 }
 

@@ -62,6 +62,8 @@ import {
     type RepoAssociationWatchService
 } from '../graft/index.js';
 import { createAppHandlers } from '../handlers/app/index.js';
+// §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
+import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
 import { paneHandlers, spawnEnvVars, spawnPaneIfShell, type PaneHandlerContext, type PaneSpawnDefaults } from '../handlers/pane/index.js';
 import {
     clearRunFiles,
@@ -97,7 +99,11 @@ import {
     type PaneBranchWatchService
 } from '../git/index.js';
 import { createSystemStatsSampler } from '../stats/index.js';
-import { createTerminalStateService, type TerminalStateServiceImpl } from '../term/index.js';
+import {
+    createTerminalStateService,
+    type OscNotification,
+    type TerminalStateServiceImpl
+} from '../term/index.js';
 import {
     createAgentChannel,
     createGraftOrphanRegistry,
@@ -382,6 +388,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      */
     /** Assigned beside `onPaneDirectory`, and deferred for the same reason. */
     let onPaneTitle: (paneID: string, title: string) => void = () => {};
+    /**
+     * §TERM-050's delivery, deferred for the same reason as the two above: it needs `store` and
+     * `ws`, both of which are built below.
+     */
+    let onPaneOscNotification: (paneID: string, notification: OscNotification) => void = () => {};
     const term = createTerminalStateService({
         onDirectoryChange: (paneID, directory) => {
             try {
@@ -401,6 +412,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 report(error, 'pane title report');
             }
         },
+        // §TERM-050: OSC 9 / OSC 777 out of the PTY stream. The suppression matrix and the
+        // broadcast live in `deliverOscNotification` below, beside the client-presence reads
+        // the agent-event path already uses.
+        onOscNotification: (paneID, notification) => {
+            try {
+                onPaneOscNotification(paneID, notification);
+            } catch (error) {
+                report(error, 'pane osc notification');
+            }
+        },
         // §TERM-037…§TERM-039: the CLIENT encodes DEC mouse reports (no renderer this port ships
         // implements them), so the modes have to reach it as state. Targeted at the clients
         // attached to that pane's stream rather than broadcast (`ws/streams.ts`).
@@ -409,6 +430,18 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 ws?.streams.modesChanged(paneID, modes);
             } catch (error) {
                 report(error, 'pane modes report');
+            }
+        },
+        // §TERM-030: the one place where parsing OUTPUT owes the PTY INPUT. A real terminal
+        // answers `CSI ? u` with its kitty-keyboard flags, and that answer is how an
+        // application learns the protocol exists at all. `writeDirect`, never `write`: a device
+        // reply belongs to the pane that asked, and mirroring it into every synchronise-input
+        // sibling would hand each of them an answer to a question they never asked.
+        onKittyReply: (paneID, reply) => {
+            try {
+                pty.writeDirect(paneID, reply);
+            } catch (error) {
+                report(error, 'kitty keyboard query reply');
             }
         }
     });
@@ -700,6 +733,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out.
         controlTransport: () => ({ tcp: controlTcpStatus() }),
         profiles: readProfiles,
+        // §SET-209: the undefined-profile warning `WorkspaceProfilesClient.resolveEnv` logs.
+        // It lands in the daemon log, where every other spawn-path diagnostic goes.
+        onLog: (message) => log(message),
         spawn: spawnDefaults,
         ...(options.now !== undefined ? { clock: options.now } : {}),
         ...(options.uuid !== undefined ? { mintPaneID: options.uuid, mintWorkspaceID: options.uuid } : {})
@@ -831,6 +867,20 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     };
 
     /**
+     * §TERM-050's delivery, bound to real client presence. The rule itself lives in
+     * `handlers/app/osc-notifications.ts`, beside the agent-event path it mirrors, so it can be
+     * exercised without standing a daemon up.
+     */
+    onPaneOscNotification = createOscNotificationSink({
+        getState: () => store.getState(),
+        isPaneFocused: (paneID, workspaceID) => ws?.isPaneAttended(workspaceID, paneID) ?? false,
+        isAppActive: () => ws?.presence().anyVisible ?? false,
+        broadcast: (message) => {
+            ws?.broadcast(message);
+        }
+    });
+
+    /**
      * The interrupted-graft set behind the inspector's banner (§GIT-051 / §WS-145). Boot fills
      * it; recover/dismiss mutate it; every change re-broadcasts, so a second window's banner
      * disappears when the first window restores.
@@ -864,6 +914,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // these into getters).
         worktreeBasePath: () => settings.snapshot.general.worktreeBasePath,
         placement: () => settings.snapshot.general.newWorkspacePlacement,
+        // SET-012, read the same way and for the same reason: the sidebar's drop IS a
+        // `workspace-move`, so the toggle has to be consulted per command rather than captured
+        // at boot — flipping it in Settings changes the very next drop.
+        expandGroupOnDrop: () => settings.snapshot.general.expandGroupOnWorkspaceDrop,
         ...(options.now !== undefined ? { now: options.now } : {}),
         ...(options.uuid !== undefined ? { uuid: options.uuid } : {})
     });

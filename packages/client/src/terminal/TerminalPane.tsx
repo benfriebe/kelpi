@@ -30,6 +30,7 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactElement } fro
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
+import { createKittyKeyboard, sanitizeKittyFlags, type KittyKeyboard } from './kitty-keyboard';
 import {
     IDLE_PANE_MODES,
     createMouseReporter,
@@ -93,6 +94,56 @@ export const TERMINAL_START_ATTEMPTS = 3;
 /** Backoff before rebuilding a failed engine; doubles per attempt (150 ms, then 300 ms). */
 export const TERMINAL_START_RETRY_MS = 150;
 
+/**
+ * §TERM-036 — the surface's accessibility identity.
+ *
+ * `SurfaceView.swift:703-715` makes the terminal an accessibility ELEMENT with role
+ * `.textArea` and `accessibilityHelp` "Terminal content area". The three clauses port one for
+ * one, and the mapping is the only interesting part:
+ *
+ *   - **element**: an `NSView` opts in with `isAccessibilityElement`; a `<div>` opts in by
+ *     carrying a `role`, which is what promotes it out of the generic-container bucket.
+ *   - **role `.textArea`**: the ARIA spelling of `AXTextArea` is `role="textbox"` +
+ *     `aria-multiline="true"` — Blink maps exactly that pair onto `NSAccessibilityTextAreaRole`
+ *     on macOS, so a screen reader on the platform the Swift app targets hears the same word.
+ *     `role="textbox"` alone is `AXTextField`, a single-line control, which a terminal is not.
+ *   - **help text**: `accessibilityHelp` becomes the AX *description*. It is attached through
+ *     `aria-describedby` → a visually-hidden span rather than `aria-description` (patchier
+ *     support) or `title` (which would hang a tooltip over the whole grid).
+ *
+ * The NAME is the fourth clause, and the one that was wrong rather than missing: the surface
+ * used to be labelled `terminal <uuid>`, which reads a 36-character id aloud and names nothing
+ * a person can recognise. It now carries the pane's own header title.
+ *
+ * All four go on the pane ROOT, not on `[data-terminal-host]` — see the render, where the
+ * reason (the engine owns the host's ARIA attributes) is spelled out.
+ */
+export const TERMINAL_ACCESSIBILITY_HELP = 'Terminal content area';
+
+/**
+ * The surface's accessible name: `Terminal — <what the pane header shows>`.
+ *
+ * Falls back to the bare word when assembly has no title yet (a pane that has not reported a
+ * cwd, and every fixture test) — never to the pane id, which is the defect this replaces.
+ */
+export function terminalAccessibilityName(displayName?: string | undefined): string {
+    const trimmed = (displayName ?? '').trim();
+    return trimmed === '' ? 'Terminal' : `Terminal — ${trimmed}`;
+}
+
+/** Off-screen but readable by assistive tech — the `aria-describedby` target's style. */
+const VISUALLY_HIDDEN = {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    margin: '-1px',
+    padding: 0,
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    whiteSpace: 'nowrap',
+    border: 0
+} as const;
+
 export interface TerminalGeometry {
     readonly cols: number;
     readonly rows: number;
@@ -151,6 +202,11 @@ export interface TerminalPaneProps {
      * capability is the READ; a browser has no system text service to report it to.
      */
     readonly onSelectionChange?: ((paneID: string, selection: string) => void) | undefined;
+    /**
+     * §TERM-036 — what a screen reader should call this pane, normally the same string the
+     * pane header shows (`paneDisplayTitle`). Omitted ⇒ the bare word "Terminal".
+     */
+    readonly accessibilityName?: string | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
     readonly className?: string | undefined;
@@ -276,6 +332,36 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             },
             // Straight to the PTY, exactly as the engine's own `onData` goes: a mouse report is
             // input, and the daemon owns nothing about it.
+            write: (data) => streamRef.current?.write(data)
+        });
+    }
+
+    // ── kitty keyboard protocol (§TERM-030) ─────────────────────────────────────────
+    //
+    // Same shape, same reason, one wave later: the daemon negotiates the flags off the VT
+    // stream (`daemon/src/term/kitty-keyboard.ts`, including the `CSI ? u` reply a real
+    // terminal owes the PTY) and this layer encodes the key events — because the engine cannot.
+    // It registers ONE `keydown` listener and ZERO `keyup` listeners, and never calls its own
+    // `setKittyFlags`, so press/repeat/release is not something it could be made to do from
+    // here. `encodeKittyKey` returns null for every key whose legacy encoding is already
+    // correct, so with the protocol off (and for plain typing with it on) nothing below runs.
+    /** Mirrors the live flags into the DOM so the audit can read them off the pane. */
+    const [kittyFlags, setKittyFlags] = useState(0);
+    /**
+     * True between `compositionstart` and `compositionend`.
+     *
+     * `event.isComposing` is the primary guard, but it is false for the keydown that ARRIVES
+     * first on some IMEs and for the one that terminates a composition on others, so the window
+     * is tracked as well. A composed string is committed by `compositionend`, never by a key
+     * event: encoding the keydowns that drive an IME would both double-write the text and hand
+     * the application key codes for keystrokes that were never keys. This is §TERM-030's
+     * "suppressed entirely while marked text exists", in the browser's vocabulary.
+     */
+    const composingRef = useRef(false);
+    const kittyRef = useRef<KittyKeyboard | null>(null);
+    if (kittyRef.current === null) {
+        kittyRef.current = createKittyKeyboard({
+            flags: () => modesRef.current.kittyKeyboardFlags ?? 0,
             write: (data) => streamRef.current?.write(data)
         });
     }
@@ -432,6 +518,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 onModes: (modes) => {
                     modesRef.current = modes;
                     setTrackingMode(modes.mouseTracking);
+                    setKittyFlags(sanitizeKittyFlags(modes.kittyKeyboardFlags));
                     // An application that turns reporting off mid-gesture leaves us holding a
                     // button that will never be released as far as this layer is concerned.
                     if (modes.mouseTracking === 'none') mouseRef.current?.reset();
@@ -487,6 +574,8 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // pane reports nothing rather than reporting against a dead stream.
                 modesRef.current = IDLE_PANE_MODES;
                 setTrackingMode('none');
+                setKittyFlags(0);
+                composingRef.current = false;
                 setSelectionLength(0);
                 mouseRef.current?.reset();
                 ingest.pause();
@@ -631,6 +720,74 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         };
     }, []);
 
+    // ── kitty keyboard: capture-phase interception (§TERM-030) ──────────────────────
+    //
+    // Where these sit is the whole trick, and it is the same trick the mouse uses. The engine's
+    // key listener lives on (or under) the hidden `<textarea>` it focuses, which is a DESCENDANT
+    // of the host; a capture-phase listener on the HOST therefore runs first, and
+    // `stopImmediatePropagation()` there means the event never reaches the target at all — the
+    // engine loses. `preventDefault()` is the second half: without it the textarea would still
+    // receive the character through `beforeinput`, and the key would be written twice.
+    //
+    // Above us, unaffected: the app's own key dispatcher is a WINDOW capture listener
+    // (`chrome/keys.ts` `installKeyDispatcher`), so it has already run and already consumed
+    // anything that is a Nex binding. A bound ⌘ chord can never reach this encoder.
+    //
+    // Nothing is intercepted while no application has negotiated the protocol: `keyboard.key()`
+    // returns false for every event when the flags are zero, and for every key whose legacy
+    // encoding is already correct even when they are not.
+    useEffect(() => {
+        const host = hostRef.current;
+        if (host === null) return;
+        const keyboard = kittyRef.current;
+        if (keyboard === null) return;
+
+        const composing = (event: KeyboardEvent): boolean =>
+            composingRef.current || event.isComposing || event.keyCode === 229;
+
+        const handle = (event: KeyboardEvent, type: 'keydown' | 'keyup'): void => {
+            if (!keyboard.active) return;
+            if (composing(event)) return;
+            const consumed = keyboard.key({
+                type,
+                key: event.key,
+                code: event.code,
+                location: event.location,
+                repeat: event.repeat,
+                shiftKey: event.shiftKey,
+                altKey: event.altKey,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey
+            });
+            if (!consumed) return;
+            event.preventDefault();
+            // Not `stopPropagation`: the engine may attach more than one listener to the same
+            // node, and only the immediate form guarantees none of them runs.
+            event.stopImmediatePropagation();
+        };
+
+        const onKeyDown = (event: KeyboardEvent): void => handle(event, 'keydown');
+        const onKeyUp = (event: KeyboardEvent): void => handle(event, 'keyup');
+        const onCompositionStart = (): void => {
+            composingRef.current = true;
+        };
+        const onCompositionEnd = (): void => {
+            composingRef.current = false;
+        };
+
+        host.addEventListener('keydown', onKeyDown, true);
+        host.addEventListener('keyup', onKeyUp, true);
+        host.addEventListener('compositionstart', onCompositionStart, true);
+        host.addEventListener('compositionend', onCompositionEnd, true);
+        return () => {
+            host.removeEventListener('keydown', onKeyDown, true);
+            host.removeEventListener('keyup', onKeyUp, true);
+            host.removeEventListener('compositionstart', onCompositionStart, true);
+            host.removeEventListener('compositionend', onCompositionEnd, true);
+            composingRef.current = false;
+        };
+    }, []);
+
     // ── resize observation ──────────────────────────────────────────────────────────
     useEffect(() => {
         const host = hostRef.current;
@@ -732,12 +889,35 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             /* The live DEC mouse-tracking mode (§TERM-037). Read by the audit so "reporting is
                on" is an observable fact about the pane rather than an inference from bytes. */
             data-terminal-mouse={trackingMode}
+            /* The live kitty keyboard flags (§TERM-030), as a decimal number. `0` means the
+               protocol is off and every key takes the legacy path. Published for the same reason
+               as the mouse mode: "the negotiation reached the client" has to be an observable
+               fact about the pane, not an inference from the bytes that came out the other end. */
+            data-terminal-kitty={String(kittyFlags)}
             /* Selected characters (§TERM-034). Length, never the text: the audit needs to know
                a selection HAPPENED, and a pane's contents do not belong in an attribute. */
             data-terminal-selection={String(selectionLength)}
             /* Cell metrics in CSS pixels, so the audit can compute the cell a pixel lands in
                and assert a mouse report byte for byte instead of pattern-matching it. */
             data-terminal-cell={cellHint}
+            /*
+             * §TERM-036 — the pane IS the accessibility element (`SurfaceView.swift:703-715`).
+             *
+             * On the ROOT, not on `[data-terminal-host]`, and that is load-bearing rather than
+             * stylistic: ghostty-web's `open(parent)` imperatively sets `role`, `aria-label`
+             * ("Terminal input") and `aria-multiline` on the host it is given, and `dispose()`
+             * REMOVES all three — so anything React renders there is overwritten on mount and
+             * stripped on teardown. Measured, not assumed: the first run of the audit's
+             * `terminal-host-edges` read the host's AX name back as the engine's static
+             * "Terminal input" instead of the pane's own title. The root is the element this
+             * component owns outright, it survives an engine rebuild, and it is the honest
+             * analogue of the single `NSView` the Swift app makes accessible — libghostty's
+             * internals are not separate AX elements there either.
+             */
+            role="textbox"
+            aria-multiline="true"
+            aria-label={terminalAccessibilityName(props.accessibilityName)}
+            aria-describedby={`terminal-help-${paneID}`}
             className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
             style={{
                 backgroundColor: background,
@@ -756,7 +936,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             onMouseDownCapture={requestFocus}
             onTouchStartCapture={requestFocus}
         >
-            <div ref={hostRef} className="h-full w-full" data-terminal-host="" aria-label={`terminal ${paneID}`} />
+            {/* §TERM-036's help text, off-screen: `accessibilityHelp`'s only faithful home. */}
+            <span id={`terminal-help-${paneID}`} style={VISUALLY_HIDDEN}>
+                {TERMINAL_ACCESSIBILITY_HELP}
+            </span>
+            <div ref={hostRef} className="h-full w-full" data-terminal-host="" />
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
                 // is now the last stop on the retry path, not a dead end. The pane root still

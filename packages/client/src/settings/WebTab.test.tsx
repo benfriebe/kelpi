@@ -152,3 +152,34 @@ describe('the empty state', () => {
         expect(screen.queryByTestId('settings-favourites-list')).toBeNull();
     });
 });
+
+/**
+ * SET-098's typography clauses: the star, the 10 pt monospace URL, and the MIDDLE truncation.
+ *
+ * The truncation is the one that needs a test rather than a screenshot, because CSS cannot do
+ * it: `text-overflow: ellipsis` only cuts at one end, and for a URL neither end is expendable
+ * (the host is at the front, the page at the back). It is a string transform here, so it is
+ * asserted as one — with the whole URL still in `title`, which is what makes the row honest.
+ */
+describe('SET-098 row presentation', () => {
+    it('shows the URL in 10pt monospace, middle-truncated, with the full URL in the title', () => {
+        const long =
+            'https://example.test/a-very-long-path/that-nobody-would-ever-read-in-full/index.html?with=query';
+        setup([favourite('f1', 'Long', long)]);
+        const url = screen.getByTestId('settings-favourite-url-f1');
+        expect(url.className).toContain('font-mono');
+        expect(url.className).toContain('text-[10px]');
+        // Middle, not the end: the host survives AND so does the file name.
+        expect(url.textContent).toContain('https://example.test/');
+        expect(url.textContent).toContain('index.html?with=query');
+        expect(url.textContent).toContain('…');
+        expect((url.textContent ?? '').length).toBeLessThan(long.length);
+        // Nothing is lost — the whole URL is one hover away.
+        expect(url.getAttribute('title')).toBe(long);
+    });
+
+    it('leaves a URL that fits completely alone', () => {
+        setup();
+        expect(screen.getByTestId('settings-favourite-url-f1').textContent).toBe('https://alpha.test/');
+    });
+});

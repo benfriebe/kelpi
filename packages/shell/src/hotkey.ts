@@ -142,6 +142,68 @@ export interface HotkeySwapResult {
 }
 
 /**
+ * §SET-200/§SET-201: one registration outcome, in the shape the daemon relays to every client.
+ *
+ * Declared here rather than in `./status.ts` because THIS module owns the facts: it read the
+ * config line, it knows whether the trigger has an accelerator spelling, and it performed the
+ * swap. `./status.ts` only puts the record on a socket.
+ */
+export interface HotkeyStatusReport {
+    /** The accelerator that is live NOW — after a rejected swap that is the previous one. */
+    readonly accelerator: string | null;
+    /** The config-file spelling that was asked for; null when the hotkey is unset. */
+    readonly configString: string | null;
+    readonly ok: boolean;
+    readonly error: string | null;
+    /** `launch` is §8.4's config-load path; `settings` is a re-register after a config write. */
+    readonly source: 'launch' | 'settings';
+}
+
+/**
+ * The report for one registration attempt (§SET-200/§SET-201).
+ *
+ * `result === null` means the attempt never happened because the trigger has no Electron
+ * accelerator spelling — a case Carbon cannot produce, so the wording is the port's own. It is
+ * still a FAILURE report: the config file names a hotkey, and without one Settings would show a
+ * chord that nothing ever tried to register.
+ *
+ * Everything else follows the Swift reducer: a rejection keeps the reason string (and the
+ * configured value, which is never written back), and success — including "no hotkey
+ * configured" — reports `ok`, which is what clears a standing warning.
+ */
+export function hotkeyStatusReport(
+    settings: GlobalHotkeySettings,
+    result: HotkeySwapResult | null,
+    source: 'launch' | 'settings'
+): HotkeyStatusReport {
+    if (result === null) {
+        return {
+            accelerator: null,
+            configString: settings.configString,
+            ok: false,
+            error: `“${settings.configString ?? '?'}” cannot be registered as a system shortcut on this platform.`,
+            source
+        };
+    }
+    if (settings.accelerator === null || result.ok) {
+        return {
+            accelerator: result.accelerator,
+            configString: settings.configString,
+            ok: true,
+            error: null,
+            source
+        };
+    }
+    return {
+        accelerator: result.accelerator,
+        configString: settings.configString,
+        ok: false,
+        error: result.error ?? 'This shortcut could not be registered.',
+        source
+    };
+}
+
+/**
  * §8.3 staged swap: register the new accelerator BEFORE dropping the old one, so a rejection
  * (another app already owns the combo) leaves the previous registration live. Registering the
  * identical accelerator is a no-op, and `null` just unregisters.

@@ -117,6 +117,36 @@ describe('buildSettingsSnapshot', () => {
         expect(snapshot.appearance.fontSize).toBe(16);
         expect(snapshot.appearance.isDark).toBe(false);
     });
+
+    /*
+     * §SET-105 / §SET-216: the nex config's `theme` key is CONSUMED, not merely displayed.
+     *
+     * The Swift app resolved it through `NexTheme.named(id)` at launch and the resolved theme is
+     * what the terminal used. Here the same lookup decides `appearance.theme` — the value the
+     * Appearance picker shows, and what tells that tab a theme owns the background — under two
+     * rules: ghostty's own file wins, and a name that is not a built-in selects nothing.
+     */
+    it('falls back to the nex config’s theme when ghostty names none (§SET-105)', () => {
+        expect(buildSettingsSnapshot('theme = Nord\n', '').appearance.theme).toBe('Nord');
+    });
+
+    it('lets ghostty’s own theme line win over the nex key', () => {
+        expect(buildSettingsSnapshot('theme = Nord\n', 'theme = Dracula\n').appearance.theme).toBe(
+            'Dracula'
+        );
+    });
+
+    it('selects NOTHING for a theme that is not a built-in (§SET-216)', () => {
+        // Both are "no theme": the terminal keeps whatever ghostty already resolved rather than
+        // being repainted from a value this port cannot look up.
+        expect(buildSettingsSnapshot('theme = nord\n', '').appearance.theme).toBeNull();
+        expect(buildSettingsSnapshot('theme = My Custom Theme\n', '').appearance.theme).toBeNull();
+        // …and the raw value still rides `general` verbatim, so Settings can show what the file
+        // actually says (§SET-105's parsing half).
+        expect(buildSettingsSnapshot('theme = My Custom Theme\n', '').general.theme).toBe(
+            'My Custom Theme'
+        );
+    });
 });
 
 describe('keybindLinesFrom', () => {

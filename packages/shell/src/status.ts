@@ -47,6 +47,8 @@ import {
 } from './agents.js';
 import type { DaemonLocation } from './daemon.js';
 import { shellHello } from './hello.js';
+// §SET-200/§SET-201: the report shape belongs to the module that produces it.
+import type { HotkeyStatusReport } from './hotkey.js';
 import { trayIconDataUrl, trayIconIsTemplate, type IconIndicator } from './icon.js';
 import { parseShellAction, shellActionAppliesHere } from './shell-actions.js';
 import { log, logError, warn } from './log.js';
@@ -154,6 +156,17 @@ export interface StatusController {
      * picker entry point, "Nex Help". Returns false when the socket is not ready.
      */
     sendMenuRequest(command: string): boolean;
+    /**
+     * §SET-200/§SET-201: tell the daemon — and through it every Settings window — what the OS
+     * said about the global hotkey.
+     *
+     * Only this process can know: `globalShortcut` lives here, and the reason a chord was
+     * refused ("This shortcut is already claimed by another app.") had nowhere else to go, so
+     * Settings showed a hotkey that silently did nothing. Returns false when the socket is not
+     * ready; the report is repeated on the next attempt, and a window that attaches later gets
+     * the daemon's remembered copy.
+     */
+    reportHotkeyStatus(status: HotkeyStatusReport): boolean;
     /** Re-point at a (re)discovered daemon and redial. */
     setLocation(location: DaemonLocation): void;
     /** Force a redial now (tray "Reconnect"). */
@@ -707,6 +720,13 @@ export function createStatusController(options: StatusOptions): StatusController
                 return false;
             }
             return true;
+        },
+        reportHotkeyStatus(status: HotkeyStatusReport): boolean {
+            // NOT scoped to this window: a hotkey is registered for the whole app, so the
+            // warning belongs in every Settings window attached to this daemon — including a
+            // browser one, which has no registrar of its own and would otherwise report the
+            // hotkey as working.
+            return sendJson({ type: 'hotkey-status', ...status }, 'hotkey status');
         },
         sendMenuRequest(command: string): boolean {
             const current = socket;

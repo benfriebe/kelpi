@@ -20,6 +20,7 @@
  * settles on whatever the file actually says.
  */
 
+import { BUILT_IN_TERMINAL_THEMES } from '@nex/core/config';
 import { DEFAULT_WS_CHROME_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
 import { useRef, useState, type ChangeEvent, type ReactElement } from 'react';
 
@@ -81,19 +82,12 @@ function isAgentStatusKey(key: OverridableChromeKey): boolean {
 /**
  * `NexTheme.builtIn` — the ten terminal themes, by their ghostty theme id (which IS the
  * `theme = <id>` value; the ids are case-sensitive filenames).
+ *
+ * Re-exported from `@nex/core/config` rather than declared here: §SET-105's `theme` key is read
+ * by the DAEMON (it decides which theme the settings snapshot reports), so the table has to be
+ * one table. The export name is kept so every existing importer is unchanged.
  */
-export const BUILT_IN_TERMINAL_THEMES: readonly { readonly id: string; readonly name: string }[] = [
-    { id: 'Dracula', name: 'Dracula' },
-    { id: 'Catppuccin Mocha', name: 'Catppuccin Mocha' },
-    { id: 'Catppuccin Latte', name: 'Catppuccin Latte' },
-    { id: 'Catppuccin Macchiato', name: 'Catppuccin Macchiato' },
-    { id: 'Catppuccin Frappe', name: 'Catppuccin Frappé' },
-    { id: 'Nord', name: 'Nord' },
-    { id: 'Gruvbox Dark', name: 'Gruvbox Dark' },
-    { id: 'Gruvbox Light', name: 'Gruvbox Light' },
-    { id: 'iTerm2 Solarized Dark', name: 'Solarized Dark' },
-    { id: 'iTerm2 Solarized Light', name: 'Solarized Light' }
-];
+export { BUILT_IN_TERMINAL_THEMES };
 
 function percentLabel(value: number): string {
     return `${String(Math.round(value * 100))}%`;

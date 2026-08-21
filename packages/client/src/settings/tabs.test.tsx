@@ -200,6 +200,29 @@ describe('Settings ▸ Workspaces', () => {
         expect(bound.general).toEqual([{ key: 'confirm-workspace-delete', value: 'false' }]);
     });
 
+    // SET-012: the last of §13's six behaviour keys to become a real setting.
+    it('writes the drop-expands-group flag as a general setting', () => {
+        const bound = actions();
+        const view = render(
+            <WorkspacesTab settings={snapshot()} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />
+        );
+        const toggle = screen.getByTestId('expand-group-on-drop-toggle') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        fireEvent.click(toggle);
+        expect(bound.general).toEqual([{ key: 'expand-group-on-workspace-drop', value: 'false' }]);
+        // Same no-local-echo rule as its neighbours: the control only moves on the snapshot.
+        view.rerender(
+            <WorkspacesTab
+                settings={snapshot({
+                    general: { ...DEFAULT_WS_SETTINGS.general, expandGroupOnWorkspaceDrop: false }
+                })}
+                actions={bound}
+                paths={DEFAULT_SETTINGS_PATHS}
+            />
+        );
+        expect((screen.getByTestId('expand-group-on-drop-toggle') as HTMLInputElement).checked).toBe(false);
+    });
+
     it('reflects the daemon’s value rather than a local echo', () => {
         const bound = actions();
         const view = render(

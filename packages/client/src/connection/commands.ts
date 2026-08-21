@@ -691,6 +691,26 @@ export class CommandClient {
         return this.raw(wirePayload('toggle-zoom', { pane_id: input.paneID }), options ?? {});
     }
 
+    /**
+     * A divider drag addressed by SPLIT PATH (§LAY-061) — the layout model's own spelling, and
+     * the one Swift's GUI uses (`updateSplitRatio(splitPath:ratio:)`). `setSplitRatio` above
+     * can only name a PANE, so it cannot move a divider whose two children are both splits
+     * (the root divider of a 2×2 `tiled` layout); this can move any of them.
+     */
+    setSplitRatioAtPath(
+        input: { workspaceID: string; splitPath: string; ratio: number },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-split-ratio', {
+                workspace_id: input.workspaceID,
+                split_path: input.splitPath,
+                ratio: input.ratio
+            }),
+            options ?? {}
+        );
+    }
+
     /** Sidebar disclosure triangle; the collapsed flag is daemon state, not client-local. */
     setGroupCollapsed(
         input: { groupID: string; collapsed: boolean },

@@ -60,6 +60,16 @@ export interface SidebarResizerProps {
     readonly onResize: (width: number) => void;
     /** Fired once when the pointer is released, so assembly can persist the final width. */
     readonly onCommit?: ((width: number) => void) | undefined;
+    /**
+     * Fired once when the pointer goes DOWN, before the first move.
+     *
+     * Assembly uses it to take §WS-001's slide transition off the slot for the length of the
+     * gesture: the slide animates the same `width` this handle writes, so an always-on
+     * transition turns a drag into a 250 ms chase (`chrome/sidebar-reveal.ts` ▸
+     * `sidebarSlideStyle`'s `animate`). The first move must already be un-animated, which is
+     * why this is its own callback rather than "the first `onResize`".
+     */
+    readonly onResizeStart?: (() => void) | undefined;
 }
 
 export function SidebarResizer(props: SidebarResizerProps): ReactElement {
@@ -101,6 +111,9 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
                 if (event.button > 0) return;
                 event.preventDefault();
                 drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width };
+                // Before any move: tell assembly a gesture owns the width now, so §WS-001's
+                // slide transition comes off the slot for the length of it.
+                props.onResizeStart?.();
                 // The pointer leaves the 6 px strip immediately; the listeners are on the window
                 // so the drag keeps tracking, and the cursor stays a resize cursor throughout.
                 window.addEventListener('pointermove', move);

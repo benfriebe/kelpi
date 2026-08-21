@@ -884,6 +884,15 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly confirmDeleteWhenActive?: boolean | undefined;
     /** The alert's suppression button — honoured whichever button ended the dialog. */
     readonly onSuppressDeleteConfirm?: (() => void) | undefined;
+    /**
+     * §WS-052: "Move to Group ▸ New Group…" for a single row.
+     *
+     * Assembly owns it because the flow needs the CREATED group's id, and that only exists in
+     * the command reply: it mints the placeholder name, sends the workspace along with the
+     * create, and opens inline rename on the header the reply names. Absent = the entry is not
+     * offered (the submenu is then exactly what it was before).
+     */
+    readonly onCreateGroupWithWorkspace?: ((workspaceID: string) => void) | undefined;
 }
 
 interface DragState {
@@ -2453,7 +2462,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                               index: baseModel.topLevel.length
                                           });
                                       }
-                                  } satisfies MenuItemSpec
+                                  } satisfies MenuItemSpec,
+                                  // The Swift's own divider after the un-group verb, so the
+                                  // destinations below read as a list rather than a fourth item.
+                                  { id: 'move:sep-top', label: '', kind: 'separator' } satisfies MenuItemSpec
                               ]),
                         ...groups.map(
                             (group): MenuItemSpec => ({
@@ -2468,7 +2480,31 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                     });
                                 }
                             })
-                        )
+                        ),
+                        // §WS-052: the one-gesture "put this workspace in a NEW group". The
+                        // create carries the workspace (one atomic change, not a create then a
+                        // move) and the reply's id opens the header's inline rename — which is
+                        // why the callback lives in assembly and not here.
+                        ...(props.onCreateGroupWithWorkspace === undefined
+                            ? []
+                            : [
+                                  ...(groups.length === 0
+                                      ? []
+                                      : [
+                                            {
+                                                id: 'move:sep-new',
+                                                label: '',
+                                                kind: 'separator'
+                                            } satisfies MenuItemSpec
+                                        ]),
+                                  {
+                                      id: 'move:new',
+                                      label: 'New Group…',
+                                      onSelect: () => {
+                                          props.onCreateGroupWithWorkspace?.(workspaceID);
+                                      }
+                                  } satisfies MenuItemSpec
+                              ])
                     ]
                 },
                 { id: 'sep', label: '', kind: 'separator' },

@@ -54,9 +54,18 @@ import {
     ensureDaemon,
     type DaemonLocation
 } from './daemon.js';
-import { readGlobalHotkeySettings, swapGlobalHotkey, type HotkeyRegistrar } from './hotkey.js';
+import {
+    hotkeyStatusReport,
+    readGlobalHotkeySettings,
+    swapGlobalHotkey,
+    type HotkeyRegistrar,
+    type HotkeyStatusReport,
+    type HotkeySwapResult
+} from './hotkey.js';
 import { log, logError, warn } from './log.js';
+import { VIEW_MENU_LOG_FRAGMENT, viewMenuTemplate } from './menu.js';
 import { isForwardableOpenPath } from './shell-actions.js';
+import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
 import { checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
@@ -91,6 +100,12 @@ let status: StatusController | null = null;
 let webHost: WebPaneHost | null = null;
 let quitGate: QuitGate | null = null;
 let hotkeyAccelerator: string | null = null;
+/**
+ * §SET-200/§SET-201: the last registration outcome, kept so it can be (re)sent whenever the
+ * status socket connects. The launch attempt happens before that socket exists, and a hotkey
+ * refused at startup is precisely the case Settings has to be able to explain.
+ */
+let lastHotkeyReport: HotkeyStatusReport | null = null;
 /**
  * APP-012 / SET-049 — was THIS window created transparent? Electron fixes `transparent` at
  * creation, so the answer is a property of the window, not of the current settings, and the two
@@ -410,23 +425,55 @@ function toggleFrontmost(): void {
     showWindow();
 }
 
-function registerGlobalHotkey(): void {
+/**
+ * Register (or re-register) the global hotkey and REPORT what happened (§SET-200/§SET-201).
+ *
+ * The report is the half that used to be missing. `swapGlobalHotkey` already gets the Swift
+ * staged-swap right — a rejected chord leaves the working one registered and returns the reason
+ * — but the reason went to `logError` and stopped there, so Settings ▸ Keybindings showed a
+ * hotkey that quietly did nothing. It now travels shell → daemon → every window, where
+ * `GlobalHotkeySection` renders it in the same orange warning the Swift view uses.
+ *
+ * Three outcomes are reported, and all three matter:
+ *   - **unspellable trigger** — a keyCode Electron has no accelerator for. Swift's Carbon path
+ *     cannot produce this, so the wording is the port's own; without it the row shows a chord
+ *     nothing ever tried to register.
+ *   - **rejected** — the OS refused (usually another app owns the combo). §8.4: the configured
+ *     value is KEPT so the user can see and edit it, which is exactly why the warning is needed.
+ *   - **accepted / none configured** — `ok: true`, which CLEARS a standing warning.
+ */
+function registerGlobalHotkey(source: 'launch' | 'settings'): void {
     const settings = readGlobalHotkeySettings();
     hotkeyHideOnRepress = settings.hideOnRepress;
+    /*
+     * Remembered as well as sent: the launch registration happens before the status socket is
+     * up, and `daemonSettingsReady` (which fires on every connect and reconnect) replays it.
+     * Without that, the one report a user most needs — "the hotkey in your config file was
+     * refused at startup" — would be the one that never arrives.
+     */
+    const report = (result: HotkeySwapResult | null): void => {
+        lastHotkeyReport = hotkeyStatusReport(settings, result, source);
+        status?.reportHotkeyStatus(lastHotkeyReport);
+    };
     if (settings.trigger !== null && settings.accelerator === null) {
         warn(`global-hotkey "${settings.configString ?? '?'}" has no Electron accelerator; ignored`);
+        report(null);
         return;
     }
     const result = swapGlobalHotkey(registrar, hotkeyAccelerator, settings.accelerator, toggleFrontmost);
     hotkeyAccelerator = result.accelerator;
+    report(result);
     if (settings.accelerator === null) {
         log('global-hotkey: none configured');
         return;
     }
-    if (result.ok) log(`global-hotkey registered ${settings.accelerator} (${settings.configString ?? ''})`);
+    if (result.ok) {
+        log(`global-hotkey registered ${settings.accelerator} (${settings.configString ?? ''})`);
+        return;
+    }
     // §8.4 launch-path failure: keep the configured value and surface the error rather than
     // silently dropping the user's hotkey.
-    else logError(`global-hotkey ${settings.accelerator} could not be registered: ${result.error ?? 'rejected'}`);
+    logError(`global-hotkey ${settings.accelerator} could not be registered: ${result.error ?? 'rejected'}`);
 }
 
 // ── appearance (APP-012 / SET-049, SET-219) ─────────────────────────────────────────
@@ -653,18 +700,26 @@ function offerCliInstall(): void {
  * own `absent` result — is `runCliInstallPolicy` in `./launch.ts`, where it has tests.
  */
 /**
- * §APP-006's launch step — **deliberately inert, and the reason is a scar.**
+ * §APP-006's launch step — live again, under the two rules the scar bought.
  *
- * The Swift app re-copied its bundled agent documentation into the user's config directory at
+ * The Swift app re-copies its bundled agent documentation into the user's config directory at
  * launch. A port of that ran here once and landed in a REAL home while every harness in this
  * repo was pointed at a throwaway one, because Electron's `app.getPath('home')` asks the OS and
- * ignores `$HOME`. Anything reinstating this step must resolve the destination from `$HOME`
- * (what the CLI, `install-hooks` and Claude Code itself all use) and must be provable in a
- * sandbox before it is wired. Until then the step exists so the launch order has a named slot,
- * and it writes nothing.
+ * ignores `$HOME`. So the destination is resolved from `process.env` — the same `$HOME` the CLI,
+ * `install-hooks` and Claude Code itself use — and the decision lives in `./skill.ts`, which
+ * imports no Electron and can therefore be driven, in full, against a sandbox home.
+ *
+ * `app.getPath('home')` MUST NOT appear in this function. The second rule (never overwrite a
+ * document this app cannot prove it wrote) is enforced inside the module and is what keeps a
+ * real home safe even if this call site is ever wired up wrongly again.
  */
 function applySkillRefreshIfEnabled(): void {
-    log('skill-refresh: not enabled in this build');
+    const result = refreshBundledSkill({
+        env: process.env,
+        resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+        appVersion: app.getVersion()
+    });
+    log(describeSkillRefresh(result));
 }
 
 function applyCliInstallPolicy(): void {
@@ -727,14 +782,14 @@ function buildMenu(): void {
         },
         { role: 'editMenu' },
         {
+            // WS-001: View ▸ Toggle Sidebar (⌘⇧S), the shipped app's own View group. The
+            // template lives in `menu.ts` so the click can be exercised without an Electron
+            // process; it relays to the client, which owns the sidebar's visibility.
             label: 'View',
-            submenu: [
-                { role: 'reload' },
-                { role: 'forceReload' },
-                { role: 'toggleDevTools' },
-                { type: 'separator' },
-                { role: 'togglefullscreen' }
-            ]
+            submenu: viewMenuTemplate({
+                sendMenuRequest: (command) => status?.sendMenuRequest(command) === true,
+                onUndelivered: (command) => warn(`menu: no window took "${command}"`)
+            })
         },
         { role: 'windowMenu' },
         {
@@ -763,7 +818,9 @@ function buildMenu(): void {
     // Logged rather than inferred, for the same reason the tray item is: an application menu is
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
-    log('menu: Nex ▸ Check for Updates… · File ▸ Preview Markdown… (⌘O) · Help ▸ Nex Help (⌘?)');
+    log(
+        `menu: Nex ▸ Check for Updates… · File ▸ Preview Markdown… (⌘O) · ${VIEW_MENU_LOG_FRAGMENT} · Help ▸ Nex Help (⌘?)`
+    );
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
@@ -823,6 +880,11 @@ function startStatusController(): void {
                  * runs once per install and never again.
                  */
                 daemonSettingsReady: () => {
+                    // §SET-200/§SET-201: this fires on every (re)connect, which is the only
+                    // moment the launch-time registration outcome can actually be delivered —
+                    // it happened before there was a socket. Re-sending on a reconnect is
+                    // harmless: the daemon keeps only the latest and re-broadcasts it.
+                    if (lastHotkeyReport !== null) status?.reportHotkeyStatus(lastHotkeyReport);
                     const file = settingsFile(app.getPath('userData'));
                     const local = readShellSettings(file);
                     if (local.quitConfirmationMigrated) return;
@@ -879,7 +941,7 @@ function startStatusController(): void {
                  * changed, so the common case does not touch `globalShortcut` at all.
                  */
                 settingsChanged: () => {
-                    registerGlobalHotkey();
+                    registerGlobalHotkey('settings');
                     applyAppearanceSettings();
                 }
             }
@@ -951,7 +1013,10 @@ async function boot(): Promise<void> {
         createWindow: () => {
             mainWindow = createWindow();
         },
-        registerGlobalHotkey,
+        // §SET-201: the config-LOAD path. A failure here keeps the configured value (the file
+        // is never rewritten) and reports the reason, so Settings can show the user what their
+        // own config line did rather than leaving them with a dead chord.
+        registerGlobalHotkey: () => registerGlobalHotkey('launch'),
         // Best-effort and never blocking: a CLI that could not be linked is a log line (and, when
         // it is a real repair we could not do, one notification per build), not a failed launch.
         runCliInstallPolicy: applyCliInstallPolicy,

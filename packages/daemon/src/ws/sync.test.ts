@@ -1,4 +1,5 @@
 import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@nex/protocol';
+import { enclosingSplitPath, ratioAtPath, type PaneLayout } from '@nex/core/layout';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
@@ -509,6 +510,93 @@ describe('WS-only commands', () => {
         expect(f.store.state().groups[0]?.isCollapsed).toBe(false);
     });
 
+    /**
+     * §LAY-061 — the divider drag's split-path spelling.
+     *
+     * The `tiled` tree below is the shape that had no wire spelling at all: the ROOT split's
+     * two children are themselves splits, so no pane's `enclosingSplitPath` is `"d"` and
+     * `pane-resize` — which addresses a PANE — cannot move that divider.
+     */
+    describe('set-split-ratio', () => {
+        const PANE_C = '22222222-3333-4444-8555-666666666666';
+        const PANE_D = '33333333-4444-4555-8666-777777777777';
+
+        function tiled(): Fixture {
+            const f = fixture();
+            for (const paneID of [PANE_B, PANE_C, PANE_D]) {
+                f.store.dispatch({
+                    type: 'split-pane',
+                    workspaceID: W1,
+                    paneID,
+                    direction: 'horizontal',
+                    now: NOW
+                });
+            }
+            // `tiled` over four panes is split(h, split(v, …), split(v, …)) — root children
+            // are both splits, and the action stamps `currentLayoutIndex`.
+            f.store.dispatch({ type: 'select-layout', workspaceID: W1, kind: 'tiled' });
+            return f;
+        }
+
+        const layoutOf = (f: Fixture): PaneLayout =>
+            f.store.state().workspaces[0]?.layout ?? { kind: 'empty' };
+
+        it('moves a divider no pane can address, and clears the layout index', () => {
+            const f = tiled();
+            // The premise: every pane's enclosing split is a CHILD of the root, never the root.
+            for (const paneID of [PANE_A, PANE_B, PANE_C, PANE_D]) {
+                expect(enclosingSplitPath(layoutOf(f), paneID)?.path).not.toBe('d');
+            }
+            expect(f.store.state().workspaces[0]?.currentLayoutIndex).not.toBeNull();
+
+            const reply = send(f, {
+                command: 'set-split-ratio',
+                workspace_id: W1,
+                split_path: 'd',
+                ratio: 0.7
+            });
+            expect(reply).toEqual({ ok: true, workspace_id: W1, split_path: 'd', ratio: 0.7 });
+            expect(ratioAtPath(layoutOf(f), 'd')).toBeCloseTo(0.7);
+            // A manual resize breaks the tracked predefined layout (LAY-048's rule).
+            expect(f.store.state().workspaces[0]?.currentLayoutIndex).toBeNull();
+        });
+
+        it('reports the STORED ratio, so a drag past the clamp is corrected', () => {
+            const f = tiled();
+            const reply = send(f, {
+                command: 'set-split-ratio',
+                workspace_id: W1,
+                split_path: 'dR',
+                ratio: 0.02
+            });
+            expect(reply).toMatchObject({ ok: true, ratio: 0.1 });
+            expect(ratioAtPath(layoutOf(f), 'dR')).toBeCloseTo(0.1);
+        });
+
+        it('refuses a stale path instead of silently no-op’ing', () => {
+            const f = tiled();
+            const before = layoutOf(f);
+            // "dLL" is a LEAF, not a split: in the model that is a no-op, which over a wire
+            // would read as success.
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, split_path: 'dLL', ratio: 0.7 })
+            ).toEqual({ ok: false, error: "no split at path 'dLL'" });
+            expect(layoutOf(f)).toEqual(before);
+        });
+
+        it('refuses an unknown workspace, a missing path and a non-numeric ratio', () => {
+            const f = tiled();
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: 'nope', split_path: 'd', ratio: 0.5 })['ok']
+            ).toBe(false);
+            expect(send(f, { command: 'set-split-ratio', workspace_id: W1, split_path: 'd' })['ok']).toBe(false);
+            expect(
+                send(f, { command: 'set-split-ratio', workspace_id: W1, split_path: 'd', ratio: 'wide' })['ok']
+            ).toBe(false);
+            expect(send(f, { command: 'set-split-ratio', workspace_id: W1, ratio: 0.5 })['ok']).toBe(false);
+        });
+    });
+
     it('renames a workspace', () => {
         const f = fixture();
         const reply = send(f, { command: 'rename-workspace', workspace_id: W1, name: '  renamed  ' });
@@ -748,5 +836,103 @@ describe('broadcast', () => {
         f.hub.close();
         expect(transport.closes.at(-1)?.code).toBe(1001);
         expect(f.hub.sessions).toHaveLength(0);
+    });
+});
+
+/**
+ * §SET-200 / §SET-201: the global-hotkey registration outcome, relayed.
+ *
+ * The daemon registers nothing and has no opinion about accelerators — the Electron shell owns
+ * `globalShortcut`. What it owns is being the only thing every window shares, so it relays the
+ * shell's report and REMEMBERS the last one: a claimed hotkey is a standing condition, and a
+ * Settings window opened an hour later still has to be able to explain the dead chord.
+ */
+describe('hotkey-status relay', () => {
+    const report = (overrides: Record<string, unknown> = {}): string =>
+        JSON.stringify({
+            type: 'hotkey-status',
+            accelerator: null,
+            configString: 'ctrl+alt+n',
+            ok: false,
+            error: 'This shortcut is already claimed by another app.',
+            source: 'launch',
+            ...overrides
+        });
+
+    it('fans a shell report out to every attached client', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        shell.session.handleMessage(report());
+        const relayed = window.transport.ofType('hotkey-status')[0] as Record<string, unknown>;
+        expect(relayed).toEqual({
+            type: 'hotkey-status',
+            accelerator: null,
+            configString: 'ctrl+alt+n',
+            ok: false,
+            error: 'This shortcut is already claimed by another app.',
+            source: 'launch'
+        });
+    });
+
+    it('replays the last report to a client that attaches afterwards', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(report());
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        expect(late.transport.ofType('hotkey-status')).toHaveLength(1);
+        // …and after the handshake, not before it: a client must have its snapshot first.
+        expect(late.transport.json.map((m) => m['type'])).toEqual([
+            'welcome',
+            'snapshot',
+            'hotkey-status'
+        ]);
+    });
+
+    it('replaces the remembered report, so a success clears a standing failure', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(report());
+        shell.session.handleMessage(
+            report({ ok: true, error: null, accelerator: 'Control+Alt+N', source: 'settings' })
+        );
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        const replayed = late.transport.ofType('hotkey-status')[0] as Record<string, unknown>;
+        expect(replayed['ok']).toBe(true);
+        expect(replayed['error']).toBeNull();
+    });
+
+    it('drops a malformed report rather than remembering it', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        // No `ok` field: nothing can be concluded, and a stored bad frame would be re-sent to
+        // every future client.
+        shell.session.handleMessage(JSON.stringify({ type: 'hotkey-status', error: 'nope' }));
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        expect(late.transport.ofType('hotkey-status')).toHaveLength(0);
+    });
+
+    it('normalizes an unknown source rather than passing it through', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+        shell.session.handleMessage(report({ source: 'whatever' }));
+        expect(
+            (window.transport.ofType('hotkey-status')[0] as Record<string, unknown>)['source']
+        ).toBe('settings');
     });
 });

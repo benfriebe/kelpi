@@ -17,7 +17,7 @@
 import { useState, type ReactElement } from 'react';
 
 import { tokens } from '../grid/tokens';
-import type { WebFavourite } from '../webpane';
+import { truncateMiddle, type WebFavourite } from '../webpane';
 import { SettingsButton, SettingsFooterNote, SettingsSection } from './ui';
 
 export interface WebTabActions {
@@ -34,6 +34,15 @@ export interface WebTabProps {
 }
 
 export const DEFAULT_FAVOURITES_PATH = '~/.local/state/nex/favourites.json';
+
+/**
+ * SET-098's middle truncation, as a character budget.
+ *
+ * 64 characters of the row's 10 px monospace is about 380 px — comfortably inside the detail
+ * column at the dialog's own width — so a normal URL is untouched and only a long one loses its
+ * middle. The full URL is always in the row's `title`.
+ */
+export const FAVOURITE_URL_MAX_CHARS = 64;
 
 export function WebTab(props: WebTabProps): ReactElement {
     const { favourites, actions } = props;
@@ -119,13 +128,22 @@ export function WebTab(props: WebTabProps): ReactElement {
                                             setDraft(null);
                                         }}
                                     />
+                                    {/*
+                                      * SET-099's sibling clause in SET-098: the URL is 10 pt
+                                      * monospace and MIDDLE-truncated. CSS can only ellipsize at
+                                      * one end, and neither end is the right one for a URL — the
+                                      * host is at the front and the page is at the back — so the
+                                      * ellipsis is put in the middle by the same string helper the
+                                      * bookmarks menu uses, with the whole URL in `title`. The
+                                      * `truncate` class stays as the backstop for a narrow window.
+                                      */}
                                     <span
                                         title={favourite.url}
                                         data-testid={`settings-favourite-url-${favourite.id}`}
                                         className="truncate px-1 font-mono text-[10px]"
                                         style={{ color: tokens.textTertiary }}
                                     >
-                                        {favourite.url}
+                                        {truncateMiddle(favourite.url, FAVOURITE_URL_MAX_CHARS)}
                                     </span>
                                 </div>
                                 <SettingsButton

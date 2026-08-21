@@ -186,6 +186,21 @@ export {
     type WorkspaceLocation
 } from './sidebar-model';
 
+// §WS-001: the show/hide slide's phase machine. A conditional mount cannot transition, so the
+// phases keep the panel in the tree for the length of a close.
+export {
+    SIDEBAR_SLIDE_EASING,
+    SIDEBAR_SLIDE_MS,
+    isSidebarMounted,
+    isSidebarSettledOpen,
+    sidebarPhaseAfterSettle,
+    sidebarPhaseFor,
+    sidebarSettleDelayMs,
+    sidebarSlideStyle,
+    type SidebarPhase,
+    type SidebarSlideStyle
+} from './sidebar-reveal';
+
 export {
     WORKSPACE_COLORS,
     type ChromeGroup,

@@ -8,11 +8,25 @@ import { makeKeyTrigger, parseKeyTrigger } from '@nex/core/config';
 
 import {
     acceleratorForTrigger,
+    hotkeyStatusReport,
     readGlobalHotkeySettings,
     resolveConfigPath,
     swapGlobalHotkey,
     type HotkeyRegistrar
 } from './hotkey.js';
+
+/** A registrar that accepts (or refuses) every registration, for the report branches below. */
+function registrarFor(accept: boolean): HotkeyRegistrar {
+    const registered: string[] = [];
+    return {
+        register(accelerator) {
+            if (accept) registered.push(accelerator);
+            return accept;
+        },
+        unregister: () => undefined,
+        isRegistered: (accelerator) => registered.includes(accelerator)
+    };
+}
 
 const dirs: string[] = [];
 
@@ -229,5 +243,80 @@ describe('re-reading after a settings write', () => {
         expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(true);
         fs.writeFileSync(file, 'global-hotkey = ctrl+alt+space\nglobal-hotkey-hide-on-repress = false\n');
         expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(false);
+    });
+});
+
+/**
+ * §SET-200 / §SET-201: the registration OUTCOME, in the shape the daemon relays to Settings.
+ *
+ * The Swift reducer keeps the reason string in state and Settings ▸ Keybindings renders it; the
+ * port's registrar lives in another process, so the report has to be a value first. These are
+ * the branches that value has to get right — including the two the Swift app cannot produce
+ * (an unspellable trigger) and the one nobody sees unless it works (success clearing a standing
+ * warning).
+ */
+describe('hotkeyStatusReport', () => {
+    const configured = (contents: string) =>
+        readGlobalHotkeySettings({ NEXD_CONFIG_PATH: configFile(contents) });
+
+    it('reports a rejected registration with the reason and the STILL-LIVE accelerator', () => {
+        const settings = configured('global-hotkey = ctrl+alt+n\n');
+        const registry = registrarFor(false);
+        const result = swapGlobalHotkey(registry, 'Control+Alt+Space', settings.accelerator, () => undefined);
+        const report = hotkeyStatusReport(settings, result, 'settings');
+        expect(report).toEqual({
+            // §8.3's staged swap: the previous hotkey is what is registered right now.
+            accelerator: 'Control+Alt+Space',
+            configString: 'ctrl+alt+n',
+            ok: false,
+            error: 'This shortcut is already claimed by another app.',
+            source: 'settings'
+        });
+    });
+
+    it('keeps the CONFIGURED value in the report on a launch-path failure (§SET-201)', () => {
+        const settings = configured('global-hotkey = ctrl+alt+n\n');
+        const result = swapGlobalHotkey(registrarFor(false), null, settings.accelerator, () => undefined);
+        const report = hotkeyStatusReport(settings, result, 'launch');
+        // The file is never rewritten, and the report still names what the user asked for — so
+        // Settings shows the failing chord for them to see and edit.
+        expect(report.configString).toBe('ctrl+alt+n');
+        expect(report.accelerator).toBeNull();
+        expect(report.ok).toBe(false);
+        expect(report.source).toBe('launch');
+    });
+
+    it('reports success, which is what CLEARS a standing warning', () => {
+        const settings = configured('global-hotkey = ctrl+alt+n\n');
+        const result = swapGlobalHotkey(registrarFor(true), null, settings.accelerator, () => undefined);
+        expect(hotkeyStatusReport(settings, result, 'settings')).toEqual({
+            accelerator: 'Control+Alt+N',
+            configString: 'ctrl+alt+n',
+            ok: true,
+            error: null,
+            source: 'settings'
+        });
+    });
+
+    it('reports "no hotkey configured" as a success, not a failure', () => {
+        const settings = configured('global-hotkey = none\n');
+        const result = swapGlobalHotkey(registrarFor(true), 'Control+Alt+N', null, () => undefined);
+        expect(hotkeyStatusReport(settings, result, 'settings')).toEqual({
+            accelerator: null,
+            configString: null,
+            ok: true,
+            error: null,
+            source: 'settings'
+        });
+    });
+
+    it('reports a trigger with no Electron accelerator spelling as a failure', () => {
+        // `f20` parses as a trigger but has no accelerator name, so nothing is ever attempted —
+        // and without a report the row would show a chord that was never registered.
+        const settings = { ...configured('global-hotkey = none\n'), configString: 'f20', accelerator: null };
+        const report = hotkeyStatusReport(settings, null, 'launch');
+        expect(report.ok).toBe(false);
+        expect(report.error).toContain('f20');
+        expect(report.accelerator).toBeNull();
     });
 });

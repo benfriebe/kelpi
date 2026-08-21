@@ -59,8 +59,15 @@ export interface GitService {
     /**
      * `git diff --no-color [-- <targetPath>]` in `repoPath` (content-panes.md §5.1). Throws a
      * `GitCommandError` on a non-zero exit — the diff pane renders the failure as text.
+     *
+     * `signal` aborts the child when the caller has stopped caring (§CONT-107: a refresh that
+     * supersedes an in-flight run, or a pane that closed while git was still reading).
      */
-    getDiff(repoPath: string, targetPath?: string | null): Promise<string>;
+    getDiff(
+        repoPath: string,
+        targetPath?: string | null,
+        options?: { readonly signal?: AbortSignal | undefined }
+    ): Promise<string>;
     /** `git remote get-url origin`; trimmed, empty → null. Never throws. */
     getRemoteURL(repoPath: string): Promise<string | null>;
     /** ls-remote symref → local `origin/HEAD` symref → `"main"`. Never throws. */
@@ -252,11 +259,20 @@ export function createGitService(options: CreateGitServiceOptions = {}): GitServ
             }
         },
 
-        async getDiff(repoPath, targetPath) {
+        async getDiff(repoPath, targetPath, diffOptions) {
             const scope = targetPath ?? '';
             const args =
                 scope === '' ? ['diff', '--no-color'] : ['diff', '--no-color', '--', scope];
-            return readGit(args, repoPath);
+            // §CONT-107: a superseded diff is KILLED, not merely ignored. `git diff` over a big
+            // tree is the one read here that can outlive the request that asked for it, so the
+            // caller's signal rides all the way down to the child process.
+            const signal = diffOptions?.signal;
+            if (signal === undefined) return readGit(args, repoPath);
+            return run(args, {
+                cwd: repoPath,
+                ...(short !== undefined ? { timeoutMs: short } : {}),
+                signal
+            });
         },
 
         async getRemoteURL(repoPath) {

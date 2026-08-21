@@ -192,6 +192,48 @@ describe('the shell’s menu relay (`menu-command`)', () => {
         });
         expect(screen.queryByTestId('help-overlay')).toBeNull();
     });
+
+    /**
+     * §WS-001: View ▸ Toggle Sidebar. The shell has no preload, so the native menu row reaches
+     * the sidebar the same way ⌘O reaches the file picker — and it lands on the same
+     * `act.toggleSidebar` the ⌘⇧S chord and the top-bar button use.
+     */
+    it('hides and shows the sidebar when the shell’s View menu fires', async () => {
+        const h = setup();
+        expect(screen.getByTestId('sidebar-slot').getAttribute('data-sidebar-phase')).toBe('open');
+
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'toggle-sidebar' });
+        });
+        // It leaves by SLIDING: the panel is still mounted, on its way out, with the slot it
+        // pushes the pane grid by already collapsed.
+        await waitFor(() => {
+            expect(screen.getByTestId('sidebar-slot').getAttribute('data-sidebar-phase')).toBe('closing');
+        });
+        expect(screen.getByTestId('sidebar-slot').style.width).toBe('0px');
+        await waitFor(() => {
+            expect(screen.queryByTestId('sidebar-slot')).toBeNull();
+        });
+
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'toggle-sidebar' });
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('sidebar-slot').getAttribute('data-sidebar-phase')).toBe('open');
+        });
+    });
+
+    it('ignores a sidebar toggle addressed to a different shell window', () => {
+        const h = setup();
+        act(() => {
+            h.socket().emit({
+                type: 'menu-command',
+                command: 'toggle-sidebar',
+                windowID: 'someone-elses-window'
+            });
+        });
+        expect(screen.getByTestId('sidebar-slot').getAttribute('data-sidebar-phase')).toBe('open');
+    });
 });
 
 describe('Help (APP-027 / APP-063)', () => {

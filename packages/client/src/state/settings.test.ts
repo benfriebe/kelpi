@@ -70,7 +70,12 @@ describe('hydrateSettings', () => {
 describe('the settings slice', () => {
     it('starts on the defaults, unloaded', () => {
         const store = createNexStore();
-        expect(store.getState().settings).toEqual({ value: DEFAULT_WS_SETTINGS, loaded: false });
+        expect(store.getState().settings).toEqual({
+            value: DEFAULT_WS_SETTINGS,
+            loaded: false,
+            // §SET-200: nobody has registered a hotkey, so there is nothing to warn about.
+            hotkeyStatus: null
+        });
     });
 
     it('applySettings marks it loaded', () => {
@@ -83,7 +88,11 @@ describe('the settings slice', () => {
     it('stays unloaded (and on the defaults) for a daemon that sends nothing', () => {
         const store = createNexStore();
         store.getState().applySettings(undefined);
-        expect(store.getState().settings).toEqual({ value: DEFAULT_WS_SETTINGS, loaded: false });
+        expect(store.getState().settings).toEqual({
+            value: DEFAULT_WS_SETTINGS,
+            loaded: false,
+            hotkeyStatus: null
+        });
     });
 
     it('keeps object identity when an identical payload arrives again', () => {
@@ -156,7 +165,11 @@ describe('the bridge', () => {
         const h = setup();
         h.sockets.last().open();
         h.sockets.last().emit(welcome(SETTINGS));
-        expect(h.store.getState().settings).toEqual({ value: SETTINGS, loaded: true });
+        expect(h.store.getState().settings).toEqual({
+            value: SETTINGS,
+            loaded: true,
+            hotkeyStatus: null
+        });
         h.dispose();
     });
 
@@ -165,6 +178,63 @@ describe('the bridge', () => {
         h.sockets.last().open();
         h.sockets.last().emit(welcome());
         expect(h.store.getState().settings.loaded).toBe(false);
+        h.dispose();
+    });
+
+    /*
+     * §SET-200 / §SET-201: the shell's registration outcome, arriving on its own message.
+     *
+     * It rides beside the settings rather than inside them because the two say different
+     * things: the config file records which chord was ASKED for, this records what the OS did
+     * with it. So a config write must not erase it, and a later success must clear it.
+     */
+    it('applies a hotkey-status relay and keeps it across a settings change', () => {
+        const h = setup();
+        h.sockets.last().open();
+        h.sockets.last().emit(welcome(SETTINGS));
+        h.sockets.last().emit({
+            type: 'hotkey-status',
+            accelerator: null,
+            configString: 'ctrl+alt+n',
+            ok: false,
+            error: 'This shortcut is already claimed by another app.',
+            source: 'launch'
+        });
+        expect(h.store.getState().settings.hotkeyStatus).toEqual({
+            accelerator: null,
+            configString: 'ctrl+alt+n',
+            ok: false,
+            error: 'This shortcut is already claimed by another app.',
+            source: 'launch'
+        });
+
+        // An unrelated settings write must not drop the warning.
+        h.sockets.last().emit({
+            type: 'settings-changed',
+            settings: { ...SETTINGS, keybindLines: ['ctrl+alt+y=split_down'] }
+        });
+        expect(h.store.getState().settings.hotkeyStatus?.ok).toBe(false);
+
+        // …and a later success clears it.
+        h.sockets.last().emit({
+            type: 'hotkey-status',
+            accelerator: 'Control+Alt+N',
+            configString: 'ctrl+alt+n',
+            ok: true,
+            error: null,
+            source: 'settings'
+        });
+        expect(h.store.getState().settings.hotkeyStatus?.ok).toBe(true);
+        expect(h.store.getState().settings.hotkeyStatus?.error).toBeNull();
+        h.dispose();
+    });
+
+    it('ignores a malformed hotkey-status rather than inventing a warning', () => {
+        const h = setup();
+        h.sockets.last().open();
+        h.sockets.last().emit(welcome(SETTINGS));
+        h.sockets.last().emit({ type: 'hotkey-status', error: 'nope' });
+        expect(h.store.getState().settings.hotkeyStatus).toBeNull();
         h.dispose();
     });
 

@@ -18,12 +18,14 @@
 
 export {
     DEFAULT_RESIZE_DEBOUNCE_MS,
+    TERMINAL_ACCESSIBILITY_HELP,
     TERMINAL_START_ATTEMPTS,
     TERMINAL_START_RETRY_MS,
     TerminalPane,
     measureGeometry,
     measureMouseSurface,
     shouldGrabFocus,
+    terminalAccessibilityName,
     type TerminalGeometry,
     type TerminalPaneProps,
     type TerminalPtyApi
@@ -55,6 +57,32 @@ export {
     type PointerLike,
     type WheelLike
 } from './mouse';
+
+export {
+    KITTY_DISAMBIGUATE,
+    KITTY_FUNCTIONAL_KEYS,
+    KITTY_KEYPAD_BY_CODE,
+    KITTY_KEYPAD_BY_KEY,
+    KITTY_MODIFIER_KEYS,
+    KITTY_MOD_ALT,
+    KITTY_MOD_CTRL,
+    KITTY_MOD_SHIFT,
+    KITTY_MOD_SUPER,
+    KITTY_REPORT_ALL_KEYS,
+    KITTY_REPORT_EVENT_TYPES,
+    SUPPORTED_KITTY_FLAGS,
+    createKittyKeyboard,
+    encodeKittyKey,
+    kittyModifiers,
+    kittySequence,
+    kittyTextCodepoint,
+    sanitizeKittyFlags,
+    type KittyEventType,
+    type KittyKeyEventLike,
+    type KittyKeyForm,
+    type KittyKeyboard,
+    type KittyKeyboardOptions
+} from './kitty-keyboard';
 
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
 

@@ -568,6 +568,43 @@ describe('workspace-move and workspace-profile', () => {
         expect(h.state().groups[0]?.childOrder).toEqual([W1, W3, W2]);
     });
 
+    /*
+     * SET-012. The setting is applied at the VERB because the sidebar's drop is this verb (the
+     * wire-field dictionary has no field to carry a per-gesture answer, and inventing one would
+     * put the decoder out of conformance with wire-protocol.md §7), so both directions are
+     * asserted here: on (the default) opens a collapsed target, off leaves it shut.
+     */
+    it('expands a collapsed target group by default (SET-012)', () => {
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({ type: 'create-group', id: G1, name: 'team', now: NOW });
+        h.dispatch({ type: 'set-group-collapsed', id: G1, collapsed: true });
+        h.send({ command: 'workspace-move', name: 'w1', group: 'team' });
+        expect(h.state().groups[0]?.childOrder).toEqual([W1]);
+        expect(h.state().groups[0]?.isCollapsed).toBe(false);
+    });
+
+    it('leaves a collapsed target group collapsed when the setting is off (SET-012)', () => {
+        const h = harness({ initial: seeded(1), expandGroupOnDrop: false });
+        h.dispatch({ type: 'create-group', id: G1, name: 'team', now: NOW });
+        h.dispatch({ type: 'set-group-collapsed', id: G1, collapsed: true });
+        h.send({ command: 'workspace-move', name: 'w1', group: 'team' });
+        expect(h.state().groups[0]?.childOrder).toEqual([W1]);
+        expect(h.state().groups[0]?.isCollapsed).toBe(true);
+    });
+
+    it('reads the setting per command, so a Settings write lands on the next move (SET-012)', () => {
+        let expand = false;
+        const h = harness({ initial: seeded(2), expandGroupOnDrop: () => expand });
+        h.dispatch({ type: 'create-group', id: G1, name: 'team', now: NOW });
+        h.dispatch({ type: 'set-group-collapsed', id: G1, collapsed: true });
+        h.send({ command: 'workspace-move', name: 'w1', group: 'team' });
+        expect(h.state().groups[0]?.isCollapsed).toBe(true);
+        // …the user flips the toggle: no table rebuild, no daemon restart.
+        expand = true;
+        h.send({ command: 'workspace-move', name: 'w2', group: 'team' });
+        expect(h.state().groups[0]?.isCollapsed).toBe(false);
+    });
+
     it('never creates a group and no-ops on an unresolvable name', () => {
         const h = harness({ initial: seeded(1) });
         h.send({ command: 'workspace-move', name: 'w1', group: 'nope' });

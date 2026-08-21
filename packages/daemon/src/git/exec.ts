@@ -65,6 +65,13 @@ export interface RunGitOptions {
     /** Milliseconds; omitted = block until git exits (the spec default). */
     readonly timeoutMs?: number | undefined;
     readonly maxBuffer?: number | undefined;
+    /**
+     * Kill the child when the caller no longer wants the answer — the content service uses it
+     * to cancel a superseded `git diff` (content-panes.md §5.1 / §CONT-107). An abort rejects
+     * the promise, so callers that expect one check `signal.aborted` instead of reading the
+     * error.
+     */
+    readonly signal?: AbortSignal | undefined;
 }
 
 export interface GitRunner {
@@ -117,7 +124,8 @@ export function createGitRunner(options: CreateGitRunnerOptions = {}): GitRunner
                     maxBuffer: runOptions.maxBuffer ?? DEFAULT_MAX_BUFFER,
                     // `execFile` reads `timeout: 0` as "no timeout", which is the spec default.
                     timeout: runOptions.timeoutMs ?? 0,
-                    encoding: 'utf8'
+                    encoding: 'utf8',
+                    ...(runOptions.signal === undefined ? {} : { signal: runOptions.signal })
                 },
                 (error, stdout, stderr) => {
                     if (error === null) {

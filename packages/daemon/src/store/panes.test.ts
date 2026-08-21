@@ -209,6 +209,73 @@ describe('close-pane', () => {
         expect(snapshots[0]?.label).toBe('pane-2');
     });
 
+    /**
+     * CONT-142 — the `ClosedPaneSnapshot` payload for the CONTENT pane types: the type itself,
+     * the file path, the scratchpad's text and the markdown font size all have to survive the
+     * close, because a reopened content pane is rebuilt from the snapshot alone
+     * (WorkspaceFeature.swift:1282-1298 → :1906-1940).
+     */
+    it('CONT-142: snapshots type, file path, scratchpad text and font size for content panes', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            {
+                type: 'open-markdown-pane',
+                workspaceID: W1,
+                paneID: PA,
+                filePath: '/docs/readme.md',
+                now: NOW
+            },
+            { type: 'set-markdown-font-size', workspaceID: W1, paneID: PA, size: 19 },
+            { type: 'create-scratchpad', workspaceID: W1, paneID: PB, now: NOW },
+            {
+                type: 'scratchpad-content-changed',
+                workspaceID: W1,
+                paneID: PB,
+                content: 'buy milk'
+            },
+            {
+                type: 'open-diff-pane',
+                workspaceID: W1,
+                paneID: PC,
+                repoPath: '/srv/app',
+                targetPath: '/srv/app/src',
+                now: NOW
+            },
+            { type: 'close-pane', workspaceID: W1, paneID: PC },
+            { type: 'close-pane', workspaceID: W1, paneID: PB },
+            { type: 'close-pane', workspaceID: W1, paneID: PA }
+        );
+        const snapshots = ws(h.state()).recentlyClosedPanes;
+        expect(snapshots.map((snapshot) => snapshot.type)).toEqual(['diff', 'scratchpad', 'markdown']);
+        expect(snapshots[0]).toMatchObject({
+            type: 'diff',
+            filePath: '/srv/app/src',
+            workingDirectory: '/srv/app'
+        });
+        expect(snapshots[1]).toMatchObject({ type: 'scratchpad', scratchpadContent: 'buy milk' });
+        expect(snapshots[2]).toMatchObject({
+            type: 'markdown',
+            filePath: '/docs/readme.md',
+            markdownFontSize: 19
+        });
+
+        // …and the newest snapshot rebuilds a working pane: file path, font size, and the
+        // scratchpad's edit mode all come back off the payload.
+        h.dispatch({ type: 'reopen-closed-pane', workspaceID: W1, paneID: id('eeeeeeee', 9), now: NOW });
+        expect(ws(h.state()).panes.at(-1)).toMatchObject({
+            type: 'markdown',
+            filePath: '/docs/readme.md',
+            markdownFontSize: 19,
+            isEditing: false
+        });
+        h.dispatch({ type: 'reopen-closed-pane', workspaceID: W1, paneID: id('eeeeeeee', 10), now: NOW });
+        expect(ws(h.state()).panes.at(-1)).toMatchObject({
+            type: 'scratchpad',
+            scratchpadContent: 'buy milk',
+            isEditing: true
+        });
+    });
+
     it('unparks the source pane when closing a `--here` replacement', () => {
         const h = harness(seededState());
         h.dispatch({
@@ -320,6 +387,116 @@ describe('content panes', () => {
             isEditing: true,
             scratchpadContent: 'notes'
         });
+    });
+
+    /**
+     * LAY-016 — the scratchpad's split source, both branches of the Swift `if let sourceID`
+     * (WorkspaceFeature.swift:1192-1210): the focused pane (un-zooming first), and with
+     * nothing focused a BARE LEAF that replaces the whole layout.
+     */
+    it('LAY-016: a scratchpad splits the focused pane, un-zooming first', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'toggle-zoom', workspaceID: W1 }
+        );
+        expect(ws(h.state()).zoomedPaneID).toBe(PA);
+
+        h.dispatch({ type: 'create-scratchpad', workspaceID: W1, paneID: PB, now: NOW });
+        const workspace = ws(h.state());
+        // The zoom is dropped and the scratchpad splits the pane that was focused (PA).
+        expect(workspace.zoomedPaneID).toBeNull();
+        expect(workspace.savedLayout).toBeNull();
+        expect(allPaneIDs(workspace.layout)).toEqual([P0, PA, PB]);
+        expect(workspace.focusedPaneID).toBe(PB);
+        expect(workspace.currentLayoutIndex).toBeNull();
+    });
+
+    it('LAY-016: a scratchpad is a bare leaf when nothing is focused', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'focus-pane', workspaceID: W1, paneID: null },
+            { type: 'create-scratchpad', workspaceID: W1, paneID: PB, now: NOW }
+        );
+        const workspace = ws(h.state());
+        // Swift replaces the layout outright: the other panes survive as records but leave the
+        // tree (`state.layout = .leaf(newPaneID)`).
+        expect(workspace.layout).toEqual({ kind: 'leaf', paneID: PB });
+        expect(workspace.panes.map((pane) => pane.id)).toEqual([P0, PA, PB]);
+        expect(workspace.focusedPaneID).toBe(PB);
+    });
+
+    /**
+     * LAY-015 — which pane a WEB pane splits off: `sourcePaneID ?? focusedPaneID`, else a bare
+     * leaf (WorkspaceFeature.swift:855-876). The caller-supplied anchor is the header globe /
+     * pane context menu; `direction` is its ⇧-click contract (right vs down).
+     */
+    it('LAY-015: a web pane splits the caller-named pane in the caller-named direction', () => {
+        const h = harness(seededState());
+        h.dispatch(
+            // Focus moves to PA, so an anchored open has to ignore the focused pane.
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            {
+                type: 'open-web-pane',
+                workspaceID: W1,
+                paneID: PB,
+                tabID: PC,
+                url: 'https://example.com',
+                sourcePaneID: P0,
+                direction: 'vertical',
+                now: NOW
+            }
+        );
+        const layout = ws(h.state()).layout;
+        if (layout.kind !== 'split') throw new Error('expected a split');
+        // P0's leaf became the vertical split; PA is untouched on the other side.
+        expect(layout.first).toEqual({
+            kind: 'split',
+            direction: 'vertical',
+            ratio: 0.5,
+            first: { kind: 'leaf', paneID: P0 },
+            second: { kind: 'leaf', paneID: PB }
+        });
+        expect(layout.second).toEqual({ kind: 'leaf', paneID: PA });
+        expect(ws(h.state()).focusedPaneID).toBe(PB);
+    });
+
+    it('LAY-015: a web pane falls back to the focused pane, and to a bare leaf with none', () => {
+        const h = harness(seededState());
+        h.dispatch({
+            type: 'open-web-pane',
+            workspaceID: W1,
+            paneID: PA,
+            tabID: PB,
+            url: 'https://example.com',
+            now: NOW
+        });
+        // No anchor: the focused pane (P0) is split, horizontally by default.
+        expect(ws(h.state()).layout).toEqual({
+            kind: 'split',
+            direction: 'horizontal',
+            ratio: 0.5,
+            first: { kind: 'leaf', paneID: P0 },
+            second: { kind: 'leaf', paneID: PA }
+        });
+
+        h.dispatch(
+            { type: 'focus-pane', workspaceID: W1, paneID: null },
+            {
+                type: 'open-web-pane',
+                workspaceID: W1,
+                paneID: PC,
+                tabID: id('eeeeeeee', 4),
+                url: 'https://example.org',
+                now: NOW
+            }
+        );
+        const workspace = ws(h.state());
+        expect(workspace.layout).toEqual({ kind: 'leaf', paneID: PC });
+        expect(workspace.panes.map((pane) => pane.id)).toEqual([P0, PA, PC]);
+        // The sidecar still arrives — the bare-leaf branch only changes the tree.
+        expect(workspace.webPanes[PC]?.tabs[0]?.url).toBe('https://example.org');
     });
 
     it('seeds the web sidecar with a normalized URL and drops it on close', () => {
@@ -657,6 +834,63 @@ describe('move-pane-to-workspace', () => {
         expect(allPaneIDs(target.layout)).toEqual([id('dddddddd', 200), PA]);
         expect(target.focusedPaneID).toBe(PA);
         expect(h.state().lastActiveWorkspaceID).toBe(W2);
+    });
+
+    /**
+     * LAY-083 — moving the ZOOMED pane out un-zooms the source and restores `savedLayout`
+     * MINUS the pane that left (AppReducer+Socket.swift:357-363). The un-zoom runs after the
+     * close-like refocus, so the layout the user is handed back is the saved one, not the
+     * emptied zoom layout.
+     */
+    it('LAY-083: un-zooms the source when the zoomed pane moves to another workspace', () => {
+        const h = harness(seededState());
+        h.dispatch({
+            type: 'create-workspace',
+            id: W2,
+            paneID: id('dddddddd', 202),
+            name: 'other',
+            color: 'red',
+            now: NOW
+        });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'toggle-zoom', workspaceID: W1 }
+        );
+        expect(ws(h.state(), W1).zoomedPaneID).toBe(PA);
+        expect(ws(h.state(), W1).savedLayout).not.toBeNull();
+
+        h.dispatch({ type: 'move-pane-to-workspace', paneID: PA, toWorkspaceID: W2 });
+        const source = ws(h.state(), W1);
+        expect(source.zoomedPaneID).toBeNull();
+        expect(source.savedLayout).toBeNull();
+        // Not `empty` (which is what removing PA from the zoom layout leaves): the saved
+        // two-leaf tree comes back with PA taken out of it.
+        expect(source.layout).toEqual({ kind: 'leaf', paneID: P0 });
+        expect(source.focusedPaneID).toBe(P0);
+        expect(allPaneIDs(ws(h.state(), W2).layout)).toEqual([id('dddddddd', 202), PA]);
+    });
+
+    it('LAY-083: moving a pane that is NOT the zoomed one leaves the zoom alone', () => {
+        const h = harness(seededState());
+        h.dispatch({
+            type: 'create-workspace',
+            id: W2,
+            paneID: id('dddddddd', 203),
+            name: 'other',
+            color: 'red',
+            now: NOW
+        });
+        h.dispatch(
+            { type: 'split-pane', workspaceID: W1, paneID: PA, direction: 'horizontal', now: NOW },
+            { type: 'toggle-zoom', workspaceID: W1 },
+            // P0 is off-screen under the zoom; moving it must not disturb the zoom state.
+            { type: 'move-pane-to-workspace', paneID: P0, toWorkspaceID: W2 }
+        );
+        const source = ws(h.state(), W1);
+        expect(source.zoomedPaneID).toBe(PA);
+        expect(source.layout).toEqual({ kind: 'leaf', paneID: PA });
+        // The saved layout still holds both leaves; only the visible tree lost P0.
+        expect(allPaneIDs(source.savedLayout ?? { kind: 'empty' })).toEqual([P0, PA]);
     });
 
     it('carries the web sidecar across', () => {

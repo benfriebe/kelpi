@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_GENERAL_SETTINGS, parseGeneralSettings } from './general.js';
+import { BUILT_IN_TERMINAL_THEMES, namedTerminalTheme } from './themes.js';
 import { parseKeybindOverrides } from './keybinds.js';
 import { parseProfiles } from './profiles.js';
 import { parseConfigLine } from './lines.js';
@@ -125,6 +126,20 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('inherit-group-on-new-workspace = true').inheritGroupOnNewWorkspace).toBe(true);
     });
 
+    // SET-012, the sixth and last of §13's behaviour keys to move out of UserDefaults.
+    it('defaults expand-group-on-workspace-drop to on, off only for the literal false', () => {
+        expect(parseGeneralSettings('').expandGroupOnWorkspaceDrop).toBe(true);
+        expect(
+            parseGeneralSettings('expand-group-on-workspace-drop = FALSE').expandGroupOnWorkspaceDrop
+        ).toBe(false);
+        expect(
+            parseGeneralSettings('expand-group-on-workspace-drop = garbage').expandGroupOnWorkspaceDrop
+        ).toBe(true);
+        expect(
+            parseGeneralSettings('expand-group-on-workspace-drop = true').expandGroupOnWorkspaceDrop
+        ).toBe(true);
+    });
+
     it('ignores unknown keys', () => {
         expect(parseGeneralSettings('who-knows = 5\ntheme = Nord').theme).toBe('Nord');
     });
@@ -203,5 +218,55 @@ describe('parseProfiles', () => {
         expect(
             parseProfiles('profile = work:DIR=~other/x', { home: '/Users/me' })[0]!.env
         ).toEqual({ DIR: '~other/x' });
+    });
+});
+
+/**
+ * §SET-215 / §SET-216: the built-in terminal themes and `NexTheme.named(id)`.
+ *
+ * The lookup is the whole of §SET-216 — a `theme = <anything else>` line has to select NOTHING,
+ * so the terminal keeps whatever the user's own ghostty config resolved. That means the match
+ * is exact, case included: these ids are case-sensitive theme FILENAMES.
+ */
+describe('built-in terminal themes', () => {
+    it('ships the ten NexTheme built-ins, ids spelled as ghostty filenames', () => {
+        expect(BUILT_IN_TERMINAL_THEMES.map((theme) => theme.id)).toEqual([
+            'Dracula',
+            'Catppuccin Mocha',
+            'Catppuccin Latte',
+            'Catppuccin Macchiato',
+            'Catppuccin Frappe',
+            'Nord',
+            'Gruvbox Dark',
+            'Gruvbox Light',
+            'iTerm2 Solarized Dark',
+            'iTerm2 Solarized Light'
+        ]);
+        // Three display names differ from the filename: the two Solarized entries (whose
+        // ghostty files are prefixed `iTerm2 `) and Frappé, whose file has no accent.
+        expect(BUILT_IN_TERMINAL_THEMES.filter((theme) => theme.id !== theme.name)).toEqual([
+            { id: 'Catppuccin Frappe', name: 'Catppuccin Frappé' },
+            { id: 'iTerm2 Solarized Dark', name: 'Solarized Dark' },
+            { id: 'iTerm2 Solarized Light', name: 'Solarized Light' }
+        ]);
+    });
+
+    it('matches a built-in exactly and selects nothing for anything else (§SET-216)', () => {
+        expect(namedTerminalTheme('Nord')?.name).toBe('Nord');
+        expect(namedTerminalTheme('  Nord  ')?.id).toBe('Nord');
+        // Case matters — the id is a filename, and a near miss must not repaint the terminal.
+        expect(namedTerminalTheme('nord')).toBeNull();
+        expect(namedTerminalTheme('Dracula Pro')).toBeNull();
+        expect(namedTerminalTheme('')).toBeNull();
+        expect(namedTerminalTheme(null)).toBeNull();
+    });
+
+    it('is what a `theme` line parses to, case preserved (§SET-105)', () => {
+        // The parser keeps the value verbatim; the LOOKUP is what decides whether it selects.
+        expect(parseGeneralSettings('theme = Catppuccin Mocha').theme).toBe('Catppuccin Mocha');
+        expect(namedTerminalTheme(parseGeneralSettings('theme = Catppuccin Mocha').theme)?.id).toBe(
+            'Catppuccin Mocha'
+        );
+        expect(namedTerminalTheme(parseGeneralSettings('theme = catppuccin mocha').theme)).toBeNull();
     });
 });

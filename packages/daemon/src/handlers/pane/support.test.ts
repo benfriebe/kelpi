@@ -78,6 +78,67 @@ describe('spawnEnvVars', () => {
             { key: 'NEX_PROFILE', value: 'work' }
         ]);
     });
+
+    // §SET-209: the marker is injected either way, but an assignment nothing defines is
+    // almost always a typo, and silence makes it look like it worked.
+    it('warns when a non-default profile has no definitions, and still injects the marker', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        h.store.dispatch({ type: 'set-workspace-profile', id: W1, profileName: 'ghost' });
+        const logs: string[] = [];
+        const ctx = {
+            ...h.ctx,
+            spawn: { inheritedPath: '/usr/bin' },
+            profiles: () => [{ name: 'work', env: { CLAUDE_CONFIG_DIR: '/w' } }],
+            onLog: (message: string) => logs.push(message)
+        };
+
+        expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'NEX_PANE_ID', value: P1 },
+            { key: 'PATH', value: '/usr/bin' },
+            { key: 'NEX_PROFILE', value: 'ghost' }
+        ]);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toContain('"ghost"');
+        expect(logs[0]).toContain('dev');
+    });
+
+    it('never warns about an empty default profile, which is the expected state', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const logs: string[] = [];
+        const ctx = {
+            ...h.ctx,
+            spawn: { inheritedPath: '/usr/bin' },
+            // No `default` definition at all — the built-in baseline is virtual until it has
+            // vars (§SET-206), so this is the shipped configuration, not a mistake.
+            profiles: () => [],
+            onLog: (message: string) => logs.push(message)
+        };
+
+        expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'NEX_PANE_ID', value: P1 },
+            { key: 'PATH', value: '/usr/bin' },
+            { key: 'NEX_PROFILE', value: 'default' }
+        ]);
+        expect(logs).toEqual([]);
+    });
+
+    it('does not warn for a profile the config file does define', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        h.store.dispatch({ type: 'set-workspace-profile', id: W1, profileName: 'work' });
+        const logs: string[] = [];
+        const ctx = {
+            ...h.ctx,
+            spawn: { inheritedPath: '/usr/bin' },
+            profiles: () => [{ name: 'work', env: { CLAUDE_CONFIG_DIR: '/w' } }],
+            onLog: (message: string) => logs.push(message)
+        };
+
+        spawnEnvVars(ctx, P1, h.workspace(W1));
+        expect(logs).toEqual([]);
+    });
 });
 
 describe('spawnPaneIfShell', () => {

@@ -14,9 +14,11 @@
 import { type EpochSeconds, formatWireTimestamp, newUUID } from '@nex/core/codec';
 import {
     buildPanePath,
+    DEFAULT_PROFILE_NAME,
     effectiveProfileName,
     type EnvVar,
     FALLBACK_PATH,
+    isDefinedProfile,
     mergedEnvVars,
     normalizedAssignment,
     resolveProfileEnv
@@ -158,10 +160,21 @@ export function spawnEnvVars(
         helpersDir === undefined || helpersDir === ''
             ? (inherited === null || inherited === '' ? FALLBACK_PATH : inherited)
             : buildPanePath(helpersDir, inherited);
-    const profileEnv = resolveProfileEnv(
-        profiles,
-        effectiveProfileName(normalizedAssignment(workspace.profileName))
-    );
+    const profileName = effectiveProfileName(normalizedAssignment(workspace.profileName));
+    /*
+     * §SET-209. The marker is injected either way (that is the load-bearing half, and
+     * `resolveProfileEnv` does it unconditionally), but a NON-`default` name with no `profile`
+     * lines behind it is almost always a typo in `nex workspace profile` or a profile the user
+     * deleted from the config — and without a word it is indistinguishable from a working
+     * assignment. An empty `default` is expected and is never warned about.
+     */
+    if (profileName !== DEFAULT_PROFILE_NAME && !isDefinedProfile(profiles, profileName)) {
+        ctx.onLog?.(
+            `workspace "${workspace.name}" uses profile "${profileName}", which has no ` +
+                'profile = lines in ~/.config/nex/config; only NEX_PROFILE will be set'
+        );
+    }
+    const profileEnv = resolveProfileEnv(profiles, profileName);
     return mergedEnvVars({ paneID, path, profileEnv });
 }
 

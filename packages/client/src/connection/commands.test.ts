@@ -168,6 +168,15 @@ describe('CommandClient RPC', () => {
         void h.client.setSplitRatio(PANE, 0.66);
         expect(h.lastCommand()).toEqual({ command: 'pane-resize', target: PANE, ratio: 0.66 });
 
+        // §LAY-061: the split-path spelling, for a divider no pane can name.
+        void h.client.setSplitRatioAtPath({ workspaceID: 'W1', splitPath: 'd', ratio: 0.42 });
+        expect(h.lastCommand()).toEqual({
+            command: 'set-split-ratio',
+            workspace_id: 'W1',
+            split_path: 'd',
+            ratio: 0.42
+        });
+
         void h.client.moveWorkspace({ workspace: 'dev' });
         // `group` omitted entirely = "move to top level"; never sent as null.
         expect(h.lastCommand()).toEqual({ command: 'workspace-move', name: 'dev' });

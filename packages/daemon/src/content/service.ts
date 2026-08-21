@@ -88,7 +88,11 @@ export interface ContentSubscription {
 
 /** The slice of `GitService` this module needs (kept narrow so tests can stub it). */
 export interface ContentGit {
-    getDiff(repoPath: string, targetPath?: string | null): Promise<string>;
+    getDiff(
+        repoPath: string,
+        targetPath?: string | null,
+        options?: { readonly signal?: AbortSignal | undefined }
+    ): Promise<string>;
 }
 
 export interface ContentServiceOptions {
@@ -153,6 +157,13 @@ interface Entry {
     watcher: FileWatcher | null;
     /** In-flight load; a second caller awaits it instead of seeing a half-built entry. */
     loading: Promise<void> | null;
+    /**
+     * §CONT-107: the in-flight `git diff`'s abort handle. A newer load aborts the older run —
+     * which kills the child — and the older run then drops its own result, so what the pane
+     * shows is the answer the LAST request asked for rather than whichever process happened to
+     * finish last. Cleared when the run that owns it settles.
+     */
+    diffRun: AbortController | null;
     readonly listeners: Set<ContentListener>;
 }
 
@@ -295,16 +306,46 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         editor.seed(entry.paneID, targetOf(entry), entry.content);
     };
 
-    const loadDiff = async (entry: Entry): Promise<void> => {
+    /** §CONT-107: kill whatever `git diff` is still running for this pane. */
+    const cancelDiff = (entry: Entry): void => {
+        entry.diffRun?.abort();
+        entry.diffRun = null;
+    };
+
+    /**
+     * §CONT-107 (`DiffPaneView.swift:132-158,107-110`): one `git diff` at a time per pane.
+     *
+     * Two rules, and the second is the one that matters: the previous run is CANCELLED (the
+     * child is killed, so a big tree's diff stops costing anything the moment it is stale), and
+     * a cancelled run writes NOTHING — neither its text, nor its failure, nor an emission.
+     * Without that second rule two rapid refreshes race and the later write wins by scheduling
+     * accident, which is how a diff pane ends up showing the older of two answers.
+     *
+     * Returns whether THIS run's answer was applied; a superseded run says false so its caller
+     * does not go on to render and notify on the winner's behalf.
+     */
+    const loadDiff = async (entry: Entry): Promise<boolean> => {
+        cancelDiff(entry);
+        const run = new AbortController();
+        entry.diffRun = run;
         try {
-            entry.content = await git.getDiff(entry.repoPath, entry.filePath);
+            const text = await git.getDiff(entry.repoPath, entry.filePath, { signal: run.signal });
+            if (run.signal.aborted) return false;
+            entry.content = text;
             entry.loaded = true;
             entry.error = null;
+            return true;
         } catch (error) {
+            // An abort surfaces here as a rejection (killed child / `AbortError`); it is the
+            // caller's own doing, never something to paint into the pane.
+            if (run.signal.aborted) return false;
             const message = messageOf(error);
             entry.content = gitFailureText(entry.repoPath, message);
             entry.loaded = false;
             entry.error = message;
+            return true;
+        } finally {
+            if (entry.diffRun === run) entry.diffRun = null;
         }
     };
 
@@ -316,11 +357,14 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         if (buffered === undefined) editor.seed(entry.paneID, targetOf(entry), entry.content);
     };
 
-    const load = async (entry: Entry, pane: Pane): Promise<void> => {
+    /** False only when a diff load was superseded (§CONT-107): nothing was written. */
+    const load = async (entry: Entry, pane: Pane): Promise<boolean> => {
         if (entry.type === 'markdown') await loadMarkdown(entry);
-        else if (entry.type === 'diff') await loadDiff(entry);
-        else loadScratchpad(entry, pane);
+        else if (entry.type === 'diff') {
+            if (!(await loadDiff(entry))) return false;
+        } else loadScratchpad(entry, pane);
         render(entry);
+        return true;
     };
 
     // ── watching ────────────────────────────────────────────────────────────
@@ -392,13 +436,22 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         return changed;
     };
 
-    /** Run a load exactly once per entry, with concurrent callers sharing the same promise. */
-    const runLoad = async (entry: Entry, pane: Pane): Promise<void> => {
-        const loading = load(entry, pane).finally(() => {
-            entry.loading = null;
-        });
+    /**
+     * Run a load exactly once per entry, with concurrent callers sharing the same promise.
+     * Answers `load`'s "did this run write anything" (§CONT-107).
+     */
+    const runLoad = async (entry: Entry, pane: Pane): Promise<boolean> => {
+        let applied = true;
+        const loading = load(entry, pane)
+            .then((result) => {
+                applied = result;
+            })
+            .finally(() => {
+                entry.loading = null;
+            });
         entry.loading = loading;
         await loading;
+        return applied;
     };
 
     const ensure = async (paneID: string): Promise<Entry> => {
@@ -410,9 +463,10 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             const { pane, workspaceID } = locate(paneID);
             if (sync(existing, pane, workspaceID)) {
                 stopWatch(existing);
-                await runLoad(existing, pane);
+                const applied = await runLoad(existing, pane);
                 startWatch(existing);
-                emit(existing);
+                // A superseded diff wrote nothing, so there is nothing to announce (§CONT-107).
+                if (applied) emit(existing);
             }
             return existing;
         }
@@ -439,6 +493,7 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             updatedAt: now(),
             watcher: null,
             loading: null,
+            diffRun: null,
             listeners: new Set<ContentListener>()
         };
         entries.set(paneID, entry);
@@ -446,11 +501,36 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         return entry;
     };
 
+    /**
+     * §CONT-106 — re-run the pane's load because its SCOPE moved (a diff pane's repo or target
+     * path, a markdown pane's file). The same sequence `ensure()` runs when it notices a moved
+     * path, hoisted out so the store subscription can run it the moment the change lands
+     * instead of waiting for the next command.
+     */
+    const reloadForMovedPane = async (paneID: string): Promise<void> => {
+        const entry = entries.get(paneID);
+        if (entry === undefined) return;
+        // Kill the read for the OLD scope BEFORE awaiting it: its answer is already wrong, and
+        // waiting for a big `git diff` would hold the rescope open for no reason.
+        cancelDiff(entry);
+        if (entry.loading !== null) await entry.loading;
+        if (disposed || entries.get(paneID) !== entry) return;
+        const found = findPaneAnywhere(store.getState(), paneID);
+        if (found === null || !CONTENT_PANE_TYPES.has(found.pane.type)) return;
+        if (!sync(entry, found.pane, found.workspaceID)) return;
+        stopWatch(entry);
+        const applied = await runLoad(entry, found.pane);
+        if (disposed || entries.get(paneID) !== entry) return;
+        startWatch(entry);
+        if (applied) emit(entry);
+    };
+
     /** Drop an entry once nothing watches it AND its buffer holds nothing unsaved. */
     function releaseIfIdle(entry: Entry): void {
         if (entry.listeners.size > 0) return;
         stopWatch(entry);
         if (editor.isDirty(entry.paneID)) return;
+        cancelDiff(entry); // §CONT-107: nothing is watching, so nothing wants the answer.
         editor.drop(entry.paneID);
         entries.delete(entry.paneID);
     }
@@ -461,6 +541,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
         // The pane is gone: save what the buffer still holds, then release everything.
         editor.forget(paneID);
         stopWatch(entry);
+        // §CONT-107 (the Swift view's `deinit`): a pane that closed mid-`git diff` kills it.
+        cancelDiff(entry);
         entry.listeners.clear();
         entries.delete(paneID);
     };
@@ -490,6 +572,24 @@ export function createContentService(options: ContentServiceOptions): ContentSer
                     render(entry);
                     emit(entry);
                 }
+                /*
+                 * §CONT-106 — the pane's SCOPE moved under a live subscription.
+                 *
+                 * Swift re-runs `git diff` whenever the view's repo path or target path
+                 * changes, not just when the pane is refreshed or refocused. The port used to
+                 * pick a moved path up only on the next command that happened to call
+                 * `ensure()`, so a subscriber watched a diff of somewhere else until it did
+                 * something. `reloadForMovedPane` is the same reload `ensure()` runs, and it
+                 * cancels the in-flight read first (§CONT-107) because that read is now for
+                 * the wrong scope.
+                 */
+                const moved =
+                    entry.filePath !== event.pane.filePath ||
+                    (entry.type === 'diff' && entry.repoPath !== event.pane.workingDirectory);
+                if (!moved) continue;
+                void reloadForMovedPane(event.paneID).catch((error: unknown) =>
+                    report(error, `content rescope ${event.paneID}`)
+                );
             }
         }
     });
@@ -570,8 +670,10 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             const entry = await ensure(paneID);
             if (entry.type === 'diff') {
                 const before = entry.content;
-                await loadDiff(entry);
-                if (entry.content !== before) {
+                // §CONT-107: a run this refresh no longer owns must not render or notify — the
+                // text it would be comparing against is the WINNER's, not its own.
+                const applied = await loadDiff(entry);
+                if (applied && entry.content !== before) {
                     render(entry);
                     emit(entry);
                 }
@@ -646,6 +748,8 @@ export function createContentService(options: ContentServiceOptions): ContentSer
             unsubscribeStore();
             for (const entry of entries.values()) {
                 stopWatch(entry);
+                // §CONT-107: shutdown is a teardown too — no child outlives the service.
+                cancelDiff(entry);
                 entry.listeners.clear();
             }
             entries.clear();

@@ -34,6 +34,13 @@ export type ChromePane = Pick<
 /** The workspace fields the sidebar/top bar read. */
 export type ChromeWorkspace = Pick<WorkspaceState, 'id' | 'name' | 'color' | 'icon' | 'labels'> & {
     readonly panes: readonly ChromePane[];
+    /**
+     * The assigned workspace profile; `null`/absent is the built-in `default` baseline.
+     * Optional because only two surfaces read it — the inspector's picker (§WS-138) and the
+     * row menu's "Profile ▸" (§WS-049) — and every hand-built fixture predates it. A workspace
+     * taken straight off the store mirror always carries it.
+     */
+    readonly profileName?: string | null | undefined;
 };
 
 export type ChromeGroup = Pick<WorkspaceGroup, 'id' | 'name' | 'color' | 'icon' | 'isCollapsed'>;
@@ -177,6 +184,13 @@ export interface SidebarCallbacks {
      */
     readonly onSetWorkspaceIcon?: ((workspaceID: string, icon: string | null) => void) | undefined;
     readonly onSetGroupIcon?: ((groupID: string, icon: string | null) => void) | undefined;
+    /**
+     * §WS-049's "Profile ▸". `null` is the built-in `default` baseline — the daemon normalizes
+     * "default" and "" to "no assignment", so the menu never stores the word itself.
+     */
+    readonly onSetWorkspaceProfile?: ((workspaceID: string, profile: string | null) => void) | undefined;
+    /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
+    readonly onSetGroupColor?: ((groupID: string, color: WorkspaceColor | null) => void) | undefined;
     readonly onRenameGroup?: ((groupID: string, name: string) => void) | undefined;
     readonly onDeleteGroup?: ((groupID: string, cascade: boolean) => void) | undefined;
     /**

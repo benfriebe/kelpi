@@ -271,6 +271,57 @@ describe('the whole loop', () => {
         expect(harness.service.batch.sessionOf(WEB_PANE)).toBeNull();
     });
 
+    /**
+     * §WEB-124 / §WEB-125. A batch the user has not sent is pending work, and a headless caller
+     * (`nex web inspect-result`) is entitled to it — comments included. `--clear` then cancels
+     * the batch, which is where the "only when a batch exists" clause matters: an independently
+     * armed single-shot picker must survive it.
+     */
+    it('drains pending batch items, comments and all, and --clear cancels the batch', async () => {
+        const harness = webHarness({ nonce: () => 'NONCE' });
+        const host = attachFakeHost(harness.service);
+        const started = webPaneGuiCommand(harness.service, harness.store, 'web-batch-toggle', WEB_PANE, {});
+        host.answer({ ok: true }, 'inspect-arm');
+        await started;
+        host.emit('inspect', WEB_PANE, pickPayload('#one'), WEB_TAB);
+        host.emit('inspect', WEB_PANE, pickPayload('#two'), WEB_TAB);
+        const itemID = harness.service.batch.sessionOf(WEB_PANE)?.items[0]?.id ?? '';
+        await webPaneGuiCommand(harness.service, harness.store, 'web-batch-comment', WEB_PANE, {
+            item_id: itemID,
+            comment: 'the primary CTA'
+        });
+
+        const drained = harness.reply({ command: 'web-inspect-result', pane_id: WEB_PANE });
+        const results = drained['results'] as Record<string, unknown>[];
+        expect(results.map((entry) => entry['selector'])).toEqual(['#one', '#two']);
+        expect(results[0]?.['comment']).toBe('the primary CTA');
+        // An item with no comment omits the field entirely (the serialiser's rule).
+        expect(results[1]?.['comment']).toBeUndefined();
+        // A plain drain leaves the batch alone: the panel is still on screen.
+        expect(harness.service.batch.sessionOf(WEB_PANE)?.items).toHaveLength(2);
+
+        harness.reply({ command: 'web-inspect-result', pane_id: WEB_PANE, clear: true });
+        expect(harness.service.batch.sessionOf(WEB_PANE)).toBeNull();
+        expect(
+            (harness.reply({ command: 'web-inspect-result', pane_id: WEB_PANE })['results'] as unknown[])
+        ).toEqual([]);
+    });
+
+    it('--clear leaves an independently armed single-shot picker alone (WEB-125)', () => {
+        const harness = webHarness({ nonce: () => 'NONCE-SOLO' });
+        attachFakeHost(harness.service);
+        harness.service.inspect.arm({
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            nonce: 'NONCE-SOLO',
+            sendTo: null,
+            submit: false
+        });
+
+        harness.reply({ command: 'web-inspect-result', pane_id: WEB_PANE, clear: true });
+        expect(harness.service.inspect.armOf(WEB_PANE)?.nonce).toBe('NONCE-SOLO');
+    });
+
     it('tears the session down when the arm fails, rather than leaving a dead panel', async () => {
         const harness = webHarness({ nonce: () => 'NONCE' });
         const host = attachFakeHost(harness.service);

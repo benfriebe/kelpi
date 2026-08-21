@@ -80,6 +80,7 @@ import {
     clientKeyBindings,
     createFaviconController,
     createKeyDispatcher,
+    defaultGroupName,
     flattenOver,
     normalizeHexColor,
     presetChromeTheme,
@@ -297,6 +298,15 @@ function Shell(props: AppProps): ReactElement {
     const [findRequest, setFindRequest] = useState<{ paneID: string; seq: number } | null>(null);
     const [scrollToWorkspaceID, setScrollToWorkspaceID] = useState<string | null>(null);
     /**
+     * §SET-153 / §SET-144: the row the sidebar should open its inline rename field on, set by
+     * the `rename_workspace` and `new_group` keybindings (the sidebar owns the field itself).
+     * One-shot — the sidebar clears it through `onRenameRequestHandled`.
+     */
+    const [sidebarRenameRequest, setSidebarRenameRequest] = useState<{
+        kind: 'workspace' | 'group';
+        id: string;
+    } | null>(null);
+    /**
      * Where the terminal search's selected match sits, for the pane whose renderer has to scroll
      * to it. The search itself is DAEMON state (needle, total, selected all ride the workspace's
      * delta stream); this is only the reply's transient "and it is here" — carrying a `seq` so
@@ -463,7 +473,12 @@ function Shell(props: AppProps): ReactElement {
     const inspectorData = useInspectorData({
         commands,
         workspaceID: workspace?.id ?? null,
-        enabled: inspectorVisible,
+        // §APP-071: the FOOTER reads the same associations for its `doc N +A -B`, so the feed
+        // runs whenever the active workspace has any — not only while the panel is open. With
+        // the panel shut it reads the daemon watcher's last known values rather than forcing a
+        // `git status` (`refreshOnRead`), so an always-visible footer costs no extra git.
+        enabled: inspectorVisible || associationsKey !== '',
+        refreshOnRead: inspectorVisible,
         associationsKey,
         registryKey
     });
@@ -1142,6 +1157,35 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
 
+            /**
+             * §SET-145 / §APP-021 / §WEB-154 — `open_web_pane` (⌘⇧O): the keyboard route to the
+             * same blank web pane the header globe and the pane context menu open. The anchor is
+             * the focused pane, else any pane of the active workspace — `pane_id` only scopes
+             * which workspace the new pane lands in, and without one the daemon would fall back
+             * to a `lastActiveWorkspaceID` it may never have been told.
+             */
+            newWebPaneFocused(): boolean {
+                const paneID = focused() ?? activeWorkspace()?.panes[0]?.id ?? null;
+                if (paneID === null) return false;
+                return run(
+                    'New web pane',
+                    commands.raw({ command: 'web-open', url: 'about:blank', private: false, pane_id: paneID })
+                );
+            },
+
+            /**
+             * §CONT-133 — `open_diff` (default unbound): a diff pane for the FOCUSED pane's
+             * working directory, unscoped (no `target_path`), which is what the Swift menu item
+             * does. The inspector's plusminus (`openRepoDiff`) is the same verb scoped to a repo.
+             */
+            openDiffForFocusedPane(): boolean {
+                const paneID = focused() ?? activeWorkspace()?.panes[0]?.id ?? null;
+                if (paneID === null) return false;
+                const pane = selectPane(store.getState(), paneID);
+                if (pane === null || pane.workingDirectory === '') return false;
+                return run('Open diff', commands.openDiff({ repoPath: pane.workingDirectory, paneID }));
+            },
+
             copyWorkingDirectory(paneID: string): boolean {
                 const pane = selectPane(store.getState(), paneID);
                 if (pane === null) return false;
@@ -1305,6 +1349,11 @@ function Shell(props: AppProps): ReactElement {
                 return run('Change icon', commands.setGroupIcon({ groupID, icon }));
             },
 
+            /** §WS-065's "Color ▸". `null` is the submenu's "None": a group's colour is optional. */
+            setGroupColor(groupID: string, color: WorkspaceColor | null): boolean {
+                return run('Group color', commands.setGroupColor({ groupID, color }));
+            },
+
             toggleWorkspaceLabel(workspaceID: string, label: string, applied: boolean): boolean {
                 return run(
                     'Label workspace',
@@ -1327,6 +1376,47 @@ function Shell(props: AppProps): ReactElement {
                         ...(color === undefined || color === null ? {} : { color })
                     })
                 );
+            },
+
+            /**
+             * §SET-144 / §APP-019 — `new_group` (⌘⇧G). The Swift menu item does not ask for a
+             * name: it mints `New Group` / `New Group 2` / … and drops straight into inline
+             * rename. Same here, with the reply's `group_id` as the rename target, so the
+             * keystroke path never opens the sidebar's New Group *form* (that stays the
+             * footer button's affordance). The sidebar is revealed first — a rename field in a
+             * hidden sidebar would be a keystroke that silently did nothing.
+             */
+            newGroupWithRename(): boolean {
+                const existing = store.getState().daemon.state.groups.map((group) => group.name);
+                const name = defaultGroupName(existing);
+                void commands.createGroup({ name }).then(
+                    (reply) => {
+                        if (!isOkReply(reply)) {
+                            notifyFailure('New group', replyError(reply));
+                            return;
+                        }
+                        const id = reply['group_id'];
+                        if (typeof id !== 'string' || id === '') return;
+                        setSidebarVisible(true);
+                        setSidebarRenameRequest({ kind: 'group', id });
+                    },
+                    (error: unknown) => {
+                        notifyFailure('New group', error instanceof Error ? error.message : String(error));
+                    }
+                );
+                return true;
+            },
+
+            /**
+             * §SET-153 — `rename_workspace` (⌘⇧R): begin inline rename of the ACTIVE workspace
+             * in the sidebar (the same field the row menu's "Rename…" opens).
+             */
+            beginRenameActiveWorkspace(): boolean {
+                const id = activeWorkspaceID();
+                if (id === null) return false;
+                setSidebarVisible(true);
+                setSidebarRenameRequest({ kind: 'workspace', id });
+                return true;
             },
 
             renameGroup(groupID: string, name: string): boolean {
@@ -1985,6 +2075,14 @@ function Shell(props: AppProps): ReactElement {
             new_workspace: () => act.newWorkspace(),
             next_workspace: () => act.switchRelative(1),
             previous_workspace: () => act.switchRelative(-1),
+            // The four actions this registry used to advertise and not dispatch (index gap #6):
+            // §SET-144/§APP-019, §SET-153, §SET-145/§APP-021/§WEB-154 and §CONT-133. Each has a
+            // gesture elsewhere (the sidebar footer, the row menu, the header globe); these are
+            // the keyboard halves, and each falls through when its precondition is unmet.
+            new_group: () => act.newGroupWithRename(),
+            rename_workspace: () => act.beginRenameActiveWorkspace(),
+            open_web_pane: () => act.newWebPaneFocused(),
+            open_diff: () => act.openDiffForFocusedPane(),
             // The `web_*` family (WEB-154/WEB-155). All ship unbound; each is a no-op unless
             // the focused pane is a web pane, and `web_tab_close` additionally needs a second
             // tab — so an unmet condition falls through instead of swallowing the chord.
@@ -1995,7 +2093,12 @@ function Shell(props: AppProps): ReactElement {
             web_tab_new: () => webAct.run((pane) => webAct.newTab(pane.paneID)),
             web_tab_close: () => {
                 const pane = webAct.focusedWebPane();
-                if (pane === null || pane.tabCount <= 1 || pane.tabID === null) return false;
+                if (pane === null) return false;
+                // §WEB-013: the Swift reducer turns a single-tab close into `closePane` (the
+                // WIRE keeps refusing it and names `nex pane close` instead — a CLI that closes
+                // a pane when it was asked to close a tab is a different contract). So the GUI
+                // is where the last tab becomes a pane close, exactly as the reducer has it.
+                if (pane.tabCount <= 1 || pane.tabID === null) return act.closePane(pane.paneID);
                 webAct.closeTab(pane.paneID, pane.tabID);
                 return true;
             },
@@ -2023,6 +2126,14 @@ function Shell(props: AppProps): ReactElement {
     // global hotkey, not the one that was configured when it was built.
     const globalHotkeyRef = useRef(settings.general.globalHotkey);
     globalHotkeyRef.current = settings.general.globalHotkey;
+    /**
+     * SET-186 / APP-109 — Escape clears a sidebar multi-selection before any binding lookup.
+     *
+     * The sidebar fills this while it is mounted (`SidebarProps.escapeRef`): it is the only
+     * place that knows both whether a selection exists and whether one of its own overlays is
+     * up and should eat the key instead. Assembly's whole part is to hold the ref and ask.
+     */
+    const sidebarEscapeRef = useRef<(() => boolean) | null>(null);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
@@ -2040,6 +2151,9 @@ function Shell(props: AppProps): ReactElement {
             isPaletteOpen: () =>
                 store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current,
             hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null,
+            // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
+            // lookup, which is `close_search` by default.
+            onEscape: () => sidebarEscapeRef.current?.() ?? false,
             /*
              * SET-187 — never dispatch an in-app binding that shadows the system-wide hotkey.
              *
@@ -2259,6 +2373,11 @@ function Shell(props: AppProps): ReactElement {
             // §8.5 ordering: activate the workspace, then focus the pane.
             runtime.activateWorkspace(item.workspaceID);
             if (item.paneID !== null) runtime.focusPane(item.workspaceID, item.paneID);
+            // §APP-037: the Swift sets the sidebar's scroll target when a row is confirmed, so a
+            // workspace that was off-screen (or inside a collapsed group) scrolls into view
+            // rather than being activated somewhere the user cannot see. Same one-shot channel
+            // the create path uses; the sidebar clears it through `onScrollHandled`.
+            setScrollToWorkspaceID(item.workspaceID);
         },
         [runtime, store]
     );
@@ -2292,6 +2411,17 @@ function Shell(props: AppProps): ReactElement {
         (targetWorkspaceID: string, paneID: string): void => {
             runtime.activateWorkspace(targetWorkspaceID);
             runtime.focusPane(targetWorkspaceID, paneID);
+            // §APP-076: the popover row is a button that is about to unmount, so the caret has
+            // to be handed to the destination explicitly — the same handoff the palette and the
+            // Settings close path make, and without it typing after a jump goes nowhere until
+            // the user clicks. Twice on purpose: now for a jump inside this workspace (the host
+            // is already mounted), and again after the next frame for a jump that crosses
+            // workspaces, where the destination pane does not exist yet.
+            focusTerminalElement(paneID);
+            const soon = globalThis.requestAnimationFrame;
+            const again = (): void => focusTerminalElement(paneID);
+            if (typeof soon === 'function') soon(again);
+            else setTimeout(again, 0);
         },
         [runtime]
     );
@@ -2323,6 +2453,18 @@ function Shell(props: AppProps): ReactElement {
     const [renameRequest, setRenameRequest] = useState<{ paneID: string; seq: number } | null>(null);
     const startPaneRename = useCallback((paneID: string): void => {
         setRenameRequest((current) =>
+            current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
+        );
+    }, []);
+
+    /**
+     * §TERM-103: the markdown header's copy button. Same token shape as the rename field — the
+     * menu belongs to the content frame (rich text needs its iframe), so the header asks and
+     * the frame opens; asking twice re-opens it after the first menu was dismissed.
+     */
+    const [copyRequest, setCopyRequest] = useState<{ paneID: string; seq: number } | null>(null);
+    const onCopyDocument = useCallback((paneID: string): void => {
+        setCopyRequest((current) =>
             current?.paneID === paneID ? { paneID, seq: current.seq + 1 } : { paneID, seq: 1 }
         );
     }, []);
@@ -2707,6 +2849,8 @@ function Shell(props: AppProps): ReactElement {
                         onFocusRequest={onTerminalFocus}
                         onToggleEdit={act.toggleMarkdownEdit}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
+                        // §TERM-103: the header's copy button opens the frame's Copy menu.
+                        copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
                         findPalette={findPalette}
                         onOpenExternalEditor={act.openExternalEditor}
                     />
@@ -2812,6 +2956,9 @@ function Shell(props: AppProps): ReactElement {
             act,
             content,
             findRequest,
+            // §TERM-103: without this the frame would be frozen at the token it had when the
+            // callback was last built, and the header's copy button would open nothing.
+            copyRequest,
             searchPaneTheme,
             searchReveal,
             paneByID,
@@ -2885,6 +3032,11 @@ function Shell(props: AppProps): ReactElement {
                     onMoveWorkspaces={act.moveWorkspaces}
                     onSetWorkspaceIcon={act.setWorkspaceIcon}
                     onSetGroupIcon={act.setGroupIcon}
+                    // §WS-049 / §WS-065: the two row-menu submenus the port was missing.
+                    onSetWorkspaceProfile={act.setWorkspaceProfile}
+                    onSetGroupColor={act.setGroupColor}
+                    // SET-186 / APP-109: the sidebar publishes "did I consume this Escape?".
+                    escapeRef={sidebarEscapeRef}
                     onRenameGroup={act.renameGroup}
                     onDeleteGroup={act.deleteGroup}
                     onCreateWorkspace={(name, groupID, worktree, extras) => {
@@ -2901,6 +3053,9 @@ function Shell(props: AppProps): ReactElement {
                     keyBindings={bindings}
                     scrollToWorkspaceID={scrollToWorkspaceID}
                     onScrollHandled={() => setScrollToWorkspaceID(null)}
+                    // §SET-153 / §SET-144: the keyboard's "start renaming this row".
+                    renameRequest={sidebarRenameRequest}
+                    onRenameRequestHandled={() => setSidebarRenameRequest(null)}
                     onOpenSettings={(section) => {
                         openSettings(section === 'labels' ? 'labels' : 'keybindings');
                     }}
@@ -2969,6 +3124,7 @@ function Shell(props: AppProps): ReactElement {
                         onToggleZoom={act.toggleZoom}
                         onToggleMarkdownEdit={act.toggleMarkdownEdit}
                         onRefreshDiff={act.refreshDiff}
+                        onCopyDocument={onCopyDocument}
                         onSetFontSize={act.setFontSize}
                         onRestartAgent={act.restartAgent}
                         onDwellClear={act.dwellClear}
@@ -2987,6 +3143,11 @@ function Shell(props: AppProps): ReactElement {
                 <StatusFooter
                     summary={agentSummary}
                     focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
+                    // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
+                    // sits in. The same rows the inspector renders, matched by longest prefix.
+                    associations={inspectorData.associations}
+                    // §APP-069: the DAEMON's home, so a cwd under it renders as `~/…`.
+                    {...(daemon.info?.home === undefined ? {} : { homeDirectory: daemon.info.home })}
                     bucket={bucket}
                     bucketItems={bucketItems}
                     onSelectPane={onSelectStatusPane}

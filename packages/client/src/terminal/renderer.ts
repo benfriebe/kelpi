@@ -149,6 +149,28 @@ export interface TerminalRenderer {
     onData(listener: (data: string) => void): () => void;
     onBell(listener: () => void): () => void;
     onTitleChange(listener: (title: string) => void): () => void;
+    /**
+     * The live selection, as text (`''` when there is none, or when the engine has no read).
+     *
+     * §TERM-034's port-side answer. The Swift reads the selection out of libghostty so macOS
+     * text services see it; a browser has no equivalent consumer, but the read itself is not
+     * engine-specific — BOTH engines expose `getSelection()` — and having it is what lets the
+     * app (and the audit) tell "the engine made a selection" from "the application was sent a
+     * mouse report", which are mutually exclusive by design (§TERM-037).
+     */
+    selection(): string;
+    /** Fires when the engine's selection changes. Returns an unsubscribe. */
+    onSelectionChange(listener: (selection: string) => void): () => void;
+    /**
+     * Drop the engine's selection.
+     *
+     * Called the moment a mouse report is sent (§TERM-037), which is ghostty's own rule:
+     * `Surface.zig:3850-3852` — "In any other mouse button scenario without shift pressed we
+     * clear the selection since the underlying application can handle that in any way." Without
+     * it, a selection made before an application asked for the mouse would sit highlighted over
+     * a TUI that is now handling the same drag itself.
+     */
+    clearSelection(): void;
     resize(cols: number, rows: number): void;
     focus(): void;
     blur(): void;
@@ -201,6 +223,10 @@ export interface XtermLikeTerminal {
     onBell?(listener: () => void): EngineDisposable;
     onTitleChange?(listener: (title: string) => void): EngineDisposable;
     onResize?(listener: (size: { cols: number; rows: number }) => void): EngineDisposable;
+    /** Both shipped engines have these; typed optional so a fake need not (§TERM-034). */
+    getSelection?(): string;
+    onSelectionChange?(listener: () => void): EngineDisposable;
+    clearSelection?(): void;
 }
 
 /** What a loader hands back: the terminal plus the engine-specific bits it can serve. */
@@ -586,6 +612,7 @@ class AdapterRenderer implements TerminalRenderer {
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
+    private readonly selectionListeners = new Set<(selection: string) => void>();
     private readonly failureListeners = new Set<(error: unknown) => void>();
     private readonly engineDisposables: EngineDisposable[] = [];
 
@@ -696,6 +723,30 @@ class AdapterRenderer implements TerminalRenderer {
         return () => this.titleListeners.delete(listener);
     }
 
+    /** §TERM-034. `''` for a poisoned/unopened engine, or one with no selection read. */
+    selection(): string {
+        if (this.disposed || this.poisoned) return '';
+        const terminal = this.handle?.terminal;
+        if (terminal?.getSelection === undefined) return '';
+        // Swallowed, not guarded: a failed selection read is cosmetic and must never poison a
+        // pane whose PTY is fine.
+        let value = '';
+        this.swallow(() => {
+            value = terminal.getSelection?.() ?? '';
+        });
+        return value;
+    }
+
+    onSelectionChange(listener: (selection: string) => void): () => void {
+        this.selectionListeners.add(listener);
+        return () => this.selectionListeners.delete(listener);
+    }
+
+    clearSelection(): void {
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.terminal.clearSelection?.());
+    }
+
     resize(cols: number, rows: number): void {
         if (this.disposed) return;
         // Zero-size guard (terminal-surface.md §15.4): a transient 0×0 layout pass must never
@@ -763,6 +814,7 @@ class AdapterRenderer implements TerminalRenderer {
         this.dataListeners.clear();
         this.bellListeners.clear();
         this.titleListeners.clear();
+        this.selectionListeners.clear();
         this.failureListeners.clear();
     }
 
@@ -919,6 +971,13 @@ class AdapterRenderer implements TerminalRenderer {
                 for (const listener of [...this.titleListeners]) listener(value);
             });
             if (title !== undefined) this.engineDisposables.push(title);
+            // §TERM-034: both engines emit a bare "it changed"; the adapter resolves the TEXT
+            // once and hands it to every listener, so a pane never reads the engine N times.
+            const selection = terminal.onSelectionChange?.((): void => {
+                const value = terminal.getSelection?.() ?? '';
+                for (const listener of [...this.selectionListeners]) listener(value);
+            });
+            if (selection !== undefined) this.engineDisposables.push(selection);
 
             // Metrics first, then geometry, then the bytes. A replay written before the resize
             // would be parsed at the CONSTRUCTION grid and then reflowed by it, which is what

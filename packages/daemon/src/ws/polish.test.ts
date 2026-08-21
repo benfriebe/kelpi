@@ -161,6 +161,52 @@ describe('icon verbs', () => {
             true
         );
     });
+
+    /**
+     * §WS-065. The reducer action has existed since the import path was written, but the only
+     * way to reach it was `group create --color`, so a group made any other way was grey for
+     * life. The verb mirrors the icon verbs' shape with one difference that matters: a group's
+     * colour is OPTIONAL, so an absent/`null` colour is the menu's "None" rather than an error,
+     * while an unrecognised NAME *is* an error — silently clearing on a typo would look exactly
+     * like the user having picked "None".
+     */
+    it('sets, clears and validates a group colour (§WS-065)', () => {
+        const f = fixture();
+        f.store.dispatch({ type: 'create-group', id: G1, name: 'infra', color: null, now: 1 });
+        const { session, transport } = f.connect();
+
+        expect(ask(session, transport, { command: 'set-group-color', group_id: G1, color: 'purple' })).toEqual({
+            ok: true,
+            group_id: G1,
+            color: 'purple'
+        });
+        expect(f.store.state().groups[0]?.color).toBe('purple');
+
+        // "None" — the option a workspace's Color submenu does not have.
+        expect(ask(session, transport, { command: 'set-group-color', group_id: G1, color: null })).toEqual({
+            ok: true,
+            group_id: G1,
+            color: null
+        });
+        expect(f.store.state().groups[0]?.color).toBeNull();
+
+        // A typo must not read as "None".
+        f.store.dispatch({ type: 'set-group-color', id: G1, color: 'green' });
+        expect(ask(session, transport, { command: 'set-group-color', group_id: G1, color: 'chartreuse' })).toEqual({
+            ok: false,
+            error: "'chartreuse' is not a known color"
+        });
+        expect(f.store.state().groups[0]?.color).toBe('green');
+
+        expect(ask(session, transport, { command: 'set-group-color', group_id: 'nope', color: 'red' })).toEqual({
+            ok: false,
+            error: "no group matches 'nope'"
+        });
+        expect(ask(session, transport, { command: 'set-group-color', color: 'red' })).toEqual({
+            ok: false,
+            error: 'set-group-color requires group_id'
+        });
+    });
 });
 
 describe('move-workspaces', () => {

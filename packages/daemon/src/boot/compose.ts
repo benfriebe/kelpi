@@ -380,12 +380,35 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * (graft-git.md §GIT-075). `autoDetect` is created further down — this closure defers to
      * it, so the ordering between the two is not load-bearing.
      */
+    /** Assigned beside `onPaneDirectory`, and deferred for the same reason. */
+    let onPaneTitle: (paneID: string, title: string) => void = () => {};
     const term = createTerminalStateService({
         onDirectoryChange: (paneID, directory) => {
             try {
                 onPaneDirectory(paneID, directory);
             } catch (error) {
                 report(error, 'pane directory report');
+            }
+        },
+        // §TERM-147's OTHER writer: OSC 0 / OSC 2. The pwd half (OSC 7, above) landed first; a
+        // pane whose TITLE moves without a directory change now advances `lastActivityAt` too,
+        // which is what `workspace list --json`'s `last_activity_at` and `group sort
+        // --by last-activity` read — and what the pane header shows (`title ?? workingDirectory`).
+        onTitleChange: (paneID, title) => {
+            try {
+                onPaneTitle(paneID, title);
+            } catch (error) {
+                report(error, 'pane title report');
+            }
+        },
+        // §TERM-037…§TERM-039: the CLIENT encodes DEC mouse reports (no renderer this port ships
+        // implements them), so the modes have to reach it as state. Targeted at the clients
+        // attached to that pane's stream rather than broadcast (`ws/streams.ts`).
+        onModesChange: (paneID, modes) => {
+            try {
+                ws?.streams.modesChanged(paneID, modes);
+            } catch (error) {
+                report(error, 'pane modes report');
             }
         }
     });
@@ -772,6 +795,39 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             now: (options.now ?? Date.now)()
         });
         autoDetect.paneDirectoryChanged({ workspaceID: workspace.id, paneID, directory });
+    };
+
+    /**
+     * One OSC 0 / OSC 2 report (§TERM-147): the pane's `title` moves and `lastActivityAt` with
+     * it, so a shell with no OSC 7 integration — but with the title escape every stock
+     * `PROMPT_COMMAND` / `precmd` writes — still advances activity.
+     *
+     * Same shape as the directory writer above, and the same two guards: a pane the store does
+     * not know is ignored, and a repeat of the current title is dropped BEFORE the dispatch (an
+     * app that re-asserts its title every redraw must not turn into a delta per frame).
+     */
+    onPaneTitle = (paneID, title) => {
+        const state = store.getState();
+        const workspace = state.workspaces.find(
+            (candidate) =>
+                candidate.panes.some((pane) => pane.id === paneID) ||
+                candidate.parkedPanes.some((pane) => pane.id === paneID)
+        );
+        if (workspace === undefined) return;
+        const pane =
+            workspace.panes.find((entry) => entry.id === paneID) ??
+            workspace.parkedPanes.find((entry) => entry.id === paneID);
+        if (pane === undefined) return;
+        // An empty title is a real report (`OSC 2 ; BEL` clears it), and the store stores null
+        // for "no title" — so it normalizes here rather than in the reducer.
+        const next = title.length === 0 ? null : title;
+        if (pane.title === next) return;
+        store.dispatch({
+            type: 'pane-title-changed',
+            paneID,
+            title: next,
+            now: (options.now ?? Date.now)()
+        });
     };
 
     /**

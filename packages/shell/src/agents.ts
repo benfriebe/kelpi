@@ -440,6 +440,24 @@ export function newlyWaitingPanes(
     return [...next].filter((paneID) => !before.has(paneID));
 }
 
+/**
+ * §AGNT-077's other direction: panes that STOPPED waiting.
+ *
+ * `NotificationService.removeNotification(for:)` withdraws a pane's delivered notification when
+ * its waiting status is cleared — which is what visiting the pane does. The client half of that
+ * already works (the in-app toast is dismissed on focus); the native toast had nothing to act
+ * on, because the daemon publishes a notification but never a retraction. It does not need one:
+ * a pane leaving the waiting set IS the retraction, and the shell already tracks that set for
+ * the dock bounce.
+ */
+export function noLongerWaitingPanes(
+    previous: Iterable<string>,
+    next: Iterable<string>
+): readonly string[] {
+    const after = new Set(next);
+    return [...previous].filter((paneID) => !after.has(paneID));
+}
+
 export interface ActivitySummary {
     readonly agents: number;
     readonly workspaces: number;

@@ -609,6 +609,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             onToggleZoom={props.onToggleZoom}
                             onToggleMarkdownEdit={props.onToggleMarkdownEdit}
                             onRefreshDiff={props.onRefreshDiff}
+                            onCopyDocument={props.onCopyDocument}
                             onSetFontSize={props.onSetFontSize}
                             onRestartAgent={props.onRestartAgent}
                             onNewWebPane={props.onNewWebPane}

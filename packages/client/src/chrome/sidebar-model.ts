@@ -322,6 +322,21 @@ export interface DropZoneLayout {
 export interface DropZoneOptions {
     /** Measured row height keyed by row key; missing rows use `rowHeight`. */
     readonly heights?: ReadonlyMap<string, number> | undefined;
+    /**
+     * Measured content-space TOP of each row, keyed by row key — the same space `contentY`
+     * resolves a cursor into (`clientY - scrollerTop + scrollTop`).
+     *
+     * Why this exists (defect N4b): heights are border-box and every sidebar row carries a
+     * `my-0.5` margin, so walking the list by `y += height` loses ~2px per row. The error is
+     * cumulative, so in a three-row sidebar the model is right to within a pixel and in a
+     * seven-row one the sixth row's band is ~10px above where the row actually is — enough for
+     * a cursor sitting three quarters of the way down a group header to resolve to *no zone at
+     * all*, which is a drag that visibly does nothing. Measured tops remove the whole class:
+     * whatever the CSS does between rows (margins, collapsing, gaps, a spacer) the zones land
+     * exactly on the pixels the user sees. Missing keys fall back to the accumulator, so a
+     * layout-free environment (jsdom) behaves as before.
+     */
+    readonly offsets?: ReadonlyMap<string, number> | undefined;
     readonly rowHeight?: number | undefined;
     /** 4pt content padding (§5.2). */
     readonly contentTop?: number | undefined;
@@ -360,10 +375,16 @@ export function buildDropZones(
     }
 
     let y = options.contentTop ?? 4;
-    for (const row of rows) {
+    for (let index = 0; index < rows.length; index++) {
+        const row = rows[index] as RenderedRow;
         const height = options.heights?.get(row.key) ?? rowHeight;
-        const yTop = y;
-        const yBottom = y + height;
+        const measured = options.offsets?.get(row.key);
+        const yTop = measured ?? y;
+        // A row owns the gap beneath it, so the zones TILE the list: the margin between two
+        // rows is never a dead spot the cursor can fall into (N4b).
+        const nextRow = rows[index + 1];
+        const nextTop = nextRow === undefined ? undefined : options.offsets?.get(nextRow.key);
+        const yBottom = nextTop ?? yTop + height;
         y = yBottom;
 
         if (row.kind === 'workspace' && dragging.has(row.workspaceID)) continue;
@@ -477,16 +498,22 @@ export function buildGroupSpans(
         current = null;
     };
 
-    for (const row of rows) {
+    for (let index = 0; index < rows.length; index++) {
+        const row = rows[index] as RenderedRow;
         const height = options.heights?.get(row.key) ?? rowHeight;
+        // Same measured-top rule as `buildDropZones` — a group's block must start where the
+        // header actually is, not where accumulating border-box heights says it is (N4b).
+        const yTop = options.offsets?.get(row.key) ?? y;
         if (row.kind === 'group-header') {
-            flush(y);
-            current = { slotID: `group:${row.groupID}`, groupID: row.groupID, yTop: y };
+            flush(yTop);
+            current = { slotID: `group:${row.groupID}`, groupID: row.groupID, yTop };
         } else if (row.kind === 'workspace' && row.groupID === null) {
-            flush(y);
-            current = { slotID: `workspace:${row.workspaceID}`, groupID: null, yTop: y };
+            flush(yTop);
+            current = { slotID: `workspace:${row.workspaceID}`, groupID: null, yTop };
         }
-        y += height;
+        const nextRow = rows[index + 1];
+        const nextTop = nextRow === undefined ? undefined : options.offsets?.get(nextRow.key);
+        y = nextTop ?? yTop + height;
     }
     flush(y);
     return { spans, tailIndex: model.topLevel.length, contentBottom: y };

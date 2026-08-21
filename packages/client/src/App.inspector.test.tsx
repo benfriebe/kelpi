@@ -164,8 +164,18 @@ describe('the inspector', () => {
                 h.commands().some((command) => command['command'] === 'workspace-repo-status')
             ).toBe(true);
         });
-        const status = h.commands().find((command) => command['command'] === 'workspace-repo-status');
-        expect(status).toMatchObject({ workspace_id: W1, refresh: true });
+        // §APP-071: the footer keeps this feed alive with the panel shut, so the FIRST read is
+        // the cheap one (`refresh: false` — the daemon watcher's last known values). Opening the
+        // panel is what asks the daemon to re-run git, so the open's read is the latest one.
+        const reads = h.commands().filter((command) => command['command'] === 'workspace-repo-status');
+        expect(reads[0]).toMatchObject({ workspace_id: W1, refresh: false });
+        await waitFor(() => {
+            const latest = h
+                .commands()
+                .filter((command) => command['command'] === 'workspace-repo-status')
+                .at(-1);
+            expect(latest).toMatchObject({ workspace_id: W1, refresh: true });
+        });
         expect(h.commands().some((command) => command['command'] === 'repo-registry')).toBe(true);
 
         fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });

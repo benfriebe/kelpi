@@ -54,8 +54,11 @@ export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePre
 export {
     StatusFooter,
     SystemSparkline,
+    footerGitStats,
     type AgentBucket,
     type AgentCountSummary,
+    type FooterAssociation,
+    type FooterGitStats,
     type StatusBarItem,
     type StatusFooterProps,
     type SystemStatsView

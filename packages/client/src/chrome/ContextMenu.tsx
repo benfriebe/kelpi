@@ -144,6 +144,15 @@ function MenuRow(props: RowProps): ReactElement {
             aria-disabled={interactive ? undefined : true}
             disabled={!interactive}
             data-menu-item={item.id}
+            /*
+             * The tick is a glyph inside the label, so "is this row selected?" could only be
+             * read by string-matching `✓` off `textContent` — which the audit harness already
+             * has to strip before it can match a label. The state as an attribute costs
+             * nothing. It stays a `data-` attribute rather than `aria-checked` because ARIA
+             * allows that only on `menuitemcheckbox`, and three suites plus the harness query
+             * these rows by `role="menuitem"`.
+             */
+            data-checked={item.checked === undefined ? undefined : String(item.checked)}
             className="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[12px] disabled:opacity-40"
             style={{
                 color: item.danger === true ? '#E0655C' : tokens.textPrimary,

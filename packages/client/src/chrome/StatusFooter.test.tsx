@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ZERO_SYSTEM_STATS } from '@nex/protocol';
 
-import { StatusFooter, type ChromePane, type StatusBarItem, type SystemStatsView } from './index';
+import {
+    StatusFooter,
+    footerGitStats,
+    type ChromePane,
+    type FooterAssociation,
+    type StatusBarItem,
+    type SystemStatsView
+} from './index';
 
 afterEach(cleanup);
 
@@ -135,6 +142,91 @@ describe('focused-pane context (§9.1)', () => {
     it('renders nothing on the left with no focused pane', () => {
         render(<StatusFooter summary={SUMMARY} now={NOW} />);
         expect(screen.queryByTestId('footer-cwd')).toBeNull();
+    });
+
+    /** §AGNT-063 / §APP-072: the Swift falls back to the literal "claude", not "agent". */
+    it('labels a running agent of unknown kind "claude"', () => {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                focusedPane={pane({
+                    status: 'running',
+                    agentSessionID: 'session',
+                    agentKind: null,
+                    agentStartedAt: NOW - 4_000
+                })}
+            />
+        );
+        expect(screen.getByTestId('footer-agent').textContent).toBe('claude 4s');
+    });
+});
+
+// ── §APP-071 / §GIT-092: `doc N +A -B` ──────────────────────────────────────────────
+
+const DIRTY = { kind: 'dirty', changedFiles: 3, additions: 27, deletions: 12 } as const;
+const CLEAN = { kind: 'clean', changedFiles: 0, additions: 0, deletions: 0 } as const;
+
+function association(worktreePath: string, status: FooterAssociation['status']): FooterAssociation {
+    return { worktreePath, status };
+}
+
+describe('working-tree diff stats', () => {
+    it('matches the pane cwd to the LONGEST worktree prefix', () => {
+        const stats = footerGitStats(
+            [
+                association('/Users/test/code', DIRTY),
+                association('/Users/test/code/nex', {
+                    kind: 'dirty',
+                    changedFiles: 1,
+                    additions: 2,
+                    deletions: 3
+                }),
+                association('/Users/test/other', DIRTY)
+            ],
+            '/Users/test/code/nex/packages'
+        );
+        expect(stats).toEqual({ changedFiles: 1, additions: 2, deletions: 3 });
+    });
+
+    it('is null outside every tracked worktree, and for a clean one', () => {
+        expect(footerGitStats([association('/Users/test/code/nex', DIRTY)], '/tmp/elsewhere')).toBeNull();
+        expect(footerGitStats([association('/Users/test/code/nex', CLEAN)], '/Users/test/code/nex')).toBeNull();
+        // A sibling directory whose name merely starts the same way is NOT inside it.
+        expect(
+            footerGitStats([association('/Users/test/code/nex', DIRTY)], '/Users/test/code/nex-other')
+        ).toBeNull();
+    });
+
+    it('renders `doc N` with green additions, red deletions and a spoken label', () => {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                focusedPane={pane()}
+                associations={[association('/Users/test/code/nex', DIRTY)]}
+            />
+        );
+        const segment = screen.getByTestId('footer-git-stats');
+        expect(segment.textContent).toBe('3+27-12');
+        expect(segment.getAttribute('aria-label')).toBe('3 files changed, 27 added, 12 removed');
+        const spans = [...segment.querySelectorAll('span')];
+        const additions = spans.find((span) => span.textContent === '+27');
+        const deletions = spans.find((span) => span.textContent === '-12');
+        expect(additions?.style.color).toBe('rgb(95, 190, 137)');
+        expect(deletions?.style.color).toBe('rgb(224, 101, 92)');
+    });
+
+    it('shows no stats segment when the pane is not inside a tracked worktree', () => {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                focusedPane={pane({ workingDirectory: '/tmp/scratch' })}
+                associations={[association('/Users/test/code/nex', DIRTY)]}
+            />
+        );
+        expect(screen.queryByTestId('footer-git-stats')).toBeNull();
     });
 });
 

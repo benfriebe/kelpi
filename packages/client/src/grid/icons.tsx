@@ -26,6 +26,7 @@ export type IconName =
     | 'refresh'
     | 'restart'
     | 'rename'
+    | 'copy'
     | 'terminal'
     | 'font-smaller'
     | 'font-larger'
@@ -139,6 +140,13 @@ const PATHS: Record<IconName, ReactElement> = {
         <>
             <path d="m2.4 7.6 1-2.4 4.1-4.1 1.4 1.4-4.1 4.1z" />
             <path d="M2.2 10.4h7.6" />
+        </>
+    ),
+    /** §TERM-103: two offset sheets — the `doc.on.doc` the Swift's copy menu button uses. */
+    copy: (
+        <>
+            <rect x="1.5" y="1.5" width="6.5" height="7" rx="1" />
+            <path d="M4 10.5h5.5a1 1 0 0 0 1-1V4" />
         </>
     ),
     terminal: (

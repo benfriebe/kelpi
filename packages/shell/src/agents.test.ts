@@ -11,6 +11,7 @@ import {
     dockBadgeLabel,
     middleTruncate,
     newlyWaitingPanes,
+    noLongerWaitingPanes,
     paneDisplayTitle,
     quitConfirmDetail,
     trayIndicator,
@@ -215,6 +216,14 @@ describe('derivations', () => {
         expect(newlyWaitingPanes(['a'], ['a', 'b'])).toEqual(['b']);
         expect(newlyWaitingPanes(['a', 'b'], ['a'])).toEqual([]);
         expect(newlyWaitingPanes([], [])).toEqual([]);
+    });
+
+    /** §AGNT-077: the other direction — whose toast is now stale. */
+    it('reports the panes that stopped waiting', () => {
+        expect(noLongerWaitingPanes(['a', 'b'], ['a'])).toEqual(['b']);
+        expect(noLongerWaitingPanes(['a'], ['a', 'b'])).toEqual([]);
+        expect(noLongerWaitingPanes(['a'], [])).toEqual(['a']);
+        expect(noLongerWaitingPanes([], ['a'])).toEqual([]);
     });
 
     it('titles panes as title ?? label ?? Shell', () => {

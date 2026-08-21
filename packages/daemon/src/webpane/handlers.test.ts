@@ -247,6 +247,61 @@ describe('tabs (§5)', () => {
             args: { paneID: WEB_PANE, tabID: OTHER_TAB }
         });
     });
+
+    /**
+     * §WEB-019. The arm is daemon state keyed by TAB, so without this it outlives the page it
+     * was armed on — inert (payloads are matched against `arm.tabID`) but still reported as
+     * armed, and a `--send-to` arm would wait for a click that can never come.
+     */
+    it('drops an inspector arm that was armed on the closed tab', () => {
+        const h = webHarness({ ids: [OTHER_TAB], nonce: () => 'NONCE-CLOSE' });
+        attachFakeHost(h.service);
+        h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: 'b.test', make_active: true });
+        h.service.inspect.arm({
+            paneID: WEB_PANE,
+            tabID: OTHER_TAB,
+            nonce: 'NONCE-CLOSE',
+            sendTo: null,
+            submit: false
+        });
+
+        h.reply({ command: 'web-tab-close', pane_id: WEB_PANE, tab: '1' });
+        expect(h.service.inspect.armOf(WEB_PANE)).toBeNull();
+    });
+
+    it('leaves an arm on a DIFFERENT tab alone when a tab is closed', () => {
+        const h = webHarness({ ids: [OTHER_TAB], nonce: () => 'NONCE-KEEP' });
+        attachFakeHost(h.service);
+        h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: 'b.test', make_active: true });
+        h.service.inspect.arm({
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            nonce: 'NONCE-KEEP',
+            sendTo: null,
+            submit: false
+        });
+
+        h.reply({ command: 'web-tab-close', pane_id: WEB_PANE, tab: '1' });
+        expect(h.service.inspect.armOf(WEB_PANE)?.tabID).toBe(WEB_TAB);
+    });
+
+    /** The page-initiated close (`window.close()`) takes the same route. */
+    it('drops the arm when the PAGE closes its own tab', () => {
+        const h = webHarness({ ids: [OTHER_TAB], nonce: () => 'NONCE-SELF' });
+        const host = attachFakeHost(h.service);
+        h.reply({ command: 'web-tab-new', pane_id: WEB_PANE, url: 'b.test', make_active: true });
+        h.service.inspect.arm({
+            paneID: WEB_PANE,
+            tabID: OTHER_TAB,
+            nonce: 'NONCE-SELF',
+            sendTo: null,
+            submit: false
+        });
+
+        host.emit('tab-closed', WEB_PANE, {}, OTHER_TAB);
+        expect(h.service.inspect.armOf(WEB_PANE)).toBeNull();
+        expect(h.state().workspaces[0]?.webPanes[WEB_PANE]?.tabs.map((tab) => tab.id)).toEqual([WEB_TAB]);
+    });
 });
 
 describe('private mode (§6)', () => {

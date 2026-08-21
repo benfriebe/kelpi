@@ -390,6 +390,9 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
                 return;
             }
             ok(reply, { ...baseFields(target), tab_id: resolved.tab.id });
+            // §WEB-019: the tab is about to be destroyed, so the per-tab daemon state that
+            // would outlive it goes first — an inspector arm on THIS tab can never fire again.
+            service.forgetTab(target.paneID, resolved.tab.id);
             ctx.store.dispatch({
                 type: 'web-tab-close',
                 workspaceID: target.workspace.id,
@@ -518,9 +521,21 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
         forCommand('web-inspect-result', (msg, ctx, reply) => {
             const target = resolveScope(ctx, msg, reply);
             if (target === null) return;
-            const results = service.inspect.queued(target.paneID).map(serializeInspectResult);
-            ok(reply, { ...baseFields(target), results });
-            if (msg.clear) service.inspect.clearQueue(target.paneID);
+            // §WEB-124: the single-shot queue FIRST, then anything a batch is still holding —
+            // each batch item stamped with its own comment, which is the only place a `comment`
+            // field ever comes from. A batch the user has not sent yet is pending work, and
+            // `nex web inspect-result` is how a headless caller collects it.
+            const queued = service.inspect.queued(target.paneID).map(serializeInspectResult);
+            const batch = service.batch.sessionOf(target.paneID);
+            const pending = (batch?.items ?? []).map((item) =>
+                serializeInspectResult({ ...item.result, comment: item.comment })
+            );
+            ok(reply, { ...baseFields(target), results: [...queued, ...pending] });
+            if (!msg.clear) return;
+            service.inspect.clearQueue(target.paneID);
+            // §WEB-125: `--clear` cancels the BATCH too — but only when there is one. An
+            // independently armed single-shot `web inspect` keeps its arm either way.
+            if (batch !== null) service.cancelBatch(target.paneID);
         }),
 
         // ── private mode ────────────────────────────────────────────────────

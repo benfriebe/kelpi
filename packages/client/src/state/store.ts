@@ -121,6 +121,12 @@ export interface DaemonInfo {
     readonly version: string;
     readonly build: string;
     readonly pid: number;
+    /**
+     * §APP-069: the daemon HOST's home, for display only — `homeDirectory` is stripped from the
+     * mirror, and every path this client renders is the daemon's, so `~` abbreviation needs the
+     * daemon's home rather than the viewer's. Absent on a daemon that predates it.
+     */
+    readonly home?: string;
 }
 
 export interface DaemonSlice {

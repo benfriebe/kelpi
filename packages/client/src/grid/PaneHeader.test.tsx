@@ -203,6 +203,33 @@ describe('PaneHeader rendering', () => {
         expect(screen.getByTestId('pane-restart-a')).toBeTruthy();
     });
 
+    /**
+     * §TERM-103: the Swift keeps "Copy as Markdown / Copy as Rich Text" on the pane HEADER,
+     * markdown-only. The menu itself is the content frame's (see `ContentFrame.copyToken`);
+     * the header's job is the button, and it is absent in edit mode — there is no rendered
+     * document to copy while the editor is up.
+     */
+    it('offers the markdown copy button in preview mode only', () => {
+        const onCopyDocument = vi.fn();
+        renderHeader(testPane('a', { type: 'markdown', isEditing: false }), { onCopyDocument });
+        const button = screen.getByTestId('pane-copy-a');
+        expect(button.getAttribute('aria-label')).toBe('Copy document (Markdown or Rich Text)');
+        act(() => button.click());
+        expect(onCopyDocument).toHaveBeenCalledExactlyOnceWith('a');
+        cleanup();
+
+        renderHeader(testPane('a', { type: 'markdown', isEditing: true }), { onCopyDocument });
+        expect(screen.queryByTestId('pane-copy-a')).toBeNull();
+        cleanup();
+
+        renderHeader(testPane('a', { type: 'shell' }), { onCopyDocument });
+        expect(screen.queryByTestId('pane-copy-a')).toBeNull();
+        cleanup();
+
+        renderHeader(testPane('a', { type: 'diff' }), { onCopyDocument });
+        expect(screen.queryByTestId('pane-copy-a')).toBeNull();
+    });
+
     it('routes every button to its callback', () => {
         const spies = {
             onClosePane: vi.fn(),

@@ -105,8 +105,19 @@ export interface InspectorReader {
 export interface UseInspectorDataInput {
     readonly commands: InspectorReader;
     readonly workspaceID: string | null;
-    /** False (the inspector is closed) = no git reads and no timer. */
+    /** False = no association reads and no timer (nothing on screen wants them). */
     readonly enabled: boolean;
+    /**
+     * §APP-071's second consumer: the status footer wants the same per-association dirtiness
+     * while the *panel* is shut, so `enabled` is no longer "the inspector is open".
+     *
+     * `refresh` is what separates the two. Open, the panel asks the daemon to re-run git before
+     * replying — opening the inspector is exactly the moment a stale badge is worth a `git
+     * status`. Closed, the footer reads the watcher's LAST KNOWN values (`refresh: false`),
+     * which the daemon's own 30 s poll keeps warm — so a permanently-visible footer never
+     * doubles the git the daemon was already running. Defaults to true (the panel's behaviour).
+     */
+    readonly refreshOnRead?: boolean | undefined;
     /**
      * A signature of the mirror's repo registry (its ids). The REGISTRY is read even while the
      * inspector is closed — it is a cheap, git-free read, and the New Workspace form's "Create
@@ -133,6 +144,7 @@ export interface InspectorData {
 
 export function useInspectorData(input: UseInspectorDataInput): InspectorData {
     const { commands, workspaceID, enabled, associationsKey } = input;
+    const refreshOnRead = input.refreshOnRead ?? true;
     const pollMs = input.pollMs ?? INSPECTOR_POLL_MS;
     const [associations, setAssociations] = useState<readonly InspectorAssociation[]>(EMPTY_ASSOCIATIONS);
     const [repos, setRepos] = useState<readonly InspectorRepo[]>(EMPTY_REPOS);
@@ -174,7 +186,7 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
         const read = async (): Promise<void> => {
             setRefreshing(true);
             try {
-                const status = await commands.workspaceRepoStatus({ workspaceID, refresh: true });
+                const status = await commands.workspaceRepoStatus({ workspaceID, refresh: refreshOnRead });
                 if (cancelled || generation.current !== mine) return;
                 if (status['ok'] === true) setAssociations(parseAssociations(status));
             } catch {
@@ -196,7 +208,7 @@ export function useInspectorData(input: UseInspectorDataInput): InspectorData {
             cancelled = true;
             clearInterval(timer);
         };
-    }, [commands, enabled, workspaceID, associationsKey, nonce, pollMs]);
+    }, [commands, enabled, workspaceID, associationsKey, nonce, pollMs, refreshOnRead]);
 
     return { associations, repos, refreshing, refresh };
 }

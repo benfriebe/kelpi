@@ -160,6 +160,106 @@ describe('drop resolution', () => {
         expect(layout.tailIndex).toBe(2);
     });
 
+    /**
+     * Defect N4b, as arithmetic.
+     *
+     * Every sidebar row carries a 2px `my-0.5` margin that `getBoundingClientRect().height`
+     * does not report, so the accumulate-heights walk drifts 2px further off with every row.
+     * The fixture below is the one the failing full run produced: a 7-row sidebar with the
+     * drop target sixth. The cursor sits three quarters of the way down the group header —
+     * the point that selects `ontoGroupHeader` — and the old model answers `null`, which the
+     * drag loop treats as "no target", which the user sees as a drag that does nothing.
+     */
+    describe('measured offsets (N4b)', () => {
+        const keys = ['a', 'b', 'c', 'header', 'child', 'target', 'dragged'];
+        const rowHeights = [69, 53, 37, 33, 35, 32, 38];
+        const heights = new Map(keys.map((key, index) => [key, rowHeights[index] as number]));
+        const offsets = new Map<string, number>();
+        {
+            let top = 4;
+            for (const [index, key] of keys.entries()) {
+                offsets.set(key, top);
+                top += (rowHeights[index] as number) + 2;
+            }
+        }
+        const targetTop = offsets.get('target') as number;
+        const cursor = targetTop + 32 * 0.75;
+        // The list run-I actually had: five rows, the collapsed target header, and the dragged
+        // row last — the dragged one is excluded as a target but still occupies its space.
+        const model = { topLevel: [{ kind: 'group' as const, id: 'target' }], children: new Map<string, readonly string[]>() };
+        const asRows = [
+            ...keys.slice(0, 6).map((key) => ({ kind: 'group-header' as const, key, groupID: key })),
+            { kind: 'workspace' as const, key: 'dragged', workspaceID: 'dragged', groupID: null, depth: 0 as const }
+        ];
+        const dragging = new Set(['dragged']);
+
+        it('accumulating border-box heights drifts a row-count of margins off the truth', () => {
+            let accumulated = 4;
+            for (const key of keys) {
+                if (key === 'target') break;
+                accumulated += heights.get(key) as number;
+            }
+            // Five preceding rows plus the padding: the model puts the header 10px too high…
+            expect(targetTop - accumulated).toBe(10);
+            // …which is enough to put the cursor past the band entirely.
+            expect(cursor).toBeGreaterThan(accumulated + 32);
+
+            // …and past it into the hole the dragged row leaves, which resolves to nothing.
+            // This IS the failure: `resolve()` returns early on null, so the header never
+            // tints, the row never takes the nested indent and the drop never commits.
+            const drifted = buildDropZones(model, asRows, { heights, contentTop: 4, dragging });
+            expect(resolveDropTarget(drifted, cursor)).toBeNull();
+        });
+
+        it('offsets put every band on the pixels the row occupies, and tile the gaps', () => {
+            const layout = buildDropZones(model, asRows, { heights, offsets, contentTop: 4, dragging });
+            const targets = keys.slice(0, 6);
+            expect(layout.zones.map((zone) => zone.yTop)).toEqual(targets.map((key) => offsets.get(key)));
+            for (let index = 0; index + 1 < layout.zones.length; index++) {
+                expect(layout.zones[index]?.yBottom).toBe(layout.zones[index + 1]?.yTop);
+            }
+            expect(layout.contentBottom).toBe((offsets.get('dragged') as number) + 38);
+            expect(resolveDropTarget(layout, cursor)).toEqual({ kind: 'ontoGroupHeader', groupID: 'target' });
+        });
+
+        it('the drift is invisible at the top of the list and decisive at the bottom', () => {
+            const exact = buildDropZones(model, asRows, { heights, offsets, contentTop: 4, dragging });
+            const drifted = buildDropZones(model, asRows, { heights, contentTop: 4, dragging });
+            // The gesture the audit drives: press 75% of the way down a row, which is the
+            // point that means "append into this one" rather than "insert above it".
+            const wrong: string[] = [];
+            for (const [index, key] of keys.slice(0, 6).entries()) {
+                const point = (offsets.get(key) as number) + (rowHeights[index] as number) * 0.75;
+                const right = resolveDropTarget(exact, point);
+                expect(right).toEqual({ kind: 'ontoGroupHeader', groupID: key });
+                if (JSON.stringify(resolveDropTarget(drifted, point)) !== JSON.stringify(right)) wrong.push(key);
+            }
+            // The first row has no drift above it, so it reads correctly either way — which is
+            // exactly why a three-row scoped run passed this flow and a seven-row full one
+            // did not. The sixth row is the one the audit drops on.
+            expect(wrong).not.toContain('a');
+            expect(wrong).toContain('target');
+        });
+
+        it('group spans start where their header actually is', () => {
+            const entries = entriesFor(daemonState(false));
+            const model = orderModelFromEntries(entries);
+            const rows = renderedRows(entries, {});
+            const measured = new Map<string, number>();
+            const tall = new Map<string, number>();
+            let y = 4;
+            for (const row of rows) {
+                measured.set(row.key, y);
+                tall.set(row.key, 40);
+                y += 42;
+            }
+            const spans = buildGroupSpans(model, rows, { heights: tall, offsets: measured, contentTop: 4 });
+            const header = spans.spans.find((span) => span.groupID === G1);
+            expect(header?.yTop).toBe(measured.get(`header:${G1}`));
+            expect(spans.contentBottom).toBe(y - 2);
+        });
+    });
+
     it('the empty-group placeholder drops at index 0', () => {
         const entries: ChromeSidebarEntry[] = [
             {

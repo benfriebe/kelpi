@@ -91,15 +91,17 @@ export interface StubTerm {
     setSnapshot(paneID: string, data: string): void;
     /** Resolve `snapshotAsync` on the next microtask instead of immediately. */
     asyncSnapshots: boolean;
+    /** What `modes()` reports from here on (§TERM-037's `pane-modes` stream). */
+    setModes(modes: VtModes): void;
 }
 
 export function stubTerm(): StubTerm {
     const snapshots = new Map<string, string>();
     const resizes: { paneID: string; cols: number; rows: number }[] = [];
     const fed: { paneID: string; data: string }[] = [];
-    const modes: VtModes = { applicationCursorKeys: false, bracketedPaste: false };
     const state = {
-        asyncSnapshots: false
+        asyncSnapshots: false,
+        modes: { applicationCursorKeys: false, bracketedPaste: false } as VtModes
     };
 
     const read = (paneID: string): { data: Uint8Array; cols: number; rows: number } => ({
@@ -125,7 +127,7 @@ export function stubTerm(): StubTerm {
             if (state.asyncSnapshots) await new Promise<void>((resolve) => setImmediate(resolve));
             return read(paneID);
         },
-        modes: () => modes,
+        modes: () => state.modes,
         dispose: (paneID) => {
             snapshots.delete(paneID);
         }
@@ -143,6 +145,9 @@ export function stubTerm(): StubTerm {
         },
         set asyncSnapshots(value: boolean) {
             state.asyncSnapshots = value;
+        },
+        setModes(modes) {
+            state.modes = modes;
         }
     };
 }

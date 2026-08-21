@@ -731,6 +731,20 @@ export class CommandClient {
     }
 
     /**
+     * §WS-065's "Color ▸". A group's colour is OPTIONAL, so `null` is the submenu's "None" and
+     * clears it — which is why this is not `setBulkColor` with a single id.
+     */
+    setGroupColor(
+        input: { groupID: string; color: WorkspaceColor | null },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        return this.raw(
+            wirePayload('set-group-color', { group_id: input.groupID, color: input.color }),
+            options ?? {}
+        );
+    }
+
+    /**
      * A multi-row sidebar drag: ONE atomic move for the whole selection (§5.5). Sending N
      * `workspace-move`s instead would re-index between each one, so the rows land scrambled.
      */

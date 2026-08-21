@@ -2,7 +2,7 @@ import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@nex/proto
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
-import { G1, harness as storeHarness, NOW, seededState, W1, W2 } from '../store/testing.js';
+import { G1, harness as storeHarness, HOME, NOW, seededState, W1, W2 } from '../store/testing.js';
 import {
     BAD_TOKEN_MESSAGE,
     createSyncHub,
@@ -77,7 +77,9 @@ describe('handshake', () => {
         const welcome = transport.json[0] as Record<string, unknown>;
         expect(welcome['protocolVersion']).toBe(WS_PROTOCOL_VERSION);
         expect(welcome['clientID']).toBe(session.clientID);
-        expect(welcome['daemon']).toEqual({ version: '0.1.0', build: '42', pid: 4242 });
+        // §APP-069: `home` rides the identity so the client can abbreviate the DAEMON's paths
+        // to `~`. It is display-only, and deliberately still absent from the mirror below.
+        expect(welcome['daemon']).toEqual({ version: '0.1.0', build: '42', pid: 4242, home: HOME });
 
         const snapshot = transport.json[1] as Record<string, unknown>;
         expect(snapshot['seq']).toBe(0);

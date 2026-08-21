@@ -179,6 +179,66 @@ describe('copy commands', () => {
         expect(screen.queryByTestId(`content-copy-menu-${PANE}`)).toBeNull();
     });
 
+    /**
+     * §TERM-103: the pane HEADER's copy button, which is where the Swift puts this menu. It
+     * cannot pass coordinates (it is not in this component's box), so the menu pins to the
+     * top-right corner the in-frame chip occupies — and a second bump re-opens it.
+     */
+    it('opens the menu from the header’s copy button, pinned top-right', () => {
+        const view = render(
+            <ContentFrame
+                paneID={PANE}
+                title="markdown preview"
+                html={DOCUMENT}
+                copySource="# Doc\n"
+                copyToken={0}
+            />
+        );
+        expect(screen.queryByTestId(`content-copy-menu-${PANE}`)).toBeNull();
+
+        view.rerender(
+            <ContentFrame
+                paneID={PANE}
+                title="markdown preview"
+                html={DOCUMENT}
+                copySource="# Doc\n"
+                copyToken={1}
+            />
+        );
+        const menu = screen.getByTestId(`content-copy-menu-${PANE}`);
+        expect(menu.style.right).toBe('14px');
+        expect(menu.style.top).toBe('8px');
+        expect(menu.style.left).toBe('');
+        // Both items are the same ones the chip opens.
+        expect(screen.getByTestId(`content-copy-markdown-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`content-copy-rich-${PANE}`)).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId(`content-copy-scrim-${PANE}`));
+        expect(screen.queryByTestId(`content-copy-menu-${PANE}`)).toBeNull();
+
+        // Asking again re-opens it (the token is a counter, not a flag).
+        view.rerender(
+            <ContentFrame
+                paneID={PANE}
+                title="markdown preview"
+                html={DOCUMENT}
+                copySource="# Doc\n"
+                copyToken={2}
+            />
+        );
+        expect(screen.getByTestId(`content-copy-menu-${PANE}`)).toBeTruthy();
+    });
+
+    it('ignores the header’s copy button for a document whose load failed', () => {
+        const view = render(
+            <ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} copySource={null} copyToken={0} />
+        );
+        view.rerender(
+            <ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} copySource={null} copyToken={1} />
+        );
+        expect(screen.queryByTestId(`content-copy-menu-${PANE}`)).toBeNull();
+    });
+
     it('opens the same menu from the preview’s right-click', () => {
         render(
             <ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} copySource="# Doc\n" />

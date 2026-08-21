@@ -11,7 +11,12 @@ import {
     measureGeometry,
     shouldGrabFocus
 } from './TerminalPane';
-import { createFakePtyApi, createFakeRendererFactory, installFakeResizeObserver } from './testing';
+import {
+    createFakePtyApi,
+    createFakeRendererFactory,
+    installFakeResizeObserver,
+    type FakePaneStream
+} from './testing';
 
 /**
  * jsdom has no canvas, so no engine can `open()` here (verified: ghostty-web throws
@@ -850,5 +855,217 @@ describe('TerminalPane — helpers', () => {
         input.blur();
         expect(shouldGrabFocus(document.createElement('div'))).toBe(true);
         input.remove();
+    });
+});
+
+// ── mouse reporting (§TERM-037…§TERM-039) ───────────────────────────────────────────
+//
+// The pane, not the engine, turns pointer events into DEC mouse reports. What is asserted here
+// is the wiring the encoder's own unit tests cannot see: that the daemon's `pane-modes` reaches
+// the reporter, that the bytes go up the pane's PTY stream, and — the half that mattered most —
+// that the ENGINE never sees an event that was reported, so its selection cannot fight the
+// application for the same drag.
+
+/** `\e` written out, so the expectations below read like the wire. */
+const esc = (rest: string): string => `\u001B${rest}`;
+
+/** Mount a pane with 10×20 cells, plus a stand-in for the engine's own canvas listener. */
+async function mouseHarness(
+    modes: { mouseTracking?: string; mouseFormat?: string } = {}
+): Promise<{
+    pty: ReturnType<typeof createFakePtyApi>;
+    renderers: ReturnType<typeof createFakeRendererFactory>;
+    root: HTMLElement;
+    host: HTMLElement;
+    engine: HTMLElement;
+    engineEvents: string[];
+}> {
+    const pty = createFakePtyApi();
+    const renderers = createFakeRendererFactory({ cell: { width: 10, height: 20 } });
+    const view = render(
+        <TerminalPane
+            paneID="pane-1"
+            ptyApi={pty}
+            focused
+            visible
+            createRenderer={renderers.factory}
+            measure={box(800, 480)}
+        />
+    );
+    await settle();
+    const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+    const host = root.querySelector('[data-terminal-host]') as HTMLElement;
+    // Below the host in the tree, exactly where both engines put their canvas — so an event
+    // that reaches it is an event the engine would have acted on.
+    const engine = document.createElement('div');
+    const engineEvents: string[] = [];
+    for (const type of ['mousedown', 'mousemove', 'mouseup', 'wheel']) {
+        engine.addEventListener(type, () => engineEvents.push(type));
+    }
+    host.appendChild(engine);
+    if (Object.keys(modes).length > 0) {
+        act(() => {
+            pty.last().modes(modes as Parameters<FakePaneStream['modes']>[0]);
+        });
+    }
+    return { pty, renderers, root, host, engine, engineEvents };
+}
+
+describe('TerminalPane — mouse reporting', () => {
+    it('reports a press → drag → release as SGR bytes on the pane stream', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
+
+        expect(h.pty.last().input).toEqual([esc('[<0;5;4M'), esc('[<32;9;5M'), esc('[<0;9;5m')]);
+    });
+
+    it('the engine never sees an event that was reported', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
+
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    it('leaves every event alone while no application asked for the mouse', async () => {
+        // The default: a pane with no mouse mode selects text exactly as it always did.
+        const h = await mouseHarness();
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.wheel(h.engine, { clientX: 45, clientY: 61, deltaX: 0, deltaY: -60 });
+
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.engineEvents).toEqual(['mousedown', 'mousemove', 'mouseup', 'wheel']);
+        expect(h.root.dataset['terminalMouse']).toBe('none');
+    });
+
+    it('shift-click bypasses reporting and reaches the engine for selection', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0, shiftKey: true });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0, shiftKey: true });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0, shiftKey: true });
+
+        expect(h.pty.last().input).toEqual([]);
+        expect(h.engineEvents).toEqual(['mousedown', 'mousemove', 'mouseup']);
+    });
+
+    it('reports the wheel as buttons 64/65 and keeps it off the engine', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.wheel(h.engine, { clientX: 45, clientY: 61, deltaX: 0, deltaY: -40 });
+
+        expect(h.pty.last().input).toEqual([esc('[<64;5;4M'), esc('[<64;5;4M')]);
+        expect(h.engineEvents).toEqual([]);
+    });
+
+    it('publishes the live tracking mode on the pane root', async () => {
+        const h = await mouseHarness({ mouseTracking: 'any', mouseFormat: 'sgr' });
+        expect(h.root.dataset['terminalMouse']).toBe('any');
+
+        act(() => {
+            h.pty.last().modes({ mouseTracking: 'none' });
+        });
+        expect(h.root.dataset['terminalMouse']).toBe('none');
+    });
+
+    it('follows a drag that leaves the pane, and the release outside it', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+        const outside = document.createElement('div');
+        document.body.appendChild(outside);
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(outside, { clientX: 2000, clientY: 61, button: 0 });
+        fireEvent.mouseUp(outside, { clientX: 2000, clientY: 61, button: 0 });
+
+        expect(h.pty.last().input).toEqual([esc('[<0;5;4M'), esc('[<32;80;4M'), esc('[<0;80;4m')]);
+        outside.remove();
+    });
+
+    it('stops reporting when the application turns tracking back off mid-drag', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        act(() => {
+            h.pty.last().modes({ mouseTracking: 'none' });
+        });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+
+        expect(h.pty.last().input).toEqual([esc('[<0;5;4M')]);
+        expect(h.engineEvents).toEqual(['mousemove']);
+    });
+});
+
+describe('TerminalPane — selection read (§TERM-034)', () => {
+    it('publishes the engine selection length, and hands the text to the host', async () => {
+        const pty = createFakePtyApi();
+        const renderers = createFakeRendererFactory();
+        const seen: string[] = [];
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+                onSelectionChange={(_, selection) => seen.push(selection)}
+            />
+        );
+        await settle();
+        const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        expect(root.dataset['terminalSelection']).toBe('0');
+
+        act(() => {
+            renderers.last().emitSelection('total 48');
+        });
+
+        expect(root.dataset['terminalSelection']).toBe('8');
+        expect(seen).toEqual(['total 48']);
+
+        act(() => {
+            renderers.last().emitSelection('');
+        });
+        expect(root.dataset['terminalSelection']).toBe('0');
+    });
+
+    it('publishes the cell metrics the audit computes expected report cells with', async () => {
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+        expect(h.root.dataset['terminalCell']).toBe('10.00x20.00');
+    });
+
+    it('clears a stale selection the moment reporting takes a gesture', async () => {
+        // Ghostty clears it too (`Surface.zig:3850-3852`): the highlight would otherwise sit
+        // over a TUI that is now handling the same drag itself.
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+        act(() => {
+            h.renderers.last().emitSelection('left over from before');
+        });
+        expect(h.root.dataset['terminalSelection']).toBe('21');
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        expect(h.root.dataset['terminalSelection']).toBe('0');
+    });
+
+    it('a reported drag leaves the engine with no selection at all', async () => {
+        // The §TERM-037 invariant, stated as a pane-level fact rather than as bytes: while an
+        // application is being sent mouse reports the engine sees nothing, so it can make no
+        // selection — which is exactly what a real terminal does and what the audit asserts on
+        // the real engine.
+        const h = await mouseHarness({ mouseTracking: 'drag', mouseFormat: 'sgr' });
+
+        fireEvent.mouseDown(h.engine, { clientX: 45, clientY: 61, button: 0 });
+        fireEvent.mouseMove(h.engine, { clientX: 85, clientY: 81, button: 0 });
+        fireEvent.mouseUp(h.engine, { clientX: 85, clientY: 81, button: 0 });
+
+        expect(h.pty.last().input.length).toBeGreaterThan(0);
+        expect(h.root.dataset['terminalSelection']).toBe('0');
     });
 });

@@ -22,11 +22,39 @@ export {
     TERMINAL_START_RETRY_MS,
     TerminalPane,
     measureGeometry,
+    measureMouseSurface,
     shouldGrabFocus,
     type TerminalGeometry,
     type TerminalPaneProps,
     type TerminalPtyApi
 } from './TerminalPane';
+
+export {
+    IDLE_PANE_MODES,
+    MAX_WHEEL_REPORTS_PER_EVENT,
+    NO_MODIFIERS,
+    buttonCode,
+    createMouseReporter,
+    encodeMouseReport,
+    positionOutOfViewport,
+    positionToCell,
+    shouldReport,
+    type Cell,
+    type EncodeMouseOptions,
+    type EncodedMouseReport,
+    type MouseAction,
+    type MouseButton,
+    type MouseFormat,
+    type MouseGridMetrics,
+    type MouseModifiers,
+    type MouseReportEvent,
+    type MouseReporter,
+    type MouseReporterOptions,
+    type MouseTrackingMode,
+    type PaneVtModes,
+    type PointerLike,
+    type WheelLike
+} from './mouse';
 
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
 

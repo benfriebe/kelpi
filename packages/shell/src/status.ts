@@ -39,6 +39,7 @@ import {
     EMPTY_COUNTS,
     dockBadgeLabel,
     newlyWaitingPanes,
+    noLongerWaitingPanes,
     trayIndicator,
     trayMenuRows,
     trayTooltip,
@@ -46,7 +47,7 @@ import {
 } from './agents.js';
 import type { DaemonLocation } from './daemon.js';
 import { shellHello } from './hello.js';
-import { trayIconDataUrl, type IconIndicator } from './icon.js';
+import { trayIconDataUrl, trayIconIsTemplate, type IconIndicator } from './icon.js';
 import { parseShellAction, shellActionAppliesHere } from './shell-actions.js';
 import { log, logError, warn } from './log.js';
 
@@ -358,15 +359,28 @@ export function createStatusController(options: StatusOptions): StatusController
         ]);
     }
 
+    /**
+     * §AGNT-087: the icon for one indicator, marked as a template image when it carries no
+     * status dot — an idle glyph then TINTS with the menu bar (and inverts under a highlighted
+     * status item) instead of sitting there as a fixed mid-grey. A dotted state cannot be a
+     * template (AppKit keeps only alpha), so `trayIconIsTemplate` decides both here and in the
+     * drawing, from one rule.
+     */
+    function trayImage(indicator_: IconIndicator): Electron.NativeImage {
+        const image = nativeImage.createFromDataURL(trayIconDataUrl(indicator_));
+        image.setTemplateImage(trayIconIsTemplate(indicator_));
+        return image;
+    }
+
     function updateTray(): void {
         const next = trayIndicator(counts, ready);
         if (tray === null) {
-            tray = new Tray(nativeImage.createFromDataURL(trayIconDataUrl(next)));
+            tray = new Tray(trayImage(next));
             tray.on('click', () => host.showWindow());
             indicator = next;
-            log(`tray ready (${next})`);
+            log(`tray ready (${next}${trayIconIsTemplate(next) ? ', template' : ''})`);
         } else if (next !== indicator) {
-            tray.setImage(nativeImage.createFromDataURL(trayIconDataUrl(next)));
+            tray.setImage(trayImage(next));
             indicator = next;
         }
         tray.setToolTip(trayTooltip(counts, ready));
@@ -397,6 +411,14 @@ export function createStatusController(options: StatusOptions): StatusController
         // Until the attach snapshot has been folded in, every "waiting" pane is pre-existing
         // state, not a transition (`primed` is set by the snapshot handler).
         const newlyWaiting = primed ? newlyWaitingPanes(waiting, nextWaiting) : [];
+        // §AGNT-077: a pane that stopped waiting withdraws its toast. Visiting the pane is what
+        // clears the status, so this is the native half of "focus dismisses the notification" —
+        // the in-app toast is already dropped client-side. Unconditional on `primed`: a
+        // notification can only exist if we posted it, and one whose pane is no longer waiting
+        // is stale whether or not the transition happened before we attached.
+        for (const paneID of noLongerWaitingPanes(waiting, nextWaiting)) {
+            liveNotifications.get(`nex-${paneID}`)?.close();
+        }
         waiting = nextWaiting;
 
         // §7.1 `shouldBounce`: only when the app is not the frontmost thing the user is

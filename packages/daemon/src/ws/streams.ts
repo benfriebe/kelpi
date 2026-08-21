@@ -32,15 +32,33 @@
 import {
     PTY_FLOW_CONTROL_WINDOW_BYTES,
     PTY_FRAME_TYPES,
+    WS_PANE_MODES_MESSAGE,
     decodeAckPayload,
     decodePtyFrame,
     decodeResizePayload,
     encodePtyFrame,
     type JsonObject,
-    type PtyFrameType
+    type PtyFrameType,
+    type WsMouseFormat,
+    type WsMouseTrackingMode,
+    type WsVtModes
 } from '@nex/protocol';
 
-import type { PtyManager, TerminalStateService } from '../seams.js';
+import type { PtyManager, TerminalStateService, VtModes } from '../seams.js';
+
+/**
+ * The wire form of a pane's modes. The two mouse members are optional on the seam (so every
+ * existing `VtModes` literal stays valid) and mandatory on the wire, and this is where the
+ * defaults are applied — "absent" means "no mouse mode", never "unknown".
+ */
+function wireModes(modes: VtModes): WsVtModes {
+    return {
+        applicationCursorKeys: modes.applicationCursorKeys,
+        bracketedPaste: modes.bracketedPaste,
+        mouseTracking: (modes.mouseTracking ?? 'none') as WsMouseTrackingMode,
+        mouseFormat: (modes.mouseFormat ?? 'x10') as WsMouseFormat
+    };
+}
 
 /** Per-(client, pane) bytes buffered while the client is over its window before we drop. */
 export const DEFAULT_CLIENT_QUEUE_BYTES = 1024 * 1024;
@@ -103,6 +121,13 @@ export interface PaneStreamHub {
     readonly sessionCount: number;
     /** Panes with at least one attached client (diagnostics / future render gating). */
     attachedPaneIDs(): string[];
+    /**
+     * A pane's VT modes changed: tell every client attached to it (§TERM-037).
+     *
+     * Targeted rather than broadcast, because a mode is per-pane stream state — a client that is
+     * not rendering the pane has nothing to encode against and does not need the traffic.
+     */
+    modesChanged(paneID: string, modes: VtModes): void;
     close(): void;
 }
 
@@ -203,6 +228,11 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
 
             this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
             entry.live = true;
+            // The pane's VT modes, right behind the replay it belongs to (§TERM-037): the client
+            // encodes DEC mouse reports itself, so an attach that did not carry the modes would
+            // leave a mouse-mode TUI unreportable until the app happened to re-assert DECSET.
+            // After `live`, so this can never precede the replay a client renders first.
+            this.sendModes(paneID);
         }
 
         detach(paneID: string): void {
@@ -310,6 +340,31 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             this.panes.delete(paneID);
         }
 
+        /** Push this pane's current VT modes, if this session is attached to it. */
+        sendModes(paneID: string, modes?: VtModes | undefined): void {
+            if (this.disposed || !this.panes.has(paneID)) return;
+            let current = modes;
+            if (current === undefined) {
+                try {
+                    current = term.modes(paneID);
+                } catch (error) {
+                    report(error, `pane-modes ${paneID}`);
+                    return;
+                }
+            }
+            try {
+                this.transport.sendJson({
+                    type: WS_PANE_MODES_MESSAGE,
+                    paneID,
+                    // `sendJson` takes a `JsonObject`, and an interface has no index signature;
+                    // the cast is the shape assertion, not a widening.
+                    modes: { ...wireModes(current) } as unknown as JsonObject
+                });
+            } catch (error) {
+                report(error, `pane-modes-send ${paneID}`);
+            }
+        }
+
         private enqueue(entry: PaneEntry, chunk: Uint8Array): void {
             if (entry.resyncPending) return; // already stale; the replay supersedes it
             entry.queue.push(chunk);
@@ -393,6 +448,10 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             const ids = new Set<string>();
             for (const session of sessions) for (const paneID of session.paneIDs) ids.add(paneID);
             return [...ids];
+        },
+        modesChanged(paneID, modes) {
+            if (closed) return;
+            for (const session of sessions) session.sendModes(paneID, modes);
         },
         close() {
             if (closed) return;

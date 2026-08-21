@@ -294,6 +294,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         onToggleZoom,
         onToggleMarkdownEdit,
         onRefreshDiff,
+        onCopyDocument,
         onSetFontSize,
         onRestartAgent,
         onNewWebPane,
@@ -516,6 +517,17 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                         onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'increase')}
                     />
                 </>
+            ) : null}
+            {/* §TERM-103: the Swift's header copy menu — markdown, preview mode only (there is
+                no rendered document to copy while the editor is up). The menu is drawn by the
+                content frame; this asks it to open. */}
+            {pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined ? (
+                <HeaderButton
+                    testID={`pane-copy-${pane.id}`}
+                    label="Copy document (Markdown or Rich Text)"
+                    icon="copy"
+                    onClick={() => onCopyDocument(pane.id)}
+                />
             ) : null}
             {pane.type === 'markdown' ? (
                 <HeaderButton

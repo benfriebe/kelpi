@@ -92,7 +92,8 @@ export interface WorktreeRequest {
 export type InspectorResult = Promise<string | null> | string | null | void;
 
 export interface InspectorProps {
-    readonly workspace: ChromeWorkspace & { readonly profileName?: string | null | undefined };
+    /** `profileName` lives on `ChromeWorkspace` itself now that §WS-049's row menu reads it too. */
+    readonly workspace: ChromeWorkspace;
     readonly focusedPaneID?: string | null | undefined;
     readonly associations?: readonly InspectorAssociation[] | undefined;
     readonly repos?: readonly InspectorRepo[] | undefined;

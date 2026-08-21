@@ -6,6 +6,8 @@
  * can open (no canvas 2D context), so they inject `createRenderer={fakeRendererFactory()}`.
  */
 
+import type { WsVtModes } from '@nex/protocol';
+
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import type {
     CellSize,
@@ -66,7 +68,10 @@ export class FakeRenderer implements TerminalRenderer {
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();
+    private readonly selectionListeners = new Set<(selection: string) => void>();
     private readonly failureListeners = new Set<(error: unknown) => void>();
+    /** What `selection()` reports; driven by `emitSelection` (§TERM-034). */
+    private selected = '';
     private cell: CellSize;
     private settle: (() => void) | undefined;
     private fail: ((error: Error) => void) | undefined;
@@ -150,6 +155,20 @@ export class FakeRenderer implements TerminalRenderer {
         return () => this.titleListeners.delete(listener);
     }
 
+    selection(): string {
+        return this.selected;
+    }
+
+    onSelectionChange(listener: (selection: string) => void): () => void {
+        this.selectionListeners.add(listener);
+        return () => this.selectionListeners.delete(listener);
+    }
+
+    clearSelection(): void {
+        if (this.selected === '') return;
+        this.emitSelection('');
+    }
+
     resize(cols: number, rows: number): void {
         this.cols = cols;
         this.rows = rows;
@@ -189,10 +208,17 @@ export class FakeRenderer implements TerminalRenderer {
         this.dataListeners.clear();
         this.bellListeners.clear();
         this.titleListeners.clear();
+        this.selectionListeners.clear();
         this.failureListeners.clear();
     }
 
     // ── driving from a test ─────────────────────────────────────────────────────────
+
+    /** The engine made (or cleared) a selection — what a drag does when nothing intercepts it. */
+    emitSelection(selection: string): void {
+        this.selected = selection;
+        for (const listener of [...this.selectionListeners]) listener(selection);
+    }
 
     /** The user typed: what the engine would emit on `onData`. */
     emitData(data: string): void {
@@ -246,6 +272,11 @@ export interface FakePaneStream {
     output(data: string): void;
     exit(exitCode: number | null, signal?: string): void;
     resync(reason?: string): void;
+    /**
+     * Push a `pane-modes` update at the pane (§TERM-037). Partial: only the members a test
+     * cares about, on top of "nothing set".
+     */
+    modes(modes: Partial<WsVtModes>): void;
 }
 
 export interface FakePtyApi {
@@ -300,6 +331,15 @@ export function createFakePtyApi(): FakePtyApi {
                 },
                 resync(reason = 'flow-control'): void {
                     subscription.onResync?.(reason);
+                },
+                modes(modes: Partial<WsVtModes>): void {
+                    subscription.onModes?.({
+                        applicationCursorKeys: false,
+                        bracketedPaste: false,
+                        mouseTracking: 'none',
+                        mouseFormat: 'x10',
+                        ...modes
+                    });
                 }
             };
             streams.push(stream);

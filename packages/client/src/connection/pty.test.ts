@@ -205,3 +205,69 @@ describe('PtyClient ack pacing', () => {
         expect(acks(h.frames())).toEqual([PTY_FLOW_CONTROL_WINDOW_BYTES / 4]);
     });
 });
+
+describe('pane-modes (§TERM-037: the client encodes DEC mouse reports itself)', () => {
+    it('routes a pane-modes message to that pane’s subscribers only', () => {
+        const h = harness();
+        const seen: unknown[] = [];
+        const other: unknown[] = [];
+        h.client.subscribe(PANE, { onData: () => {}, onModes: (modes) => seen.push(modes) });
+        h.client.subscribe(OTHER, { onData: () => {}, onModes: (modes) => other.push(modes) });
+
+        h.socket().emit({
+            type: 'pane-modes',
+            paneID: PANE,
+            modes: {
+                applicationCursorKeys: false,
+                bracketedPaste: false,
+                mouseTracking: 'drag',
+                mouseFormat: 'sgr'
+            }
+        });
+
+        expect(seen).toEqual([
+            {
+                applicationCursorKeys: false,
+                bracketedPaste: false,
+                mouseTracking: 'drag',
+                mouseFormat: 'sgr'
+            }
+        ]);
+        expect(other).toEqual([]);
+    });
+
+    it('replays the last modes to a subscriber that joins an attached pane', () => {
+        // A second viewer (or a re-mount between the attach and the next DECSET) must not start
+        // from "no mouse tracking", which would silently disable reporting for it.
+        const h = harness();
+        h.client.subscribe(PANE, { onData: () => {} });
+        h.socket().emit({
+            type: 'pane-modes',
+            paneID: PANE,
+            modes: {
+                applicationCursorKeys: false,
+                bracketedPaste: false,
+                mouseTracking: 'any',
+                mouseFormat: 'urxvt'
+            }
+        });
+
+        const late: unknown[] = [];
+        h.client.subscribe(PANE, { onData: () => {}, onModes: (modes) => late.push(modes) });
+        expect(late).toEqual([
+            {
+                applicationCursorKeys: false,
+                bracketedPaste: false,
+                mouseTracking: 'any',
+                mouseFormat: 'urxvt'
+            }
+        ]);
+    });
+
+    it('ignores modes for a pane nothing is subscribed to', () => {
+        const h = harness();
+        expect(() => {
+            h.socket().emit({ type: 'pane-modes', paneID: PANE, modes: {} });
+        }).not.toThrow();
+    });
+});

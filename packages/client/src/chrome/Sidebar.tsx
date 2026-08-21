@@ -30,6 +30,7 @@ import {
     memo,
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -71,6 +72,7 @@ import {
     workspaceCommit,
     type CollapseState,
     type DropTarget,
+    type RenderedRow,
     type SidebarOrderModel
 } from './sidebar-model';
 import {
@@ -118,6 +120,19 @@ export const AUTO_SCROLL_EDGE_PX = 40;
 export const AUTO_SCROLL_STEP_PX = 3;
 export const AUTO_SCROLL_INTERVAL_MS = 15;
 
+/**
+ * §WS-008: the sidebar's rendered entry list animates on insert and on reorder.
+ *
+ * `.spring(response: 0.35, dampingFraction: 0.8)` has no CSS equivalent, so it is approximated
+ * by a slightly overshooting curve over the response time. Two mechanisms share it: a new row
+ * plays `nex-sidebar-row-enter` once (styles.css), and a row that only CHANGED PLACE is moved
+ * by the FLIP pass below — measured before/after tops, the delta applied instantly and then
+ * transitioned away. Removals are deliberately not animated; see styles.css for why.
+ */
+export const ROW_ENTER_ANIMATION = 'nex-sidebar-row-enter';
+export const SPRING_EASING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
+export const REORDER_MS = 350;
+
 // ── small pieces ────────────────────────────────────────────────────────────────────
 
 /**
@@ -163,8 +178,19 @@ function StatusDot({ counts }: { readonly counts: AgentCounts }): ReactElement |
         <span
             data-testid="status-dot"
             data-status={counts.waiting > 0 ? 'waiting' : 'running'}
-            className="absolute -right-[3px] -top-[3px] h-[9px] w-[9px] rounded-full"
-            style={{ background: color, boxShadow: `0 0 0 1.5px ${tokens.sidebarBackground}` }}
+            // §AGNT-103 / §AGNT-104: the dot PULSES (the Swift's repeating halo). The animation
+            // lives in styles.css — it needs `@keyframes`, and it drops out under
+            // `prefers-reduced-motion`; the two custom properties are what it interpolates, so
+            // the halo is the status colour and the ring stays the sidebar's own background.
+            className="nex-agent-dot-pulse absolute -right-[3px] -top-[3px] h-[9px] w-[9px] rounded-full"
+            style={
+                {
+                    background: color,
+                    boxShadow: `0 0 0 1.5px ${tokens.sidebarBackground}`,
+                    '--nex-dot-ring': tokens.sidebarBackground,
+                    '--nex-dot-halo': withAlpha(color, 0.55)
+                } as CSSProperties
+            }
         />
     );
 }
@@ -302,6 +328,9 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
 interface WorkspaceRowProps {
     readonly workspace: ChromeWorkspace;
     readonly depth: 0 | 1;
+    /** The group this row is inside, or `null` at top level — §WS-007's guide needs it, and it
+     *  is what lets anything outside the component tell two groups' children apart. */
+    readonly groupID?: string | null | undefined;
     readonly active: boolean;
     readonly selected: boolean;
     /** Index in `visibleWorkspaceOrder`; -1 suppresses the badge (filtered list). */
@@ -321,6 +350,29 @@ interface WorkspaceRowProps {
     readonly nestPreview?: boolean | undefined;
     /** §WS-092: the row is playing its "falls into the collapsed group" landing. */
     readonly landing?: boolean | undefined;
+    /**
+     * §WS-007's guide line: the colour of the 1.5px rule that joins an expanded group's
+     * children, or absent for a top-level row. The three props are primitives rather than one
+     * object so this `memo`'d row is not re-rendered by a fresh literal every frame.
+     */
+    readonly guideColor?: string | undefined;
+    /** Bridge the 2px gap above / below so the rule reads as ONE line, not one dash per row. */
+    readonly guideExtendUp?: boolean | undefined;
+    readonly guideExtendDown?: boolean | undefined;
+    /**
+     * §WS-088: this row is the landing slot of a live drag, so a 2px accent rule marks the
+     * insertion point. (`nestPreview` covers the other half — the `ontoGroupHeader` case,
+     * whose indicator is the header band's own tint.)
+     */
+    readonly insertLine?: boolean | undefined;
+    /** §WS-008: the row is newly inserted, so it plays the entry animation once. */
+    readonly entering?: boolean | undefined;
+    /**
+     * §WS-008's FLIP first frame: how far the row has to be pushed back to where it WAS, in
+     * px. Present for exactly one commit; the next one drops it and the transition carries the
+     * row to its new place.
+     */
+    readonly flipDelta?: number | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -357,10 +409,13 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
         // §WS-089: the indent previews the container the row is being dropped INTO while the
         // cursor holds a group header, and animates so the nesting reads as a movement.
         marginLeft: nested ? 24 : 0,
-        transition:
-            landing
-                ? 'transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 380ms ease'
-                : 'margin-left 120ms ease',
+        transition: landing
+            ? 'transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 380ms ease'
+            : props.dragging === true
+              ? // The lift is instant: a 350 ms transform transition would make grabbing a row
+                // feel like it lagged the cursor.
+                'margin-left 120ms ease'
+              : `margin-left 120ms ease, transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
         // §5.5: a dragged row lifts to 80% opacity and scales up; the OTHER rows of a
         // multi-selection collapse to zero height so the grid closes over them.
         // §WS-092: a row landing in a collapsed group shrinks toward the header instead.
@@ -383,7 +438,18 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                   overflow: 'hidden',
                   pointerEvents: 'none' as const
               }
-            : {})
+            : {}),
+        // §WS-007's rule and §WS-088's insertion line are absolutely positioned inside the row.
+        position: 'relative',
+        // §WS-008's FLIP first frame: pushed back to where the row was, with the transition
+        // suppressed so the offset lands instantly and only the RETURN is animated.
+        ...(props.flipDelta !== undefined && !landing && props.dragging !== true
+            ? { transform: `translateY(${String(props.flipDelta)}px)`, transition: 'none' }
+            : {}),
+        // §WS-008: a row that has just appeared plays its entry once. The curve is the CSS
+        // approximation of `spring(response: 0.35, dampingFraction: 0.8)` — slightly
+        // overshooting, settling in ~350ms — since CSS has no spring primitive.
+        ...(props.entering === true ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` } : {})
     };
 
     return (
@@ -392,6 +458,12 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                 props.registerRow(`ws:${workspace.id}`, element);
             }}
             data-drag-hidden={hidden ? 'true' : undefined}
+            data-guide={props.guideColor === undefined ? undefined : 'true'}
+            data-insert-line={props.insertLine === true ? 'true' : undefined}
+            data-entering={props.entering === true ? 'true' : undefined}
+            /* §WS-053/§SET-186: multi-selection was legible only as a fill colour, so nothing
+               outside the component could assert it. */
+            data-selected={props.selected ? 'true' : 'false'}
             data-nest-preview={props.nestPreview === true ? 'true' : undefined}
             data-landing={landing ? 'true' : undefined}
             role="option"
@@ -399,6 +471,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             aria-selected={props.active}
             data-testid="workspace-row"
             data-workspace-id={workspace.id}
+            {...(props.groupID === undefined || props.groupID === null ? {} : { 'data-group-id': props.groupID })}
             data-depth={props.depth}
             data-active={props.active ? 'true' : 'false'}
             className="my-0.5 flex cursor-default items-center gap-2 rounded-[7px] px-2 py-1.5"
@@ -413,6 +486,51 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                 props.onContextMenu(workspace.id, event);
             }}
         >
+            {/*
+             * §WS-007: children of an expanded group are joined by a CONTINUOUS 1.5px rule at
+             * an 18px leading inset, tinted with the group's colour (or the theme divider when
+             * it has none). The rows are a flat list, so each child draws its own segment and
+             * bridges the 2px margin above and below it — which is what makes the run read as
+             * one line rather than one dash per row. `left: -6` is the 18px inset measured from
+             * the row's own left edge, which sits at the 24px nesting indent.
+             */}
+            {props.guideColor === undefined ? null : (
+                <span
+                    aria-hidden
+                    data-testid="group-guide"
+                    style={{
+                        position: 'absolute',
+                        left: -6,
+                        top: props.guideExtendUp === true ? -2 : 0,
+                        bottom: props.guideExtendDown === true ? -2 : 0,
+                        width: 1.5,
+                        borderRadius: 1,
+                        background: props.guideColor,
+                        pointerEvents: 'none'
+                    }}
+                />
+            )}
+            {/*
+             * §WS-088: the 2px accent rule at the landing slot. The shadow-commit model has
+             * already moved the row into the slot, so the line marks the boundary the row will
+             * be inserted at — the same information the Swift's preview-only indicator carries.
+             */}
+            {props.insertLine === true ? (
+                <span
+                    aria-hidden
+                    data-testid="drop-insert-line"
+                    style={{
+                        position: 'absolute',
+                        left: 0,
+                        right: 0,
+                        top: -3,
+                        height: 2,
+                        borderRadius: 1,
+                        background: tokens.accent,
+                        pointerEvents: 'none'
+                    }}
+                />
+            ) : null}
             <Avatar
                 name={workspace.name}
                 color={workspace.color}
@@ -506,12 +624,24 @@ interface GroupHeaderRowProps {
     readonly onCommitRename: (groupID: string, name: string) => void;
     readonly onCancelRename: () => void;
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
+    /** §WS-008: the FLIP first frame and the entry animation, as for a workspace row. */
+    readonly flipDelta?: number | undefined;
+    readonly entering?: boolean | undefined;
 }
 
 const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
     const { group } = props;
     const hex = group.color === null ? tokens.textTertiary : workspaceColorHex(group.color, props.bucket);
     const glyph = iconGlyph(group.icon);
+    // §WS-036: `null` = draw whatever glyph the icon names; otherwise the folder, outlined or
+    // filled. A group with no icon at all is a folder, and so is one that explicitly picked the
+    // `folder` symbol — both take the fill upgrade from the group's colour.
+    const folderIcon: 'outlined' | 'filled' | null =
+        group.icon === null || (group.icon.kind === 'system' && group.icon.name.startsWith('folder'))
+            ? group.color === null && group.icon?.name !== 'folder.fill'
+                ? 'outlined'
+                : 'filled'
+            : null;
     return (
         <div
             ref={(element) => {
@@ -521,6 +651,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
             data-group-id={group.id}
             data-collapsed={props.collapsed ? 'true' : 'false'}
             data-drop-preview={props.dropPreview ? 'true' : 'false'}
+            data-entering={props.entering === true ? 'true' : undefined}
             className="my-0.5 flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5"
             style={{
                 background: props.dropPreview
@@ -533,7 +664,15 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                       : tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
                 border: props.dropPreview
                     ? `1px solid ${tokens.accent}`
-                    : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`
+                    : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`,
+                // §WS-008: a header reorders (a whole group block moving) exactly like a row.
+                transition: `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
+                ...(props.flipDelta === undefined
+                    ? {}
+                    : { transform: `translateY(${String(props.flipDelta)}px)`, transition: 'none' }),
+                ...(props.entering === true
+                    ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` }
+                    : {})
             }}
             onMouseDown={(event) => {
                 props.onDragStart(group.id, event);
@@ -546,12 +685,19 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
             }}
         >
             <span className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[12px]">
-                {glyph === null ? (
-                    <span style={{ color: hex }}>
-                        <ChromeIcon name="folder" size={13} />
-                    </span>
-                ) : (
+                {/*
+                 * §WS-036: the folder is OUTLINED for a colourless group and FILLED once the
+                 * group has a colour — the Swift's `folder` → `folder.fill` switch, in the
+                 * only vocabulary this renderer has. A `system:folder` token chosen from the
+                 * Symbol palette takes the same upgrade instead of falling through to the
+                 * generic glyph table, so the two paths agree.
+                 */}
+                {folderIcon === null ? (
                     <span style={iconIsTintable(group.icon) ? { color: hex } : undefined}>{glyph}</span>
+                ) : (
+                    <span style={{ color: hex }}>
+                        <ChromeIcon name="folder" size={13} filled={folderIcon === 'filled'} />
+                    </span>
                 )}
                 <StatusDot counts={props.counts} />
             </span>
@@ -605,6 +751,19 @@ export interface SidebarProps extends SidebarCallbacks {
     readonly rowHeight?: number | undefined;
     readonly selectedWorkspaceIDs?: ReadonlySet<string> | undefined;
     readonly onSelectionChange?: ((ids: ReadonlySet<string>) => void) | undefined;
+    /**
+     * §SET-186 / §APP-109: Escape clears a workspace multi-selection *before* any keybinding
+     * lookup, so it beats the default `escape=close_search`.
+     *
+     * The handle is imperative rather than a `selectionCount` prop because the decision needs
+     * three facts the sidebar owns and assembly does not: whether a selection exists, whether
+     * one of the sidebar's own overlays (a context menu, a confirmation, the icon sheet, an
+     * inline rename, the create form) is up and should eat the key itself, and how to clear
+     * the selection. The sidebar publishes ONE predicate — "did I consume this Escape?" — and
+     * the dispatcher asks it. Assembly holds the ref; the sidebar fills it while mounted and
+     * nulls it on unmount, so a torn-down sidebar can never consume a key.
+     */
+    readonly escapeRef?: { current: (() => boolean) | null } | undefined;
     /** Shortcut hints on the menu rows that have one; absent = no hints. */
     readonly keyBindings?: KeyBindingMap | undefined;
     /**
@@ -614,6 +773,16 @@ export interface SidebarProps extends SidebarCallbacks {
      */
     readonly scrollToWorkspaceID?: string | null | undefined;
     readonly onScrollHandled?: (() => void) | undefined;
+    /**
+     * §SET-153 / §SET-144: "begin inline rename of this row", asked for from outside the
+     * sidebar — the `rename_workspace` keybinding on the active workspace, and `new_group`,
+     * which mints a group and drops straight into its name field. Shaped like
+     * `scrollToWorkspaceID`: assembly sets it, the sidebar consumes it once and clears it
+     * through `onRenameRequestHandled`, so a re-render cannot re-open a field the user just
+     * dismissed. An id with no row (a group another client deleted) is dropped, not retried.
+     */
+    readonly renameRequest?: { readonly kind: 'workspace' | 'group'; readonly id: string } | null | undefined;
+    readonly onRenameRequestHandled?: (() => void) | undefined;
     /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
     readonly springLoadMs?: number | undefined;
     readonly autoScrollIntervalMs?: number | undefined;
@@ -668,6 +837,20 @@ interface DragState {
     springTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/** The group ids in a sidebar entry list — §WS-095 asks "is this dragged id a group?". */
+function groupsInEntries(entries: readonly ChromeSidebarEntry[]): ReadonlySet<string> {
+    const ids = new Set<string>();
+    for (const entry of entries) if (entry.kind === 'group') ids.add(entry.group.id);
+    return ids;
+}
+
+/** A drop target as one short string, for the `data-drag-target` diagnostic (defect N4b). */
+function describeTarget(target: DropTarget): string {
+    if (target.kind === 'ontoGroupHeader') return `ontoGroupHeader:${target.groupID}`;
+    if (target.kind === 'intoGroup') return `intoGroup:${target.groupID}:${String(target.index)}`;
+    return `topLevel:${String(target.index)}`;
+}
+
 type MenuState =
     | { readonly kind: 'workspace'; readonly id: string; readonly x: number; readonly y: number }
     | { readonly kind: 'group'; readonly id: string; readonly x: number; readonly y: number }
@@ -711,6 +894,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
     } | null>(null);
     const [internalSelection, setInternalSelection] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
     const [dragID, setDragID] = useState<string | null>(null);
+    /**
+     * The gesture has passed the 5px threshold AND §WS-093's measure gate — i.e. it is a drag
+     * rather than a press. Rendered state (not just the mutable `DragState`) because §WS-088's
+     * insertion line must not appear on a press the user has not yet moved.
+     */
+    const [dragActive, setDragActive] = useState(false);
     /** The group a preview-only `ontoGroupHeader` target is tinting (§5.5). */
     const [previewGroupID, setPreviewGroupID] = useState<string | null>(null);
     /** §5.5 spring-loading: a collapsed group held open for the rest of THIS drag. */
@@ -729,10 +918,26 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const newFormColor = useMemo(() => nextCreateColor(props.entries), [newForm]);
 
     const selection = props.selectedWorkspaceIDs ?? internalSelection;
-    const collapse: CollapseState = useMemo(
-        () => ({ overrides: collapseOverrides, springLoadedGroupID }),
-        [collapseOverrides, springLoadedGroupID]
+    /**
+     * §WS-095: a group being dragged renders **as if collapsed**, so the block the user is
+     * moving is one row rather than a header trailed by its children. Its persisted
+     * `isCollapsed` is untouched — this is a render-time override that lives exactly as long
+     * as the gesture, the same shape as §5.5's spring-load in the other direction.
+     *
+     * Workspace and group ids are distinct UUIDs, so "is the dragged id a group?" is a lookup
+     * rather than another piece of drag state.
+     */
+    const draggingGroupID = useMemo(
+        () =>
+            dragActive && dragID !== null && groupsInEntries(props.entries).has(dragID) ? dragID : null,
+        [dragActive, dragID, props.entries]
     );
+    const collapse: CollapseState = useMemo(() => {
+        if (draggingGroupID === null) return { overrides: collapseOverrides, springLoadedGroupID };
+        const overrides = new Map(collapseOverrides);
+        overrides.set(draggingGroupID, true);
+        return { overrides, springLoadedGroupID };
+    }, [collapseOverrides, draggingGroupID, springLoadedGroupID]);
 
     const baseModel = useMemo(() => orderModelFromEntries(props.entries), [props.entries]);
     const effectiveEntries = useMemo(
@@ -803,14 +1008,69 @@ export function Sidebar(props: SidebarProps): ReactElement {
         [baseModel]
     );
 
+    /**
+     * §WS-007's guide colour: the group's own, or the theme's divider when the group has none.
+     * `undefined` for a top-level row, which draws no rule at all.
+     */
+    const guideColorFor = useCallback(
+        (groupID: string | null): string | undefined => {
+            if (groupID === null) return undefined;
+            const group = groups.find((candidate) => candidate.id === groupID);
+            if (group === undefined) return undefined;
+            return group.color === null
+                ? tokens.divider
+                : withAlpha(workspaceColorHex(group.color, bucket), 0.55);
+        },
+        [bucket, groups]
+    );
+
     // ── selection ───────────────────────────────────────────────────────────────
+    /**
+     * §WS-044 / §WS-046's `lastSelectionAnchor`, explicit rather than inferred.
+     *
+     * It used to be read off the selection `Set`'s insertion order, which is right for an ADD
+     * and wrong for a REMOVE: ⌘-clicking a row *off* left the anchor on whatever happened to
+     * remain last, so the next shift-click ranged from a row the user had not touched. The
+     * Swift keeps the field and the rule is simple — a toggle (either direction) moves the
+     * anchor to the row that was toggled, and clearing the selection clears it.
+     */
+    const anchorRef = useRef<string | null>(null);
+
     const setSelection = useCallback(
-        (ids: ReadonlySet<string>): void => {
+        (ids: ReadonlySet<string>, anchor?: string | null): void => {
             setInternalSelection(ids);
+            if (anchor !== undefined) anchorRef.current = anchor;
+            if (ids.size === 0) anchorRef.current = null;
             props.onSelectionChange?.(ids);
         },
         [props]
     );
+
+    /**
+     * §SET-186 / §APP-109's predicate, published to assembly's key dispatcher.
+     *
+     * Precedence, in the order the checks run: an open overlay owns the key (a macOS menu eats
+     * Escape and the selection behind it survives — and the ContextMenu's own handler is what
+     * closes it); with nothing open and nothing selected the sidebar declines, so Escape falls
+     * through to whatever the user's map binds it to (`close_search` by default); only a real
+     * selection with no overlay above it is consumed.
+     */
+    const escapeRefProp = props.escapeRef;
+    const overlayOpen =
+        menu !== null || rename !== null || confirm !== null || newForm !== null || emojiSheet !== null;
+    const selectionSize = selection.size;
+    useEffect(() => {
+        if (escapeRefProp === undefined) return;
+        escapeRefProp.current = (): boolean => {
+            if (overlayOpen) return false;
+            if (selectionSize === 0) return false;
+            setSelection(EMPTY_SELECTION);
+            return true;
+        };
+        return () => {
+            escapeRefProp.current = null;
+        };
+    }, [escapeRefProp, overlayOpen, selectionSize, setSelection]);
 
     // ── activation ──────────────────────────────────────────────────────────────
     const onActivate = useCallback(
@@ -824,16 +1084,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 const next = new Set(selection);
                 if (next.has(workspaceID)) next.delete(workspaceID);
                 else next.add(workspaceID);
-                setSelection(next);
+                // §WS-046: a toggle in EITHER direction moves the anchor to the row toggled.
+                setSelection(next, workspaceID);
                 return;
             }
-            if (event.shiftKey && selection.size > 0) {
-                const anchor = [...selection][selection.size - 1] ?? workspaceID;
+            if (event.shiftKey) {
+                // §WS-044's fallback chain: last anchor → first selected → active workspace →
+                // the clicked row. The last term makes a shift-click with nothing selected
+                // select just that row rather than silently behaving like a plain click.
+                const anchor =
+                    anchorRef.current ?? [...selection][0] ?? props.activeWorkspaceID ?? workspaceID;
                 const from = visibleOrder.indexOf(anchor);
                 const to = visibleOrder.indexOf(workspaceID);
                 if (from >= 0 && to >= 0) {
                     const [lo, hi] = from <= to ? [from, to] : [to, from];
-                    setSelection(new Set(visibleOrder.slice(lo, hi + 1)));
+                    // The anchor is NOT moved by a range extension — that is what makes
+                    // shift-clicking twice re-range from the same origin instead of walking.
+                    setSelection(new Set(visibleOrder.slice(lo, hi + 1)), anchor);
                     return;
                 }
             }
@@ -872,6 +1139,28 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (height > 0) heights.set(key, height);
         }
         return heights;
+    }, []);
+
+    /**
+     * Where each row actually STARTS, in the same content space `contentY` resolves a cursor
+     * into. Defect N4b: the drag model used to walk the list adding border-box heights, which
+     * silently dropped every row's `my-0.5` margin — a 2px error per row that accumulates, so
+     * a crowded sidebar resolved the cursor against bands ~10px above the rows the user can
+     * see and a drop three quarters of the way down a group header hit no band at all. The
+     * measurement is one pass over the already-registered row elements, taken per resolve so
+     * it survives a mid-drag reflow.
+     */
+    const measuredOffsets = useCallback((): ReadonlyMap<string, number> => {
+        const list = listRef.current;
+        if (list === null) return new Map<string, number>();
+        const origin = list.getBoundingClientRect().top - list.scrollTop;
+        const offsets = new Map<string, number>();
+        for (const [key, element] of rowElements.current) {
+            const rect = element.getBoundingClientRect();
+            if (rect.height <= 0) continue;
+            offsets.set(key, rect.top - origin);
+        }
+        return offsets;
     }, []);
 
     /**
@@ -980,24 +1269,47 @@ export function Sidebar(props: SidebarProps): ReactElement {
             }, springLoadMs);
         };
 
+        /**
+         * Publish what the drag loop just decided onto the scroller as `data-drag-*`.
+         *
+         * A drag that resolves to nothing looks exactly like a drag that never started — that
+         * ambiguity is what kept defect N4b open through a whole burn-down, with the harness
+         * able to say only "the header did not tint". These three attributes separate the two
+         * cases without a debugger: `data-drag-active` says the gesture passed the 5px
+         * threshold and §WS-093's measure gate, `data-drag-y` is the content-space cursor the
+         * zones were walked with, and `data-drag-target` is the zone it landed in (`none` when
+         * the walk found no band at all).
+         */
+        const diagnose = (drag: DragState, target: string | null): void => {
+            const list = listRef.current;
+            if (list === null) return;
+            list.dataset['dragActive'] = drag.active ? 'true' : 'false';
+            list.dataset['dragY'] = String(Math.round(contentY(drag.clientY)));
+            list.dataset['dragTarget'] = target ?? 'none';
+        };
+
         /** Resolve the cursor against the current geometry and apply/preview the result. */
         const resolve = (drag: DragState): void => {
             const current = shadowRef.current ?? drag.originModel;
             const y = contentY(drag.clientY);
             const heights = measuredHeights();
+            const offsets = measuredOffsets();
             if (drag.kind === 'group') {
                 const spans = buildGroupSpans(current, rowsRef.current, {
                     heights,
+                    offsets,
                     rowHeight,
                     contentTop: CONTENT_TOP_PADDING
                 });
                 const index = resolveGroupDropIndex(spans, y, drag.id);
+                diagnose(drag, index === null ? null : `group:${String(index)}`);
                 if (index === null) return;
                 setShadow(applyGroupDrop(current, drag.id, index));
                 return;
             }
             const layout = buildDropZones(current, rowsRef.current, {
                 heights,
+                offsets,
                 rowHeight,
                 contentTop: CONTENT_TOP_PADDING,
                 // Every dragged row is omitted as a target and excluded from the post-remove
@@ -1005,6 +1317,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 dragging: new Set(drag.ids)
             });
             const target = resolveDropTarget(layout, y);
+            diagnose(drag, target === null ? null : describeTarget(target));
             updateSpring(drag, target);
             if (target === null) return;
             if (target.kind === 'ontoGroupHeader') {
@@ -1080,6 +1393,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 // measurement lands rather than needing a fresh press.
                 if (!geometryReady()) return;
                 drag.active = true;
+                setDragActive(true);
             }
             syncAutoScroll(drag);
             resolve(drag);
@@ -1089,9 +1403,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const drag = dragRef.current;
             dragRef.current = null;
             stopAutoScroll();
+            const list = listRef.current;
+            if (list !== null) list.dataset['dragActive'] = 'false';
             if (drag !== null) cancelSpring(drag);
             const springLoaded = springLoadedRef.current;
             setDragID(null);
+            setDragActive(false);
             setPreviewGroupID(null);
             // §5.5: the spring-loaded group stays open through the drop, then collapses.
             setSpringLoadedGroupID(null);
@@ -1184,6 +1501,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         geometryReady,
         landingMs,
         measuredHeights,
+        measuredOffsets,
         props,
         rowHeight,
         springLoadMs
@@ -1193,6 +1511,80 @@ export function Sidebar(props: SidebarProps): ReactElement {
     useEffect(
         () => () => {
             if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current);
+        },
+        []
+    );
+
+    // ── §WS-008: insert and reorder animations ──────────────────────────────────
+    //
+    // Keyed on the RENDERED entry list, as the Swift's `.animation(...,​ value:)` is: a row
+    // that appears plays the entry keyframes once, and a row that merely changed place is
+    // FLIPped — measured before and after, offset back to where it was, then transitioned to
+    // where it now is. Both are skipped mid-drag, because the drag owns `transform` (the lift,
+    // the landing) and owns the row order it is live-applying.
+    //
+    // The baseline is `offsetTop`, not `getBoundingClientRect().top`: a FLIP applies a
+    // `translateY` that DOES move the client rect, so measuring the next commit against a rect
+    // would read the animation's own offset back as a layout change and re-FLIP forever.
+    // `offsetTop` is transform-free by definition. jsdom reports 0 for all of them, which is
+    // exactly the right degradation — no layout, no movement to animate.
+    const previousLayoutRef = useRef<{ keys: ReadonlySet<string>; tops: ReadonlyMap<string, number> } | null>(null);
+    const [flip, setFlip] = useState<ReadonlyMap<string, number>>(EMPTY_FLIP);
+    const [entering, setEntering] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
+    const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useLayoutEffect(() => {
+        const tops = new Map<string, number>();
+        for (const row of rows) {
+            const element = rowElements.current.get(row.key);
+            if (element !== undefined) tops.set(row.key, element.offsetTop);
+        }
+        const previous = previousLayoutRef.current;
+        previousLayoutRef.current = { keys: new Set(rows.map((row) => row.key)), tops };
+
+        // First commit: everything is "new", and a sidebar that animates its whole contents in
+        // on mount is a worse sidebar than one that is simply there.
+        if (previous === null) return;
+        if (dragRef.current !== null || landingTimerRef.current !== null) return;
+
+        const fresh = rows.map((row) => row.key).filter((key) => !previous.keys.has(key));
+        if (fresh.length > 0) {
+            setEntering(new Set(fresh));
+            if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
+            enterTimerRef.current = setTimeout(() => {
+                enterTimerRef.current = null;
+                setEntering(EMPTY_SELECTION);
+            }, REORDER_MS + 60);
+        }
+
+        const moved = new Map<string, number>();
+        for (const row of rows) {
+            const before = previous.tops.get(row.key);
+            const after = tops.get(row.key);
+            if (before === undefined || after === undefined) continue;
+            const delta = before - after;
+            if (Math.abs(delta) < 1) continue;
+            moved.set(row.key, delta);
+        }
+        if (moved.size > 0) setFlip(moved);
+    }, [rows]);
+
+    // Second half of the FLIP: the offset is in the DOM, so release it on the next frame and
+    // let the transition carry the row home. Owned by React (rather than written straight onto
+    // the node) so an unrelated re-render mid-animation cannot overwrite the transition.
+    useLayoutEffect(() => {
+        if (flip.size === 0) return;
+        const frame = requestAnimationFrame(() => {
+            setFlip(EMPTY_FLIP);
+        });
+        return () => {
+            cancelAnimationFrame(frame);
+        };
+    }, [flip]);
+
+    useEffect(
+        () => () => {
+            if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
         },
         []
     );
@@ -1223,6 +1615,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
         element.scrollIntoView?.({ block: 'nearest' });
         onScrollHandled?.();
     }, [baseModel, scrollTarget, onScrollHandled, rows]);
+
+    /**
+     * §SET-153 / §SET-144's one-shot "start renaming this row", same shape as the scroll target
+     * above: consumed once, then cleared through `onRenameRequestHandled`. A target that does
+     * not exist here is dropped (cleared without opening a field) rather than retried.
+     */
+    const renameRequest = props.renameRequest ?? null;
+    const onRenameRequestHandled = props.onRenameRequestHandled;
+    useEffect(() => {
+        if (renameRequest === null) return;
+        const exists =
+            renameRequest.kind === 'workspace'
+                ? locateWorkspace(baseModel, renameRequest.id) !== null
+                : groups.some((group) => group.id === renameRequest.id);
+        if (exists) setRename({ kind: renameRequest.kind, id: renameRequest.id });
+        onRenameRequestHandled?.();
+    }, [baseModel, groups, renameRequest, onRenameRequestHandled]);
 
     // ── menus ───────────────────────────────────────────────────────────────────
     const closeMenu = useCallback((): void => {
@@ -1279,7 +1688,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 },
                 {
                     id: 'icon:reset',
-                    label: 'Reset to Letter',
+                    // §WS-066: a workspace resets to its LETTER avatar; a group has no letter
+                    // — its default is the folder glyph, so the item has to say so.
+                    label: kind === 'group' ? 'Reset to Folder' : 'Reset to Letter',
                     disabled: current === null,
                     onSelect: () => apply(null)
                 }
@@ -1470,6 +1881,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (workspace === undefined) return [];
             const currentGroup = groupIDForWorkspace(workspaceID);
             const applied = new Set(workspace.labels);
+            // §WS-049's list, assembled at right-click time: the built-in `default` baseline
+            // first, then whatever the config defines now, then — only if it is not already
+            // there — the name this workspace is assigned to. That last clause is the whole
+            // point of appending: a profile deleted from the config would otherwise take the
+            // workspace's tick with it and the menu would look unassigned.
+            const assignedProfile = workspace.profileName ?? null;
+            const profileNames = [
+                DEFAULT_PROFILE_NAME,
+                ...(props.profiles ?? []).filter((name) => name !== DEFAULT_PROFILE_NAME)
+            ];
+            if (assignedProfile !== null && assignedProfile.trim() !== '' && !profileNames.includes(assignedProfile)) {
+                profileNames.push(assignedProfile);
+            }
             const presetItems: MenuItemSpec[] = presets.map((preset) => ({
                 id: `label:${preset.name}`,
                 label: preset.name,
@@ -1541,6 +1965,35 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               ])
                     ]
                 },
+                // §WS-049: built at right-click time from whatever the config holds NOW — the
+                // profiles prop is re-read per snapshot, so there is no watcher to go stale.
+                // `default` leads (it is the daemon's built-in baseline, not a config entry),
+                // and a profile the workspace is assigned to but the config no longer defines
+                // is appended so the tick never disappears off the end of the list.
+                ...(props.onSetWorkspaceProfile === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'profile',
+                              label: 'Profile',
+                              submenu: profileNames.map(
+                                  (name): MenuItemSpec => ({
+                                      id: `profile:${name}`,
+                                      label: name,
+                                      checked: (assignedProfile ?? DEFAULT_PROFILE_NAME) === name,
+                                      onSelect: () => {
+                                          // The daemon normalizes "default" to "no assignment",
+                                          // so the menu sends `null` for the baseline rather
+                                          // than storing the word.
+                                          props.onSetWorkspaceProfile?.(
+                                              workspaceID,
+                                              name === DEFAULT_PROFILE_NAME ? null : name
+                                          );
+                                      }
+                                  })
+                              )
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'move',
                     label: 'Move to Group',
@@ -1665,6 +2118,38 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Change Icon',
                     submenu: iconSubmenu('group', groupID, group.icon)
                 },
+                // §WS-065: a group's colour is OPTIONAL, unlike a workspace's, so this list
+                // leads with "None" and the ten palette colours follow. Without it the colour
+                // could only ever be chosen at `group create --color` time.
+                ...(props.onSetGroupColor === undefined
+                    ? []
+                    : [
+                          {
+                              id: 'color',
+                              label: 'Color',
+                              submenu: [
+                                  {
+                                      id: 'color:none',
+                                      label: 'None',
+                                      checked: group.color === null,
+                                      onSelect: () => {
+                                          props.onSetGroupColor?.(groupID, null);
+                                      }
+                                  } satisfies MenuItemSpec,
+                                  ...WORKSPACE_COLORS.map(
+                                      (color): MenuItemSpec => ({
+                                          id: `color:${color}`,
+                                          label: color,
+                                          checked: group.color === color,
+                                          swatch: workspaceColorHex(color, bucket),
+                                          onSelect: () => {
+                                              props.onSetGroupColor?.(groupID, color);
+                                          }
+                                      })
+                                  )
+                              ]
+                          } satisfies MenuItemSpec
+                      ]),
                 {
                     id: 'collapse',
                     label: collapsed ? 'Expand' : 'Collapse',
@@ -1683,7 +2168,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [collapseOverrides, groups, iconSubmenu, shortcut, toggleCollapse]
+        [bucket, collapseOverrides, groups, iconSubmenu, props, shortcut, toggleCollapse]
     );
 
     const backgroundMenuItems = useCallback(
@@ -1824,6 +2309,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                     setSelection(next);
                                     return;
                                 }
+                                // §WS-018: find-then-go. A plain click on a filtered row clears
+                                // the selection as well — the same rule the main list's
+                                // `onActivate` follows, and the reason the filter is a way to
+                                // REACH a workspace rather than a view to work inside.
+                                if (selection.size > 0) setSelection(EMPTY_SELECTION);
                                 props.onActivateWorkspace?.(id);
                                 props.onFilterChange('');
                             }}
@@ -1838,7 +2328,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             </div>
         ) : (
             <div data-testid="sidebar-list">
-                {rows.map((row) => {
+                {rows.map((row, index) => {
                     if (row.kind === 'group-header') {
                         const entry = effectiveEntries.find(
                             (candidate) => candidate.kind === 'group' && candidate.group.id === row.groupID
@@ -1859,6 +2349,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onCommitRename={commitGroupRename}
                                 onCancelRename={cancelRename}
                                 registerRow={registerRow}
+                                flipDelta={flip.get(row.key)}
+                                entering={entering.has(row.key)}
                             />
                         );
                     }
@@ -1882,11 +2374,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     }
                     const workspace = workspaceByID.get(row.workspaceID);
                     if (workspace === undefined) return null;
+                    // §WS-007: the guide is drawn per row, so each child has to know whether it
+                    // has a sibling above and below to bridge to.
+                    const above = rows[index - 1];
+                    const below = rows[index + 1];
+                    const sibling = (candidate: RenderedRow | undefined): boolean =>
+                        candidate !== undefined && candidate.kind === 'workspace' && candidate.groupID === row.groupID;
                     return (
                         <WorkspaceRow
                             key={row.key}
                             workspace={workspace}
                             depth={row.depth}
+                            groupID={row.groupID}
                             active={workspace.id === props.activeWorkspaceID}
                             selected={selection.has(workspace.id)}
                             badgeIndex={visibleOrder.indexOf(workspace.id)}
@@ -1901,6 +2400,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             nestPreview={dragID === workspace.id && previewGroupID !== null}
                             landing={landing?.workspaceID === workspace.id}
                             groupCaption={null}
+                            // §WS-007: the guide rule, tinted with the group's own colour (or
+                            // the theme divider when it has none), bridging the gaps to its
+                            // siblings so the run of children reads as ONE line.
+                            guideColor={guideColorFor(row.groupID)}
+                            guideExtendUp={sibling(above)}
+                            guideExtendDown={sibling(below)}
+                            // §WS-088: the 2px accent rule at the landing slot — shown for the
+                            // SLOT targets (`topLevel` / `intoGroup`); a group-header target is
+                            // marked by the header band's own tint instead.
+                            insertLine={dragID === workspace.id && dragActive && previewGroupID === null}
+                            flipDelta={flip.get(row.key)}
+                            entering={entering.has(row.key)}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
                             onDragStart={dragStartWorkspace}
@@ -1942,7 +2453,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         onKeyDown={(event) => {
                             if (event.key === 'Enter') {
                                 const first = filtered[0];
+                                // §WS-011: activate, clear the SELECTION, clear the field,
+                                // yield focus — in that order. A selection made while filtering
+                                // must not survive the jump, or the next bulk gesture acts on
+                                // rows the user can no longer see.
                                 if (first !== undefined) props.onActivateWorkspace?.(first.workspace.id);
+                                if (selection.size > 0) setSelection(EMPTY_SELECTION);
                                 props.onFilterChange('');
                                 event.currentTarget.blur();
                                 return;
@@ -2931,4 +3447,5 @@ const EMPTY_GROUPS: readonly ChromeGroup[] = [];
 const EMPTY_PROFILES: readonly string[] = [];
 const EMPTY_REPO_IDS: readonly string[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
+const EMPTY_FLIP: ReadonlyMap<string, number> = new Map<string, number>();
 const EMPTY_OVERRIDES: ReadonlyMap<string, boolean> = new Map<string, boolean>();

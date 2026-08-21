@@ -77,6 +77,13 @@ export interface PaneActions {
     /** Diff pane refresh token bump (M5 owns the body; the button lives here). */
     readonly onRefreshDiff?: ((paneID: string) => void) | undefined;
     /**
+     * §TERM-103: the markdown pane's "Copy as Markdown / Copy as Rich Text" menu, opened from
+     * the HEADER (where the Swift puts it) rather than only from the in-frame chip. The menu
+     * itself belongs to the content frame — it needs the iframe conversation rich text takes —
+     * so this is a request to open it, not the copy itself.
+     */
+    readonly onCopyDocument?: ((paneID: string) => void) | undefined;
+    /**
      * §3.16 preview font size. Markdown panes in VIEW mode only — the built-in editor is a
      * fixed 13 px and diff panes have no bindings to change theirs.
      */

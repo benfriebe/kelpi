@@ -70,6 +70,13 @@ function noopProps() {
     return { activeWorkspaceID: W1, filter: '', onFilterChange: vi.fn(), rowHeight: 20 };
 }
 
+/** Menu row labels with the `✓` tick stripped — the tick is read off `data-checked`. */
+function menuLabels(scope: HTMLElement): string[] {
+    return [...scope.querySelectorAll('[data-menu-item]')].map((el) =>
+        (el.textContent ?? '').trim().replace(/^[✓✔–]\s*/, '')
+    );
+}
+
 function rowIDs(): string[] {
     return screen
         .getAllByTestId('workspace-row')
@@ -255,6 +262,90 @@ describe('context menus (portal-based)', () => {
         expect(onRenameGroup).toHaveBeenCalledWith(G1, 'platform');
     });
 
+    // ── §WS-049: the row menu's "Profile ▸" ─────────────────────────────────────────
+
+    it('builds the Profile submenu at right-click time, `default` first (§WS-049)', () => {
+        const onSetWorkspaceProfile = vi.fn();
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={entries()}
+                profiles={['work', 'personal']}
+                onSetWorkspaceProfile={onSetWorkspaceProfile}
+            />
+        );
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Profile'));
+        const submenu = screen.getByTestId('context-submenu');
+        expect(menuLabels(submenu)).toEqual(['default', 'work', 'personal']);
+        // Unassigned = the built-in baseline, so `default` carries the tick.
+        expect(submenu.querySelector('[data-menu-item="profile:default"]')?.getAttribute('data-checked')).toBe(
+            'true'
+        );
+
+        fireEvent.click(within(submenu).getByText('work'));
+        expect(onSetWorkspaceProfile).toHaveBeenCalledWith(W1, 'work');
+    });
+
+    it('keeps an assigned-but-missing profile in the list so the tick never vanishes (§WS-049)', () => {
+        const onSetWorkspaceProfile = vi.fn();
+        const withGhost = entries();
+        withGhost[0] = {
+            kind: 'workspace',
+            workspace: workspace(W1, 'alpha', { profileName: 'ghost' })
+        };
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={withGhost}
+                profiles={['work']}
+                onSetWorkspaceProfile={onSetWorkspaceProfile}
+            />
+        );
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Profile'));
+        const submenu = screen.getByTestId('context-submenu');
+        expect(menuLabels(submenu)).toEqual(['default', 'work', 'ghost']);
+        expect(submenu.querySelector('[data-menu-item="profile:ghost"]')?.getAttribute('data-checked')).toBe('true');
+
+        // Choosing `default` CLEARS the assignment rather than storing the word.
+        fireEvent.click(within(submenu).getByText('default'));
+        expect(onSetWorkspaceProfile).toHaveBeenCalledWith(W1, null);
+    });
+
+    it('hides Profile entirely when assembly wired no handler', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} profiles={['work']} />);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(screen.queryByText('Profile')).toBeNull();
+    });
+
+    // ── §WS-065: the group menu's "Color ▸" ─────────────────────────────────────────
+
+    it('offers None plus the ten colours on a group, unlike a workspace (§WS-065)', () => {
+        const onSetGroupColor = vi.fn();
+        render(<Sidebar {...noopProps()} entries={entries()} onSetGroupColor={onSetGroupColor} />);
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.mouseEnter(screen.getByText('Color'));
+        const submenu = screen.getByTestId('context-submenu');
+        const labels = menuLabels(submenu);
+        expect(labels[0]).toBe('None');
+        expect(labels).toHaveLength(11);
+        // squad is green in the fixture, so that is the row that ticks.
+        expect(submenu.querySelector('[data-menu-item="color:green"]')?.getAttribute('data-checked')).toBe('true');
+
+        fireEvent.click(within(submenu).getByText('purple'));
+        expect(onSetGroupColor).toHaveBeenCalledWith(G1, 'purple');
+    });
+
+    it('clears a group colour through None (§WS-065)', () => {
+        const onSetGroupColor = vi.fn();
+        render(<Sidebar {...noopProps()} entries={entries()} onSetGroupColor={onSetGroupColor} />);
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.mouseEnter(screen.getByText('Color'));
+        fireEvent.click(within(screen.getByTestId('context-submenu')).getByText('None'));
+        expect(onSetGroupColor).toHaveBeenCalledWith(G1, null);
+    });
+
     it('offers New Workspace / New Group on the background', () => {
         const onCreateGroup = vi.fn();
         render(<Sidebar {...noopProps()} entries={entries()} onCreateGroup={onCreateGroup} />);
@@ -416,5 +507,138 @@ describe('selection', () => {
 
         fireEvent.click(screen.getByText('Clear'));
         expect(screen.queryByTestId('selection-header')).toBeNull();
+    });
+});
+
+// ── the sidebar sweep: selection edges and the group glyph ───────────────────────────
+
+describe('selection edges', () => {
+    function selectedIDs(): string[] {
+        return screen
+            .getAllByTestId('workspace-row')
+            .filter((row) => row.dataset['selected'] === 'true')
+            .map((row) => row.dataset['workspaceId'] ?? '');
+    }
+
+    it('ranges from an explicit anchor that a toggle-OFF moves too (§WS-044/§WS-046)', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const rows = (): HTMLElement[] => screen.getAllByTestId('workspace-row');
+
+        // Anchor at alpha, then range to gamma: the whole visible run.
+        fireEvent.click(rows()[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(rows()[3] as HTMLElement, { shiftKey: true });
+        expect(selectedIDs()).toEqual([W1, W4, W2, W3]);
+
+        // A range extension does NOT move the anchor, so shrinking the range re-ranges from
+        // alpha rather than walking away from it.
+        fireEvent.click(rows()[1] as HTMLElement, { shiftKey: true });
+        expect(selectedIDs()).toEqual([W1, W4]);
+
+        // Toggling delta OFF moves the anchor onto delta — the rule the insertion-order
+        // inference got wrong, because it left the anchor on whatever remained last.
+        fireEvent.click(rows()[1] as HTMLElement, { metaKey: true });
+        expect(selectedIDs()).toEqual([W1]);
+        fireEvent.click(rows()[3] as HTMLElement, { shiftKey: true });
+        expect(selectedIDs()).toEqual([W4, W2, W3]);
+    });
+
+    it('shift-clicking with nothing selected falls back to the active workspace (§WS-044)', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        // `activeWorkspaceID` is alpha, so the range runs alpha → beta.
+        fireEvent.click(screen.getAllByTestId('workspace-row')[2] as HTMLElement, { shiftKey: true });
+        expect(selectedIDs()).toEqual([W1, W4, W2]);
+    });
+
+    it('clears the selection when the filter field is submitted (§WS-011)', () => {
+        const onActivateWorkspace = vi.fn();
+        const onFilterChange = vi.fn();
+        const view = render(
+            <Sidebar
+                {...noopProps()}
+                onFilterChange={onFilterChange}
+                entries={entries()}
+                onActivateWorkspace={onActivateWorkspace}
+            />
+        );
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+        expect(selectedIDs()).toEqual([W1, W4]);
+
+        view.rerender(
+            <Sidebar
+                {...noopProps()}
+                filter="gam"
+                onFilterChange={onFilterChange}
+                entries={entries()}
+                onActivateWorkspace={onActivateWorkspace}
+            />
+        );
+        fireEvent.keyDown(screen.getByLabelText('Filter workspaces or labels'), { key: 'Enter' });
+        expect(onActivateWorkspace).toHaveBeenCalledWith(W3);
+        expect(onFilterChange).toHaveBeenLastCalledWith('');
+
+        view.rerender(<Sidebar {...noopProps()} onFilterChange={onFilterChange} entries={entries()} />);
+        expect(selectedIDs()).toEqual([]);
+    });
+
+    it('clears the selection when a filtered row is plain-clicked (§WS-018)', () => {
+        const onFilterChange = vi.fn();
+        const onActivateWorkspace = vi.fn();
+        const view = render(
+            <Sidebar
+                {...noopProps()}
+                onFilterChange={onFilterChange}
+                entries={entries()}
+                onActivateWorkspace={onActivateWorkspace}
+            />
+        );
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+
+        view.rerender(
+            <Sidebar
+                {...noopProps()}
+                filter="gam"
+                onFilterChange={onFilterChange}
+                entries={entries()}
+                onActivateWorkspace={onActivateWorkspace}
+            />
+        );
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(onActivateWorkspace).toHaveBeenCalledWith(W3);
+        expect(onFilterChange).toHaveBeenLastCalledWith('');
+
+        view.rerender(<Sidebar {...noopProps()} onFilterChange={onFilterChange} entries={entries()} />);
+        expect(selectedIDs()).toEqual([]);
+    });
+});
+
+describe('group glyph and menus', () => {
+    it('fills the folder once a group has a colour, and outlines it when it has none (§WS-036)', () => {
+        const view = render(<Sidebar {...noopProps()} entries={entries()} />);
+        const folder = (): HTMLElement | null =>
+            screen.getByTestId('group-header').querySelector('[data-icon="folder"]');
+        expect(folder()?.getAttribute('data-filled')).toBe('true');
+
+        const colourless = entries();
+        colourless[2] = {
+            kind: 'group',
+            group: { id: G1, name: 'squad', color: null, icon: null, isCollapsed: false },
+            workspaces: [workspace(W2, 'beta'), workspace(W3, 'gamma')]
+        };
+        view.rerender(<Sidebar {...noopProps()} entries={colourless} />);
+        expect(folder()?.getAttribute('data-filled')).toBeNull();
+    });
+
+    it('says "Reset to Folder" on a group and "Reset to Letter" on a workspace (§WS-066)', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onSetGroupIcon={vi.fn()} />);
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        fireEvent.mouseEnter(screen.getByText('Change Icon'));
+        expect(within(screen.getByTestId('context-submenu')).getByText('Reset to Folder')).toBeTruthy();
+
+        fireEvent.mouseDown(document.body);
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Change Icon'));
+        expect(within(screen.getByTestId('context-submenu')).getByText('Reset to Letter')).toBeTruthy();
     });
 });

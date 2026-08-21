@@ -20,6 +20,11 @@ const W1 = 'aaaaaaaa-0000-4000-8000-000000000001'; // alpha (top level)
 const W2 = 'aaaaaaaa-0000-4000-8000-000000000002'; // beta  (in squad)
 const W3 = 'aaaaaaaa-0000-4000-8000-000000000003'; // gamma (in squad)
 const W4 = 'aaaaaaaa-0000-4000-8000-000000000004'; // delta (top level)
+// Four more top-level rows, used only by the N4b geometry test's seven-row list.
+const W5 = 'aaaaaaaa-0000-4000-8000-000000000005';
+const W6 = 'aaaaaaaa-0000-4000-8000-000000000006';
+const W7 = 'aaaaaaaa-0000-4000-8000-000000000007';
+const W8 = 'aaaaaaaa-0000-4000-8000-000000000008';
 const G1 = 'cccccccc-0000-4000-8000-000000000001';
 
 function pane(id: string): ChromePane {
@@ -532,6 +537,85 @@ describe('drag polish', () => {
         fireEvent.mouseUp(window);
         expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
     });
+
+    /**
+     * Defect N4b, in a box model that has margins — the thing jsdom's all-zero rects hid.
+     *
+     * Sidebar rows carry a 2px `my-0.5` margin that `getBoundingClientRect().height` does not
+     * report, so walking the list by `y += height` puts every row a little higher than it
+     * really is and the error compounds. This stubs a REAL layout (40px rows, a 2px gap, a
+     * seven-row list) and drops three quarters of the way down the last row's group header —
+     * the exact gesture `run-I` step 80 drives. Under the old accumulate-heights model that
+     * point lands past the end of the computed content and resolves to "append at top level";
+     * with measured offsets it resolves to the header the cursor is actually over.
+     */
+    it('resolves a drop against where rows ARE, not where accumulated heights say (N4b)', () => {
+        const ids = [W1, W4, W5, W6, W7, W8];
+        const tall: ChromeSidebarEntry[] = [
+            ...ids.map((id) => ({ kind: 'workspace' as const, workspace: workspace(id, `ws-${id.slice(-1)}`) })),
+            {
+                kind: 'group' as const,
+                group: { id: G1, name: 'squad', color: 'green' as const, icon: null, isCollapsed: true },
+                workspaces: [workspace(W2, 'beta')]
+            }
+        ];
+        // tops: 4, 46, 88, 130, 172, 214, header 256 — a 2px gap between 40px rows.
+        const tops = new Map(ids.map((id, index) => [id, 4 + index * 42]));
+        const headerTop = 4 + ids.length * 42;
+
+        const original = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function stub(this: HTMLElement): DOMRect {
+            const box = (top: number, height: number): DOMRect =>
+                ({
+                    x: 0,
+                    y: top,
+                    top,
+                    left: 0,
+                    right: 200,
+                    bottom: top + height,
+                    width: 200,
+                    height,
+                    toJSON: () => ({})
+                }) as unknown as DOMRect;
+            if (this.getAttribute('role') === 'listbox') return box(0, 600);
+            if (this.dataset['testid'] === 'group-header') return box(headerTop, 40);
+            const id = this.dataset['workspaceId'];
+            if (this.dataset['testid'] === 'workspace-row' && id !== undefined) return box(tops.get(id) ?? 0, 40);
+            return box(0, 0);
+        };
+        try {
+            const onMoveWorkspace = vi.fn();
+            render(
+                <Sidebar
+                    {...baseProps()}
+                    entries={tall}
+                    rowHeight={40}
+                    springLoadMs={100_000}
+                    landingMs={0}
+                    onMoveWorkspace={onMoveWorkspace}
+                />
+            );
+
+            fireEvent.mouseDown(rowFor(W1), { clientY: 24 });
+            fireEvent.mouseMove(window, { clientY: headerTop + 30 });
+
+            // The diagnostic says what the drag loop decided, so a future regression names
+            // itself instead of showing up as "the header did not tint".
+            const list = screen.getByRole('listbox');
+            expect(list.dataset['dragActive']).toBe('true');
+            expect(list.dataset['dragTarget']).toBe(`ontoGroupHeader:${G1}`);
+
+            expect(screen.getByTestId('group-header').dataset['dropPreview']).toBe('true');
+            expect(rowFor(W1).dataset['nestPreview']).toBe('true');
+            // Preview-only: the order under the cursor has not moved.
+            expect(rowIDs()).toEqual(ids);
+
+            fireEvent.mouseUp(window);
+            expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 1 });
+        } finally {
+            Element.prototype.getBoundingClientRect = original;
+        }
+    });
 });
 
 // ── Change Icon (§5.6) ──────────────────────────────────────────────────────────────
@@ -676,5 +760,175 @@ describe('menu shortcut hints', () => {
         render(<Sidebar {...baseProps()} entries={entries()} />);
         fireEvent.contextMenu(rowFor(W1));
         expect(screen.queryByTestId('menu-shortcut')).toBeNull();
+    });
+});
+
+// ── §WS-007 / §WS-008 / §WS-088 / §WS-094: the drag affordances ─────────────────────
+
+describe('sidebar drag affordances', () => {
+    it('joins an expanded group’s children with a continuous guide rule (§WS-007)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        const guides = screen.getAllByTestId('group-guide');
+        // Two children, two segments — and none on the two top-level rows.
+        expect(guides).toHaveLength(2);
+        expect(screen.getAllByTestId('workspace-row').map((row) => row.dataset['guide'])).toEqual([
+            undefined,
+            undefined,
+            'true',
+            'true'
+        ]);
+
+        // The rule sits at the 18px leading inset: 6px back from the row's 24px indent…
+        for (const guide of guides) {
+            expect(guide.style.left).toBe('-6px');
+            expect(guide.style.width).toBe('1.5px');
+        }
+        // …and each segment bridges the gap to the sibling it has, so the run reads as one
+        // line: the first child extends DOWN only, the last extends UP only.
+        expect([guides[0]?.style.top, guides[0]?.style.bottom]).toEqual(['0px', '-2px']);
+        expect([guides[1]?.style.top, guides[1]?.style.bottom]).toEqual(['-2px', '0px']);
+    });
+
+    it('tints the guide with the group’s colour, or the divider when it has none (§WS-007)', () => {
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+        const tinted = (screen.getAllByTestId('group-guide')[0] as HTMLElement).style.background;
+
+        const colourless = entries();
+        colourless[2] = {
+            kind: 'group',
+            group: { id: G1, name: 'squad', color: null, icon: null, isCollapsed: false },
+            workspaces: [workspace(W2, 'beta'), workspace(W3, 'gamma')]
+        };
+        rerender(<Sidebar {...baseProps()} entries={colourless} />);
+        const plain = (screen.getAllByTestId('group-guide')[0] as HTMLElement).style.background;
+
+        expect(tinted).not.toBe('');
+        expect(plain).not.toBe('');
+        expect(tinted).not.toBe(plain);
+    });
+
+    it('marks the landing slot with a 2px accent rule while dragging (§WS-088)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+
+        // A press alone is not a drag: no line until the gesture passes the threshold.
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+
+        // y=30 is delta's zone (24–44) — a `topLevel` slot target, not a group header.
+        fireEvent.mouseMove(window, { clientY: 30 });
+        const line = screen.getByTestId('drop-insert-line');
+        expect(line.style.height).toBe('2px');
+        expect(rowFor(W1).dataset['insertLine']).toBe('true');
+
+        // Over a group HEADER the indicator is the band tint instead, never both.
+        fireEvent.mouseMove(window, { clientY: 58 });
+        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+        expect(screen.getByTestId('group-header').dataset['dropPreview']).toBe('true');
+
+        fireEvent.mouseUp(window);
+        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+    });
+
+    /**
+     * §WS-008. jsdom reports `offsetTop === 0` for everything, so the FLIP pass measures no
+     * movement and only the INSERT half is observable here — which is the honest split: the
+     * reorder half is asserted by the transition being declared on the row, and its motion is
+     * a browser concern the audit photographs.
+     */
+    it('plays the entry animation for a row that appears, not for one that was there (§WS-008)', () => {
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
+        expect(screen.getAllByTestId('workspace-row').map((row) => row.dataset['entering'])).toEqual([
+            undefined,
+            undefined,
+            undefined,
+            undefined
+        ]);
+
+        const grown = entries();
+        grown.splice(1, 0, { kind: 'workspace', workspace: workspace(W5, 'epsilon') });
+        rerender(<Sidebar {...baseProps()} entries={grown} />);
+
+        const rows = screen.getAllByTestId('workspace-row');
+        const fresh = rows.find((row) => row.dataset['workspaceId'] === W5);
+        expect(fresh?.dataset['entering']).toBe('true');
+        expect(fresh?.style.animation).toContain('nex-sidebar-row-enter');
+        // The rows that were already there do NOT replay their entry.
+        expect(rows.filter((row) => row.dataset['entering'] === 'true')).toHaveLength(1);
+    });
+
+    it('declares the reorder transition on every settled row (§WS-008)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        for (const row of screen.getAllByTestId('workspace-row')) {
+            expect(row.style.transition).toContain('transform');
+        }
+        expect(screen.getByTestId('group-header').style.transition).toContain('transform');
+    });
+
+    /**
+     * §WS-094. The port holds a group's height open by CONSTRUCTION rather than with a phantom
+     * row: rows are re-derived from the shadow, so the frame that takes the last child out is
+     * the frame that puts the "No workspaces" placeholder in. This asserts the consequence the
+     * phantom exists for — the group does not collapse to a bare header mid-drag — which the
+     * item records as untested.
+     */
+    it('keeps a group’s body open when its last child is dragged out (§WS-094)', () => {
+        const single: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+            {
+                kind: 'group',
+                group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+                workspaces: [workspace(W2, 'beta')]
+            }
+        ];
+        render(<Sidebar {...baseProps()} entries={single} onMoveWorkspace={vi.fn()} />);
+        // rows: alpha 4–24 · header 24–44 · beta 44–64.
+        expect(screen.queryByTestId('group-empty')).toBeNull();
+
+        fireEvent.mouseDown(rowFor(W2), { clientY: 54 });
+        fireEvent.mouseMove(window, { clientY: 8 }); // alpha's top half → top level, index 0
+
+        // The child left the group in the shadow, and the placeholder took its place in the
+        // SAME frame, so the group still occupies a header plus a body row.
+        expect(rowIDs()).toEqual([W2, W1]);
+        expect(screen.getByTestId('group-empty')).toBeTruthy();
+        fireEvent.mouseUp(window);
+    });
+});
+
+// ── §WS-095: a dragged group moves as one block ─────────────────────────────────────
+
+describe('group drag', () => {
+    it('renders the dragged group as collapsed, without touching its stored state', () => {
+        const onToggleGroupCollapse = vi.fn();
+        const onMoveGroup = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                onMoveGroup={onMoveGroup}
+                onToggleGroupCollapse={onToggleGroupCollapse}
+            />
+        );
+        const header = screen.getByTestId('group-header');
+        expect(header.dataset['collapsed']).toBe('false');
+        expect(rowIDs()).toEqual([W1, W4, W2, W3]);
+
+        // A press alone is not a drag — the children must not vanish under a stray click.
+        fireEvent.mouseDown(header, { clientY: 50 });
+        expect(rowIDs()).toEqual([W1, W4, W2, W3]);
+
+        // Past the threshold the block folds to its header and moves as one row.
+        fireEvent.mouseMove(window, { clientY: 10 });
+        expect(screen.getByTestId('group-header').dataset['collapsed']).toBe('true');
+        expect(rowIDs()).toEqual([W1, W4]);
+
+        fireEvent.mouseUp(window);
+        // Released: the children are back — now at the top, because the block landed there —
+        // and the persisted collapse was never written.
+        expect(screen.getByTestId('group-header').dataset['collapsed']).toBe('false');
+        expect(rowIDs()).toEqual([W2, W3, W1, W4]);
+        expect(onToggleGroupCollapse).not.toHaveBeenCalled();
+        expect(onMoveGroup).toHaveBeenCalledTimes(1);
+        expect(onMoveGroup).toHaveBeenCalledWith({ groupID: G1, index: 0 });
     });
 });

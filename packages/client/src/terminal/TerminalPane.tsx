@@ -31,6 +31,13 @@ import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
 import {
+    IDLE_PANE_MODES,
+    createMouseReporter,
+    type MouseGridMetrics,
+    type MouseReporter,
+    type PaneVtModes
+} from './mouse';
+import {
     createTerminalRenderer,
     resolveTerminalTheme,
     type TerminalMatchLocation,
@@ -139,6 +146,11 @@ export interface TerminalPaneProps {
     readonly onExit?: ((paneID: string, exitCode: number | null, signal?: string) => void) | undefined;
     readonly onBell?: ((paneID: string) => void) | undefined;
     readonly onTitleChange?: ((paneID: string, title: string) => void) | undefined;
+    /**
+     * The engine's selection changed (§TERM-034). Optional and unused by assembly today — the
+     * capability is the READ; a browser has no system text service to report it to.
+     */
+    readonly onSelectionChange?: ((paneID: string, selection: string) => void) | undefined;
     /** Body measurement seam; defaults to `clientWidth`/`clientHeight`. */
     readonly measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined;
     readonly className?: string | undefined;
@@ -158,6 +170,40 @@ export function measureGeometry(
     const cols = Math.max(1, Math.floor(box.width / cell.width));
     const rows = Math.max(1, Math.floor(box.height / cell.height));
     return { cols, rows };
+}
+
+/**
+ * The pane's grid as the mouse reporter needs it: cell metrics, the surface box, and where the
+ * surface's top-left sits in client coordinates.
+ *
+ * The origin comes from the engine's own canvas when there is one (both engines draw into a
+ * child of the host), so a renderer that insets itself does not shift every reported cell by
+ * one. The box prefers the `measure` seam — the same one the column arithmetic uses, which is
+ * what makes this measurable under jsdom, where `getBoundingClientRect()` is all zeros.
+ */
+export function measureMouseSurface(
+    host: HTMLElement,
+    renderer: TerminalRenderer,
+    geometry: TerminalGeometry | null,
+    measure?: ((element: HTMLElement) => { width: number; height: number }) | undefined
+): (MouseGridMetrics & { originX: number; originY: number }) | null {
+    const cell = renderer.cellSize();
+    if (!(cell.width > 0) || !(cell.height > 0)) return null;
+    const canvas = host.querySelector('canvas');
+    const target: HTMLElement = canvas ?? host;
+    const rect = target.getBoundingClientRect();
+    const box = measure?.(host) ?? { width: rect.width, height: rect.height };
+    if (!(box.width > 0) || !(box.height > 0)) return null;
+    return {
+        cols: geometry?.cols ?? Math.max(1, Math.floor(box.width / cell.width)),
+        rows: geometry?.rows ?? Math.max(1, Math.floor(box.height / cell.height)),
+        cellWidth: cell.width,
+        cellHeight: cell.height,
+        width: box.width,
+        height: box.height,
+        originX: rect.left,
+        originY: rect.top
+    };
 }
 
 /**
@@ -198,6 +244,42 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
     const restartRef = useRef<(() => void) | null>(null);
 
+    // ── mouse reporting (§TERM-037…§TERM-039) ───────────────────────────────────────
+    //
+    // The daemon streams this pane's DEC mouse modes (`pane-modes`, off the same
+    // `@xterm/headless` instance that owns the VT) and this layer turns pointer events into
+    // reports — because NEITHER renderer does. `ghostty-web@0.4.0` parses 9/1000/1002/1003/1006
+    // and ignores them, so a mouse-mode TUI had no mouse at all; xterm.js implements its own,
+    // which would double-report, and is suppressed the same way the ghostty selection is: the
+    // handlers run in the CAPTURE phase on the host and stop the event before the engine's
+    // canvas listeners see it.
+    const modesRef = useRef<PaneVtModes>(IDLE_PANE_MODES);
+    /** Mirrors `modesRef` into the DOM so the audit can read the live mode off the pane. */
+    const [trackingMode, setTrackingMode] = useState<PaneVtModes['mouseTracking']>('none');
+    /** Characters currently selected in the engine (§TERM-034); mirrored to the DOM. */
+    const [selectionLength, setSelectionLength] = useState(0);
+    /**
+     * `WxH` at 2 dp — the same `cellSize()` the reporter measures with, published so the audit
+     * can compute the cell a pixel lands in and assert a mouse report byte for byte instead of
+     * pattern-matching it. Written by `syncGeometry`, so it follows a late font too.
+     */
+    const [cellHint, setCellHint] = useState('');
+    const mouseRef = useRef<MouseReporter | null>(null);
+    if (mouseRef.current === null) {
+        mouseRef.current = createMouseReporter({
+            modes: () => modesRef.current,
+            metrics: () => {
+                const renderer = rendererRef.current;
+                const host = hostRef.current;
+                if (renderer === null || host === null) return null;
+                return measureMouseSurface(host, renderer, geometryRef.current, latest.current.measure);
+            },
+            // Straight to the PTY, exactly as the engine's own `onData` goes: a mouse report is
+            // input, and the daemon owns nothing about it.
+            write: (data) => streamRef.current?.write(data)
+        });
+    }
+
     const clearResizeTimer = useCallback((): void => {
         if (resizeTimer.current === null) return;
         clearTimeout(resizeTimer.current);
@@ -217,6 +299,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         const unchanged = previous !== null && previous.cols === next.cols && previous.rows === next.rows;
         if (unchanged && !force) return;
         geometryRef.current = next;
+        const cell = renderer.cellSize();
+        setCellHint(
+            cell.width > 0 && cell.height > 0 ? `${cell.width.toFixed(2)}x${cell.height.toFixed(2)}` : ''
+        );
         renderer.resize(next.cols, next.rows);
         streamRef.current?.resize(next.cols, next.rows);
         if (!unchanged || force) current.onDimensionsChange?.(current.paneID, next);
@@ -340,6 +426,16 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 onReplay: (data) => ingest.replay(data),
                 onData: (data) => ingest.live(data),
                 onResync: () => ingest.expectReplay(),
+                // The daemon's VT modes for this pane: sent once behind the replay, then on
+                // every DECSET/DECRST. Kept in a ref (the handlers are installed once and must
+                // not go stale) and mirrored into state only for the `data-` attribute.
+                onModes: (modes) => {
+                    modesRef.current = modes;
+                    setTrackingMode(modes.mouseTracking);
+                    // An application that turns reporting off mid-gesture leaves us holding a
+                    // button that will never be released as far as this layer is concerned.
+                    if (modes.mouseTracking === 'none') mouseRef.current?.reset();
+                },
                 onExit: (exitCode, signal) => latest.current.onExit?.(paneID, exitCode, signal),
                 ...(initial !== null ? { cols: initial.cols, rows: initial.rows } : {})
             };
@@ -349,6 +445,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const offData = renderer.onData((data) => stream.write(data));
             const offBell = renderer.onBell(() => latest.current.onBell?.(paneID));
             const offTitle = renderer.onTitleChange((title) => latest.current.onTitleChange?.(paneID, title));
+            // §TERM-034: the engine's selection, surfaced. There is no `NSTextInputClient` in a
+            // browser to hand it to, so what it buys is observability — and the invariant it
+            // observes is §TERM-037's: while an application is being sent mouse reports the
+            // engine must make NO selection, and the two can now be told apart.
+            const offSelection = renderer.onSelectionChange((selection) => {
+                setSelectionLength(selection.length);
+                latest.current.onSelectionChange?.(paneID, selection);
+            });
             // The engine threw from inside WASM after it was already live. It is poisoned and
             // takes no more bytes, so seal the stream off it and rebuild — an engine that dies
             // under a running shell is the same defect as one that dies while starting.
@@ -379,10 +483,17 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
 
             teardown = () => {
                 clearResizeTimer();
+                // A rebuilt engine re-attaches and is told its modes again; until then this
+                // pane reports nothing rather than reporting against a dead stream.
+                modesRef.current = IDLE_PANE_MODES;
+                setTrackingMode('none');
+                setSelectionLength(0);
+                mouseRef.current?.reset();
                 ingest.pause();
                 offData();
                 offBell();
                 offTitle();
+                offSelection();
                 offFailure();
                 stream.unsubscribe();
                 renderer.dispose();
@@ -438,6 +549,87 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             renderer.repaint();
         });
     }, [syncGeometry]);
+
+    // ── mouse reporting: capture-phase interception ─────────────────────────────────
+    //
+    // Two sets of listeners, and the split is the whole trick:
+    //
+    //   host, capture   every event INSIDE the pane. Capture on the host means React's own
+    //                   root-level dispatch has already run (so the wrapper's
+    //                   `onMouseDownCapture` still reports focus, and `PaneGrid`'s still
+    //                   focuses the pane), while the engine's canvas listeners — which sit
+    //                   BELOW the host — never see the event at all once it is consumed.
+    //   window, capture the rest of a drag that left the pane. Gated on `dragging` AND on the
+    //                   event being outside the host, so an inside event is never handled
+    //                   twice (window capture fires FIRST, and would swallow it).
+    //
+    // Nothing is intercepted while no application has asked for the mouse: with tracking
+    // `none` every handler returns immediately and selection, link-clicks and the engine's own
+    // wheel-scrolls behave exactly as they did.
+    useEffect(() => {
+        const host = hostRef.current;
+        if (host === null || typeof window === 'undefined') return;
+        const reporter = mouseRef.current;
+        if (reporter === null) return;
+
+        const consume = (event: Event): void => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        const inside = (event: Event): boolean =>
+            event.target instanceof Node && host.contains(event.target);
+
+        const onDown = (event: MouseEvent): void => {
+            if (!reporter.active || !inside(event)) return;
+            if (!reporter.down(event)) return;
+            consume(event);
+            // Ghostty's rule (`Surface.zig:3850-3852`): once the application is being sent the
+            // gesture, a selection left over from before it asked for the mouse must go — it
+            // would otherwise sit highlighted over a TUI that is handling the same drag.
+            rendererRef.current?.clearSelection();
+            setSelectionLength(0);
+        };
+        const onMove = (event: MouseEvent): void => {
+            if (!reporter.active || !inside(event)) return;
+            if (reporter.move(event)) consume(event);
+        };
+        const onUp = (event: MouseEvent): void => {
+            if (!reporter.active || !inside(event)) return;
+            if (reporter.up(event)) consume(event);
+        };
+        const onWheel = (event: WheelEvent): void => {
+            if (!reporter.active || !inside(event)) return;
+            if (reporter.wheel(event)) consume(event);
+        };
+        // Outside the pane, mid-drag: a TUI that saw the press must see the motion and the
+        // release wherever they happen, which is what makes drag-select inside `vim` work when
+        // the pointer wanders over the sidebar.
+        const onWindowMove = (event: MouseEvent): void => {
+            if (!reporter.active || !reporter.dragging || inside(event)) return;
+            if (reporter.move(event)) consume(event);
+        };
+        const onWindowUp = (event: MouseEvent): void => {
+            if (!reporter.active || !reporter.dragging || inside(event)) return;
+            if (reporter.up(event)) consume(event);
+        };
+
+        host.addEventListener('mousedown', onDown, true);
+        host.addEventListener('mousemove', onMove, true);
+        host.addEventListener('mouseup', onUp, true);
+        // `passive: false` or `preventDefault()` is ignored and the page scrolls underneath.
+        host.addEventListener('wheel', onWheel, { capture: true, passive: false });
+        window.addEventListener('mousemove', onWindowMove, true);
+        window.addEventListener('mouseup', onWindowUp, true);
+        return () => {
+            host.removeEventListener('mousedown', onDown, true);
+            host.removeEventListener('mousemove', onMove, true);
+            host.removeEventListener('mouseup', onUp, true);
+            host.removeEventListener('wheel', onWheel, { capture: true });
+            window.removeEventListener('mousemove', onWindowMove, true);
+            window.removeEventListener('mouseup', onWindowUp, true);
+            reporter.reset();
+        };
+    }, []);
 
     // ── resize observation ──────────────────────────────────────────────────────────
     useEffect(() => {
@@ -530,12 +722,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
 
     const background = props.background ?? theme?.background ?? 'var(--nex-term-bg, #0A0A0C)';
 
+
     return (
         <div
             data-pane-id={paneID}
             data-terminal-status={status}
             data-terminal-attempts={String(attempts)}
             data-terminal-visible={visible ? 'true' : 'false'}
+            /* The live DEC mouse-tracking mode (§TERM-037). Read by the audit so "reporting is
+               on" is an observable fact about the pane rather than an inference from bytes. */
+            data-terminal-mouse={trackingMode}
+            /* Selected characters (§TERM-034). Length, never the text: the audit needs to know
+               a selection HAPPENED, and a pane's contents do not belong in an attribute. */
+            data-terminal-selection={String(selectionLength)}
+            /* Cell metrics in CSS pixels, so the audit can compute the cell a pixel lands in
+               and assert a mouse report byte for byte instead of pattern-matching it. */
+            data-terminal-cell={cellHint}
             className={`relative h-full w-full overflow-hidden ${className ?? ''}`}
             style={{
                 backgroundColor: background,

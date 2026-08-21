@@ -197,17 +197,23 @@ export interface ChromeIconProps {
     readonly size?: number | undefined;
     readonly className?: string | undefined;
     readonly title?: string | undefined;
+    /**
+     * §WS-036: draw the glyph SOLID rather than outlined — this port's stand-in for the SF
+     * Symbols `.fill` variants the Swift group header switches to once a group has a colour.
+     */
+    readonly filled?: boolean | undefined;
 }
 
 /** A 12×12-viewBox stroke glyph inheriting `currentColor`. */
 export function ChromeIcon(props: ChromeIconProps): ReactElement {
     const size = props.size ?? 12;
+    const filled = props.filled === true;
     return (
         <svg
             viewBox="0 0 12 12"
             width={size}
             height={size}
-            fill="none"
+            fill={filled ? 'currentColor' : 'none'}
             stroke="currentColor"
             strokeWidth={1.2}
             strokeLinecap="round"
@@ -216,6 +222,7 @@ export function ChromeIcon(props: ChromeIconProps): ReactElement {
             aria-hidden={props.title === undefined ? true : undefined}
             role={props.title === undefined ? undefined : 'img'}
             data-icon={props.name}
+            data-filled={filled ? 'true' : undefined}
         >
             {props.title === undefined ? null : <title>{props.title}</title>}
             {PATHS[props.name]}

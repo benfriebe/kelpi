@@ -26,6 +26,7 @@
  */
 
 import {
+    WS_PANE_MODES_MESSAGE,
     WS_PROTOCOL_VERSION,
     decodePtyFrame,
     type JsonObject,
@@ -36,6 +37,7 @@ import {
     type WsDeltaMessage,
     type WsNotificationMessage,
     type WsPaneExitMessage,
+    type WsPaneModesMessage,
     type WsRejectedMessage,
     type WsResyncRequiredMessage,
     type WsSnapshotMessage,
@@ -125,6 +127,8 @@ export interface ConnectionEvents {
     notification: WsNotificationMessage;
     attention: AttentionMessage;
     'pane-exit': WsPaneExitMessage;
+    /** A pane's VT modes changed (§TERM-037: the client encodes DEC mouse reports itself). */
+    'pane-modes': WsPaneModesMessage;
     'resync-required': WsResyncRequiredMessage;
     'pty-resync': PtyResyncMessage;
     rejected: WsRejectedMessage;
@@ -524,6 +528,9 @@ export class NexConnection {
                 break;
             case 'pane-exit':
                 this.emit('pane-exit', message as unknown as WsPaneExitMessage);
+                break;
+            case WS_PANE_MODES_MESSAGE:
+                this.emit('pane-modes', message as unknown as WsPaneModesMessage);
                 break;
             case 'resync-required':
                 this.emit('resync-required', message as unknown as WsResyncRequiredMessage);

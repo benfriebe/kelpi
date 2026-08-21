@@ -24,6 +24,12 @@ import headless from '@xterm/headless';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
 
 import type { TerminalStateService, VtModes } from '../seams.js';
+import {
+    DEFAULT_MOUSE_FORMAT,
+    trackMouseFormat,
+    type MouseFormatTracker,
+    type MouseTrackingMode
+} from './mouse-modes.js';
 import { DEFAULT_RING_CAPACITY_BYTES, RawRingBuffer } from './ring.js';
 import { searchTerminal, type SearchOptions, type TerminalMatch } from './search.js';
 
@@ -63,6 +69,28 @@ export interface TerminalStateOptions {
      * store's reducer and the auto-detect debounce are where "did it actually change?" lives.
      */
     readonly onDirectoryChange?: ((paneID: string, directory: string) => void) | undefined;
+    /**
+     * **OSC 0 / OSC 2** — the window/icon title (terminal-panes.md §TERM-147).
+     *
+     * `pane-title-changed`'s producer. xterm already parses both sequences and surfaces them as
+     * `Terminal.onTitleChange`, so this is a subscription rather than a parser: OSC 0 sets icon
+     * name AND window title, OSC 2 sets the window title, and either fires the event.
+     *
+     * Fires for every report, repeats included; the store's reducer decides whether the pane's
+     * `title` (and therefore its `lastActivityAt`) actually moved.
+     */
+    readonly onTitleChange?: ((paneID: string, title: string) => void) | undefined;
+    /**
+     * A pane's VT modes changed (`modes()`'s value is not what it was).
+     *
+     * Exists for the mouse-reporting modes, which the CLIENT acts on: the port encodes DEC
+     * mouse reports in its own layer (`client/src/terminal/mouse.ts`) because neither renderer
+     * does, so the modes have to cross the socket as state. DECCKM / bracketed paste ride along
+     * because they are the same object; nothing but the mouse half has a client-side consumer.
+     *
+     * Fires only on a REAL transition, after the chunk that caused it has been parsed.
+     */
+    readonly onModesChange?: ((paneID: string, modes: VtModes) => void) | undefined;
 }
 
 export interface GridSize {
@@ -76,7 +104,22 @@ export interface TerminalSnapshot {
     readonly rows: number;
 }
 
-const IDLE_MODES: VtModes = { applicationCursorKeys: false, bracketedPaste: false };
+const IDLE_MODES: VtModes = {
+    applicationCursorKeys: false,
+    bracketedPaste: false,
+    mouseTracking: 'none',
+    mouseFormat: DEFAULT_MOUSE_FORMAT
+};
+
+/** Value equality for the modes object, so `onModesChange` only fires on a real transition. */
+export function sameModes(a: VtModes, b: VtModes): boolean {
+    return (
+        a.applicationCursorKeys === b.applicationCursorKeys &&
+        a.bracketedPaste === b.bracketedPaste &&
+        (a.mouseTracking ?? 'none') === (b.mouseTracking ?? 'none') &&
+        (a.mouseFormat ?? DEFAULT_MOUSE_FORMAT) === (b.mouseFormat ?? DEFAULT_MOUSE_FORMAT)
+    );
+}
 
 /** Convenience factory for boot wiring. */
 export function createTerminalStateService(options: TerminalStateOptions = {}): TerminalStateServiceImpl {
@@ -122,6 +165,10 @@ interface PaneTerminal {
     readonly term: HeadlessTerminal;
     readonly serializer: SerializeAddonInstance;
     readonly ring: RawRingBuffer;
+    /** DEC mouse FORMAT (1005/1006/1015/1016) — the half `IModes` does not expose. */
+    readonly mouseFormat: MouseFormatTracker;
+    /** Last value handed to `onModesChange`, so a repeat DECSET costs no broadcast. */
+    lastModes: VtModes;
     /** Writes handed to xterm. */
     issued: number;
     /** Writes xterm has parsed (or that dispose force-settled). */
@@ -161,6 +208,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly defaultRows: number;
     private readonly snapshotScrollbackLines: number | undefined;
     private readonly onDirectoryChange: ((paneID: string, directory: string) => void) | undefined;
+    private readonly onTitleChange: ((paneID: string, title: string) => void) | undefined;
+    private readonly onModesChange: ((paneID: string, modes: VtModes) => void) | undefined;
 
     constructor(options: TerminalStateOptions = {}) {
         this.scrollback = Math.max(0, Math.floor(options.scrollback ?? DEFAULT_SCROLLBACK_LINES));
@@ -172,6 +221,8 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 ? undefined
                 : Math.max(0, Math.floor(options.snapshotScrollbackLines));
         this.onDirectoryChange = options.onDirectoryChange;
+        this.onTitleChange = options.onTitleChange;
+        this.onModesChange = options.onModesChange;
     }
 
     // ── lifecycle ───────────────────────────────────────────────────────────────────
@@ -211,6 +262,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         // flush()/captureAsync() can never hang on a callback that will now never fire.
         for (const settle of [...entry.settlers]) settle();
         entry.settlers.clear();
+        entry.mouseFormat.dispose();
         entry.serializer.dispose();
         entry.term.dispose();
         entry.ring.clear();
@@ -247,6 +299,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 settled = true;
                 target.settlers.delete(settle);
                 target.done += 1;
+                // Modes are only observable AFTER the chunk has been parsed, which is what this
+                // callback means. Compared rather than hooked so every mode this service reports
+                // (xterm's own `IModes` half included) is covered by one check.
+                this.publishModes(paneID, target);
                 resolve();
             };
             target.settlers.add(settle);
@@ -369,15 +425,14 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         return this.snapshot(paneID);
     }
 
-    /** Live VT modes the input encoder needs (DECCKM-aware arrows, paste framing). */
+    /**
+     * Live VT modes: what the input encoder needs (DECCKM-aware arrows, paste framing) plus the
+     * mouse-reporting pair the CLIENT needs (`mouse-modes.ts`).
+     */
     modes(paneID: string): VtModes {
         const entry = this.panes.get(paneID);
         if (!entry) return IDLE_MODES;
-        const modes = entry.term.modes;
-        return {
-            applicationCursorKeys: modes.applicationCursorKeysMode,
-            bracketedPaste: modes.bracketedPasteMode
-        };
+        return readModes(entry);
     }
 
     async modesAsync(paneID: string): Promise<VtModes> {
@@ -422,6 +477,15 @@ export class TerminalStateServiceImpl implements TerminalStateService {
 
     // ── internals ───────────────────────────────────────────────────────────────────
 
+    /** Emit `onModesChange` when this pane's modes are not what they last were. */
+    private publishModes(paneID: string, entry: PaneTerminal): void {
+        if (this.onModesChange === undefined || entry.disposed) return;
+        const next = readModes(entry);
+        if (sameModes(entry.lastModes, next)) return;
+        entry.lastModes = next;
+        this.onModesChange(paneID, next);
+    }
+
     private create(paneID: string, cols: number, rows: number): PaneTerminal {
         const term = new Terminal({
             cols,
@@ -443,17 +507,44 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 return false;
             });
         }
-        return {
+        if (this.onTitleChange !== undefined) {
+            const report = this.onTitleChange;
+            // §TERM-147's producer. `onTitleChange` covers OSC 0 (icon + window title) and OSC 2
+            // (window title) — xterm routes both here, so there is no second handler to write.
+            term.onTitleChange((title) => {
+                report(paneID, title);
+            });
+        }
+        // Mouse FORMAT has no `IModes` member, so it is tracked off the parser (`mouse-modes.ts`).
+        // Registered unconditionally: `modes()` is a synchronous read for every caller, and a
+        // pane that starts life without a mode listener can still be attached to later.
+        const mouseFormat = trackMouseFormat(term);
+        const entry: PaneTerminal = {
             term,
             serializer,
             ring: new RawRingBuffer(this.ringCapacityBytes),
+            mouseFormat,
+            lastModes: IDLE_MODES,
             issued: 0,
             done: 0,
             tail: Promise.resolve(),
             settlers: new Set(),
             disposed: false
         };
+        entry.lastModes = readModes(entry);
+        return entry;
     }
+}
+
+/** The modes object for one pane: xterm's own half plus the tracked mouse format. */
+function readModes(entry: PaneTerminal): VtModes {
+    const modes = entry.term.modes;
+    return {
+        applicationCursorKeys: modes.applicationCursorKeysMode,
+        bracketedPaste: modes.bracketedPasteMode,
+        mouseTracking: modes.mouseTrackingMode as MouseTrackingMode,
+        mouseFormat: entry.mouseFormat.format
+    };
 }
 
 /**

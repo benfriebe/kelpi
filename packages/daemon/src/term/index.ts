@@ -6,10 +6,20 @@ export {
     DEFAULT_SCROLLBACK_LINES,
     TerminalStateServiceImpl,
     parseOsc7,
+    sameModes,
     type GridSize,
     type TerminalSnapshot,
     type TerminalStateOptions
 } from './service.js';
+export {
+    DEFAULT_MOUSE_FORMAT,
+    MOUSE_FORMAT_MODES,
+    applyFormatModes,
+    trackMouseFormat,
+    type MouseFormat,
+    type MouseFormatTracker,
+    type MouseTrackingMode
+} from './mouse-modes.js';
 export {
     MAX_TERMINAL_MATCHES,
     bufferLength,

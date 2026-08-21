@@ -282,6 +282,11 @@ export interface WsWelcomeMessage {
         readonly version: string;
         readonly build: string;
         readonly pid: number;
+        /**
+         * §APP-069: the daemon HOST's home directory, for display only — the client abbreviates
+         * the daemon-side paths it renders (`~/code/nex`). Additive; absent = do not abbreviate.
+         */
+        readonly home?: string;
     };
     /**
      * The daemon's config-file settings (M8). Rides here rather than in `snapshot` because
@@ -471,6 +476,48 @@ export interface WsPaneExitMessage {
     readonly signal?: string;
 }
 
+// ── VT modes (terminal-panes.md §TERM-037…§TERM-039) ────────────────────────────────
+
+/** DEC mouse tracking, in xterm's vocabulary: 9 / 1000 / 1002 / 1003 respectively. */
+export const WS_MOUSE_TRACKING_MODES = ['none', 'x10', 'vt200', 'drag', 'any'] as const;
+export type WsMouseTrackingMode = (typeof WS_MOUSE_TRACKING_MODES)[number];
+
+/** Mouse coordinate encoding: default / 1005 / 1006 / 1015 / 1016. */
+export const WS_MOUSE_FORMATS = ['x10', 'utf8', 'sgr', 'urxvt', 'sgr-pixels'] as const;
+export type WsMouseFormat = (typeof WS_MOUSE_FORMATS)[number];
+
+/**
+ * A pane's live VT modes, as the daemon's server-side emulator sees them.
+ *
+ * `applicationCursorKeys` and `bracketedPaste` are the daemon's own input-encoding inputs and
+ * ride here because they are the same object. The two a CLIENT acts on are the mouse pair:
+ * neither renderer this port ships implements DEC mouse reporting (`ghostty-web@0.4.0` parses
+ * 9/1000/1002/1003/1006 and then ignores them), so the client encodes the reports itself and
+ * needs the modes as state rather than as engine behaviour.
+ */
+export interface WsVtModes {
+    readonly applicationCursorKeys: boolean;
+    readonly bracketedPaste: boolean;
+    readonly mouseTracking: WsMouseTrackingMode;
+    readonly mouseFormat: WsMouseFormat;
+}
+
+export const WS_PANE_MODES_MESSAGE = 'pane-modes';
+
+/**
+ * `pane-modes`: this pane's VT modes are now these.
+ *
+ * Sent once per attach (immediately after the `replay` frame, so a client's very first mouse
+ * report cannot be encoded against modes it has not been told about) and then on every
+ * transition. Additive: a client that predates it ignores an unknown message type and simply
+ * never reports the mouse — which is exactly the behaviour it had.
+ */
+export interface WsPaneModesMessage {
+    readonly type: typeof WS_PANE_MODES_MESSAGE;
+    readonly paneID: string;
+    readonly modes: WsVtModes;
+}
+
 /** The daemon cannot serve deltas from the client's seq; it must take a fresh snapshot. */
 export interface WsResyncRequiredMessage {
     readonly type: 'resync-required';
@@ -552,6 +599,7 @@ export type WsServerMessage =
     | WsCommandReplyMessage
     | WsNotificationMessage
     | WsPaneExitMessage
+    | WsPaneModesMessage
     | WsResyncRequiredMessage
     | WsPongMessage
     | WsSettingsChangedMessage

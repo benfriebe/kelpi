@@ -7,10 +7,19 @@
  * the shell rasterizes the icon into an RGBA buffer and encodes a PNG with `node:zlib` —
  * ~80 lines, zero dependencies, and the dot colour can follow the status live.
  *
- * The glyph is a mid-grey chevron + underscore in a rounded outline: mid-grey reads on both
- * a light and a dark menu bar, which a coloured non-template image otherwise would not.
- * (A real template image would be better; it cannot carry the coloured dot, and the dot is
- * the whole point of the icon. Revisit when the shell gets an asset pipeline.)
+ * Template vs mid-grey, which is §AGNT-087's actual rule and not a compromise:
+ *
+ *   - **idle** (no dot) draws the glyph in OPAQUE BLACK and is marked a template image, so
+ *     macOS tints it with the menu bar — light bar, dark glyph; dark bar, light glyph; and it
+ *     inverts under a highlighted status item. This is exactly what the Swift does ("with
+ *     neither, the image is a template").
+ *   - **running / waiting / disconnected** carry a coloured dot, and a template image cannot:
+ *     AppKit throws away every channel but alpha. Those states draw the glyph mid-grey (which
+ *     reads on both a light and a dark menu bar) and ship as an ordinary image, with the dot in
+ *     its status colour. Same trade the Swift makes, one state at a time.
+ *
+ * `trayIconIsTemplate` is the single source of that rule; `status.ts` passes it straight to
+ * `nativeImage.setTemplateImage`, so the drawing and the flag can never disagree.
  */
 
 import { deflateSync } from 'node:zlib';
@@ -25,7 +34,20 @@ export const STATUS_COLORS: Readonly<Record<IconIndicator, [number, number, numb
     disconnected: [0x9a, 0x9a, 0x96, 0xff]
 };
 
-const GLYPH: [number, number, number, number] = [0x8e, 0x8e, 0x93, 0xff];
+/** The non-template glyph tone: mid-grey reads on a light AND a dark menu bar. */
+const NON_TEMPLATE_GLYPH: [number, number, number, number] = [0x8e, 0x8e, 0x93, 0xff];
+/** The template glyph: opaque black + alpha is all AppKit keeps, and all it needs to tint. */
+const TEMPLATE_GLYPH: [number, number, number, number] = [0x00, 0x00, 0x00, 0xff];
+
+/**
+ * §AGNT-087: is this indicator's image a macOS template image?
+ *
+ * True exactly when there is no status dot to carry — a template keeps only the alpha channel,
+ * so a coloured dot and menu-bar tinting are mutually exclusive. The Swift draws the same line.
+ */
+export function trayIconIsTemplate(indicator: IconIndicator): boolean {
+    return STATUS_COLORS[indicator] === null;
+}
 
 // ── PNG encoding ────────────────────────────────────────────────────────────────────
 
@@ -148,6 +170,8 @@ export function trayIconPixels(indicator: IconIndicator, scale = 2): Canvas {
     const size = ICON_BASE_SIZE * scale;
     const canvas = createCanvas(size);
     const unit = (value: number): number => Math.round(value * scale);
+    // §AGNT-087: the tinted (template) form is black-on-alpha; the dotted forms stay mid-grey.
+    const GLYPH = trayIconIsTemplate(indicator) ? TEMPLATE_GLYPH : NON_TEMPLATE_GLYPH;
 
     // Terminal outline: a 16×14 rounded-ish box (corners knocked out below).
     const left = unit(3);

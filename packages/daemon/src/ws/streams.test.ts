@@ -283,3 +283,90 @@ describe('hub lifecycle', () => {
         expect(h.hub.sessionCount).toBe(0);
     });
 });
+
+describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
+    it('sends the pane modes right after the replay', async () => {
+        // The client encodes DEC mouse reports itself, so an attach that carried no modes would
+        // leave a mouse-mode TUI unreportable until the app happened to re-assert DECSET.
+        const h = harness();
+        h.term.setModes({
+            applicationCursorKeys: true,
+            bracketedPaste: false,
+            mouseTracking: 'drag',
+            mouseFormat: 'sgr'
+        });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        expect(h.transport.ofType('pane-modes')).toEqual([
+            {
+                type: 'pane-modes',
+                paneID: PANE_A,
+                modes: {
+                    applicationCursorKeys: true,
+                    bracketedPaste: false,
+                    mouseTracking: 'drag',
+                    mouseFormat: 'sgr'
+                }
+            }
+        ]);
+    });
+
+    it('defaults the mouse pair when the terminal state does not carry it', async () => {
+        // The seam's two mouse members are optional so every existing `VtModes` literal stays
+        // valid; absent has to mean "no mouse mode", never "unknown".
+        const h = harness();
+        h.term.setModes({ applicationCursorKeys: false, bracketedPaste: true });
+        await h.session.attach(PANE_A);
+
+        expect(h.transport.ofType('pane-modes').at(0)).toMatchObject({
+            modes: { mouseTracking: 'none', mouseFormat: 'x10', bracketedPaste: true }
+        });
+    });
+
+    it('pushes a later change to every session attached to that pane, and to no other', async () => {
+        const h = harness();
+        const other = h.hub.createSession(recordingTransport());
+        await h.session.attach(PANE_A);
+        await h.session.attach(PANE_B);
+        await other.attach(PANE_B);
+        const before = h.transport.ofType('pane-modes').length;
+
+        h.hub.modesChanged(PANE_B, {
+            applicationCursorKeys: false,
+            bracketedPaste: false,
+            mouseTracking: 'any',
+            mouseFormat: 'urxvt'
+        });
+
+        const pushed = h.transport.ofType('pane-modes').slice(before);
+        expect(pushed).toEqual([
+            {
+                type: 'pane-modes',
+                paneID: PANE_B,
+                modes: {
+                    applicationCursorKeys: false,
+                    bracketedPaste: false,
+                    mouseTracking: 'any',
+                    mouseFormat: 'urxvt'
+                }
+            }
+        ]);
+    });
+
+    it('does not push modes for a pane the session never attached', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A);
+        const before = h.transport.ofType('pane-modes').length;
+        h.hub.modesChanged(PANE_B, { applicationCursorKeys: false, bracketedPaste: false });
+        expect(h.transport.ofType('pane-modes')).toHaveLength(before);
+    });
+
+    it('stops pushing modes once the pane is detached', async () => {
+        const h = harness();
+        await h.session.attach(PANE_A);
+        h.session.detach(PANE_A);
+        const before = h.transport.ofType('pane-modes').length;
+        h.hub.modesChanged(PANE_A, { applicationCursorKeys: false, bracketedPaste: false });
+        expect(h.transport.ofType('pane-modes')).toHaveLength(before);
+    });
+});

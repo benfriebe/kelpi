@@ -119,6 +119,33 @@ describe('controls', () => {
         expect(screen.getByTestId('connection-pill').textContent).toBe('refused');
     });
 
+    /**
+     * §APP-052, and PARITY divergence 35. The Swift hosts the ••• menu and the sidebar toggle in
+     * ONE trailing titlebar accessory; the port keeps them together too — same cluster, adjacent,
+     * in DOM order — at the leading edge, where a sidebar toggle belongs (the sidebar is directly
+     * below it). What this pins is the PAIRING, which is the part of the item that is capability
+     * rather than coordinate: the two must not drift to opposite ends of the row.
+     */
+    it('keeps the sidebar toggle and the ••• menu in one adjacent cluster', () => {
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                onToggleSidebar={vi.fn()}
+                onToggleInspector={vi.fn()}
+                overflowItems={[{ id: 'settings', label: 'Settings…', onSelect: vi.fn() }]}
+            />
+        );
+        const sidebar = screen.getByLabelText('Toggle sidebar');
+        const overflow = screen.getByTestId('titlebar-menu-toggle');
+        expect(sidebar.parentElement).toBe(overflow.parentElement);
+        const cluster = [...(sidebar.parentElement?.children ?? [])];
+        // Adjacent but for the inspector toggle, which the Swift accessory had no counterpart for.
+        expect(cluster.indexOf(overflow) - cluster.indexOf(sidebar)).toBeLessThanOrEqual(2);
+        expect(cluster.indexOf(sidebar)).toBe(0);
+    });
+
     it('toggles the sidebar when the host wires it', () => {
         const onToggleSidebar = vi.fn();
         render(

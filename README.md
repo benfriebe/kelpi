@@ -15,22 +15,27 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, an audited UI whose defect ledger is closed except for one accepted engine limit,
-and 91% of the shipped app's feature surface.** The daemon, the web client, the Electron shell,
-content panes, web panes, graft, the `nex` CLI rewrite and the legacy `nex.db` importer are all
-built and green against the shipped Swift binary. The window has been driven end to end and
-photographed ten times over: the campaign opened with **17 defects + 6 nits, two of them blockers**,
-and stands at **no blockers — 1 accepted major (the daemon's VT does not reflow on resize), 1 minor,
-1 nit.** The three findings the re-audits added are all closed: the intermittent terminal-renderer
-start failure, the **packaged `Nex.app`** window (`smoke:packaged` is 58/58), and a context submenu
-that opened past the window's right edge.
+**Wire parity, an audited UI whose defect ledger is down to one accepted engine limit and one
+newly-found minor, and 96% of the shipped app's feature surface.** The daemon, the web client, the
+Electron shell, content panes, web panes, graft, the `nex` CLI rewrite and the legacy `nex.db`
+importer are all built and green against the shipped Swift binary. The window has been driven end to
+end and photographed a dozen times over: the campaign opened with **17 defects + 6 nits, two of them
+blockers**, and stands at **no blockers — 1 accepted major (the daemon's VT does not reflow on
+resize), 2 minors, 1 nit.** Four of the five findings the re-audits added are closed: the
+intermittent terminal-renderer start failure, the **packaged `Nex.app`** window (`smoke:packaged` is
+58/58), a context submenu that opened past the window's right edge, and a sidebar that resolved
+every drop target ~2 px per row above the rows themselves. The fifth is new, and is the honest cost
+of re-scoring: the status bar's `doc N +A -B` ships, passes four unit tests, and renders **nothing**
+for a repo under a symlinked path.
 
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
-domains — found 285 behaviours with no port-side implementation at all. Two burn-downs took that
-column to **9**, and coverage from 73.6% to **94.4%**, while the audit grew to **87 flows, 570
-assertions**. What is still open is ranked in that index's §2, now headed by an *upstream* finding:
-`ghostty-web@0.4.0` implements no DEC mouse reporting, so a mouse-mode TUI has no mouse in a pane.
+domains — found 285 behaviours with no port-side implementation at all. Three burn-downs took that
+column to **4**, and coverage from 73.6% to **95.9%**, while the audit grew to **93 flows, 626
+assertions**. What is still open is ranked in that index's §2, now headed by the engine's IME and
+modifier-key limits — the mouse-reporting gap that headed it last time was closed by taking mouse
+reporting away from the engine and writing it into the port, byte-identically to ghostty's own
+encoder.
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
   **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
@@ -39,21 +44,23 @@ assertions**. What is still open is ranked in that index's §2, now headed by an
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-I/`](docs/audit/run-I/index.md) is current
-  (87 flows); the twelve scoped runs beside it are one per feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-J/`](docs/audit/run-J/index.md) is current
+  (93 flows); the fourteen scoped runs beside it are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
-  the original ledger.
+  the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
+  policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
 - [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-20): `pnpm check` **4102 passed**; the compat suite 103/103 against **both** the
-shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 32, web 46,
-terminal 19) and the packaged one too, **58/58**; the terminal-renderer start stress **0 stranded in
-48 panes**; the UI audit **560 of 570 assertions, 0 step errors** across **87 real user flows** —
-the ten failures are three findings, four of them the one upstream mouse-reporting defect; and
-capability coverage against the shipped app at **94.4%** of 1490 inventoried items, up from 73.6%
-before the burn-downs. Nothing here is called done without a screenshot that shows it.
+Gates (2026-08-21): `pnpm check` **4260 passed**, 1 skipped; the compat suite 103/103 against
+**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 32,
+web 46, terminal 19) and the packaged one too, **58/58**; the terminal-renderer start stress
+**0 stranded in 48 panes**; the UI audit **624 of 626 assertions, 0 step errors** across **93 real
+user flows** — the two failures are two findings, one of them new (the footer's blank diff stats)
+and one the accepted VT-reflow limit; and capability coverage against the shipped app at **95.9%**
+of 1490 inventoried items, up from 73.6% before the burn-downs. Nothing here is called done without
+a screenshot that shows it.
 
 ## Quickstart
 

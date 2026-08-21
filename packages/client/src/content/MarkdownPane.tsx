@@ -43,6 +43,8 @@ export interface MarkdownPaneProps {
     readonly openLink?: LinkOpener | undefined;
     /** Bump to open the preview's find bar (the app's `toggle_search` binding, §3.13). */
     readonly findToken?: number | undefined;
+    /** §TERM-103: bump to open the Copy menu from the pane header's copy button. */
+    readonly copyToken?: number | undefined;
     /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
     readonly findPalette?: Partial<FindPalette> | undefined;
     /**
@@ -106,6 +108,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             writeRichClipboard={props.writeRichClipboard}
             openLink={props.openLink}
             findToken={props.findToken}
+            copyToken={props.copyToken}
             findPalette={props.findPalette}
             // §3.14: both copy commands bail on a failed load — you cannot copy the synthetic
             // "Failed to load file" blockquote, so the affordance is simply absent.

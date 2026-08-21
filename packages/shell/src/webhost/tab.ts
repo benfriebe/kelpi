@@ -63,6 +63,7 @@ import {
     type RemoteObject
 } from './console-format.js';
 import { clampZoom, type EvalOutcome, type TabController } from './dispatch.js';
+import { isWebErrorPageURL, webErrorPageDataURL } from './error-page.js';
 import type { CreateTabInput, DestroyReason } from './registry.js';
 import { forwardedChord, type ChordInput, type ForwardedChord } from './keys.js';
 import {
@@ -391,6 +392,10 @@ class ElectronTab implements HostTab {
             this.emitNavState(false);
         });
         contents.on('did-navigate', (_event, url) => {
+            // §WEB-029: our own error card is not a page. Clearing `failedLoad` here would break
+            // §WEB-028's retry (reload would redraw the card instead of re-trying the address),
+            // and reporting it as `pageState` would put a data URL in the URL bar.
+            if (isWebErrorPageURL(url)) return;
             this.failedLoad = false;
             this.applyZoom();
             this.emitNavState(contents.isLoading());
@@ -420,6 +425,15 @@ class ElectronTab implements HostTab {
             // at "loading" forever on a dead host (`did-stop-loading` does fire, but only after
             // Chromium's own error page commits — this is the immediate, honest close).
             this.emitNavState(false);
+            // §WEB-029: replace Chromium's error page with Nex's own card — the failed address,
+            // the message and a Retry anchor. `lastAttemptedURL` is unchanged, so the URL bar
+            // still shows where the user was going (the Swift's `baseURL` trick, by another
+            // route). Best-effort: a card that cannot load leaves Chromium's page in place.
+            void this.contents
+                .loadURL(webErrorPageDataURL({ url, description, code }))
+                .catch((error: unknown) => {
+                    this.report(error, 'error-page');
+                });
         });
         contents.on('render-process-gone', (_event, details) => {
             warn(`web pane ${this.paneID} tab ${this.tabID}: renderer gone (${details.reason})`);

@@ -29,7 +29,8 @@ import {
     PTY_FRAME_TYPES,
     encodeAckPayload,
     encodePtyFrame,
-    type PtyFrameType
+    type PtyFrameType,
+    type WsVtModes
 } from '@nex/protocol';
 
 import type { NexConnection } from './socket';
@@ -41,6 +42,15 @@ export interface PtySubscription {
     readonly onExit?: ((exitCode: number | null, signal?: string) => void) | undefined;
     /** The daemon dropped our backlog and re-seeded us; the next replay is authoritative. */
     readonly onResync?: ((reason: string) => void) | undefined;
+    /**
+     * The pane's VT modes, once on attach (right behind the replay) and then on every change.
+     *
+     * This rides the pane STREAM rather than the store because it is per-pane terminal state,
+     * and because its only consumer is the renderer host: the port encodes DEC mouse reports
+     * itself (§TERM-037 — no renderer it ships implements them), and the encoder needs to know
+     * which tracking mode and which coordinate format the application asked for.
+     */
+    readonly onModes?: ((modes: WsVtModes) => void) | undefined;
     /** Initial geometry; sent with `attach-pane` so the replay matches what we render. */
     readonly cols?: number | undefined;
     readonly rows?: number | undefined;
@@ -81,6 +91,8 @@ interface PaneEntry {
     unacked: number;
     pendingAck: number;
     ackTimer: ReturnType<typeof setTimeout> | null;
+    /** Last `pane-modes` for this pane; replayed to a subscriber that joins later. */
+    modes: WsVtModes | null;
 }
 
 const encoder = new TextEncoder();
@@ -127,6 +139,24 @@ export class PtyClient {
                         subscription.onExit?.(message.exitCode, message.signal);
                     } catch (error) {
                         this.report(error, `pane-exit ${message.paneID}`);
+                    }
+                }
+            })
+        );
+
+        this.unsubscribers.push(
+            connection.on('pane-modes', (message) => {
+                const entry = this.panes.get(message.paneID);
+                if (entry === undefined) return;
+                // Remembered so a viewer that subscribes LATER (a second pane view, a re-mount
+                // between the attach and the next DECSET) starts from the real modes instead of
+                // from "no mouse tracking" — which would silently disable reporting.
+                entry.modes = message.modes;
+                for (const subscription of [...entry.subscriptions]) {
+                    try {
+                        subscription.onModes?.(message.modes);
+                    } catch (error) {
+                        this.report(error, `pane-modes ${message.paneID}`);
                     }
                 }
             })
@@ -186,7 +216,8 @@ export class PtyClient {
                 attached: false,
                 unacked: 0,
                 pendingAck: 0,
-                ackTimer: null
+                ackTimer: null,
+                modes: null
             };
             this.panes.set(paneID, entry);
         }
@@ -194,6 +225,15 @@ export class PtyClient {
         target.subscriptions.add(subscription);
         if (subscription.cols !== undefined) target.cols = subscription.cols;
         if (subscription.rows !== undefined) target.rows = subscription.rows;
+        // A subscriber joining an already-attached pane gets the modes it missed; a fresh one
+        // gets them from the daemon's post-replay `pane-modes` a moment from now.
+        if (!fresh && target.modes !== null) {
+            try {
+                subscription.onModes?.(target.modes);
+            } catch (error) {
+                this.report(error, `pane-modes ${paneID}`);
+            }
+        }
 
         if (fresh) {
             this.attach(paneID, target);

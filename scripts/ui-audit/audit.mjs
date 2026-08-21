@@ -834,6 +834,81 @@ async function clickMenuItem(page, label) {
     await sleep(300);
 }
 
+/**
+ * Open a submenu by HOVERING its parent row, and read back what it contains.
+ *
+ * Submenus open on hover (the native behaviour `ContextMenu` copies), so clicking the parent
+ * would dismiss the whole menu instead. Each row comes back with its tick state read off
+ * `data-checked` rather than by string-matching a `✓` out of the label.
+ */
+async function openSubmenu(page, label) {
+    const opened = await page.eval(
+        `(() => {
+            const menu = document.querySelector('[data-testid="context-menu"]');
+            if (menu === null) return 'no-menu';
+            const text = (el) => (el.textContent ?? '').trim().replace(/^[✓✔–]\\s*/, '');
+            const rows = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+            const row = rows.find(el => text(el).startsWith(${JSON.stringify(label)}));
+            if (row === undefined) return 'no-row:' + rows.map(el => text(el)).join('/');
+            const r = row.getBoundingClientRect();
+            return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+        })()`
+    );
+    if (typeof opened !== 'string' || !opened.startsWith('{')) {
+        throw new Error(`context menu item "${label}" not found (${String(opened)})`);
+    }
+    const point = JSON.parse(opened);
+    await page.mouse('mouseMoved', point.x, point.y, { button: 'none', buttons: 0 });
+    await sleep(400);
+    const rows = await page.eval(
+        `(() => {
+            const sub = document.querySelector('[data-testid="context-submenu"]');
+            if (sub === null) return '[]';
+            return JSON.stringify(Array.from(sub.querySelectorAll('[data-menu-item]')).map(el => ({
+                id: el.getAttribute('data-menu-item'),
+                label: (el.textContent ?? '').trim().replace(/^[✓✔–]\\s*/, ''),
+                checked: el.getAttribute('data-checked')
+            })));
+        })()`
+    );
+    return JSON.parse(String(rows));
+}
+
+/** Click a row inside the open submenu by its `data-menu-item` id. */
+async function clickSubmenuItem(page, id) {
+    const clicked = await page.eval(
+        `(() => {
+            const row = document.querySelector('[data-testid="context-submenu"] [data-menu-item="${id}"]');
+            if (row === null) return 'no-row';
+            const r = row.getBoundingClientRect();
+            return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+        })()`
+    );
+    if (typeof clicked !== 'string' || !clicked.startsWith('{')) {
+        throw new Error(`submenu item "${id}" not found (${String(clicked)})`);
+    }
+    const point = JSON.parse(clicked);
+    await page.clickAt(point.x, point.y);
+    await sleep(400);
+}
+
+/** Right-click a sidebar row (or the group header) whose text contains `needle`. */
+async function openSidebarMenu(page, selector, needle) {
+    const target = await page.eval(
+        `(() => {
+            const el = Array.from(document.querySelectorAll('${selector}'))
+                .find(node => (node.innerText ?? '').includes(${JSON.stringify(needle)}));
+            if (el === undefined) return null;
+            const r = el.getBoundingClientRect();
+            return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
+        })()`
+    );
+    if (target === null) throw new Error(`no ${selector} matching "${needle}"`);
+    const point = JSON.parse(String(target));
+    await page.clickAt(point.x, point.y, { button: 'right' });
+    await sleep(450);
+}
+
 // ── the run ─────────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -2589,6 +2664,94 @@ function buildFlows(ctx) {
                 );
                 recorder.check('⌘E returned to preview', back === 0, `${String(back)} textareas remain`);
                 recorder.eyes('is the editor monospaced and legible, and does the header pencil/eye icon flip?');
+            }
+        },
+        {
+            /**
+             * §TERM-103. The Swift keeps "Copy as Markdown / Copy as Rich Text" on the pane
+             * HEADER (a native NSMenu popped at the button); the port had them only inside the
+             * preview's own right-click menu and its hover chip, so the capability existed and
+             * the affordance had moved. The header button is the missing half, and it is
+             * markdown-only and preview-only — there is no rendered document to copy while the
+             * editor is up.
+             */
+            id: 'markdown-copy-header',
+            expect:
+                'The markdown pane header carries a copy button; clicking it opens the same two-item menu (Copy as Markdown / Copy as Rich Text) the in-frame chip opens, and the button is absent for shell and diff panes.',
+            needsEyes: true,
+            async run(recorder) {
+                if (state.mdPane === null) {
+                    recorder.check('a markdown pane to copy from', false, 'the markdown step produced none');
+                    return;
+                }
+                const present = await page.eval(
+                    `(() => {
+                        const button = document.querySelector('[data-testid="pane-copy-${state.mdPane}"]');
+                        const headers = Array.from(document.querySelectorAll('[data-testid^="pane-header-"]'));
+                        const others = headers
+                            .map((el) => el.getAttribute('data-testid').slice('pane-header-'.length))
+                            .filter((id) => id !== '${state.mdPane}');
+                        return JSON.stringify({
+                            label: button?.getAttribute('aria-label') ?? null,
+                            onOtherPanes: others.filter((id) =>
+                                document.querySelector('[data-testid="pane-copy-' + id + '"]') !== null
+                            ).length,
+                            otherPanes: others.length
+                        });
+                    })()`
+                );
+                const info = JSON.parse(String(present));
+                recorder.note(`header copy button: ${JSON.stringify(info)}`);
+                recorder.check(
+                    'the markdown header has a copy button, with a spoken label',
+                    info.label === 'Copy document (Markdown or Rich Text)',
+                    String(info.label)
+                );
+                recorder.check(
+                    'no other pane type has one',
+                    info.onOtherPanes === 0,
+                    `${String(info.onOtherPanes)} of ${String(info.otherPanes)} other panes`
+                );
+                if (info.label === null) return;
+
+                await page.click(`[data-testid="pane-copy-${state.mdPane}"]`);
+                await sleep(400);
+                await recorder.shot(page, 'menu');
+                const menu = await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="content-copy-menu-${state.mdPane}"]');
+                        if (el === null) return null;
+                        const rect = el.getBoundingClientRect();
+                        return JSON.stringify({
+                            items: Array.from(el.querySelectorAll('[role="menuitem"]')).map((node) => node.textContent),
+                            label: el.getAttribute('aria-label'),
+                            width: Math.round(rect.width),
+                            visible: rect.width > 0 && rect.height > 0
+                        });
+                    })()`
+                );
+                recorder.check('the copy menu opened', typeof menu === 'string', String(menu));
+                if (typeof menu !== 'string') return;
+                const opened = JSON.parse(menu);
+                recorder.note(`copy menu: ${JSON.stringify(opened)}`);
+                recorder.check(
+                    'it offers exactly the Swift’s two commands',
+                    Array.isArray(opened.items) &&
+                        opened.items.length === 2 &&
+                        opened.items[0] === 'Copy as Markdown' &&
+                        opened.items[1] === 'Copy as Rich Text',
+                    JSON.stringify(opened.items)
+                );
+                recorder.check('and it is actually on screen', opened.visible === true, JSON.stringify(opened));
+
+                // Dismiss it again: the scrim is the same one the chip's menu uses.
+                await page.click(`[data-testid="content-copy-scrim-${state.mdPane}"]`);
+                await sleep(300);
+                const gone = await page.eval(
+                    `document.querySelectorAll('[data-testid="content-copy-menu-${state.mdPane}"]').length`
+                );
+                recorder.check('clicking away dismisses it', gone === 0, `${String(gone)} menus remain`);
+                recorder.eyes('does the header copy button read as a copy affordance, and does the menu land under it?');
             }
         },
         {
@@ -4844,6 +5007,123 @@ function buildFlows(ctx) {
             }
         },
         {
+            /**
+             * §APP-071 / §GIT-092 — the footer's `doc N +A -B`.
+             *
+             * The daemon has computed these stats per association since the graft work, and the
+             * inspector renders them; what nothing did was match the FOCUSED pane's cwd to the
+             * association it sits in (longest worktree prefix wins) and put them beside the path
+             * in the status bar. This creates a pane inside the fixture repo, focuses it, and
+             * reads the footer.
+             */
+            id: 'footer-git-stats',
+            expect:
+                'A pane whose cwd is inside the fixture repo puts `doc 2 +A -B` in the status footer beside the path — file count in the tertiary tone, additions green, deletions red, with an accessibility label spelling the counts out. A pane outside every tracked worktree shows none of it.',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * `nex pane create` is being called from OUTSIDE a Nex pane (the harness has no
+                 * `NEX_PANE_ID`), so it needs an explicit destination or the CLI refuses with
+                 * "requires --workspace <name-or-id> or --target". Without it this whole step
+                 * errored out — which is exactly how it errored in run-J1/J2/J3, taking the only
+                 * evidence for §APP-071 with it. Address the ACTIVE workspace, which is the one
+                 * whose footer is on screen.
+                 */
+                const activeWorkspace = (await cli.json(['workspace', 'list', '--json'])).find(
+                    (workspace) => workspace.is_active
+                );
+                recorder.check(
+                    'there is an active workspace to create the repo pane in',
+                    activeWorkspace !== undefined,
+                    String(activeWorkspace?.name ?? '(none)')
+                );
+                if (activeWorkspace === undefined) return;
+                const created = await cli.json([
+                    'pane',
+                    'create',
+                    '--workspace',
+                    String(activeWorkspace.id),
+                    '--path',
+                    repo,
+                    '--json'
+                ]);
+                const repoPaneID = created.pane_id;
+                recorder.note(`pane in the repo: ${String(repoPaneID)}`);
+                // The association's status read is a real `git status`; the client's footer feed
+                // polls, so give both a beat rather than racing them.
+                await sleep(2500);
+                await page.click(`[data-testid="pane-header-${String(repoPaneID)}"]`);
+                await sleep(1200);
+                await recorder.shot(page);
+
+                const footer = await page.eval(
+                    `(() => {
+                        const stats = document.querySelector('[data-testid="footer-git-stats"]');
+                        const cwd = document.querySelector('[data-testid="footer-cwd"]');
+                        if (stats === null) {
+                            return JSON.stringify({ present: false, cwd: cwd?.textContent ?? null });
+                        }
+                        const spans = Array.from(stats.querySelectorAll('span'));
+                        const tone = (node) => (node === undefined ? null : getComputedStyle(node).color);
+                        return JSON.stringify({
+                            present: true,
+                            cwd: cwd?.textContent ?? null,
+                            // Double-escaped on purpose: this eval body is a TEMPLATE LITERAL, so
+                            // a single-backslash n is a real newline by the time the page parses
+                            // it, and the regex literal it sits in becomes an unterminated one —
+                            // "Invalid regular expression: missing /", which errored the step.
+                            text: (stats.innerText ?? '').replace(/\\s+/g, ' '),
+                            label: stats.getAttribute('aria-label'),
+                            additions: tone(spans.find((node) => node.textContent.startsWith('+'))),
+                            deletions: tone(spans.find((node) => node.textContent.startsWith('-')))
+                        });
+                    })()`
+                );
+                const info = JSON.parse(String(footer));
+                recorder.note(`footer: ${JSON.stringify(info)}`);
+                recorder.check('the footer shows the diff stats for the pane’s repo', info.present === true, String(footer));
+                if (info.present !== true) return;
+                recorder.check(
+                    'the file count is the fixture’s two changed files',
+                    /^2\b/.test(String(info.text).trim()),
+                    String(info.text)
+                );
+                recorder.check(
+                    'additions are green and deletions are red, as in the inspector',
+                    /rgb\(95,\s*190,\s*137\)/.test(String(info.additions)) &&
+                        /rgb\(224,\s*101,\s*92\)/.test(String(info.deletions)),
+                    `${String(info.additions)} / ${String(info.deletions)}`
+                );
+                recorder.check(
+                    'it carries an accessibility label spelling the counts out',
+                    /\d+ files? changed, \d+ added, \d+ removed/.test(String(info.label)),
+                    String(info.label)
+                );
+
+                // …and a pane OUTSIDE the repo shows nothing, which is the other half of the rule.
+                const panes = await cli.json(['pane', 'list', '--json']);
+                const outside = panes.find(
+                    (pane) => pane.type === 'shell' && pane.id !== repoPaneID && !String(pane.cwd ?? '').startsWith(repo)
+                );
+                if (outside !== undefined) {
+                    await page.click(`[data-testid="pane-header-${String(outside.id)}"]`);
+                    await sleep(1000);
+                    const none = await page.eval(
+                        `document.querySelectorAll('[data-testid="footer-git-stats"]').length`
+                    );
+                    recorder.check(
+                        'a pane outside every tracked worktree shows no stats at all',
+                        none === 0,
+                        `${String(none)} stat segments for ${String(outside.cwd)}`
+                    );
+                    await recorder.shot(page, 'outside');
+                }
+                await cli.ok(['pane', 'close', '--target', String(repoPaneID)]);
+                await sleep(600);
+                recorder.eyes('does `doc N +A -B` sit legibly beside the path without crowding the branch chip?');
+            }
+        },
+        {
             id: 'inspector-worktree-create',
             expect:
                 'The inspector’s Add ▸ New Worktree creates a REAL git worktree: the sheet previews the sanitized path and branch, Create runs `git worktree add`, and the new worktree shows up on disk, in `git worktree list`, and as an indented association row with a green (clean) dot.',
@@ -5300,7 +5580,7 @@ function buildFlows(ctx) {
         {
             id: 'terminal-input-matrix',
             expect:
-                'The engine turns real keystrokes into the right BYTES: ctrl+letter into the C0 control codes, Home/End/PageUp/PageDown into their escape sequences, and mouse press/drag/wheel into DEC mouse reports — read back through `cat -v`, which prints what the PTY actually received.',
+                'Real input becomes the right BYTES, read back through `cat -v` (which prints what the PTY actually received): ctrl+letter into the C0 control codes, Home/End/PageUp/PageDown into their escape sequences, and — under DECSET 1002 + 1006 — a real press / drag / release / wheel into DEC mouse reports, byte for byte at the cell the pixel landed in. With no mouse mode set the same drag still selects text and sends nothing; with one set the engine sees nothing and makes no selection; shift hands the gesture back.',
             needsEyes: true,
             async run(recorder) {
                 const target = await widestShellPane(page, cli);
@@ -5393,96 +5673,272 @@ function buildFlows(ctx) {
                     `${String(escapes)} escape introducers on the line`
                 );
 
-                // ── mouse reporting (TERM-037 / TERM-038) ───────────────────────────
+                // ── mouse reporting (TERM-037 / TERM-038 / TERM-039) ────────────────
                 //
-                // Turn on button-event tracking (1002) + SGR encoding (1006) and read the
-                // reports back. `cat -v` renders them as `^[[<0;COL;ROWM` (press) and `m`
-                // (release); a drag adds a 32-flagged motion report. This is the only place in
-                // the repo where a real `Input.dispatchMouseEvent` lands on the terminal grid.
+                // The port implements DEC mouse reporting in its OWN layer, because neither
+                // renderer does: `ghostty-web@0.4.0` parses 9/1000/1002/1003/1006 and then
+                // ignores them — its canvas `mousedown` starts a text SELECTION, `mousemove`
+                // extends it, `mouseup` copies it, and `hasMouseTracking()` is never consulted.
+                // That is why the previous run of this step read back ZERO reports and the gap
+                // became 00-INDEX gap #1.
+                //
+                // What runs now: the daemon streams the pane's DEC modes off the same
+                // `@xterm/headless` VT that already sees every PTY byte (`pane-modes`), the
+                // client intercepts pointer events in the CAPTURE phase before the engine's
+                // canvas can see them, and `client/src/terminal/mouse.ts` encodes the reports
+                // exactly as `ghostty/src/input/mouse_encode.zig` does. So the assertions below
+                // are byte-for-byte rather than pattern-shaped: the cell a pixel lands in is
+                // computed from the pane's OWN published metrics, and the expected escape
+                // sequence is spelled out in full.
                 await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
                 await sleep(500);
-                await runInTerminal(page, "printf '\\033[?1002h\\033[?1006h'; cat -v", { settleMs: 800 });
-                const body = await page.box(`[data-testid="pane-body-${paneID}"]`);
-                if (body === null) {
-                    recorder.check('the pane has a body to click in', false);
+
+                /**
+                 * A screen full of known text first.
+                 *
+                 * The selection assertions are the other half of the reporting claim — "the
+                 * engine sees nothing" only means something if the engine WOULD otherwise have
+                 * made a selection — and a drag over blank cells selects nothing at all.
+                 */
+                await runInTerminal(
+                    page,
+                    "clear; i=1; while [ $i -le 40 ]; do printf 'SELPROBE-%02d-0123456789ABCDEFGHIJKLMNOP\\n' $i; i=$((i+1)); done",
+                    { settleMs: 900 }
+                );
+
+                /**
+                 * The pane's own cell metrics and its canvas origin, published on the pane root
+                 * (`data-terminal-cell`) by the same `cellSize()` the reporter measures with. A
+                 * cell computed from these and a cell computed by the client cannot disagree,
+                 * which is what makes an exact expectation legitimate rather than lucky.
+                 */
+                // `data-pane-id` is on BOTH the grid wrapper and the terminal root, and the
+                // wrapper comes first in document order — so the terminal's own attributes are
+                // only reachable through a selector that names one of them.
+                const paneRoot = `[data-pane-id="${paneID}"][data-terminal-status]`;
+                const readGrid = async () =>
+                    await page.eval(
+                        `(() => {
+                            const root = document.querySelector('${paneRoot}');
+                            if (root === null) return null;
+                            const host = root.querySelector('[data-terminal-host]');
+                            const target = host?.querySelector('canvas') ?? host ?? root;
+                            const rect = target.getBoundingClientRect();
+                            const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
+                            return {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                                cellWidth: Number(cell[0] ?? 0),
+                                cellHeight: Number(cell[1] ?? 0),
+                                mouse: root.getAttribute('data-terminal-mouse'),
+                                selection: Number(root.getAttribute('data-terminal-selection') ?? 0)
+                            };
+                        })()`
+                    );
+                const selectionLength = async () => (await readGrid())?.selection ?? 0;
+
+                const grid = await readGrid();
+                if (grid === null || !(grid.cellWidth > 0) || !(grid.cellHeight > 0)) {
+                    recorder.check(
+                        'the pane publishes its cell metrics (data-terminal-cell)',
+                        false,
+                        JSON.stringify(grid)
+                    );
                     return;
                 }
-                const x = body.x + Math.min(80, body.width / 3);
-                const y = body.y + Math.min(120, body.height / 3);
-                await page.mouse('mouseMoved', x, y, { button: 'none', buttons: 0 });
-                await page.mouse('mousePressed', x, y, { button: 'left', clickCount: 1 });
-                await sleep(120);
-                await page.mouse('mouseMoved', x + 40, y + 20, { button: 'left', buttons: 1 });
-                await sleep(120);
-                await page.mouse('mouseReleased', x + 40, y + 20, { button: 'left', clickCount: 1 });
-                await sleep(900);
-                const mouseCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
-                const reports = (mouseCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? []);
-                recorder.block('after a click-drag with mouse reporting on', mouseCapture.slice(-500));
-                recorder.note(`SGR mouse reports: ${reports.join(' ') || '(none)'}`);
+                recorder.note(
+                    `grid: origin ${grid.x.toFixed(1)},${grid.y.toFixed(1)} · cell ` +
+                        `${grid.cellWidth.toFixed(2)}×${grid.cellHeight.toFixed(2)} px`
+                );
+
+                /** Pixel at the CENTRE of a zero-based cell, so rounding can never straddle. */
+                const at = (col, row) => ({
+                    x: grid.x + grid.cellWidth * (col + 0.5),
+                    y: grid.y + grid.cellHeight * (row + 0.5)
+                });
+                // Rows 3–5 of a 40-line block: inside the printed text on any pane height.
+                const from = at(2, 3);
+                const to = at(10, 5);
+
+                /**
+                 * WITH NO MOUSE MODE: the drag belongs to the engine.
+                 *
+                 * Asserted before reporting is turned on, because it is the regression this
+                 * whole feature could plausibly cause — a capture-phase interceptor that
+                 * swallowed events unconditionally would take selection away from every pane
+                 * that never asked for the mouse.
+                 */
+                await runInTerminal(page, 'cat -v', { settleMs: 700 });
+                await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                await sleep(80);
+                await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
+                await sleep(80);
+                await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                await sleep(400);
+                const plainSelection = await selectionLength();
+                const plainCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                const plainReports = plainCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
+                recorder.note(`selection with no mouse mode: ${String(plainSelection)} chars`);
                 recorder.check(
-                    'a real click on the grid is reported to the application (TERM-037)',
-                    reports.some((report) => report.endsWith('M')),
-                    reports.join(' ') || 'no press report'
+                    'with no mouse mode set, a drag still makes a normal text selection',
+                    plainSelection > 0,
+                    `${String(plainSelection)} characters selected`
                 );
                 recorder.check(
-                    'the release is reported too',
-                    reports.some((report) => report.endsWith('m')),
-                    reports.filter((report) => report.endsWith('m')).join(' ') || 'no release report'
+                    'and nothing is sent to the application',
+                    plainReports.length === 0,
+                    plainReports.join(' ') || 'no reports, as expected'
+                );
+
+                // ── reporting on: DECSET 1002 (button-event) + 1006 (SGR) ───────────
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(400);
+                await runInTerminal(page, "printf '\\033[?1002h\\033[?1006h'; cat -v", { settleMs: 900 });
+
+                /**
+                 * The mode reached the CLIENT, not just the daemon.
+                 *
+                 * `data-terminal-mouse` is the pane's live tracking mode, written from the
+                 * `pane-modes` message. Asserting it separately is what tells a future failure
+                 * apart: no attribute = the mode never crossed the socket; attribute but no
+                 * bytes = the encoder or the interception is wrong.
+                 */
+                let tracking = null;
+                try {
+                    tracking = await page.waitFor(
+                        `(() => document.querySelector('${paneRoot}')?.getAttribute('data-terminal-mouse') === 'drag')()`,
+                        { timeoutMs: 5000, label: 'data-terminal-mouse=drag' }
+                    );
+                } catch {
+                    tracking = null;
+                }
+                recorder.check(
+                    'DECSET 1002 reaches the client as a live pane mode (pane-modes)',
+                    tracking === true,
+                    tracking === true
+                        ? 'data-terminal-mouse="drag"'
+                        : `data-terminal-mouse=${String((await readGrid())?.mouse)}`
+                );
+
+                await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                await sleep(120);
+                // Two intermediate moves so motion reporting has cells to cross.
+                await page.mouse('mouseMoved', at(6, 4).x, at(6, 4).y, { button: 'left', buttons: 1 });
+                await sleep(80);
+                await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
+                await sleep(120);
+                await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                await sleep(900);
+
+                const mouseCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                const reports = mouseCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
+                recorder.block('after a click-drag with mouse reporting on', mouseCapture.slice(-500));
+                recorder.note(`SGR mouse reports: ${reports.join(' ') || '(none)'}`);
+
+                // 1-based cells, which is what the protocol puts on the wire.
+                const pressReport = `^[[<0;3;4M`;
+                const releaseReport = `^[[<0;11;6m`;
+                const midReport = `^[[<32;7;5M`;
+                const lastMotion = `^[[<32;11;6M`;
+                recorder.check(
+                    'a real click on the grid is reported byte for byte (TERM-037)',
+                    reports[0] === pressReport,
+                    `expected ${pressReport}, got ${reports[0] ?? '(nothing)'}`
+                );
+                recorder.check(
+                    'the release is reported at the cell it happened in',
+                    reports.at(-1) === releaseReport,
+                    `expected ${releaseReport}, got ${reports.at(-1) ?? '(nothing)'}`
                 );
                 const dragReports = reports.filter((report) => {
                     const button = Number((/\^\[\[<(\d+);/.exec(report) ?? [])[1] ?? '0');
                     return (button & 32) === 32;
                 });
                 recorder.check(
-                    'and the drag streams motion reports while the button is down (TERM-038)',
-                    dragReports.length > 0,
-                    dragReports.join(' ') || 'no motion reports (button|32)'
+                    'and the drag streams one motion report per cell crossed (TERM-038)',
+                    dragReports.join(' ') === [midReport, lastMotion].join(' '),
+                    `expected ${midReport} ${lastMotion}, got ${dragReports.join(' ') || '(none)'}`
                 );
-                if (reports.length === 0) {
-                    /**
-                     * FINDING, and the reason the three checks above are red.
-                     *
-                     * `ghostty-web@0.4.0` has no mouse-report path AT ALL. Reading its bundle:
-                     * `mousedown` on the canvas starts a text SELECTION, `mousemove` extends it,
-                     * `mouseup` copies it, and `wheel` either scrolls the viewport (normal
-                     * screen) or emits ↑/↓ (alternate screen). `hasMouseTracking()` exists on
-                     * the VT object and is never consulted by the input path, so DECSET 1000 /
-                     * 1002 / 1003 / 1006 are parsed and then ignored.
-                     *
-                     * User-visible consequence: mouse support in vim, tmux, htop, less and any
-                     * TUI that asks for it does not work in a Nex pane on the default engine.
-                     * This is engine-owned and not fixable in this repo — it is an upstream
-                     * feature request (or a reason to prefer `VITE_TERMINAL_ENGINE=xterm`,
-                     * which does implement reporting).
-                     */
-                    recorder.note(
-                        'FINDING (engine): ghostty-web 0.4 implements no DEC mouse reporting — its canvas mousedown/mousemove/mouseup drive text selection only, and hasMouseTracking() is never read. Mouse-mode TUIs (vim, tmux, htop) therefore get no mouse in a Nex pane under the default engine; xterm.js (VITE_TERMINAL_ENGINE=xterm) does implement it.'
-                    );
-                }
+                const reportedSelection = await selectionLength();
+                recorder.check(
+                    'a reported drag makes NO selection — the engine never saw the events',
+                    reportedSelection === 0,
+                    `${String(reportedSelection)} characters selected`
+                );
                 await recorder.shot(page, 'mouse-reporting');
+
+                // ── shift bypasses reporting (ghostty Surface.zig:3844-3846) ────────
+                //
+                // The universal terminal convention, and ghostty's default
+                // (`mouse-shift-capture = false`): shift hands the gesture back to the terminal
+                // so a user can still select text out of a mouse-mode TUI.
+                const beforeShift = reports.length;
+                await page.mouse('mouseMoved', from.x, from.y, {
+                    button: 'none',
+                    buttons: 0,
+                    modifiers: MOD.shift
+                });
+                await page.mouse('mousePressed', from.x, from.y, {
+                    button: 'left',
+                    clickCount: 1,
+                    modifiers: MOD.shift
+                });
+                await sleep(80);
+                await page.mouse('mouseMoved', to.x, to.y, {
+                    button: 'left',
+                    buttons: 1,
+                    modifiers: MOD.shift
+                });
+                await sleep(80);
+                await page.mouse('mouseReleased', to.x, to.y, {
+                    button: 'left',
+                    clickCount: 1,
+                    modifiers: MOD.shift
+                });
+                await sleep(600);
+                const shiftCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                const shiftReports = shiftCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
+                const shiftSelection = await selectionLength();
+                recorder.note(
+                    `shift-drag: ${String(shiftReports.length - beforeShift)} new reports, ` +
+                        `${String(shiftSelection)} chars selected`
+                );
+                recorder.check(
+                    'shift bypasses reporting: no new reports reach the application',
+                    shiftReports.length === beforeShift,
+                    `${String(shiftReports.length - beforeShift)} new report(s)`
+                );
+                recorder.check(
+                    'and the engine gets the gesture instead, selecting text',
+                    shiftSelection > 0,
+                    `${String(shiftSelection)} characters selected`
+                );
 
                 // ── wheel / precise scroll (TERM-039) ───────────────────────────────
                 //
                 // A browser's wheel event carries `deltaMode` rather than macOS's
                 // `hasPreciseScrollingDeltas`: `deltaMode 0` IS the precise (pixel) case, which
-                // is what CDP dispatches. So the port's equivalent of the precise flag is
-                // observable exactly here — as wheel reports arriving from a pixel-delta event.
+                // is what CDP dispatches, and the port's accumulator is ghostty's own
+                // (`Surface.zig` `scrollCallback`) — pixels add up against the CELL HEIGHT and
+                // each whole cell is one button-64/65 press.
                 /**
                  * Bounded, because this dispatch can HANG.
                  *
                  * `Input.dispatchMouseEvent{type:"mouseWheel"}` resolves only once the renderer
-                 * has acked the wheel, and the engine's own handler is registered
-                 * `{passive:false, capture:true}` and calls `preventDefault()` — in an Electron
-                 * renderer that combination left the command outstanding until the harness's
-                 * own 60 s timeout, turning a finding into a step error. A short budget plus a
-                 * note is the honest shape: the audit says what it could not drive.
+                 * has acked the wheel, and a `{passive:false, capture:true}` handler that calls
+                 * `preventDefault()` — which is what reporting requires — has left the command
+                 * outstanding until the harness's own timeout. A short budget plus a note is the
+                 * honest shape: the audit says what it could not drive.
                  */
                 const wheel = async (deltaY) => {
                     try {
                         await page.send(
                             'Input.dispatchMouseEvent',
-                            { type: 'mouseWheel', x, y, deltaX: 0, deltaY, modifiers: 0 },
+                            { type: 'mouseWheel', x: from.x, y: from.y, deltaX: 0, deltaY, modifiers: 0 },
                             4000
                         );
                         return true;
@@ -5493,26 +5949,60 @@ function buildFlows(ctx) {
                 const wheelDispatched = (await wheel(-120)) && (await wheel(120));
                 if (!wheelDispatched) {
                     recorder.note(
-                        'NOTE: `Input.dispatchMouseEvent{mouseWheel}` did not ack within 4 s — the engine handles wheel with `{passive:false, capture:true}` + preventDefault, and Chromium does not settle the command. The wheel assertions below read whatever DID arrive at the PTY.'
+                        'NOTE: `Input.dispatchMouseEvent{mouseWheel}` did not ack within 4 s — a wheel handler that calls preventDefault() does not settle the command in an Electron renderer. The assertions below read whatever DID arrive at the PTY.'
                     );
                 }
                 await sleep(900);
                 const wheelCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
-                const wheelReports = (wheelCapture.match(/\^\[\[<6[45];\d+;\d+M/g) ?? []);
+                const wheelReports = wheelCapture.match(/\^\[\[<6[45];\d+;\d+M/g) ?? [];
                 recorder.note(`wheel reports (buttons 64/65): ${wheelReports.join(' ') || '(none)'}`);
                 recorder.check(
                     'a pixel-delta wheel event is reported as a wheel button (TERM-039)',
                     wheelReports.length > 0,
                     wheelReports.join(' ') || 'no wheel reports'
                 );
-
-                // The wheel path that DOES exist, asserted rather than assumed: on the
-                // ALTERNATE screen the engine converts a wheel into cursor keys, which is what
-                // makes `less`/`man` scroll with a trackpad. `deltaMode` is CDP's pixel mode —
-                // the browser's equivalent of macOS's `hasPreciseScrollingDeltas` bit — so this
-                // is also the only observable half of TERM-039's precise-scroll flag.
-                await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
-                await sleep(400);
+                recorder.check(
+                    'wheel up and wheel down are reported as 64 and 65 at the pointer cell',
+                    wheelReports.some((report) => report.startsWith('^[[<64;')) &&
+                        wheelReports.some((report) => report.startsWith('^[[<65;')) &&
+                        wheelReports.every((report) => report.endsWith(';3;4M')),
+                    wheelReports.join(' ') || 'no wheel reports'
+                );
+                // The OTHER wheel path, asserted rather than assumed: on the ALTERNATE screen,
+                // with NO mouse mode set, the engine converts a wheel into cursor keys — which
+                // is what makes `less`/`man` scroll with a trackpad. `deltaMode` is CDP's pixel
+                // mode — the browser's equivalent of macOS's `hasPreciseScrollingDeltas` bit —
+                // so this is also the only observable half of TERM-039's precise-scroll flag.
+                //
+                // Reporting is turned OFF first, and that ordering is now load-bearing rather
+                // than incidental: an application that asked for the mouse OWNS the wheel
+                // (ghostty `Surface.zig:3625-3634` takes the alternate-scroll path only when
+                // `mouse_event == .none`), so leaving 1002 on would correctly suppress the very
+                // conversion this asserts. Before this wave it made no difference, because the
+                // engine ignored the modes entirely.
+                //
+                // ctrl-C, NOT ctrl-D, and that is now load-bearing too: every mouse report above
+                // was written to the PTY as INPUT with no newline, so the tty line buffer is not
+                // empty and EOT flushes it instead of ending `cat` (the same trap the hand-back
+                // block below documents). SIGINT ends the reader whatever is on the line.
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(500);
+                await runInTerminal(page, "printf '\\033[?1002l\\033[?1006l'", { settleMs: 600 });
+                let trackingOff = false;
+                try {
+                    trackingOff =
+                        (await page.waitFor(
+                            `(() => document.querySelector('${paneRoot}')?.getAttribute('data-terminal-mouse') === 'none')()`,
+                            { timeoutMs: 4000, label: 'data-terminal-mouse=none' }
+                        )) === true;
+                } catch {
+                    trackingOff = false;
+                }
+                recorder.check(
+                    'DECRST 1002 turns reporting back off in the client too',
+                    trackingOff,
+                    trackingOff ? 'data-terminal-mouse="none"' : `still ${String((await readGrid())?.mouse)}`
+                );
                 await runInTerminal(page, "printf '\\033[?1049h'; cat -v", { settleMs: 800 });
                 for (const delta of [-120, -120, 120]) {
                     await wheel(delta);
@@ -5566,29 +6056,165 @@ function buildFlows(ctx) {
                 await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
 
                 /**
-                 * What CDP cannot synthesise, recorded so the gap stays visible.
+                 * The input items this wave did NOT close, each with the reason it could not be
+                 * — read out of the engine bundle rather than inferred, so a re-score can act on
+                 * them instead of re-deriving them.
                  *
-                 * These are not "untested because nobody got to them" — they have no mechanism
-                 * in this harness at all, and saying so is the honest alternative to a green
-                 * tick that means nothing.
+                 * The mouse half of this step used to live here as "engine-owned, not fixable".
+                 * It moved out because it turned out to be fixable in the port's own layer
+                 * (`client/src/terminal/mouse.ts`), which is exactly why these notes now say
+                 * WHERE the mechanism is rather than only that there isn't one.
                  */
                 recorder.note(
-                    'SKIPPED (no mechanism): IME composition / marked text (TERM-024, TERM-032, TERM-033). ' +
-                        'CDP has no input-method channel — `Input.imeSetComposition` drives Chromium\'s own IME widget, ' +
-                        'not the engine\'s, and the client never sees a composition event. PARITY ▸ Known gaps #7 already ' +
-                        'records CJK/Hangul composition as a measured regression with `VITE_TERMINAL_ENGINE=xterm` as the escape hatch.'
+                    'SKIPPED (no mechanism to DRIVE): IME composition / marked text (TERM-024, TERM-032). ' +
+                        'CDP has no input-method channel — `Input.imeSetComposition` drives Chromium\'s own IME widget, not ' +
+                        'the engine\'s, so the client never sees a composition event the harness produced. What the engine ' +
+                        'does is readable, though: `ghostty-web@0.4.0` registers compositionstart/update/end on its ' +
+                        'container, and `handleCompositionUpdate` is an EMPTY function — the preedit is never pushed to the ' +
+                        'terminal, so nothing renders while composing and only the committed string is sent on ' +
+                        'compositionend. That is TERM-032\'s missing half, stated from the bundle. PARITY ▸ Known gaps #7 ' +
+                        'records the user-visible result; `VITE_TERMINAL_ENGINE=xterm` remains the escape hatch.'
                 );
                 recorder.note(
-                    'SKIPPED (no mechanism): dead keys / option-composed characters (TERM-024). A dead key is produced by the ' +
-                        'OS keyboard layout before the browser sees anything; CDP dispatches an already-resolved key event, so ' +
-                        'there is nothing here to compose.'
+                    'NOT IMPLEMENTABLE IN THIS LAYER: the IME caret rect (TERM-033). The candidate window follows the ' +
+                        'focused input, and `ghostty-web@0.4.0` pins its 1×1 hidden `<textarea>` at `left:0; top:0` of the ' +
+                        'pane container and never moves it — so composition is unpositioned by construction, at the pane\'s ' +
+                        'top-left corner rather than at the cursor. Fixing it from the port would mean writing to the ' +
+                        'engine\'s private `textarea` AND streaming the cursor cell to every client on every output chunk; ' +
+                        'the honest fix is upstream, in the engine that already owns the element.'
                 );
                 recorder.note(
-                    'SKIPPED (no mechanism): modifier press/release reporting (TERM-030, the Kitty keyboard protocol). ' +
-                        'Nothing in the client observes modifier-only keydown/keyup, so there is no behaviour to drive — ' +
-                        'that item is scored missing rather than untested.'
+                    'SKIPPED (no mechanism): dead keys / option-composed characters (TERM-024). A dead key is produced by ' +
+                        'the OS keyboard layout before the browser sees anything; CDP dispatches an already-resolved key ' +
+                        'event, so there is nothing here to compose.'
+                );
+                recorder.note(
+                    'NOT IMPLEMENTABLE IN THIS LAYER: modifier press/release reporting (TERM-030, the Kitty keyboard ' +
+                        'protocol). Two facts from the `ghostty-web@0.4.0` bundle: it registers ONE `keydown` listener and ' +
+                        'ZERO `keyup` listeners (so no key release of any kind reaches its encoder), and its ' +
+                        '`setKittyFlags()` — which does exist, forwarding to the real ghostty key encoder in WASM — is ' +
+                        'never called, so the VT\'s Kitty flag stack never reaches the encoder. The port could parse ' +
+                        '`CSI > flags u` itself the way it now parses the mouse modes, but acting on it means taking over ' +
+                        'the encoding of EVERY key, not just the modifiers: under the Kitty protocol every key changes ' +
+                        'shape, and a terminal where half the keys are Kitty-encoded is worse than one where none are. ' +
+                        'Scored missing rather than untested, deliberately.'
+                );
+                recorder.note(
+                    'IMPLEMENTED THIS WAVE (TERM-034): the terminal selection is readable — `TerminalRenderer.selection()` ' +
+                        'over both engines\' `getSelection()`, published as `data-terminal-selection` and asserted above in ' +
+                        'both directions. The Swift\'s consumer (NSTextInputClient `selectedRange()`) has no browser ' +
+                        'equivalent, so what the read buys here is the §TERM-037 invariant: a reported gesture makes no ' +
+                        'selection, an unreported one does.'
                 );
                 recorder.eyes('the "control-codes" and "mouse-reporting" shots: do the caret-escaped bytes read as a clean column, and did the drag leave the screen intact?');
+            }
+        },
+        {
+            id: 'pane-title-osc',
+            expect:
+                'A shell that sets its window title (OSC 2) moves the pane header from its working directory to that title, and advances the workspace\'s `last_activity_at` — the second half of the activity chain, whose first half (OSC 7 / pwd) landed last wave.',
+            needsEyes: true,
+            async run(recorder) {
+                /**
+                 * §TERM-147, and the reason it was `[~]`: `pane-directory-changed` had a
+                 * producer (OSC 7) and `pane-title-changed` had none, so a pane whose TITLE
+                 * moved without a directory change never advanced its activity — and a shell
+                 * with no OSC 7 integration never advanced at all. Every stock
+                 * `PROMPT_COMMAND` / `precmd` writes the title escape, so this is the writer
+                 * that fires for a plain `bash` with nothing configured.
+                 *
+                 * The producer is the daemon's own VT (`term/service.ts` → xterm's
+                 * `onTitleChange`, which covers OSC 0 and OSC 2), so nothing here depends on
+                 * which renderer the client is running.
+                 */
+                const target = await widestShellPane(page, cli);
+                const paneID = target?.id ?? state.firstPane;
+                if (paneID === null) {
+                    recorder.check('a shell pane to title', false);
+                    return;
+                }
+                const titleOf = async () =>
+                    await page.eval(
+                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? null)()`
+                    );
+                const activityOf = async () => {
+                    const rows = await cli.json(['workspace', 'list', '--json']);
+                    const row = rows.find((entry) => entry.is_active === true) ?? rows[0];
+                    return row?.last_activity_at ?? null;
+                };
+
+                await focusPaneBody(page, paneID);
+                const before = await titleOf();
+                const activityBefore = await activityOf();
+                recorder.note(`header before: ${JSON.stringify(before)} · activity ${String(activityBefore)}`);
+
+                const probe = `NEX-TITLE-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                // A full second, so the ISO-8601 `last_activity_at` (whole seconds) can move.
+                await sleep(1100);
+                await runInTerminal(page, `printf '\\033]2;${probe}\\007'`, { settleMs: 900 });
+
+                let shown = null;
+                try {
+                    shown = await page.waitFor(
+                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') === ${JSON.stringify(probe)})()`,
+                        { timeoutMs: 6000, label: 'pane header shows the OSC 2 title' }
+                    );
+                } catch {
+                    shown = null;
+                }
+                recorder.check(
+                    'an OSC 2 title reaches the pane header (TERM-147)',
+                    shown === true,
+                    shown === true ? probe : `header reads ${JSON.stringify(await titleOf())}`
+                );
+
+                const activityAfter = await activityOf();
+                recorder.note(`activity after: ${String(activityAfter)}`);
+                recorder.check(
+                    'and the title change advances the workspace activity clock',
+                    activityBefore !== null &&
+                        activityAfter !== null &&
+                        Date.parse(activityAfter) > Date.parse(activityBefore),
+                    `${String(activityBefore)} → ${String(activityAfter)}`
+                );
+                await recorder.shot(page, 'pane-title-osc');
+
+                /**
+                 * OSC 0 sets the icon name AND the window title; the port takes both through
+                 * the same handler, so this is the same assertion one sequence over.
+                 */
+                const second = `${probe}-ICON`;
+                await runInTerminal(page, `printf '\\033]0;${second}\\007'`, { settleMs: 900 });
+                let osc0 = null;
+                try {
+                    osc0 = await page.waitFor(
+                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') === ${JSON.stringify(second)})()`,
+                        { timeoutMs: 6000, label: 'pane header shows the OSC 0 title' }
+                    );
+                } catch {
+                    osc0 = null;
+                }
+                recorder.check(
+                    'OSC 0 (icon + window title) reaches the same producer',
+                    osc0 === true,
+                    osc0 === true ? second : `header reads ${JSON.stringify(await titleOf())}`
+                );
+
+                /**
+                 * Clear it, so the pane hands back with the working directory in its header —
+                 * the state every other step reads it in. An empty OSC 2 is a real report
+                 * (`title = null`), which is also the branch that proves the empty string is
+                 * not stored as a title.
+                 */
+                await runInTerminal(page, "printf '\\033]2;\\007'", { settleMs: 900 });
+                const cleared = await titleOf();
+                recorder.note(`header after clearing: ${JSON.stringify(cleared)}`);
+                recorder.check(
+                    'clearing the title returns the header to the working directory',
+                    typeof cleared === 'string' && cleared !== probe && cleared !== second,
+                    JSON.stringify(cleared)
+                );
+                recorder.eyes('the "pane-title-osc" shot: does the header read as a title rather than a path, and is it truncated in the middle when long?');
             }
         },
         {
@@ -7701,23 +8327,20 @@ function buildFlows(ctx) {
                  * Scroll the sidebar to its END before measuring anything.
                  *
                  * Both rows this step drags between are created HERE, so they are the last two
-                 * entries in the list — and by this point in a full run the list is long enough
-                 * to overflow its own scroller. A drag whose grab point or drop point is outside
-                 * the visible box never resolves a zone: the header does not tint, the landing
-                 * never plays, and nothing commits. Under `--only` the list is three rows and the
-                 * bug cannot appear, which is why this failed the full run and passed the scoped
-                 * one — run-H's README calls that disagreement a targeting bug until proven
-                 * otherwise, and this is one.
+                 * entries in the list — and by this point in a full run the list can be long
+                 * enough to overflow its own scroller. A drag whose grab point or drop point is
+                 * outside the visible box never resolves a zone.
+                 *
+                 * The scroller is the `role="listbox"` element, NOT `sidebar-list`: the latter
+                 * is the inner rows block, whose `scrollTop` is always 0. The old version of
+                 * this walked up from it looking for something that overflowed and, when
+                 * nothing did, kept walking to the document — which is why the diagnostics in
+                 * `run-I` reported `scrollTop: 0` for an element that never scrolls.
                  */
                 await page.eval(
-                    `(() => { const el = document.querySelector('[data-testid="sidebar-list"]');
+                    `(() => { const el = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
                               if (el === null) return false;
-                              let scroller = el;
-                              while (scroller !== null && scroller.scrollHeight <= scroller.clientHeight + 1) {
-                                  scroller = scroller.parentElement;
-                              }
-                              if (scroller === null) return false;
-                              scroller.scrollTop = scroller.scrollHeight;
+                              el.scrollTop = el.scrollHeight;
                               return true; })()`
                 );
                 await sleep(900);
@@ -7787,10 +8410,17 @@ function buildFlows(ctx) {
                                 const dragged = document.querySelector('[data-workspace-id="${grabbed.id}"]');
                                 const head = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
                                     .find(node => (node.innerText ?? '').includes('Drop Target'));
+                                const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
                                 return JSON.stringify({
                                     nest: dragged?.getAttribute('data-nest-preview') ?? null,
                                     indent: dragged === null ? null : getComputedStyle(dragged).marginLeft,
-                                    tint: head?.getAttribute('data-drop-preview') ?? null
+                                    tint: head?.getAttribute('data-drop-preview') ?? null,
+                                    // Defect N4b's instrumentation: what the drag loop DECIDED,
+                                    // which is the difference between "the gesture never began"
+                                    // and "it began and resolved to the wrong band".
+                                    dragActive: list?.getAttribute('data-drag-active') ?? null,
+                                    dragTarget: list?.getAttribute('data-drag-target') ?? null,
+                                    dragY: list?.getAttribute('data-drag-y') ?? null
                                 });
                             })()`
                         )
@@ -7798,18 +8428,26 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`mid-drag: ${JSON.stringify(preview)}`);
                 /**
-                 * Diagnostics for the one flow that still disagrees between a full run and a
-                 * scoped one (docs/PARITY.md ▸ N4). If the drag did not start, the next question
-                 * is always the same: did §WS-093's measure-before-dragging gate see every
-                 * rendered row? Record the numbers rather than guessing at them next time.
+                 * Defect N4b's diagnostics, kept because they are what closed it.
+                 *
+                 * The failure looked like "the drag never started" for a whole burn-down. It was
+                 * not: `data-drag-active` was `true` all along and `data-drag-target` said
+                 * `topLevel:<tail>` — the drop-zone walk was accumulating border-box heights
+                 * and losing each row's 2px margin, so by the sixth row of a crowded sidebar the
+                 * bands sat ~10px above the rows and a cursor three quarters down a group
+                 * header hit no band at all. Zones are built from measured tops now; if this
+                 * ever regresses, `dragTarget` names the wrong answer instead of leaving a
+                 * screenshot of nothing happening.
                  */
                 if (preview.tint !== 'true') {
                     const gate = await page.eval(
                         `(() => {
-                            const list = document.querySelector('[data-testid="sidebar-list"]');
+                            const rowsBlock = document.querySelector('[data-testid="sidebar-list"]');
+                            const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
                             const filtered = document.querySelector('[data-testid="sidebar-filtered"]') !== null;
-                            const rows = list === null ? [] : Array.from(list.children);
+                            const rows = rowsBlock === null ? [] : Array.from(rowsBlock.children);
                             const zero = rows.filter((el) => el.getBoundingClientRect().height === 0).length;
+                            const box = (el) => el === null ? null : { top: Math.round(el.getBoundingClientRect().top), bottom: Math.round(el.getBoundingClientRect().bottom) };
                             return JSON.stringify({
                                 filtered,
                                 rows: rows.length,
@@ -7817,8 +8455,14 @@ function buildFlows(ctx) {
                                 headers: document.querySelectorAll('[data-testid="group-header"]').length,
                                 empties: document.querySelectorAll('[data-testid="group-empty"]').length,
                                 workspaceRows: document.querySelectorAll('[data-testid="workspace-row"]').length,
-                                scrollTop: list === null ? null : list.scrollTop,
-                                listBox: list === null ? null : { top: Math.round(list.getBoundingClientRect().top), bottom: Math.round(list.getBoundingClientRect().bottom) }
+                                scrollTop: list === null ? null : Math.round(list.scrollTop),
+                                overflow: list === null ? null : Math.round(list.scrollHeight - list.clientHeight),
+                                scroller: box(list),
+                                rowsBlock: box(rowsBlock),
+                                // Where the rows ACTUALLY are, in the content space the zone
+                                // walk resolves into: the number the accumulate-heights model
+                                // used to get wrong by 2px per row.
+                                tops: rows.map((el) => Math.round(el.getBoundingClientRect().top - (list === null ? 0 : list.getBoundingClientRect().top) + (list === null ? 0 : list.scrollTop)))
                             });
                         })()`
                     );
@@ -7826,9 +8470,97 @@ function buildFlows(ctx) {
                     recorder.note(`grab point ${String(Math.round(grabbed.y))}, drop point ${String(Math.round(after.y))}`);
                 }
                 await recorder.shot(page, 'nest-preview');
+                recorder.check(
+                    'the gesture became a drag at all (N4b: `data-drag-active`)',
+                    preview.dragActive === 'true',
+                    String(preview.dragActive)
+                );
+                recorder.check(
+                    'and it resolved to the group header the cursor is over, not a tail slot (N4b)',
+                    typeof preview.dragTarget === 'string' && preview.dragTarget.startsWith('ontoGroupHeader:'),
+                    `${String(preview.dragTarget)} @ y=${String(preview.dragY)}`
+                );
                 recorder.check('the group header tints as a drop target (§WS-088)', preview.tint === 'true', String(preview.tint));
                 recorder.check('the dragged row previews its nested indent (§WS-089)', preview.nest === 'true', String(preview.nest));
                 recorder.check('and the indent is really applied, not just flagged', preview.indent === '24px', String(preview.indent));
+
+                /**
+                 * Re-arm §5.5's spring dwell before releasing.
+                 *
+                 * The landing below is the COLLAPSED-group case, and the sidebar deliberately
+                 * skips it for a group that spring-loaded open (that group is visibly open, so
+                 * the row lands in a slot the user can see). The reads and the screenshot above
+                 * take several hundred milliseconds of CDP round trips with the cursor parked on
+                 * the header — long enough to cross the 650 ms dwell and turn this into the
+                 * OTHER case, which is what made the landing assertion flake between full runs.
+                 *
+                 * Stepping off the group cancels the dwell AND re-collapses it; stepping back on
+                 * starts a fresh one that the release beats.
+                 *
+                 * Where "off" is matters, and getting it wrong is instructive: the obvious
+                 * choice — the dragged row's own original position — fails in exactly the case
+                 * it is needed for, because once the group has sprung open its children push
+                 * everything below them down and that point is now INSIDE the group's band, so
+                 * the dwell survives. The top of the list is above every group by construction.
+                 * The header is then RE-MEASURED: both the spring closing and the slot the
+                 * cursor passed through on the way move it.
+                 */
+                const listTop = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                if (list === null) return 'null';
+                                const r = list.getBoundingClientRect();
+                                return JSON.stringify({ x: r.x + r.width / 2, y: Math.round(r.top + 6) });
+                            })()`
+                        )
+                    )
+                );
+                await page.mouse('mouseMoved', listTop.x, listTop.y, { button: 'left', buttons: 1 });
+                await sleep(140);
+                const reArmed = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                    .find(node => (node.innerText ?? '').includes('Drop Target'));
+                                if (el === undefined) return 'null';
+                                const r = el.getBoundingClientRect();
+                                return JSON.stringify({
+                                    x: r.x + r.width / 2,
+                                    y: r.y + r.height * 0.75,
+                                    collapsed: el.getAttribute('data-collapsed')
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`re-armed over: ${JSON.stringify(reArmed)}`);
+                after.x = reArmed.x;
+                after.y = reArmed.y;
+                await page.mouse('mouseMoved', after.x, after.y, { button: 'left', buttons: 1 });
+                await sleep(140);
+                const atRelease = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const head = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                    .find(node => (node.innerText ?? '').includes('Drop Target'));
+                                return JSON.stringify({
+                                    collapsed: head?.getAttribute('data-collapsed') ?? null,
+                                    tint: head?.getAttribute('data-drop-preview') ?? null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`at release: ${JSON.stringify(atRelease)}`);
+                recorder.check(
+                    'the target group is still collapsed when the drop happens (§WS-092 precondition)',
+                    atRelease.collapsed === 'true' && atRelease.tint === 'true',
+                    JSON.stringify(atRelease)
+                );
 
                 await page.mouse('mouseReleased', after.x, after.y, { button: 'left', clickCount: 1 });
                 /**
@@ -7839,7 +8571,7 @@ function buildFlows(ctx) {
                  * gone into the collapsed group, which the daemon-side assertion below covers.
                  */
                 let landing = { landing: null, transform: null };
-                for (let tick = 0; tick < 20; tick++) {
+                for (let tick = 0; tick < 40; tick++) {
                     const seen = JSON.parse(
                         String(
                             await page.eval(
@@ -7857,7 +8589,7 @@ function buildFlows(ctx) {
                         landing = seen;
                         break;
                     }
-                    await sleep(25);
+                    await sleep(10);
                 }
                 recorder.note(`on release: ${JSON.stringify(landing)}`);
                 await recorder.shot(page, 'landing');
@@ -7873,6 +8605,469 @@ function buildFlows(ctx) {
                 const moved = workspaces.find((workspace) => workspace.name === 'Dragged One');
                 recorder.check('and the move lands in the daemon after the animation', moved?.group_name === 'Drop Target', JSON.stringify(moved ?? null));
                 recorder.eyes('does the mid-drag frame READ as "this row is going inside that group" — tinted header, indented row?');
+            }
+        },
+        {
+            id: 'sidebar-row-submenus',
+            expect:
+                'The two sidebar submenus that never got built: a workspace row’s "Profile ▸" (built at right-click time, `default` first, the assignment ticked) and a group header’s "Color ▸" (a "None" a workspace does not get, plus the ten palette colours) — each one reaching the daemon (§WS-049/§WS-065).',
+            needsEyes: true,
+            async run(recorder) {
+                // The previous step dropped `Dragged One` into a collapsed group; the daemon's
+                // drop expands it, but do not depend on that — this step needs the row visible.
+                await page.eval(
+                    `(() => {
+                        const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                            .find(node => (node.innerText ?? '').includes('Drop Target'));
+                        if (el === undefined || el.getAttribute('data-collapsed') !== 'true') return false;
+                        el.querySelector('[data-testid="group-chevron"]')?.click();
+                        return true;
+                    })()`
+                );
+                await sleep(700);
+
+                // ── §WS-049: the workspace row's Profile ▸ ──────────────────────────
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Dragged One');
+                const menu = await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="context-menu"]');
+                        if (el === null) return '[]';
+                        return JSON.stringify(Array.from(el.querySelectorAll('[role="menuitem"]')).map(row => (row.textContent ?? '').trim()));
+                    })()`
+                );
+                recorder.note(`row menu: ${String(menu)}`);
+                recorder.check(
+                    'the row menu now carries a Profile entry (§WS-049)',
+                    JSON.parse(String(menu)).some((label) => String(label).startsWith('Profile')),
+                    String(menu)
+                );
+
+                const profiles = await openSubmenu(page, 'Profile');
+                recorder.note(`profile submenu: ${JSON.stringify(profiles)}`);
+                await recorder.shot(page, 'profile-submenu');
+                recorder.check(
+                    'the built-in `default` baseline leads the list (§WS-049)',
+                    profiles[0]?.label === 'default',
+                    profiles.map((row) => row.label).join(', ')
+                );
+                recorder.check(
+                    'the config’s own profiles follow it, read at right-click time',
+                    profiles.some((row) => row.label === 'audit'),
+                    profiles.map((row) => row.label).join(', ')
+                );
+                recorder.check(
+                    'an unassigned workspace ticks `default`, not nothing',
+                    profiles.find((row) => row.label === 'default')?.checked === 'true',
+                    JSON.stringify(profiles.map((row) => [row.label, row.checked]))
+                );
+
+                await clickSubmenuItem(page, 'profile:audit');
+                await sleep(900);
+                await recorder.shot(page, 'profile-chosen');
+                // The profile is not on `workspace list`; the inspector reads it off the mirror.
+                await ensureInspector();
+                await sleep(700);
+                const assigned = await page.eval(
+                    `document.querySelector('[data-testid="inspector-profile"]')?.value ?? null`
+                );
+                recorder.check('choosing one reaches the daemon (§WS-049)', assigned === 'audit', String(assigned));
+
+                // …and re-opening the menu now ticks the assignment rather than the baseline.
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Dragged One');
+                const reopened = await openSubmenu(page, 'Profile');
+                recorder.check(
+                    'and the tick moves to it when the menu is rebuilt',
+                    reopened.find((row) => row.label === 'audit')?.checked === 'true',
+                    JSON.stringify(reopened.map((row) => [row.label, row.checked]))
+                );
+                await page.key('Escape');
+                await sleep(300);
+
+                // ── §WS-065: the group header's Color ▸ ─────────────────────────────
+                const before = await cli.json(['group', 'list', '--json']);
+                recorder.note(`groups before: ${JSON.stringify(before.map((group) => [group.name, group.color ?? null]))}`);
+
+                await openSidebarMenu(page, '[data-testid="group-header"]', 'Drop Target');
+                const colors = await openSubmenu(page, 'Color');
+                recorder.note(`colour submenu: ${JSON.stringify(colors.map((row) => row.label))}`);
+                await recorder.shot(page, 'group-colour-submenu');
+                recorder.check(
+                    'a group’s Color submenu leads with "None" (§WS-065)',
+                    colors[0]?.label === 'None',
+                    colors.map((row) => row.label).join(', ')
+                );
+                recorder.check(
+                    'and offers all ten palette colours after it',
+                    colors.length === 11,
+                    `${String(colors.length)} rows: ${colors.map((row) => row.label).join(', ')}`
+                );
+                recorder.check(
+                    'a colourless group ticks None',
+                    colors[0]?.checked === 'true',
+                    JSON.stringify(colors.map((row) => [row.label, row.checked]))
+                );
+
+                await clickSubmenuItem(page, 'color:purple');
+                await sleep(1200);
+                await recorder.shot(page, 'group-recoloured');
+                const after = await cli.json(['group', 'list', '--json']);
+                const target = after.find((group) => group.name === 'Drop Target');
+                recorder.note(`groups after: ${JSON.stringify(after.map((group) => [group.name, group.color ?? null]))}`);
+                recorder.check(
+                    'choosing one reaches the daemon through the new `set-group-color` verb (§WS-065)',
+                    target?.color === 'purple',
+                    JSON.stringify(target ?? null)
+                );
+
+                // "None" is the half a workspace's Color submenu does not have: it must CLEAR.
+                await openSidebarMenu(page, '[data-testid="group-header"]', 'Drop Target');
+                const ticked = await openSubmenu(page, 'Color');
+                recorder.check(
+                    'the tick follows the colour it just set',
+                    ticked.find((row) => row.label === 'purple')?.checked === 'true',
+                    JSON.stringify(ticked.map((row) => [row.label, row.checked]))
+                );
+                await clickSubmenuItem(page, 'color:none');
+                await sleep(1200);
+                const cleared = (await cli.json(['group', 'list', '--json'])).find(
+                    (group) => group.name === 'Drop Target'
+                );
+                recorder.check(
+                    'and "None" clears it again rather than being inert',
+                    (cleared?.color ?? null) === null,
+                    JSON.stringify(cleared ?? null)
+                );
+                await recorder.shot(page, 'group-colour-cleared');
+                recorder.eyes('do both submenus read as native menus — ticks aligned, swatches true-colour, "None" separated?');
+            }
+        },
+        {
+            id: 'sidebar-drag-affordances',
+            expect:
+                'The drag affordances the sidebar was missing: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), and the entry animation a newly created row plays (§WS-007/§WS-008/§WS-088).',
+            needsEyes: true,
+            async run(recorder) {
+                // Expand the group this run has been dropping into, so it has visible children.
+                await page.eval(
+                    `(() => {
+                        const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                            .find(node => (node.innerText ?? '').includes('Drop Target'));
+                        if (el === undefined || el.getAttribute('data-collapsed') !== 'true') return false;
+                        el.querySelector('[data-testid="group-chevron"]')?.click();
+                        return true;
+                    })()`
+                );
+                await sleep(700);
+                await recorder.shot(page, 'guide');
+
+                // ── §WS-007: the guide rule ─────────────────────────────────────────
+                const guides = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                const nested = rows.filter(el => el.getAttribute('data-depth') === '1');
+                                const top = rows.filter(el => el.getAttribute('data-depth') === '0');
+                                const read = (el) => {
+                                    const guide = el.querySelector('[data-testid="group-guide"]');
+                                    if (guide === null) return null;
+                                    const g = guide.getBoundingClientRect();
+                                    const r = el.getBoundingClientRect();
+                                    return {
+                                        group: el.getAttribute('data-group-id'),
+                                        width: Math.round(g.width * 10) / 10,
+                                        inset: Math.round(g.left - r.left),
+                                        colour: getComputedStyle(guide).backgroundColor,
+                                        top: Math.round(g.top),
+                                        bottom: Math.round(g.bottom)
+                                    };
+                                };
+                                return JSON.stringify({
+                                    nested: nested.length,
+                                    withGuide: nested.filter(el => el.getAttribute('data-guide') === 'true').length,
+                                    topLevelWithGuide: top.filter(el => el.getAttribute('data-guide') === 'true').length,
+                                    segments: nested.map(read).filter(entry => entry !== null)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`guides: ${JSON.stringify(guides)}`);
+                recorder.check(
+                    'every child of an expanded group draws a guide segment (§WS-007)',
+                    guides.nested > 0 && guides.withGuide === guides.nested,
+                    `${String(guides.withGuide)} of ${String(guides.nested)}`
+                );
+                recorder.check(
+                    'and no top-level row draws one',
+                    guides.topLevelWithGuide === 0,
+                    String(guides.topLevelWithGuide)
+                );
+                recorder.check(
+                    'the rule is 1.5px at an 18px leading inset (§WS-007)',
+                    guides.segments.every((segment) => segment.width === 1.5 && segment.inset === -6),
+                    JSON.stringify(guides.segments.map((segment) => [segment.width, segment.inset]))
+                );
+                recorder.check(
+                    'it is tinted, not a hairline of nothing',
+                    guides.segments.every((segment) => segment.colour !== 'rgba(0, 0, 0, 0)'),
+                    JSON.stringify(guides.segments.map((segment) => segment.colour))
+                );
+                /*
+                 * Continuity is the whole point — but only WITHIN a group. Two groups' runs are
+                 * separated by the second group's header, and the gap between them is meant to
+                 * be there: measuring across it is how the first version of this check produced
+                 * a 40px "gap" and called it a defect.
+                 */
+                const gaps = [];
+                for (let index = 0; index + 1 < guides.segments.length; index++) {
+                    const here = guides.segments[index];
+                    const next = guides.segments[index + 1];
+                    if (here.group !== next.group) continue;
+                    gaps.push(next.top - here.bottom);
+                }
+                recorder.note(`segment gaps within a group: ${JSON.stringify(gaps)}`);
+                recorder.check(
+                    'consecutive segments meet, so a group’s run reads as ONE line (§WS-007)',
+                    gaps.length > 0 && gaps.every((gap) => gap <= 0),
+                    JSON.stringify(gaps)
+                );
+
+                // ── §WS-088: the insertion line at a slot target ─────────────────────
+                //
+                // By this point in a full run most workspaces live inside a group, so the two
+                // top-level rows this needs are created rather than assumed.
+                await cli.ok(['workspace', 'create', '--name', 'Slot A']);
+                await cli.ok(['workspace', 'create', '--name', 'Slot B']);
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Slot B'))`,
+                    { timeoutMs: 20_000, label: 'the second slot row' }
+                );
+                await sleep(900);
+                const rows = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                .filter(el => el.getAttribute('data-depth') === '0')
+                                .map(el => {
+                                    const r = el.getBoundingClientRect();
+                                    return { id: el.getAttribute('data-workspace-id'), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                                }))`
+                        )
+                    )
+                );
+                recorder.check('there are two top-level rows to drag between', rows.length >= 2, String(rows.length));
+                if (rows.length >= 2) {
+                    const from = rows[rows.length - 1];
+                    const to = rows[0];
+                    await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                    // A press alone must not draw the line: the gesture is not a drag yet.
+                    await sleep(120);
+                    const onPress = await page.eval(
+                        `document.querySelectorAll('[data-testid="drop-insert-line"]').length`
+                    );
+                    recorder.check('a press with no movement draws no insertion line', onPress === 0, String(onPress));
+
+                    for (let step = 1; step <= 10; step++) {
+                        await page.mouse('mouseMoved', from.x + ((to.x - from.x) * step) / 10, from.y + ((to.y - from.y) * step) / 10, {
+                            button: 'left',
+                            buttons: 1
+                        });
+                        await sleep(20);
+                    }
+                    await sleep(250);
+                    const line = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="drop-insert-line"]');
+                                    const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                    if (el === null) return JSON.stringify({ present: false, target: list?.getAttribute('data-drag-target') ?? null });
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        present: true,
+                                        height: Math.round(r.height * 10) / 10,
+                                        width: Math.round(r.width),
+                                        colour: getComputedStyle(el).backgroundColor,
+                                        target: list?.getAttribute('data-drag-target') ?? null,
+                                        tinted: document.querySelectorAll('[data-drop-preview="true"]').length
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`insertion line: ${JSON.stringify(line)}`);
+                    await recorder.shot(page, 'insert-line');
+                    recorder.check(
+                        // 2 CSS px measures back as ~2.1 on a retina display; the assertion is
+                        // "a 2pt rule", not "exactly 2.0 device pixels".
+                        'a slot target draws the 2pt accent insertion line (§WS-088)',
+                        line.present === true && line.height >= 1.5 && line.height <= 2.5,
+                        JSON.stringify(line)
+                    );
+                    recorder.check(
+                        'and it is the SLOT indicator, so no header band is tinted at the same time',
+                        line.tinted === 0,
+                        String(line.tinted)
+                    );
+                    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                    await sleep(900);
+                    const gone = await page.eval(`document.querySelectorAll('[data-testid="drop-insert-line"]').length`);
+                    recorder.check('the line goes away on release', gone === 0, String(gone));
+                }
+
+                // ── §WS-008: a newly inserted row plays its entry ────────────────────
+                await cli.ok(['workspace', 'create', '--name', 'Springy']);
+                // The animation is 350ms; poll for the first frame that carries the flag rather
+                // than hoping one round trip lands inside the window.
+                let entered = { flagged: 0, animation: null };
+                for (let tick = 0; tick < 40; tick++) {
+                    const seen = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                    const fresh = rows.filter(el => el.getAttribute('data-entering') === 'true');
+                                    return JSON.stringify({
+                                        flagged: fresh.length,
+                                        animation: fresh[0] === undefined ? null : getComputedStyle(fresh[0]).animationName,
+                                        name: fresh[0] === undefined ? null : (fresh[0].innerText ?? '').split('\\n')[0]
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    if (seen.flagged > 0) {
+                        entered = seen;
+                        break;
+                    }
+                    await sleep(25);
+                }
+                recorder.note(`entry animation: ${JSON.stringify(entered)}`);
+                await recorder.shot(page, 'row-entering');
+                recorder.check(
+                    'a row that appears plays the entry animation (§WS-008)',
+                    entered.flagged === 1 && entered.animation === 'nex-sidebar-row-enter',
+                    JSON.stringify(entered)
+                );
+                await sleep(600);
+                const settled = await page.eval(
+                    `(() => {
+                        const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                        return JSON.stringify({
+                            entering: rows.filter(el => el.getAttribute('data-entering') === 'true').length,
+                            reorderable: rows.filter(el => (el.style.transition ?? '').includes('transform')).length,
+                            total: rows.length
+                        });
+                    })()`
+                );
+                recorder.note(`settled: ${String(settled)}`);
+                const state = JSON.parse(String(settled));
+                recorder.check('and stops playing it once settled', state.entering === 0, String(state.entering));
+                recorder.check(
+                    'every settled row declares the reorder transition (§WS-008)',
+                    state.total > 0 && state.reorderable === state.total,
+                    `${String(state.reorderable)} of ${String(state.total)}`
+                );
+                await recorder.shot(page, 'settled');
+                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, and is the insertion line legible against the row fill?');
+            }
+        },
+        {
+            id: 'sidebar-escape-clears-selection',
+            expect:
+                'Escape clears a sidebar multi-selection before any keybinding lookup — so it beats `close_search` — while an open context menu keeps the key for itself (§SET-186/§APP-109).',
+            needsEyes: true,
+            async run(recorder) {
+                const boxes = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).map(el => {
+                                const r = el.getBoundingClientRect();
+                                return { id: el.getAttribute('data-workspace-id'), name: (el.innerText ?? '').split('\\n')[0], x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 };
+                            }))`
+                        )
+                    )
+                );
+                recorder.check('there are rows to select', boxes.length >= 2, String(boxes.length));
+                if (boxes.length < 2) return;
+
+                const selected = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"][data-selected="true"]')).map(el => el.getAttribute('data-workspace-id')))`
+                            )
+                        )
+                    );
+
+                /*
+                 * ⌘-click two rows (§WS-045) — RE-MEASURING between them.
+                 *
+                 * The first selection makes the "N selected" banner appear above the list, which
+                 * pushes every row down by its height. Clicking the second row at a coordinate
+                 * measured before that happened lands on the first row again and toggles it
+                 * straight back off, which is what one selected row instead of two means.
+                 */
+                const boxFor = async (id) =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-workspace-id="${id}"]');
+                                    if (el === null) return 'null';
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({ x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
+                                })()`
+                            )
+                        )
+                    );
+                const first = await boxFor(boxes[0].id);
+                await page.clickAt(first.x, first.y, { modifiers: MOD.meta });
+                await sleep(400);
+                const second = await boxFor(boxes[1].id);
+                await page.clickAt(second.x, second.y, { modifiers: MOD.meta });
+                await sleep(400);
+                const before = await selected();
+                recorder.note(`selected: ${JSON.stringify(before)}`);
+                await recorder.shot(page, 'selected');
+                recorder.check('⌘-click builds a multi-selection', before.length === 2, JSON.stringify(before));
+
+                const banner = await page.eval(
+                    `document.querySelector('[data-testid="selection-header"]')?.innerText?.replace(/\\n/g, ' ') ?? null`
+                );
+                recorder.check('and the selection banner counts it', String(banner).includes('2 selected'), String(banner));
+
+                // A menu is up → the menu owns Escape; the selection must survive it.
+                await openSidebarMenu(page, PAGE.workspaceRows, String(boxes[0].name));
+                await sleep(300);
+                await page.key('Escape');
+                await sleep(400);
+                const afterMenu = await selected();
+                const menuGone = await page.eval(`document.querySelector('${PAGE.contextMenu}') === null`);
+                recorder.note(`after the menu’s Escape: menu closed=${String(menuGone)}, selected=${JSON.stringify(afterMenu)}`);
+                recorder.check('an open menu takes Escape for itself', menuGone === true, String(menuGone));
+                recorder.check('and the selection behind it survives', afterMenu.length === 2, JSON.stringify(afterMenu));
+
+                // Now the real thing.
+                await page.key('Escape');
+                await sleep(500);
+                const after = await selected();
+                await recorder.shot(page, 'cleared');
+                recorder.check('Escape clears the multi-selection (§SET-186/§APP-109)', after.length === 0, JSON.stringify(after));
+                const bannerGone = await page.eval(
+                    `document.querySelector('[data-testid="selection-header"]') === null`
+                );
+                recorder.check('and the selection banner goes with it', bannerGone === true, String(bannerGone));
+
+                // …and with nothing selected Escape falls through to the binding map again,
+                // which is what `close_search` needs: the sidebar must DECLINE, not swallow.
+                await page.key('Escape');
+                await sleep(300);
+                const stillEmpty = await selected();
+                recorder.check('a second Escape is a no-op, not an error', stillEmpty.length === 0, JSON.stringify(stillEmpty));
+                recorder.eyes('does the selection strip appear and disappear cleanly, with no half-selected rows left behind?');
             }
         },
         {

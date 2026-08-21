@@ -7,7 +7,7 @@
  * whole selection — which is what these assert, callback by callback.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Sidebar, SidebarResizer, clampSidebarWidth, readStoredSidebarWidth, storeSidebarWidth } from './index';
@@ -361,5 +361,84 @@ describe('sidebar resize (§WS-002 / §APP-065)', () => {
         onResize.mockClear();
         window.dispatchEvent(new MouseEvent('pointermove', { clientX: 100 }));
         expect(onResize).not.toHaveBeenCalled();
+    });
+});
+
+// ── Escape clears the multi-selection (§SET-186 / §APP-109) ─────────────────────────
+
+describe('escape handle', () => {
+    /**
+     * The predicate assembly's key dispatcher calls at §7.2 step 2 — before any binding
+     * lookup, so it beats the default `escape=close_search`. The sidebar answers rather than
+     * assembly deciding, because only the sidebar knows whether one of its own overlays is up
+     * and should eat the key itself.
+     */
+    function mount(props: Record<string, unknown> = {}): { current: (() => boolean) | null } {
+        const ref: { current: (() => boolean) | null } = { current: null };
+        render(<Sidebar {...base()} entries={entries()} labelPresets={PRESETS} escapeRef={ref} {...props} />);
+        return ref;
+    }
+
+    /** The real call site is a window keydown handler, so the state flush has to be acted. */
+    function pressEscape(ref: { current: (() => boolean) | null }): boolean {
+        let consumed = false;
+        act(() => {
+            consumed = ref.current?.() ?? false;
+        });
+        return consumed;
+    }
+
+    function selectedIDs(): string[] {
+        return screen
+            .getAllByTestId('workspace-row')
+            .filter((row) => row.dataset['selected'] === 'true')
+            .map((row) => row.dataset['workspaceId'] ?? '');
+    }
+
+    it('declines when nothing is selected, so Escape reaches close_search', () => {
+        const ref = mount();
+        expect(ref.current).toBeTypeOf('function');
+        expect(pressEscape(ref)).toBe(false);
+    });
+
+    it('clears a multi-selection and reports the key consumed', () => {
+        const onSelectionChange = vi.fn();
+        const ref = mount({ onSelectionChange });
+
+        // Build the selection the way a user does: ⌘-click two rows.
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+        expect(selectedIDs()).toEqual([W1, W2]);
+
+        expect(pressEscape(ref)).toBe(true);
+        expect(selectedIDs()).toEqual([]);
+        expect(onSelectionChange).toHaveBeenLastCalledWith(new Set());
+
+        // …and a second Escape declines, so the key falls through again.
+        expect(pressEscape(ref)).toBe(false);
+    });
+
+    it('yields to an open context menu, which owns Escape itself', () => {
+        const ref = mount();
+        fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement, { metaKey: true });
+        fireEvent.click(screen.getAllByTestId('workspace-row')[1] as HTMLElement, { metaKey: true });
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(screen.getByTestId('context-menu')).toBeTruthy();
+
+        // The menu is up: the selection survives and the sidebar does not consume the key.
+        expect(pressEscape(ref)).toBe(false);
+        expect(selectedIDs()).toEqual([W1, W2]);
+
+        // The menu's own Escape closes it; the next Escape then clears the selection.
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+        expect(pressEscape(ref)).toBe(true);
+        expect(selectedIDs()).toEqual([]);
+    });
+
+    it('is nulled on unmount, so a torn-down sidebar cannot consume a key', () => {
+        const ref = mount();
+        cleanup();
+        expect(ref.current).toBeNull();
     });
 });

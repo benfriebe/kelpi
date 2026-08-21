@@ -201,13 +201,20 @@ describe('TerminalStateServiceImpl — modes', () => {
 
         await expect(service.modesAsync('p')).resolves.toEqual({
             applicationCursorKeys: true,
-            bracketedPaste: true
+            bracketedPaste: true,
+            mouseTracking: 'none',
+            mouseFormat: 'x10'
         });
     });
 
     it('reports idle modes for unknown panes', () => {
         const service = makeService();
-        expect(service.modes('gone')).toEqual({ applicationCursorKeys: false, bracketedPaste: false });
+        expect(service.modes('gone')).toEqual({
+            applicationCursorKeys: false,
+            bracketedPaste: false,
+            mouseTracking: 'none',
+            mouseFormat: 'x10'
+        });
     });
 });
 

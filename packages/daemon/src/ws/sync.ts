@@ -62,7 +62,7 @@ import {
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
-import type { DaemonState, DomainAction, DomainEvent, LabelColor } from '../store/types.js';
+import type { DaemonState, DomainAction, DomainEvent, LabelColor, WorkspaceColor } from '../store/types.js';
 import {
     isDesktopCommand,
     type DesktopChannel,
@@ -304,6 +304,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  *   rename-workspace     `workspace_id`, `name`          → rename-workspace
  *   set-workspace-icon   `workspace_id`, `icon`          → set-workspace-icon
  *   set-group-icon       `group_id`, `icon`              → set-group-icon
+ *   set-group-color      `group_id`, `color?`            → set-group-color
  *   move-workspaces      `workspace_ids`, `group_id?`, `index?` → move-workspaces-to-group
  *   clear-pane-status    `pane_id`                       → pane-agent-event(clearPaneStatus)
  *   set-pane-status      `pane_id`, `status`             → pane-agent-event(setPaneStatus)
@@ -334,6 +335,10 @@ export const WS_ONLY_COMMANDS = [
     'rename-workspace',
     'set-workspace-icon',
     'set-group-icon',
+    // §WS-065: a group's colour is optional and only `group create --color` could ever set it,
+    // so a group created any other way was stuck grey for life. The reducer action has always
+    // existed; this is the verb the sidebar's "Color ▸" submenu needed.
+    'set-group-color',
     'move-workspaces',
     'create-group-for-workspaces',
     'set-bulk-color',
@@ -461,6 +466,25 @@ export function handleWsOnlyCommand(
             ...(workspaceScoped ? { workspace_id: id } : { group_id: id }),
             icon: icon === null ? null : formatIconString(icon)
         };
+    }
+
+    if (command === 'set-group-color') {
+        // §WS-065. Unlike a workspace, a group's colour is OPTIONAL: the submenu leads with
+        // "None", so a missing/`null`/empty `color` clears it back to the theme's divider
+        // tint rather than being an error. An unrecognised name IS an error — silently
+        // clearing on a typo would look like the menu had picked "None".
+        const id = text(payload['group_id']);
+        if (id === undefined) return failure('set-group-color requires group_id');
+        if (groupByID(state, id) === null) return failure(`no group matches '${id}'`);
+        const raw = payload['color'];
+        let color: WorkspaceColor | null = null;
+        if (typeof raw === 'string' && raw.trim() !== '') {
+            const parsed = parseWorkspaceColor(raw.trim());
+            if (parsed === undefined) return failure(`'${raw}' is not a known color`);
+            color = parsed;
+        }
+        store.dispatch({ type: 'set-group-color', id, color });
+        return { ok: true, group_id: id, color };
     }
 
     if (command === 'add-label-preset') {
@@ -1420,7 +1444,14 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 daemon: {
                     version: options.daemon.version,
                     build: options.daemon.build,
-                    pid: options.daemon.pid ?? process.pid
+                    pid: options.daemon.pid ?? process.pid,
+                    // §APP-069, additive: the daemon HOST's home, for display only.
+                    // `homeDirectory` is stripped from the MIRROR because a browser on another
+                    // machine must not read it as its own — but every path the client renders
+                    // (a pane's cwd, a worktree root) is the daemon's, so abbreviating one to
+                    // `~` needs the daemon's home rather than the viewer's. Absent on an older
+                    // daemon, which a client reads as "no abbreviation", never as `/`.
+                    home: options.store.getState().homeDirectory
                 },
                 // M8: settings ride the handshake, not the snapshot — they are not domain
                 // state and must not enter the delta-replayed mirror (`ws/settings.ts`).

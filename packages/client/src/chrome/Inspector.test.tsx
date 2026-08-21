@@ -38,7 +38,7 @@ function pane(id: string, overrides: Partial<ChromePane> = {}): ChromePane {
     };
 }
 
-function workspace(overrides: Partial<ChromeWorkspace> = {}): ChromeWorkspace & { profileName?: string | null } {
+function workspace(overrides: Partial<ChromeWorkspace> = {}): ChromeWorkspace {
     return {
         id: W1,
         name: 'alpha',
@@ -126,7 +126,7 @@ describe('layout and identity (§WS-137/§WS-138)', () => {
     it('leads the profile picker with `default` and keeps an assigned-but-missing one selectable', () => {
         const onSetProfile = vi.fn();
         view({
-            workspace: workspace({ profileName: 'ghost' } as Partial<ChromeWorkspace>),
+            workspace: workspace({ profileName: 'ghost' }),
             profiles: ['work', 'personal'],
             onSetProfile
         });

@@ -150,6 +150,12 @@ export interface WebPaneService {
      */
     retargetFind(paneID: string, nextTabID: string | null): void;
     /**
+     * §WEB-019: a tab was destroyed — drop the per-tab daemon state that outlives it. Today
+     * that is the inspector arm (the only thing keyed by tab rather than pane that is not
+     * already torn down with the tab object). A no-op when nothing was armed on that tab.
+     */
+    forgetTab(paneID: string, tabID: string): void;
+    /**
      * Arm the page picker STICKY for a batch (WEB-127): unlike `nex web inspect`, the arm is not
      * consumed by the first pick, so the user keeps clicking elements into the panel.
      */
@@ -276,6 +282,22 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const disarmPicker = (paneID: string): void => {
         inspectState.disarm(paneID);
         host.notify('inspect-disarm', { paneID });
+    };
+
+    /**
+     * §WEB-019: a destroyed tab takes its inspector arm with it.
+     *
+     * The Swift drops the arm inside `destroyTab` because the arm's listeners lived in that
+     * WKWebView. Here the arm is daemon state, so an arm left on a closed tab outlives its page
+     * and is merely INERT — every inbound payload is checked against `arm.tabID`. Inert is not
+     * gone: `nex web inspect` would still report an arm that can never fire, and a `--send-to`
+     * arm would wait forever. Both tab-close paths (the verb and a page-initiated close) call
+     * this. No `inspect-disarm` notify: it would address a tab the host has already destroyed.
+     */
+    const forgetTab = (paneID: string, tabID: string): void => {
+        const arm = inspectState.armOf(paneID);
+        if (arm === null || arm.tabID !== tabID) return;
+        inspectState.disarm(paneID);
     };
 
     // ── find (§10) ──────────────────────────────────────────────────────────
@@ -514,6 +536,8 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         if (store === undefined || event.tabID === undefined) return;
         const found = webPaneOf(event.paneID);
         if (found === null) return;
+        // §WEB-019: the page closed itself; the arm it carried dies with it.
+        forgetTab(event.paneID, event.tabID);
         store.dispatch({
             type: 'web-tab-close',
             workspaceID: found.workspaceID,
@@ -541,6 +565,10 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             }
             // The tab rides back so a stale count (WEB-063) is recognisable as stale.
             return { ...envelope, tab_id: tabID };
+        },
+
+        forgetTab(paneID, tabID) {
+            forgetTab(paneID, tabID);
         },
 
         retargetFind(paneID, nextTabID) {

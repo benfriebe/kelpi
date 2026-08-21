@@ -4,6 +4,8 @@
 
 import type { WireMessage } from '@nex/protocol';
 
+import type { MouseFormat, MouseTrackingMode } from './term/mouse-modes.js';
+
 // ---------------------------------------------------------------------------
 // Control transport (wire-protocol.md)
 // ---------------------------------------------------------------------------
@@ -72,6 +74,17 @@ export interface PtyManager {
 export interface VtModes {
   readonly applicationCursorKeys: boolean; // DECCKM
   readonly bracketedPaste: boolean;
+  /**
+   * DEC mouse tracking (9 / 1000 / 1002 / 1003), in xterm's vocabulary. Optional so every
+   * existing `VtModes` literal (tests, fakes, the idle default) stays valid; absent reads as
+   * `'none'`, which is what a terminal with no mouse mode set has.
+   *
+   * Streamed to clients because the port implements mouse REPORTING in its own layer — see
+   * `term/mouse-modes.ts` for why the engine cannot.
+   */
+  readonly mouseTracking?: MouseTrackingMode | undefined;
+  /** Coordinate encoding (1005 / 1006 / 1015 / 1016). Absent reads as `'x10'`. */
+  readonly mouseFormat?: MouseFormat | undefined;
 }
 
 export interface TerminalStateService {

@@ -39,6 +39,70 @@ import { SYSTEM_STATS_INTERVAL_MS, ZERO_SYSTEM_STATS, type WsSystemStats } from 
 
 export type AgentBucket = 'running' | 'waiting' | 'inactive';
 
+/** The slice of an inspector association the footer's longest-prefix match needs. */
+export interface FooterAssociation {
+    readonly worktreePath: string;
+    readonly status: {
+        readonly kind: 'unknown' | 'clean' | 'dirty';
+        readonly changedFiles: number;
+        readonly additions: number;
+        readonly deletions: number;
+    };
+}
+
+export interface FooterGitStats {
+    readonly changedFiles: number;
+    readonly additions: number;
+    readonly deletions: number;
+}
+
+/**
+ * §APP-071 / §GIT-092 — what `doc N +A -B` is computed from.
+ *
+ * The pane carries no association id, so the Swift matches its cwd to the repo association it
+ * sits INSIDE, longest worktree path winning (a workspace can hold a repo and a worktree nested
+ * under it; the deeper one is the one the pane is actually in). `null` when the pane is outside
+ * every tracked worktree, or the tree it is in is clean — the two cases the Swift hides.
+ */
+export function footerGitStats(
+    associations: readonly FooterAssociation[],
+    workingDirectory: string
+): FooterGitStats | null {
+    if (workingDirectory === '') return null;
+    let best: FooterAssociation | null = null;
+    for (const association of associations) {
+        const root = association.worktreePath;
+        if (root === '') continue;
+        if (workingDirectory !== root && !workingDirectory.startsWith(`${root}/`)) continue;
+        if (best === null || root.length > best.worktreePath.length) best = association;
+    }
+    if (best === null || best.status.kind !== 'dirty') return null;
+    const { changedFiles, additions, deletions } = best.status;
+    return { changedFiles, additions, deletions };
+}
+
+/** The Swift's `gitStatsLabel`: `doc N`, then `+A` in green and `-B` in red, 10 pt monospaced. */
+function GitStats({ stats }: { readonly stats: FooterGitStats }): ReactElement {
+    const label =
+        `${String(stats.changedFiles)} file${stats.changedFiles === 1 ? '' : 's'} changed, ` +
+        `${String(stats.additions)} added, ${String(stats.deletions)} removed`;
+    return (
+        <span
+            data-testid="footer-git-stats"
+            className="flex shrink-0 items-center gap-1 font-mono text-[10px]"
+            aria-label={label}
+            title={label}
+        >
+            <span className="flex items-center gap-0.5" style={{ color: tokens.textTertiary }}>
+                <ChromeIcon name="document" size={9} />
+                {stats.changedFiles}
+            </span>
+            {stats.additions > 0 ? <span style={{ color: '#5FBE89' }}>+{stats.additions}</span> : null}
+            {stats.deletions > 0 ? <span style={{ color: '#E0655C' }}>-{stats.deletions}</span> : null}
+        </span>
+    );
+}
+
 export interface AgentCountSummary {
     readonly running: number;
     readonly waiting: number;
@@ -74,6 +138,13 @@ export interface StatusFooterProps {
      * being off renders — a footer must not invent a 0 % CPU it was never told about.
      */
     readonly systemStats?: SystemStatsView | undefined;
+    /**
+     * §APP-071 / §GIT-092: the ACTIVE workspace's repo associations, with their last known
+     * dirtiness. The footer matches the focused pane's cwd against them (longest prefix) and
+     * renders `doc N +A -B` for the one it lands in. Absent/empty = no stats segment, which is
+     * also what a pane outside every tracked worktree gets.
+     */
+    readonly associations?: readonly FooterAssociation[] | undefined;
     /** Frozen clock for tests; defaults to the live 1s ticker. */
     readonly now?: number | undefined;
 }
@@ -189,6 +260,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
     const nowMs = props.now ?? tickerSecond * 1000;
 
     const items = openBucket === null ? [] : (props.bucketItems?.(openBucket) ?? []);
+    // §APP-071: the focused pane's working tree, resolved against the workspace's associations.
+    const treeStats =
+        pane === null
+            ? null
+            : footerGitStats(props.associations ?? EMPTY_ASSOCIATIONS, pane.workingDirectory);
 
     // The enabled set in canonical order, gated by the master toggle (`enabledStatKinds`).
     const stats = props.systemStats;
@@ -225,9 +301,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                                 {pane.gitBranch}
                             </span>
                         )}
+                        {treeStats === null ? null : <GitStats stats={treeStats} />}
                         {pane.agentSessionID === null ? null : paneRunning ? (
                             <span data-testid="footer-agent" style={{ color: tokens.activeAgent }}>
-                                {pane.agentKind ?? 'agent'}
+                                {/* §AGNT-063 / §APP-072: the Swift's literal default is "claude". */}
+                                {pane.agentKind ?? 'claude'}
                                 {pane.agentStartedAt === null || pane.agentStartedAt === undefined
                                     ? ''
                                     : ` ${chromeElapsedLabel(pane.agentStartedAt, nowMs)}`}
@@ -356,3 +434,4 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 }
 
 const EMPTY_SAMPLES: readonly number[] = [];
+const EMPTY_ASSOCIATIONS: readonly FooterAssociation[] = [];

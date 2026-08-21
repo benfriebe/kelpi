@@ -64,6 +64,14 @@ export const FRAME_DOCUMENT_BACKGROUND = { dark: '#0A0A0C', light: '#FFFFFF' } a
  */
 const OVERLAY_INSET = 14;
 
+/**
+ * Where the Copy menu opens. A measured `{x, y}` is the in-frame chip's own anchor (its
+ * bottom-left); `{anchor:'top-right'}` is the pane HEADER's button (§TERM-103), which is not in
+ * this component's coordinate space at all — it sits one row above, so the menu is pinned to
+ * the same top-right corner the chip occupies instead of a coordinate that would be a guess.
+ */
+type CopyMenuPosition = { readonly x: number; readonly y: number } | { readonly anchor: 'top-right' };
+
 export interface ContentFrameProps {
     readonly paneID: string;
     /** The daemon's rendered document. An empty string renders an empty (but live) frame. */
@@ -108,6 +116,15 @@ export interface ContentFrameProps {
     readonly findPalette?: Partial<FindPalette> | undefined;
     /** Bump to open the find bar from outside (the app's `toggle_search` binding). */
     readonly findToken?: number | undefined;
+    /**
+     * §TERM-103: bump to open the Copy menu from the PANE HEADER's copy button.
+     *
+     * The Swift pops a native `NSMenu` at the header button; here the menu is the frame's own
+     * (it owns the iframe conversation "Copy as Rich Text" needs), so the header asks for it
+     * with a token the same way ⌘F asks for the find bar. It opens where the in-frame chip
+     * would put it — top-right of the document, directly under the header button that asked.
+     */
+    readonly copyToken?: number | undefined;
     readonly testID?: string | undefined;
 }
 
@@ -221,11 +238,25 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     }, [findOpen, needle, sendFind]);
 
     // ── the copy commands (§3.14) ───────────────────────────────────────────────────
-    const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+    const [menu, setMenu] = useState<CopyMenuPosition | null>(null);
     /** Pending "Copy as Rich Text" requests: the frame answers asynchronously. */
     const richTokenRef = useRef<string | null>(null);
 
     const copyable = typeof props.copySource === 'string';
+
+    /**
+     * §TERM-103: the PANE HEADER's copy button, arriving as a bumped token (see `copyToken`).
+     * It opens the same menu the in-frame chip opens, pinned under the header rather than at a
+     * measured chip — the button that asked for it is in the header, one row above.
+     */
+    const copyToken = props.copyToken ?? 0;
+    const lastCopyToken = useRef(copyToken);
+    useEffect(() => {
+        if (copyToken === lastCopyToken.current) return;
+        lastCopyToken.current = copyToken;
+        if (!copyable) return;
+        setMenu({ anchor: 'top-right' });
+    }, [copyToken, copyable]);
 
     // The frame only takes the browser's own context menu away while there is something to
     // replace it with, so it has to be told — on every `ready` (a reload resets the flag) and
@@ -399,7 +430,12 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                         aria-label="Copy document"
                         data-testid={`content-copy-menu-${paneID}`}
                         className="absolute z-10 min-w-[160px] rounded-md p-1 text-[12px]"
-                        style={{ ...OVERLAY_STYLE, left: menu.x, top: menu.y }}
+                        style={{
+                            ...OVERLAY_STYLE,
+                            ...('anchor' in menu
+                                ? { right: OVERLAY_INSET, top: 8 }
+                                : { left: menu.x, top: menu.y })
+                        }}
                     >
                         <button
                             type="button"

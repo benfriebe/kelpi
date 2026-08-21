@@ -304,3 +304,53 @@ input {
     opacity: 0.6;
   }
 }
+
+/*
+ * §AGNT-103 / §AGNT-104's pulsing agent dot.
+ *
+ * The Swift overlays a dot on the workspace avatar (and on a group header, aggregated) and
+ * PULSES it: `.easeInOut(duration: 1).repeatForever(autoreverses: true)` on a halo behind the
+ * dot. A halo is a second layer here too — `box-shadow` spread, which grows outward without
+ * moving the dot or disturbing the 1.5 px ring that separates it from the sidebar behind it.
+ *
+ * The dot itself never changes size: a status marker that breathes is read as "working", one
+ * that jumps is read as a glitch. Reduced motion keeps the dot and drops the pulse — the colour
+ * is the state, and the animation only draws the eye to it.
+ */
+@keyframes nex-agent-dot-pulse {
+  0% { box-shadow: 0 0 0 1.5px var(--nex-dot-ring), 0 0 0 0 var(--nex-dot-halo); }
+  100% { box-shadow: 0 0 0 1.5px var(--nex-dot-ring), 0 0 0 4px transparent; }
+}
+
+.nex-agent-dot-pulse {
+  animation: nex-agent-dot-pulse 1s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-agent-dot-pulse {
+    animation: none;
+  }
+}
+
+/*
+ * §WS-008's sidebar entry animation.
+ *
+ * The Swift animates its rendered-entry list with `.spring(response: 0.35,
+ * dampingFraction: 0.8)`. CSS has no spring, so the port approximates it two ways: newly
+ * inserted rows play these keyframes once (a slight overshoot settling in ~350ms), and rows
+ * that merely CHANGED PLACE are moved by the FLIP pass in `Sidebar.tsx`, which measures the
+ * before/after tops and transitions the delta away on the same curve. Removals are not
+ * animated: React unmounts the node, and holding a dead row alive to fade it out would put a
+ * phantom in the drag geometry that §WS-093's measure gate has to trust.
+ */
+@keyframes nex-sidebar-row-enter {
+  0% { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  60% { opacity: 1; transform: translateY(1px) scale(1.005); }
+  100% { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-entering='true'] {
+    animation: none !important;
+  }
+}

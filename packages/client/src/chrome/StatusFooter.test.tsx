@@ -9,7 +9,9 @@ import { ZERO_SYSTEM_STATS } from '@nex/protocol';
 
 import {
     StatusFooter,
+    fitStatGauges,
     footerGitStats,
+    statGaugeWidth,
     type ChromePane,
     type FooterAssociation,
     type StatusBarItem,
@@ -641,7 +643,13 @@ describe('the left cluster clips instead of overflowing (N6)', () => {
         expect(left.className).toContain('overflow-hidden');
         // …while still being the flexible half of the row: it has to be able to shrink at all.
         expect(left.className).toContain('min-w-0');
-        expect(left.className).toContain('flex-1');
+        // `flex-auto`, not `flex-1` — the same grow and the same shrink, but a CONTENT basis
+        // instead of `0%` (§N7). With a zero basis this cluster asks the row for nothing, and an
+        // over-subscribed row hands it exactly that: the 0 px-wide left cluster photographed in
+        // run-M/56-footer-git-stats.png, with the path, the branch and the stats all clipped out
+        // of existence. `flex-1` must NOT come back.
+        expect(left.className).toContain('flex-auto');
+        expect(left.className).not.toContain('flex-1');
     });
 
     it('gives the path the largest shrink factor, so it truncates first', () => {
@@ -674,5 +682,185 @@ describe('the left cluster clips instead of overflowing (N6)', () => {
         expect(screen.getByTestId('footer-git-stats').getAttribute('aria-label')).toBe(
             '2 files changed, 5 added, 5 removed'
         );
+    });
+});
+
+/**
+ * §N7 — the RIGHT cluster yields, and it yields in a fixed order.
+ *
+ * The defect N6's fix made legible: the right cluster was `shrink-0` around ~840 px of gauges,
+ * counts and clock, so an over-subscribed row could not balance at all — the left cluster was
+ * starved to 0 px AND the right one still ran 485 px past the footer's own box, sideways under
+ * the inspector (docs/audit/run-M/56-footer-git-stats.png).
+ *
+ * jsdom cannot measure any of that; what it can pin is the set of rules that make it impossible,
+ * every one of which was absent before:
+ *   1. the right cluster shrinks at all, and shrinks harder than the left one, so a resize is
+ *      contained even in the frame before the next measurement;
+ *   2. the gauge row is `shrink-0` and NOT clipped — it is dropped a reading at a time by
+ *      `fitStatGauges` instead, because CSS cannot make a flex container yield below its
+ *      children's min-content and because every gauge owns a hover popover that a clip would eat;
+ *   3. the counts and the clock are `shrink-0` and grouped, so they are never crushed and the
+ *      budget can measure exactly what it must leave room for;
+ *   4. the row itself still has no `overflow-hidden` — the bucket popover is positioned outside
+ *      its box, so nothing over this row may clip.
+ * The measurement is the audit's `footer-git-stats` step, which reads every one of these boxes
+ * against the footer's own at 1280 / 1060 / 880 px.
+ */
+describe('the right cluster shrinks in priority order (N7)', () => {
+    function renderRight(patch: Partial<SystemStatsView> = {}): void {
+        render(
+            <StatusFooter
+                summary={SUMMARY}
+                now={NOW}
+                focusedPane={pane()}
+                systemStats={statsView({
+                    enabled: ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace'],
+                    ...patch
+                })}
+            />
+        );
+    }
+
+    it('is no longer shrink-0, and gives way 1000× faster than the left cluster', () => {
+        renderRight();
+        const right = screen.getByTestId('footer-right');
+        const left = screen.getByTestId('footer-left');
+        expect(right.className).not.toContain('shrink-0');
+        expect(Number(right.style.flexShrink)).toBe(1000);
+        // The left cluster's shrink factor is the CSS default of 1 (via `flex-auto`), so the
+        // right one is three orders of magnitude more willing to give up width.
+        expect(left.style.flexShrink).toBe('');
+        expect(Number(right.style.flexShrink)).toBeGreaterThan(1);
+    });
+
+    it('never zeroes its own minimum — counts and clock are what it refuses to shrink below', () => {
+        renderRight();
+        const right = screen.getByTestId('footer-right');
+        // `min-w-0` here would let flexbox crush the counts; the automatic min-content size IS
+        // the contract, so it must stay.
+        expect(right.className).not.toContain('min-w-0');
+        for (const bucket of ['running', 'waiting', 'inactive']) {
+            const count = screen.getByTestId(`count-${bucket}`);
+            expect(count.className).toContain('shrink-0');
+            expect(count.className).toContain('whitespace-nowrap');
+        }
+        expect(screen.getByTestId('footer-clock').className).toContain('shrink-0');
+    });
+
+    it('renders a gauge whole or not at all — the squeeze removes readings, not digits', () => {
+        renderRight();
+        const stats = screen.getByTestId('system-stats');
+        // NOT clipped and NOT compressible: every gauge owns a hover popover drawn ABOVE the
+        // footer, so an `overflow-hidden` here would cut the popovers off at the window edge —
+        // which is why the segment is dropped by measurement instead (see `fitStatGauges`).
+        expect(stats.className).toContain('shrink-0');
+        expect(stats.className).not.toContain('overflow-hidden');
+        // …and each reading keeps its fixed slot (§APP-081's fixed per-kind slot).
+        const slot = screen.getByTestId('stat-gauge-cpu').firstElementChild as HTMLElement;
+        expect(slot.style.width).toBe('44px');
+    });
+
+    it('groups the segments it keeps, so the budget can measure exactly what it must leave', () => {
+        renderRight();
+        const keep = screen.getByTestId('footer-keep');
+        expect(keep.className).toContain('shrink-0');
+        for (const bucket of ['running', 'waiting', 'inactive']) {
+            expect(keep.contains(screen.getByTestId(`count-${bucket}`))).toBe(true);
+        }
+        expect(keep.contains(screen.getByTestId('footer-clock'))).toBe(true);
+        // The gauges are deliberately OUTSIDE it: they are the part that goes.
+        expect(keep.contains(screen.getByTestId('system-stats'))).toBe(false);
+    });
+
+    it('renders every gauge while no measurement has been taken (jsdom, first paint)', () => {
+        // `useFooterGaugeBudget` returns null without a ResizeObserver, and null means "all of
+        // them" — the behaviour the row had before the budget existed.
+        renderRight();
+        expect(
+            within(screen.getByTestId('system-stats'))
+                .getAllByRole('button')
+                .map((node) => node.getAttribute('data-testid'))
+        ).toEqual([
+            'stat-gauge-cpu',
+            'stat-gauge-memory',
+            'stat-gauge-load',
+            'stat-gauge-network',
+            'stat-gauge-diskIO',
+            'stat-gauge-diskSpace'
+        ]);
+    });
+
+    it('leaves the row itself unclipped, so the bucket popover can still escape it', () => {
+        renderRight();
+        const row = screen.getByTestId('status-footer');
+        expect(row.className).not.toContain('overflow-hidden');
+        expect(row.className).toContain('relative');
+        fireEvent.click(screen.getByTestId('count-running'));
+        const popover = screen.getByTestId('bucket-popover');
+        // Anchored to the row, drawn ABOVE it — the thing `overflow-hidden` on the row would eat.
+        expect(popover.className).toContain('absolute');
+        expect(popover.className).toContain('bottom-7');
+        expect(row.contains(popover)).toBe(true);
+    });
+
+    it('keeps the standalone sparkline slot on the same terms as the gauge row', () => {
+        render(<StatusFooter summary={SUMMARY} now={NOW} sparklineSamples={[1, 4, 2, 8]} />);
+        const slot = screen.getByTestId('sparkline').parentElement as HTMLElement;
+        expect(slot.className).toContain('shrink-0');
+        expect(slot.className).not.toContain('overflow-hidden');
+    });
+});
+
+/**
+ * §N7's arithmetic, on its own.
+ *
+ * The decision the footer cannot express in CSS: a flex container's min-content size counts its
+ * children's min-content sizes whatever their `min-width`, so the gauge row's intrinsic width
+ * propagates out through the right cluster and makes it unshrinkable below ~840 px — which is
+ * how a `shrink-0` right cluster came to run 485 px past the footer's own box while starving the
+ * left one to 0. The fix is to decide how many gauges fit and render only those; this is that
+ * decision, held still.
+ */
+describe('fitStatGauges (N7)', () => {
+    const width = (kind: string): number => statGaugeWidth(kind, { showGraph: false, graphWidth: 28 });
+    const all = ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace'] as const;
+
+    it('measures a gauge as its fixed slot, plus its sparkline when graphs are on', () => {
+        expect(statGaugeWidth('cpu', { showGraph: false, graphWidth: 28 })).toBe(44);
+        expect(statGaugeWidth('cpu', { showGraph: true, graphWidth: 28 })).toBe(44 + 3 + 28);
+        expect(statGaugeWidth('network', { showGraph: false, graphWidth: 28 })).toBe(60);
+        // An unknown kind measures 0 rather than throwing: it renders nothing either.
+        expect(statGaugeWidth('nonsense', { showGraph: true, graphWidth: 28 })).toBe(0);
+    });
+
+    it('keeps every gauge when no measurement has been taken', () => {
+        expect(fitStatGauges(all, Number.POSITIVE_INFINITY, width)).toEqual(all);
+    });
+
+    it('drops from the TAIL, so the canonical order is the priority order', () => {
+        // cpu(44) + 14 + memory(44) = 102; the next gap+load would need 108 more.
+        expect(fitStatGauges(all, 102, width)).toEqual(['cpu', 'memory']);
+        expect(fitStatGauges(all, 101, width)).toEqual(['cpu']);
+        expect(fitStatGauges(all, 44, width)).toEqual(['cpu']);
+    });
+
+    it('drops the whole row when even the first one does not fit — including a negative budget', () => {
+        expect(fitStatGauges(all, 43, width)).toEqual([]);
+        expect(fitStatGauges(all, 0, width)).toEqual([]);
+        expect(fitStatGauges(all, -120, width)).toEqual([]);
+    });
+
+    it('charges the gap only BETWEEN gauges, never before the first', () => {
+        const two = fitStatGauges(['cpu', 'memory'] as const, 102, width);
+        expect(two).toEqual(['cpu', 'memory']);
+        // The same budget minus one pixel loses the second one, which is where the gap lives.
+        expect(fitStatGauges(['cpu', 'memory'] as const, 101, width)).toEqual(['cpu']);
+    });
+
+    it('counts the sparkline when graphs are on, so a graphed row drops sooner', () => {
+        const graphed = (kind: string): number => statGaugeWidth(kind, { showGraph: true, graphWidth: 28 });
+        expect(fitStatGauges(all, 102, graphed)).toEqual(['cpu']);
+        expect(fitStatGauges(all, 74, graphed)).toEqual([]);
     });
 });

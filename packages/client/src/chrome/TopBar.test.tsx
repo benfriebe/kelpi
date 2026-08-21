@@ -163,3 +163,69 @@ describe('controls', () => {
         expect(onToggleSidebar).toHaveBeenCalledOnce();
     });
 });
+
+/**
+ * §APP-046 — the strip is drawn UNDER the window's traffic lights.
+ *
+ * The shell now creates its window with `titleBarStyle: 'hiddenInset'`, which removes the native
+ * title bar entirely: this bar IS the title bar. Two things follow, and both are asserted here
+ * because the defect they replace was invisible from the page — a native strip stacked above the
+ * client's own, and a leading gutter that did not exist so the buttons landed on the controls.
+ */
+describe('the hidden title bar (§APP-046)', () => {
+    it('keeps the shell’s leading gutter clear, without growing the strip', () => {
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                trafficLightInset={80}
+                dragRegion
+                onToggleSidebar={() => undefined}
+            />
+        );
+        const bar = screen.getByTestId('top-bar');
+        expect(bar.style.paddingLeft).toBe('80px');
+        expect(bar.getAttribute('data-traffic-light-inset')).toBe('80');
+        // The HEIGHT is untouched — `h-8`, the shipped app's 32pt. A taller bar would be the
+        // "two stacked strips" defect wearing a different hat.
+        expect(bar.className).toContain('h-8');
+        // …and the first control really is beyond the gutter, which is the clause that matters:
+        // the buttons must not sit on top of it.
+        expect(bar.style.paddingLeft).not.toBe('12px');
+    });
+
+    it('takes the drag region, and hands it back to every control inside it', () => {
+        render(
+            <TopBar
+                workspaceName="alpha"
+                panes={[]}
+                connection="connected"
+                trafficLightInset={80}
+                dragRegion
+                onToggleSidebar={() => undefined}
+                onToggleInspector={() => undefined}
+            />
+        );
+        const bar = screen.getByTestId('top-bar');
+        // The attribute is the hook; `styles.css` carries the `-webkit-app-region` pair, because
+        // a descendant rule cannot be forgotten by a control added to the bar later.
+        expect(bar.getAttribute('data-titlebar-drag')).toBe('true');
+        // The controls are still real buttons inside it (the `no-drag` half of that rule).
+        expect(bar.querySelectorAll('button').length).toBeGreaterThanOrEqual(2);
+        fireEvent.click(screen.getByLabelText('Toggle sidebar'));
+    });
+
+    it('reserves NOTHING and claims no drag region in a browser tab', () => {
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" />);
+        const bar = screen.getByTestId('top-bar');
+        expect(bar.style.paddingLeft).toBe('12px');
+        expect(bar.getAttribute('data-traffic-light-inset')).toBe('0');
+        expect(bar.getAttribute('data-titlebar-drag')).toBeNull();
+    });
+
+    it('never lets a negative inset eat the bar’s own padding', () => {
+        render(<TopBar workspaceName="alpha" panes={[]} connection="connected" trafficLightInset={-40} />);
+        expect(screen.getByTestId('top-bar').style.paddingLeft).toBe('12px');
+    });
+});

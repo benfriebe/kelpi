@@ -11,7 +11,9 @@ import { describe, expect, it } from 'vitest';
 
 import { createGeometryReporter, type GeometryReport } from './geometry';
 import {
+    TRAFFIC_LIGHT_INSET_PARAM,
     readShellWindowID,
+    readTrafficLightInset,
     readWindowTransparent,
     SHELL_WINDOW_PARAM,
     WINDOW_TRANSPARENT_PARAM
@@ -202,5 +204,30 @@ describe('readWindowTransparent', () => {
         expect(readWindowTransparent(`?${SHELL_WINDOW_PARAM}=WIN-1`)).toBe(false);
         expect(readWindowTransparent(`?${WINDOW_TRANSPARENT_PARAM}=0`)).toBe(false);
         expect(readWindowTransparent(`?${WINDOW_TRANSPARENT_PARAM}=maybe`)).toBe(false);
+    });
+});
+
+// APP-046: the third thing only the shell can know — how much leading room the page must leave
+// for the window's traffic lights, now that the frame around it has no title bar of its own.
+describe('readTrafficLightInset', () => {
+    it('reads the gutter the shell positioned the buttons with', () => {
+        expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=80`)).toBe(80);
+        expect(
+            readTrafficLightInset(`?${SHELL_WINDOW_PARAM}=WIN-1&${TRAFFIC_LIGHT_INSET_PARAM}=64`)
+        ).toBe(64);
+    });
+
+    it('is 0 for a browser tab, a Linux window, and junk', () => {
+        // Neither has traffic lights, so reserving space for them would be a macOS feature
+        // leaking into a window that does not have one.
+        expect(readTrafficLightInset('')).toBe(0);
+        expect(readTrafficLightInset(`?${SHELL_WINDOW_PARAM}=WIN-1`)).toBe(0);
+        expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=0`)).toBe(0);
+        expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=-40`)).toBe(0);
+        expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=wide`)).toBe(0);
+    });
+
+    it('caps a hand-edited URL, which cannot push the title bar off screen', () => {
+        expect(readTrafficLightInset(`?${TRAFFIC_LIGHT_INSET_PARAM}=99999`)).toBe(200);
     });
 });

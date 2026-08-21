@@ -757,6 +757,30 @@ async function launchPhase() {
             app.lines.find((line) => line.includes('auto-update')) ?? ''
         );
 
+        /*
+         * ── the Debug menu is NOT in a packaged build (§APP-028 / §SET-194) ──────
+         *
+         * The Swift gates its Debug ▸ Seed Test Group on `#if DEBUG`, which does not exist in a
+         * JavaScript bundle that ships to both builds; the port's equivalent is
+         * `app.isPackaged`, and this is the only place it can be asked of a REAL packaged app
+         * rather than of a parameter a test passed. `menu.test.ts` asserts the dev half.
+         *
+         * Both directions are checked on purpose: the label must be gone AND the line must say
+         * the menu was deliberately not built, so a launch that never installed a menu at all
+         * could not pass this by accident.
+         */
+        const packagedMenu = await app.waitForLine(/menu: Nex /, 'the application menu');
+        check(
+            'a packaged build has NO Debug ▸ Seed Test Group row',
+            !packagedMenu.includes('Seed Test Group'),
+            packagedMenu.trim()
+        );
+        check(
+            '…and says so, rather than the row merely being missing from a menu that failed to build',
+            packagedMenu.includes('no Debug menu (packaged)'),
+            packagedMenu.trim()
+        );
+
         // ── the CLI self-heal (APP-003) ─────────────────────────────────────────
         // The sandbox planted a dangling symlink into a bundle that no longer exists. A
         // packaged launch has to notice and repoint it at THIS app's launcher — the drift that

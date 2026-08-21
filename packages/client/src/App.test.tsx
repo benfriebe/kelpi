@@ -382,7 +382,24 @@ describe('gestures and keys become wire commands', () => {
         });
     });
 
-    it('switches to a workspace it created (⌘N), once the daemon names it', async () => {
+    it('opens the New Workspace SHEET on ⌘N, and creates nothing by itself (§APP-018)', async () => {
+        // `NexCommands.swift:10-13` spends ⌘N on `showNewWorkspaceSheet()`. This used to fire a
+        // `workspace-create` straight out — the create WITHOUT the sheet: no name, no colour, no
+        // group, no profile, no repositories, and nothing to cancel.
+        const h = setup();
+        expect(screen.queryByTestId('new-workspace-form')).toBeNull();
+
+        fireEvent.keyDown(window, { code: 'KeyN', key: 'n', metaKey: true });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('new-workspace-form')).toBeTruthy();
+        });
+        expect(h.commands().filter((command) => command['command'] === 'workspace-create')).toHaveLength(
+            0
+        );
+    });
+
+    it('switches to the workspace the SHEET created, once the daemon names it', async () => {
         // run-B L3: the row appeared and the window stayed where it was — for the rest of the
         // session, because a per-client active workspace only moves when the client moves it.
         // Creating one is a deliberate act with an obvious destination (Swift's
@@ -391,8 +408,13 @@ describe('gestures and keys become wire commands', () => {
         const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
 
         fireEvent.keyDown(window, { code: 'KeyN', key: 'n', metaKey: true });
+        const form = await screen.findByTestId('new-workspace-form');
+        fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'built' } });
+        fireEvent.submit(form);
         await waitFor(() => {
-            expect(h.commands().at(-1)).toMatchObject({ command: 'workspace-create' });
+            expect(
+                h.commands().filter((command) => command['command'] === 'workspace-create')
+            ).toHaveLength(1);
         });
         const create = h
             .sent()
@@ -401,12 +423,14 @@ describe('gestures and keys become wire commands', () => {
                 (message) =>
                     (message['payload'] as Record<string, unknown>)['command'] === 'workspace-create'
             );
+        // The name the SHEET collected rides the create — the half ⌘N could not carry before.
+        expect((create?.['payload'] as Record<string, unknown>)['name']).toBe('built');
 
         await act(async () => {
             h.socket().emit({
                 type: 'command-reply',
                 id: create?.['id'] as string,
-                reply: { ok: true, workspace_id: W2, workspace_name: 'Workspace' }
+                reply: { ok: true, workspace_id: W2, workspace_name: 'built' }
             });
             await Promise.resolve();
         });
@@ -438,7 +462,15 @@ describe('gestures and keys become wire commands', () => {
         fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
 
         await waitFor(() => {
-            expect(h.commands().at(-1)).toMatchObject({ command: 'workspace-delete', name: W1, force: true });
+            // §WS-156: ⌘W is the ONE route allowed to reach zero workspaces, so it goes out on
+            // the GUI's own WS-only verb with `allow_last` — the CLI's `workspace-delete` has no
+            // such field and still refuses the last workspace.
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'delete-workspace',
+                workspace_id: W1,
+                force: true,
+                allow_last: true
+            });
         });
         expect(screen.queryByTestId('agent-delete-gate')).toBeNull();
     });

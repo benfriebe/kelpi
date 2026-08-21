@@ -67,6 +67,17 @@ export interface Harness {
     send(object: Record<string, unknown>): Record<string, unknown>[];
     /** Like `send` but asserts exactly one reply line and returns it. */
     reply(object: Record<string, unknown>): Record<string, unknown>;
+    /**
+     * Dispatch a message the daemon CONSTRUCTED rather than decoded, and assert one reply.
+     *
+     * `send`/`reply` go through `decodeWireObject`, which is exactly right for anything that
+     * arrives over the control socket — and exactly wrong for the handful of GUI-only messages
+     * the WS layer builds itself (§WS-156's `delete-workspace` → `workspace-delete` with
+     * `allow_last`, `ws/sync.ts` ▸ `guiDeleteWorkspace`). Those carry fields that are deliberately
+     * NOT in wire-protocol.md §7's dictionary, so a decode would silently drop them and the test
+     * would pass for the wrong reason.
+     */
+    replyMessage(message: WireMessage): Record<string, unknown>;
     readonly replies: CapturedReply[];
 }
 
@@ -275,6 +286,15 @@ export function harness(options: HarnessOptions = {}): Harness {
             if (payloads.length !== 1) {
                 throw new Error(
                     `expected exactly one reply line, got ${String(payloads.length)} for ${String(object['command'])}`
+                );
+            }
+            return payloads[0] as Record<string, unknown>;
+        },
+        replyMessage(message) {
+            const payloads = run(message, true);
+            if (payloads.length !== 1) {
+                throw new Error(
+                    `expected exactly one reply line, got ${String(payloads.length)} for ${message.command}`
                 );
             }
             return payloads[0] as Record<string, unknown>;

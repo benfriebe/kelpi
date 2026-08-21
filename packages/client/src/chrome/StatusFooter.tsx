@@ -18,12 +18,12 @@
  * non-zero count is a button that opens the bucket popover.
  */
 
-import { useState, type ReactElement } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
 import { useSecondsTicker } from './clock';
 import { ChromeIcon } from './icons';
 import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
-import { visibleStatKinds } from './stats';
+import { systemStatMeta, visibleStatKinds } from './stats';
 import {
     chromeElapsedLabel,
     clockLabel,
@@ -286,7 +286,7 @@ function CountItem(props: CountItemProps): ReactElement {
             <span
                 data-testid={`count-${props.bucket}`}
                 data-count={props.count}
-                className="flex items-center gap-1"
+                className="flex shrink-0 items-center gap-1 whitespace-nowrap"
                 style={{ color: tokens.textTertiary }}
             >
                 {content}
@@ -300,7 +300,7 @@ function CountItem(props: CountItemProps): ReactElement {
             data-count={props.count}
             aria-label={`${props.count} ${BUCKET_LABEL[props.bucket]}`}
             aria-expanded={props.open}
-            className="flex items-center gap-1"
+            className="flex shrink-0 items-center gap-1 whitespace-nowrap"
             style={{ color: tokens.textSecondary }}
             onClick={props.onToggle}
         >
@@ -309,10 +309,108 @@ function CountItem(props: CountItemProps): ReactElement {
     );
 }
 
+/** Layout constants the fit calculation and the row's own CSS have to agree on. */
+const FOOTER_ROW_PADDING_PX = 24; // `px-3`, both sides
+const FOOTER_CLUSTER_GAP_PX = 12; // `gap-3`
+const GAUGE_GAP_PX = 14; // `gap-3.5` between gauges
+const GAUGE_GRAPH_GAP_PX = 3; // `gap-[3px]` between a gauge's value slot and its sparkline
+/**
+ * What the left cluster keeps before a gauge may claim the space: enough for a middle-truncated
+ * path and a branch chip. The Swift row has no equivalent because its right cluster simply
+ * overflows; this is the number that stops the port doing the same thing (§N7).
+ */
+const FOOTER_LEFT_RESERVE_PX = 96;
+
+/** One gauge's rendered width: the fixed per-kind slot (§APP-081) plus its optional sparkline. */
+export function statGaugeWidth(
+    kind: string,
+    options: { readonly showGraph: boolean; readonly graphWidth: number }
+): number {
+    const meta = systemStatMeta(kind);
+    if (meta === null) return 0;
+    return meta.labelWidth + (options.showGraph ? GAUGE_GRAPH_GAP_PX + options.graphWidth : 0);
+}
+
+/**
+ * §N7 — the gauges the row can afford, in canonical order, dropping from the tail.
+ *
+ * A prefix, deliberately: the canonical order is the priority order (cpu, memory, load, …), so
+ * the reading that survives a squeeze is the one nearest the top of the list rather than
+ * whichever one happens to fit. An infinite budget (no measurement yet) keeps all of them.
+ */
+export function fitStatGauges<T extends string>(
+    kinds: readonly T[],
+    budget: number,
+    widthOf: (kind: T) => number
+): readonly T[] {
+    if (!Number.isFinite(budget)) return kinds;
+    const shown: T[] = [];
+    let used = 0;
+    for (const kind of kinds) {
+        const next = used + (shown.length === 0 ? 0 : GAUGE_GAP_PX) + widthOf(kind);
+        if (next > budget) break;
+        shown.push(kind);
+        used = next;
+    }
+    return shown;
+}
+
+/**
+ * How much room the gauge row has, measured off the real boxes.
+ *
+ * Everything else in this file is CSS, and this is the one thing CSS cannot express: a flex
+ * container's min-content size counts its children's min-content sizes whatever their
+ * `min-width`, so the gauge row's intrinsic width propagates all the way out to the row and
+ * makes the right cluster unshrinkable below it. The measurement replaces that with a decision:
+ * available width, minus what the counts and the clock need (they never shrink), minus the
+ * slice the left cluster keeps — and `fitStatGauges` spends what is left.
+ *
+ * Only the ROW is observed. The other two are read synchronously inside the callback: the keep
+ * group never changes size on its own, and observing the left cluster would feed the effect the
+ * output of its own decision.
+ */
+function useFooterGaugeBudget(
+    rowRef: React.RefObject<HTMLDivElement | null>,
+    leftRef: React.RefObject<HTMLDivElement | null>,
+    keepRef: React.RefObject<HTMLDivElement | null>,
+    deps: readonly string[]
+): number | null {
+    const [budget, setBudget] = useState<number | null>(null);
+    const key = deps.join('|');
+    useLayoutEffect(() => {
+        const row = rowRef.current;
+        if (row === null || typeof ResizeObserver === 'undefined') return undefined;
+        const measure = (): void => {
+            const width = row.getBoundingClientRect().width;
+            if (width <= 0) return;
+            const keep = keepRef.current?.getBoundingClientRect().width ?? 0;
+            // `scrollWidth` is what the left cluster WANTS: it clips, so its own box width says
+            // nothing about the path it is holding.
+            const wanted = leftRef.current?.scrollWidth ?? 0;
+            const reserve = Math.min(FOOTER_LEFT_RESERVE_PX, wanted);
+            const next = Math.round(
+                width - FOOTER_ROW_PADDING_PX - keep - 2 * FOOTER_CLUSTER_GAP_PX - reserve
+            );
+            setBudget((current) => (current === next ? current : next));
+        };
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(row);
+        return () => {
+            observer.disconnect();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [key, rowRef, leftRef, keepRef]);
+    return budget;
+}
+
 export function StatusFooter(props: StatusFooterProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
     const home = props.homeDirectory ?? '';
     const [openBucket, setOpenBucket] = useState<AgentBucket | null>(null);
+    const rowRef = useRef<HTMLDivElement | null>(null);
+    const leftRef = useRef<HTMLDivElement | null>(null);
+    const keepRef = useRef<HTMLDivElement | null>(null);
 
     const pane = props.focusedPane ?? null;
     const paneRunning = pane !== null && pane.status === 'running';
@@ -333,7 +431,32 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 
     // The enabled set in canonical order, gated by the master toggle (`enabledStatKinds`).
     const stats = props.systemStats;
-    const gauges = stats === undefined ? [] : visibleStatKinds(stats.showSystemStats, stats.enabled);
+    const enabledGauges = stats === undefined ? [] : visibleStatKinds(stats.showSystemStats, stats.enabled);
+    /*
+     * §N7 — and then only the ones the row can afford.
+     *
+     * The gauges are the segment the status bar gives up first when it runs out of room, and
+     * "gives up" has to mean UNMOUNTED rather than clipped: every gauge owns a hover popover
+     * that is drawn above the footer, so an `overflow: hidden` anywhere over this row would cut
+     * the popovers off at the window's bottom edge. Clipping is also not available on the row
+     * itself (the bucket popover) — so the only honest way to drop a segment is to not render
+     * it, which is what the Swift status bar's own `enabledStatKinds` does one level up.
+     *
+     * `gaugeBudget` is null until a measurement exists (and stays null wherever ResizeObserver
+     * does not, e.g. jsdom), and null means "render them all" — the pre-measurement behaviour.
+     */
+    const gaugeBudget = useFooterGaugeBudget(rowRef, leftRef, keepRef, [
+        enabledGauges.join(','),
+        String(stats?.showGraphs === true),
+        String(stats?.graphWidth ?? 28),
+        `${String(props.summary.running)}/${String(props.summary.waiting)}/${String(props.summary.inactive)}`
+    ]);
+    const gaugeWidth = (kind: string): number =>
+        statGaugeWidth(kind, {
+            showGraph: stats?.showGraphs === true,
+            graphWidth: stats?.graphWidth ?? 28
+        });
+    const gauges = fitStatGauges(enabledGauges, gaugeBudget ?? Number.POSITIVE_INFINITY, gaugeWidth);
     // SET-044: an empty hex means "the adaptive chrome default", which is the footer's own
     // secondary tone — so a user who resets the colour follows the palette rather than being
     // stuck on whatever hex the theme they imported happened to carry.
@@ -342,6 +465,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 
     return (
         <div
+            ref={rowRef}
             data-testid="status-footer"
             className="relative flex h-6 shrink-0 items-center gap-3 border-t px-3 text-[11px]"
             style={{
@@ -353,12 +477,12 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
             {/*
               * §N6 — the left cluster CLIPS, it does not spill.
               *
-              * This row is `flex-1 min-w-0` so it can shrink, but its children were fixed-size
-              * (`shrink-0`, or text with no `min-w-0` to shrink into) inside a box with no
-              * `overflow-hidden`. At the width the full audit run gives the footer — sidebar and
-              * inspector open, six system stats on — the segments simply overflowed the box and
-              * were PAINTED OVER the system-stat gauges beside them: `⑂ main 🗎 2 +5 -5` on top
-              * of the CPU chip (docs/audit/run-L/52-footer-git-stats.png).
+              * This row can shrink, but its children were fixed-size (`shrink-0`, or text with
+              * no `min-w-0` to shrink into) inside a box with no `overflow-hidden`. At the width
+              * the full audit run gives the footer — sidebar and inspector open, six system
+              * stats on — the segments simply overflowed the box and were PAINTED OVER the
+              * system-stat gauges beside them: `⑂ main 🗎 2 +5 -5` on top of the CPU chip
+              * (docs/audit/run-L/52-footer-git-stats.png).
               *
               * Two rules fix it, and both are needed:
               *   1. `overflow-hidden` here — the hard guarantee. Whatever does not fit is
@@ -369,10 +493,24 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
               *      shortened), then the branch name, and the fixed little `doc N +A -B` and
               *      agent segments hold their size. That is the same priority SwiftUI's
               *      `HStack` + `.lineLimit(1)` produces for `leftSection` in the shipped app.
+              *
+              * §N7 — and the basis is `auto`, not `0`, which is the half N6 could not see.
+              *
+              * It used to be `flex-1` (`flex: 1 1 0%`). With a ZERO basis this cluster asks the
+              * row for nothing, so the moment the row is over-subscribed — which it was at every
+              * realistic width, because the right cluster's natural size was ~840 px — flexbox
+              * hands it exactly its basis: 0 px. The path, the branch chip and `doc N +A -B`
+              * were all clipped out of existence while the right cluster ran 485 px past the
+              * footer's own box (run-M/56-footer-git-stats.png). `flex-auto` (`flex: 1 1 auto`)
+              * makes the basis the content's own size, so the cluster STARTS from what it wants
+              * to show and gives width up under pressure — after the gauges have gone, because
+              * the gauge row is dropped by measurement before this cluster is asked for
+              * anything (see `useFooterGaugeBudget`).
               */}
             <div
+                ref={leftRef}
                 data-testid="footer-left"
-                className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+                className="flex min-w-0 flex-auto items-center gap-2 overflow-hidden"
             >
                 {pane === null ? null : (
                     <>
@@ -427,13 +565,40 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                 )}
             </div>
 
-            {/* The fixed half of the row: gauges, counts, clock. Named so the audit can measure
-              * the left cluster against it and prove §N6's overlap cannot come back. */}
-            <div data-testid="footer-right" className="flex shrink-0 items-center gap-3">
+            {/* The right half of the row: gauges, counts, clock. Named so the audit can measure
+              * the left cluster against it and prove §N6's overlap cannot come back.
+              *
+              * §N7 — it is no longer `shrink-0`, and the gauges are DROPPED rather than squashed.
+              *
+              * `shrink-0` on a cluster whose natural width is ~840 px meant the row could never
+              * balance: the left cluster was starved to 0 px and the right one still overran the
+              * footer's own box by 485 px, sideways under the inspector. Three rules replace it:
+              *
+              *   · the gauge row is unmounted a reading at a time as the row narrows
+              *     (`useFooterGaugeBudget` + `fitStatGauges`), because a flex container's
+              *     min-content size counts its children whatever their `min-width` — CSS alone
+              *     cannot make this segment yield — and because CLIPPING it is not available:
+              *     every gauge owns a hover popover drawn above the footer;
+              *   · what is left is the counts and the clock, which are `shrink-0`, so this
+              *     cluster's automatic minimum IS them — hence no `min-w-0` here, which would
+              *     let the row crush `3 running` into nothing;
+              *   · and a large shrink factor, so during the frame between a resize and the next
+              *     measurement it gives way toward that minimum instead of overflowing.
+              *
+              * The result at the audit's three widths: the gauges thin out and then go; the
+              * counts and clock stay whole; the left cluster keeps a real width throughout; and
+              * nothing leaves the footer's box.
+              */}
+            <div
+                data-testid="footer-right"
+                className="flex items-center gap-3"
+                style={{ flexShrink: 1000 }}
+            >
                 {gauges.length > 0 ? (
                     // Spacing-separated, no dot separators — the gaps carry the grouping
-                    // (`rightSection`'s `HStack(spacing: 14)`).
-                    <div data-testid="system-stats" className="flex items-center gap-3.5">
+                    // (`rightSection`'s `HStack(spacing: 14)`). `shrink-0`: a gauge is either
+                    // rendered at its own size or not rendered at all.
+                    <div data-testid="system-stats" className="flex shrink-0 items-center gap-3.5">
                         {gauges.map((kind) => (
                             <SystemStatGauge
                                 key={kind}
@@ -449,35 +614,46 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                         ))}
                     </div>
                 ) : props.sparklineSamples === undefined ? null : (
-                    <SystemSparkline samples={props.sparklineSamples} label={props.sparklineLabel} />
+                    <span className="flex shrink-0 items-center">
+                        <SystemSparkline samples={props.sparklineSamples} label={props.sparklineLabel} />
+                    </span>
                 )}
-                <CountItem
-                    bucket="running"
-                    count={props.summary.running}
-                    open={openBucket === 'running'}
-                    onToggle={() => {
-                        setOpenBucket(openBucket === 'running' ? null : 'running');
-                    }}
-                />
-                <CountItem
-                    bucket="waiting"
-                    count={props.summary.waiting}
-                    open={openBucket === 'waiting'}
-                    onToggle={() => {
-                        setOpenBucket(openBucket === 'waiting' ? null : 'waiting');
-                    }}
-                />
-                <CountItem
-                    bucket="inactive"
-                    count={props.summary.inactive}
-                    open={openBucket === 'inactive'}
-                    onToggle={() => {
-                        setOpenBucket(openBucket === 'inactive' ? null : 'inactive');
-                    }}
-                />
-                <span data-testid="footer-clock" className="font-mono tabular-nums">
-                    {clockLabel(new Date(nowMs))}
-                </span>
+                {/* The segments the row keeps at any width, grouped so the budget above can
+                  * measure exactly what it must leave room for. */}
+                <div
+                    ref={keepRef}
+                    data-testid="footer-keep"
+                    className="flex shrink-0 items-center gap-3"
+                >
+                    <CountItem
+                        bucket="running"
+                        count={props.summary.running}
+                        open={openBucket === 'running'}
+                        onToggle={() => {
+                            setOpenBucket(openBucket === 'running' ? null : 'running');
+                        }}
+                    />
+                    <CountItem
+                        bucket="waiting"
+                        count={props.summary.waiting}
+                        open={openBucket === 'waiting'}
+                        onToggle={() => {
+                            setOpenBucket(openBucket === 'waiting' ? null : 'waiting');
+                        }}
+                    />
+                    <CountItem
+                        bucket="inactive"
+                        count={props.summary.inactive}
+                        open={openBucket === 'inactive'}
+                        onToggle={() => {
+                            setOpenBucket(openBucket === 'inactive' ? null : 'inactive');
+                        }}
+                    />
+                    {/* §N7: the clock is the last thing the row would give up — it never does. */}
+                    <span data-testid="footer-clock" className="shrink-0 font-mono tabular-nums">
+                        {clockLabel(new Date(nowMs))}
+                    </span>
+                </div>
             </div>
 
             {openBucket === null ? null : (

@@ -346,6 +346,53 @@ describe('reports', () => {
         expect(f.store.state().lastActiveWorkspaceID).toBe(W1);
     });
 
+    /**
+     * §WS-112 — activation opens the group the destination is hidden in, EVERY time.
+     *
+     * The churn guard ("this workspace is already the last-active, do nothing") used to swallow
+     * the whole action, including the expand. A workspace can be the last-active and still be
+     * inside a group the user collapsed after arriving: re-activating it (⌘1–9, the palette, a
+     * status-popover row) then did nothing at all and the sidebar kept the group shut around the
+     * workspace it had just said the user was in.
+     */
+    it('expands a collapsed parent group even when the workspace is already active', () => {
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        const report = JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID });
+        session.handleMessage(report);
+        expect(f.store.state().lastActiveWorkspaceID).toBe(W1);
+
+        // The user files the active workspace into a group and collapses it.
+        f.store.dispatch(
+            { type: 'create-group', id: G1, name: 'Client', now: NOW },
+            { type: 'move-workspace-to-group', id: W1, groupID: G1, index: null },
+            { type: 'set-group-collapsed', id: G1, collapsed: true }
+        );
+        expect(f.store.state().groups[0]?.isCollapsed).toBe(true);
+
+        // …and activates it again. Same id as the last-active: the guard must still let the
+        // expand through.
+        session.handleMessage(report);
+        expect(f.store.state().groups[0]?.isCollapsed).toBe(false);
+        expect(f.store.state().lastActiveWorkspaceID).toBe(W1);
+    });
+
+    it('still says nothing when the re-assert has no work to do', () => {
+        // The other half of the guard, unchanged: an idempotent report for a workspace whose
+        // group is already open produces no dispatch at all, so a client that reports on every
+        // click does not churn the delta stream.
+        const f = fixture();
+        const { session, transport } = f.connect();
+        session.handleMessage(hello());
+        const report = JSON.stringify({ type: 'focus-report', workspaceID: W1, paneID: f.paneID });
+        session.handleMessage(report);
+        const before = transport.ofType('delta').length;
+        session.handleMessage(report);
+        session.handleMessage(report);
+        expect(transport.ofType('delta').length).toBe(before);
+    });
+
     it('answers ping with pong', () => {
         const f = fixture();
         const { session, transport } = f.connect();
@@ -934,5 +981,137 @@ describe('hotkey-status relay', () => {
         expect(
             (window.transport.ofType('hotkey-status')[0] as Record<string, unknown>)['source']
         ).toBe('settings');
+    });
+});
+
+/**
+ * §AGNT-056: `shell-activation`, relayed.
+ *
+ * The Swift reads `NSApplication.didBecomeActiveNotification` in the same process as the pane
+ * grid; here the grid is in the renderer and activation is known only to the shell, so the fact
+ * travels the one channel both share. The daemon's job is fan-out and nothing else — and,
+ * unlike the hotkey outcome, it must NOT remember: a replayed "window W is inactive" would
+ * suspend a fresh client's dwell timers on a premise about a window that may not exist any more.
+ */
+describe('shell-activation relay', () => {
+    it('fans a shell report out to every attached client, windowID intact', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: false, windowID: 'WIN-1' }));
+        expect(window.transport.ofType('shell-activation')[0]).toEqual({
+            type: 'shell-activation',
+            active: false,
+            windowID: 'WIN-1'
+        });
+
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: true, windowID: 'WIN-1' }));
+        expect(window.transport.ofType('shell-activation')[1]).toEqual({
+            type: 'shell-activation',
+            active: true,
+            windowID: 'WIN-1'
+        });
+    });
+
+    it('relays an unscoped report without inventing a window id', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: true }));
+        expect(window.transport.ofType('shell-activation')[0]).toEqual({ type: 'shell-activation', active: true });
+    });
+
+    it('never replays activation to a client that attaches afterwards', () => {
+        const f = fixture();
+        const shell = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: false, windowID: 'WIN-1' }));
+
+        const late = f.connect();
+        late.session.handleMessage(hello());
+        expect(late.transport.ofType('shell-activation')).toHaveLength(0);
+    });
+
+    it('drops a report with no boolean `active` rather than guessing one', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', windowID: 'WIN-1' }));
+        shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: 'yes' }));
+        expect(window.transport.ofType('shell-activation')).toHaveLength(0);
+    });
+});
+
+/**
+ * §WS-156 / §APP-067 — the GUI's own workspace delete.
+ *
+ * The clause it exists for is the shipped app's asymmetry: `nex workspace delete` refuses at one
+ * workspace, ⌘W on the last pane of the last one does not, and the window lands on "No workspace
+ * selected". The port had one verb for both, so the GUI inherited the CLI's refusal.
+ *
+ * What is asserted here is the SEAM, because that is where the safety is: the flag that waives
+ * the guard reaches the handler only on a message this layer CONSTRUCTED, and it is not a field
+ * anything decoded off the control socket could carry (`decode.ts` never reads `allow_last`; the
+ * dictionary in wire-protocol.md §7 has no entry for it).
+ */
+describe('the GUI’s delete-workspace (§WS-156)', () => {
+    function drive(payload: Record<string, unknown>): Fixture {
+        const f = fixture();
+        const { session } = f.connect();
+        session.handleMessage(hello());
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'del1', payload }));
+        return f;
+    }
+
+    it('constructs a workspace-delete carrying allow_last, and dispatches it', () => {
+        const f = drive({ command: 'delete-workspace', workspace_id: W1, force: true, allow_last: true });
+
+        expect(f.calls).toHaveLength(1);
+        expect(f.calls[0]?.message).toEqual({
+            command: 'workspace-delete',
+            name: W1,
+            force: true,
+            allow_last: true
+        });
+        // Request/response, like the CLI's own delete: the caller's promise settles on a reply.
+        expect(f.calls[0]?.reply).not.toBeNull();
+    });
+
+    it('never asserts allow_last on its own — the caller has to say so', () => {
+        const f = drive({ command: 'delete-workspace', workspace_id: W1 });
+        expect(f.calls[0]?.message).toMatchObject({ allow_last: false, force: false });
+    });
+
+    it('accepts `name` as well as `workspace_id`, and refuses neither', () => {
+        expect(drive({ command: 'delete-workspace', name: 'w1' }).calls[0]?.message).toMatchObject({
+            command: 'workspace-delete',
+            name: 'w1'
+        });
+
+        const f = fixture();
+        const { session, transport } = f.connect();
+        session.handleMessage(hello());
+        session.handleMessage(JSON.stringify({ type: 'command', id: 'del2', payload: { command: 'delete-workspace' } }));
+        expect(f.calls).toHaveLength(0);
+        expect(transport.ofType('command-reply')[0]?.['reply']).toEqual({
+            ok: false,
+            error: 'delete-workspace requires workspace_id'
+        });
+    });
+
+    it('is NOT a wire command, so the CLI can never send it', () => {
+        // The whole safety argument in one line: `allow_last` rides a verb the control socket's
+        // decoder does not know, on a message the decoder never builds.
+        expect(isWireCommand('delete-workspace')).toBe(false);
+        expect(isWireCommand('workspace-delete')).toBe(true);
     });
 });

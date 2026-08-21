@@ -47,6 +47,71 @@ describe('the empty state (SET-080)', () => {
     });
 });
 
+/**
+ * The other half of SET-080: the "No profile selected" placeholder, and the gestures that make
+ * it reachable. The Swift gets deselection free from `List(selection:)`; this rail is buttons,
+ * so the port chose the two gestures the module note argues for.
+ */
+describe('deselection (SET-080)', () => {
+    it('clears the selection when the rail’s empty space is clicked, and shows the placeholder', () => {
+        setup(WORK);
+        expect(screen.getByTestId('profile-detail')).toBeDefined();
+        expect(screen.queryByTestId('profile-detail-placeholder')).toBeNull();
+
+        // The rail itself, not a row: the guard is `target === currentTarget`.
+        fireEvent.click(screen.getByTestId('profiles-list'));
+
+        const placeholder = screen.getByTestId('profile-detail-placeholder');
+        expect(placeholder.textContent).toContain('No profile selected');
+        expect(placeholder.textContent).toContain('named set of environment variables');
+        expect(screen.queryByTestId('profile-detail')).toBeNull();
+        // Nothing reads as selected any more, for a screen reader as well as for the eye.
+        expect(screen.getAllByRole('option').every((row) => row.getAttribute('aria-selected') === 'false')).toBe(
+            true
+        );
+    });
+
+    it('does NOT clear when the click lands on a row (that selects it)', () => {
+        setup(WORK);
+        fireEvent.click(screen.getByTestId('profile-row-work'));
+        expect(screen.getByTestId('profile-detail')).toBeDefined();
+        expect(screen.getByTestId('profile-row-work').getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('clears on Escape in the rail, and consumes the key only while something is selected', () => {
+        setup(WORK);
+        const rail = screen.getByTestId('profiles-list');
+
+        const first = fireEvent.keyDown(rail, { key: 'Escape' });
+        expect(screen.getByTestId('profile-detail-placeholder')).toBeDefined();
+        // `fireEvent` returns false when the handler called preventDefault: the rail took it.
+        expect(first).toBe(false);
+
+        // With nothing selected the key is left alone, so the overlay's own Escape still closes
+        // Settings rather than being swallowed by a rail that has nothing to clear.
+        const second = fireEvent.keyDown(rail, { key: 'Escape' });
+        expect(second).toBe(true);
+        expect(screen.getByTestId('profile-detail-placeholder')).toBeDefined();
+    });
+
+    it('selects again from the placeholder — the state is a detour, not a dead end', () => {
+        setup(WORK);
+        fireEvent.click(screen.getByTestId('profiles-list'));
+        expect(screen.getByTestId('profile-detail-placeholder')).toBeDefined();
+        fireEvent.click(screen.getByTestId('profile-row-work'));
+        expect(screen.getByTestId('profile-detail')).toBeDefined();
+        expect((screen.getByTestId('profile-name') as HTMLInputElement).value).toBe('work');
+    });
+
+    it('the placeholder’s inline Add creates a profile and selects it', () => {
+        const bound = setup(WORK);
+        fireEvent.click(screen.getByTestId('profiles-list'));
+        fireEvent.click(screen.getByTestId('profile-add-empty'));
+        expect(bound.writes.at(-1)?.map((profile) => profile.name)).toEqual(['work', 'profile-3']);
+        expect((screen.getByTestId('profile-name') as HTMLInputElement).value).toBe('profile-3');
+    });
+});
+
 describe('the profile list', () => {
     it('pins `default` first even for an empty config, and locks its name', () => {
         setup();

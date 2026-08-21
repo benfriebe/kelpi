@@ -52,6 +52,24 @@ export interface TopBarProps {
      * knowing what a shell is. Absent or empty = no ••• button at all.
      */
     readonly overflowItems?: readonly MenuItemSpec[] | undefined;
+    /**
+     * §APP-046 — leading room to keep clear for the window's traffic lights, in CSS pixels.
+     *
+     * The shell creates its window with a HIDDEN title bar, so this strip is drawn underneath the
+     * three macOS window buttons and has to get out of their way; `?trafficLightInset=` carries
+     * the number the shell positioned them with. 0 (the default) is the browser tab and the
+     * Linux window, where there are no buttons to clear — and where reserving space for them
+     * would be a macOS feature leaking somewhere it does not apply.
+     */
+    readonly trafficLightInset?: number | undefined;
+    /**
+     * Make the strip the window's drag region (§APP-046: "empty bar area drags the window").
+     *
+     * Only true inside a shell window: `-webkit-app-region` is inert in a browser, but the
+     * attribute is what the audit reads to tell "the drawn strip IS the title bar" from "there is
+     * a native one above it", so it is not set where it would be a lie.
+     */
+    readonly dragRegion?: boolean | undefined;
 }
 
 const CONNECTION_LABEL: Readonly<Record<ConnectionStatus, string>> = {
@@ -93,14 +111,24 @@ export function TopBar(props: TopBarProps): ReactElement {
     const syncable = (props.syncedPaneCount ?? 0) >= 2;
     const overflowItems = props.overflowItems ?? [];
 
+    const trafficLightInset = Math.max(0, props.trafficLightInset ?? 0);
+
     return (
         <div
             data-testid="top-bar"
-            className="relative flex h-8 shrink-0 items-center border-b px-3"
+            /* §APP-046: the audit reads both of these off the DOM — the gutter it must find the
+               first control beyond, and whether this strip claims the drag region. */
+            data-traffic-light-inset={String(trafficLightInset)}
+            data-titlebar-drag={props.dragRegion === true ? 'true' : undefined}
+            className="relative flex h-8 shrink-0 items-center border-b pr-3"
             style={{
                 background: tokens.footerBackground,
                 borderColor: tokens.divider,
-                color: tokens.textPrimary
+                color: tokens.textPrimary,
+                /* The 12px the bar has always had, unless the traffic lights need more. The
+                   height is untouched: the strip is drawn INTO the title-bar row, not below a
+                   second one, which is the half of §APP-046 a taller bar would give away. */
+                paddingLeft: Math.max(12, trafficLightInset)
             }}
         >
             <div className="flex items-center gap-2">

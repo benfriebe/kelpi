@@ -162,6 +162,40 @@ describe('group collapse', () => {
         fireEvent.click(screen.getByTestId('group-chevron'));
         expect(rowIDs()).toEqual([W1, W4, W2, W3]);
     });
+
+    /**
+     * §WS-112 — the daemon can expand a group by itself, and the sidebar has to show it.
+     *
+     * `set-active-workspace` opens a collapsed parent on the way in, so activating a workspace
+     * hidden inside one (⌘1–9, the palette, a status-popover row) arrives with the group already
+     * open. That broadcast reaches this component as a changed `isCollapsed` — and it used to be
+     * ignored, because the local override the header click wrote won over the mirror forever.
+     * The group stayed shut around the workspace the user had just jumped to.
+     */
+    it('follows the daemon back OPEN once its own optimistic collapse is confirmed', () => {
+        const view = render(<Sidebar {...noopProps()} entries={entries()} />);
+        fireEvent.click(screen.getByTestId('group-chevron'));
+        expect(rowIDs()).toEqual([W1, W4]);
+
+        // The daemon confirms the collapse this client asked for: the override has nothing left
+        // to hide, so it retires.
+        view.rerender(<Sidebar {...noopProps()} entries={entries({ collapsed: true })} />);
+        expect(rowIDs()).toEqual([W1, W4]);
+
+        // …and now the daemon expands on its own — an activation into a hidden member.
+        view.rerender(<Sidebar {...noopProps()} entries={entries({ collapsed: false })} />);
+        expect(rowIDs()).toEqual([W1, W4, W2, W3]);
+        expect(screen.getByTestId('group-header')).toHaveProperty('dataset.collapsed', 'false');
+    });
+
+    it('still holds the optimistic answer while the round trip is in flight', () => {
+        // The override's whole reason for existing: a re-render that arrives BEFORE the daemon
+        // has answered (an agent tick, a title change) must not undo the click.
+        const view = render(<Sidebar {...noopProps()} entries={entries()} />);
+        fireEvent.click(screen.getByTestId('group-chevron'));
+        view.rerender(<Sidebar {...noopProps()} entries={entries({ collapsed: false })} />);
+        expect(rowIDs()).toEqual([W1, W4]);
+    });
 });
 
 describe('context menus (portal-based)', () => {

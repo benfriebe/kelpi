@@ -448,6 +448,76 @@ describe('control server', () => {
         expect(server.running).toBe(true);
     });
 
+    /**
+     * §AGNT-003, the clause that makes it a TEARDOWN rather than a close: a TCP client that is
+     * still connected must not be able to hold the listener's teardown open.
+     *
+     * `net.Server.close()` fires its callback only once every accepted connection has ended, so
+     * awaiting it here would hang for as long as one dev-container agent keeps an idle socket —
+     * and `startTCP` begins with exactly this call, which means the live re-bind would hang with
+     * it. The Swift cancels the accept source and closes the listening fd; the client sources it
+     * already has carry on being served, and so do these.
+     */
+    it('stopTCP returns while a TCP client is still connected, and keeps serving it', async () => {
+        const rec = recorder();
+        const server = await startServer(rec.dispatcher, { tcpPort: 0 });
+        const port = server.tcpPort as number;
+
+        const held = await connect({ port });
+        held.on('error', () => undefined);
+        sockets.push(held);
+        // A fire-and-forget command: the server acts and leaves the connection open, which is
+        // what makes this a live socket rather than a half-dead handshake.
+        held.write(`{"command":"stop","pane_id":"${PANE}"}\n`);
+        await delay(50);
+        expect(rec.calls).toHaveLength(1);
+        expect(server.connections).toBe(1);
+
+        // The assertion is the timeout: without `closeListenerAsync` this never settles.
+        await Promise.race([
+            server.stopTCP(),
+            delay(2000).then(() => {
+                throw new Error('stopTCP waited for a live TCP connection to end');
+            })
+        ]);
+
+        expect(server.running).toBe(true);
+        // The door is shut…
+        await expect(connect({ port })).rejects.toBeTruthy();
+        // …and the connection that was already through it is still being served.
+        expect(held.destroyed).toBe(false);
+        held.write(`{"command":"start","pane_id":"${PANE}"}\n`);
+        await delay(50);
+        expect(rec.calls).toHaveLength(2);
+        expect(rec.calls[1]?.message.command).toBe('start');
+    });
+
+    /**
+     * §AGNT-003 / §SET-021: what `ping` says afterwards. A stopped listener must not leave a
+     * `requested` port on `tcpStatus` — `nexd status`, Settings ▸ Network and `ping`'s
+     * `controlTransport` block would then all report a port nothing is listening on, with no
+     * error to explain it. `startTCP(undefined)` already means "no listener" and reports null;
+     * `stopTCP` is the same statement and now reads the same way.
+     */
+    it('stopTCP clears the reported transport, and a later startTCP re-establishes it', async () => {
+        const server = await startServer(recorder().dispatcher, { tcpPort: 0 });
+        expect(server.tcpStatus).not.toBeNull();
+
+        await server.stopTCP();
+        expect(server.tcpStatus).toBeNull();
+        expect(server.tcpPort).toBeUndefined();
+
+        const rebound = await server.startTCP(0);
+        expect(rebound?.bound).toBe(server.tcpPort);
+        expect(rebound?.error).toBeNull();
+        expect(server.tcpStatus).not.toBeNull();
+
+        // The unix socket was never involved in any of it.
+        const unix = await client();
+        unix.write('{"command":"ping"}\n');
+        expect(JSON.parse((await readAll(unix)).text)).toMatchObject({ ok: true });
+    });
+
     /** §AGNT-005: `tcp-port` changed while the daemon runs — move the listener, don't restart. */
     it('startTCP re-binds live, and reports a re-bind that fails', async () => {
         const rec = recorder();

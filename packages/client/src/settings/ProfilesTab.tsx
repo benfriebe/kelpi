@@ -16,6 +16,26 @@
  * is a blur / Enter / structural change (add or remove a profile or a var). The file ends up
  * identical, but a rename does not produce one daemon write, one file write and one broadcast
  * per character typed.
+ *
+ * ## Deselection, and why this rail has a gesture the spec never names (§SET-080)
+ *
+ * The Swift pane shows "No profile selected" whenever its `List(selection:)` has none, and in
+ * SwiftUI that state is reachable for free: clicking the list's empty space below the rows
+ * deselects. This rail is a column of buttons, so the state existed with nothing able to enter
+ * it — a placeholder no user could see. §9.5 of `config-keybindings.md` describes load, naming,
+ * add, remove and write-through and says nothing at all about selection, so there is no spec
+ * behaviour to match; what is matched instead is the *mechanism* the Swift gets it from:
+ *
+ *   - **Click the rail's empty space** — the same gesture as the SwiftUI list, guarded on the
+ *     click landing on the rail itself rather than on a row (a click on a row selects it).
+ *   - **Escape while the focus is in the rail** — the keyboard equivalent, because a mouse-only
+ *     affordance is not one. It follows the overlay's own documented rule that Escape means
+ *     "the innermost thing that is open": with a profile selected the rail consumes the key and
+ *     clears it, and with nothing selected the key falls through and Settings closes.
+ *
+ * Recorded as a divergence in `docs/capabilities/09-settings-config.md` §SET-080 rather than
+ * claimed as parity: it is the same end state as the Swift, reached by a gesture this port had
+ * to choose.
  */
 
 import type { WsProfile } from '@nex/protocol';
@@ -45,7 +65,8 @@ export interface ProfilesTabProps {
 export function ProfilesTab(props: ProfilesTabProps): ReactElement {
     const incoming = useMemo(() => profileDrafts(props.profiles), [props.profiles]);
     const [drafts, setDrafts] = useState<readonly ProfileDraft[]>(incoming);
-    const [selected, setSelected] = useState(0);
+    /** `null` is "no profile selected" — the state the detail placeholder renders (§SET-080). */
+    const [selected, setSelected] = useState<number | null>(0);
     /** The shape we expect the daemon to echo back, so our own write does not clobber typing. */
     const expected = useRef<string | null>(null);
 
@@ -63,8 +84,8 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
         props.actions.setProfiles(profiles);
     };
 
-    const index = Math.min(selected, Math.max(drafts.length - 1, 0));
-    const current = drafts[index];
+    const index = selected === null ? -1 : Math.min(selected, Math.max(drafts.length - 1, 0));
+    const current = index < 0 ? undefined : drafts[index];
     const nameError = current === undefined ? null : profileNameError(drafts, index, current.name);
 
     const patch = (position: number, next: ProfileDraft): readonly ProfileDraft[] =>
@@ -82,8 +103,27 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                         role="listbox"
                         aria-label="Profiles"
                         data-testid="profiles-list"
+                        title="Click empty space, or press Escape, to clear the selection"
                         className="flex w-40 shrink-0 flex-col gap-0.5 overflow-hidden rounded border p-1"
                         style={{ borderColor: tokens.divider }}
+                        /*
+                         * §SET-080's two deselect gestures (see the module note). The click is
+                         * guarded on the rail ITSELF being the target — a click that landed on a
+                         * row or on Add Profile bubbles up here too, and those select rather
+                         * than clear.
+                         */
+                        onClick={(event) => {
+                            if (event.target !== event.currentTarget) return;
+                            setSelected(null);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key !== 'Escape' || selected === null) return;
+                            // Consumed only when there IS a selection, so a second Escape (or
+                            // one pressed with nothing selected) still closes Settings.
+                            event.stopPropagation();
+                            event.preventDefault();
+                            setSelected(null);
+                        }}
                     >
                         {drafts.map((draft, position) => (
                             <button
@@ -123,10 +163,11 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                      * SET-080's detail placeholder. The Swift pane distinguished "No workspace
                      * profiles" (with an inline Add Profile) from "No profile selected", and
                      * explained what a profile IS in the empty case. The first state is
-                     * unreachable here — the built-in `default` baseline is always synthesized,
-                     * so the list is never empty — so the placeholder covers the reachable one
-                     * (a selection that has gone away under a concurrent write) and says the
-                     * same thing the Swift copy said.
+                     * unreachable in BOTH apps — the built-in `default` baseline is always
+                     * synthesized, in the Swift too — so the placeholder covers the second, and
+                     * says what the Swift copy said. It is reached by deselecting in the rail
+                     * (click its empty space, or Escape — see the module note), and also when a
+                     * selection goes away under a concurrent write.
                      */}
                     {current === undefined ? (
                         <div

@@ -234,6 +234,86 @@ describe('the shell’s menu relay (`menu-command`)', () => {
         });
         expect(screen.getByTestId('sidebar-slot').getAttribute('data-sidebar-phase')).toBe('open');
     });
+
+    /**
+     * §APP-025 / §WS-152: View ▸ Toggle Inspector, the second row in the same submenu. It lands
+     * on `act.toggleInspector` — the same state ⌘I, the top-bar button and the ••• menu's
+     * Show/Hide Inspector write.
+     */
+    it('opens and closes the inspector when the shell’s View menu fires', async () => {
+        const h = setup();
+        expect(screen.queryByTestId('inspector-slot')).toBeNull();
+
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'toggle-inspector' });
+        });
+        expect(await screen.findByTestId('inspector')).toBeTruthy();
+        // Wait for the slide to SETTLE before reversing it: a panel still in `opening` has never
+        // reached the open geometry, so hiding it lands straight on `hidden` with nothing to
+        // play out (`sidebar-reveal.ts`'s mid-flight reversal rule). That is correct behaviour
+        // and it is not what this test is about.
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'open'
+            );
+        });
+
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'toggle-inspector' });
+        });
+        // §APP-066: it leaves by SLIDING, so it is still mounted on the way out.
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'closing'
+            );
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId('inspector-slot')).toBeNull();
+        });
+    });
+
+    it('ignores an inspector toggle addressed to a different shell window', () => {
+        const h = setup();
+        act(() => {
+            h.socket().emit({
+                type: 'menu-command',
+                command: 'toggle-inspector',
+                windowID: 'someone-elses-window'
+            });
+        });
+        expect(screen.queryByTestId('inspector-slot')).toBeNull();
+    });
+
+    /**
+     * §APP-018: File ▸ New Workspace. The shipped app's ⌘N is `showNewWorkspaceSheet()`, and the
+     * menu row is the same gesture by another route — so it must open the SHEET and send no
+     * `workspace-create` of its own.
+     */
+    it('opens the New Workspace sheet when the shell’s File menu fires', async () => {
+        const h = setup();
+        expect(screen.queryByTestId('new-workspace-form')).toBeNull();
+
+        act(() => {
+            h.socket().emit({ type: 'menu-command', command: 'new-workspace' });
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('new-workspace-form')).toBeTruthy();
+        });
+        expect(h.lastCommand('workspace-create')).toBeUndefined();
+    });
+
+    it('ignores a New Workspace relay addressed to a different shell window', () => {
+        const h = setup();
+        act(() => {
+            h.socket().emit({
+                type: 'menu-command',
+                command: 'new-workspace',
+                windowID: 'someone-elses-window'
+            });
+        });
+        expect(screen.queryByTestId('new-workspace-form')).toBeNull();
+    });
 });
 
 describe('Help (APP-027 / APP-063)', () => {

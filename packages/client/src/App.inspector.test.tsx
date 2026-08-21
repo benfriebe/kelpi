@@ -295,3 +295,73 @@ describe('the sidebar’s width (§WS-002)', () => {
         });
     });
 });
+
+/**
+ * §APP-066 — "sidebar and inspector show/hide are animated".
+ *
+ * The sidebar half landed in burn-down 5; this is the clause that kept the item partial. What is
+ * asserted here is the STATE MACHINE, not the appearance: that the panel is kept in the tree for
+ * the length of a close (a conditional mount has nothing to transition from), that the slot
+ * carries the same ~0.25s curve the sidebar's does, and that the panel is translated off the
+ * TRAILING edge rather than the leading one. The picture is `docs/audit`'s `mac-chrome`.
+ */
+describe('the inspector’s slide (§APP-066)', () => {
+    it('stays mounted for the length of a close, sliding off the trailing edge', async () => {
+        setup();
+        fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'open'
+            );
+        });
+
+        const slot = screen.getByTestId('inspector-slot');
+        const panel = screen.getByTestId('inspector-panel');
+        // At rest: the slot holds the 280px the grid is pushed by, and the panel sits in it.
+        expect(slot.style.width).toBe('280px');
+        expect(panel.style.transform).toBe('translateX(0px)');
+        expect(slot.style.transition).toContain('250ms');
+
+        fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+
+        // Mid-close: still in the tree, slot collapsed (that is what moves the grid), panel
+        // translated to the RIGHT — the mirror of the sidebar's `-width`.
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'closing'
+            );
+        });
+        expect(screen.getByTestId('inspector-slot').style.width).toBe('0px');
+        expect(screen.getByTestId('inspector-panel').style.transform).toBe('translateX(280px)');
+        expect(screen.getByTestId('inspector-panel').style.opacity).toBe('0');
+        expect(screen.getByTestId('inspector-panel').style.pointerEvents).toBe('none');
+        // The panel is still there while it travels — the whole point.
+        expect(screen.queryByTestId('inspector')).not.toBeNull();
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('inspector-slot')).toBeNull();
+        });
+    });
+
+    it('reverses mid-flight without a second animation', async () => {
+        setup();
+        // Open, then close, then re-open before the close has finished: the panel is already
+        // mounted at the collapsed end, so it transitions straight back out.
+        fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'open'
+            );
+        });
+        fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+        await waitFor(() => {
+            expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe(
+                'closing'
+            );
+        });
+        fireEvent.keyDown(window, { code: 'KeyI', key: 'i', metaKey: true });
+
+        expect(screen.getByTestId('inspector-slot').getAttribute('data-inspector-phase')).toBe('open');
+        expect(screen.getByTestId('inspector-slot').style.width).toBe('280px');
+    });
+});

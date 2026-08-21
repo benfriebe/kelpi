@@ -17,8 +17,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+    CLI_MARKER_SCAN_LIMIT,
     DEFAULT_CLI_LINK_PATH,
+    SWIFT_CLI_MARKERS,
     bundledCliLauncher,
+    carriesCompiledCliMarkers,
     describeCliInstall,
     healCliSymlink,
     installCliSymlink,
@@ -178,6 +181,116 @@ describe('opt-in is preserved (APP-004)', () => {
         expect(result.kind).toBe('skipped');
         expect(result.plan.action).toBe('unavailable');
         expect(installCliSymlink({ linkPath, target: '' }, nodeCliFs).kind).toBe('skipped');
+    });
+});
+
+/**
+ * The pre-April-2025 `cp` installer's leftover: a compiled Swift `nex` sitting at the link path
+ * as a REGULAR file. The Swift asked a Team-ID signature; this port asks for two embedded
+ * strings and a Mach-O magic, which is a heuristic and is tested as one — most of the cases
+ * below are about what it must NOT adopt.
+ *
+ * Fixtures are files, never processes: nothing here (and nothing in the module) executes a
+ * candidate. The shipped-binary case proves that in the strongest available way — the copy is
+ * mode 0o600, so a code path that tried to run it could not have succeeded.
+ */
+describe('a compiled CLI left by the old `cp` installer (APP-004)', () => {
+    const SHIPPED_CLI = '/Applications/Nex.app/Contents/Helpers/nex';
+
+    /** A Mach-O-shaped fixture carrying exactly the strings a case wants to test. */
+    function machOFixture(name: string, strings: readonly string[]): string {
+        const file = path.join(root, name);
+        const magic = Buffer.alloc(4);
+        // MH_MAGIC_64. A real thin arm64 binary starts `cf fa ed fe` and a universal one
+        // `ca fe ba be`; all three are in the module's magic list, and `/bin/ls` below is a
+        // genuine one of the latter.
+        magic.writeUInt32BE(0xfeedfacf, 0);
+        const body = Buffer.from(`${strings.join('\0')}\0`, 'latin1');
+        // Padded so the needles are NOT in the first bytes: `readHead`'s 4 KiB must not be what
+        // finds them, or this would pass for the wrong reason.
+        fs.writeFileSync(file, Buffer.concat([magic, Buffer.alloc(200_000), body]), { mode: 0o755 });
+        return file;
+    }
+
+    it('names two markers that are in the shipped binary AND in the CLI’s first version', () => {
+        // Pinning the constant: `cli-install.ts`'s note and the checklist item both quote these,
+        // and a silent edit here would make both of them lies.
+        expect([...SWIFT_CLI_MARKERS]).toEqual(['NEX_PANE_ID', 'Usage: nex ']);
+    });
+
+    it('attributes a real shipped CLI binary and heals it into a symlink', () => {
+        if (!fs.existsSync(SHIPPED_CLI)) {
+            // No Nex.app on this machine — the synthetic Mach-O cases below carry the logic;
+            // this one is the reality check, and it is honest about not having run.
+            expect(fs.existsSync(SHIPPED_CLI)).toBe(false);
+            return;
+        }
+        fs.writeFileSync(linkPath, fs.readFileSync(SHIPPED_CLI), { mode: 0o600 });
+        expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(true);
+        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(true);
+        expect(plan().action).toBe('drifted');
+        expect(heal().kind).toBe('linked');
+        expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(linkPath)).toBe(target);
+    });
+
+    it('attributes a Mach-O carrying BOTH markers, wherever in the file they sit', () => {
+        fs.copyFileSync(machOFixture('compiled-nex', ['NEX_PANE_ID', 'Usage: nex pane split [...]']), linkPath);
+        expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(true);
+        expect(heal().kind).toBe('linked');
+        expect(fs.readlinkSync(linkPath)).toBe(target);
+    });
+
+    it('refuses a Mach-O carrying only ONE of them', () => {
+        for (const only of ['NEX_PANE_ID', 'Usage: nex event stop']) {
+            fs.rmSync(linkPath, { force: true });
+            fs.copyFileSync(machOFixture(`half-${only.slice(0, 5)}`, [only]), linkPath);
+            expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
+            expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(false);
+            expect(plan().action).toBe('foreign');
+            expect(heal().kind).toBe('skipped');
+            expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(false);
+        }
+    });
+
+    it('refuses a real, unrelated Mach-O binary (the decoy: /bin/ls)', () => {
+        fs.copyFileSync('/bin/ls', linkPath);
+        const before = fs.readFileSync(linkPath);
+        expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
+        expect(heal().kind).toBe('skipped');
+        expect(fs.readFileSync(linkPath).equals(before)).toBe(true);
+    });
+
+    it('refuses a SCRIPT that merely mentions both markers — the magic is part of the check', () => {
+        fs.writeFileSync(linkPath, '#!/bin/sh\n# Usage: nex … reads NEX_PANE_ID\nexec other-nex "$@"\n', {
+            mode: 0o755
+        });
+        expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
+        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(false);
+        expect(heal().kind).toBe('skipped');
+        expect(fs.readFileSync(linkPath, 'utf8')).toContain('exec other-nex');
+    });
+
+    it('refuses an empty or unreadable file rather than throwing', () => {
+        fs.writeFileSync(linkPath, '');
+        expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
+        expect(carriesCompiledCliMarkers(path.join(root, 'no-such-file'), nodeCliFs)).toBe(false);
+        expect(heal().kind).toBe('skipped');
+    });
+
+    it('reads at most the scan limit, so a huge file at the link path is not swallowed whole', () => {
+        expect(CLI_MARKER_SCAN_LIMIT).toBe(16 * 1024 * 1024);
+        const seen: number[] = [];
+        const probe = {
+            ...nodeCliFs,
+            readBytes(file: string, maxBytes: number): Buffer | null {
+                seen.push(maxBytes);
+                return nodeCliFs.readBytes(file, maxBytes);
+            }
+        };
+        fs.copyFileSync(machOFixture('scan-limit', ['NEX_PANE_ID', 'Usage: nex ']), linkPath);
+        expect(carriesCompiledCliMarkers(linkPath, probe)).toBe(true);
+        expect(seen).toEqual([CLI_MARKER_SCAN_LIMIT]);
     });
 });
 

@@ -126,6 +126,14 @@ export interface PaneGridProps extends PaneActions, GridLayoutCallbacks {
     readonly resizeBadgeLingerMs?: number | undefined;
     /** Overrides the 600 ms focus-dwell delay (shell-ui.md §4.6). */
     readonly dwellMs?: number | undefined;
+    /**
+     * §AGNT-056: is this the app the user is actually looking at? The dwell clear is an
+     * ACKNOWLEDGMENT, so false suspends it — a badge raised while the window is in the
+     * background has to survive until someone comes back — and the flip back to true
+     * re-schedules it, which is precisely what the Swift's `didBecomeActive` handler does.
+     * Defaults to true: a host that reports no activation behaves exactly as before.
+     */
+    readonly dwellEnabled?: boolean | undefined;
     readonly focusFollowsMouse?: boolean | undefined;
     readonly focusFollowsMouseDelayMs?: number | undefined;
     readonly className?: string | undefined;
@@ -188,6 +196,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         ratioCommitIntervalMs = RATIO_COMMIT_INTERVAL_MS,
         resizeBadgeLingerMs = RESIZE_BADGE_LINGER_MS,
         dwellMs,
+        dwellEnabled = true,
         focusFollowsMouse = false,
         focusFollowsMouseDelayMs = 0,
         className,
@@ -499,6 +508,10 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         paneID: focusedPaneID,
         status: focusedStatus,
         onDwellClear,
+        // §AGNT-056: the gate. `enabled` is a dependency of the timer's effect, so a
+        // deactivate tears the pending clear down and the next activate schedules a fresh
+        // 600 ms — the Swift's "same clear, scheduled again on didBecomeActive".
+        enabled: dwellEnabled,
         ...(dwellMs === undefined ? {} : { delayMs: dwellMs })
     });
 

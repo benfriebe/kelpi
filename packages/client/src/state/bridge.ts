@@ -19,6 +19,8 @@ import type { WsRejectedMessage } from '@nex/protocol';
 
 import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, NexConnection, PtyClient, type NexConnectionOptions } from '../connection';
+import { readShellWindowID } from '../webpane/shell-window';
+import { activationAppliesHere, parseShellActivation } from './activation';
 import { createNotificationManager, type NotificationManager } from './notifications';
 import { useNexStore, type NexStoreApi } from './store';
 
@@ -42,11 +44,18 @@ export interface StoreBridgeOptions {
      * bridge out of storage entirely (tests, private mode).
      */
     readonly tokenStorage?: StorageLike | null | undefined;
+    /**
+     * §AGNT-056: which shell window this client is the page of (`?shellWindow=`), so a scoped
+     * `shell-activation` can be told apart from another window's. Defaults to the live URL;
+     * tests pass it explicitly rather than rewriting `location`.
+     */
+    readonly shellWindowID?: string | null | undefined;
 }
 
 /** Subscribe the store to a connection. Returns the unsubscribe. */
 export function connectStore(options: StoreBridgeOptions): () => void {
     const { store, connection } = options;
+    const shellWindowID = options.shellWindowID === undefined ? readShellWindowID() : options.shellWindowID;
     const offs: (() => void)[] = [];
 
     offs.push(
@@ -102,6 +111,21 @@ export function connectStore(options: StoreBridgeOptions): () => void {
         connection.on('message', (message) => {
             if (message['type'] !== 'hotkey-status') return;
             store.getState().applyHotkeyStatus(message);
+        })
+    );
+
+    offs.push(
+        // §AGNT-056: `shell-activation` — the Electron shell's window became (or stopped being)
+        // the active one, relayed because the shell and this page are different processes. It
+        // gates the pane grid's 600 ms status clear, so a badge raised while the user was in
+        // another app is still there when they come back — and clears shortly after they do.
+        // Scoped by window id: a second shell window losing focus says nothing about this one,
+        // and a browser (no `?shellWindow=`) ignores every targeted report and keeps running off
+        // `document.visibilitychange` alone.
+        connection.on('message', (message) => {
+            const report = parseShellActivation(message);
+            if (report === null || !activationAppliesHere(report, shellWindowID)) return;
+            store.getState().setAppActive(report.active);
         })
     );
 
@@ -207,6 +231,8 @@ export interface NexRuntimeOptions extends NexConnectionOptions {
     readonly onAttention?: ((target: { paneID: string; workspaceID: string }) => void) | undefined;
     /** Where the remembered token lives (see `StoreBridgeOptions.tokenStorage`). */
     readonly tokenStorage?: StorageLike | null | undefined;
+    /** §AGNT-056: see `StoreBridgeOptions.shellWindowID`. */
+    readonly shellWindowID?: string | null | undefined;
 }
 
 export interface NexRuntime {
@@ -259,7 +285,8 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
         connection,
         notifications,
         ...(options.onAttention !== undefined ? { onAttention: options.onAttention } : {}),
-        ...(options.tokenStorage !== undefined ? { tokenStorage: options.tokenStorage } : {})
+        ...(options.tokenStorage !== undefined ? { tokenStorage: options.tokenStorage } : {}),
+        ...(options.shellWindowID !== undefined ? { shellWindowID: options.shellWindowID } : {})
     });
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {

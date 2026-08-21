@@ -317,6 +317,10 @@ function decodeCommand(
         case 'workspace-delete': {
             const name = fields.nonEmpty('name');
             if (name === undefined) return guard(command, 'workspace-delete requires name', 'name');
+            // `allow_last` is deliberately NOT decoded here: it is not a wire field, it has no
+            // entry in §7's dictionary, and nothing arriving over the control socket may set it.
+            // The GUI's own `delete-workspace` verb constructs it (`ws/sync.ts`); see
+            // `WorkspaceDeleteMessage`.
             return { command, name, force: fields.flag('force', false) };
         }
         case 'workspace-profile': {

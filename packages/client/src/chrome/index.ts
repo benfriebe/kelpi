@@ -54,7 +54,9 @@ export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePre
 export {
     StatusFooter,
     SystemSparkline,
+    fitStatGauges,
     footerGitStats,
+    statGaugeWidth,
     type AgentBucket,
     type AgentCountSummary,
     type FooterAssociation,
@@ -186,8 +188,9 @@ export {
     type WorkspaceLocation
 } from './sidebar-model';
 
-// §WS-001: the show/hide slide's phase machine. A conditional mount cannot transition, so the
-// phases keep the panel in the tree for the length of a close.
+// §WS-001 / §APP-066: the show/hide slide's phase machine, shared by the sidebar and the
+// inspector. A conditional mount cannot transition, so the phases keep the panel in the tree for
+// the length of a close; `SidebarEdge` is the only thing that differs between the two panels.
 export {
     SIDEBAR_SLIDE_EASING,
     SIDEBAR_SLIDE_MS,
@@ -197,6 +200,7 @@ export {
     sidebarPhaseFor,
     sidebarSettleDelayMs,
     sidebarSlideStyle,
+    type SidebarEdge,
     type SidebarPhase,
     type SidebarSlideStyle
 } from './sidebar-reveal';
@@ -301,6 +305,20 @@ export {
     type KeyEventLike,
     type KeyEventTarget
 } from './keys';
+
+export {
+    DESTRUCTIVE_COLOR,
+    QUIT_GATE_GLOBAL,
+    QUIT_GATE_VERSION,
+    QuitConfirmDialog,
+    QuitGate,
+    installQuitGate,
+    normalizeQuitGateSpec,
+    type QuitConfirmDialogProps,
+    type QuitGateProps,
+    type QuitGateSpec,
+    type QuitGateVerdict
+} from './QuitConfirmDialog';
 
 export {
     DEFAULT_FAVICON_COLORS,

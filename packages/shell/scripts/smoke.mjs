@@ -519,6 +519,17 @@ async function adoptPhase() {
         const snapshot = await shell.waitForLine(/snapshot workspaces=/, 'the status snapshot');
         check('the status connection received a state snapshot', snapshot !== undefined, snapshot.trim());
 
+        // §AGNT-056: the shell tells the window whether the app is ACTIVE, because the pane grid
+        // (in the renderer) gates its 600 ms status-clear on it and cannot see the OS. Reported
+        // on every focus/blur, and once on connect so a window that came up in the background
+        // is not assumed to be in front of somebody.
+        const activation = await shell.waitForLine(/activation report:/, 'the activation report');
+        check(
+            'the shell reports the window’s activation to its clients (§AGNT-056)',
+            /activation report: (active|inactive)/.test(activation),
+            activation.trim()
+        );
+
         const hotkey = await shell.waitForLine(/global-hotkey/, 'the global hotkey line');
         check(
             'the global hotkey from the config file was applied',
@@ -535,6 +546,14 @@ async function adoptPhase() {
         check('the app menu offers "Check for Updates…"', menu.includes('Check for Updates…'), menu.trim());
         check('the File menu offers "Preview Markdown…" on ⌘O', menu.includes('Preview Markdown… (⌘O)'), menu.trim());
         check('the Help menu offers "Nex Help" on ⌘?', menu.includes('Nex Help (⌘?)'), menu.trim());
+        // §APP-028 / §SET-194: this smoke runs an UNPACKAGED shell (`electron .` against the
+        // checkout), which is this port's `#if DEBUG`, so the Debug menu must be there. The
+        // other half — that it is NOT there in a built .app — is `packaged-smoke.mjs`.
+        check(
+            'a dev build carries Debug ▸ Seed Test Group (APP-028/SET-194)',
+            menu.includes('Debug ▸ Seed Test Group (dev build)'),
+            menu.trim()
+        );
 
         /*
          * §APP-006, the half that matters most: this HOME carries a skill document the user
@@ -655,11 +674,16 @@ async function adoptPhase() {
         // ── the quit gate's other branch ────────────────────────────────────────────
         // A second shell attaches to the SAME daemon (proving reattach works at all), gets an
         // active agent, and is asked to quit: the gate must hold the quit and ask first. The
-        // dialog cannot be clicked from here, so the assertion is that the app is still alive.
+        // dialog cannot be clicked from here, so the assertion is that the app is still alive —
+        // plus, since §AGNT-116, WHICH dialog the hybrid chose (`./quit-prompt.ts`).
         const second = startShell(sandbox);
         try {
             await second.waitForLine(/status ws connected/, 'the second shell handshake');
             pass('a second shell attaches to the same daemon');
+            // The renderer route needs a page that has finished loading and installed the gate;
+            // waiting for the load is what makes the route assertion below deterministic rather
+            // than a race with `webContents.isLoading()`.
+            await second.waitForLine(/did-finish-load/, 'the second shell’s page load');
 
             const secondPane = await controlCommand(sandbox.runSocket, {
                 command: 'pane-create',
@@ -673,6 +697,22 @@ async function adoptPhase() {
             second.child.kill('SIGTERM');
             const held = await second.waitForLine(/quit held/, 'the quit-gate hold', 10_000);
             check('quitting with an active agent asks first', held.includes('1 active agent'), held.trim());
+
+            // §AGNT-116: the hybrid's decision, on the real ⌘Q path (a SIGTERM becomes
+            // `app.quit()` → `before-quit` → the gate). With the client's own bundle being
+            // served, the confirmation is DRAWN BY THE RENDERER — the only route on which Quit
+            // can be destructive and Cancel the default; without one, the same gate falls back
+            // to `dialog.showMessageBox`, which is the invariant that made this hybrid safe.
+            const route = await second.waitForLine(/quit: asking (in the renderer|with the native dialog)/, 'the quit dialog route', 10_000);
+            const rendererServed = fs.existsSync(path.join(clientDist, 'index.html'));
+            check(
+                rendererServed
+                    ? 'the quit confirmation is routed to the renderer’s own dialog (§AGNT-116)'
+                    : 'with no client bundle to draw it, the quit confirmation falls back to the native dialog',
+                rendererServed ? route.includes('in the renderer') : route.includes('native dialog'),
+                route.trim()
+            );
+
             await sleep(1500);
             check('the app stays alive while the confirmation is open', !second.exited);
             check('and the daemon is still untouched', (await controlPing(sandbox.runSocket))?.ok === true);

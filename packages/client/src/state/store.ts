@@ -226,6 +226,14 @@ export interface UiSlice {
      */
     readonly focusEcho: FocusEcho | null;
     readonly documentVisible: boolean;
+    /**
+     * §AGNT-056: is the window this client runs in the ACTIVE one? Reported by the Electron
+     * shell (`shell-activation`, scoped to its window id), true until something says otherwise
+     * — the right assumption for a browser tab, which has no shell to report for it. Distinct
+     * from `documentVisible`: a window can be perfectly visible and still not be the app the
+     * user is looking at, and the 600 ms status-clear cares about the latter.
+     */
+    readonly appActive: boolean;
     readonly palette: { readonly open: boolean; readonly query: string };
     readonly sidebarFilter: string;
     readonly toasts: readonly Toast[];
@@ -264,6 +272,8 @@ export interface NexActions {
     setFocusEcho(workspaceID: string, paneID: string | null): void;
     clearFocusEcho(): void;
     setDocumentVisible(visible: boolean): void;
+    /** §AGNT-056: a relayed `shell-activation` for this window. */
+    setAppActive(active: boolean): void;
 
     setPaletteOpen(open: boolean): void;
     togglePalette(): void;
@@ -559,6 +569,7 @@ function initialUiSlice(): UiSlice {
         activeWorkspaceID: null,
         focusEcho: null,
         documentVisible: true,
+        appActive: true,
         palette: { open: false, query: '' },
         sidebarFilter: '',
         toasts: []
@@ -721,6 +732,12 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
             const ui = get().ui;
             if (ui.documentVisible === visible) return;
             set({ ui: { ...ui, documentVisible: visible } });
+        },
+
+        setAppActive(active) {
+            const ui = get().ui;
+            if (ui.appActive === active) return;
+            set({ ui: { ...ui, appActive: active } });
         },
 
         setPaletteOpen(open) {

@@ -428,6 +428,26 @@ describe('PaneGrid focus', () => {
         expect(onDwellClear).toHaveBeenCalledTimes(1);
     });
 
+    /** §AGNT-056: the grid's own wiring of the activation gate, not just the hook's. */
+    it('holds the dwell clear while the app is inactive, and re-schedules it on activation', () => {
+        vi.useFakeTimers();
+        const onDwellClear = vi.fn();
+        const grid = renderGrid({
+            panes: [testPane('a', { status: 'waitingForInput' }), testPane('b')],
+            focusedPaneID: 'a',
+            onDwellClear,
+            dwellEnabled: false
+        });
+        act(() => vi.advanceTimersByTime(5000));
+        expect(onDwellClear).not.toHaveBeenCalled();
+
+        grid.update({ dwellEnabled: true });
+        act(() => vi.advanceTimersByTime(599));
+        expect(onDwellClear).not.toHaveBeenCalled();
+        act(() => vi.advanceTimersByTime(1));
+        expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('a');
+    });
+
     it('focus-follows-mouse honours its delay', () => {
         vi.useFakeTimers();
         const onFocusPane = vi.fn();

@@ -23,11 +23,17 @@
  * `pnpm dist` produces an ad-hoc signature whose identity changes every build — so a signature
  * check would either pass on nothing or have to be skipped. Instead an entry is ours when it is a
  * symlink into a bundle's `Contents/Resources/cli/`, a dangling symlink that still names such a
- * path (or the Swift era's `.app/Contents/Helpers/nex`), or a regular file carrying the launcher's
- * own marker text. The consequence is stated plainly: a *regular* Mach-O binary at
- * `/usr/local/bin/nex` — what the pre-April 2025 `cp` installer left — is NOT attributed by this
- * port and is left alone. That is the conservative direction: the cost is a stale Swift CLI that
- * keeps working, where the alternative cost is deleting a binary that was never ours.
+ * path (or the Swift era's `.app/Contents/Helpers/nex`), a regular file carrying the launcher's
+ * own marker text, or — the case the Swift's Team-ID check existed for — a regular **Mach-O**
+ * binary carrying BOTH of `SWIFT_CLI_MARKERS`, which is what the pre-April 2025 `cp` installer
+ * left behind.
+ *
+ * That last arm is *heuristic attribution*, and calling it anything else would be dishonest: two
+ * embedded strings are evidence, not a signature. It is scoped so the evidence is enough — both
+ * markers, a Mach-O magic, and a file the user put at the CLI link path on purpose — and the
+ * file is only ever read, never executed. What remains unattributable stays untouched, which is
+ * still the conservative direction: the cost of a miss is a stale CLI that keeps working, and the
+ * cost of a false positive is deleting a binary that was never ours.
  *
  * Nothing here imports Electron: the dialog, the notification and the tray item live in
  * `./main.ts` and `./status.ts`, and everything below is a pure decision over a filesystem seam,
@@ -66,6 +72,39 @@ export function resolveCliLinkPath(env: NodeJS.ProcessEnv): string {
 const PORT_CLI_SUFFIXES = ['/Contents/Resources/cli/nex', '/Contents/Resources/cli/nex.js'];
 const LEGACY_CLI_SUFFIX = '.app/Contents/Helpers/nex';
 
+/**
+ * The two strings a *compiled* Swift `nex` CLI carries, both of which must be present before a
+ * regular Mach-O binary at the link path is attributed to Nex (APP-004).
+ *
+ * Read off the shipped binary rather than guessed — `strings -n 6
+ * /Applications/Nex.app/Contents/Helpers/nex` on 0.32.0 shows `NEX_PANE_ID` eleven times and
+ * `Usage: nex ` at the head of every subcommand's usage block — and chosen because they are also
+ * in the *first* version of that CLI (`Tools/nex-cli/nex.swift` at its introducing commit reads
+ * `environment["NEX_PANE_ID"]` and prints `Usage: nex --event stop|error|notification`). The
+ * heal's whole point is an OLD binary, so a marker that only exists in recent builds would miss
+ * exactly the file it is looking for.
+ *
+ * **This is a heuristic, and it is named as one.** It is not proof of provenance the way a Team
+ * ID signature was: any binary that both reads a `NEX_PANE_ID` environment variable and prints a
+ * `Usage: nex ` line would be adopted, and adoption means the file is *deleted* and replaced
+ * with a symlink. Three things keep it narrow: both markers are required (either alone is
+ * plausible in a wrapper or a README-ish blob), the file must be a real Mach-O executable
+ * (§`MACH_O_MAGICS` — a shell script that merely mentions the strings is not touched), and it
+ * only ever applies to a file the user themselves put at the CLI link path, which the opt-in
+ * rule already restricts to someone who installed a `nex` on purpose.
+ */
+export const SWIFT_CLI_MARKERS = ['NEX_PANE_ID', 'Usage: nex '] as const;
+
+/**
+ * Mach-O magic numbers, both endiannesses plus the `fat` (universal) wrappers — a `cp` installer
+ * could have left either a thin arm64 binary or a universal one. Checked as bytes, never by
+ * running the file: nothing in this module ever executes what it finds.
+ */
+const MACH_O_MAGICS = [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca];
+
+/** How much of a candidate binary is scanned. The shipped 0.32.0 CLI is 423 KiB. */
+export const CLI_MARKER_SCAN_LIMIT = 16 * 1024 * 1024;
+
 export interface CliFs {
     /** `lstat`-based existence: a dangling symlink counts. */
     exists(file: string): boolean;
@@ -74,6 +113,12 @@ export interface CliFs {
     readLink(file: string): string | null;
     /** First bytes of a file, for the launcher marker check; null when unreadable. */
     readHead(file: string): string | null;
+    /**
+     * Up to `maxBytes` of a file as raw bytes, for the compiled-CLI marker scan; null when
+     * unreadable. Separate from `readHead` because the markers sit in a Mach-O's string table,
+     * hundreds of kilobytes in, and because the scan needs bytes rather than a UTF-8 decode.
+     */
+    readBytes(file: string, maxBytes: number): Buffer | null;
     isWritable(dir: string): boolean;
     mkdirp(dir: string): void;
     remove(file: string): void;
@@ -124,6 +169,22 @@ export const nodeCliFs: CliFs = {
             return null;
         }
     },
+    readBytes(file, maxBytes) {
+        try {
+            const handle = fs.openSync(file, 'r');
+            try {
+                const size = fs.fstatSync(handle).size;
+                const buffer = Buffer.alloc(Math.min(size, maxBytes));
+                if (buffer.length === 0) return buffer;
+                const read = fs.readSync(handle, buffer, 0, buffer.length, 0);
+                return buffer.subarray(0, read);
+            } finally {
+                fs.closeSync(handle);
+            }
+        } catch {
+            return null;
+        }
+    },
     isWritable(dir) {
         try {
             fs.accessSync(dir, fs.constants.W_OK);
@@ -158,11 +219,36 @@ function carriesLauncherMarker(file: string, fsys: CliFs): boolean {
     return head !== null && head.includes(CLI_LAUNCHER_MARKER);
 }
 
+/** True when the first four bytes are a Mach-O (or universal-binary) magic number. */
+function isMachO(bytes: Buffer): boolean {
+    if (bytes.length < 4) return false;
+    return MACH_O_MAGICS.includes(bytes.readUInt32BE(0));
+}
+
+/**
+ * Is this regular file a *compiled* Nex CLI — the pre-April-2025 `cp` installer's leftover?
+ *
+ * Heuristic attribution, deliberately: see `SWIFT_CLI_MARKERS` for what is being traded and why
+ * both markers plus the Mach-O check are required. The file is read, never run — a binary at an
+ * unknown provenance is the last thing to execute, and there is nothing a `--version` would tell
+ * us that its bytes do not.
+ *
+ * Decoded `latin1` rather than `utf8` so the scan is byte-exact: an ASCII needle can never be
+ * swallowed by a mis-decoded multi-byte sequence, and no substitution characters are introduced.
+ */
+export function carriesCompiledCliMarkers(file: string, fsys: CliFs): boolean {
+    const bytes = fsys.readBytes(file, CLI_MARKER_SCAN_LIMIT);
+    if (bytes === null || !isMachO(bytes)) return false;
+    const text = bytes.toString('latin1');
+    return SWIFT_CLI_MARKERS.every((marker) => text.includes(marker));
+}
+
 /**
  * Is the entry at `linkPath` something a Nex installer produced?
  *
- * See the module note for why this is not a code-signature check, and for the one case it
- * deliberately answers "no" where the Swift original answered "yes".
+ * See the module note for why this is not a code-signature check. The regular-file arm has two
+ * answers: our own launcher script (an exact marker it writes into itself) and — heuristically —
+ * a compiled Swift CLI carrying both of `SWIFT_CLI_MARKERS`.
  */
 export function isNexManagedInstall(linkPath: string, fsys: CliFs): boolean {
     if (fsys.isSymlink(linkPath)) {
@@ -179,7 +265,9 @@ export function isNexManagedInstall(linkPath: string, fsys: CliFs): boolean {
             PORT_CLI_SUFFIXES.some((suffix) => resolved.endsWith(suffix)) || resolved.endsWith(LEGACY_CLI_SUFFIX)
         );
     }
-    if (fsys.isFile(linkPath)) return carriesLauncherMarker(linkPath, fsys);
+    if (fsys.isFile(linkPath)) {
+        return carriesLauncherMarker(linkPath, fsys) || carriesCompiledCliMarkers(linkPath, fsys);
+    }
     return false;
 }
 

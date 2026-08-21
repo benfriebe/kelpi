@@ -23,7 +23,37 @@ import { app, dialog, type BrowserWindow } from 'electron';
 
 import { activitySummary, type AgentCounts } from './agents.js';
 import { log } from './log.js';
-import { quitDialogSpec, readShellSettings, shouldConfirmQuit, writeShellSettings } from './settings.js';
+import {
+    promptForQuit,
+    quitGateDismissScript,
+    quitGateOpenScript,
+    quitGateProbeScript,
+    type QuitPromptRenderer,
+    type QuitVerdict
+} from './quit-prompt.js';
+import {
+    quitDialogSpec,
+    readShellSettings,
+    shouldConfirmQuit,
+    writeShellSettings,
+    type QuitDialogSpec
+} from './settings.js';
+
+export {
+    QUIT_GATE_GLOBAL,
+    QUIT_GATE_PROBE_TIMEOUT_MS,
+    QUIT_GATE_VERDICT_TIMEOUT_MS,
+    QUIT_GATE_VERSION,
+    normalizeQuitVerdict,
+    promptForQuit,
+    quitGateDismissScript,
+    quitGateOpenScript,
+    quitGateProbeScript,
+    type QuitPromptDeps,
+    type QuitPromptOutcome,
+    type QuitPromptRenderer,
+    type QuitVerdict
+} from './quit-prompt.js';
 
 export {
     DEFAULT_SHELL_SETTINGS,
@@ -69,6 +99,12 @@ export interface QuitGateOptions {
      */
     readonly flushPendingSaves?: (() => Promise<void>) | undefined;
     readonly flushTimeoutMs?: number | undefined;
+    /**
+     * §AGNT-116: overrides for the renderer route's two budgets (`./quit-prompt.ts` explains why
+     * there are two). Production leaves them alone; the smoke shortens the verdict one so a
+     * dialog nobody is there to click still ends in a native fallback rather than a hang.
+     */
+    readonly quitPromptTimeouts?: { readonly probeMs?: number; readonly verdictMs?: number } | undefined;
 }
 
 /** Long enough for a synchronous daemon-side write and its round trip; short enough to feel instant. */
@@ -170,6 +206,44 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
             });
     };
 
+    /**
+     * §AGNT-116: the native dialog — the fallback, and the only dialog before the hybrid.
+     *
+     * Unchanged: `defaultId`/`cancelId` both point at Cancel, and a null (or destroyed) parent
+     * gives an app-modal box, which is what makes a tray/signal quit with no window still ask.
+     */
+    const askNatively = async (spec: QuitDialogSpec): Promise<QuitVerdict> => {
+        const parent = options.window?.() ?? null;
+        const request = { ...spec, buttons: [...spec.buttons] };
+        const result =
+            parent === null || parent.isDestroyed()
+                ? await dialog.showMessageBox(request)
+                : await dialog.showMessageBox(parent, request);
+        return { response: result.response, checkboxChecked: result.checkboxChecked };
+    };
+
+    /**
+     * §AGNT-116: the renderer route, or null when there is nothing on screen to route to.
+     *
+     * "Live renderer" is deliberately strict — a window the user cannot SEE is not somewhere to
+     * put a modal question. Hidden, minimised, destroyed, crashed or still loading all mean the
+     * native dialog, which appears regardless.
+     */
+    const rendererTarget = (): QuitPromptRenderer | null => {
+        const window = options.window?.() ?? null;
+        if (window === null || window.isDestroyed()) return null;
+        if (!window.isVisible() || window.isMinimized()) return null;
+        const contents = window.webContents;
+        if (contents.isDestroyed() || contents.isCrashed() || contents.isLoading()) return null;
+        return {
+            probe: async () => (await contents.executeJavaScript(quitGateProbeScript(), false)) === true,
+            ask: async (spec) => await contents.executeJavaScript(quitGateOpenScript(spec), false),
+            dismiss: () => {
+                void contents.executeJavaScript(quitGateDismissScript(), false).catch(() => undefined);
+            }
+        };
+    };
+
     const ask = (counts: AgentCounts): void => {
         confirming = true;
         const summary = activitySummary(counts);
@@ -177,20 +251,24 @@ export function installQuitGate(options: QuitGateOptions): QuitGate {
             `quit held: ${String(summary.agents)} active agent(s) across ${String(summary.workspaces)} workspace(s); asking first`
         );
         const spec = quitDialogSpec(counts);
-        const parent = options.window?.() ?? null;
-        const request = { ...spec, buttons: [...spec.buttons] };
-        const promise =
-            parent === null || parent.isDestroyed()
-                ? dialog.showMessageBox(request)
-                : dialog.showMessageBox(parent, request);
 
-        void promise
+        void promptForQuit(spec, {
+            renderer: rendererTarget(),
+            native: askNatively,
+            log: (message) => log(message),
+            ...(options.quitPromptTimeouts?.probeMs === undefined
+                ? {}
+                : { probeTimeoutMs: options.quitPromptTimeouts.probeMs }),
+            ...(options.quitPromptTimeouts?.verdictMs === undefined
+                ? {}
+                : { verdictTimeoutMs: options.quitPromptTimeouts.verdictMs })
+        })
             .then((result) => {
                 confirming = false;
                 // §10 step 4: honour the suppression checkbox even on Cancel.
                 if (result.checkboxChecked && policy().confirmQuitWhenActive) suppress();
                 if (result.response === 0) proceed();
-                else log('quit cancelled');
+                else log(`quit cancelled (${result.route} dialog)`);
             })
             .catch(() => {
                 // A dialog that could not be shown must not wedge the app in "confirming".

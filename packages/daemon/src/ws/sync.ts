@@ -34,6 +34,7 @@ import {
     WS_CLIENT_KINDS,
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
+    WS_SHELL_ACTIVATION_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
     decodeWireObject,
@@ -61,6 +62,7 @@ import type { ControlDispatcher, DomainStore, ReplyHandle } from '../seams.js';
 import {
     findPaneAnywhere,
     groupByID,
+    groupIDForWorkspace,
     workspaceByID,
     workspaceContainingVisiblePane
 } from '../store/derived.js';
@@ -362,6 +364,15 @@ export const WS_ONLY_COMMANDS = [
 ] as const;
 export type WsOnlyCommand = (typeof WS_ONLY_COMMANDS)[number];
 
+/**
+ * §WS-156 / §APP-067 — the GUI's workspace delete, which may reach ZERO workspaces.
+ *
+ * WS-only like the list above, but it is not IN the list: `handleWsOnlyCommand` answers from the
+ * store alone, and a delete has to tear down PTYs and persist. It is routed straight into the
+ * app dispatcher instead (`guiDeleteWorkspace`), which is why it carries its own constant.
+ */
+export const GUI_DELETE_WORKSPACE_COMMAND = 'delete-workspace';
+
 export function isWsOnlyCommand(command: string): command is WsOnlyCommand {
     return (WS_ONLY_COMMANDS as readonly string[]).includes(command);
 }
@@ -613,7 +624,18 @@ export function handleWsOnlyCommand(
         const requested = Array.isArray(raw)
             ? raw.filter((entry): entry is string => typeof entry === 'string')
             : [];
-        if (requested.length === 0) return failure('create-group-for-workspaces requires workspace_ids');
+        /*
+         * §WS-123 — an EMPTY member list is legal, and it is the ⌘⇧G path.
+         *
+         * The chord mints a placeholder name and drops into inline rename on the new header,
+         * which needs the id back; `group-create` is fire-and-forget and its ack carries
+         * nothing, so ⌘⇧G created a group and then silently did neither the rename nor the
+         * reveal (caught live by the `workspace-edges` audit flow, which timed out waiting for
+         * a rename field that never opened). This verb already answers with `group_id`, and a
+         * group created around no workspaces is the same `create-group` action with an empty
+         * `initialWorkspaceIDs` — so the guard that used to reject it is gone and unknown ids
+         * are still refused below.
+         */
         const unknown = requested.find((id) => workspaceByID(state, id) === null);
         if (unknown !== undefined) return failure(`no workspace matches '${unknown}'`);
         const color =
@@ -1332,6 +1354,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_HOTKEY_STATUS_MESSAGE:
                     hotkeyStatusReport(parsed);
                     return;
+                case WS_SHELL_ACTIVATION_MESSAGE:
+                    shellActivationReport(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -1735,7 +1760,24 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private setActiveWorkspace(workspaceID: string): void {
             this.activeWorkspaceID = workspaceID;
             const state = store.getState();
-            if (state.lastActiveWorkspaceID === workspaceID) return;
+            /*
+             * §WS-112 — the churn guard must not swallow the EXPAND.
+             *
+             * `set-active-workspace` does two things: it stamps `lastAccessedAt`, and it opens
+             * the parent group when the destination is hidden inside a COLLAPSED one
+             * (`reducers/workspaces.ts`; the Swift's `AppReducer.swift:1434-1452` step 3). The
+             * guard below exists so the activation report a client sends on every click is not
+             * a state change every time — but a workspace can be the daemon's last-active AND
+             * sit inside a group the user has since collapsed, and then re-activating it
+             * (⌘1–9, the palette, a status-popover row, `reveal-pane`) had nothing to do and
+             * left the group shut around the workspace the user was just told they arrived in.
+             *
+             * So the guard asks whether there is anything to DO rather than only whether the id
+             * changed: a collapsed parent is work, and the dispatch goes out.
+             */
+            const parentID = groupIDForWorkspace(state, workspaceID);
+            const parentCollapsed = parentID !== null && groupByID(state, parentID)?.isCollapsed === true;
+            if (state.lastActiveWorkspaceID === workspaceID && !parentCollapsed) return;
             if (workspaceByID(state, workspaceID) === null) return;
             // The daemon keeps the last-active workspace so a fresh client restores where
             // the user left off (PLAN.md); the per-client value above is the live one.
@@ -1823,6 +1865,10 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 }
                 if (name !== undefined && isDesktopCommand(name)) {
                     this.desktopCommand(id, name, payload);
+                    return;
+                }
+                if (name === GUI_DELETE_WORKSPACE_COMMAND) {
+                    this.guiDeleteWorkspace(id, payload);
                     return;
                 }
             }
@@ -1956,6 +2002,54 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          * listener rebind both take longer than a message handler — so the reply settles when
          * the promise does, like the content verbs.
          */
+        /**
+         * §WS-156 / §APP-067 — the GUI's own workspace delete.
+         *
+         * It exists for one reason: the shipped app lets ⌘W on the last pane of the LAST
+         * workspace reach zero workspaces (and land on "No workspace selected"), while
+         * `nex workspace delete` refuses at one. The port had both routes on one verb, so the
+         * GUI inherited the CLI's refusal and the empty state had no gesture that could reach it.
+         *
+         * Rather than put a flag on the wire — `allow_last` is not in wire-protocol.md §7's field
+         * dictionary and must never be settable from the control socket — this is a WS-ONLY verb,
+         * exactly like `rename-workspace` and for the same stated reason: a new CLI verb would be
+         * a compatibility surface owed to the Swift CLI forever. It CONSTRUCTS the delete message
+         * instead of decoding one, so `allow_last` can only ever come from a window.
+         *
+         * Everything after that is the existing handler: the same running-agents guard, the same
+         * PTY teardown, the same reply.
+         */
+        private guiDeleteWorkspace(id: string, payload: Record<string, unknown>): void {
+            const workspaceID = text(payload['workspace_id']) ?? text(payload['name']);
+            if (workspaceID === undefined) {
+                this.send({
+                    type: 'command-reply',
+                    id,
+                    reply: failure(`${GUI_DELETE_WORKSPACE_COMMAND} requires workspace_id`)
+                });
+                return;
+            }
+            const handle = new WsReplyHandle(this.transport, id, (h) => this.handles.delete(h));
+            this.handles.add(handle);
+            try {
+                dispatcher(
+                    {
+                        command: 'workspace-delete',
+                        name: workspaceID,
+                        force: payload['force'] === true,
+                        allow_last: payload['allow_last'] === true
+                    },
+                    handle
+                );
+            } catch (error) {
+                report(error, `ws-command ${GUI_DELETE_WORKSPACE_COMMAND}`);
+                if (!handle.closed) {
+                    handle.send({ ...errorReply('handler failed') });
+                    handle.close();
+                }
+            }
+        }
+
         private desktopCommand(
             id: string,
             command: DesktopCommand,
@@ -2310,6 +2404,28 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         };
         lastHotkeyStatus = relayed;
         revealPane(relayed);
+    }
+
+    /**
+     * §AGNT-056: `shell-activation` from a shell → every client, and NOT remembered.
+     *
+     * The daemon has no opinion about activation either — it is a routing hint about a window,
+     * like `reveal-request`, and it is relayed with its `windowID` intact so the client running
+     * in that window is the one that acts on it. Nothing is stored: unlike the hotkey outcome
+     * (a durable fact about the machine), this describes a moment, and replaying "window W lost
+     * focus" into a client that attaches an hour later would suspend timers on a false premise.
+     *
+     * A malformed report is dropped rather than defaulted: guessing `active: true` here would
+     * silently re-arm every client's dwell clear on a frame nobody understood.
+     */
+    function shellActivationReport(message: Record<string, unknown>): void {
+        if (typeof message['active'] !== 'boolean') return;
+        const windowID = text(message['windowID']);
+        revealPane({
+            type: WS_SHELL_ACTIVATION_MESSAGE,
+            active: message['active'],
+            ...(windowID === undefined ? {} : { windowID })
+        });
     }
 
     const unsubscribe = store.subscribe((events) => {

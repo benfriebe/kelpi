@@ -354,3 +354,33 @@ input {
     animation: none !important;
   }
 }
+
+/*
+ * §APP-046 — the drawn title bar IS the window's drag region.
+ *
+ * The shell creates its window with `titleBarStyle: 'hiddenInset'`, which removes the native
+ * strip entirely: what a user grabs to move the window is this page's own 32px bar. shell-ui.md
+ * §3: "empty bar area drags the window".
+ *
+ * Every interactive descendant opts back out. `-webkit-app-region: drag` swallows mouse events
+ * whole — a button inside a drag region cannot be clicked at all — so the exclusion list is the
+ * difference between a title bar and a row of dead controls. It is written as a descendant rule
+ * rather than per-component so a control ADDED to the bar later is excluded by default; the
+ * failure mode of forgetting is a button nobody can press.
+ *
+ * `-webkit-app-region` is inert outside Electron, and the attribute is only set inside a shell
+ * window anyway, so a browser tab is untouched.
+ */
+[data-titlebar-drag='true'] {
+  -webkit-app-region: drag;
+}
+
+[data-titlebar-drag='true'] button,
+[data-titlebar-drag='true'] a,
+[data-titlebar-drag='true'] input,
+[data-titlebar-drag='true'] select,
+[data-titlebar-drag='true'] textarea,
+[data-titlebar-drag='true'] [role='menu'],
+[data-titlebar-drag='true'] [role='menuitem'] {
+  -webkit-app-region: no-drag;
+}

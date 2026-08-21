@@ -116,8 +116,10 @@ export {
 
 export {
     SHELL_WINDOW_PARAM,
+    TRAFFIC_LIGHT_INSET_PARAM,
     WINDOW_TRANSPARENT_PARAM,
     readShellWindowID,
+    readTrafficLightInset,
     readWindowTransparent
 } from './shell-window';
 

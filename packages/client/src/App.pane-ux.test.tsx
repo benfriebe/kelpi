@@ -422,10 +422,13 @@ describe('the ⌘W active-agents gate (TERM-077 / WS-109)', () => {
         fireEvent.click(screen.getByTestId('agent-delete-confirm'));
 
         await waitFor(() => {
+            // §WS-156: the gate was raised BY ⌘W, so the confirmation inherits ⌘W's own
+            // permission to reach zero workspaces — the GUI verb, not the CLI's.
             expect(h.commands().at(-1)).toMatchObject({
-                command: 'workspace-delete',
-                name: W1,
-                force: true
+                command: 'delete-workspace',
+                workspace_id: W1,
+                force: true,
+                allow_last: true
             });
         });
         expect(

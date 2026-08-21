@@ -5979,6 +5979,329 @@ function buildFlows(ctx) {
         },
         {
             /**
+             * §AGNT-056 / §AGNT-073 / §AGNT-116 — the three details of the agent lifecycle that
+             * only exist once the app is real.
+             *
+             * **§AGNT-056** is the one with a product bug under it. The Swift schedules its
+             * 600 ms status clear from two places — focusing a pane, and
+             * `NSApplication.didBecomeActive` — so a badge raised while you were in another app
+             * is still there when you come back, and clears shortly AFTER you look at it. The
+             * port ran the timer unconditionally, so a `stop` on the focused pane cleared its
+             * own badge 600 ms later whether or not anybody was there. This drives both halves:
+             * the app is deactivated FIRST, then the event lands, and the badge has to survive;
+             * then the app is activated and the badge has to clear ~600 ms later. The activation
+             * travels the real wire — a second WS client sends the same `shell-activation` the
+             * Electron shell sends from `window.on('focus')`, and the daemon relays it to the
+             * window exactly as it would the shell's own.
+             *
+             * **§AGNT-073** cannot be photographed: the two action buttons live in macOS's
+             * notification centre. What is asserted is that a REAL `Notification` was
+             * constructed with the `nex-agent` category's actions, read off the shell's own log
+             * line — the same technique §AGNT-090's tray rows use, for the same reason.
+             *
+             * **§AGNT-116**'s dialog is the client's, so it IS photographable. The main process
+             * calls the page's `window.__nexQuitGate.open(spec)` over `executeJavaScript` (this
+             * app has no preload); this drives that exact entry point with the exact spec
+             * `quitDialogSpec` builds, and asks the three questions the item is about: is Quit
+             * painted destructive, does Cancel hold focus (so Return is safe), does Escape
+             * cancel. The main-process half — which dialog is chosen, and every fallback — is
+             * `shell/src/quit-prompt.test.ts`, and the real ⌘Q path is asserted live in
+             * `packages/shell/scripts/smoke.mjs` ("quit: asking in the renderer").
+             *
+             * Leaves the world as it found it: same active workspace, same focused pane, the
+             * pane back to idle, the app active, no dialog, and the observer socket closed.
+             */
+            id: 'agent-lifecycle',
+            expect:
+                'A status raised while the app is in the BACKGROUND survives (no 600 ms self-clear) and clears ~600 ms after the app becomes active again; the desktop notification is posted with the `nex-agent` category’s Open/Dismiss actions; and the ⌘Q confirmation the shell routes into the renderer paints Quit destructive, holds focus on Cancel, and cancels on Escape.',
+            needsEyes: true,
+            async run(recorder) {
+                const shellPane = await widestShellPane(page, cli);
+                if (shellPane === null) {
+                    recorder.check('a terminal pane to drive an agent from', false, 'none');
+                    return;
+                }
+                const paneID = shellPane.id;
+                // The grid stamps `data-focused` on the pane container it draws the focus ring
+                // in, so this reads the ring's own source rather than guessing from the DOM.
+                const focusedPaneExpr = `(document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null)`;
+                const cameFromPane = await page.eval(focusedPaneExpr);
+                recorder.note(`focused pane before: ${String(cameFromPane)}; driving ${paneID}`);
+
+                await page.click(`[data-testid="pane-body-${paneID}"]`);
+                await sleep(700);
+                const focusedNow = await page.eval(focusedPaneExpr);
+                recorder.check('the pane under test holds focus', focusedNow === paneID, String(focusedNow));
+                // The dwell clear only fires for the FOCUSED pane, so a pane that could not be
+                // focused would make every assertion below vacuously true.
+                if (focusedNow !== paneID) return;
+
+                // A second WS client, attached with the run dir's token, standing in for the
+                // Electron shell's status connection. It reports no visibility and no focus, so
+                // the only thing it changes is the activation state it is there to change.
+                const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));
+                const token =
+                    tokenFile === undefined
+                        ? null
+                        : fs.readFileSync(path.join(sandbox.runDir, tokenFile), 'utf8').trim();
+                recorder.check('the audit can speak the shell’s side of the wire', token !== null);
+                if (token === null) return;
+
+                const activation = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                let activationReady = false;
+                activation.addEventListener('open', () => {
+                    activation.send(
+                        JSON.stringify({
+                            type: 'hello',
+                            protocolVersion: 1,
+                            token,
+                            client: { kind: 'browser', name: 'audit-activation-reporter' }
+                        })
+                    );
+                });
+                activation.addEventListener('message', (event) => {
+                    try {
+                        if (JSON.parse(String(event.data))?.type === 'welcome') activationReady = true;
+                    } catch {
+                        /* a binary frame — not ours */
+                    }
+                });
+                const setActive = async (active) => {
+                    activation.send(JSON.stringify({ type: 'shell-activation', active }));
+                    await sleep(500);
+                };
+                const paneStatus = async () =>
+                    (await cli.json(['pane', 'list', '--json'])).find((entry) => entry.id === paneID)?.status ?? null;
+                const headerText = async () =>
+                    String(
+                        await page.eval(
+                            `((document.querySelector('[data-testid="pane-header-${paneID}"]')?.innerText) ?? '').replace(/\\n/g,' | ')`
+                        )
+                    );
+
+                try {
+                    for (let attempt = 0; attempt < 50 && !activationReady; attempt++) await sleep(160);
+                    recorder.check('the stand-in shell is attached to the daemon', activationReady);
+                    if (!activationReady) return;
+
+                    // ── §AGNT-056, first half: nobody is looking ─────────────────────
+                    //
+                    // A session first, because the header badge is drawn only for a pane with an
+                    // agent attached (§AGNT-091: `agentBadge` returns null without a session id)
+                    // — and this step's claim is about what the user comes back and SEES.
+                    const sessionID = 'audit-life-0000-0001';
+                    await cli.ok(['event', 'session-start'], { paneID, stdin: JSON.stringify({ session_id: sessionID }) });
+                    await sleep(600);
+
+                    // Phase 0 — the control. With the app ACTIVE the clear fires as it always
+                    // has (§AGNT-055), so the two phases below are measuring a gate rather than
+                    // a timer that was never running: the audit window is frequently not the
+                    // frontmost app, and without this the "it survived" assertion could pass for
+                    // the wrong reason.
+                    await setActive(true);
+                    await cli.ok(['event', 'error', '--message', 'Audit: control run'], { paneID });
+                    await sleep(1600);
+                    const activeClear = await paneStatus();
+                    recorder.check(
+                        'with the app active, the 600 ms dwell clears the focused pane (§AGNT-055)',
+                        activeClear === 'idle',
+                        `status=${String(activeClear)}`
+                    );
+
+                    await setActive(false);
+                    const shellLogMark = runtime.shell.text().length;
+                    // `event error` always raises a notification (§7's matrix: an error is never
+                    // suppressed) and leaves the pane `waitingForInput` — the one status the
+                    // dwell clear acts on. One event, both claims.
+                    await cli.ok(['event', 'error', '--message', 'Audit: the agent needs you'], { paneID });
+                    await sleep(1800);
+
+                    const backgroundStatus = await paneStatus();
+                    const backgroundHeader = await headerText();
+                    await recorder.shot(page, 'background');
+                    recorder.note(`while deactivated: status=${String(backgroundStatus)} header=${backgroundHeader}`);
+                    recorder.check(
+                        'a status raised while the app is in the background does NOT clear itself (§AGNT-056)',
+                        backgroundStatus === 'waitingForInput',
+                        `status=${String(backgroundStatus)} after 1.8s (three times the 600 ms dwell)`
+                    );
+                    recorder.check(
+                        'and the badge is still on the pane header for the user to come back to',
+                        /awaiting input/i.test(backgroundHeader),
+                        backgroundHeader
+                    );
+
+                    // ── §AGNT-073: what the shell actually posted ────────────────────
+                    const posted = runtime.shell
+                        .text()
+                        .slice(shellLogMark)
+                        .split('\n')
+                        .filter((line) => line.includes('notification posted:'));
+                    recorder.block('shell log: the notification it posted', posted.join('\n') || '(nothing)');
+                    recorder.check(
+                        'the desktop notification carries the nex-agent category’s actions (§AGNT-073)',
+                        posted.some((line) => line.includes('category=nex-agent') && line.includes('actions=Open,Dismiss')),
+                        posted.slice(-1).join('') || '(no notification line)'
+                    );
+                    recorder.check(
+                        '…for this pane, under its dedupe identity',
+                        posted.some((line) => line.includes(`nex-${paneID}`)),
+                        posted.slice(-1).join('') || '(no notification line)'
+                    );
+
+                    // ── §AGNT-056, second half: the user comes back ──────────────────
+                    await setActive(true);
+                    await sleep(1600);
+                    const returnedStatus = await paneStatus();
+                    const returnedHeader = await headerText();
+                    await recorder.shot(page, 'reactivated');
+                    recorder.note(`after activation: status=${String(returnedStatus)} header=${returnedHeader}`);
+                    recorder.check(
+                        'activating the app schedules the 600 ms clear, and the badge goes (§AGNT-056)',
+                        returnedStatus === 'idle',
+                        `status=${String(returnedStatus)}`
+                    );
+                    recorder.check(
+                        '…leaving the pane header with no "awaiting input" badge',
+                        !/awaiting input/i.test(returnedHeader),
+                        returnedHeader
+                    );
+
+                    // ── §AGNT-116: the quit confirmation, drawn by the client ────────
+                    //
+                    // The exact spec `shell/src/settings.ts` `quitDialogSpec` builds, through the
+                    // exact global the main process calls over `executeJavaScript`.
+                    const openGate = `(() => {
+                        const gate = window.__nexQuitGate;
+                        if (!gate || typeof gate.open !== 'function') return null;
+                        window.__auditQuitVerdict = null;
+                        gate.open({
+                            type: 'question',
+                            message: 'Quit Nex?',
+                            detail: '1 agent across 1 workspace is still active. They keep running in the background — quitting only closes this window.',
+                            buttons: ['Quit', 'Cancel'],
+                            defaultId: 1,
+                            cancelId: 1,
+                            checkboxLabel: "Don't ask again",
+                            checkboxChecked: false
+                        }).then((verdict) => { window.__auditQuitVerdict = verdict; });
+                        return { version: gate.version };
+                    })()`;
+                    const gate = await page.eval(openGate);
+                    recorder.check(
+                        'the page carries the quit gate the main process drives (§AGNT-116)',
+                        gate !== null && Number(gate.version) >= 1,
+                        JSON.stringify(gate)
+                    );
+                    await sleep(500);
+                    await recorder.shot(page, 'quit-dialog');
+                    const dialog = await page.eval(`(() => {
+                        const el = document.querySelector('[data-testid="quit-dialog"]');
+                        if (el === null) return null;
+                        const quit = el.querySelector('[data-testid="quit-confirm"]');
+                        const cancel = el.querySelector('[data-testid="quit-cancel"]');
+                        const color = (node) => (node === null ? null : getComputedStyle(node).color);
+                        return {
+                            role: el.getAttribute('role'),
+                            text: (el.innerText ?? '').replace(/\\n/g, ' | '),
+                            quit: quit?.textContent ?? null,
+                            cancel: cancel?.textContent ?? null,
+                            quitColor: color(quit),
+                            cancelColor: color(cancel),
+                            focused: document.activeElement?.getAttribute('data-testid') ?? null,
+                            suppress: el.querySelector('[data-testid="quit-suppress"]') !== null
+                        };
+                    })()`);
+                    recorder.block('quit dialog', JSON.stringify(dialog, null, 2));
+                    recorder.check('the confirmation is on screen', dialog !== null);
+                    recorder.check(
+                        'Quit is painted destructive — the half `dialog.showMessageBox` cannot do (§AGNT-116)',
+                        dialog?.quitColor === 'rgb(224, 101, 92)',
+                        `${String(dialog?.quitColor)} (the delete gate’s #E0655C)`
+                    );
+                    recorder.check(
+                        '…and Cancel is not, so the two read differently',
+                        dialog !== null && dialog.quitColor !== dialog.cancelColor,
+                        `${String(dialog?.quitColor)} vs ${String(dialog?.cancelColor)}`
+                    );
+                    recorder.check(
+                        'Cancel holds focus, so a stray Return cannot confirm the quit',
+                        dialog?.focused === 'quit-cancel',
+                        String(dialog?.focused)
+                    );
+                    recorder.check(
+                        'it is a dialog, with the "Don’t ask again" suppression on it',
+                        dialog?.role === 'dialog' && dialog.suppress === true,
+                        `role=${String(dialog?.role)} suppress=${String(dialog?.suppress)}`
+                    );
+
+                    // Escape — the real key, through the page's own capture-phase handler.
+                    await page.key('Escape');
+                    await sleep(400);
+                    const afterEscape = await page.eval(
+                        `({ open: document.querySelector('[data-testid="quit-dialog"]') !== null, verdict: window.__auditQuitVerdict ?? null })`
+                    );
+                    recorder.note(`after Escape: ${JSON.stringify(afterEscape)}`);
+                    recorder.check(
+                        'Escape closes it and answers Cancel (index 1), so the app keeps running',
+                        afterEscape?.open === false && afterEscape?.verdict?.response === 1,
+                        JSON.stringify(afterEscape)
+                    );
+
+                    // …and the destructive button reports the Quit index, which is the answer
+                    // `quit.ts` acts on. Nothing is awaiting this promise, so nothing quits.
+                    await page.eval(openGate);
+                    await sleep(400);
+                    await page.click('[data-testid="quit-confirm"]');
+                    await sleep(400);
+                    const afterQuit = await page.eval(
+                        `({ open: document.querySelector('[data-testid="quit-dialog"]') !== null, verdict: window.__auditQuitVerdict ?? null })`
+                    );
+                    recorder.check(
+                        'clicking Quit answers with index 0 — the response `quit.ts` proceeds on',
+                        afterQuit?.open === false && afterQuit?.verdict?.response === 0,
+                        JSON.stringify(afterQuit)
+                    );
+                    recorder.eyes(
+                        'the quit dialog: is the destructive Quit legible, is Cancel’s focus visible, does it read as the same app as the delete confirmation?'
+                    );
+                } finally {
+                    // Whatever happened above: the session is detached, the app is active again,
+                    // the page has no leftover audit global, the socket is closed, and focus is
+                    // back where it was.
+                    await cli.run(['event', 'session-end'], {
+                        paneID,
+                        stdin: JSON.stringify({ session_id: 'audit-life-0000-0001' })
+                    });
+                    try {
+                        activation.send(JSON.stringify({ type: 'shell-activation', active: true }));
+                    } catch {
+                        /* already closing */
+                    }
+                    await sleep(300);
+                    activation.close();
+                    await page.eval(
+                        `(() => { delete window.__auditQuitVerdict; return document.querySelector('[data-testid="quit-dialog"]') === null; })()`
+                    );
+                    if (typeof cameFromPane === 'string' && cameFromPane !== paneID) {
+                        await page.click(`[data-testid="pane-body-${cameFromPane}"]`);
+                        await sleep(500);
+                    }
+                    const restored = await page.eval(focusedPaneExpr);
+                    recorder.check(
+                        'the step handed focus back where it found it',
+                        restored === (cameFromPane ?? paneID),
+                        `${String(restored)} (was ${String(cameFromPane)})`
+                    );
+                    const endStatus = (await cli.json(['pane', 'list', '--json'])).find(
+                        (entry) => entry.id === paneID
+                    )?.status;
+                    recorder.check('…and left the pane idle', endStatus === 'idle', `status=${String(endStatus)}`);
+                }
+            }
+        },
+        {
+            /**
              * §APP-076 — the count popover's cross-workspace jump.
              *
              * The Swift makes the destination surface first responder while the popover still
@@ -6210,6 +6533,285 @@ function buildFlows(ctx) {
                 );
                 await recorder.shot(page, 'restored');
                 recorder.eyes('does the popover read as a list of jumpable panes — workspace dot, name, pane title, elapsed — and does the destination pane look focused after the jump?');
+            }
+        },
+
+        {
+            /**
+             * §GIT-070 — the registry list's two empty states, and the auto-discovered rows it
+             * hides.
+             *
+             * The list logic has been unit-tested since the settings work (`filterRepos` +
+             * `RepositoriesTab.test.tsx`), and `settings-repositories` photographs the FILTERED
+             * empty state. What no run has ever had is the OTHER one: the audit registers a repo
+             * long before it reaches Settings, so "No repositories registered" — the state a new
+             * user meets first, and the only one carrying the hint that names both ways in — has
+             * never been on screen.
+             *
+             * This flow sits where the registry is still empty (nothing registers a repo before
+             * `inspector-repo-status`), and it also proves the hiding rule the Swift's
+             * `filteredRepos` states and the port keeps as its default: an auto-DISCOVERED repo
+             * is not in the list at all. It is provoked with the real thing — a pane `cd`s into
+             * a repository and auto-detect (§GIT-077) registers it — so the row under test is
+             * one the daemon minted, not one the harness typed.
+             *
+             * It hands the world back the way it found it: the pane returns to the directory it
+             * was in, the auto-discovered repo is garbage-collected (§GIT-081), the registry is
+             * empty again, and the Settings overlay is closed and CHECKED closed.
+             */
+            id: 'repo-registry',
+            expect:
+                'Settings \u25b8 Repositories distinguishes its two empty states and hides auto-discovered repos entirely. With nothing registered it reads "No repositories registered" plus a hint naming both "Scan Directory" and "Add Repo"; a repo that auto-detect registered is INVISIBLE until "Show auto-detected" is ticked, and with it visible an over-narrow filter reads "No matching repositories" \u2014 without the hint. (\u00a7GIT-070, \u00a7SET-055, \u00a7SET-057.)',
+            needsEyes: true,
+            async run(recorder) {
+                const target = autoDetectRepo();
+                const rows = async () =>
+                    (
+                        (await page.eval(
+                            `Array.from(document.querySelectorAll('[data-testid^="repo-row-"]')).map(el => JSON.stringify({
+                                id: el.getAttribute('data-testid').slice('repo-row-'.length),
+                                origin: el.getAttribute('data-origin'),
+                                text: (el.innerText ?? '').replace(/\\n/g, ' | ')
+                            }))`
+                        )) ?? []
+                    ).map((row) => JSON.parse(row));
+                const emptyText = async () =>
+                    String(
+                        await page.eval(
+                            `(document.querySelector('[data-testid="repo-empty"]')?.innerText ?? '').replace(/\\n/g, ' | ')`
+                        )
+                    );
+                const showAuto = async (on) => {
+                    const state = await page.eval(
+                        `document.querySelector('[data-testid="repo-show-auto"]')?.checked === true`
+                    );
+                    if (state === on) return;
+                    await page.click('[data-testid="repo-show-auto"]');
+                    await sleep(400);
+                };
+                const setFilter = async (value) => {
+                    await page.eval(
+                        `(() => { const el = document.querySelector('[data-testid="repo-filter"]');
+                                  if (el === null) return false;
+                                  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                                  setter.call(el, ''); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`
+                    );
+                    await sleep(200);
+                    if (value === '') return;
+                    await page.click('[data-testid="repo-filter"]');
+                    await page.insertText(value);
+                    await sleep(400);
+                };
+
+                // ── 1. the state a new user meets: nothing registered ───────────────────
+                await openSettingsTab(page, 'repositories');
+                const startRows = await rows();
+                recorder.check(
+                    'the run reaches this flow with an EMPTY registry (nothing has registered a repo yet)',
+                    startRows.length === 0,
+                    JSON.stringify(startRows.map((row) => row.text))
+                );
+                const hiddenByDefault = await page.eval(
+                    `document.querySelector('[data-testid="repo-show-auto"]')?.checked === true`
+                );
+                recorder.check(
+                    'auto-discovered repos are hidden by DEFAULT \u2014 the checkbox ships off (\u00a7GIT-070)',
+                    hiddenByDefault === false,
+                    String(hiddenByDefault)
+                );
+                const empty = await emptyText();
+                recorder.block('the empty-registry placeholder', empty);
+                recorder.check(
+                    'it says "No repositories registered" (\u00a7SET-057, first state)',
+                    empty.includes('No repositories registered'),
+                    empty
+                );
+                recorder.check(
+                    'and the hint names BOTH ways in \u2014 "Scan Directory" and "Add Repo"',
+                    empty.includes('Scan Directory') && empty.includes('Add Repo'),
+                    empty
+                );
+                const buttons = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify({
+                                scan: (document.querySelector('[data-testid="repo-scan"]')?.innerText ?? '').trim(),
+                                add: (document.querySelector('[data-testid="repo-add"]')?.innerText ?? '').trim()
+                            })`
+                        )
+                    )
+                );
+                recorder.check(
+                    'the two buttons the hint names are actually on screen',
+                    buttons.scan === 'Scan Directory' && buttons.add === 'Add Repo',
+                    JSON.stringify(buttons)
+                );
+                await recorder.shot(page, 'empty');
+
+                // ── 2. a REAL auto-discovered repo, provoked through auto-detect ────────
+                const paneID = (await widestShellPane(page, cli))?.id ?? (await domPaneIDs(page))[0] ?? null;
+                recorder.check('a terminal pane to cd in', paneID !== null, String(paneID));
+                let restoredRegistry = false;
+                if (paneID !== null) {
+                    const before = (await cli.json(['pane', 'list', '--json'])).find(
+                        (pane) => pane.id === paneID
+                    );
+                    const cameFrom = String(before?.working_directory ?? '') || work;
+                    // Earlier flows deliberately leave a half-typed line in a pane, and
+                    // `pane send` appends — the same trap `repo-autodetect` documents.
+                    await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
+                    await sleep(500);
+                    await cli.ok([
+                        'pane',
+                        'send',
+                        '--target',
+                        paneID,
+                        `cd ${target} && printf '\\033]7;file://%s%s\\007' "$(hostname)" "$PWD"`
+                    ]);
+
+                    // Tick the checkbox first: this is the only way to SEE that the daemon
+                    // registered it, which is what makes the hidden case below meaningful.
+                    await showAuto(true);
+                    let appeared = true;
+                    try {
+                        await page.waitFor(
+                            `Array.from(document.querySelectorAll('[data-testid^="repo-row-"]')).some(el => (el.innerText ?? '').includes('autodetect-repo'))`,
+                            { timeoutMs: 25_000, label: 'the auto-discovered registry row' }
+                        );
+                    } catch (error) {
+                        appeared = false;
+                        recorder.check(
+                            'auto-detect registered the repository the pane walked into',
+                            false,
+                            String(error?.message ?? error)
+                        );
+                    }
+                    if (appeared) {
+                        await sleep(400);
+                        const shown = await rows();
+                        const autoRow = shown.find((row) => row.text.includes('autodetect-repo'));
+                        recorder.note(`rows with "Show auto-detected" on: ${JSON.stringify(shown.map((row) => row.text))}`);
+                        recorder.check(
+                            'auto-detect registered the repository the pane walked into',
+                            autoRow !== undefined,
+                            JSON.stringify(shown.map((row) => row.text))
+                        );
+                        recorder.check(
+                            'the daemon marks it auto-discovered, and the row says so',
+                            autoRow?.origin === 'auto' &&
+                                (await page.eval(
+                                    `document.querySelector('[data-testid="repo-auto-${String(autoRow?.id)}"]') !== null`
+                                )) === true,
+                            String(autoRow?.origin)
+                        );
+                        await recorder.shot(page, 'auto-shown');
+
+                        // The claim itself: untick, and it is not merely dimmed — it is GONE,
+                        // and the list falls back to the empty-registry placeholder.
+                        await showAuto(false);
+                        const hidden = await rows();
+                        const hiddenText = await emptyText();
+                        recorder.check(
+                            'unticked, the auto-discovered repo is hidden ENTIRELY (\u00a7GIT-070)',
+                            hidden.length === 0,
+                            JSON.stringify(hidden.map((row) => row.text))
+                        );
+                        recorder.check(
+                            'and the list reads as an empty registry, hint and all',
+                            hiddenText.includes('No repositories registered') &&
+                                hiddenText.includes('Scan Directory'),
+                            hiddenText
+                        );
+                        await recorder.shot(page, 'auto-hidden');
+
+                        // ── 3. the OTHER empty state, with a row that exists to exclude ──
+                        await showAuto(true);
+                        await setFilter('zzzz-no-such-repo');
+                        const filtered = await rows();
+                        const noMatch = await emptyText();
+                        recorder.block('the filtered placeholder', noMatch);
+                        recorder.check(
+                            'a filter that excludes every VISIBLE row says "No matching repositories"',
+                            filtered.length === 0 && noMatch.includes('No matching repositories'),
+                            `${String(filtered.length)} rows / ${noMatch}`
+                        );
+                        recorder.check(
+                            'and it does NOT repeat the "Scan Directory / Add Repo" hint \u2014 the two states are distinct',
+                            !noMatch.includes('Scan Directory') && !noMatch.includes('No repositories registered'),
+                            noMatch
+                        );
+                        await recorder.shot(page, 'no-match');
+                        await setFilter('');
+                    }
+
+                    // ── 4. put the world back ──────────────────────────────────────────
+                    await cli.run([
+                        'pane',
+                        'send',
+                        '--target',
+                        paneID,
+                        `cd ${cameFrom} && printf '\\033]7;file://%s%s\\007' "$(hostname)" "$PWD"`
+                    ]);
+                    // §GIT-080's 5 s unlink debounce, then §GIT-081's GC of the now-unreferenced
+                    // auto-discovered repo. Watched with the checkbox ON, so an empty list here
+                    // means the registry really is empty rather than merely filtered.
+                    await showAuto(true);
+                    try {
+                        await page.waitFor(
+                            `document.querySelectorAll('[data-testid^="repo-row-"]').length === 0`,
+                            { timeoutMs: 30_000, label: 'the auto-discovered repo to be garbage-collected' }
+                        );
+                        restoredRegistry = true;
+                    } catch {
+                        restoredRegistry = false;
+                    }
+                    const after = (await cli.json(['pane', 'list', '--json'])).find(
+                        (pane) => pane.id === paneID
+                    );
+                    const landed = String(after?.working_directory ?? '');
+                    const samePath = (a, b) => {
+                        if (a === b) return true;
+                        try {
+                            return fs.realpathSync(a) === fs.realpathSync(b);
+                        } catch {
+                            return false;
+                        }
+                    };
+                    recorder.check(
+                        'the pane is back in the directory this flow found it in',
+                        samePath(landed, cameFrom),
+                        `${landed} vs ${cameFrom}`
+                    );
+                    recorder.check(
+                        'and the registry is empty again, so the flows after this one see what they expected',
+                        restoredRegistry,
+                        JSON.stringify((await rows()).map((row) => row.text))
+                    );
+                    await showAuto(false);
+                }
+
+                // The overlay's backdrop is `absolute inset-0`: leaving it up breaks every
+                // flow downstream (docs/audit/README.md, run-M rule 1).
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    try {
+                        await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                            timeoutMs: 5000,
+                            label: 'the settings overlay to close'
+                        });
+                    } catch {
+                        await page.key('Escape');
+                        await sleep(500);
+                    }
+                }
+                recorder.check(
+                    'the step leaves the window bare for the flows after it',
+                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'settings overlay closed'
+                );
+                recorder.eyes(
+                    'the two empty states: does the first read as an invitation (placeholder + hint naming both buttons) and the second as a dead end, and is it obvious which one you are looking at?'
+                );
             }
         },
 
@@ -6507,6 +7109,10 @@ function buildFlows(ctx) {
                                         left: box(left),
                                         stats: box(document.querySelector('[data-testid="system-stats"]')),
                                         right: box(document.querySelector('[data-testid="footer-right"]')),
+                                        // §N7: the row's OWN box, at this width. Read here rather
+                                        // than once at the end, so containment is a measurement
+                                        // per width instead of an inference from the last one.
+                                        footer: box(document.querySelector('[data-testid="status-footer"]')),
                                         segments
                                     });
                                 })()`
@@ -6615,6 +7221,90 @@ function buildFlows(ctx) {
                 recorder.note(
                     `at ${String(narrowLayout.innerWidth)} px the RIGHT cluster ends ${rightOverflow.toFixed(1)} px past the footer's own box ` +
                         `(> 0 means the gauges/counts run under the inspector — separate from N6, which is the LEFT cluster)`
+                );
+
+                /*
+                 * §N7, now asserted rather than only recorded.
+                 *
+                 * The note above was written when the right cluster was `shrink-0`: it measured
+                 * 485 px of overflow at 880 and left it for whoever ledgered it. The rule the
+                 * fix installs is that the row BALANCES — the right cluster shrinks 1000× faster
+                 * than the left one and gives up its gauges first, but it never shrinks past the
+                 * counts and the clock, and the left cluster is what absorbs the rest. So there
+                 * are three things to hold at every width, and each of them fails differently:
+                 *   1. the right cluster stays inside the footer's own box (nothing runs under
+                 *      the inspector);
+                 *   2. the left cluster is not starved to nothing while it does (the 0 px-wide
+                 *      cluster of run-M/56-footer-git-stats.png);
+                 *   3. the counts and the clock are still whole — they are what the Swift status
+                 *      bar keeps when the row runs out of room.
+                 */
+                const containment = layouts
+                    .filter((layout) => layout.right !== null && layout.footer !== null)
+                    .map((layout) => ({
+                        width: layout.innerWidth,
+                        overflow: layout.right.right - layout.footer.right,
+                        leftWidth: layout.left === null ? 0 : layout.left.w,
+                        statsWidth: layout.stats === null ? 0 : layout.stats.w
+                    }));
+                recorder.note(`§N7 containment: ${JSON.stringify(containment)}`);
+                recorder.check(
+                    'the RIGHT cluster stays inside the footer’s own box at every width (§N7)',
+                    containment.length === layouts.length &&
+                        containment.every((entry) => entry.overflow <= 0.5),
+                    containment
+                        .map((entry) => `${String(entry.width)}px: ${entry.overflow.toFixed(1)} past`)
+                        .join(' · ')
+                );
+                recorder.check(
+                    'and it does not starve the left cluster to nothing to manage it (§N7)',
+                    containment.length > 0 && containment.every((entry) => entry.leftWidth > 1),
+                    containment
+                        .map((entry) => `${String(entry.width)}px: left ${entry.leftWidth.toFixed(1)} px`)
+                        .join(' · ')
+                );
+                recorder.check(
+                    'the gauges are what gives way — they compress while the left cluster still has width',
+                    containment.length > 1 &&
+                        (containment[containment.length - 1]?.statsWidth ?? 0) <=
+                            (containment[0]?.statsWidth ?? 0) + 0.5,
+                    containment
+                        .map((entry) => `${String(entry.width)}px: gauges ${entry.statsWidth.toFixed(1)} px`)
+                        .join(' · ')
+                );
+                const kept = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const wid = (testID) => {
+                                    const el = document.querySelector('[data-testid="' + testID + '"]');
+                                    return el === null ? null : Math.round(el.getBoundingClientRect().width * 10) / 10;
+                                };
+                                const right = document.querySelector('[data-testid="footer-right"]');
+                                const clock = document.querySelector('[data-testid="footer-clock"]');
+                                return JSON.stringify({
+                                    running: wid('count-running'),
+                                    waiting: wid('count-waiting'),
+                                    inactive: wid('count-inactive'),
+                                    clock: wid('footer-clock'),
+                                    clockInside:
+                                        right === null || clock === null
+                                            ? null
+                                            : clock.getBoundingClientRect().right <= right.getBoundingClientRect().right + 0.5
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`§N7 kept segments at ${String(narrowLayout.innerWidth)} px: ${JSON.stringify(kept)}`);
+                recorder.check(
+                    'the agent counts and the clock survive the squeeze whole (§N7 priority order)',
+                    Number(kept.running) > 10 &&
+                        Number(kept.waiting) > 10 &&
+                        Number(kept.inactive) > 10 &&
+                        Number(kept.clock) > 10 &&
+                        kept.clockInside === true,
+                    JSON.stringify(kept)
                 );
 
                 // Hand the rest of the run the window it started with.
@@ -14518,6 +15208,730 @@ function buildFlows(ctx) {
             }
         },
         {
+            /**
+             * Debug ▸ Seed Test Group (§APP-028 / §SET-194), the shipped app's one DEBUG-only
+             * affordance — and the last two `[ ]` in the checklist.
+             *
+             * Two things are being settled, and they need different instruments:
+             *
+             *  - **The row exists in a dev build and not in a packaged one.** A native menu is
+             *    in no DOM and CDP cannot open one, so the shell logs what it installed and that
+             *    line is read here. The absence half belongs to `packaged-smoke.mjs`, the only
+             *    place `app.isPackaged` is true without a test having said so.
+             *  - **The fixture it seeds is the Swift's.** That IS on screen, so it is driven and
+             *    photographed: the request goes over the daemon's own `menu-request` relay —
+             *    byte-identical to what `status.sendMenuRequest` sends when the row is clicked
+             *    (`shell/src/status.ts`) — and what the sidebar then shows is compared against
+             *    `AppReducer.seedTestGroup`: a gray "Test Group" holding "Test Monitor 1" and
+             *    "Test Monitor 2" in that order, each with one live pane, appended without
+             *    moving the user off the workspace they were on.
+             *
+             * It puts the world back: both workspaces and the group are deleted, and the
+             * workspace that was active is re-activated BY ID with confirmation.
+             */
+            id: 'debug-menu',
+            expect:
+                'A dev build carries Debug ▸ Seed Test Group (the shell logs the row it installed). Firing it appends a gray "Test Group" holding "Test Monitor 1" and "Test Monitor 2", in that order, each with one live terminal pane — and the active workspace does not change. The step then deletes the fixture and hands the run back where it found it.',
+            needsEyes: true,
+            async run(recorder) {
+                // Bare the window first (the rule `reattach-after-relaunch` pays for below):
+                // this step clicks sidebar rows, and an overlay an earlier flow left open turns
+                // every one of those clicks into a dismissal.
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                        timeoutMs: 5000,
+                        label: 'the settings overlay an earlier flow left open to close'
+                    });
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+
+                /*
+                 * …and make sure the sidebar is OUT. §WS-001 gave the port three ways to hide it
+                 * (⌘⇧S, the top-bar button, the View menu), so a flow in front of this one can
+                 * legitimately leave it away — and then the fixture this step photographs would
+                 * be invisible for a reason that has nothing to do with the seed. The button is
+                 * addressed by its accessible name; it carries no test id.
+                 */
+                if (!(await page.eval(`document.querySelector('${PAGE.sidebar}') !== null`))) {
+                    await page.click('button[aria-label="Toggle sidebar"]');
+                    await sleep(700);
+                    recorder.note('re-opened the sidebar an earlier flow left hidden');
+                }
+
+                // ── 1. the row itself, off the shell's own log ───────────────────────
+                const menuLine = runtime.shell?.lines.find((line) => line.includes('menu: Nex ')) ?? '';
+                recorder.note(`shell menu line: ${menuLine.trim()}`);
+                recorder.check(
+                    'this (unpackaged) build installed Debug ▸ Seed Test Group',
+                    menuLine.includes('Debug ▸ Seed Test Group (dev build)'),
+                    menuLine.trim() || '(no menu line)'
+                );
+
+                const activeRow = async () =>
+                    String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                /** Click a workspace row BY ID and confirm — never by its visible text (run-L). */
+                const activateWorkspace = async (workspaceID) => {
+                    for (let attempt = 0; attempt < 6; attempt++) {
+                        await page.eval(
+                            `(() => { const row = document.querySelector('[data-workspace-id="${workspaceID}"]');
+                                      if (row === null) return false; row.click(); return true; })()`
+                        );
+                        await sleep(700);
+                        if ((await activeRow()) === workspaceID) return true;
+                    }
+                    return false;
+                };
+
+                const cameFrom = await activeRow();
+                recorder.check('a workspace to hand the run back to', cameFrom !== '', cameFrom);
+                if (cameFrom === '') return;
+                const groupsBefore = await cli.json(['group', 'list', '--json']);
+                recorder.note(`groups before: ${groupsBefore.map((group) => group.name).join(', ') || '(none)'}`);
+
+                // ── 2. fire the row's own relay ──────────────────────────────────────
+                //
+                // The message is exactly what the main process sends on a click; sending it from
+                // here is how a native menu item gets exercised at all. No `windowID`, so the
+                // one attached UI takes it — the same fan-out-and-let-the-client-filter rule
+                // `ws/sync.ts` documents.
+                const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));
+                const token =
+                    tokenFile === undefined
+                        ? null
+                        : fs.readFileSync(path.join(sandbox.runDir, tokenFile), 'utf8').trim();
+                recorder.check('the run dir yielded a token to attach with', token !== null);
+                if (token === null) return;
+
+                const relay = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                await new Promise((resolve) => {
+                    relay.addEventListener('open', resolve, { once: true });
+                    setTimeout(resolve, 5000);
+                });
+                relay.send(
+                    JSON.stringify({
+                        type: 'hello',
+                        protocolVersion: 1,
+                        token,
+                        client: { kind: 'browser', name: 'audit-menu-relay' }
+                    })
+                );
+                await sleep(800);
+                relay.send(JSON.stringify({ type: 'menu-request', command: 'seed-test-group' }));
+
+                // ── 3. what the sidebar shows ────────────────────────────────────────
+                try {
+                    await page.waitFor(
+                        `Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                             .some(el => (el.innerText ?? '').includes('Test Group'))`,
+                        { timeoutMs: 25_000, label: 'the seeded Test Group header' }
+                    );
+                    await sleep(1800);
+                } catch (error) {
+                    recorder.check('the seed produced a Test Group', false, String(error?.message ?? error));
+                }
+                await recorder.shot(page, 'seeded-test-group');
+
+                const groupsAfter = await cli.json(['group', 'list', '--json']);
+                const seeded = groupsAfter.find((group) => group.name === 'Test Group') ?? null;
+                recorder.check('a group named "Test Group" exists', seeded !== null, JSON.stringify(seeded));
+                recorder.check(
+                    'it is GRAY, as the Swift seed makes it',
+                    seeded?.color === 'gray',
+                    String(seeded?.color)
+                );
+                const members = (seeded?.workspaces ?? []).map((workspace) => workspace.name);
+                recorder.check(
+                    'it holds Test Monitor 1 then Test Monitor 2, in that order',
+                    JSON.stringify(members) === JSON.stringify(['Test Monitor 1', 'Test Monitor 2']),
+                    JSON.stringify(members)
+                );
+
+                const workspaces = await cli.json(['workspace', 'list', '--json']);
+                const monitors = workspaces.filter((workspace) => members.includes(workspace.name));
+                recorder.check(
+                    'both monitors are gray and carry ONE pane each (a live surface, as the Swift spawns)',
+                    monitors.length === 2 &&
+                        monitors.every((workspace) => workspace.color === 'gray' && workspace.pane_count === 1),
+                    JSON.stringify(
+                        monitors.map((workspace) => ({
+                            name: workspace.name,
+                            color: workspace.color,
+                            panes: workspace.pane_count,
+                            group: workspace.group_name
+                        }))
+                    )
+                );
+                const monitorPanes = (await cli.json(['pane', 'list', '--json'])).filter((pane) =>
+                    monitors.some((workspace) => workspace.id === pane.workspace_id)
+                );
+                recorder.check(
+                    'the daemon really spawned a shell pane in each',
+                    monitorPanes.length === 2 && monitorPanes.every((pane) => pane.type === 'shell'),
+                    JSON.stringify(monitorPanes.map((pane) => `${String(pane.type)} ${String(pane.id).slice(0, 8)}`))
+                );
+                // The rows are in the sidebar, nested under the header — the seed is a thing you
+                // can see, which is the whole point of the affordance.
+                const rowsUnder = await page.eval(
+                    `(() => { const header = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                  .find(el => (el.innerText ?? '').includes('Test Group'));
+                              if (header === undefined) return [];
+                              const id = header.getAttribute('data-group-id');
+                              return Array.from(document.querySelectorAll('[data-testid="workspace-row"][data-group-id="' + id + '"]'))
+                                  .map(el => (el.innerText ?? '').replace(/\\n/g, ' ').trim()); })()`
+                );
+                recorder.note(`sidebar rows under the group: ${JSON.stringify(rowsUnder)}`);
+                recorder.check(
+                    'both monitors are visible in the sidebar, under the group header',
+                    (rowsUnder ?? []).length === 2,
+                    JSON.stringify(rowsUnder)
+                );
+
+                /*
+                 * §APP-028's quiet clause: the Swift seed appends state and never touches
+                 * `activeWorkspaceID`, so the user stays where they were.
+                 *
+                 * The port cannot inherit that for free — the daemon reveals EVERY workspace it
+                 * creates (`revealCreatedWorkspace`, the run-B L3 fix) — so the seed's call site
+                 * undoes exactly the reveal it caused. This assertion is what caught the
+                 * difference: before that undo existed, the seed left the window on
+                 * "Test Monitor 2".
+                 */
+                recorder.check(
+                    'the seed did NOT move the user — the workspace on screen is the one from before',
+                    (await activeRow()) === cameFrom,
+                    `${cameFrom} → ${await activeRow()}`
+                );
+
+                // ── 4. put the world back ────────────────────────────────────────────
+                for (const workspace of monitors) {
+                    await cli.run(['workspace', 'delete', workspace.id, '--force']);
+                }
+                await sleep(1200);
+                if (seeded !== null) await cli.run(['group', 'delete', seeded.id]);
+                await sleep(900);
+                const groupsFinally = await cli.json(['group', 'list', '--json']);
+                const namesFinally = (await cli.json(['workspace', 'list', '--json'])).map(
+                    (workspace) => workspace.name
+                );
+                recorder.check(
+                    'the fixture is gone again — no Test Group, no Test Monitors',
+                    !groupsFinally.some((group) => group.name === 'Test Group') &&
+                        !namesFinally.some((name) => name.startsWith('Test Monitor')),
+                    `${groupsFinally.map((group) => group.name).join(', ') || '(no groups)'} | ${namesFinally.join(', ')}`
+                );
+                try {
+                    relay.close();
+                } catch {
+                    /* already gone */
+                }
+                const restored = await activateWorkspace(cameFrom);
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    restored && (await activeRow()) === cameFrom,
+                    `${cameFrom} → ${await activeRow()}`
+                );
+                recorder.eyes(
+                    'in "seeded-test-group", does the sidebar show a "Test Group" band holding two gray "Test Monitor" rows, and is the previously-active workspace still the highlighted one?'
+                );
+            }
+        },
+        {
+            /**
+             * §WS-110 / §WS-112 / §WS-120 / §WS-123 — four sidebar edges, driven as gestures.
+             *
+             * All four had reducer code and none had a witness a user could point at, which is
+             * §3's "a route with no reachable gesture is not a capability" from the other side:
+             * the route exists, and what nobody checked is that a gesture reaches it and that
+             * the window then SHOWS the result.
+             *
+             * Two of them were broken end to end and are fixed in this wave, both in the seam
+             * between the daemon's answer and the window's own optimism:
+             *   · `ws/sync.ts` returned early on "this workspace is already the last-active",
+             *     which swallowed the expand `set-active-workspace` owes a collapsed parent;
+             *   · `Sidebar.tsx` never retired the optimistic collapse override, so even once
+             *     the daemon DID expand the group, the sidebar went on drawing the collapsed
+             *     header the user had clicked minutes earlier.
+             * Either one alone hides §WS-112 completely, and neither is visible from a unit
+             * test of the reducer — which is the reason this flow exists.
+             */
+            id: 'workspace-edges',
+            expect:
+                'Four sidebar edges as gestures: `workspace move` naming a group that does not exist leaves the row exactly where it was instead of orphaning it, and an out-of-range index clamps to the tail (§WS-120); the delete gate’s “Don’t ask again” and Settings ▸ Workspaces are ONE value, provably in both directions and through the config file (§WS-110); jumping to a workspace hidden inside a COLLAPSED group opens the group on the way in and lands on its row (§WS-112); and the new-group chord mints a placeholder name, drops into inline rename AND scrolls its new header into view (§WS-123).',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * BARE THE WINDOW FIRST — the same precondition `sidebar-remaining` documents.
+                 * A Settings overlay left open by an earlier flow swallows every chord below
+                 * (§TERM-154, correct behaviour) and its backdrop eats the sidebar clicks.
+                 */
+                if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await page.click('[data-testid="settings-close"]');
+                    try {
+                        await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                            timeoutMs: 5000,
+                            label: 'the settings overlay an earlier flow left open to close'
+                        });
+                    } catch {
+                        await page.key('Escape');
+                    }
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+                recorder.check(
+                    'the window is bare, so the chords below are not swallowed by an overlay',
+                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'no settings overlay'
+                );
+                const activeBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                recorder.note(`active workspace on entry: ${activeBefore}`);
+
+                // ── the fixture this step owns, provisioned rather than inherited ────
+                for (const name of ['Edge A', 'Edge B']) {
+                    await cli.ok(['workspace', 'create', '--name', name]);
+                }
+                await cli.ok(['group', 'create', 'Edge Group']);
+                await cli.ok(['workspace', 'move', 'Edge A', '--group', 'Edge Group']);
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Edge B'))`,
+                    { timeoutMs: 25_000, label: 'the Edge rows' }
+                );
+                await sleep(900);
+                const edgeGroup = (await cli.json(['group', 'list', '--json'])).find(
+                    (group) => group.name === 'Edge Group'
+                );
+                recorder.check(
+                    'the fixture group exists with Edge A inside it',
+                    edgeGroup !== undefined &&
+                        (edgeGroup.workspaces ?? []).some((member) => member.name === 'Edge A'),
+                    JSON.stringify(edgeGroup ?? null)
+                );
+                if (edgeGroup === undefined) return;
+                const edgeA = (await cli.json(['workspace', 'list', '--json'])).find(
+                    (workspace) => workspace.name === 'Edge A'
+                );
+                recorder.note(`Edge A: ${String(edgeA?.id)}`);
+                if (edgeA === undefined) return;
+
+                // ── §WS-120: the destination is validated BEFORE anything is detached ─
+                //
+                // The failure this rules out is not "the move did not happen" — it is a row
+                // detached from the top-level order, never attached to the group that does not
+                // exist, and reachable from no sidebar entry at all. So the assertion is about
+                // where Edge B IS afterwards, in the daemon's own listing and on screen, rather
+                // than about an error message.
+                const ghostMove = await cli.run(['workspace', 'move', 'Edge B', '--group', 'Ghost Group']);
+                recorder.note(`move into a group that does not exist: exit ${String(ghostMove.code)}`);
+                await sleep(1200);
+                const afterGhost = (await cli.json(['workspace', 'list', '--json'])).find(
+                    (workspace) => workspace.name === 'Edge B'
+                );
+                recorder.note(`Edge B after the bad move: ${JSON.stringify(afterGhost ?? null)}`);
+                recorder.check(
+                    'a move naming a group that does not exist leaves the workspace where it was (§WS-120)',
+                    afterGhost !== undefined &&
+                        afterGhost.group_id === undefined &&
+                        afterGhost.group_name === undefined,
+                    JSON.stringify(afterGhost ?? null)
+                );
+                const ghostRow = await page.eval(
+                    `document.querySelectorAll('[data-workspace-id="${String(afterGhost?.id ?? '')}"]').length`
+                );
+                recorder.check(
+                    'and its row is still in the sidebar — not orphaned out of every entry',
+                    Number(ghostRow) === 1,
+                    `${String(ghostRow)} rows`
+                );
+
+                // …and an out-of-range index clamps rather than dropping the move.
+                await cli.run(['workspace', 'move', 'Edge B', '--group', 'Edge Group', '--index', '99']);
+                await sleep(1400);
+                const clamped =
+                    (await cli.json(['group', 'list', '--json'])).find((group) => group.name === 'Edge Group') ??
+                    null;
+                recorder.note(`Edge Group after --index 99: ${JSON.stringify(clamped)}`);
+                recorder.check(
+                    'an out-of-range index clamps to the tail instead of being dropped (§WS-120)',
+                    clamped !== null &&
+                        (clamped.workspaces ?? []).map((member) => member.name).join(',') === 'Edge A,Edge B',
+                    JSON.stringify((clamped?.workspaces ?? []).map((member) => member.name))
+                );
+
+                // ── §WS-110: the gate's checkbox and the Settings toggle are ONE value ─
+                const edgeBPane = (await cli.json(['pane', 'list', '--json'])).find(
+                    (pane) => pane.workspace_name === 'Edge B' && pane.type === 'shell'
+                );
+                recorder.check(
+                    'Edge B has a pane to run an agent in',
+                    edgeBPane !== undefined,
+                    JSON.stringify(edgeBPane ?? null)
+                );
+                const sessionID = 'edge-0000-1111-2222';
+                if (edgeBPane !== undefined) {
+                    await cli.ok(['event', 'session-start'], {
+                        paneID: edgeBPane.id,
+                        stdin: JSON.stringify({ session_id: sessionID })
+                    });
+                    await cli.ok(['event', 'start'], {
+                        paneID: edgeBPane.id,
+                        stdin: JSON.stringify({ session_id: sessionID })
+                    });
+                    await sleep(1800);
+                }
+
+                const readGate = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="confirm-dialog"]');
+                                    if (el === null) return JSON.stringify({ open: false });
+                                    return JSON.stringify({
+                                        open: true,
+                                        agents: el.getAttribute('data-active-agents'),
+                                        suppress: el.querySelector('[data-testid="confirm-suppress"]') !== null
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Edge B');
+                await clickMenuItem(page, 'Delete');
+                await sleep(500);
+                const armed = await readGate();
+                recorder.note(`gate with the setting on: ${JSON.stringify(armed)}`);
+                await recorder.shot(page, 'gate-armed');
+                recorder.check(
+                    'the delete gate counts the live agent while the setting is on (§WS-108)',
+                    armed.open === true && armed.agents === '1' && armed.suppress === true,
+                    JSON.stringify(armed)
+                );
+                /*
+                 * Tick "Don't ask again" and CANCEL. Two things ride on the cancel: the
+                 * suppression is honoured whichever button ends the dialog (§WS-108), and the
+                 * fixture survives for the rest of this flow.
+                 */
+                await page.click('[data-testid="confirm-suppress"]');
+                await sleep(200);
+                await page.click('[data-testid="confirm-cancel"]');
+                await sleep(1500);
+                const survived = (await cli.json(['workspace', 'list', '--json'])).some(
+                    (workspace) => workspace.name === 'Edge B'
+                );
+                recorder.check(
+                    'cancelling deleted nothing, so the checkbox is the only thing that acted',
+                    survived === true,
+                    String(survived)
+                );
+                const configAfterCheckbox = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.check(
+                    'the checkbox wrote the DAEMON’s own `confirm-workspace-delete` key (§WS-110)',
+                    /confirm-workspace-delete\s*=\s*false/.test(configAfterCheckbox),
+                    configAfterCheckbox.trim().slice(-140) || '(empty)'
+                );
+
+                await openSettingsTab(page, 'workspaces');
+                const toggleState = async () =>
+                    await page.eval(
+                        `document.querySelector('[data-testid="confirm-delete-toggle"]')?.checked ?? null`
+                    );
+                const afterSuppress = await toggleState();
+                recorder.note(`Settings toggle after the checkbox: ${String(afterSuppress)}`);
+                await recorder.shot(page, 'settings-toggle-off');
+                recorder.check(
+                    'and Settings ▸ Workspaces is showing that same value, unprompted (§WS-110)',
+                    afterSuppress === false,
+                    String(afterSuppress)
+                );
+                // …and back the other way: the control puts it back, and the gate has to follow.
+                await page.click('[data-testid="confirm-delete-toggle"]');
+                await sleep(1000);
+                const restoredToggle = await toggleState();
+                recorder.check(
+                    'turning it back on in Settings sticks',
+                    restoredToggle === true &&
+                        /confirm-workspace-delete\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    String(restoredToggle)
+                );
+                await page.click('[data-testid="settings-close"]');
+                await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                    timeoutMs: 8000,
+                    label: 'the settings overlay to close'
+                });
+                await sleep(700);
+
+                await openSidebarMenu(page, PAGE.workspaceRows, 'Edge B');
+                await clickMenuItem(page, 'Delete');
+                await sleep(500);
+                const rearmed = await readGate();
+                recorder.note(`gate after the Settings round trip: ${JSON.stringify(rearmed)}`);
+                recorder.check(
+                    'the gate follows the toggle back — one value, both directions (§WS-110)',
+                    rearmed.open === true && rearmed.agents === '1',
+                    JSON.stringify(rearmed)
+                );
+                await page.click('[data-testid="confirm-cancel"]');
+                await sleep(700);
+
+                // ── §WS-112: arriving at a workspace hidden inside a collapsed group ──
+                await page.eval(
+                    `(() => { const row = document.querySelector('[data-workspace-id="${String(edgeA.id)}"]'); if (row === null) return false; row.click(); return true; })()`
+                );
+                await sleep(1300);
+                const activeNow = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                recorder.check(
+                    'Edge A is the active workspace before it is hidden',
+                    activeNow === edgeA.id,
+                    `${activeNow} vs ${String(edgeA.id)}`
+                );
+
+                await page.click(
+                    `[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"] [data-testid="group-chevron"]`
+                );
+                await sleep(1300);
+                const hidden = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const header = document.querySelector('[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"]');
+                                return JSON.stringify({
+                                    collapsed: header?.getAttribute('data-collapsed') ?? null,
+                                    rows: document.querySelectorAll('[data-workspace-id="${String(edgeA.id)}"]').length
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`after collapsing: ${JSON.stringify(hidden)}`);
+                await recorder.shot(page, 'collapsed');
+                recorder.check(
+                    'collapsing the group hides the ACTIVE workspace’s own row',
+                    hidden.collapsed === 'true' && hidden.rows === 0,
+                    JSON.stringify(hidden)
+                );
+
+                /*
+                 * The gesture that has to open it again: the palette, which is the one route to
+                 * a row the sidebar is not drawing. Pressed through the LIVE binding map, since
+                 * earlier flows rebind keys.
+                 */
+                const paletteKey = await pressBoundAction(page, 'command_palette');
+                recorder.note(`command_palette is bound to ${String(paletteKey.display)}`);
+                await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
+                    timeoutMs: 8000,
+                    label: 'the command palette'
+                });
+                await page.insertText('Edge A');
+                await sleep(700);
+                await recorder.shot(page, 'palette');
+                const paletteRow = await page.eval(
+                    `document.querySelectorAll('[data-testid="palette-row"][data-item-id="ws:${String(edgeA.id)}"]').length`
+                );
+                recorder.check(
+                    'the palette can still reach a workspace whose row is hidden',
+                    Number(paletteRow) === 1,
+                    `${String(paletteRow)} rows`
+                );
+                await page.click(`[data-testid="palette-row"][data-item-id="ws:${String(edgeA.id)}"]`);
+                await sleep(2200);
+
+                const arrived = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const header = document.querySelector('[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"]');
+                                const row = document.querySelector('[data-workspace-id="${String(edgeA.id)}"]');
+                                return JSON.stringify({
+                                    collapsed: header?.getAttribute('data-collapsed') ?? null,
+                                    rowVisible: row !== null,
+                                    active: document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? null,
+                                    palette: document.querySelector('[data-testid="command-palette"]') !== null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`after jumping back in: ${JSON.stringify(arrived)}`);
+                await recorder.shot(page, 'expanded-on-arrival');
+                recorder.check(
+                    'activating a workspace inside a COLLAPSED group opens the group on the way in (§WS-112)',
+                    arrived.collapsed === 'false',
+                    JSON.stringify(arrived)
+                );
+                recorder.check(
+                    'and the row it landed on is drawn, and is the active one',
+                    arrived.rowVisible === true && arrived.active === edgeA.id && arrived.palette === false,
+                    JSON.stringify(arrived)
+                );
+
+                /*
+                 * ── §WS-123: the new-group chord mints, renames AND reveals ─────────
+                 *
+                 * The whole block is guarded, because a step that ERRORS produces no evidence
+                 * AND skips its own cleanup (docs/audit/README.md). The first run of this flow
+                 * did exactly that: the chord went out, no rename field ever appeared, and the
+                 * `waitFor` threw twenty seconds later with the fixture still on the daemon.
+                 * That timeout was a real defect — `group-create` is fire-and-forget and its ack
+                 * carries no `group_id`, so ⌘⇧G created a group and then did neither the rename
+                 * nor the reveal — and it is fixed in `App.tsx` ▸ `newGroupWithRename`, which
+                 * now uses the verb that answers with the id. The guard stays: a regression here
+                 * has to read as a failed assertion, not as a step that took the flow's cleanup
+                 * down with it.
+                 *
+                 * What the reveal can and cannot be shown here: the sidebar's own scroll is
+                 * measured by `chrome/sidebar-polish.test.tsx` ("reveals a newly created GROUP
+                 * by its header") on a list long enough to need one; this run's list is four
+                 * rows and has nothing to scroll. What this proves is the half that only the
+                 * live app can answer — the id came back at all, which is the one closure that
+                 * queues the reveal and opens the rename together (`runCreateGroup`), and the
+                 * header the field opens on is on screen.
+                 */
+                try {
+                    const focusTarget = (await widestShellPane(page, cli))?.id ?? null;
+                    if (focusTarget !== null) await focusPaneBody(page, focusTarget);
+                    await sleep(400);
+                    const groupKey = await pressBoundAction(page, 'new_group');
+                    recorder.note(`new_group is bound to ${String(groupKey.display)}`);
+                    await page.waitFor(
+                        `document.querySelector('input[aria-label^="Rename New Group"]') !== null`,
+                        { timeoutMs: 15_000, label: 'the new group’s inline rename field' }
+                    );
+                    await sleep(800);
+                    const minted = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const field = document.querySelector('input[aria-label^="Rename New Group"]');
+                                    const header = field === null ? null : field.closest('[data-testid="group-header"]');
+                                    const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                    if (field === null || header === null || list === null) return JSON.stringify({ open: false });
+                                    const h = header.getBoundingClientRect();
+                                    const l = list.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        open: true,
+                                        focused: document.activeElement === field,
+                                        value: field.value,
+                                        selected: field.selectionEnd - field.selectionStart,
+                                        groupID: header.getAttribute('data-group-id'),
+                                        inView: h.top >= l.top - 1 && h.bottom <= l.bottom + 1
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`new-group chord: ${JSON.stringify(minted)}`);
+                    await recorder.shot(page, 'new-group-revealed');
+                    recorder.check(
+                        'the chord mints a PLACEHOLDER name and drops straight into rename (§WS-123)',
+                        minted.open === true &&
+                            minted.focused === true &&
+                            String(minted.value).startsWith('New Group') &&
+                            minted.selected === String(minted.value).length,
+                        JSON.stringify(minted)
+                    );
+                    recorder.check(
+                        'on a header the user can SEE — the same closure that queues its reveal (§WS-123)',
+                        minted.inView === true && typeof minted.groupID === 'string' && minted.groupID !== '',
+                        `in view: ${String(minted.inView)} · header ${String(minted.groupID)}`
+                    );
+                    const mintedGroup = (await cli.json(['group', 'list', '--json'])).find(
+                        (group) => group.id === minted.groupID
+                    );
+                    recorder.check(
+                        'and the group the field renames is a real one the daemon made',
+                        mintedGroup !== undefined && String(mintedGroup.name).startsWith('New Group'),
+                        JSON.stringify(mintedGroup ?? null)
+                    );
+                    await page.key('Escape');
+                    await sleep(600);
+                } catch (error) {
+                    recorder.check(
+                        'the new-group chord opens an inline rename on the group it just made (§WS-123)',
+                        false,
+                        error instanceof Error ? error.message : String(error)
+                    );
+                    await page.key('Escape');
+                    await sleep(400);
+                }
+
+                // ── hand the run back where it found it ─────────────────────────────
+                await sleep(700);
+                if (edgeBPane !== undefined) {
+                    await cli.run(['event', 'stop'], {
+                        paneID: edgeBPane.id,
+                        stdin: JSON.stringify({ session_id: sessionID })
+                    });
+                }
+                for (const group of await cli.json(['group', 'list', '--json'])) {
+                    if (group.name === 'Edge Group' || String(group.name).startsWith('New Group')) {
+                        await cli.run(['group', 'delete', String(group.id)]);
+                    }
+                }
+                await cli.run(['workspace', 'delete', 'Edge A', 'Edge B', '--force']);
+                await page.waitFor(
+                    `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => ['Edge A', 'Edge B'].some(name => (el.innerText ?? '').includes(name)))`,
+                    { timeoutMs: 25_000, label: 'the Edge rows to leave' }
+                );
+                await sleep(1000);
+                const leftovers = (await cli.json(['workspace', 'list', '--json'])).filter((workspace) =>
+                    String(workspace.name).startsWith('Edge ')
+                );
+                const leftoverGroups = (await cli.json(['group', 'list', '--json'])).filter(
+                    (group) => group.name === 'Edge Group' || String(group.name).startsWith('New Group')
+                );
+                recorder.check(
+                    'the step cleans up after itself: no Edge workspaces, and none of the groups it made',
+                    leftovers.length === 0 && leftoverGroups.length === 0,
+                    `${String(leftovers.length)} workspaces · ${String(leftoverGroups.length)} groups`
+                );
+                let handedBack = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await page.eval(
+                        `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(700);
+                    handedBack = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (handedBack === activeBefore) break;
+                }
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    activeBefore !== '' && handedBack === activeBefore,
+                    `${activeBefore} → ${handedBack}`
+                );
+                recorder.check(
+                    'and with no overlay left open behind it',
+                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'no settings overlay'
+                );
+                recorder.eyes(
+                    'does the group open around the row the palette jumped to, and does the new group’s rename field sit on a header that is actually on screen?'
+                );
+            }
+        },
+        {
             id: 'reattach-after-relaunch',
             expect:
                 'Quitting the shell leaves the daemon (and every PTY) alive; a fresh shell reattaches to the SAME workspaces and panes — same count, same ids, terminal scrollback intact, nothing duplicated.',
@@ -14671,6 +16085,583 @@ function buildFlows(ctx) {
                     `${String(occurrences)} occurrences (1 echo + 1 output is normal; more means replay duplication)`
                 );
                 recorder.eyes('DUPLICATION CHECK — does the reattached terminal show the same lines twice? Compare against the pre-quit screenshots.');
+            }
+        },
+
+        /**
+         * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 — the difference between "a web
+         * app in a window" and "a Mac app".
+         *
+         * Five clauses that only exist on screen, driven end to end. Each one replaces something
+         * the port did differently rather than something it did not do at all, which is why the
+         * assertions below are mostly about GEOMETRY and TIMING rather than about presence:
+         *
+         *   §APP-046  the window has NO native title bar; the client's own 32px strip is drawn up
+         *             into the traffic-light row, keeps a gutter clear for the buttons, and is the
+         *             window's drag region. The defect it replaces was two stacked strips.
+         *   §APP-018  ⌘N opens the New Workspace SHEET and creates nothing by itself. The defect
+         *             it replaces was a create with no sheet — no name, no colour, no cancel.
+         *   §APP-025  View ▸ Toggle Inspector exists in the running shell's menu and works,
+         *             driven here through the very IPC the menu row uses.
+         *   §APP-066  the inspector SLIDES, on §WS-001's machine mirrored to the trailing edge.
+         *   §APP-067  with no workspace at all the window shows "No workspace selected" and a
+         *             button out of it — reached by actually deleting the last workspace.
+         *
+         * **This step runs LAST, and it is the only one that may.** Its final act deletes every
+         * workspace in the sandbox to reach §APP-067's state; nothing downstream could survive
+         * that, so it is placed after `reattach-after-relaunch` deliberately and it recreates a
+         * workspace before it returns. It also reads `runtime.page` rather than the `page` the
+         * flows were built with, because the relaunch above replaces the CDP session.
+         */
+        {
+            id: 'mac-chrome',
+            expect:
+                'The window has no native title bar: the client’s 32px strip IS the title bar, insets the traffic lights, and takes the drag region, with the first pane immediately under it. ⌘N opens the New Workspace sheet and creates nothing. The shell’s View menu carries Toggle Sidebar AND Toggle Inspector, and firing the inspector row through the menu IPC opens the panel — which slides in and out rather than popping. Deleting the last workspace lands the window on "No workspace selected" with a Create Workspace button that opens the sheet, and the step recreates a workspace before it leaves.',
+            needsEyes: true,
+            async run(recorder) {
+                // `reattach-after-relaunch` replaces the page; anything after it must ask the
+                // runtime rather than close over the session the flows were built with.
+                const view = runtime.page ?? page;
+
+                /*
+                 * BARE THE WINDOW FIRST — the precondition `docs/audit/README.md` records for
+                 * every step that presses a global chord. With Settings up the dispatcher defers
+                 * to it (§TERM-154) and ⌘N never reaches `act.newWorkspace`.
+                 */
+                if (await view.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                    await view.click('[data-testid="settings-close"]');
+                    try {
+                        await view.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                            timeoutMs: 5000,
+                            label: 'the settings overlay an earlier flow left open to close'
+                        });
+                    } catch {
+                        await view.key('Escape');
+                    }
+                    await sleep(400);
+                    recorder.note('dismissed the Settings overlay an earlier flow left open');
+                }
+                recorder.check(
+                    'the window is bare, so the chords below are not swallowed by an overlay',
+                    (await view.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
+                    'no settings overlay'
+                );
+                await recorder.shot(view, 'chrome');
+
+                // ── §APP-046a: the frame, read from OUTSIDE the page ─────────────────
+                //
+                // A window's frame is not observable from the renderer, and the defect this
+                // replaces — a native strip stacked ABOVE the client's own — shows up as exactly
+                // one number: the height the frame keeps for itself. `createWindow` logs it.
+                const titleBarLine = (runtime.shell?.text() ?? '')
+                    .split('\n')
+                    .reverse()
+                    .find((line) => line.includes('titlebar: style='));
+                recorder.note(`shell titlebar line: ${String(titleBarLine)}`);
+                recorder.check(
+                    'the window is created with a HIDDEN title bar (§APP-046)',
+                    typeof titleBarLine === 'string' && titleBarLine.includes('style=hiddenInset'),
+                    String(titleBarLine)
+                );
+                recorder.check(
+                    'the traffic lights are positioned by the app, not left at the default',
+                    typeof titleBarLine === 'string' && /trafficLights=\d+,\d+/.test(titleBarLine),
+                    String(titleBarLine)
+                );
+                const chromeHeight = Number(/chromeHeight=(-?\d+)/.exec(String(titleBarLine))?.[1] ?? NaN);
+                recorder.check(
+                    'and the frame keeps NO height for itself — there is no second strip above the drawn one',
+                    chromeHeight === 0,
+                    `chromeHeight=${String(chromeHeight)}`
+                );
+
+                // ── §APP-046b: and the strip inside the page matches it ──────────────
+                const strip = JSON.parse(
+                    String(
+                        await view.eval(
+                            `(() => {
+                                const bar = document.querySelector('${PAGE.topBar}');
+                                if (bar === null) return JSON.stringify({ present: false });
+                                const rect = bar.getBoundingClientRect();
+                                const controls = Array.from(bar.querySelectorAll('button'))
+                                    .map(el => Math.round(el.getBoundingClientRect().left))
+                                    .filter(left => left < window.innerWidth / 2)
+                                    .sort((a, b) => a - b);
+                                const header = document.querySelector('[data-testid^="pane-header-"]');
+                                const empty = document.querySelector('[data-testid="pane-grid-empty"]');
+                                const firstPaneTop = header !== null
+                                    ? Math.round(header.getBoundingClientRect().top)
+                                    : (empty === null ? null : Math.round(empty.getBoundingClientRect().top));
+                                return JSON.stringify({
+                                    present: true,
+                                    top: Math.round(rect.top),
+                                    height: Math.round(rect.height),
+                                    paddingLeft: Math.round(parseFloat(getComputedStyle(bar).paddingLeft)),
+                                    inset: Number(bar.getAttribute('data-traffic-light-inset')),
+                                    drag: bar.getAttribute('data-titlebar-drag'),
+                                    firstLeadingControl: controls[0] ?? null,
+                                    firstPaneTop
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`title bar: ${JSON.stringify(strip)}`);
+                recorder.check('the drawn strip exists', strip.present === true);
+                recorder.check(
+                    'it starts at the very top of the window — the page is drawn INTO the title-bar row',
+                    strip.top === 0,
+                    `top=${String(strip.top)}`
+                );
+                recorder.check(
+                    'it is the shipped app’s 32pt, NOT doubled to make room for a native bar',
+                    strip.height === 32,
+                    `height=${String(strip.height)}`
+                );
+                recorder.check(
+                    'it reserves the shell’s traffic-light gutter (§APP-046)',
+                    strip.inset > 0 && strip.paddingLeft === strip.inset,
+                    `inset=${String(strip.inset)} paddingLeft=${String(strip.paddingLeft)}`
+                );
+                recorder.check(
+                    'and the first control really sits BEYOND the gutter, so the buttons cannot land on it',
+                    typeof strip.firstLeadingControl === 'number' &&
+                        strip.firstLeadingControl >= strip.inset,
+                    `first control at x=${String(strip.firstLeadingControl)}, gutter ${String(strip.inset)}`
+                );
+                recorder.check(
+                    'the strip claims the window drag region (shell-ui.md §3: empty bar area drags)',
+                    strip.drag === 'true',
+                    String(strip.drag)
+                );
+                recorder.check(
+                    'the first pane sits immediately under the strip — no third band between them',
+                    typeof strip.firstPaneTop === 'number' &&
+                        strip.firstPaneTop >= strip.height &&
+                        strip.firstPaneTop <= strip.height + 4,
+                    `strip ${String(strip.height)}px, first pane top ${String(strip.firstPaneTop)}`
+                );
+                // The one thing no DOM read can settle: the buttons are drawn by the OS, OUTSIDE
+                // the page, so a CDP capture cannot photograph them at all.
+                recorder.eyes(
+                    'TRAFFIC LIGHTS — the close/minimise/zoom buttons are drawn by macOS outside the page and cannot appear in a CDP capture. On a real screen: are they vertically centred in the 32px strip, and clear of the sidebar/inspector toggles?'
+                );
+
+                // ── §APP-018: ⌘N opens the SHEET, and creates nothing ────────────────
+                const workspacesBeforeN = await cli.json(['workspace', 'list', '--json']);
+                await view.key('KeyN', { modifiers: MOD.meta });
+                let sheetOpen = false;
+                try {
+                    await view.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the New Workspace sheet'
+                    });
+                    sheetOpen = true;
+                } catch (error) {
+                    recorder.note(`⌘N did not open the sheet: ${String(error?.message ?? error)}`);
+                }
+                await sleep(300);
+                await recorder.shot(view, 'new-workspace-sheet');
+                recorder.check('⌘N opens the New Workspace sheet (§APP-018)', sheetOpen);
+                const sheetFields = await view.eval(
+                    `(() => {
+                        const form = document.querySelector('[data-testid="new-workspace-form"]');
+                        if (form === null) return '';
+                        return (form.innerText ?? '').replace(/\\n/g, ' | ');
+                    })()`
+                );
+                recorder.note(`sheet contents: ${String(sheetFields)}`);
+                const workspacesAfterN = await cli.json(['workspace', 'list', '--json']);
+                recorder.check(
+                    'and creates NOTHING by itself — the sheet is the gesture, not a side effect',
+                    workspacesAfterN.length === workspacesBeforeN.length,
+                    `${String(workspacesBeforeN.length)} → ${String(workspacesAfterN.length)} workspaces`
+                );
+                // Hand it back: Escape closes the form without creating anything.
+                await view.key('Escape');
+                await sleep(400);
+                const sheetGone = await view.eval(
+                    `document.querySelector('[data-testid="new-workspace-form"]') === null`
+                );
+                recorder.check('Escape cancels it, leaving no workspace behind', sheetGone === true);
+                recorder.check(
+                    'still nothing created after the cancel',
+                    (await cli.json(['workspace', 'list', '--json'])).length === workspacesBeforeN.length
+                );
+
+                // ── §APP-025 / §WS-152: the View menu, and the row driven through its IPC ──
+                //
+                // A native macOS menu row cannot be clicked through CDP, so this is two halves:
+                // the running shell says which rows it installed (an application menu is not
+                // observable from outside the process), and the row's BEHAVIOUR is driven through
+                // the exact channel the click uses — `menu-request` → the daemon → `menu-command`
+                // → the client. A second WS client stands in for the main process.
+                const menuLine = (runtime.shell?.text() ?? '')
+                    .split('\n')
+                    .reverse()
+                    .find((line) => line.includes('menu: Nex '));
+                recorder.note(`shell menu line: ${String(menuLine)}`);
+                recorder.check(
+                    'the running shell installed View ▸ Toggle Sidebar (⌘⇧S) — §WS-001, unchanged',
+                    typeof menuLine === 'string' && menuLine.includes('View ▸ Toggle Sidebar (⌘⇧S)'),
+                    String(menuLine)
+                );
+                recorder.check(
+                    'AND View ▸ Toggle Inspector (⌘I) beside it (§APP-025 / §WS-152)',
+                    typeof menuLine === 'string' && menuLine.includes('Toggle Inspector (⌘I)'),
+                    String(menuLine)
+                );
+                recorder.check(
+                    'the File menu spends ⌘N on New Workspace rather than a second window (§APP-018)',
+                    typeof menuLine === 'string' &&
+                        menuLine.includes('New Workspace (⌘N)') &&
+                        !menuLine.includes('New Window'),
+                    String(menuLine)
+                );
+                recorder.check(
+                    'Check for Updates… reports its enabled state, and this dev build greys it (§APP-026)',
+                    typeof menuLine === 'string' && menuLine.includes('Check for Updates… (disabled)'),
+                    String(menuLine)
+                );
+
+                const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));
+                const token =
+                    tokenFile === undefined
+                        ? null
+                        : fs.readFileSync(path.join(sandbox.runDir, tokenFile), 'utf8').trim();
+                let menuSocket = null;
+                if (token !== null) {
+                    menuSocket = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                    await new Promise((resolve) => {
+                        menuSocket.addEventListener('open', () => {
+                            menuSocket.send(
+                                JSON.stringify({
+                                    type: 'hello',
+                                    protocolVersion: 1,
+                                    token,
+                                    client: { kind: 'browser', name: 'audit-menu-driver' }
+                                })
+                            );
+                            resolve();
+                        });
+                        setTimeout(resolve, 3000);
+                    });
+                    await sleep(800);
+                }
+                recorder.check('a stand-in for the shell’s menu IPC is attached', menuSocket !== null);
+                /**
+                 * Fire one menu row exactly as `viewMenuTemplate`'s click does.
+                 *
+                 * `settleMs` is the difference between "make it happen" and "watch it happen":
+                 * the default waits the relay out, and the mid-flight sample below passes 0
+                 * because a 900 ms settle is three times the length of the 250 ms slide it is
+                 * trying to catch — the first run of this step read `{present:false}` on every
+                 * sample for exactly that reason.
+                 */
+                const fireMenu = async (command, settleMs = 900) => {
+                    menuSocket?.send(JSON.stringify({ type: 'menu-request', command }));
+                    await sleep(settleMs);
+                };
+
+                const inspectorOpenAtEntry = await view.eval(
+                    `document.querySelector('[data-testid="inspector"]') !== null`
+                );
+                if (inspectorOpenAtEntry === true) {
+                    await fireMenu('toggle-inspector');
+                    await sleep(700);
+                    recorder.note('closed an inspector an earlier flow left open');
+                }
+
+                await fireMenu('toggle-inspector');
+                const openedByMenu = await view.eval(
+                    `document.querySelector('[data-testid="inspector"]') !== null`
+                );
+                await recorder.shot(view, 'inspector-from-menu');
+                recorder.check(
+                    'View ▸ Toggle Inspector opens the panel through the menu’s own IPC (§APP-025)',
+                    openedByMenu === true
+                );
+
+                // ── §APP-066: and it SLIDES, in both directions ──────────────────────
+                const readInspector = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="inspector-slot"]');
+                                    if (el === null) return JSON.stringify({ present: false });
+                                    const panel = el.querySelector('[data-testid="inspector-panel"]');
+                                    return JSON.stringify({
+                                        present: true,
+                                        phase: el.getAttribute('data-inspector-phase'),
+                                        width: Math.round(el.getBoundingClientRect().width * 10) / 10,
+                                        transition: getComputedStyle(el).transitionDuration,
+                                        panelX: panel === null ? null : Math.round(panel.getBoundingClientRect().x),
+                                        panelOpacity: panel === null ? null : Number(getComputedStyle(panel).opacity)
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                await view.waitFor(
+                    `document.querySelector('[data-testid="inspector-slot"]')?.getAttribute('data-inspector-phase') === 'open'`,
+                    { timeoutMs: 10_000, label: 'the inspector to settle open' }
+                );
+                const inspectorRest = await readInspector();
+                recorder.note(`inspector at rest: ${JSON.stringify(inspectorRest)}`);
+                const inspectorWidth = Number(inspectorRest.width ?? 0);
+                recorder.check(
+                    'the inspector sits in its own animatable slot at the shipped 280pt',
+                    inspectorRest.present === true && Math.abs(inspectorWidth - 280) < 2,
+                    JSON.stringify(inspectorRest)
+                );
+                recorder.check(
+                    'on the ~0.25s default-ease curve the sidebar’s slide uses (§WS-001’s machine, reused)',
+                    typeof inspectorRest.transition === 'string' && inspectorRest.transition.includes('0.25s'),
+                    String(inspectorRest.transition)
+                );
+
+                /*
+                 * Mid-flight is the point, and it is caught the way §WS-001's own step catches
+                 * it: poll for a frame that is BETWEEN the two ends, then read again a beat later.
+                 * Two samples that disagree are what separates a running animation from a
+                 * stylesheet that merely declares one. No capture in between — a CDP screenshot
+                 * costs most of a 250ms slide.
+                 */
+                await fireMenu('toggle-inspector', 0);
+                let closing = { present: false };
+                for (let tick = 0; tick < 120; tick++) {
+                    const seen = await readInspector();
+                    if (seen.present !== true) break;
+                    if (seen.phase === 'closing') {
+                        closing = seen;
+                        if (seen.width < inspectorWidth - 1) break;
+                    }
+                    await sleep(8);
+                }
+                await sleep(60);
+                const closingLater = await readInspector();
+                recorder.note(`inspector closing: ${JSON.stringify(closing)} → later ${JSON.stringify(closingLater)}`);
+                recorder.check(
+                    'hiding the inspector catches it MID-SLIDE, not snapped shut (§APP-066)',
+                    closing.present === true && closing.width > 0 && closing.width < inspectorWidth - 1,
+                    `${String(closing.width)} of ${String(inspectorWidth)} · phase ${String(closing.phase)}`
+                );
+                recorder.check(
+                    'and it is really MOVING: the next sample is narrower still',
+                    closing.present === true &&
+                        (closingLater.present !== true || Number(closingLater.width) < Number(closing.width)),
+                    `${String(closing.width)} → ${closingLater.present === true ? String(closingLater.width) : 'unmounted'}`
+                );
+                recorder.check(
+                    'the panel travels off the TRAILING edge rather than shrinking in place',
+                    closing.present === true &&
+                        Number(closing.panelX) > Number(inspectorRest.panelX) &&
+                        Number(closing.panelOpacity) < 1,
+                    `panelX ${String(inspectorRest.panelX)} → ${String(closing.panelX)} · opacity ${String(closing.panelOpacity)}`
+                );
+                await sleep(700);
+                recorder.check(
+                    'it ends fully gone',
+                    (await readInspector()).present === false,
+                    JSON.stringify(await readInspector())
+                );
+
+                /*
+                 * The PICTURE, with one stated intervention — the same one `sidebar-remaining`
+                 * makes and for the same reason. A CDP capture costs more than a 250ms slide, so
+                 * the still is of the SAME transition with its duration stretched to 2s by a
+                 * stylesheet this step installs and then removes. Only the duration changes: the
+                 * geometry, the curve and the phases in the still are the ones measured above.
+                 */
+                await view.eval(
+                    `(() => {
+                        const style = document.createElement('style');
+                        style.id = 'audit-slow-inspector';
+                        style.textContent = '[data-testid="inspector-slot"],[data-testid="inspector-panel"]{transition-duration:2000ms !important}';
+                        document.head.appendChild(style);
+                        return true;
+                    })()`
+                );
+                await fireMenu('toggle-inspector');
+                let still = { present: false };
+                for (let tick = 0; tick < 250; tick++) {
+                    still = await readInspector();
+                    if (
+                        still.present === true &&
+                        still.width > inspectorWidth * 0.2 &&
+                        still.width < inspectorWidth * 0.8
+                    ) {
+                        break;
+                    }
+                    await sleep(10);
+                }
+                recorder.note(
+                    `inspector still caught at ${String(still.width)} of ${String(inspectorWidth)} — the same transition, stretched to 2s for the capture only`
+                );
+                await recorder.shot(view, 'inspector-sliding');
+                recorder.check(
+                    'the still is of an inspector genuinely half-way out, not of either end',
+                    still.present === true &&
+                        still.width > inspectorWidth * 0.2 &&
+                        still.width < inspectorWidth * 0.8,
+                    `${String(still.width)} of ${String(inspectorWidth)}`
+                );
+                await sleep(2400);
+                await view.eval(`(() => { document.getElementById('audit-slow-inspector')?.remove(); return true; })()`);
+                // Put the inspector back where it was found (shut, in every run so far).
+                await fireMenu('toggle-inspector');
+                await sleep(700);
+                recorder.check(
+                    'the inspector is handed back CLOSED',
+                    (await view.eval(`document.querySelector('[data-testid="inspector"]') === null`)) === true
+                );
+
+                // ── §APP-067 / §WS-156: no workspace at all ──────────────────────────
+                //
+                // THE DESTRUCTIVE PART, and the reason this step runs last. The state cannot be
+                // faked: it exists only when the daemon holds zero workspaces, and the only
+                // gesture that can get there is ⌘W on the last pane of the last one — the
+                // shipped app's own asymmetry (`nex workspace delete` refuses at one; ⌘W does
+                // not). So the step really deletes them, really lands on the empty state, and
+                // really builds a workspace back out of the button it is asserting.
+                const before = await cli.json(['workspace', 'list', '--json']);
+                recorder.note(`deleting ${String(before.length)} workspaces to reach the empty state`);
+                const scratch = await cli.json(['workspace', 'create', '--name', 'Mac Chrome', '--json']);
+                const scratchID = String(scratch?.workspace_id ?? '');
+                recorder.check('a fresh single-pane workspace to spend on the empty state', scratchID !== '');
+                await sleep(1500);
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await view.eval(
+                        `(() => { const row = document.querySelector('[data-workspace-id="${scratchID}"]');
+                                  if (row === null) return false; row.click(); return true; })()`
+                    );
+                    await sleep(700);
+                    const active = await view.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    );
+                    if (String(active) === scratchID) break;
+                }
+                for (const workspace of before) {
+                    await cli.run(['workspace', 'delete', String(workspace.id), '--force']);
+                }
+                await sleep(1500);
+                const remaining = await cli.json(['workspace', 'list', '--json']);
+                recorder.check(
+                    'exactly one workspace is left, and the CLI refused to take it (§WS-156’s CLI half)',
+                    remaining.length === 1 && String(remaining[0]?.id) === scratchID,
+                    remaining.map((entry) => entry.name).join(', ')
+                );
+                const cliRefusal = await cli.run(['workspace', 'delete', scratchID, '--force']);
+                recorder.note(`cli delete of the last workspace: exit ${String(cliRefusal.code)} ${cliRefusal.stderr.trim()}`);
+                recorder.check(
+                    'and it says so rather than silently doing it',
+                    cliRefusal.code !== 0 &&
+                        `${cliRefusal.stdout}${cliRefusal.stderr}`.includes('refusing to delete the last workspace'),
+                    `${cliRefusal.stdout}${cliRefusal.stderr}`.trim()
+                );
+
+                const scratchPanes = await cli.json(['pane', 'list', '--workspace', scratchID, '--json']);
+                recorder.check('the scratch workspace has exactly one pane', scratchPanes.length === 1, String(scratchPanes.length));
+                if (scratchPanes.length === 1) {
+                    await focusPaneBody(view, String(scratchPanes[0].id));
+                    await sleep(300);
+                }
+                // ⌘W on the last pane of the LAST workspace — the one gesture allowed to reach
+                // zero (`act.closeFocused` → the GUI's own `delete-workspace` verb).
+                await view.key('KeyW', { modifiers: MOD.meta });
+                let emptyState = false;
+                try {
+                    await view.waitFor(`document.querySelector('[data-testid="no-workspace-empty"]') !== null`, {
+                        timeoutMs: 15_000,
+                        label: 'the "No workspace selected" state'
+                    });
+                    emptyState = true;
+                } catch (error) {
+                    recorder.note(`empty state never appeared: ${String(error?.message ?? error)}`);
+                }
+                await sleep(600);
+                await recorder.shot(view, 'no-workspace');
+                const emptyText = await view.eval(
+                    `(document.querySelector('[data-testid="no-workspace-empty"]')?.innerText ?? '').replace(/\\n/g, ' | ')`
+                );
+                recorder.note(`empty state: ${String(emptyText)}`);
+                recorder.check('⌘W on the last pane of the LAST workspace reaches zero (§WS-156)', emptyState);
+                recorder.check(
+                    'the daemon really holds no workspaces — this is the state, not a placeholder',
+                    (await cli.json(['workspace', 'list', '--json'])).length === 0
+                );
+                recorder.check(
+                    'it says "No workspace selected" (§APP-067)',
+                    String(emptyText).includes('No workspace selected'),
+                    String(emptyText)
+                );
+                recorder.check(
+                    'and it offers a way out: a Create Workspace button',
+                    (await view.eval(`document.querySelector('[data-testid="no-workspace-create"]') !== null`)) === true
+                );
+                recorder.check(
+                    'the pane-level "No panes" placeholder is NOT also on screen',
+                    (await view.eval(`document.querySelector('[data-testid="pane-grid-empty"]') === null`)) === true
+                );
+
+                // ── and out of it, through the button the state is claimed for ────────
+                await view.click('[data-testid="no-workspace-create"]');
+                let recoverySheet = false;
+                try {
+                    await view.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the New Workspace sheet from the empty state'
+                    });
+                    recoverySheet = true;
+                } catch (error) {
+                    recorder.note(`the Create button did not open the sheet: ${String(error?.message ?? error)}`);
+                }
+                await recorder.shot(view, 'no-workspace-create');
+                recorder.check('Create Workspace opens the SHEET (§APP-018’s gesture, §APP-067’s button)', recoverySheet);
+                if (recoverySheet) {
+                    await view.click('[aria-label="New workspace name"]');
+                    await view.insertText('Restored');
+                    await view.click('[data-testid="new-workspace-submit"]');
+                }
+                await view.waitFor(`document.querySelectorAll('${PAGE.workspaceRows}').length > 0`, {
+                    timeoutMs: 25_000,
+                    label: 'the recreated workspace row'
+                });
+                await sleep(1500);
+                const restored = await cli.json(['workspace', 'list', '--json']);
+                recorder.note(`restored: ${restored.map((entry) => `${String(entry.name)} (${String(entry.id)})`).join(', ')}`);
+                recorder.check(
+                    'the button really creates one, named by the sheet',
+                    restored.length === 1 && String(restored[0]?.name) === 'Restored',
+                    restored.map((entry) => entry.name).join(', ')
+                );
+                const restoredID = String(restored[0]?.id ?? '');
+                // Hand the run back on a workspace confirmed BY ID, per `docs/audit/README.md`.
+                const handedBack = String(
+                    await view.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+                recorder.check(
+                    'and the window lands on it — the empty state is not a dead end',
+                    restoredID !== '' && handedBack === restoredID,
+                    `${restoredID} → ${handedBack}`
+                );
+                recorder.check(
+                    'the empty state is gone once a workspace exists again',
+                    (await view.eval(`document.querySelector('[data-testid="no-workspace-empty"]') === null`)) === true
+                );
+                await recorder.shot(view, 'restored');
+                try {
+                    menuSocket?.close();
+                } catch {
+                    // already gone
+                }
+                recorder.eyes(
+                    'Does the empty state read like the shipped app’s (faint terminal glyph, secondary copy, one button), and does the recreated window look like a normal Nex window rather than a half-torn-down one?'
+                );
             }
         },
 

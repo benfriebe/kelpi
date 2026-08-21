@@ -179,15 +179,41 @@ export function runCliInstallPolicy(deps: CliInstallPolicyDeps): CliInstallPolic
 // Boot ordering (APP-001, APP-101)
 // ---------------------------------------------------------------------------
 
+/** A launch step. Sync in `main.ts`; a test may hand back a promise to prove concurrency. */
+export type LaunchStep = () => void | Promise<void>;
+
 export interface DaemonConnectSteps {
     /** Discover or spawn the daemon and remember where it is. Never stops one. */
     readonly connect: () => Promise<void>;
     /** Create the status socket, or re-point the existing one (never a second controller). */
-    readonly startStatus: () => void;
+    readonly startStatus: LaunchStep;
     /** Same for the web-pane host. */
-    readonly startWebHost: () => void;
+    readonly startWebHost: LaunchStep;
     /** Stage-one replay (CONT-127): only meaningful once there is somewhere to send. */
-    readonly drainPendingOpens: () => void;
+    readonly drainPendingOpens: LaunchStep;
+}
+
+/**
+ * Run every step, let each one's failure cost only itself, and report the ones that threw.
+ *
+ * This is the shape §APP-013's fan-out needs: the shipped app's `.appLaunched` is a `.merge` of
+ * six effects, and `.merge` does not serialise them and does not let one cancel the others. A
+ * bare `Promise.all` would do the first half and not the second — one rejection would abandon the
+ * remaining settlements — so this awaits `allSettled` and hands the rejections back.
+ */
+async function fanOut(steps: readonly (readonly [string, LaunchStep])[]): Promise<readonly (readonly [string, unknown])[]> {
+    const results = await Promise.allSettled(
+        steps.map(async ([, step]) => {
+            await step();
+        })
+    );
+    const failures: (readonly [string, unknown])[] = [];
+    results.forEach((result, index) => {
+        if (result.status !== 'rejected') return;
+        const name = steps[index]?.[0] ?? 'step';
+        failures.push([name, result.reason]);
+    });
+    return failures;
 }
 
 /**
@@ -201,80 +227,114 @@ export interface DaemonConnectSteps {
  */
 export async function runDaemonConnectSequence(steps: DaemonConnectSteps): Promise<void> {
     await steps.connect();
-    steps.startStatus();
-    steps.startWebHost();
-    steps.drainPendingOpens();
+    // The two sockets are independent of each other — a status controller does not need a web
+    // host and vice versa; both need only the connection above — so they go out together
+    // (§APP-013). The DRAIN still waits for both: it is the one step with a real dependency.
+    const failures = await fanOut([
+        ['status', steps.startStatus],
+        ['web-host', steps.startWebHost]
+    ]);
+    // No `logError` on this seam, so a socket that threw must not be swallowed here: it goes up
+    // to `startDaemonAndConnect`'s caller, exactly as it did when these two calls were bare.
+    const first = failures[0];
+    if (first !== undefined) throw first[1];
+    await steps.drainPendingOpens();
 }
 
 export interface LaunchSteps {
     /** stack.md §1's permission handlers, installed before any content loads. */
-    readonly applyPermissionPolicy: () => void;
-    readonly buildMenu: () => void;
+    readonly applyPermissionPolicy: LaunchStep;
+    readonly buildMenu: LaunchStep;
     /** `runDaemonConnectSequence` in production; rejects when no daemon can be reached. */
     readonly connectDaemon: () => Promise<void>;
     /** The fatal path: report and exit. Launch stops here — no window is created. */
     readonly reportDaemonUnavailable: (error: unknown) => void;
     /** SET-219: the web find palette is read before the first tab can exist. */
-    readonly applyFindPalette: () => void;
-    readonly createWindow: () => void;
-    readonly registerGlobalHotkey: () => void;
+    readonly applyFindPalette: LaunchStep;
+    readonly createWindow: LaunchStep;
+    readonly registerGlobalHotkey: LaunchStep;
     /** APP-003/004. Best-effort: a throw here must not cost the user their window. */
-    readonly runCliInstallPolicy: () => void;
+    readonly runCliInstallPolicy: LaunchStep;
     /**
      * §APP-006: refresh the bundled agent documentation into `$HOME/.claude/skills/…`
      * (`./skill.ts` owns every rule about when that is allowed). Best-effort for the same
      * reason the CLI policy is — it writes outside the app, and a home that cannot be written
      * to must cost a log line rather than the launch.
      */
-    readonly refreshBundledSkill: () => void;
-    readonly startUpdater: () => void;
-    readonly installQuitGate: () => void;
+    readonly refreshBundledSkill: LaunchStep;
+    readonly startUpdater: LaunchStep;
+    readonly installQuitGate: LaunchStep;
     readonly logError: (message: string, error: unknown) => void;
 }
 
 export type LaunchOutcome = 'ready' | 'daemon-unavailable';
 
 /**
- * `boot()`, as an order — the sequence the file's own header comment describes, made executable.
+ * `boot()`, as an order — and, where the order is not real, as a FAN-OUT (§APP-013/§APP-014).
  *
- * Two things in here are load-bearing and were previously only comments:
+ * The shipped app's `.appLaunched` is a `.merge` of six effects: persisted state, settings,
+ * keybindings, the general config, favourites and label presets all go out at once, and the
+ * reducer takes each answer as it lands (`AppReducer.swift:1079-1117`). This shell's own six
+ * launch-time loads — the daemon handshake, the find palette, the global-hotkey config, the CLI
+ * symlink probe, the bundled-skill refresh and the updater — ran strictly one after another, so
+ * every one of them paid for the one in front of it. They do not any more.
  *
- *  - **The daemon comes before the window.** A window pointed at a daemon that is not there
- *    shows an error page and retries in a loop; the app reports and exits instead, and it must
- *    not create the window first (APP-001's "discover or spawn the daemon" step 2 before step 3).
- *  - **The CLI policy and the skill refresh cannot fail the launch.** They write to
- *    `/usr/local/bin` and `~/.claude`, exactly the kind of places that throw, and they run
- *    *after* the window exists so that a throw costs a log line and nothing else (APP-003: "off
- *    the boot path's critical line").
+ * What is still an ORDER, and why each one is real:
+ *
+ *  - **Permissions and the menu come first.** The permission handlers must exist before any
+ *    content can load (stack.md §1), and both are pure main-process setup with nothing to wait on.
+ *  - **The daemon comes before the window.** A window pointed at a daemon that is not there shows
+ *    an error page and retries in a loop; the app reports and exits instead, and it must not
+ *    create the window first (APP-001's step 2 before step 3). The find palette joins it in the
+ *    same wave — it is independent of the daemon, but SET-219 requires it before the first web
+ *    tab can exist, so it must land before the window too.
+ *  - **The window comes before the four best-effort steps.** APP-003's "off the boot path's
+ *    critical line": the CLI policy writes into `/usr/local/bin` and the skill refresh into
+ *    `~/.claude`, exactly the kind of places that throw, and a throw must cost a log line rather
+ *    than the user's window. They run TOGETHER now, each with its own failure, because none of
+ *    the four is an input to any other.
+ *  - **The quit gate does not wait for them.** It is installed the moment the window exists,
+ *    ahead of the join, so a slow symlink probe on a busy machine cannot leave the app briefly
+ *    unable to guard ⌘Q. The sequence still returns only once everything has settled.
  */
 export async function runLaunchSequence(steps: LaunchSteps): Promise<LaunchOutcome> {
-    steps.applyPermissionPolicy();
-    steps.buildMenu();
+    await steps.applyPermissionPolicy();
+    await steps.buildMenu();
 
-    try {
-        await steps.connectDaemon();
-    } catch (error) {
-        steps.reportDaemonUnavailable(error);
+    // Wave one: the daemon handshake and the find-palette read, together. The palette read is
+    // local and quick; the handshake can spawn a process. Serialising them bought nothing.
+    let daemonError: { readonly error: unknown } | null = null;
+    const paletteFailures = await fanOut([
+        [
+            'daemon',
+            async () => {
+                try {
+                    await steps.connectDaemon();
+                } catch (error) {
+                    daemonError = { error };
+                }
+            }
+        ],
+        ['find-palette', steps.applyFindPalette]
+    ]);
+    for (const [name, error] of paletteFailures) steps.logError(`${name} failed`, error);
+    if (daemonError !== null) {
+        steps.reportDaemonUnavailable((daemonError as { readonly error: unknown }).error);
         return 'daemon-unavailable';
     }
 
-    steps.applyFindPalette();
-    steps.createWindow();
-    steps.registerGlobalHotkey();
-    // Two independent best-effort steps, in two independent `try`s: both write outside the app
-    // (one into `/usr/local/bin`, one into `~/.claude`), and one of them failing must cost the
-    // other nothing — least of all the launch.
-    try {
-        steps.runCliInstallPolicy();
-    } catch (error) {
-        steps.logError('cli-install failed', error);
-    }
-    try {
-        steps.refreshBundledSkill();
-    } catch (error) {
-        steps.logError('skill-refresh failed', error);
-    }
-    steps.startUpdater();
-    steps.installQuitGate();
+    await steps.createWindow();
+
+    // Wave two: four independent best-effort steps. `fanOut` gives each its own failure, so one
+    // of them throwing costs the other three nothing — the property the two separate `try`s used
+    // to provide, kept while they stopped waiting on each other.
+    const tail = fanOut([
+        ['hotkey', steps.registerGlobalHotkey],
+        ['cli-install', steps.runCliInstallPolicy],
+        ['skill-refresh', steps.refreshBundledSkill],
+        ['updater', steps.startUpdater]
+    ]);
+    await steps.installQuitGate();
+    for (const [name, error] of await tail) steps.logError(`${name} failed`, error);
     return 'ready';
 }

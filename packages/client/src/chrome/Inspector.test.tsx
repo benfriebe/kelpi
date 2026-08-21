@@ -304,6 +304,37 @@ describe('the Create Worktree sheet (§WS-147/§WS-148, §GIT-098/§GIT-099)', (
         expect(screen.getByTestId('worktree-sheet').textContent).toContain('infra');
     });
 
+    /**
+     * §WS-146 — "skips the repo picker when there is exactly one candidate", the OTHER way a
+     * candidate can be unique.
+     *
+     * The first test above is a workspace that references exactly one repo. This is the
+     * registry-of-one case: the workspace references NOTHING yet — the state a fresh workspace
+     * is in, and the state the Add menu is most often opened from — and the registry holds a
+     * single repo, so there is still nothing to choose between and a picker with one row in it
+     * is a step that exists only to be dismissed.
+     */
+    it('skips the picker when the whole registry holds exactly one repo', () => {
+        const only = REPOS[0];
+        if (only === undefined) throw new Error('fixture');
+        view({ associations: [], repos: [only], onCreateWorktree: vi.fn() });
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        fireEvent.click(screen.getByText('New Worktree…'));
+        expect(screen.queryByTestId('repo-picker-sheet')).toBeNull();
+        expect(screen.getByTestId('worktree-sheet').textContent).toContain('app');
+        // …and with nothing to change TO, the "Change" escape hatch is not offered either.
+        expect(screen.queryByTestId('worktree-change-repo')).toBeNull();
+    });
+
+    it('still asks when neither the workspace nor the registry narrows it to one', () => {
+        // Two registered repos and no associations: the ambiguity is real, so the picker stands.
+        view({ associations: [], onCreateWorktree: vi.fn() });
+        fireEvent.click(screen.getByTestId('inspector-add-repo'));
+        fireEvent.click(screen.getByText('New Worktree…'));
+        expect(screen.getByTestId('repo-picker-sheet')).toBeTruthy();
+        expect(screen.queryByTestId('worktree-sheet')).toBeNull();
+    });
+
     it('mirrors the name into the branch, previews the sanitized result and gates Create', async () => {
         const onCreateWorktree = vi.fn().mockResolvedValue(null);
         view({ onCreateWorktree });

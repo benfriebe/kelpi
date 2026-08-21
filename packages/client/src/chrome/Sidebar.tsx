@@ -848,6 +848,21 @@ export interface SidebarProps extends SidebarCallbacks {
      */
     readonly renameRequest?: { readonly kind: 'workspace' | 'group'; readonly id: string } | null | undefined;
     readonly onRenameRequestHandled?: (() => void) | undefined;
+    /**
+     * §APP-018 / §WS-151 / §WS-156: "open the New Workspace form", asked for from OUTSIDE the
+     * sidebar — ⌘N, the Electron File ▸ New Workspace row, the command palette, and the
+     * no-workspace empty state's Create button. The shipped app's `showNewWorkspaceSheet()`.
+     *
+     * Same shape as `renameRequest`, for the same reason: assembly sets it, the sidebar consumes
+     * it once and clears it through `onCreateRequestHandled`, so a re-render cannot re-open a
+     * form the user just dismissed. `groupID` preselects the form's group picker (§WS-076); a
+     * missing/null one lets §SET-011's inheritance choose, exactly as the footer button does.
+     */
+    readonly createRequest?:
+        | { readonly kind: 'workspace' | 'group'; readonly groupID?: string | null | undefined }
+        | null
+        | undefined;
+    readonly onCreateRequestHandled?: (() => void) | undefined;
     /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
     readonly springLoadMs?: number | undefined;
     readonly autoScrollIntervalMs?: number | undefined;
@@ -1305,6 +1320,36 @@ export function Sidebar(props: SidebarProps): ReactElement {
         },
         [collapseOverrides, groups, props]
     );
+
+    /**
+     * §WS-112 — an optimistic override lasts until the daemon agrees, and not one render longer.
+     *
+     * `collapseOverrides` exists so a header click flips NOW rather than after the round trip,
+     * and `isGroupCollapsed` lets it win over the mirror's `isCollapsed`. Nothing retired it,
+     * though, so the local answer outlived the gesture that made it: once the daemon expands a
+     * group on its own — which is exactly what `set-active-workspace` does when the destination
+     * is hidden inside a collapsed one (§WS-112's step 3, `reducers/workspaces.ts`) — the
+     * broadcast landed in state and the sidebar went on drawing the collapsed group the user
+     * had clicked minutes earlier. The daemon's expand was invisible, and the workspace the
+     * user had just jumped to stayed hidden behind a closed header.
+     *
+     * So: drop an override the moment the mirror CONFIRMS it (the round trip is over, it has
+     * nothing left to hide) or the group it belongs to disappears. A disagreement is kept —
+     * that is a gesture still in flight.
+     */
+    useEffect(() => {
+        setCollapseOverrides((current) => {
+            if (current.size === 0) return current;
+            let next: Map<string, boolean> | null = null;
+            for (const [groupID, value] of current) {
+                const group = groups.find((candidate) => candidate.id === groupID);
+                if (group !== undefined && group.isCollapsed !== value) continue;
+                next ??= new Map(current);
+                next.delete(groupID);
+            }
+            return next ?? current;
+        });
+    }, [groups]);
 
     // ── drag ────────────────────────────────────────────────────────────────────
     const contentY = useCallback((clientY: number): number => {
@@ -2083,6 +2128,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
         if (exists) setRename({ kind: renameRequest.kind, id: renameRequest.id });
         onRenameRequestHandled?.();
     }, [baseModel, groups, renameRequest, onRenameRequestHandled]);
+
+    /**
+     * §APP-018's other half: "open the New Workspace form", asked for from outside.
+     *
+     * The same one-shot contract as the rename above — consumed once, cleared immediately — so
+     * ⌘N pressed twice re-opens the form the second time rather than being swallowed as a
+     * no-change prop, and a re-render after the user cancels cannot bring it back. The form's
+     * own autofocus does the rest: `NewEntryForm` focuses its name field on mount, so the
+     * gesture lands the caret exactly where the shipped sheet does.
+     */
+    const createRequest = props.createRequest ?? null;
+    const onCreateRequestHandled = props.onCreateRequestHandled;
+    useEffect(() => {
+        if (createRequest === null) return;
+        setNewForm({ kind: createRequest.kind, groupID: createRequest.groupID ?? null });
+        onCreateRequestHandled?.();
+    }, [createRequest, onCreateRequestHandled]);
 
     // ── menus ───────────────────────────────────────────────────────────────────
     const closeMenu = useCallback((): void => {

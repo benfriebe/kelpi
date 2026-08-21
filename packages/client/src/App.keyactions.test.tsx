@@ -217,6 +217,15 @@ describe('rename_workspace (⌘⇧R)', () => {
 });
 
 describe('new_group (⌘⇧G)', () => {
+    /**
+     * The verb is `create-group-for-workspaces` with NO workspaces, and that matters (§WS-123).
+     *
+     * Both halves of this gesture — the inline rename and the header's scroll-into-view — need
+     * the new group's id, and the id only exists in a reply. The wire's `group-create` is
+     * fire-and-forget (wire-protocol.md §7) and its ack carries nothing, so while this path used
+     * it the chord created a group and then did neither; the audit's `workspace-edges` flow
+     * found it by timing out on a rename field that never opened.
+     */
     it('mints a uniquely named group immediately instead of opening the form', async () => {
         const h = setup();
 
@@ -225,7 +234,11 @@ describe('new_group (⌘⇧G)', () => {
         });
 
         await waitFor(() => {
-            expect(h.commands().at(-1)).toMatchObject({ command: 'group-create', name: 'New Group' });
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'create-group-for-workspaces',
+                name: 'New Group',
+                workspace_ids: []
+            });
         });
         // The form is NOT what opened: no name field asking for one up front.
         expect(screen.queryByLabelText('Group name')).toBeNull();
@@ -237,7 +250,7 @@ describe('new_group (⌘⇧G)', () => {
             fireEvent.keyDown(window, { code: 'KeyG', key: 'G', metaKey: true, shiftKey: true });
         });
         await waitFor(() => {
-            expect(h.idOf('group-create')).toBeDefined();
+            expect(h.idOf('create-group-for-workspaces')).toBeDefined();
         });
 
         // The reply names the group; the delta is what puts its row on screen.
@@ -247,7 +260,7 @@ describe('new_group (⌘⇧G)', () => {
         await act(async () => {
             h.socket().emit({
                 type: 'command-reply',
-                id: h.idOf('group-create') as string,
+                id: h.idOf('create-group-for-workspaces') as string,
                 reply: { ok: true, group_id: GROUP_1, group_name: 'New Group' }
             });
             h.socket().emit({ type: 'snapshot', seq: 1, state: store.getState() as unknown as JsonObject });

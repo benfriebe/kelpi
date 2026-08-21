@@ -63,11 +63,12 @@ import {
     type HotkeySwapResult
 } from './hotkey.js';
 import { log, logError, warn } from './log.js';
-import { VIEW_MENU_LOG_FRAGMENT, viewMenuTemplate } from './menu.js';
+import { appMenuTemplate, debugMenuSection, fileMenuTemplate, menuLogLine, viewMenuTemplate } from './menu.js';
 import { isForwardableOpenPath } from './shell-actions.js';
+import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
 import { createStatusController, type StatusController } from './status.js';
-import { checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
+import { canCheckForUpdates, checkForUpdatesNow, maybeStartAutoUpdate } from './updater.js';
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { EMPTY_COUNTS } from './agents.js';
 import {
@@ -274,6 +275,15 @@ function applyPermissionPolicy(): void {
     );
 }
 
+/**
+ * APP-046 — the frame decision, taken once for this process.
+ *
+ * `titleBarStyle` is fixed at window construction (like `transparent`), so it cannot be a runtime
+ * setting; and `loadDaemonUrl` needs the same decision to tell the page what to reserve. One
+ * module-level constant rather than two calls that could disagree.
+ */
+const TITLE_BAR = titleBarStyleFor(process.platform);
+
 function loadDaemonUrl(window: BrowserWindow): void {
     if (daemon === null) return;
     // `shellWindow` marks the page as "the UI inside this shell window" — it is what makes the
@@ -284,7 +294,11 @@ function loadDaemonUrl(window: BrowserWindow): void {
         // APP-012: the page cannot know whether the frame around it is transparent, and it must
         // not paint an rgba window fill in an ordinary browser tab (there it would composite
         // over white). The window that DOES know says so.
-        (windowIsTransparent ? '&windowTransparent=1' : '');
+        (windowIsTransparent ? '&windowTransparent=1' : '') +
+        // APP-046: the same shape of answer for the traffic lights. With `hiddenInset` the page
+        // is drawn UNDER them, so it is told how much leading room to keep clear; a browser tab
+        // (and a Linux window) gets no parameter and reserves nothing.
+        trafficLightQuery(TITLE_BAR);
     // The token rides in the query string (the client reads it, remembers it, and strips it
     // from the address bar). It must never reach a log file, so redact it here — which also
     // makes the log line proof that a token WAS attached.
@@ -324,9 +338,20 @@ function createWindow(): BrowserWindow {
         title: 'Nex',
         ...(windowIsTransparent ? { transparent: true } : {}),
         backgroundColor: windowIsTransparent ? '#00000000' : '#16161a',
-        // A standard frame on purpose. `titleBarStyle: 'hiddenInset'` would look closer to the
-        // Swift app, but the client's top bar does not reserve the traffic lights' inset yet,
-        // so the buttons would sit on top of its controls. Flip this once the client does.
+        /*
+         * APP-046 — the hidden title bar, at last.
+         *
+         * The shipped app is `.hiddenTitleBar` with its 32pt strip drawn up into the traffic-light
+         * row. This window was a standard frame on purpose until now ("the client's top bar does
+         * not reserve the traffic lights' inset yet"), which stacked a native strip above the
+         * client's own. The client reserves it now — `?trafficLightInset=` above, `TopBar`'s
+         * leading gutter — so the frame goes away and the drawn strip becomes the title bar,
+         * drag region and all. `./titlebar.ts` owns every number in that sentence.
+         */
+        ...(TITLE_BAR.titleBarStyle === undefined ? {} : { titleBarStyle: TITLE_BAR.titleBarStyle }),
+        ...(TITLE_BAR.trafficLightPosition === undefined
+            ? {}
+            : { trafficLightPosition: { ...TITLE_BAR.trafficLightPosition } }),
         webPreferences: {
             // Electron defaults, restated because they are load-bearing (stack.md §1).
             contextIsolation: true,
@@ -337,6 +362,28 @@ function createWindow(): BrowserWindow {
             spellcheck: false
         }
     });
+
+    /*
+     * APP-046, reported rather than assumed.
+     *
+     * An application window's frame is not observable from outside the process, and the defect
+     * this replaces — a native title bar stacked ABOVE the client's drawn one — shows up as
+     * exactly one number: the height the frame keeps for itself. With a hidden title bar it is 0.
+     * `scripts/smoke.mjs` and `docs/audit`'s `mac-chrome` read this line.
+     */
+    try {
+        const frame = window.getBounds();
+        const content = window.getContentBounds();
+        log(
+            titleBarLogLine({
+                decision: TITLE_BAR,
+                frameHeight: frame.height,
+                contentHeight: content.height
+            })
+        );
+    } catch (error) {
+        warn(`titlebar report failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     if (fullScreen) window.setFullScreen(true);
     // §APP-060: reapply the stored "all desktops" assignment. `mainWindow` is not assigned until
@@ -361,6 +408,17 @@ function createWindow(): BrowserWindow {
     window.on('focus', () => {
         // agent-lifecycle.md §8.4: activating the app clears the badge immediately.
         status?.acknowledgeActivation();
+        // §AGNT-056: …and the pane grid re-schedules its 600 ms status clear, which is the
+        // Swift's `didBecomeActive` half. The grid lives in the renderer, so the fact has to
+        // travel — shell → daemon → this window's client — rather than being read off a
+        // notification in the same process.
+        status?.reportActivation(true);
+    });
+    window.on('blur', () => {
+        // The other half, and the reason the timer is a GATE rather than a bare re-arm: a
+        // `stop` that lands while nobody is looking must not clear its own "awaiting input"
+        // badge 600 ms later. Suspended here, re-armed on the next focus.
+        status?.reportActivation(false);
     });
     window.on('closed', () => {
         mainWindow = null;
@@ -742,56 +800,53 @@ function applyCliInstallPolicy(): void {
 function buildMenu(): void {
     // Keep it minimal: the UI owns its own commands, but macOS needs an app menu for ⌘Q,
     // and Edit needs its roles for copy/paste to reach the web contents.
+    //
+    // Every PRODUCT row lives in `./menu.ts`, where its click can be exercised without an
+    // Electron process; what is left here is the wiring — the relay, the native panel fallback,
+    // and the two menus (Edit, Window) that are pure roles.
+    const relay = {
+        sendMenuRequest: (command: string) => status?.sendMenuRequest(command) === true,
+        onUndelivered: (command: string) => warn(`menu: no window took "${command}"`)
+    };
+    // §APP-026: read once, here, and reported in the log line below — the row is greyed in a dev
+    // or unsigned build exactly as Sparkle's was when `canCheckForUpdates` was false.
+    const updatesAvailable = canCheckForUpdates({ isPackaged: app.isPackaged, platform: process.platform });
     const template: Electron.MenuItemConstructorOptions[] = [
         ...(process.platform === 'darwin'
             ? ([
                   {
                       label: 'Nex',
-                      submenu: [
-                          { role: 'about' },
-                          // APP-026: directly after About, exactly where Sparkle's item sat.
-                          { label: 'Check for Updates…', click: () => checkForUpdates() },
-                          { type: 'separator' },
-                          { role: 'hide' },
-                          { role: 'hideOthers' },
-                          { role: 'unhide' },
-                          { type: 'separator' },
-                          { role: 'quit' }
-                      ]
+                      submenu: appMenuTemplate({
+                          checkForUpdates: () => checkForUpdates(),
+                          canCheckForUpdates: updatesAvailable
+                      })
                   }
               ] as Electron.MenuItemConstructorOptions[])
             : []),
         {
+            // §APP-018 / §WS-151: New Workspace (⌘N) in place of the stock New Window, then
+            // Preview Markdown… (⌘O). Both relay to the client, which owns the sheet and the
+            // picker; ⌘O falls back to raising the native panel from here.
             label: 'File',
-            submenu: [
-                { label: 'New Window', click: () => showWindow() },
-                // CONT-120 / APP-020. It goes to the CLIENT rather than opening the panel here,
-                // so the picker behaves identically however it is raised (⌘O in the window, this
-                // item, the ••• menu) and so the caller pane travels with the request. The
-                // client answers by asking us for the native panel — see `promptOpenFile`.
-                {
-                    label: 'Preview Markdown…',
-                    accelerator: 'CommandOrControl+O',
-                    click: () => {
-                        if (status?.sendMenuRequest('open-file') !== true) promptOpenFile(null);
-                    }
-                },
-                { type: 'separator' },
-                process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
-            ]
+            submenu: fileMenuTemplate({
+                ...relay,
+                promptOpenFile: () => promptOpenFile(null),
+                platform: process.platform
+            })
         },
         { role: 'editMenu' },
         {
-            // WS-001: View ▸ Toggle Sidebar (⌘⇧S), the shipped app's own View group. The
-            // template lives in `menu.ts` so the click can be exercised without an Electron
-            // process; it relays to the client, which owns the sidebar's visibility.
+            // §WS-001 / §APP-025: View ▸ Toggle Sidebar (⌘⇧S) + Toggle Inspector (⌘I), the
+            // shipped app's own View group. Both relay to the client, which owns the visibility
+            // of both panels.
             label: 'View',
-            submenu: viewMenuTemplate({
-                sendMenuRequest: (command) => status?.sendMenuRequest(command) === true,
-                onUndelivered: (command) => warn(`menu: no window took "${command}"`)
-            })
+            submenu: viewMenuTemplate(relay)
         },
         { role: 'windowMenu' },
+        // §APP-028 / §SET-194: the Swift's `#if DEBUG` Debug ▸ Seed Test Group. `app.isPackaged`
+        // is this port's compile-time condition, and it is read HERE — the template module never
+        // imports Electron, which is what lets `menu.test.ts` build the menu both ways.
+        ...debugMenuSection({ ...relay, isPackaged: app.isPackaged }),
         {
             // APP-027: the Help menu is replaced by a single "Nex Help" item bound to ⌘?. The
             // window it opens is the client's overlay (`client/src/chrome/HelpOverlay.tsx`),
@@ -818,9 +873,7 @@ function buildMenu(): void {
     // Logged rather than inferred, for the same reason the tray item is: an application menu is
     // not observable from outside the process, so `scripts/smoke.mjs` asserts this line and
     // "the items are there" becomes a check instead of a hope.
-    log(
-        `menu: Nex ▸ Check for Updates… · File ▸ Preview Markdown… (⌘O) · ${VIEW_MENU_LOG_FRAGMENT} · Help ▸ Nex Help (⌘?)`
-    );
+    log(menuLogLine({ canCheckForUpdates: updatesAvailable, isPackaged: app.isPackaged }));
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────────────
@@ -1023,16 +1076,18 @@ async function boot(): Promise<void> {
         refreshBundledSkill: applySkillRefreshIfEnabled,
         // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
         // signed build) and what it logs when it declines. No network call happens by default.
-        startUpdater: () => {
-            void maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
+        // §APP-013: RETURNED rather than fired-and-forgotten, so the launch wave owns it — it
+        // runs beside the hotkey / CLI / skill steps instead of after them, and the sequence does
+        // not call itself ready while an `import('update-electron-app')` is still resolving.
+        startUpdater: () =>
+            maybeStartAutoUpdate({ isPackaged: app.isPackaged, platform: process.platform }).then(
                 (outcome) => {
                     updaterStarted = outcome.started;
                 },
                 () => {
                     updaterStarted = false;
                 }
-            );
-        },
+            ),
         installQuitGate: () => {
             quitGate = installQuitGate({
                 counts: () => status?.counts ?? EMPTY_COUNTS,

@@ -120,3 +120,51 @@ describe('sidebar slide geometry (§WS-001)', () => {
         expect(isSidebarSettledOpen('closing')).toBe(false);
     });
 });
+
+/**
+ * §APP-066's other half: the same machine, mirrored, for the trailing inspector.
+ *
+ * The item is one sentence covering both panels ("sidebar and inspector show/hide are
+ * animated"), and the reason it stayed partial after burn-down 5 is that only one of the two had
+ * an animation. What makes this a REUSE rather than a second implementation is that nothing here
+ * introduces a phase, a duration or a curve: the only difference between the two panels is the
+ * sign of the collapsed transform, because they leave by opposite edges.
+ */
+describe('the trailing edge (§APP-066, the inspector)', () => {
+    it('travels off the RIGHT edge, where the sidebar travels off the left', () => {
+        expect(sidebarSlideStyle('closing', 280, true, 'trailing').panel.transform).toBe(
+            'translateX(280px)'
+        );
+        expect(sidebarSlideStyle('closing', 280, true, 'leading').panel.transform).toBe(
+            'translateX(-280px)'
+        );
+        // …and `leading` is the default, so every existing sidebar call site is unchanged.
+        expect(sidebarSlideStyle('closing', 280).panel.transform).toBe('translateX(-280px)');
+    });
+
+    it('shares the curve, the duration and every other geometry with the sidebar', () => {
+        const inspector = sidebarSlideStyle('open', 280, true, 'trailing');
+        const sidebar = sidebarSlideStyle('open', 280, true, 'leading');
+        expect(inspector).toEqual(sidebar);
+        expect(inspector.slot.transition).toBe(`width ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}`);
+        // Open is open: a panel at rest has no direction, so the two are identical there. The
+        // mirror only shows in the collapsed geometry above.
+    });
+
+    it('collapses the slot the same way, so the grid takes the space back', () => {
+        for (const phase of ['hidden', 'opening', 'closing'] as const) {
+            expect(sidebarSlideStyle(phase, 280, true, 'trailing').slot.width).toBe(0);
+            expect(sidebarSlideStyle(phase, 280, true, 'trailing').panel.width).toBe(280);
+            expect(sidebarSlideStyle(phase, 280, true, 'trailing').panel.pointerEvents).toBe('none');
+        }
+    });
+
+    it('still has the drag opt-out available, unused though the inspector leaves it', () => {
+        // The inspector is a fixed 280px with no edge handle, so it passes `animate: true`. The
+        // parameter is kept on the shared function rather than special-cased away, so the day
+        // the inspector gains a resize gesture the fix §WS-002 needed is already here.
+        const dragging = sidebarSlideStyle('open', 280, false, 'trailing');
+        expect(dragging.slot.transition).toBe('none');
+        expect(dragging.panel.transition).toBe('none');
+    });
+});

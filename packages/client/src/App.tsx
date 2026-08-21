@@ -62,11 +62,14 @@ import {
     terminalDropText
 } from './app/open-file';
 import {
+    ChromeIcon,
     CommandPalette,
     ContextMenu,
     DEFAULT_PROFILE_NAME,
     HelpOverlay,
+    INSPECTOR_WIDTH_PX,
     Inspector,
+    QuitGate,
     Sidebar,
     SidebarResizer,
     StatusFooter,
@@ -112,6 +115,12 @@ import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
+    SEED_TEST_GROUP_COMMAND,
+    consumeSuppressedReveal,
+    seedTestGroup,
+    suppressReveal
+} from './app/seed-test-group';
+import {
     isOkReply,
     replyError,
     replySearchMatch,
@@ -122,6 +131,7 @@ import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient, type FontS
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
 import { SettingsOverlay, type SettingsActions, type SettingsTabID } from './settings';
 import {
+    isAppActive,
     selectActiveWorkspace,
     selectActiveWorkspaceID,
     selectAgentSummary,
@@ -161,6 +171,7 @@ import {
     createWebPaneCommands,
     parseRevealMessage,
     readShellWindowID,
+    readTrafficLightInset,
     readWindowTransparent,
     revealAppliesHere,
     type WebPaneTab
@@ -316,6 +327,14 @@ function Shell(props: AppProps): ReactElement {
     const [sidebarResizing, setSidebarResizing] = useState(false);
     /** §WS-137: the trailing inspector, opened from the top bar or `toggle_inspector`. */
     const [inspectorVisible, setInspectorVisible] = useState(false);
+    /**
+     * §APP-066: the inspector's slide, driven by the SAME phase machine as the sidebar's
+     * (`sidebar-reveal.ts`). `inspectorVisible` stays the one boolean everything writes; this is
+     * the animation's own state, and it is what keeps the panel mounted while a close plays out.
+     */
+    const [inspectorPhase, setInspectorPhase] = useState<SidebarPhase>(() =>
+        inspectorVisible ? 'open' : 'hidden'
+    );
     const [terminalTheme, setTerminalTheme] = useState<TerminalTheme | undefined>(undefined);
     /**
      * Two pieces of purely client-local UI state that only assembly can own:
@@ -376,6 +395,21 @@ function Shell(props: AppProps): ReactElement {
         id: string;
     } | null>(null);
     /**
+     * §APP-018 / §WS-156: "open the New Workspace form", set by ⌘N, by the Electron File ▸ New
+     * Workspace row, by the command palette and by the no-workspace empty state's Create button.
+     *
+     * The shipped app's ⌘N is `showNewWorkspaceSheet()` — a SHEET, not a create — and this is the
+     * port's equivalent: the sidebar's own footer form, the one place the port collects a name, a
+     * colour, a group, a profile and repositories in one submit (§WS-075). One-shot; the sidebar
+     * clears it through `onCreateRequestHandled`, and it carries a `seq` so pressing ⌘N again
+     * after cancelling is a NEW request rather than an unchanged prop the effect ignores.
+     */
+    const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{
+        kind: 'workspace' | 'group';
+        groupID: string | null;
+        seq: number;
+    } | null>(null);
+    /**
      * Where the terminal search's selected match sits, for the pane whose renderer has to scroll
      * to it. The search itself is DAEMON state (needle, total, selected all ride the workspace's
      * delta stream); this is only the reply's transient "and it is here" — carrying a `seq` so
@@ -393,7 +427,7 @@ function Shell(props: AppProps): ReactElement {
      * case and the delete goes straight out.
      */
     const [closeGate, setCloseGate] = useState<
-        { workspaceID: string; name: string; activeAgents: number } | null
+        { workspaceID: string; name: string; activeAgents: number; allowLast?: boolean } | null
     >(null);
     /**
      * The Settings window (M8): open flag + which tab, so a deep link ("Manage labels…") can
@@ -409,6 +443,12 @@ function Shell(props: AppProps): ReactElement {
     const [helpOpen, setHelpOpen] = useState(false);
     /** Pending §8.5 focus hand-offs, cleared on unmount so none fires into a dead tree. */
     const revealTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+    /**
+     * §APP-028: workspace ids whose next `reveal-pane` this window should ignore, each with a
+     * deadline (see `suppressReveal`). Exactly one gesture writes here — Debug ▸ Seed Test Group,
+     * which creates workspaces the user did not ask to be taken to.
+     */
+    const suppressedReveals = useRef(new Map<string, number>());
 
     // ── §WS-001: the sidebar's show/hide slide ──────────────────────────────────────
     //
@@ -441,6 +481,42 @@ function Shell(props: AppProps): ReactElement {
 
     const sidebarMounted = isSidebarMounted(sidebarPhase);
     const sidebarSlide = sidebarSlideStyle(sidebarPhase, sidebarWidth, !sidebarResizing);
+
+    // ── §APP-066: the INSPECTOR's show/hide slide, the same machine mirrored ─────────
+    //
+    // §APP-066 is one sentence — "sidebar and inspector show/hide are animated" — and the
+    // sidebar half shipped in burn-down 5 while the inspector still appeared and vanished
+    // instantly. This is deliberately not a second animation: the same four phases, the same
+    // ~0.25s SwiftUI `.default` curve, the same "keep it mounted for the length of a close"
+    // rule, differing only in which edge the panel travels off (`edge: 'trailing'`).
+    //
+    // No resize opt-out is passed, and that is a property of the panel rather than an oversight:
+    // the inspector is a FIXED 280px (`INSPECTOR_WIDTH_PX`), so nothing writes the width the
+    // slot transitions and there is none of the chase §WS-002's drag had. The parameter exists
+    // on `sidebarSlideStyle` for the day it gains an edge handle.
+
+    useEffect(() => {
+        setInspectorPhase((phase) => sidebarPhaseFor(phase, inspectorVisible));
+    }, [inspectorVisible]);
+
+    useEffect(() => {
+        const delay = sidebarSettleDelayMs(inspectorPhase);
+        if (delay === null) return;
+        const advance = (): void => setInspectorPhase((phase) => sidebarPhaseAfterSettle(phase));
+        if (delay === 0) {
+            if (typeof requestAnimationFrame !== 'function') {
+                const immediate = setTimeout(advance, 0);
+                return () => clearTimeout(immediate);
+            }
+            const frame = requestAnimationFrame(() => requestAnimationFrame(advance));
+            return () => cancelAnimationFrame(frame);
+        }
+        const timer = setTimeout(advance, delay);
+        return () => clearTimeout(timer);
+    }, [inspectorPhase]);
+
+    const inspectorMounted = isSidebarMounted(inspectorPhase);
+    const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
 
@@ -478,6 +554,13 @@ function Shell(props: AppProps): ReactElement {
      * Read once — the marker cannot change without a reload.
      */
     const shellWindowID = useMemo(() => readShellWindowID(), []);
+    /**
+     * §APP-046: how much leading room the title bar must keep clear for the window's traffic
+     * lights. The shell says so with `?trafficLightInset=` — like `shellWindow` and
+     * `windowTransparent`, it is something only the party that CREATED the window can know. 0 in
+     * a browser tab, and on any platform whose frame has no such buttons.
+     */
+    const trafficLightInset = useMemo(() => readTrafficLightInset(), []);
     /**
      * The same value, reachable from `act` without putting it in that memo's dependency list.
      * It cannot change without a reload, so a ref is the honest expression of that.
@@ -521,6 +604,9 @@ function Shell(props: AppProps): ReactElement {
         const off = runtime.connection.on('message', (message) => {
             const target = parseRevealMessage(message);
             if (target === null || !revealAppliesHere(target, shellWindowID)) return;
+            // §APP-028: one reveal this window asked the daemon NOT to act on — see
+            // `suppressReveal` and the Seed Test Group branch below.
+            if (consumeSuppressedReveal(suppressedReveals.current, target.workspaceID)) return;
             // §WS-100: the SOCKET creation paths reach the sidebar here. The daemon reveals
             // every `workspace create` (and every notification "Open") to its clients, and this
             // is the client's `setActiveWorkspace` for that message — so it queues the reveal
@@ -549,8 +635,12 @@ function Shell(props: AppProps): ReactElement {
     const agentSummary = useMemo(() => selectAgentSummary(nex), [nex]);
     /**
      * SET-011: the group the New Workspace form preselects when it was not opened scoped to one
-     * — the active workspace's, while "Inherit group when creating a new workspace" is on. ⌘N
-     * reads the same rule from `act`; this is the form's half (§WS-076).
+     * — the active workspace's, while "Inherit group when creating a new workspace" is on
+     * (§WS-076).
+     *
+     * This is now the ONLY place the rule is applied. ⌘N used to carry its own copy of it,
+     * because ⌘N used to create a workspace outright with no sheet to preselect in; §APP-018
+     * gave it the sheet, so the rule lives where the picker the user can override it in is.
      */
     const inheritGroupID = useMemo(
         () =>
@@ -921,18 +1011,6 @@ function Shell(props: AppProps): ReactElement {
          * half, and the two are idempotent.
          */
         /**
-         * SET-011's group inheritance, as the create gestures read it: the active workspace's
-         * group when the setting is on, else null. Reads `store.getState()` so the value is
-         * whatever the settings snapshot says at the moment of the gesture.
-         */
-        const inheritedGroupID = (): string | null => {
-            const state = store.getState();
-            if (!state.settings.value.general.inheritGroupOnNewWorkspace) return null;
-            const id = selectActiveWorkspaceID(state);
-            return id === null ? null : (selectGroupForWorkspace(state, id)?.id ?? null);
-        };
-
-        /**
          * §WS-100: a group this client created is revealed by its header, the same one-shot the
          * workspace create path uses. `run` cannot do it — the id is in the reply.
          */
@@ -1081,6 +1159,11 @@ function Shell(props: AppProps): ReactElement {
              * which is the state the sweep found. The alert only comes up when that workspace
              * still has running agents AND `confirm-workspace-delete` is on; with neither, ⌘W
              * deletes silently, exactly as `NexCommands.handleClosePane` does.
+             *
+             * §WS-156: this is the ONE route that may reach zero workspaces, which is the Swift's
+             * own asymmetry (the CLI and the sidebar's Delete both refuse at one) and the only
+             * way to arrive at §APP-067's "No workspace selected" state. `allowLast` says so on
+             * the wire; the daemon's guard is otherwise unchanged.
              */
             closeFocused(): boolean {
                 const workspace = activeWorkspace();
@@ -1091,10 +1174,18 @@ function Shell(props: AppProps): ReactElement {
                 }
                 const agents = activeAgentCount(workspace);
                 if (agents > 0 && store.getState().settings.value.general.confirmWorkspaceDeleteWhenActive) {
-                    setCloseGate({ workspaceID: workspace.id, name: workspace.name, activeAgents: agents });
+                    setCloseGate({
+                        workspaceID: workspace.id,
+                        name: workspace.name,
+                        activeAgents: agents,
+                        allowLast: true
+                    });
                     return true;
                 }
-                return run('Delete workspace', commands.deleteWorkspace({ workspace: workspace.id, force: true }));
+                return run(
+                    'Delete workspace',
+                    commands.deleteWorkspace({ workspace: workspace.id, force: true, allowLast: true })
+                );
             },
 
             renamePane(paneID: string, name: string): boolean {
@@ -1466,17 +1557,36 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * ⌘N. SET-011: with "Inherit group when creating a new workspace" on (the default)
-             * and the active workspace inside a group, the new one joins that group — the
-             * preselection `NewWorkspaceSheet.swift:66` makes, applied here because this
-             * gesture has no sheet to preselect in. The wire verb is untouched, so
-             * `nex workspace create` still lands at top level.
+             * ⌘N — **open the New Workspace sheet** (§APP-018).
+             *
+             * The shipped app spends ⌘N on `showNewWorkspaceSheet()` (`NexCommands.swift:10-13`),
+             * which is a form: a name, a colour, a group, a profile and repositories, submitted
+             * once. This used to create a workspace outright, named by the daemon, with no way to
+             * say any of that — the create was there and the SHEET was not, which is what kept
+             * the item partial.
+             *
+             * The sheet is the sidebar's own footer form (`Sidebar.tsx` ▸ `NewEntryForm`), so
+             * this reveals the sidebar first: a form in a panel that is off screen is not an
+             * affordance. Every other route to the same form — the footer button, the group
+             * menu's "New Workspace", File ▸ New Workspace, the palette, §WS-156's empty state —
+             * lands on this one action, so there is a single sheet with a single set of rules.
+             *
+             * SET-011's group inheritance is preserved and moves INTO the sheet: the picker opens
+             * preselected on the active workspace's group (`inheritGroupID`, which the sidebar
+             * already reads), which is the preselection `NewWorkspaceSheet.swift:66` makes. The
+             * wire verb is untouched, so `nex workspace create` still lands at top level.
              */
             newWorkspace(): boolean {
-                const inherited = inheritedGroupID();
-                return runCreateWorkspace(
-                    commands.createWorkspace(inherited === null ? {} : { group: inherited })
-                );
+                setSidebarVisible(true);
+                setSidebarCreateRequest((previous) => ({
+                    kind: 'workspace',
+                    // null: the SHEET applies §SET-011 itself, through the `inheritGroupID`
+                    // prop, so scoping the request to a group here would override a user who
+                    // had turned inheritance off.
+                    groupID: null,
+                    seq: (previous?.seq ?? 0) + 1
+                }));
+                return true;
             },
 
             /**
@@ -1517,11 +1627,25 @@ function Shell(props: AppProps): ReactElement {
                 );
             },
 
-            deleteWorkspace(workspaceID: string): boolean {
+            deleteWorkspace(
+                workspaceID: string,
+                options: { allowLast?: boolean } = {}
+            ): boolean {
                 // The sidebar runs its own confirmation first, which is the GUI's
                 // "delete anyway?" — so the command goes out forced, as the app's own
                 // delete path does once the user has said yes.
-                return run('Delete workspace', commands.deleteWorkspace({ workspace: workspaceID, force: true }));
+                //
+                // `allowLast` defaults OFF, so the sidebar's Delete keeps the shipped app's
+                // `.disabled(store.workspaces.count <= 1)` rule; only the ⌘W gate passes it on
+                // (§WS-156).
+                return run(
+                    'Delete workspace',
+                    commands.deleteWorkspace({
+                        workspace: workspaceID,
+                        force: true,
+                        ...(options.allowLast === true ? { allowLast: true } : {})
+                    })
+                );
             },
 
             renameWorkspace(workspaceID: string, name: string): boolean {
@@ -1595,35 +1719,30 @@ function Shell(props: AppProps): ReactElement {
             },
 
             /**
-             * §SET-144 / §APP-019 — `new_group` (⌘⇧G). The Swift menu item does not ask for a
-             * name: it mints `New Group` / `New Group 2` / … and drops straight into inline
-             * rename. Same here, with the reply's `group_id` as the rename target, so the
-             * keystroke path never opens the sidebar's New Group *form* (that stays the
-             * footer button's affordance). The sidebar is revealed first — a rename field in a
-             * hidden sidebar would be a keystroke that silently did nothing.
+             * §SET-144 / §APP-019 / §WS-123 — `new_group` (⌘⇧G). The Swift menu item does not
+             * ask for a name: it mints `New Group` / `New Group 2` / … , drops straight into
+             * inline rename and queues the new header's scroll-into-view. Same here, so the
+             * keystroke path never opens the sidebar's New Group *form* (that stays the footer
+             * button's affordance) — and it goes through `runCreateGroup`, which owns both
+             * one-shots.
+             *
+             * The verb is `create-group-for-workspaces` **with no workspaces**, and that is not
+             * a workaround: both halves need the new group's id, and the id only exists in a
+             * reply. The wire's `group-create` is fire-and-forget (wire-protocol.md §7) and its
+             * ack carries nothing, so the previous version of this — a `.then` reading
+             * `reply['group_id']` off that ack — silently did neither the rename nor the reveal
+             * for every ⌘⇧G ever pressed. The audit's `workspace-edges` flow is what found it:
+             * it timed out waiting for a rename field that never opened.
              */
             newGroupWithRename(): boolean {
                 const existing = store.getState().daemon.state.groups.map((group) => group.name);
-                const name = defaultGroupName(existing);
-                void commands.createGroup({ name }).then(
-                    (reply) => {
-                        if (!isOkReply(reply)) {
-                            notifyFailure('New group', replyError(reply));
-                            return;
-                        }
-                        const id = reply['group_id'];
-                        if (typeof id !== 'string' || id === '') return;
-                        setSidebarVisible(true);
-                        // §WS-100: a group creation queues the reveal too, so ⌘⇧G's rename
-                        // field opens on a header the user can actually see.
-                        setScrollToGroupID(id);
-                        setSidebarRenameRequest({ kind: 'group', id });
-                    },
-                    (error: unknown) => {
-                        notifyFailure('New group', error instanceof Error ? error.message : String(error));
-                    }
+                return runCreateGroup(
+                    commands.createGroupForWorkspaces({
+                        name: defaultGroupName(existing),
+                        workspaceIDs: []
+                    }),
+                    { rename: true }
                 );
-                return true;
             },
 
             /**
@@ -2481,6 +2600,49 @@ function Shell(props: AppProps): ReactElement {
             // ⌘⇧S binding and the top-bar button use, so the menu item and the chord are one
             // state, and the shell never has to know whether the sidebar is out.
             else if (command === 'toggle-sidebar') actRef.current.toggleSidebar();
+            // §APP-025 / §WS-152: View ▸ Toggle Inspector, the same shape one row down — ⌘I,
+            // the top-bar button, the ••• menu's Show/Hide Inspector and this row are four
+            // gestures onto one piece of client-local state.
+            else if (command === 'toggle-inspector') actRef.current.toggleInspector();
+            // §APP-018: File ▸ New Workspace. It opens the SHEET, exactly as ⌘N does inside the
+            // page — the main process never creates a workspace of its own.
+            else if (command === 'new-workspace') actRef.current.newWorkspace();
+            /*
+             * §APP-028 / §SET-194: Debug ▸ Seed Test Group, a row the shell only builds in a dev
+             * build (`shell/src/menu.ts` ▸ `debugMenuSection`). The fixture is composed out of
+             * the ordinary create verbs (`app/seed-test-group.ts`).
+             *
+             * …and the view stays put, which needs a word. The Swift seed appends reducer state
+             * directly and never touches `activeWorkspaceID`: the group appears and the user
+             * stays where they were. Composing it out of `workspace-create` cannot inherit that,
+             * because the daemon deliberately broadcasts a REVEAL for every workspace it creates
+             * (`handlers/app/workspaces.ts` ▸ `revealCreatedWorkspace`, the run-B L3 fix, so a
+             * `nex workspace create` from a terminal cannot leave the window behind).
+             *
+             * So the two reveals this gesture is about to cause are declined BEFORE they arrive
+             * rather than undone afterwards — undoing loses the race, since the create's reply
+             * is sent before its broadcast and an "activate what I came from" written in the
+             * reply's own microtask is simply overwritten by the reveal that follows it. The
+             * suppression is one-shot, expires, and is keyed on the exact workspace ids this
+             * seed made, so nothing else's reveal can be swallowed by it.
+             */
+            else if (command === SEED_TEST_GROUP_COMMAND) {
+                const pendingReveals = suppressedReveals.current;
+                void seedTestGroup({
+                    commands: {
+                        createGroup: (input) => commands.createGroup(input),
+                        createWorkspace: (input) => commands.createWorkspace(input),
+                        // `group-create` is fire-and-forget on the wire and settles as a bare
+                        // `{ok:true}` (`ws/sync.ts`), so the group's id is read back rather than
+                        // assumed — see the module note.
+                        listGroups: () => commands.listGroups()
+                    },
+                    onWorkspaceCreated: (workspaceID) => {
+                        suppressReveal(pendingReveals, workspaceID);
+                    },
+                    onFailure: (title, message) => notifyFailureRef.current(title, message)
+                });
+            }
             // A browser chord an embedded page swallowed, relayed back by the shell
             // (`shell/webhost/keys.ts`). Replayed as a real `keydown`, so the page-focused path
             // and the chrome-focused path go through the very same interceptor.
@@ -3246,7 +3408,11 @@ function Shell(props: AppProps): ReactElement {
             data-drop-active={dropActive ? 'true' : 'false'}
             /* `relative`: the connection banner and the toast stack position against the
                window, not against the pane grid (which is its own positioned container). */
-            className="relative flex h-full w-full overflow-hidden"
+            /* §APP-046: a COLUMN, so the title bar spans the window the way the shipped
+               app's does (shell-ui.md §1's diagram: the strip is above the sidebar, not
+               beside it) — and so the traffic lights drawn over its leading edge land on the
+               strip rather than on the sidebar's filter field. */
+            className="relative flex h-full w-full flex-col overflow-hidden"
             style={{ background: chromeTokens.windowBackground, color: chromeTokens.textPrimary }}
             onDragEnter={onDragEnter}
             onDragOver={onDragOver}
@@ -3254,6 +3420,38 @@ function Shell(props: AppProps): ReactElement {
             onDrop={onDrop}
             onClickCapture={onRootClickCapture}
         >
+            <TopBar
+                workspaceName={workspace?.name ?? null}
+                workspaceColor={workspace?.color}
+                panes={panes}
+                bucket={bucket}
+                connection={ui.connection}
+                connectionError={ui.connectionError}
+                currentLayout={currentLayout}
+                onCycleLayout={act.cycleLayout}
+                onSelectLayout={act.selectLayout}
+                syncInputActive={workspace?.isSyncInputActive ?? false}
+                syncedPaneCount={synced.length}
+                onToggleSyncInput={act.toggleSyncInput}
+                onToggleSidebar={act.toggleSidebar}
+                sidebarVisible={sidebarVisible}
+                onToggleInspector={act.toggleInspector}
+                inspectorVisible={inspectorVisible}
+                overflowItems={overflowMenuItems}
+                // §APP-046: this strip IS the title bar inside a shell window — the shell
+                // creates the window with a hidden one and draws the page up into the
+                // traffic-light row, so the bar clears the buttons and takes the drag.
+                trafficLightInset={trafficLightInset}
+                dragRegion={shellWindowID !== null}
+            />
+
+            {/*
+              * §APP-046 / shell-ui.md §1 — the middle row: sidebar | pane grid | inspector,
+              * under one full-width title bar. It is a row inside a column rather than the
+              * whole window being a row, which is what puts the drawn strip above the sidebar
+              * instead of beside it.
+              */}
+            <div className="flex min-h-0 flex-1">
             {sidebarMounted ? (
                 /* §WS-001: the slot animates its WIDTH (that is what the pane grid is pushed
                    by); the panel inside keeps its full width and translates, so a 220px
@@ -3328,6 +3526,10 @@ function Shell(props: AppProps): ReactElement {
                     // §SET-153 / §SET-144: the keyboard's "start renaming this row".
                     renameRequest={sidebarRenameRequest}
                     onRenameRequestHandled={() => setSidebarRenameRequest(null)}
+                    // §APP-018 / §WS-156: ⌘N, File ▸ New Workspace, the palette and the
+                    // no-workspace empty state all open THIS form.
+                    createRequest={sidebarCreateRequest}
+                    onCreateRequestHandled={() => setSidebarCreateRequest(null)}
                     onOpenSettings={(section) => {
                         openSettings(section === 'labels' ? 'labels' : 'keybindings');
                     }}
@@ -3360,27 +3562,21 @@ function Shell(props: AppProps): ReactElement {
             ) : null}
 
             <div className="flex min-w-0 flex-1 flex-col">
-                <TopBar
-                    workspaceName={workspace?.name ?? null}
-                    workspaceColor={workspace?.color}
-                    panes={panes}
-                    bucket={bucket}
-                    connection={ui.connection}
-                    connectionError={ui.connectionError}
-                    currentLayout={currentLayout}
-                    onCycleLayout={act.cycleLayout}
-                    onSelectLayout={act.selectLayout}
-                    syncInputActive={workspace?.isSyncInputActive ?? false}
-                    syncedPaneCount={synced.length}
-                    onToggleSyncInput={act.toggleSyncInput}
-                    onToggleSidebar={act.toggleSidebar}
-                    sidebarVisible={sidebarVisible}
-                    onToggleInspector={act.toggleInspector}
-                    inspectorVisible={inspectorVisible}
-                    overflowItems={overflowMenuItems}
-                />
-
                 <div className="relative min-h-0 flex-1">
+                    {/*
+                      * §APP-067 / §WS-156 — "No workspace selected".
+                      *
+                      * It REPLACES the grid rather than sitting over it, which is what the
+                      * shipped app does (`ContentView.swift:237-249`: the `else` branch of the
+                      * `if let workspace`) and what stops two empty-state placeholders — this one
+                      * and the grid's own "No panes" — from being on screen at once.
+                      *
+                      * `ready &&` because a client with no snapshot yet has no workspace either,
+                      * and the honest thing to show THERE is the connection splash below.
+                      */}
+                    {ready && workspace === null ? (
+                        <NoWorkspaceSelected onCreate={() => act.newWorkspace()} />
+                    ) : (
                     <PaneGrid
                         // §10: the daemon's config file drives hover-focus; the grid owns the
                         // cancel-on-re-hover timer semantics.
@@ -3409,6 +3605,13 @@ function Shell(props: AppProps): ReactElement {
                         onSetFontSize={act.setFontSize}
                         onRestartAgent={act.restartAgent}
                         onDwellClear={act.dwellClear}
+                        /*
+                         * §AGNT-056: the 600 ms clear runs only while somebody is looking, and
+                         * is re-scheduled when they come back. `appActive` is the shell's
+                         * `shell-activation` relay (about THIS window); `documentVisible` is the
+                         * browser's own answer to the same question, for a client with no shell.
+                         */
+                        dwellEnabled={isAppActive(ui)}
                         onMovePane={act.movePaneAdjacent}
                         onCreatePane={act.createPane}
                         onSetRatio={(splitPath, ratio, commit) => {
@@ -3424,6 +3627,7 @@ function Shell(props: AppProps): ReactElement {
                             act.setSplitRatio(commit.paneID, commit.share);
                         }}
                     />
+                    )}
                     {ready ? null : <ConnectionSplash runtime={runtime} state={nex} target={target} />}
                 </div>
 
@@ -3446,8 +3650,32 @@ function Shell(props: AppProps): ReactElement {
               * §WS-137: the trailing inspector, scoped to the ACTIVE workspace. It is a sibling
               * of the pane column (not an overlay) so it takes width from the grid the way the
               * shipped 280 pt panel does, and it renders nothing when no workspace is active.
+              *
+              * §APP-066: and it SLIDES, on §WS-001's machine mirrored to the trailing edge — the
+              * slot's width is what moves the grid, the panel inside keeps its full 280px and
+              * translates, so the inspector's contents never reflow mid-flight. `inspectorMounted`
+              * rather than `inspectorVisible` is what keeps it in the tree for the length of a
+              * close; a conditional mount has nothing to transition from.
               */}
-            {inspectorVisible && workspace !== null ? (
+            {inspectorMounted && workspace !== null ? (
+                <div
+                    data-testid="inspector-slot"
+                    data-inspector-phase={inspectorPhase}
+                    className="flex h-full shrink-0"
+                    style={{ width: inspectorSlide.slot.width, transition: inspectorSlide.slot.transition }}
+                >
+                    <div className="h-full min-w-0 flex-1 overflow-hidden">
+                        <div
+                            data-testid="inspector-panel"
+                            className="h-full"
+                            style={{
+                                width: inspectorSlide.panel.width,
+                                opacity: inspectorSlide.panel.opacity,
+                                transform: inspectorSlide.panel.transform,
+                                transition: inspectorSlide.panel.transition,
+                                pointerEvents: inspectorSlide.panel.pointerEvents
+                            }}
+                        >
                 <Inspector
                     workspace={workspace}
                     focusedPaneID={focusedPaneID}
@@ -3509,7 +3737,11 @@ function Shell(props: AppProps): ReactElement {
                         void graft.controller.dismissOrphan(orphan);
                     }}
                 />
+                        </div>
+                    </div>
+                </div>
             ) : null}
+            </div>
 
             {ready && ui.connection !== 'connected' ? (
                 <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} />
@@ -3567,6 +3799,14 @@ function Shell(props: AppProps): ReactElement {
                  */
             />
 
+            {/*
+             * §AGNT-116: the ⌘Q confirmation, for the quits where the shell decides to ask HERE
+             * rather than with `dialog.showMessageBox` — the only route on which Quit can be
+             * painted destructive with Cancel as the default. Inert until the main process opens
+             * one, so a browser tab (which no shell will ever call into) draws nothing.
+             */}
+            <QuitGate />
+
             {helpOpen ? (
                 <HelpOverlay
                     bindings={bindings}
@@ -3619,7 +3859,12 @@ function Shell(props: AppProps): ReactElement {
                     onCancel={() => setCloseGate(null)}
                     onConfirm={(suppress) => {
                         if (suppress) settingsActions.setGeneralSetting('confirm-workspace-delete', 'false');
-                        act.deleteWorkspace(closeGate.workspaceID);
+                        // §WS-156: the gate was raised BY ⌘W, so the confirmation inherits ⌘W's
+                        // permission to reach zero workspaces. A gate raised anywhere else does
+                        // not, and goes through the ordinary sidebar delete.
+                        act.deleteWorkspace(closeGate.workspaceID, {
+                            allowLast: closeGate.allowLast === true
+                        });
                         setCloseGate(null);
                     }}
                     onSuppressOnly={() => {
@@ -3729,6 +3974,50 @@ const SPLASH_HINT: Readonly<Record<string, string>> = {
     // produces a working link — so name it rather than describing the problem in the abstract.
     rejected: 'open this page from `nexd url`, which includes the daemon token'
 };
+
+/**
+ * §APP-067 / §WS-156 — the detail area with no active workspace.
+ *
+ * `ContentView.swift:237-249`, one for one: a 48pt terminal glyph at the faintest tint, "No
+ * workspace selected" in secondary text, and a "Create Workspace" button that raises the new
+ * workspace sheet (`showNewWorkspaceSheet()`, which here is §APP-018's `act.newWorkspace`).
+ *
+ * It is a real state, not a decoration. ⌘W on the last pane of the last workspace deletes that
+ * workspace (§TERM-077 / §WS-109's rule, which the shipped app also lets reach zero) and this is
+ * what the window lands on — a window with no workspaces and no way back would otherwise be a
+ * dead end, which is exactly why the Swift put a button in it.
+ *
+ * `autoFocus` for the same reason the grid's "New Pane" has it: when it is the only control on
+ * screen, Return should press it.
+ */
+function NoWorkspaceSelected({ onCreate }: { readonly onCreate: () => void }): ReactElement {
+    return (
+        <div
+            data-testid="no-workspace-empty"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+            style={{ background: chromeTokens.windowBackground, color: chromeTokens.textTertiary }}
+        >
+            <ChromeIcon name="terminal" size={48} />
+            <span className="text-sm" style={{ color: chromeTokens.textSecondary }}>
+                No workspace selected
+            </span>
+            <button
+                type="button"
+                data-testid="no-workspace-create"
+                autoFocus
+                className="rounded px-3 py-1 text-sm"
+                style={{
+                    background: chromeTokens.surfaceBackground,
+                    color: chromeTokens.textPrimary,
+                    border: `1px solid ${chromeTokens.divider}`
+                }}
+                onClick={onCreate}
+            >
+                Create Workspace
+            </button>
+        </div>
+    );
+}
 
 interface ConnectionSplashProps {
     readonly runtime: NexRuntime;

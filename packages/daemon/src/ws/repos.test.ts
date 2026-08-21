@@ -81,7 +81,9 @@ interface Fixture {
     connect(): { session: SyncSession; transport: RecordedTransport };
 }
 
-function fixture(options: StubGitOptions & { repos?: boolean } = {}): Fixture {
+function fixture(
+    options: StubGitOptions & { repos?: boolean; worktreeBasePath?: () => string } = {}
+): Fixture {
     const store = storeHarness(seededState(W1, PANE));
     const { git, calls } = stubGit(options);
     const statuses = new Map<string, RepoGitStatus>();
@@ -90,7 +92,12 @@ function fixture(options: StubGitOptions & { repos?: boolean } = {}): Fixture {
     const channel: RepoChannel = {
         store: store.store,
         git,
-        worktreeBasePath: '~/nex/worktrees/<repo>',
+        // A GETTER, exactly as `boot/compose.ts` builds it: the base path is a live user
+        // setting (§GIT-101 / §SET-008), so the inspector's own worktree verbs must not run on
+        // a boot-time copy of it.
+        get worktreeBasePath(): string {
+            return options.worktreeBasePath?.() ?? '~/nex/worktrees/<repo>';
+        },
         uuid: () => {
             counter += 1;
             return `ffffffff-0000-4000-8000-${String(counter).padStart(12, '0')}`;
@@ -194,6 +201,36 @@ describe('repo-registry', () => {
         expect(repos[0]?.['name']).toBe('app');
         // `~` and `<repo>` both expand here: the client's mirror has no home directory.
         expect(repos[0]?.['worktree_base']).toBe(`${HOME}/nex/worktrees/app`);
+    });
+
+    /**
+     * §GIT-101's FIRST rule, at the PREVIEW site.
+     *
+     * `worktree_base` is what `chrome/worktree.ts` joins the sanitized folder onto to draw the
+     * "Create git worktree" preview — the client deliberately computes nothing, because `~`,
+     * `<repo>` and the daemon host's home are all daemon-side. `git/names.test.ts` pins the
+     * pure helper; this pins the wire field a person actually reads, in both positions.
+     */
+    it('expands a LEADING <repo> to the repo’s FULL path, and a later one to its name (§GIT-101)', async () => {
+        let template = '<repo>/.worktrees';
+        const f = fixture({ worktreeBasePath: () => template });
+        seedRepo(f);
+        const { session, transport } = f.connect();
+
+        const leading = await ask(session, transport, { command: 'repo-registry' });
+        expect((leading['repos'] as JsonObject[])[0]?.['worktree_base']).toBe('/src/app/.worktrees');
+
+        // Both positions in one template: the leading token is the full path, the second is the
+        // repo's directory NAME.
+        template = '<repo>/wt/<repo>';
+        const both = await ask(session, transport, { command: 'repo-registry' });
+        expect((both['repos'] as JsonObject[])[0]?.['worktree_base']).toBe('/src/app/wt/app');
+
+        // And the template is re-read per reply, so changing it in Settings reaches the next
+        // preview without a restart (§SET-008).
+        template = '~/elsewhere/<repo>/wt';
+        const tilde = await ask(session, transport, { command: 'repo-registry' });
+        expect((tilde['repos'] as JsonObject[])[0]?.['worktree_base']).toBe(`${HOME}/elsewhere/app/wt`);
     });
 });
 
@@ -501,6 +538,62 @@ describe('workspace-add-worktree', () => {
         expect(association?.branchName).toBe('Fix-Login-Bug');
     });
 
+    /**
+     * §GIT-101's second half: "the resolved value feeds BOTH the sheet preview and the actual
+     * create". Asserted as one identity rather than two constants — the preview reads
+     * `repo-registry`'s `worktree_base`, the create resolves the template again inside
+     * `workspace-add-worktree`, and the two answers have to be the same string or the sheet is
+     * lying about where the directory will land.
+     */
+    it('creates under the SAME base the preview published, leading <repo> included (§GIT-101)', async () => {
+        const f = fixture({ worktreeBasePath: () => '<repo>/.worktrees' });
+        seedRepo(f);
+        const { session, transport } = f.connect();
+
+        const registry = await ask(session, transport, { command: 'repo-registry' });
+        const previewBase = String((registry['repos'] as JsonObject[])[0]?.['worktree_base']);
+        expect(previewBase).toBe('/src/app/.worktrees');
+
+        const reply = await ask(session, transport, {
+            command: 'workspace-add-worktree',
+            workspace_id: W1,
+            repo_id: REPO_ID,
+            name: 'Fix Login Bug'
+        });
+        expect(reply['ok']).toBe(true);
+        expect(reply['worktree_path']).toBe(`${previewBase}/Fix-Login-Bug`);
+        expect(f.calls.worktreeAdds[0]?.worktreePath).toBe(`${previewBase}/Fix-Login-Bug`);
+        expect(f.store.state().workspaces[0]?.repoAssociations[0]?.worktreePath).toBe(
+            `${previewBase}/Fix-Login-Bug`
+        );
+    });
+
+    /**
+     * §GIT-103 — `seedRepo` registers the repo AUTO-DISCOVERED, which is what auto-detect
+     * (§GIT-077) leaves behind after a pane wanders into a repository. Building a worktree from
+     * it is a deliberate act, and the Swift's `worktreeCreated` promotes the row
+     * unconditionally; without that, §GIT-081's GC collects the registry entry the moment the
+     * auto association lapses — while the user's worktree is still on disk.
+     */
+    it('promotes the AUTO-DISCOVERED repo it built the worktree from (§GIT-103)', async () => {
+        const f = fixture();
+        seedRepo(f);
+        expect(f.store.state().repos[0]?.isAutoDiscovered).toBe(true);
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, {
+            command: 'workspace-add-worktree',
+            workspace_id: W1,
+            repo_id: REPO_ID,
+            name: 'spike'
+        });
+        expect(reply['ok']).toBe(true);
+        expect(reply['repo_id']).toBe(REPO_ID);
+        // Promoted in place: same id, same row, no second registration.
+        expect(f.store.state().repos).toHaveLength(1);
+        expect(f.store.state().repos[0]?.id).toBe(REPO_ID);
+        expect(f.store.state().repos[0]?.isAutoDiscovered).toBe(false);
+    });
+
     it('honours a hand-edited branch name and refuses names that sanitize to nothing', async () => {
         const f = fixture();
         seedRepo(f);
@@ -621,7 +714,7 @@ describe('bulk workspace verbs', () => {
         expect(f.store.batches.length).toBe(before + 1);
     });
 
-    it('refuses a nameless or empty group selection', async () => {
+    it('refuses a nameless group', async () => {
         const f = bulkFixture();
         const { session, transport } = f.connect();
         expect(
@@ -631,13 +724,50 @@ describe('bulk workspace verbs', () => {
                 workspace_ids: [W1]
             }))['ok']
         ).toBe(false);
+    });
+
+    /**
+     * §WS-123 — an EMPTY selection is legal, and it is the ⌘⇧G path.
+     *
+     * This used to be refused, in the same assertion as the nameless case above. The chord that
+     * mints `New Group` and drops into inline rename needs the new id back for BOTH the rename
+     * and the header reveal, and `group-create` is fire-and-forget with an ack that carries
+     * nothing — so ⌘⇧G created a group and then silently did neither (found live by the
+     * `workspace-edges` audit flow). This verb is the one that answers with `group_id`, and a
+     * group around no workspaces is the same `create-group` action with an empty
+     * `initialWorkspaceIDs`.
+     */
+    it('creates an empty group and answers with its id (the ⌘⇧G path)', async () => {
+        const f = bulkFixture();
+        const before = f.store.batches.length;
+        const { session, transport } = f.connect();
+        const reply = await ask(session, transport, {
+            command: 'create-group-for-workspaces',
+            name: 'New Group',
+            workspace_ids: []
+        });
+        expect(reply['ok']).toBe(true);
+        const groups = f.store.state().groups;
+        expect(groups).toHaveLength(1);
+        expect(groups[0]?.name).toBe('New Group');
+        expect(groups[0]?.childOrder).toEqual([]);
+        // The id is the whole point: the rename and the reveal have nowhere else to get it.
+        expect(reply['group_id']).toBe(groups[0]?.id);
+        expect(f.store.batches.length).toBe(before + 1);
+        // …and no workspace was moved into it on the way.
+        expect(f.store.state().workspaces.every((workspace) => workspace.id !== undefined)).toBe(true);
+    });
+
+    it('still refuses an unknown workspace id in the member list', async () => {
+        const f = bulkFixture();
+        const { session, transport } = f.connect();
         expect(
-            (await ask(session, transport, {
+            await ask(session, transport, {
                 command: 'create-group-for-workspaces',
                 name: 'Review',
-                workspace_ids: []
-            }))['ok']
-        ).toBe(false);
+                workspace_ids: [W1, 'nope']
+            })
+        ).toEqual({ ok: false, error: "no workspace matches 'nope'" });
     });
 
     it('refuses an unknown workspace, an unknown colour and an empty label', async () => {

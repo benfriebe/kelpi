@@ -262,13 +262,32 @@ async function handleStatus(channel: RepoChannel, payload: Record<string, unknow
  * Register `repoPath` if the registry does not have it yet, and answer with its id. The remote
  * URL is read best-effort (a repo without an `origin` is normal), and a repo reached through
  * this gesture is a DELIBERATE one, so it is never marked auto-discovered.
+ *
+ * `promote` is §GIT-103's other half, and it only applies to a repo the registry ALREADY has:
+ * the Swift's `worktreeCreated` sets `isAutoDiscovered = false` unconditionally
+ * (`AppReducer+RepoGit.swift:156-157`), so building a worktree from a repo auto-detect happened
+ * to have registered keeps it out of §GIT-081's GC. Passed only by the worktree verb — a plain
+ * association add is not the deliberate act the Swift promotes on.
  */
-async function ensureRepo(channel: RepoChannel, repoPath: string): Promise<string> {
+async function ensureRepo(
+    channel: RepoChannel,
+    repoPath: string,
+    options: { promote?: boolean } = {}
+): Promise<string> {
     const state = channel.store.getState();
     const home = state.homeDirectory;
     const standardized = standardizePath(repoPath, home);
     const existing = findRepoByPath(state, standardized);
-    if (existing !== undefined) return existing.id;
+    if (existing !== undefined) {
+        if (options.promote === true && existing.isAutoDiscovered) {
+            channel.store.dispatch({
+                type: 'set-repo-auto-discovered',
+                id: existing.id,
+                isAutoDiscovered: false
+            });
+        }
+        return existing.id;
+    }
     let remoteURL: string | null = null;
     try {
         remoteURL = await channel.git.getRemoteURL(standardized);
@@ -442,9 +461,11 @@ async function handleAddWorktree(channel: RepoChannel, payload: Record<string, u
         return failure(worktreeErrorMessage(error));
     }
 
-    // §4.1 step 7 / GIT-103: the create promotes the repo out of auto-discovered status by
-    // registering it deliberately, then appends the association carrying the new branch.
-    const resolvedRepoID = await ensureRepo(channel, repoPath);
+    // §4.1 step 7 / GIT-103: the create promotes the repo out of auto-discovered status —
+    // by registering it deliberately when it is new, and by CLEARING the flag when the
+    // registry already carries it as auto-discovered — then appends the association carrying
+    // the new branch.
+    const resolvedRepoID = await ensureRepo(channel, repoPath, { promote: true });
     const association: RepoAssociation = {
         id: channel.uuid(),
         repoID: resolvedRepoID,

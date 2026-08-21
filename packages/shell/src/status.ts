@@ -50,6 +50,8 @@ import { shellHello } from './hello.js';
 // §SET-200/§SET-201: the report shape belongs to the module that produces it.
 import type { HotkeyStatusReport } from './hotkey.js';
 import { trayIconDataUrl, trayIconIsTemplate, type IconIndicator } from './icon.js';
+// §AGNT-073: the `nex-agent` category — its two actions and the index→action mapping.
+import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
 import { parseShellAction, shellActionAppliesHere } from './shell-actions.js';
 import { log, logError, warn } from './log.js';
 
@@ -195,6 +197,12 @@ export interface StatusController {
     flushPendingSaves(timeoutMs?: number): Promise<boolean>;
     /** §8.4: the badge clears the moment the user activates the app. */
     acknowledgeActivation(): void;
+    /**
+     * §AGNT-056: tell the clients in this window that the app became active (or stopped being
+     * active), so the pane grid can re-schedule — or suspend — its 600 ms status-clear timer.
+     * Returns false when the socket is not up; the client's own default (active) then stands.
+     */
+    reportActivation(active: boolean): boolean;
     /** Rebuild the tray (host state, e.g. window visibility, changed). */
     refresh(): void;
 }
@@ -271,6 +279,28 @@ export function createStatusController(options: StatusOptions): StatusController
         const value = general['confirmQuitWhenActive'];
         if (typeof value !== 'boolean') return;
         daemonSettings = { confirmQuitWhenActive: value };
+    }
+
+    /**
+     * §AGNT-056: shell → daemon → this window's clients, "the app is (not) active".
+     *
+     * Scoped to THIS window, like a reveal — two shell windows on one daemon are independently
+     * active, and the pane grid whose 600 ms dwell timers this gates is the one inside this
+     * window. A shell with no window id (single-window dev runs) sends it unscoped, which every
+     * client applies. The log line is the only externally visible trace of a message that
+     * otherwise leaves nothing behind, and `scripts/smoke.mjs` asserts it.
+     */
+    function sendActivation(active: boolean): boolean {
+        const sent = sendJson(
+            {
+                type: 'shell-activation',
+                active,
+                ...(options.windowID === undefined ? {} : { windowID: options.windowID })
+            },
+            'activation report'
+        );
+        if (sent) log(`activation report: ${active ? 'active' : 'inactive'}`);
+        return sent;
     }
 
     function sendJson(message: Record<string, unknown>, what: string): boolean {
@@ -457,16 +487,44 @@ export function createStatusController(options: StatusOptions): StatusController
         // Replace-on-repost: close the pane's previous toast before showing the new one.
         liveNotifications.get(key)?.close();
 
-        const notification = new Notification({ title, body, silent: false });
-        notification.on('click', () => {
+        /** §AGNT-075: the body tap and the "Open" action are the same behaviour. */
+        const open = (): void => {
             host.showWindow();
             if (paneID !== undefined && workspaceID !== undefined) host.revealPane?.(workspaceID, paneID);
+        };
+
+        // §AGNT-073: every agent notification carries the `nex-agent` category's action set,
+        // built in one place so the two buttons are always the same two, in the same order.
+        const spec = agentNotificationSpec({ title, body });
+        const notification = new Notification({
+            title: spec.title,
+            body: spec.body,
+            silent: spec.silent,
+            // Electron's `NotificationAction[]` is mutable; the spec's is not, by design.
+            actions: spec.actions.map((action) => ({ type: action.type, text: action.text }))
+        });
+        notification.on('click', open);
+        notification.on('action', (_event, index) => {
+            // Index → name, never a bare `index === 0`: the mapping lives with the actions.
+            const action = notificationActionID(index);
+            if (action === 'open') {
+                open();
+                return;
+            }
+            // "Dismiss" does nothing beyond dismissing (§AGNT-075). macOS closes the
+            // notification itself when an action is chosen; this makes it true either way and
+            // lets the `close` handler drop it from the live map.
+            if (action === 'dismiss') notification.close();
         });
         notification.on('close', () => {
             if (liveNotifications.get(key) === notification) liveNotifications.delete(key);
         });
         liveNotifications.set(key, notification);
         notification.show();
+        // The buttons live in the OS notification centre, where no screenshot reaches: this line
+        // is how the smoke and the audit prove a real `Notification` carried the category's
+        // actions.
+        log(notificationLogLine(key, spec));
     }
 
     // ── the socket ──────────────────────────────────────────────────────────────────
@@ -553,6 +611,13 @@ export function createStatusController(options: StatusOptions): StatusController
                 log(
                     `status ws connected ${wsUrl()} daemon=${String(daemon['version'] ?? '?')} pid=${String(daemon['pid'] ?? '?')}`
                 );
+                // §AGNT-056: state the window's CURRENT activation the moment there is a socket
+                // to state it on. Focus/blur only report transitions, and a client that
+                // attaches to a window it cannot see (page reload while the app is in the
+                // background, a window opened unfocused) would otherwise assume it is active
+                // and clear a badge nobody has looked at. Scoped to this window, so a shell
+                // with no window at all reports into an empty room.
+                sendActivation(host.isWindowFocused());
                 publish();
                 break;
             }
@@ -720,6 +785,9 @@ export function createStatusController(options: StatusOptions): StatusController
                 return false;
             }
             return true;
+        },
+        reportActivation(active: boolean): boolean {
+            return sendActivation(active);
         },
         reportHotkeyStatus(status: HotkeyStatusReport): boolean {
             // NOT scoped to this window: a hotkey is registered for the whole app, so the

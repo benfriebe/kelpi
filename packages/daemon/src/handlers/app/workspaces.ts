@@ -297,7 +297,27 @@ function handleWorktreeCreate(
             updateMain: msg.update_main
         })
         .then(() => {
-            if (existingRepo === undefined) {
+            if (existingRepo !== undefined) {
+                /*
+                 * §GIT-103, the half the insert-skip used to swallow.
+                 *
+                 * The Swift sets `state.repoRegistry[id: repoID]?.isAutoDiscovered = false`
+                 * UNCONDITIONALLY on `worktreeCreated` (`AppReducer+RepoGit.swift:156-157`) —
+                 * it does not care whether the repo was already in the registry. The port only
+                 * marked the repo manual on the INSERT, so a repo auto-detect had already
+                 * registered (`isAutoDiscovered: true`) stayed auto-discovered after the user
+                 * deliberately built a worktree from it, and §GIT-081's GC would then collect
+                 * the registry row the moment its auto association lapsed — taking the user's
+                 * own worktree's parent out of the registry with it.
+                 */
+                if (existingRepo.isAutoDiscovered) {
+                    ctx.store.dispatch({
+                        type: 'set-repo-auto-discovered',
+                        id: repoID,
+                        isAutoDiscovered: false
+                    });
+                }
+            } else {
                 ctx.store.dispatch({
                     type: 'add-repo',
                     repo: {
@@ -416,6 +436,7 @@ function handleWorkspaceCreate(
 function handleWorkspaceDelete(
     nameOrID: string,
     force: boolean,
+    allowLast: boolean,
     ctx: AppContext,
     reply: ReplyHandle | null,
     deps: AppDeps
@@ -437,8 +458,21 @@ function handleWorkspaceDelete(
         return;
     }
 
-    // Deliberately stricter than ⌘W's close-last-pane path (which may reach zero).
-    if (state.workspaces.length <= 1) {
+    /*
+     * The last-workspace guard, and the one caller allowed past it (§WS-156 / §APP-067).
+     *
+     * The shipped app is asymmetric on purpose: `nex workspace delete` and the sidebar's own
+     * Delete item both refuse at one workspace (`.disabled(store.workspaces.count <= 1)`), while
+     * ⌘W closing the last pane of the last workspace DOES reach zero — which is the only way to
+     * arrive at `ContentView.swift:237-249`'s "No workspace selected" state, and the reason that
+     * state has a Create button in it.
+     *
+     * This guard used to be unconditional, which made the port stricter than the Swift on the
+     * one path the Swift is lenient on, and made the empty state unreachable by any gesture. The
+     * flag is set by exactly that path in the client (`act.closeFocused`) and by nothing else:
+     * the CLI does not send it, so `nex workspace delete` still refuses here.
+     */
+    if (state.workspaces.length <= 1 && !allowLast) {
         fail(reply, 'refusing to delete the last workspace');
         return;
     }
@@ -596,7 +630,7 @@ export function workspaceHandlerEntries(deps: AppDeps): readonly (readonly [stri
             handleWorkspaceCreate(msg, ctx, reply, deps);
         }),
         forCommand('workspace-delete', (msg, ctx, reply) => {
-            handleWorkspaceDelete(msg.name, msg.force, ctx, reply, deps);
+            handleWorkspaceDelete(msg.name, msg.force, msg.allow_last === true, ctx, reply, deps);
         }),
         forCommand('workspace-move', (msg, ctx) => {
             handleWorkspaceMove(msg.name, msg.group, msg.index, ctx, deps);

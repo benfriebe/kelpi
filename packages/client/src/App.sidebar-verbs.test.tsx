@@ -14,7 +14,7 @@
 import type { JsonObject } from '@nex/protocol';
 import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
@@ -198,6 +198,86 @@ describe('Move to Group ▸ New Group… (§WS-052)', () => {
         fireEvent.click(within(submenuOn('alpha', 'Move to Group')).getByText('New Group…'));
         expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({ name: 'New Group 2' });
     });
+
+    /**
+     * §WS-123 — the rename drop-in and the header reveal are ONE gesture, not two features.
+     *
+     * The Swift queues `scrollToTarget(.group(id))` in the same reducer branch that sets
+     * `autoRename` (`AppReducer.swift:1762-1771`), because a rename field on a header that is
+     * scrolled out of the sidebar is a keystroke the user cannot see. The sidebar's own reveal
+     * is proven by `sidebar-polish.test.tsx` ("reveals a newly created GROUP by its header");
+     * what only assembly can answer is whether the MENU paths ask for it at all — the id exists
+     * nowhere but the reply, so this is the only place the request can be made.
+     *
+     * jsdom has no layout, so the reveal takes its no-box-model branch and hands the header to
+     * `scrollIntoView` — the same observable end `App.reveal-paths.test.tsx` uses.
+     */
+    describe('queues the header reveal alongside the rename (§WS-123)', () => {
+        let scrolled: Element[] = [];
+        let original: () => void;
+
+        beforeEach(() => {
+            scrolled = [];
+            original = Element.prototype.scrollIntoView;
+            Element.prototype.scrollIntoView = function scrollIntoView(this: Element): void {
+                scrolled.push(this);
+            };
+        });
+
+        afterEach(() => {
+            Element.prototype.scrollIntoView = original;
+        });
+
+        const revealedHeader = (): boolean =>
+            scrolled.some((element) => element.getAttribute('data-testid') === 'group-header');
+
+        const answer = (h: Harness): void => {
+            act(() => {
+                h.socket().emit({
+                    type: 'snapshot',
+                    seq: 1,
+                    state: snapshotState({ group: { id: NEW_GROUP, name: 'New Group', members: [W1] } })
+                });
+            });
+            scrolled.length = 0;
+            h.reply({ group_id: NEW_GROUP, name: 'New Group', workspace_ids: [W1] });
+        };
+
+        it('from a row’s Move to Group ▸ New Group…', async () => {
+            const h = setup();
+            fireEvent.click(within(submenuOn('alpha', 'Move to Group')).getByText('New Group…'));
+            answer(h);
+            await waitFor(() => {
+                expect(screen.getByLabelText('Rename New Group')).toBeTruthy();
+            });
+            expect(revealedHeader()).toBe(true);
+        });
+
+        /**
+         * ⌘⇧G goes out as `create-group-for-workspaces` with NO workspaces, and the verb is
+         * load-bearing: the rename and the reveal both need the new group's id, and the id only
+         * exists in a reply. `group-create` is fire-and-forget (wire-protocol.md §7) and its ack
+         * carries nothing — which is exactly how this path used to create a group and then do
+         * neither. The assertion on the wire frame is what keeps it from regressing back.
+         */
+        it('from ⌘⇧G, which mints the placeholder name and never opens a form', async () => {
+            const h = setup();
+            act(() => {
+                fireEvent.keyDown(window, { code: 'KeyG', key: 'G', metaKey: true, shiftKey: true });
+            });
+            expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({
+                command: 'create-group-for-workspaces',
+                name: 'New Group',
+                workspace_ids: []
+            });
+            expect(h.lastCommand('group-create')).toBeUndefined();
+            answer(h);
+            await waitFor(() => {
+                expect(screen.getByLabelText('Rename New Group')).toBeTruthy();
+            });
+            expect(revealedHeader()).toBe(true);
+        });
+    });
 });
 
 describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
@@ -230,6 +310,55 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
         const dialog = screen.getByTestId('confirm-dialog');
         expect(dialog.getAttribute('data-active-agents')).toBe('0');
         expect(dialog.textContent).not.toContain('active agent');
+    });
+
+    /**
+     * §WS-110 — the flag is ONE value, and the daemon's broadcast is the only thing that moves
+     * it.
+     *
+     * The Swift shares it through a `UserDefaults` key plus a change notification, so the alert
+     * and the Settings toggle can never disagree. The port's equivalent is the daemon's
+     * `confirm-workspace-delete` config key plus the `settings-changed` broadcast — and this is
+     * the half no component test can see: nothing is written locally here and no gesture is made
+     * in Settings, yet the gate in front of a workspace with a running agent changes shape,
+     * because a broadcast arrived from outside this client (another window's toggle, a
+     * hand-edited config file, `nex` writing the file).
+     */
+    it('follows the daemon’s `settings-changed` broadcast, with no local write (§WS-110)', () => {
+        const h = setup();
+        const broadcast = (confirm: boolean): void => {
+            act(() => {
+                h.socket().emit({
+                    type: 'settings-changed',
+                    settings: { general: { confirmWorkspaceDeleteWhenActive: confirm } }
+                });
+            });
+        };
+        const openDelete = (): HTMLElement => {
+            fireEvent.contextMenu(row('beta'));
+            fireEvent.click(screen.getByText('Delete'));
+            return screen.getByTestId('confirm-dialog');
+        };
+
+        // Off: beta still has its running agent, but the dialog is the plain one — no count, no
+        // suppression checkbox. The setting is the only thing that changed.
+        broadcast(false);
+        const suppressed = openDelete();
+        expect(suppressed.getAttribute('data-active-agents')).toBe('0');
+        expect(suppressed.textContent).not.toContain('active agent');
+        expect(within(suppressed).queryByTestId('confirm-suppress')).toBeNull();
+        fireEvent.click(within(suppressed).getByTestId('confirm-cancel'));
+
+        // …and back on, through the same one path: the alert returns with its count.
+        broadcast(true);
+        const restored = openDelete();
+        expect(restored.getAttribute('data-active-agents')).toBe('1');
+        expect(restored.textContent).toContain('This workspace has 1 active agent');
+        expect(within(restored).getByTestId('confirm-suppress')).toBeTruthy();
+        fireEvent.click(within(restored).getByTestId('confirm-cancel'));
+
+        // No client-side write took part in any of it: the value only ever came from the daemon.
+        expect(h.commands().some((payload) => payload['command'] === 'set-general-setting')).toBe(false);
     });
 
     it('“Don’t ask again” writes the shared `confirm-workspace-delete` setting (§WS-110)', async () => {

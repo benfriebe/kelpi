@@ -97,6 +97,16 @@ export interface SidebarSlideStyle {
 }
 
 /**
+ * Which window edge a panel slides out from.
+ *
+ * `leading` is the sidebar; `trailing` is the inspector (§WS-137 / §APP-066), which is the same
+ * animation mirrored — it must travel off the RIGHT edge, so its collapsed transform is `+width`
+ * where the sidebar's is `−width`. Everything else about the two is identical, which is the
+ * point: one phase machine, one curve, one set of rules about what is mounted when.
+ */
+export type SidebarEdge = 'leading' | 'trailing';
+
+/**
  * The geometry for a phase.
  *
  * The slot animates its WIDTH (that is what moves the pane grid); the panel keeps its full
@@ -111,20 +121,28 @@ export interface SidebarSlideStyle {
  * (run-M attempt 1). SwiftUI has the same split for the same reason: the shipped app wraps only
  * the visibility TOGGLE in `withAnimation`, never the drag. So: animated while the phase machine
  * is driving, not animated while a person is dragging.
+ *
+ * The inspector passes `edge: 'trailing'` and keeps `animate` at its default `true`, because it
+ * is a FIXED 280px panel with no resize handle (`Inspector.tsx`'s `INSPECTOR_WIDTH_PX`) — there
+ * is no gesture writing its width, so there is nothing for a transition to chase. The parameter
+ * is still the one on this function rather than a second flag somewhere else: if the inspector
+ * ever gains an edge handle, the opt-out it needs is already here and already tested.
  */
 export function sidebarSlideStyle(
     phase: SidebarPhase,
     width: number,
-    animate = true
+    animate = true,
+    edge: SidebarEdge = 'leading'
 ): SidebarSlideStyle {
     const out = phase === 'open';
     const transition = animate ? `width ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}` : 'none';
+    const offscreen = edge === 'trailing' ? width : -width;
     return {
         slot: { width: out ? width : 0, transition },
         panel: {
             width,
             opacity: out ? 1 : 0,
-            transform: out ? 'translateX(0px)' : `translateX(${String(-width)}px)`,
+            transform: out ? 'translateX(0px)' : `translateX(${String(offscreen)}px)`,
             transition: animate
                 ? `transform ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}, opacity ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}`
                 : 'none',

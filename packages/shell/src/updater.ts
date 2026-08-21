@@ -153,6 +153,19 @@ export interface ManualUpdateOptions {
     readonly started?: boolean | undefined;
 }
 
+/**
+ * §APP-026 — Sparkle's `canCheckForUpdates`, as a build capability.
+ *
+ * `checkForUpdatesNow` answers three ways; an application-menu row can only be enabled or greyed,
+ * so this is the half of that decision which is FIXED for the life of the process: is this a build
+ * that could ever check (packaged, on a Squirrel platform, opted in)? The transient half — "the
+ * feed has not finished starting yet" — is deliberately excluded, because the menu is built before
+ * `maybeStartAutoUpdate` runs and a row greyed on that basis would never come back.
+ */
+export function canCheckForUpdates(host: AutoUpdateHost, env: NodeJS.ProcessEnv = process.env): boolean {
+    return autoUpdateDecision(readAutoUpdateSettings(env), host).started;
+}
+
 export function checkForUpdatesNow(options: ManualUpdateOptions): UpdateCheckResult {
     const settings = readAutoUpdateSettings(options.env ?? process.env);
     const decision = autoUpdateDecision(settings, options.host);

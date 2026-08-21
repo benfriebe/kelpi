@@ -6,7 +6,17 @@
  *   `notifications.ts` — Web Notifications + toast fallback with `nex-<paneID>` identity
  *   `bridge.ts`        — subscribes the store to a `NexConnection`, and `createNexRuntime`,
  *                        the assembled connection + commands + PTY + store object
+ *   `activation.ts`    — §AGNT-056's "is anybody looking?", from the shell's relayed
+ *                        `shell-activation` plus the document's own visibility
  */
+
+export {
+    SHELL_ACTIVATION_MESSAGE,
+    activationAppliesHere,
+    isAppActive,
+    parseShellActivation,
+    type ShellActivationReport
+} from './activation';
 
 export {
     DOMAIN_EVENT_KINDS,

@@ -15,8 +15,9 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, a 102-flow UI audit whose only three failures are two ledgered findings, and 98.8% of
-the shipped app's feature surface — four of its ten domains complete.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
+**Wire parity, a 107-flow UI audit whose only failure is one deliberate assertion naming an open
+layout defect, and 99.8% of the shipped app's feature surface — eight of its ten domains complete,
+with nothing left unimplemented.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
 `nex` CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
 binary. The window has been driven end to end and photographed a dozen times over: the campaign
 opened with **17 defects + 6 nits, two of them blockers**, and stands at **no blockers — 1 accepted
@@ -28,14 +29,20 @@ reattach flow that had been typing its marker into the wrong pane behind an open
 was fixed in the daemon and proven on an audit step left **byte-identical** to the one that failed;
 the second was never a daemon defect at all. The footer row that
 replaced them — the left cluster painting over the system stats — is **closed** too, and what it was
-hiding is now the open minor: the same row starved from the other end.
+hiding is the open minor: the same row starved from the other end, now about nine tenths fixed (the
+right cluster no longer overruns its box, the left cluster is no longer empty) with the path segment
+still clipped, and one assertion left failing on purpose until it is not.
 
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
-domains — found 285 behaviours with no port-side implementation at all. Five burn-downs took that
-column to **2** (both of them one DEBUG-only menu), and coverage from 73.6% to **98.8%**, while the
-audit grew to **102 flows, 900-odd assertions**. Four of the ten domains — layout, CLI, content
-panes and web panes — now have no partials and no gaps left at all. The terminal engine is vendored (`ghostty-web 0.4.0-nex.2`
+domains — found 285 behaviours with no port-side implementation at all. Six burn-downs took that
+column to **zero** and coverage from 73.6% to **99.8%**, while the audit grew to **107 flows, 991
+assertions**. Eight of the ten domains now have no partials and no gaps left at all, and the seven
+partials that remain are two pieces of real work, two arguments, two things a browser has no
+counterpart for, and one security decline. The sixth wave's subject was the window itself: a hidden
+title bar with the traffic lights drawn into the client's own 32 px strip, ⌘N opening the New
+Workspace sheet, a View menu with Toggle Inspector in it, an inspector that slides, and a
+"No workspace selected" state you can actually reach. The terminal engine is vendored (`ghostty-web 0.4.0-nex.2`
 = upstream v0.4.0 + two open PRs + one adaptation this repo wrote), which turned "engine-owned,
 unreachable" into a permanent audit step: composed CJK reaches the PTY exactly once, and the preedit
 is now marked text **on the cursor cell** — measured 0×0 px off a cell the terminal was told to move
@@ -44,7 +51,8 @@ user would notice", was closed the same way the mouse gap was — by taking it o
 daemon negotiates it off the VT stream and answers `CSI ? u` into the PTY, the client encodes the
 keys above the engine's own listener, and the legacy path is proven byte-identical on an audit step
 left unchanged. What is still open is ranked in that index's §2, and no entry in it stops a
-workflow; the list is headed by the app shell's menu bar and launch sequence. The mouse-reporting
+workflow; what heads it now is a terminal palette name that does not resolve and a one-shot label
+migration, neither of which a first-time user would meet. The mouse-reporting
 gap that once headed it was closed by taking mouse reporting away from the engine and writing it
 into the port, byte-identically to ghostty's own encoder.
 
@@ -55,9 +63,9 @@ into the port, byte-identically to ghostty's own encoder.
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-M/`](docs/audit/run-M/index.md) is current
-  (102 flows); [`run-L/`](docs/audit/run-L/index.md) is kept whole as the *before* picture of the
-  fifth burn-down; the scoped runs beside them are one per feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-N/`](docs/audit/run-N/index.md) is current
+  (107 flows); [`run-M/`](docs/audit/run-M/index.md) is kept whole as the *before* picture of the
+  sixth burn-down; the scoped runs beside them are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
   the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
   policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
@@ -65,18 +73,19 @@ into the port, byte-identically to ghostty's own encoder.
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-22): `pnpm check` **4662 passed**, 1 skipped; the compat suite 103/103 against
-**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 48,
-web 46, terminal 19) and the packaged one too, **58/58** against a bundle repackaged from this tree;
-the terminal-renderer start stress **0 stranded in 48 panes**; the UI audit **872 of 875 assertions,
-0 step errors** across **102 real user flows** — three failures, and they are two ledgered findings
-rather than three defects (one assertion fails on purpose to name an open layout bug; two are green
-in every scoped run of the same step on the same bundles). The results that carry the most weight
-are on steps that did **not** change: the terminal input matrix is assertion-for-assertion identical
-to the previous run's and still passes now that the kitty keyboard protocol ships, which is the
-legacy-byte guarantee that implementation stands on. Capability coverage against the shipped app is **98.8%** of 1490 inventoried
-items, up from 73.6% before the burn-downs, with four of the ten domains complete. Nothing here is called done without a screenshot that
-shows it.
+Gates (2026-08-22): `pnpm check` **4839 passed**, 1 skipped; the compat suite 103/103 against
+**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 51,
+web 46, terminal 19) and the packaged one too, **60/60** against a bundle repackaged from this tree,
+which also quits cleanly and leaves its daemon running; the terminal-renderer start stress
+**0 stranded in 48 panes**; the UI audit **990 of 991 assertions, 0 step errors, 0 renderer console
+errors** across **107 real user flows** — one failure, and it is the assertion that names the open
+layout bug, kept byte-identical across three runs so its numbers can be read against each other.
+The results that carry the most weight are again on steps that did **not** change: the terminal
+input matrix is assertion-for-assertion identical to the previous two runs' and still passes, and
+the reattach-after-relaunch flow is 10/10 with the window's whole title bar replaced underneath it.
+Capability coverage against the shipped app is **99.8%** of 1490 inventoried items, up from 73.6%
+before the burn-downs, with eight of the ten domains complete and the "missing" column empty.
+Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart
 

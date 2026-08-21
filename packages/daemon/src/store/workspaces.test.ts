@@ -197,6 +197,87 @@ describe('sidebar ordering', () => {
     });
 });
 
+/**
+ * §WS-120 — `move-workspace-to-group`'s four rules, each on its own.
+ *
+ * The one that matters and cannot be seen from the outside is the ORDER: the destination is
+ * validated before anything is detached. Detach-then-validate loses the row entirely — it is
+ * gone from the top-level order and from every group's `childOrder`, which is a workspace that
+ * exists in `state.workspaces` and is reachable from no sidebar entry at all.
+ */
+describe('moving one workspace into a group (WS-120)', () => {
+    function grouped(): ReturnType<typeof harness> {
+        const h = harness(seeded());
+        h.dispatch({ type: 'create-group', id: G1, name: 'Client', now: NOW });
+        return h;
+    }
+
+    it('validates the destination BEFORE detaching, so a stale group id cannot orphan the row', () => {
+        const h = grouped();
+        const before = h.state();
+        h.dispatch({ type: 'move-workspace-to-group', id: W2, groupID: id('cccccccc', 9), index: null });
+        // Untouched, not merely "not in the missing group": same object, same sidebar slot.
+        expect(h.state()).toBe(before);
+        expect(topLevelWorkspaceIDs(h.state())).toEqual([W1, W2, W3]);
+        expect(groupIDForWorkspace(h.state(), W2)).toBeNull();
+    });
+
+    it('is inert for a workspace that does not exist', () => {
+        const h = grouped();
+        const before = h.state();
+        h.dispatch({ type: 'move-workspace-to-group', id: id('bbbbbbbb', 9), groupID: G1, index: null });
+        expect(h.state()).toBe(before);
+    });
+
+    it('clamps an out-of-range index and appends when it is null', () => {
+        const h = grouped();
+        h.dispatch(
+            { type: 'move-workspace-to-group', id: W1, groupID: G1, index: null },
+            // Way past the end: clamped to the tail rather than dropped (the Swift clamps too).
+            { type: 'move-workspace-to-group', id: W2, groupID: G1, index: 99 },
+            // Negative: clamped to the head.
+            { type: 'move-workspace-to-group', id: W3, groupID: G1, index: -5 }
+        );
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([W3, W1, W2]);
+        expect(topLevelWorkspaceIDs(h.state())).toEqual([]);
+    });
+
+    it('moves back out to the top level at the index it was given', () => {
+        const h = grouped();
+        h.dispatch(
+            { type: 'move-workspace-to-group', id: W1, groupID: G1, index: null },
+            { type: 'move-workspace-to-group', id: W1, groupID: null, index: 0 }
+        );
+        expect(groupByID(h.state(), G1)?.childOrder).toEqual([]);
+        expect(topLevelWorkspaceIDs(h.state())).toEqual([W1, W2, W3]);
+    });
+
+    it('expands a collapsed destination only while `expand-group-on-workspace-drop` is on', () => {
+        const off = grouped();
+        off.dispatch(
+            { type: 'set-group-collapsed', id: G1, collapsed: true },
+            { type: 'move-workspace-to-group', id: W2, groupID: G1, index: null, expandOnDrop: false }
+        );
+        expect(groupByID(off.state(), G1)?.childOrder).toEqual([W2]);
+        expect(groupByID(off.state(), G1)?.isCollapsed).toBe(true);
+
+        const on = grouped();
+        on.dispatch(
+            { type: 'set-group-collapsed', id: G1, collapsed: true },
+            { type: 'move-workspace-to-group', id: W2, groupID: G1, index: null, expandOnDrop: true }
+        );
+        expect(groupByID(on.state(), G1)?.isCollapsed).toBe(false);
+
+        // Absent = the Swift default and the behaviour the verb had before the setting existed.
+        const fallback = grouped();
+        fallback.dispatch(
+            { type: 'set-group-collapsed', id: G1, collapsed: true },
+            { type: 'move-workspace-to-group', id: W2, groupID: G1, index: null }
+        );
+        expect(groupByID(fallback.state(), G1)?.isCollapsed).toBe(false);
+    });
+});
+
 describe('groups', () => {
     it('inserts a new group into the slot vacated by its first member', () => {
         const h = harness(seeded());

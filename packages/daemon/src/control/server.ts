@@ -84,6 +84,11 @@ export interface ControlServer {
      * The asymmetry is the point — a `tcp-port` change must never take the transport every
      * local `nex` command, hook and client depends on offline for the duration of a rebind.
      * Idempotent, and a no-op when TCP was never configured.
+     *
+     * Resolves as soon as the listening handle is down: connections already accepted on that
+     * port are left to finish, exactly as the Swift's client dispatch sources are. It also
+     * clears `tcpStatus` — after this call nothing was asked for, so `ping` stops reporting a
+     * `tcp` block for a listener that is deliberately gone.
      */
     stopTCP(): Promise<void>;
     /**
@@ -199,6 +204,28 @@ function closeAsync(server: Server | undefined): Promise<void> {
     if (server === undefined || !server.listening) return Promise.resolve();
     return new Promise<void>((resolve) => {
         server.close(() => resolve());
+    });
+}
+
+/**
+ * Drop a LISTENER without waiting for the connections it is already serving (§AGNT-003).
+ *
+ * `net.Server.close()` closes the listening handle synchronously but fires its callback only
+ * once every live connection has ended — so awaiting it is awaiting the CLIENTS, not the
+ * listener. That is the right thing for `stop()` (which destroys the connections first) and
+ * exactly the wrong thing for `stopTCP()`: one dev-container agent holding an idle TCP
+ * connection would hang the teardown, and with it the `startTCP` re-bind that begins with it.
+ * The Swift `stopTCP()` cancels the accept source and closes the listening fd, leaving the
+ * client sources alone; this is that, in Node's vocabulary.
+ *
+ * `setImmediate` rather than a bare resolve: libuv finishes closing the handle in the current
+ * loop's closing phase, so one turn later the port is genuinely refusing connections.
+ */
+function closeListenerAsync(server: Server | undefined): Promise<void> {
+    if (server === undefined || !server.listening) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+        server.close(() => undefined);
+        setImmediate(resolve);
     });
 }
 
@@ -399,11 +426,24 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         async stopTCP() {
             // §AGNT-003: ONLY the TCP listener. The unix socket, the connections it is serving
             // and the socket file are all untouched — that asymmetry is the whole point.
+            //
+            // Three details that are the difference between "closes" and "tears down
+            // independently":
+            //   - `closeListenerAsync`, so a live TCP client cannot hold the teardown (and
+            //     therefore a `startTCP` re-bind) hostage;
+            //   - the connections already accepted on that port keep being served, as the
+            //     Swift's client sources do — this drops the door, not the people through it;
+            //   - the REQUEST is cleared too, so `tcpStatus` (and `ping`'s `controlTransport`)
+            //     stop advertising a port nothing is listening on. `startTCP(undefined)` means
+            //     the same thing and already reports it the same way; a listener that was
+            //     deliberately stopped is "no TCP listener", not "asked for and silently
+            //     failed".
             const current = tcpServer;
             tcpServer = undefined;
             boundTcpPort = undefined;
             tcpBindError = null;
-            await closeAsync(current);
+            requestedTcpPort = undefined;
+            await closeListenerAsync(current);
         },
         async startTCP(port) {
             await this.stopTCP();

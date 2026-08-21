@@ -81,6 +81,50 @@ describe('useFocusDwell', () => {
         expect(second).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * §AGNT-056: the Swift schedules the SAME 600 ms clear again on `didBecomeActive`, so a
+     * badge raised while the user was in another app is acknowledged after they come back —
+     * not 600 ms after an event they never saw.
+     */
+    it('suspends while the app is inactive and schedules a fresh 600 ms on activation', () => {
+        vi.useFakeTimers();
+        const onDwellClear = vi.fn();
+        const props = { paneID: 'a', status: 'waitingForInput' as PaneStatus, onDwellClear };
+
+        // The stop lands while the window is in the background: nothing is acknowledged, no
+        // matter how long it sits there.
+        const view = render(<Dwell {...props} enabled={false} />);
+        act(() => vi.advanceTimersByTime(10 * FOCUS_DWELL_MS));
+        expect(onDwellClear).not.toHaveBeenCalled();
+
+        // The user comes back. The countdown starts NOW, from zero.
+        view.rerender(<Dwell {...props} enabled />);
+        act(() => vi.advanceTimersByTime(FOCUS_DWELL_MS - 1));
+        expect(onDwellClear).not.toHaveBeenCalled();
+        act(() => vi.advanceTimersByTime(1));
+        expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('a');
+    });
+
+    it('tears a pending clear down when the app is deactivated mid-countdown', () => {
+        vi.useFakeTimers();
+        const onDwellClear = vi.fn();
+        const props = { paneID: 'a', status: 'waitingForInput' as PaneStatus, onDwellClear };
+
+        const view = render(<Dwell {...props} enabled />);
+        act(() => vi.advanceTimersByTime(FOCUS_DWELL_MS - 100));
+        // Alt-tab away with 100 ms to go: the acknowledgment must not fire behind their back.
+        view.rerender(<Dwell {...props} enabled={false} />);
+        act(() => vi.advanceTimersByTime(10 * FOCUS_DWELL_MS));
+        expect(onDwellClear).not.toHaveBeenCalled();
+
+        // And coming back gives the full delay again, not the 100 ms that were left.
+        view.rerender(<Dwell {...props} enabled />);
+        act(() => vi.advanceTimersByTime(FOCUS_DWELL_MS - 1));
+        expect(onDwellClear).not.toHaveBeenCalled();
+        act(() => vi.advanceTimersByTime(1));
+        expect(onDwellClear).toHaveBeenCalledExactlyOnceWith('a');
+    });
+
     it('honours a custom delay and the enabled switch', () => {
         vi.useFakeTimers();
         const onDwellClear = vi.fn();

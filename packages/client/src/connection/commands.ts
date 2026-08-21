@@ -569,7 +569,32 @@ export class CommandClient {
         );
     }
 
-    deleteWorkspace(input: { workspace: string; force?: boolean }, options?: SendOptions): Promise<CommandReply> {
+    /**
+     * `allowLast` is §WS-156's asymmetry, and exactly one caller sets it: ⌘W on the last pane of
+     * the last workspace, which the shipped app lets reach ZERO workspaces (and which is how a
+     * user arrives at the "No workspace selected" state). The sidebar's Delete leaves it unset,
+     * so it keeps the shipped app's own "not the last one" rule — and so does the CLI.
+     *
+     * It also chooses the VERB, because the flag is not a wire field. `workspace-delete` is the
+     * CLI's verb and cannot carry it; `delete-workspace` is the GUI's, WS-only like
+     * `rename-workspace`, and the daemon constructs the delete from it rather than decoding one
+     * (`daemon/src/ws/sync.ts` ▸ `guiDeleteWorkspace`). Everything downstream — the
+     * running-agents guard, the PTY teardown, the reply — is the one handler.
+     */
+    deleteWorkspace(
+        input: { workspace: string; force?: boolean; allowLast?: boolean },
+        options?: SendOptions
+    ): Promise<CommandReply> {
+        if (input.allowLast === true) {
+            return this.raw(
+                wirePayload('delete-workspace', {
+                    workspace_id: input.workspace,
+                    force: input.force ?? false,
+                    allow_last: true
+                }),
+                options ?? {}
+            );
+        }
         return this.raw(
             wirePayload('workspace-delete', { name: input.workspace, force: input.force ?? false }),
             options ?? {}

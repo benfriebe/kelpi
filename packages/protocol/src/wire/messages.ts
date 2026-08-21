@@ -190,6 +190,24 @@ export interface WorkspaceDeleteMessage {
     command: 'workspace-delete';
     name: string;
     force: boolean;
+    /**
+     * §WS-156 / §APP-067 — may this delete leave ZERO workspaces behind?
+     *
+     * **Not a wire field.** It has no entry in wire-protocol.md §7's dictionary and `decode.ts`
+     * never reads it, so nothing arriving over the control socket can set it: `nex workspace
+     * delete` is byte-identical and still refuses the last workspace. It exists on this message
+     * because the GUI's own `delete-workspace` verb — WS-only, like `rename-workspace`, and
+     * therefore outside the CLI's vocabulary forever — CONSTRUCTS this message directly
+     * (`daemon/src/ws/sync.ts`) rather than decoding one.
+     *
+     * The shipped app is deliberately asymmetric here: the CLI and the sidebar's Delete both
+     * refuse at one workspace (`.disabled(store.workspaces.count <= 1)`), while ⌘W closing the
+     * last pane of the last workspace may reach zero — and the window lands on the "No workspace
+     * selected" empty state, which exists precisely because it can. The port put that guard in
+     * the one handler both routes share, which made the GUI stricter than the Swift and the empty
+     * state unreachable by any gesture. This is that asymmetry, restored.
+     */
+    allow_last?: boolean | undefined;
 }
 
 export interface WorkspaceProfileMessage {

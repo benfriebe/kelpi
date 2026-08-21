@@ -243,6 +243,38 @@ export interface WsHotkeyStatusMessage {
 
 export const WS_HOTKEY_STATUS_MESSAGE = 'hotkey-status';
 
+/**
+ * §AGNT-056: the app became active (or stopped being active), reported by the shell.
+ *
+ * The Swift reads `NSApplication.didBecomeActiveNotification` in the view that owns the pane
+ * grid and re-schedules the 600 ms focus-dwell clear from there — the acknowledgment happens
+ * when the user comes BACK, which is the whole reason for the delay. Here the grid is in a
+ * different process from the thing that knows about activation, so the fact has to travel:
+ * shell → daemon → the client running in that window.
+ *
+ * `windowID` scopes it exactly as `reveal-request` is scoped, for a sharper reason: two shell
+ * windows on one daemon are independently active, so an unscoped report would suspend a second
+ * window's timers because the first one lost focus. A report with no `windowID` applies
+ * everywhere (the single-window and automation case).
+ *
+ * Deliberately NOT remembered by the daemon: activation is a transient about a window that may
+ * already be gone, and a replayed one would tell a fresh client something false about itself. A
+ * client that has heard nothing assumes it is active — the same assumption a browser tab makes
+ * before its first `visibilitychange`.
+ *
+ * Both a client → daemon report and, relayed unchanged, a daemon → client push (the shell is a
+ * WS client like any other, exactly as `hotkey-status` is).
+ */
+export const WS_SHELL_ACTIVATION_MESSAGE = 'shell-activation';
+
+export interface WsShellActivationMessage {
+    readonly type: typeof WS_SHELL_ACTIVATION_MESSAGE;
+    /** True on activate/focus, false on deactivate/blur. */
+    readonly active: boolean;
+    /** The shell window this is about; absent = every client. */
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -258,7 +290,8 @@ export type WsClientMessage =
     | WsHostUnregisterMessage
     | WsHostRpcReplyMessage
     | WsHostEventMessage
-    | WsHotkeyStatusMessage;
+    | WsHotkeyStatusMessage
+    | WsShellActivationMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -647,6 +680,7 @@ export type WsServerMessage =
     | WsHostNotifyMessage
     | WsWebConsoleLineMessage
     | WsRevealPaneMessage
-    | WsHotkeyStatusMessage;
+    | WsHotkeyStatusMessage
+    | WsShellActivationMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

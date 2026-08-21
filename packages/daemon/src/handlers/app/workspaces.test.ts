@@ -290,6 +290,110 @@ describe('workspace-create (worktree)', () => {
         ]);
     });
 
+    /**
+     * §GIT-103 — the promotion the insert-skip used to swallow.
+     *
+     * The Swift's `worktreeCreated` sets `isAutoDiscovered = false` unconditionally, so a repo
+     * auto-detect had already registered is KEPT the moment the user builds a worktree from it.
+     * The port only marked the repo manual when it INSERTED one, so this case left the row
+     * auto-discovered and §GIT-081's GC could collect it out from under its own worktree.
+     */
+    it('promotes an already-registered AUTO-DISCOVERED repo instead of skipping it (§GIT-103)', async () => {
+        const R1 = id('eeeeeeee', 7);
+        const h = harness({
+            worktreeBasePath: '~/wt/<repo>',
+            git: stubGit({ worktreeAdd: async () => {} })
+        });
+        h.dispatch({
+            type: 'add-repo',
+            repo: {
+                id: R1,
+                path: '/code/nex',
+                name: 'nex',
+                remoteURL: null,
+                lastAccessedAt: NOW / 1000,
+                isAutoDiscovered: true
+            }
+        });
+        h.send(worktreeRequest);
+        await flush();
+
+        // One row, the SAME row — promoted, not duplicated by a second registration.
+        expect(h.state().repos).toHaveLength(1);
+        expect(h.state().repos[0]?.id).toBe(R1);
+        expect(h.state().repos[0]?.isAutoDiscovered).toBe(false);
+        const workspace = h.state().workspaces.find((entry) => entry.name === 'feature-x');
+        expect(workspace?.repoAssociations[0]?.repoID).toBe(R1);
+        expect(workspace?.repoAssociations[0]?.worktreePath).toBe(`${HOME}/wt/nex/feature-x`);
+    });
+
+    it('leaves an already-MANUAL repo alone (nothing to promote)', async () => {
+        const R1 = id('eeeeeeee', 8);
+        const h = harness({
+            worktreeBasePath: '~/wt/<repo>',
+            git: stubGit({ worktreeAdd: async () => {} })
+        });
+        h.dispatch({
+            type: 'add-repo',
+            repo: {
+                id: R1,
+                path: '/code/nex',
+                name: 'hand-named',
+                remoteURL: 'git@example.invalid:acme/nex.git',
+                lastAccessedAt: NOW / 1000,
+                isAutoDiscovered: false
+            }
+        });
+        h.send(worktreeRequest);
+        await flush();
+
+        // The user's own name and remote survive: promotion must never re-register the row.
+        expect(h.state().repos).toEqual([
+            expect.objectContaining({
+                id: R1,
+                name: 'hand-named',
+                remoteURL: 'git@example.invalid:acme/nex.git',
+                isAutoDiscovered: false
+            })
+        ]);
+    });
+
+    /**
+     * §GIT-101 — `<repo>` in BOTH positions, at the CREATE site, from a LIVE setting.
+     *
+     * `git/names.test.ts` pins the pure helper; what this pins is the handler reading
+     * `deps.worktreeBasePath` as a getter (`handlers/app/context.ts`), so a base path changed
+     * in Settings reaches the very next `workspace create --worktree` in the same process.
+     */
+    it('expands a LEADING <repo> to the repo’s full path, and re-reads the template per command (§GIT-101)', async () => {
+        const requests: WorktreeAddRequest[] = [];
+        let template = '<repo>/.worktrees';
+        const h = harness({
+            worktreeBasePath: () => template,
+            git: stubGit({
+                worktreeAdd: async (request) => {
+                    requests.push(request);
+                }
+            })
+        });
+
+        h.send(worktreeRequest);
+        await flush();
+        // Rule 1: a template STARTING with <repo> expands to the repo's full path.
+        expect(requests[0]?.worktreePath).toBe('/code/nex/.worktrees/feature-x');
+
+        // Same daemon, no restart: the next command sees the new template, and rules 2 + 3
+        // (a non-leading <repo> is the repo's DIRECTORY NAME, `~` is home) apply to it.
+        template = '~/wt/<repo>/nested';
+        h.send({ ...worktreeRequest, name: 'second', worktree: 'second' });
+        await flush();
+        expect(requests[1]?.worktreePath).toBe(`${HOME}/wt/nex/nested/second`);
+
+        // And the workspace's first pane opens in whatever the template resolved to (§GIT-107).
+        const second = h.state().workspaces.find((entry) => entry.name === 'second');
+        expect(second?.panes[0]?.workingDirectory).toBe(`${HOME}/wt/nex/nested/second`);
+    });
+
     it('sanitizes an explicit branch and falls back to the worktree name', async () => {
         const requests: WorktreeAddRequest[] = [];
         const h = harness({
@@ -424,6 +528,68 @@ describe('workspace-delete', () => {
         expect(h.reply({ command: 'workspace-delete', name: 'w1' })).toEqual({
             ok: false,
             error: 'refusing to delete the last workspace'
+        });
+        expect(h.state().workspaces).toHaveLength(1);
+        // …and the field that waives it is not readable off the wire, so a hand-written control
+        // frame cannot set it either (`decode.ts` never looks at `allow_last`).
+        expect(h.reply({ command: 'workspace-delete', name: 'w1', allow_last: true })).toEqual({
+            ok: false,
+            error: 'refusing to delete the last workspace'
+        });
+        expect(h.state().workspaces).toHaveLength(1);
+    });
+
+    it('refuses it even under --force: that guard is about agents, not about the count', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(h.reply({ command: 'workspace-delete', name: 'w1', force: true })).toEqual({
+            ok: false,
+            error: 'refusing to delete the last workspace'
+        });
+        expect(h.state().workspaces).toHaveLength(1);
+    });
+
+    /**
+     * §WS-156 / §APP-067 — the shipped app's own asymmetry.
+     *
+     * `nex workspace delete` and the sidebar's Delete both refuse at one workspace; ⌘W on the
+     * last pane of the last workspace does NOT, and the window lands on "No workspace selected".
+     * The port had one verb for both, so the GUI inherited the CLI's refusal and the empty state
+     * had no gesture that could reach it.
+     *
+     * `allow_last` can only arrive on a message the daemon CONSTRUCTED for the GUI's WS-only
+     * verb (`ws/sync.ts` ▸ `guiDeleteWorkspace`); `decode.ts` never reads it, which is what keeps
+     * the refusal above true for everything that comes off the control socket.
+     */
+    it('lets the GUI’s own delete reach zero workspaces (§WS-156)', () => {
+        const h = harness({ initial: seeded(1) });
+        expect(
+            h.replyMessage({ command: 'workspace-delete', name: 'w1', force: true, allow_last: true })
+        ).toMatchObject({ ok: true, workspace_name: 'w1' });
+        expect(h.state().workspaces).toHaveLength(0);
+    });
+
+    it('still applies every OTHER guard to the GUI’s delete', () => {
+        // `allow_last` waives exactly one rule. A running agent without `--force` is still a
+        // refusal, and an unknown name is still an error.
+        const h = harness({ initial: seeded(1) });
+        h.dispatch({
+            type: 'pane-agent-event',
+            paneID: P1,
+            event: { type: 'agentStarted', agent: 'claude' },
+            now: NOW
+        });
+        expect(
+            h.replyMessage({ command: 'workspace-delete', name: 'w1', force: false, allow_last: true })
+        ).toEqual({
+            ok: false,
+            error: 'workspace w1 has 1 running agent; pass --force to delete anyway',
+            active_agents: 1
+        });
+        expect(
+            h.replyMessage({ command: 'workspace-delete', name: 'ghost', force: false, allow_last: true })
+        ).toEqual({
+            ok: false,
+            error: 'workspace not found: ghost'
         });
         expect(h.state().workspaces).toHaveLength(1);
     });

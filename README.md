@@ -31,11 +31,14 @@ for a repo under a symlinked path.
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
 domains — found 285 behaviours with no port-side implementation at all. Three burn-downs took that
-column to **4**, and coverage from 73.6% to **95.9%**, while the audit grew to **93 flows, 626
-assertions**. What is still open is ranked in that index's §2, now headed by the engine's IME and
-modifier-key limits — the mouse-reporting gap that headed it last time was closed by taking mouse
-reporting away from the engine and writing it into the port, byte-identically to ghostty's own
-encoder.
+column to **4**, and coverage from 73.6% to **95.9%**, while the audit grew to **94 flows, 647
+assertions**. A fourth pass re-scored the terminal-input family after the engine was vendored
+(`ghostty-web 0.4.0-nex.1`), which turned "engine-owned, unreachable" into a permanent audit step:
+composed CJK now reaches the PTY exactly once, on camera. What is still open is ranked in that
+index's §2, now headed by the status footer's blank diff stats — the engine's IME *positioning* and
+modifier-key limits moved to #2 as their composition half closed, and the mouse-reporting gap that
+headed the list before them was closed by taking mouse reporting away from the engine and writing
+it into the port, byte-identically to ghostty's own encoder.
 
 - [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
   **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
@@ -44,8 +47,8 @@ encoder.
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-J/`](docs/audit/run-J/index.md) is current
-  (93 flows); the fourteen scoped runs beside it are one per feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-K/`](docs/audit/run-K/index.md) is current
+  (94 flows); the fifteen scoped runs beside it are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
   the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
   policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
@@ -56,9 +59,10 @@ encoder.
 Gates (2026-08-21): `pnpm check` **4260 passed**, 1 skipped; the compat suite 103/103 against
 **both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 32,
 web 46, terminal 19) and the packaged one too, **58/58**; the terminal-renderer start stress
-**0 stranded in 48 panes**; the UI audit **624 of 626 assertions, 0 step errors** across **93 real
-user flows** — the two failures are two findings, one of them new (the footer's blank diff stats)
-and one the accepted VT-reflow limit; and capability coverage against the shipped app at **95.9%**
+**0 stranded in 48 panes**; the UI audit **645 of 647 assertions, 0 step errors** across **94 real
+user flows** — the two failures are two findings, the footer's blank diff stats and the accepted
+VT-reflow limit, and they are the *same* two the previous full run had, which is how the engine
+swap is known to have regressed nothing; and capability coverage against the shipped app at **95.9%**
 of 1490 inventoried items, up from 73.6% before the burn-downs. Nothing here is called done without
 a screenshot that shows it.
 

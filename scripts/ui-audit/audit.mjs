@@ -6066,34 +6066,38 @@ function buildFlows(ctx) {
                  * WHERE the mechanism is rather than only that there isn't one.
                  */
                 recorder.note(
-                    'SKIPPED (no mechanism to DRIVE): IME composition / marked text (TERM-024, TERM-032). ' +
-                        'CDP has no input-method channel — `Input.imeSetComposition` drives Chromium\'s own IME widget, not ' +
-                        'the engine\'s, so the client never sees a composition event the harness produced. What the engine ' +
-                        'does is readable, though: `ghostty-web@0.4.0` registers compositionstart/update/end on its ' +
-                        'container, and `handleCompositionUpdate` is an EMPTY function — the preedit is never pushed to the ' +
-                        'terminal, so nothing renders while composing and only the committed string is sent on ' +
-                        'compositionend. That is TERM-032\'s missing half, stated from the bundle. PARITY ▸ Known gaps #7 ' +
-                        'records the user-visible result; `VITE_TERMINAL_ENGINE=xterm` remains the escape hatch.'
+                    'MOVED, NOT SKIPPED: IME composition / marked text (TERM-024, TERM-032) now has its own step, ' +
+                        '`terminal-ime`. The engine is `ghostty-web 0.4.0-nex.1` (vendor/ghostty-web-patched), which carries ' +
+                        'upstream PR #120: the composition listeners live on the hidden `<textarea>`, `handleCompositionEnd` ' +
+                        'writes the committed string to the PTY and replays the pending key, and a preview chip renders the ' +
+                        'preedit. CDP still has no input-method channel — `Input.imeSetComposition` drives Chromium\'s own ' +
+                        'IME widget, not the engine\'s — so `terminal-ime` dispatches real `CompositionEvent`s at the hidden ' +
+                        '`<textarea>` the engine focuses (the element a macOS IME would target), from which they bubble to ' +
+                        'the engine\'s listeners — the same event stream a macOS IME produces. What that does NOT cover is ' +
+                        'the OS side of the pipeline (candidate window, layout dead keys); see that step\'s own notes.'
                 );
                 recorder.note(
                     'NOT IMPLEMENTABLE IN THIS LAYER: the IME caret rect (TERM-033). The candidate window follows the ' +
-                        'focused input, and `ghostty-web@0.4.0` pins its 1×1 hidden `<textarea>` at `left:0; top:0` of the ' +
-                        'pane container and never moves it — so composition is unpositioned by construction, at the pane\'s ' +
-                        'top-left corner rather than at the cursor. Fixing it from the port would mean writing to the ' +
-                        'engine\'s private `textarea` AND streaming the cursor cell to every client on every output chunk; ' +
-                        'the honest fix is upstream, in the engine that already owns the element.'
+                        'focused input, and even at `0.4.0-nex.1` the hidden 1×1 `<textarea>` sits at `left:0; top:0` of the ' +
+                        'pane container and never moves to the cursor; PR #120\'s preview chip is pinned at ' +
+                        '`top:4px; right:4px`, not at the caret either. Composition is therefore still unpositioned by ' +
+                        'construction. Fixing it from the port would mean writing to the engine\'s private `textarea` AND ' +
+                        'streaming the cursor cell to every client on every output chunk; the honest fix is upstream, in ' +
+                        'the engine that already owns the element.'
                 );
                 recorder.note(
-                    'SKIPPED (no mechanism): dead keys / option-composed characters (TERM-024). A dead key is produced by ' +
-                        'the OS keyboard layout before the browser sees anything; CDP dispatches an already-resolved key ' +
-                        'event, so there is nothing here to compose.'
+                    'STILL NO MECHANISM: dead keys / option-composed characters (TERM-023, and TERM-024\'s layout half). A ' +
+                        'dead key is produced by the OS keyboard layout before the browser sees anything; CDP dispatches an ' +
+                        'already-resolved key event, so there is nothing here to compose. Synthetic COMPOSITION is covered ' +
+                        'now (`terminal-ime`); layout-level dead keys are not, and cannot be from this harness.'
                 );
                 recorder.note(
                     'NOT IMPLEMENTABLE IN THIS LAYER: modifier press/release reporting (TERM-030, the Kitty keyboard ' +
-                        'protocol). Two facts from the `ghostty-web@0.4.0` bundle: it registers ONE `keydown` listener and ' +
+                        'protocol). Re-read against the VENDORED bundle (`0.4.0-nex.1`, which took PR #159 and routes every ' +
+                        'keydown through the WASM encoder), and both facts survive: it registers ONE `keydown` listener and ' +
                         'ZERO `keyup` listeners (so no key release of any kind reaches its encoder), and its ' +
-                        '`setKittyFlags()` — which does exist, forwarding to the real ghostty key encoder in WASM — is ' +
-                        'never called, so the VT\'s Kitty flag stack never reaches the encoder. The port could parse ' +
+                        '`setKittyFlags()` — which does exist, forwarding to the real ghostty key encoder in WASM — has no ' +
+                        'call site at all, so the VT\'s Kitty flag stack never reaches the encoder. The port could parse ' +
                         '`CSI > flags u` itself the way it now parses the mouse modes, but acting on it means taking over ' +
                         'the encoding of EVERY key, not just the modifiers: under the Kitty protocol every key changes ' +
                         'shape, and a terminal where half the keys are Kitty-encoded is worse than one where none are. ' +
@@ -6107,6 +6111,493 @@ function buildFlows(ctx) {
                         'selection, an unreported one does.'
                 );
                 recorder.eyes('the "control-codes" and "mouse-reporting" shots: do the caret-escaped bytes read as a clean column, and did the drag leave the screen intact?');
+            }
+        },
+        {
+            /**
+             * The vendored engine's input path, driven rather than read.
+             *
+             * Until `ghostty-web 0.4.0-nex.1` (vendor/ghostty-web-patched, upstream v0.4.0 + PR
+             * #120 + PR #159) every item in this area was scored "engine-owned, unreachable":
+             * `handleCompositionUpdate` was an empty function, composition listeners sat on a
+             * `contenteditable` container that never had focus, and the printable/special-key
+             * fast paths meant the WASM key encoder saw almost nothing. The audit's answer was a
+             * paragraph of notes explaining why nothing could be asserted.
+             *
+             * What changed is not "the engine got better" — it is that the behaviour became
+             * DRIVABLE. Focus lives on the hidden `<textarea>` — a real element a real
+             * `CompositionEvent` can be dispatched at, and the element a macOS IME would target —
+             * and events dispatched there bubble to the engine's own listeners (composition on the
+             * container, the preview chip's on the textarea itself). That event stream is exactly
+             * what an IME produces: start → update(preedit) → the terminating keydown →
+             * end(committed). So this step does what the integration probe did, as a
+             * permanent flow: compose 한글 into a live `cat`, and read the PTY's own copy back
+             * through `nex pane capture`.
+             *
+             * Three things it can prove that a unit test cannot, and the index's claim standard
+             * demands (`written-but-unexercised is [~]`):
+             *
+             *   1. EXACTLY ONCE. The failure mode PR #120's local adaptations exist for is
+             *      double delivery — `compositionend` writes the string, and then `beforeinput`
+             *      or the keydown dedupe writes it again. One occurrence on screen is the only
+             *      honest read of "once", and it needs a real PTY on the other end.
+             *   2. THE TERMINATOR. A composition ended by Space must commit the text plus ONE
+             *      space; one ended by Enter must emit at most a carriage return. The vendored
+             *      hardening (`processPendingKeyAfterComposition` replays single-character keys
+             *      only) exists because the un-hardened replay writes the literal string "Enter"
+             *      to the PTY. That is a five-character regression a screenshot shows plainly.
+             *   3. THE WIDE-CELL SELECTION FIX. PR #120 also fixes selection over a
+             *      double-width glyph emitting a space for the continuation cell. 26 cells of
+             *      `WSTART` + 8×漢 + `WEND` must copy as 18 characters, not 26.
+             *
+             * And PR #159's half, which is the same vendored change: every keydown now goes
+             * through ghostty's WASM encoder, so Shift+Tab is `ESC [ Z` (TERM-029 names it and
+             * nothing here had ever asserted it), Home/End follow DECCKM, and Shift+Enter is the
+             * fixterms sequence. Those are ASCII, so `cat -v` reads them back byte for byte.
+             *
+             * NOT covered, and the notes at the end say so: anything the OS owns before the
+             * browser sees it — a layout dead key, the candidate window, the caret rect the
+             * candidate window would position against.
+             */
+            id: 'terminal-ime',
+            expect:
+                'Real `CompositionEvent`s on the engine\'s hidden textarea compose CJK into the PTY exactly once: a preview ' +
+                'chip shows the preedit mid-composition and is withdrawn on commit, a composition terminated by Space commits ' +
+                'the text plus exactly one space, and one terminated by Enter emits at most a carriage return — never the ' +
+                'literal key name. The same vendored patch\'s wide-cell fix is read back out of the clipboard: 26 cells of ' +
+                '`WSTART`+8×漢+`WEND` copy as 18 characters with no spaces injected between the glyphs. And with every keydown ' +
+                'routed through ghostty\'s WASM encoder, Shift+Tab is `ESC [ Z`, Home/End follow DECCKM (`ESC [ H` vs `ESC O H`) ' +
+                'and Shift+Enter is the fixterms sequence.',
+            needsEyes: true,
+            async run(recorder) {
+                const target = await widestShellPane(page, cli);
+                const paneID = target?.id ?? state.firstPane;
+                if (paneID === null || paneID === undefined) {
+                    recorder.check('a shell pane to compose into', false);
+                    return;
+                }
+                recorder.note(`target pane: ${String(paneID)} (${String(Math.round(target?.width ?? 0))}px)`);
+
+                /**
+                 * The composed strings, built from codepoints rather than written as literals.
+                 *
+                 * The `glyphs.sh` lesson (see `GLYPH_LINES`): a fixture that can silently lose
+                 * the thing it tests is worse than no fixture. A Hangul literal that an editor,
+                 * a diff or a copy-paste turned into `??` would make every assertion below pass
+                 * vacuously on ASCII.
+                 */
+                const HANGUL_PREEDIT = String.fromCodePoint(0xd55c); // 한
+                const HANGUL = String.fromCodePoint(0xd55c, 0xae00); // 한글
+                const TEST_PREEDIT = String.fromCodePoint(0xd14c); // 테
+                const TEST = String.fromCodePoint(0xd14c, 0xc2a4, 0xd2b8); // 테스트
+                const HAN = String.fromCodePoint(0x6f22); // 漢, a double-width glyph
+                const CLIP_SENTINEL = 'NEX-AUDIT-CLIPBOARD-SENTINEL';
+
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, 'clear', { settleMs: 500 });
+
+                const paneRoot = `[data-pane-id="${paneID}"][data-terminal-status]`;
+                const textarea = `${paneRoot} [data-terminal-host] textarea`;
+
+                // ── PR #120's premise: composition has a real element to happen on ───
+                //
+                // Upstream 0.4.0 listened on a `contenteditable` container. The patched engine
+                // listens on a hidden `<textarea>` and routes focus to it, which is both the
+                // fix and the reason this step can exist: a textarea is an element a
+                // CompositionEvent can be dispatched at, and `document.activeElement` proves
+                // the browser would send a real IME's events to the same place.
+                const wiring = await page.eval(
+                    `(() => {
+                        const root = document.querySelector('${paneRoot}');
+                        if (root === null) return { error: 'no pane root' };
+                        const host = root.querySelector('[data-terminal-host]');
+                        if (host === null) return { error: 'no terminal host' };
+                        const ta = host.querySelector('textarea');
+                        return {
+                            textarea: ta !== null,
+                            aria: ta?.getAttribute('aria-label') ?? null,
+                            tabindex: ta?.getAttribute('tabindex') ?? null,
+                            contentEditable: host.querySelectorAll('[contenteditable]').length,
+                            activeIsTextarea: ta !== null && document.activeElement === ta,
+                            activeTag: document.activeElement?.tagName ?? null
+                        };
+                    })()`
+                );
+                recorder.note(`composition host: ${JSON.stringify(wiring)}`);
+                recorder.check(
+                    'the engine hosts composition on a hidden <textarea> (PR #120)',
+                    wiring?.textarea === true,
+                    JSON.stringify(wiring)
+                );
+                if (wiring?.textarea !== true) {
+                    recorder.note(
+                        'no engine textarea — either VITE_TERMINAL_ENGINE=xterm is in force or the vendored patch is not ' +
+                            'in this bundle. Every assertion below is about the ghostty engine, so the step stops here ' +
+                            'rather than reporting vacuous passes.'
+                    );
+                    return;
+                }
+                recorder.check(
+                    'no `contenteditable` host is left to swallow composition events',
+                    wiring.contentEditable === 0,
+                    `${String(wiring.contentEditable)} contenteditable elements under the host`
+                );
+                recorder.check(
+                    'clicking the pane body puts the caret in that textarea, where an IME would target it',
+                    wiring.activeIsTextarea === true,
+                    `document.activeElement is <${String(wiring.activeTag)}>`
+                );
+
+                await runInTerminal(page, 'cat', { settleMs: 800 });
+
+                /**
+                 * `cat`, not `cat -v`, and it matters.
+                 *
+                 * Every other byte-level assertion in this file reads through `cat -v`, which
+                 * renders a control byte as `^A`. BSD `cat -v` also renders every byte ≥ 0x80 as
+                 * `M-…`, so a UTF-8 Hangul syllable would come back as six `M-` escapes and the
+                 * "did the right TEXT arrive" question would be unanswerable. Plain `cat` keeps
+                 * the tty's own echo, which is what puts the glyphs on the screen for the
+                 * screenshot as well.
+                 */
+
+                // ── composition 1: terminated by Space ──────────────────────────────
+                const composing = await page.eval(
+                    `(() => {
+                        const ta = document.querySelector(${JSON.stringify(textarea)});
+                        if (ta === null) return { error: 'no textarea' };
+                        ta.focus();
+                        const fire = (type, data) =>
+                            ta.dispatchEvent(new CompositionEvent(type, { data, bubbles: true, cancelable: true }));
+                        fire('compositionstart', '');
+                        fire('compositionupdate', ${JSON.stringify(HANGUL_PREEDIT)});
+                        const chips = [...ta.parentElement.querySelectorAll('div')]
+                            .map((node) => {
+                                const rect = node.getBoundingClientRect();
+                                return {
+                                    text: node.textContent ?? '',
+                                    display: getComputedStyle(node).display,
+                                    color: getComputedStyle(node).color,
+                                    rect: { x: Math.round(rect.x), y: Math.round(rect.y) }
+                                };
+                            })
+                            .filter((chip) => chip.text.length > 0);
+                        return { chips };
+                    })()`
+                );
+                recorder.note(`chips mid-composition: ${JSON.stringify(composing?.chips ?? [])}`);
+                const chip = (composing?.chips ?? []).find((entry) => entry.display !== 'none');
+                recorder.check(
+                    'a composition preview chip is shown while composing (PR #120)',
+                    chip !== undefined,
+                    JSON.stringify(composing?.chips ?? [])
+                );
+                recorder.check(
+                    'and it carries the preedit text, not a placeholder',
+                    chip !== undefined && chip.text.includes(HANGUL_PREEDIT),
+                    chip?.text ?? '(no visible chip)'
+                );
+                // Where it lands, in numbers, because TERM-033 is about position: the chip is
+                // styled `top:4px; right:4px` on the engine container and never follows the
+                // cursor cell, so it sits against the pane's top edge wherever the caret is.
+                recorder.note(`preview chip origin: ${JSON.stringify(chip?.rect ?? null)} (the caret is not consulted — TERM-033)`);
+                await recorder.shot(page, 'composing');
+
+                /**
+                 * The terminating keydown lands DURING the composition, which is the real
+                 * ordering and the only one that exercises the hardening: `handleKeyDown`
+                 * parks it in `pendingKeyAfterComposition` and `handleCompositionEnd` decides
+                 * whether to replay it. A keydown dispatched after `compositionend` would take
+                 * the ordinary encoder path and prove nothing about the replay.
+                 */
+                const committed = await page.eval(
+                    `(() => {
+                        const ta = document.querySelector(${JSON.stringify(textarea)});
+                        if (ta === null) return { error: 'no textarea' };
+                        const fire = (type, data) =>
+                            ta.dispatchEvent(new CompositionEvent(type, { data, bubbles: true, cancelable: true }));
+                        ta.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true }));
+                        fire('compositionend', ${JSON.stringify(HANGUL)});
+                        const chips = [...ta.parentElement.querySelectorAll('div')]
+                            .map((node) => ({ text: node.textContent ?? '', display: getComputedStyle(node).display }))
+                            .filter((entry) => entry.text.length > 0);
+                        return { chips };
+                    })()`
+                );
+                recorder.check(
+                    'the chip is withdrawn the moment the composition commits',
+                    (committed?.chips ?? []).every((entry) => entry.display === 'none'),
+                    JSON.stringify(committed?.chips ?? [])
+                );
+
+                // A sentinel keystroke AFTER the commit, so the terminator space is an INTERIOR
+                // cell. `pane capture` trims trailing whitespace off a row, so a space at the
+                // end of the line would be unprovable; `한글 Q` is not.
+                await sleep(500);
+                await page.key('KeyQ', { key: 'Q', text: 'Q' });
+                await sleep(800);
+                await recorder.shot(page, 'composed');
+
+                const spaceCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.block('nex pane capture (Space-terminated composition)', spaceCapture.trimEnd());
+                const hangulCount = spaceCapture.split(HANGUL).length - 1;
+                recorder.note(`"${HANGUL}" occurrences on screen: ${String(hangulCount)}`);
+                recorder.check(
+                    'the composed text reaches the PTY EXACTLY ONCE (no beforeinput/keydown double-write)',
+                    hangulCount === 1,
+                    `${String(hangulCount)} occurrences`
+                );
+                recorder.check(
+                    'the terminating Space is replayed exactly once, between the text and the next keystroke',
+                    spaceCapture.includes(`${HANGUL} Q`),
+                    spaceCapture.includes(`${HANGUL}Q`)
+                        ? 'the text and the sentinel are adjacent — the terminator was dropped'
+                        : `looking for "${HANGUL} Q"`
+                );
+
+                // Submit that line so the next composition starts on a clean one.
+                await page.key('Enter');
+                await sleep(800);
+
+                // ── composition 2: terminated by Enter (the vendored hardening) ──────
+                await page.eval(
+                    `(() => {
+                        const ta = document.querySelector(${JSON.stringify(textarea)});
+                        if (ta === null) return { error: 'no textarea' };
+                        ta.focus();
+                        const fire = (type, data) =>
+                            ta.dispatchEvent(new CompositionEvent(type, { data, bubbles: true, cancelable: true }));
+                        fire('compositionstart', '');
+                        fire('compositionupdate', ${JSON.stringify(TEST_PREEDIT)});
+                        ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+                        fire('compositionend', ${JSON.stringify(TEST)});
+                        return 'ok';
+                    })()`
+                );
+                await sleep(900);
+                const enterCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.block('nex pane capture (Enter-terminated composition)', enterCapture.trimEnd());
+                const keyNameLeak = ['Enter', 'Return', 'Escape', 'Backspace'].filter((name) => enterCapture.includes(name));
+                recorder.check(
+                    'a composition ended by a NAMED key never writes the key name to the PTY (the vendored hardening)',
+                    keyNameLeak.length === 0,
+                    keyNameLeak.length === 0 ? 'no key names on screen' : `leaked: ${keyNameLeak.join(' ')}`
+                );
+                const testCount = enterCapture.split(TEST).length - 1;
+                recorder.note(
+                    `"${TEST}" occurrences on screen: ${String(testCount)} ` +
+                        '(1 = tty echo only, so nothing was replayed; 2 = echo + cat\'s copy, so a carriage return was sent)'
+                );
+                recorder.check(
+                    'and emits at most a carriage return — the composed text arrives once, submitted at most once',
+                    testCount >= 1 && testCount <= 2,
+                    `${String(testCount)} occurrences`
+                );
+                recorder.check(
+                    'the composed line is exactly the composed text, with nothing appended',
+                    enterCapture.split('\n').some((line) => line.trim() === TEST),
+                    JSON.stringify(enterCapture.trimEnd().split('\n').slice(-2))
+                );
+
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(500);
+
+                // ── PR #159: every keydown through ghostty's WASM encoder ────────────
+                //
+                // ASCII only, so `cat -v` is the right instrument again — these are the bytes
+                // the PTY received, not the engine's rendering of its own state.
+                await runInTerminal(page, "clear; printf '\\033[?1l'; cat -v", { settleMs: 900 });
+                await page.key('Tab', { modifiers: MOD.shift, key: 'Tab' });
+                await sleep(200);
+                await page.key('Enter');
+                await sleep(600);
+                await page.key('Enter', { modifiers: MOD.shift });
+                await sleep(200);
+                await page.key('Enter');
+                await sleep(600);
+                await page.key('Home');
+                await sleep(150);
+                await page.key('End');
+                await sleep(150);
+                await page.key('Enter');
+                await sleep(700);
+                const encoderCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                recorder.block('nex pane capture (cat -v, DECCKM off)', encoderCapture.trimEnd().split('\n').slice(-8).join('\n'));
+                recorder.check(
+                    'Shift+Tab reaches the PTY as `ESC [ Z` — TERM-029\'s named case, unasserted until now',
+                    encoderCapture.includes('^[[Z'),
+                    encoderCapture.includes('^[[Z') ? '^[[Z' : 'no ^[[Z on screen'
+                );
+                recorder.check(
+                    'Shift+Enter reaches the PTY as the fixterms sequence, not a bare CR',
+                    encoderCapture.includes('^[[27;2;13~'),
+                    encoderCapture.includes('^[[27;2;13~') ? '^[[27;2;13~' : 'no fixterms sequence on screen'
+                );
+                recorder.check(
+                    'with DECCKM RESET, Home and End are `ESC [ H` / `ESC [ F`',
+                    encoderCapture.includes('^[[H') && encoderCapture.includes('^[[F'),
+                    `^[[H ${String(encoderCapture.includes('^[[H'))} · ^[[F ${String(encoderCapture.includes('^[[F'))}`
+                );
+
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(500);
+                await runInTerminal(page, "clear; printf '\\033[?1h'; cat -v", { settleMs: 900 });
+                await page.key('Home');
+                await sleep(150);
+                await page.key('End');
+                await sleep(150);
+                await page.key('ArrowUp');
+                await sleep(150);
+                await page.key('Enter');
+                await sleep(700);
+                const decckmCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                recorder.block('nex pane capture (cat -v, DECCKM set)', decckmCapture.trimEnd().split('\n').slice(-4).join('\n'));
+                const decckmLine = decckmCapture.split('\n').filter((line) => line.includes('^[')).pop() ?? '';
+                recorder.note(`DECCKM line: ${JSON.stringify(decckmLine)}`);
+                recorder.check(
+                    'with DECCKM SET, the same Home/End keys become `ESC O H` / `ESC O F` (PR #159\'s headline)',
+                    decckmLine.includes('^[OH') && decckmLine.includes('^[OF'),
+                    JSON.stringify(decckmLine)
+                );
+                recorder.check(
+                    'and the arrow keys follow the same mode, `ESC O A` rather than `ESC [ A`',
+                    decckmLine.includes('^[OA') && !decckmLine.includes('^[[A'),
+                    JSON.stringify(decckmLine)
+                );
+
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(500);
+                await runInTerminal(page, "printf '\\033[?1l'", { settleMs: 600 });
+
+                // ── PR #120's other half: selection over double-width cells ──────────
+                //
+                // Printed with OCTAL escapes, so the command itself is ASCII and `page.type`
+                // can produce it one physical key at a time — the same reason the glyph
+                // fixtures are files rather than typed literals. 漢 is E6 BC A2 in UTF-8.
+                const octalHan = '\\346\\274\\242';
+                const wideCount = 8;
+                const expectedText = `WSTART${HAN.repeat(wideCount)}WEND`;
+                const expectedCells = 'WSTART'.length + wideCount * 2 + 'WEND'.length;
+                await runInTerminal(page, `clear; printf 'WSTART${octalHan.repeat(wideCount)}WEND\\n'`, { settleMs: 1100 });
+                const wideCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                const wideLines = wideCapture.split('\n');
+                const wideRow = wideLines.findIndex((line) => line.includes('WSTART'));
+                recorder.check(
+                    'the wide-glyph probe line rendered (fixture integrity)',
+                    wideRow >= 0 && (wideLines[wideRow] ?? '').includes(expectedText),
+                    wideRow < 0 ? wideCapture.trimEnd().split('\n').slice(-3).join(' / ') : JSON.stringify(wideLines[wideRow])
+                );
+                if (wideRow >= 0) {
+                    const grid = await page.eval(
+                        `(() => {
+                            const root = document.querySelector('${paneRoot}');
+                            if (root === null) return null;
+                            const host = root.querySelector('[data-terminal-host]');
+                            const node = host?.querySelector('canvas') ?? host ?? root;
+                            const rect = node.getBoundingClientRect();
+                            const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
+                            return { x: rect.x, y: rect.y, cellWidth: Number(cell[0] ?? 0), cellHeight: Number(cell[1] ?? 0) };
+                        })()`
+                    );
+                    if (grid === null || !(grid.cellWidth > 0)) {
+                        recorder.check('the pane publishes its cell metrics (data-terminal-cell)', false, JSON.stringify(grid));
+                    } else {
+                        const at = (col) => ({
+                            x: grid.x + grid.cellWidth * (col + 0.5),
+                            y: grid.y + grid.cellHeight * (wideRow + 0.5)
+                        });
+                        /**
+                         * A sentinel in the clipboard first.
+                         *
+                         * `navigator.clipboard.readText()` returns whatever is on the SYSTEM
+                         * clipboard, so an engine that copied nothing at all would hand back a
+                         * previous run's text and this assertion would pass on someone else's
+                         * data. Writing a known value first makes "the engine copied" a fact
+                         * rather than an assumption. (The engine writes to the real clipboard
+                         * on every mouse-up selection — that is the behaviour under test, and
+                         * this step is not the first in the run to trigger it.)
+                         */
+                        const seeded = await page.eval(
+                            `navigator.clipboard.writeText(${JSON.stringify(CLIP_SENTINEL)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                        );
+                        recorder.note(`clipboard sentinel: ${String(seeded)}`);
+
+                        const from = at(0);
+                        const to = at(expectedCells - 1);
+                        await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                        await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                        await sleep(80);
+                        await page.mouse('mouseMoved', (from.x + to.x) / 2, to.y, { button: 'left', buttons: 1 });
+                        await sleep(60);
+                        await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
+                        await sleep(80);
+                        await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                        await sleep(500);
+                        await recorder.shot(page, 'wide-selection');
+
+                        const selected = await page.eval(
+                            `Number(document.querySelector('${paneRoot}')?.getAttribute('data-terminal-selection') ?? 0)`
+                        );
+                        const copied = await page.eval(
+                            `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
+                        );
+                        recorder.note(
+                            `drag over ${String(expectedCells)} cells → selection ${String(selected)} chars · ` +
+                                `clipboard ${JSON.stringify(copied)}`
+                        );
+                        recorder.check(
+                            `${String(expectedCells)} cells of double-width glyphs select as ${String(expectedText.length)} CHARACTERS, not ${String(expectedCells)} (PR #120 continuation cells)`,
+                            selected === expectedText.length,
+                            `data-terminal-selection = ${String(selected)}`
+                        );
+                        recorder.check(
+                            'the engine wrote the selection to the clipboard (not a stale read)',
+                            typeof copied === 'string' && copied !== CLIP_SENTINEL && !copied.startsWith('ERR:'),
+                            JSON.stringify(copied)
+                        );
+                        recorder.check(
+                            'and the copied text has NO spaces injected between the wide glyphs',
+                            copied === expectedText,
+                            JSON.stringify(copied)
+                        );
+                    }
+                }
+
+                /**
+                 * Hand the pane back with a live shell, and prove it — the same rule
+                 * `terminal-input-matrix` learned the hard way: this step runs `cat` twice and
+                 * `cat -v` twice, and a reader left holding the tty turns every later step that
+                 * types into this pane into an echo test.
+                 */
+                let handedBack = false;
+                for (let attempt = 0; attempt < 3 && !handedBack; attempt++) {
+                    await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(500);
+                    await runInTerminal(page, "printf '\\033[?1l'", { settleMs: 500 });
+                    await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+                    const probe = `IMEOK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 800 });
+                    const back = await cli.run(['pane', 'capture', '--target', paneID]);
+                    handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                }
+                recorder.check('the pane is handed back with a live shell, not a reader on the tty', handedBack);
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+
+                recorder.note(
+                    'WHAT THIS STEP DOES NOT PROVE. The composition events are SYNTHETIC: they are the same type, on the ' +
+                        'same element, in the same order a macOS IME produces, and the engine cannot tell the difference — ' +
+                        'but the OS half of the pipeline is untouched. Not covered: the candidate window (drawn by the ' +
+                        'input method, positioned against a caret rect the engine never reports — TERM-033), layout dead ' +
+                        'keys and Option-composed characters (resolved by the keyboard layout before the browser sees a ' +
+                        'keydown — TERM-023), and modifier press/release (TERM-030: the bundle still registers zero `keyup` ' +
+                        'listeners and never calls `setKittyFlags()`). A run under a real Korean or Japanese IME remains ' +
+                        'the only way to close those, and no CI can host one.'
+                );
+                recorder.eyes(
+                    'the "composing" and "composed" shots: is the preedit chip legible and is 한글 painted as two real ' +
+                        'Hangul syllables (not tofu, not a doubled 한글한글)? And in "wide-selection", does the highlight ' +
+                        'cover whole 漢 glyphs rather than splitting one down the middle?'
+                );
             }
         },
         {

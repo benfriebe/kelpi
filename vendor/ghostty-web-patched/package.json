@@ -1,0 +1,45 @@
+{
+  "name": "ghostty-web",
+  "version": "0.4.0-nex.1",
+  "description": "Web-based terminal emulator using Ghostty's VT100 parser via WebAssembly",
+  "type": "module",
+  "main": "./dist/ghostty-web.umd.cjs",
+  "module": "./dist/ghostty-web.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/ghostty-web.js",
+      "require": "./dist/ghostty-web.umd.cjs"
+    },
+    "./ghostty-vt.wasm": "./ghostty-vt.wasm"
+  },
+  "files": [
+    "dist",
+    "ghostty-vt.wasm",
+    "README.md"
+  ],
+  "keywords": [
+    "terminal",
+    "terminal-emulator",
+    "ghostty",
+    "web",
+    "xterm",
+    "vt100",
+    "wasm",
+    "webassembly",
+    "ansi",
+    "tty"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coder/ghostty-web.git"
+  },
+  "bugs": "https://github.com/coder/ghostty-web/issues",
+  "homepage": "https://github.com/coder/ghostty-web#readme",
+  "license": "MIT",
+  "author": "Coder",
+  "publishConfig": {
+    "access": "public"
+  }
+}

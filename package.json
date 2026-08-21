@@ -23,6 +23,9 @@
       "fs-xattr",
       "macos-alias",
       "node-pty"
-    ]
+    ],
+    "overrides": {
+      "ghostty-web": "file:vendor/ghostty-web-patched"
+    }
   }
 }

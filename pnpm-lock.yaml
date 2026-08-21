@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  ghostty-web: file:vendor/ghostty-web-patched
+
 importers:
 
   .:
@@ -43,8 +46,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       ghostty-web:
-        specifier: ^0.4.0
-        version: 0.4.0
+        specifier: file:../../vendor/ghostty-web-patched
+        version: file:vendor/ghostty-web-patched
       react:
         specifier: ^19.2.0
         version: 19.2.8
@@ -2081,8 +2084,8 @@ packages:
     resolution: {integrity: sha512-nBF+F1rAZVCu/p7rjzgA+Yb4lfYXrpl7a6VmJrU8wF9I1CKvP/QwPNZHnOlwbTkY6dvtFIzFMSyQXbLoTQPRpA==}
     engines: {node: '>=8'}
 
-  ghostty-web@0.4.0:
-    resolution: {integrity: sha512-0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg==}
+  ghostty-web@file:vendor/ghostty-web-patched:
+    resolution: {directory: vendor/ghostty-web-patched, type: directory}
 
   github-url-to-object@4.0.6:
     resolution: {integrity: sha512-NaqbYHMUAlPcmWFdrAB7bcxrNIiiJWJe8s/2+iOc9vlcHlwHqSGrPk+Yi3nu6ebTwgsZEa7igz+NH2vEq3gYwQ==}
@@ -5660,7 +5663,7 @@ snapshots:
     dependencies:
       pump: 3.0.4
 
-  ghostty-web@0.4.0: {}
+  ghostty-web@file:vendor/ghostty-web-patched: {}
 
   github-url-to-object@4.0.6:
     dependencies:

@@ -384,11 +384,28 @@ export function makeCli(sandbox, { repoRoot }) {
             child.on('close', () => clearTimeout(timer));
         });
 
+    const logged = async (args, opts) => {
+        const result = await invoke(args, opts);
+        // Every CLI invocation, when the audit asks for it: the run-O leak hunt needed to map
+        // two orphan panes to the call that made them, and nothing had recorded the calls.
+        const logPath = process.env.NEX_AUDIT_CLI_LOG;
+        if (logPath !== undefined && logPath !== '') {
+            try {
+                fs.appendFileSync(
+                    logPath,
+                    `${JSON.stringify({ t: new Date().toISOString(), args, code: result.code, out: result.stdout.slice(0, 300) })}\n`
+                );
+            } catch {
+                // best-effort
+            }
+        }
+        return result;
+    };
     return {
-        run: invoke,
+        run: logged,
         /** Run + require exit 0; returns stdout. */
         async ok(args, opts = {}) {
-            const result = await invoke(args, opts);
+            const result = await logged(args, opts);
             if (result.code !== 0) {
                 throw new Error(`nex ${args.join(' ')} exited ${String(result.code)}\n${result.stdout}${result.stderr}`);
             }

@@ -780,6 +780,21 @@ async function focusWebPane(page, paneID) {
     return box;
 }
 
+/**
+ * Focus a pane by its HEADER without the centre-click hazard: `page.click` aims at an
+ * element's centre, and in a narrow pane the header's centre sits inside the trailing
+ * button cluster — three runs of `run-O` leaked panes because a "focus" click landed on
+ * a split button (the leaked panes' cwds matched the clicked panes', which is what gave
+ * it away). The leading edge holds the status dot and the path, never a button.
+ */
+async function clickPaneHeader(page, paneID) {
+    const box = await page.box(`[data-testid="pane-header-${paneID}"]`);
+    if (box === null) throw new Error(`no pane header for ${paneID}`);
+    await page.clickAt(box.x + Math.min(14, box.width / 4), box.y + box.height / 2);
+    await sleep(200);
+    return box;
+}
+
 async function focusPaneBody(page, paneID) {
     const box = await page.box(`[data-testid="pane-body-${paneID}"]`);
     if (box === null) throw new Error(`no pane body for ${paneID}`);
@@ -1110,10 +1125,45 @@ async function main() {
         await sleep(2500);
 
         const flows = buildFlows({ report, page, cli, sandbox, work, repo, site, consoleErrors, runtime, repoRoot, options });
+        /*
+         * State timeline: one JSON line per step with the pane roster (id/type/cwd/label per
+         * workspace) and the active workspace, taken AFTER the step ran. This exists because
+         * two harness defects in a row (ledger N9 and its sibling) were pane-state leaks that
+         * took hours of archaeology across runs' incidental notes to localise — with the
+         * timeline, "which step left this pane behind / left that workspace active" is one
+         * grep. Best-effort: a CLI hiccup records the error and never fails the run.
+         */
+        process.env.NEX_AUDIT_CLI_LOG = path.join(outDir, 'cli-invocations.jsonl');
+        const timelinePath = path.join(outDir, 'state-timeline.jsonl');
+        const recordTimeline = async (stepID) => {
+            try {
+                const panes = await cli.json(['pane', 'list', '--json']);
+                const workspaces = await cli.json(['workspace', 'list', '--json']);
+                const active = workspaces.find((ws) => ws.is_active);
+                fs.appendFileSync(
+                    timelinePath,
+                    `${JSON.stringify({
+                        step: stepID,
+                        active: active === undefined ? null : { id: active.id, name: active.name },
+                        panes: panes.map((pane) => ({
+                            id: String(pane.id).slice(0, 8),
+                            ws: String(pane.workspace_name ?? pane.workspace_id ?? '?'),
+                            type: pane.type,
+                            cwd: pane.cwd ?? pane.working_directory ?? null,
+                            label: pane.label ?? null
+                        }))
+                    })}\n`
+                );
+            } catch (error) {
+                fs.appendFileSync(timelinePath, `${JSON.stringify({ step: stepID, error: String(error) })}\n`);
+            }
+        };
+        await recordTimeline('(boot)');
         for (const flow of flows) {
             if (skip(flow.id)) continue;
             const recorder = report.step(flow.id, { expect: flow.expect, needsEyes: flow.needsEyes === true });
             await report.guard(recorder, () => flow.run(recorder));
+            await recordTimeline(flow.id);
         }
 
         // The console tally is its own step so it lands in the report even when nothing failed.
@@ -1134,6 +1184,14 @@ async function main() {
         site.close();
         if (runtime.shell !== null) await runtime.shell.quit();
         if (runtime.daemon !== null) await runtime.daemon.stop();
+        // The two process logs, kept with the artefact: the run-O leak hunt needed to know
+        // which process minted two orphan panes, and both logs had been discarded.
+        try {
+            if (runtime.daemon !== null) fs.writeFileSync(path.join(outDir, 'daemon.log'), runtime.daemon.text());
+            if (runtime.shell !== null) fs.writeFileSync(path.join(outDir, 'shell.log'), runtime.shell.text());
+        } catch {
+            // best-effort
+        }
 
         const summary = report.write();
         process.stdout.write(
@@ -1996,6 +2054,15 @@ function buildFlows(ctx) {
                 for (const probe of probes) {
                     await focusPaneBody(page, state.firstPane);
                     const before = await page.eval(probe.observe);
+                    /*
+                     * §N9 — remember the ids that exist BEFORE a splitting probe fires, so the
+                     * cleanup closes the pane that APPEARED rather than guessing from DOM
+                     * order. PaneGrid renders panes sorted by UUID on purpose
+                     * ("Layout-independent DOM order"), so "last in the DOM" was a coin flip
+                     * on two random uuids: it won in run-N and lost in both run-O attempts,
+                     * leaking a pane that halved the widest shell pane for every later step.
+                     */
+                    const paneIDsBefore = probe.cleanup === true ? await domPaneIDs(page) : null;
                     await probe.press();
                     await sleep(1100);
                     const after = await page.eval(probe.observe);
@@ -2011,11 +2078,19 @@ function buildFlows(ctx) {
                         await sleep(500);
                     }
                     if (probe.cleanup === true && fired) {
-                        // Undo the extra pane so later steps see a predictable grid.
-                        const ids = await domPaneIDs(page);
-                        const extra = ids[ids.length - 1];
-                        if (extra !== state.firstPane) await cli.run(['pane', 'close', '--target', extra]);
+                        const known = new Set(paneIDsBefore ?? []);
+                        const appeared = (await domPaneIDs(page)).filter((id) => !known.has(id));
+                        for (const extra of appeared) {
+                            await cli.run(['pane', 'close', '--target', extra]);
+                        }
                         await sleep(1200);
+                        const restored = await domPaneIDs(page);
+                        recorder.check(
+                            'the split probe’s extra pane was closed again — the grid is handed back as found (§N9)',
+                            restored.length === (paneIDsBefore ?? []).length &&
+                                restored.every((id) => known.has(id)),
+                            `panes ${String((paneIDsBefore ?? []).length)} → +${String(appeared.length)} split → ${String(restored.length)} after cleanup`
+                        );
                     }
                 }
                 await recorder.shot(page);
@@ -2819,7 +2894,7 @@ function buildFlows(ctx) {
                     recorder.check('a markdown pane to toggle', false, 'previous step produced none');
                     return;
                 }
-                await page.click(`[data-testid="pane-header-${state.mdPane}"]`);
+                await clickPaneHeader(page, state.mdPane);
                 await sleep(400);
                 await page.key('KeyE', { modifiers: MOD.meta });
                 await sleep(1200);
@@ -2916,7 +2991,7 @@ function buildFlows(ctx) {
                 );
                 if (pane === undefined) return;
 
-                await page.click(`[data-testid="pane-header-${pane.id}"]`);
+                await clickPaneHeader(page, pane.id);
                 await sleep(400);
                 await page.key('KeyE', { modifiers: MOD.meta });
                 await sleep(1600);
@@ -4359,7 +4434,7 @@ function buildFlows(ctx) {
                      * a one-tab pane and `close_pane` takes it. Driving it any other way would
                      * test a path no user is on.
                      */
-                    await page.click(`[data-testid="pane-header-${lonely}"]`);
+                    await clickPaneHeader(page, lonely);
                     await sleep(600);
                     const paneCountBefore = (await domPaneIDs(page)).length;
                     const lonelyTargets = await listTargets(sandbox.debugPort);
@@ -4594,7 +4669,7 @@ function buildFlows(ctx) {
 
                 // The other half of the rule: a tab opened WITH a URL leaves focus alone.
                 await page.key('Escape', { key: 'Escape' });
-                await page.click(`[data-testid="pane-header-${paneID}"]`);
+                await clickPaneHeader(page, paneID);
                 await sleep(300);
                 await cli.run(['web', 'tab-new', site.url, '--target', paneID], { timeoutMs: 40_000 });
                 await sleep(1500);
@@ -5618,7 +5693,7 @@ function buildFlows(ctx) {
                  * diskSpace fits (run-O attempt 1 read a layout decision as a failure).
                  */
                 if (state.firstPane !== null) {
-                    await page.click(`[data-testid="pane-header-${String(state.firstPane)}"]`);
+                    await clickPaneHeader(page, String(state.firstPane));
                     await sleep(600);
                 }
                 const cwdText = String(
@@ -7042,7 +7117,7 @@ function buildFlows(ctx) {
                 // The association's status read is a real `git status`; the client's footer feed
                 // polls, so give both a beat rather than racing them.
                 await sleep(2500);
-                await page.click(`[data-testid="pane-header-${String(repoPaneID)}"]`);
+                await clickPaneHeader(page, String(repoPaneID));
                 await sleep(1200);
                 await recorder.shot(page);
 
@@ -7373,7 +7448,7 @@ function buildFlows(ctx) {
                     (pane) => pane.type === 'shell' && pane.id !== repoPaneID && !String(pane.cwd ?? '').startsWith(repo)
                 );
                 if (outside !== undefined) {
-                    await page.click(`[data-testid="pane-header-${String(outside.id)}"]`);
+                    await clickPaneHeader(page, String(outside.id));
                     await sleep(1000);
                     const none = await page.eval(
                         `document.querySelectorAll('[data-testid="footer-git-stats"]').length`
@@ -10881,7 +10956,7 @@ function buildFlows(ctx) {
                     { timeoutMs: 15_000, label: 'the second editor session' }
                 );
                 await sleep(1200);
-                await page.click(`[data-testid="pane-header-${paneID}"]`);
+                await clickPaneHeader(page, paneID);
                 await sleep(300);
                 const editKey = await pressBoundAction(page, 'toggle_markdown_edit');
                 recorder.note(`toggle_markdown_edit is bound to ${editKey.display === '' ? '(nothing)' : editKey.display}`);
@@ -14780,7 +14855,7 @@ function buildFlows(ctx) {
                     recorder.check('a markdown pane to search in', false, 'none could be opened');
                     return;
                 }
-                await page.click(`[data-testid="pane-header-${mdPane}"]`);
+                await clickPaneHeader(page, mdPane);
                 await sleep(600);
                 await page.key('KeyF', { modifiers: MOD.meta, key: 'f', keyCode: 70 });
                 await page.waitFor(`document.querySelector('[data-testid="content-find-input-${mdPane}"]') !== null`, {

@@ -70,11 +70,12 @@ into the port, byte-identically to ghostty's own encoder.
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-N/`](docs/audit/run-N/index.md) is the last
-  one kept whole (107 flows); the seventh burn-down's two `run-O` attempts kept their per-step
-  records and lost their screenshots, with the reason in
-  [`run-O-attempts/`](docs/audit/run-O-attempts/README.md); the scoped runs beside them are one per
-  feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-O/`](docs/audit/run-O/index.md) is
+  **current** — 107 flows, 1018 assertions, **0 failed, 0 step errors**, taken on a loaded machine
+  after the harness's own two cleanup defects were closed (the story is in its
+  [`README`](docs/audit/README.md) row and the failed attempts'
+  [`run-O-attempts/`](docs/audit/run-O-attempts/README.md)); [`run-N/`](docs/audit/run-N/index.md)
+  precedes it; the scoped runs beside them are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
   the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
   policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
@@ -86,15 +87,16 @@ Gates (2026-08-22): `pnpm check` **4947 passed**, 1 skipped; the compat suite 10
 **both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 51,
 web 46, terminal 19) and the packaged one too, **60/60** against a bundle repackaged from this tree,
 which also quits cleanly and leaves its daemon running; the terminal-renderer start stress
-**0 stranded in 48 panes**; the UI audit **1014 of 1018 assertions, 0 step errors, 0 renderer console
-errors** across **107 real user flows**. The assertion that named the open footer bug for three runs
+**0 stranded in 48 panes**; the UI audit **1018 of 1018 assertions, 0 failed, 0 step errors, 0 renderer console
+errors** across **107 real user flows** (`run-O`). The assertion that named the open footer bug for three runs
 now **passes** — `192.9 → 0.0 px`, reproduced in two independent runs — so nothing in the harness is
 failing on purpose any more. The results that carry the most weight are again on steps that did
 **not** change: the terminal input matrix is assertion-for-assertion identical to the previous three
 runs' and still passes, and the reattach-after-relaunch flow is 11/11 with the window's whole title
-bar replaced underneath it. **The four remaining reds are the harness and the machine, not the
-product**, and three of them are one newly-diagnosed latent defect in the harness's own cleanup —
-which is why no run directory is kept from this pass and a clean full run is still owed
+bar replaced underneath it. **Nothing is red.** The reds the two failed attempts carried turned out to be one
+harness defect with two faces — a coin-flip pane cleanup and a centre-aimed "focus" click that
+could land on a split button — both fixed, both asserted, with the diagnosis instrumentation
+(per-step state timeline, CLI invocation log, process logs) now part of every run's artefact
 ([`docs/audit/run-O-attempts/`](docs/audit/run-O-attempts/README.md)).
 Capability coverage against the shipped app is **99.9%** of 1490 inventoried items, up from 73.6%
 before the burn-downs, with eight of the ten domains complete and the "missing" column empty.

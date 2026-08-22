@@ -17,7 +17,7 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 **Wire parity, a 107-flow UI audit with nothing left failing on purpose, and 99.9% of the shipped
 app's feature surface — eight of its ten domains complete, nothing left unimplemented, and every one
-of the four remaining partials an argument rather than a piece of work.** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
+of the three remaining partials an argument rather than a piece of work (`TERM-033`, the IME caret rect, closed 2026-08-22 the only way it could — a human session with a real Japanese input method, `docs/audit/ime-human-session/`).** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
 `nex` CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
 binary. The window has been driven end to end and photographed a dozen times over: the campaign
 opened with **17 defects + 6 nits, two of them blockers**, and stands at **no blockers — 1 accepted

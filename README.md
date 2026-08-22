@@ -15,10 +15,10 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, a 108-flow UI audit with nothing left failing on purpose, and 99.97% of the shipped
-app's feature surface — nine of its ten domains complete, nothing left unimplemented, and a single
-remaining partial that is a thing a browser has no counterpart for rather than a piece of work
-(`TERM-034`, the selection half of macOS text services; its sibling `TERM-033` closed 2026-08-22 the
+**Wire parity, a 108-flow UI audit with nothing left failing on purpose, and 100% of the shipped
+app's feature surface accounted for — all ten domains complete, nothing left unimplemented, and
+every deliberate divergence carrying its argument in the ledger
+(`TERM-034`, reclassified divergent 2026-08-23 — the selection half of macOS text services; its sibling `TERM-033` closed 2026-08-22 the
 only way it could — a human session with a real Japanese input method,
 `docs/audit/ime-human-session/`).** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
 `nex` CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
@@ -43,9 +43,10 @@ on purpose — a coin flip that had been winning every run until this one.
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
 domains — found 285 behaviours with no port-side implementation at all. Eight burn-downs took that
-column to **zero** and coverage from 73.6% to **99.97%**, while the audit grew to **108 flows, 1042
-assertions**. Nine of the ten domains now have no partials and no gaps left at all, and **the one
-partial that remains is unobservable from a browser** rather than unwritten. Nothing on the list is
+column to **zero** and coverage from 73.6% to **100% accounted**, while the audit grew to **108
+flows, 1042 assertions**. All ten domains now have no partials and no gaps left at all — the last
+open item, `TERM-034`, was reclassified divergent-by-design on the owner's decision (2026-08-23):
+its plumbing is AppKit's `NSTextInputClient`, which Electron does not expose for canvas text. Nothing on the list is
 work anybody plans to do. The last two entries that were *arguments* are what the eighth wave turned
 into code: the launch-time skill refresh now migrates a drifted `SKILL.md` exactly once — backing
 the old bytes up rather than destroying them the way the Swift does — and OSC 52 is implemented on
@@ -106,9 +107,10 @@ harness defect with two faces — a coin-flip pane cleanup and a centre-aimed "f
 could land on a split button — both fixed, both asserted, with the diagnosis instrumentation
 (per-step state timeline, CLI invocation log, process logs) now part of every run's artefact
 ([`docs/audit/run-O-attempts/`](docs/audit/run-O-attempts/README.md)).
-Capability coverage against the shipped app is **99.97%** of 1490 inventoried items, up from 73.6%
-before the burn-downs, with nine of the ten domains complete, the "missing" column empty, and a
-single partial left that no browser can observe.
+Capability coverage against the shipped app is **100% accounted** across 1490 inventoried items
+(1324 implemented, 39 divergent by design with the argument recorded, 127 superseded by the
+architecture), up from 73.6% before the burn-downs, with all ten domains complete and the missing
+and partial columns both empty.
 Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart

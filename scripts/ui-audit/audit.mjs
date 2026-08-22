@@ -5608,6 +5608,29 @@ function buildFlows(ctx) {
                 );
 
                 await page.key('Escape');
+                /*
+                 * Precondition, asserted rather than assumed: "six gauges render" is a claim
+                 * about a footer WITH ROOM. The left cluster's reserve (§N7) deliberately costs
+                 * the tail gauge when a long path + branch + stats chips compete for the same
+                 * row — that is the priority order, not a rendering failure — so the gauges are
+                 * measured beside the shortest left cluster there is: the home pane's `~`.
+                 * Without this, whichever pane an earlier flow left focused decides whether
+                 * diskSpace fits (run-O attempt 1 read a layout decision as a failure).
+                 */
+                if (state.firstPane !== null) {
+                    await page.click(`[data-testid="pane-header-${String(state.firstPane)}"]`);
+                    await sleep(600);
+                }
+                const cwdText = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="footer-cwd"]')?.textContent ?? '(none)'`
+                    )
+                );
+                recorder.check(
+                    'the home pane is focused, so the left cluster is at its smallest (the gauges have room)',
+                    cwdText.trim() === '~',
+                    cwdText
+                );
                 // Two sample intervals, so every gauge has ≥2 points and a sparkline can draw.
                 await sleep(5000);
                 await recorder.shot(page, 'footer');
@@ -7120,7 +7143,18 @@ function buildFlows(ctx) {
                         )
                     );
 
-                const wideLayout = await readFooterLayout();
+                // Same settling as the squeeze loop below: focusing the repo pane re-measures
+                // the gauge budget, and under load the first read can catch the row mid-re-fit.
+                let wideLayout = await readFooterLayout();
+                for (let attempt = 0; attempt < 20; attempt += 1) {
+                    await sleep(300);
+                    const next = await readFooterLayout();
+                    const settled =
+                        JSON.stringify(next.segments) === JSON.stringify(wideLayout.segments) &&
+                        JSON.stringify(next.right) === JSON.stringify(wideLayout.right);
+                    wideLayout = next;
+                    if (settled) break;
+                }
                 recorder.note(`footer layout at ${String(wideLayout.innerWidth)} px: ${JSON.stringify(wideLayout)}`);
                 recorder.check(
                     'the footer exposes both clusters to measure',
@@ -7140,8 +7174,25 @@ function buildFlows(ctx) {
                     recorder.note(
                         `squeezed to ${String(width)} px · ${resized.mechanism} · innerWidth ${String(resized.inner?.w)}`
                     );
-                    await sleep(400);
-                    const layout = await readFooterLayout();
+                    /*
+                     * Wait for the layout to SETTLE, not for a fixed beat: the gauge budget is
+                     * a ResizeObserver → setState → re-render → re-fit chain, and under load a
+                     * 400 ms sleep reads the row mid-drop — run-O attempt 4 caught the gauges
+                     * one update behind at 880 px and called it an overflow. Two consecutive
+                     * identical reads mean the chain has finished; the cap keeps a genuinely
+                     * wedged app from hanging the step (the assertions then judge the last
+                     * read, as before).
+                     */
+                    let layout = await readFooterLayout();
+                    for (let attempt = 0; attempt < 20; attempt += 1) {
+                        await sleep(300);
+                        const next = await readFooterLayout();
+                        const settled =
+                            JSON.stringify(next.segments) === JSON.stringify(layout.segments) &&
+                            JSON.stringify(next.right) === JSON.stringify(layout.right);
+                        layout = next;
+                        if (settled) break;
+                    }
                     layouts.push(layout);
                     recorder.note(`footer layout at ${String(layout.innerWidth)} px: ${JSON.stringify(layout)}`);
                     if (width === 880) await recorder.shot(page, 'narrow');

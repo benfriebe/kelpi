@@ -312,14 +312,21 @@ function CountItem(props: CountItemProps): ReactElement {
 /** Layout constants the fit calculation and the row's own CSS have to agree on. */
 const FOOTER_ROW_PADDING_PX = 24; // `px-3`, both sides
 const FOOTER_CLUSTER_GAP_PX = 12; // `gap-3`
+const FOOTER_LEFT_GAP_PX = 8; // `gap-2` between the left cluster's segments
 const GAUGE_GAP_PX = 14; // `gap-3.5` between gauges
 const GAUGE_GRAPH_GAP_PX = 3; // `gap-[3px]` between a gauge's value slot and its sparkline
 /**
  * What the left cluster keeps before a gauge may claim the space: enough for a middle-truncated
- * path and a branch chip. The Swift row has no equivalent because its right cluster simply
+ * path AND the chips beside it. The Swift row has no equivalent because its right cluster simply
  * overflows; this is the number that stops the port doing the same thing (§N7).
+ *
+ * The floor matters: the branch chip (~32) + `doc N +A -B` (~49) + two 8 px gaps already need
+ * 97, and both are `shrink-0`, so any reserve at or below that starves the path to 0 px at
+ * every width — the N7 residue run-N measured. 97 for the chips + ~120 for a legible
+ * middle-truncated path. Footers holding less than this (a bare `~`) still reserve only what
+ * they want, via the `min(reserve, wanted)` below.
  */
-const FOOTER_LEFT_RESERVE_PX = 96;
+const FOOTER_LEFT_RESERVE_PX = 220;
 
 /** One gauge's rendered width: the fixed per-kind slot (§APP-081) plus its optional sparkline. */
 export function statGaugeWidth(
@@ -384,9 +391,27 @@ function useFooterGaugeBudget(
             const width = row.getBoundingClientRect().width;
             if (width <= 0) return;
             const keep = keepRef.current?.getBoundingClientRect().width ?? 0;
-            // `scrollWidth` is what the left cluster WANTS: it clips, so its own box width says
-            // nothing about the path it is holding.
-            const wanted = leftRef.current?.scrollWidth ?? 0;
+            /*
+             * What the left cluster WANTS is the sum of its children's intrinsic widths, not
+             * the container's `scrollWidth`. The children SHRINK (the path truncates toward
+             * 0 px, the branch chip has `min-w-0`), so the container never overflows and its
+             * scrollWidth merely echoes its current box — which made the reserve "whatever the
+             * cluster already has", a circular measurement that kept the gauges at whatever
+             * budget they took first (run-O attempts 1-2: path 0 px wide at every width). A
+             * truncated child, by contrast, still reports its full content as ITS scrollWidth,
+             * so summing children + gaps recovers the real want. This is intrinsic to the
+             * content, not to the layout's current split, so it cannot feed the effect its own
+             * output.
+             */
+            const left = leftRef.current;
+            let wanted = 0;
+            if (left !== null) {
+                const children = Array.from(left.children) as HTMLElement[];
+                for (const child of children) {
+                    wanted += Math.max(child.scrollWidth, child.getBoundingClientRect().width);
+                }
+                wanted += Math.max(0, children.length - 1) * FOOTER_LEFT_GAP_PX;
+            }
             const reserve = Math.min(FOOTER_LEFT_RESERVE_PX, wanted);
             const next = Math.round(
                 width - FOOTER_ROW_PADDING_PX - keep - 2 * FOOTER_CLUSTER_GAP_PX - reserve
@@ -449,7 +474,17 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
         enabledGauges.join(','),
         String(stats?.showGraphs === true),
         String(stats?.graphWidth ?? 28),
-        `${String(props.summary.running)}/${String(props.summary.waiting)}/${String(props.summary.inactive)}`
+        `${String(props.summary.running)}/${String(props.summary.waiting)}/${String(props.summary.inactive)}`,
+        /*
+         * §N7 residue — the LEFT cluster's content is an input to the measurement, not only the
+         * row's size. Focusing a repo pane swaps `~` for a long path plus the branch and stats
+         * chips without the row ever resizing, so without this key the budget keeps the reserve
+         * it took when the cluster held almost nothing and the gauges never yield — the path
+         * stays 0 px wide at every width (run-O attempt 1, `footer-git-stats`). The key is
+         * derived from props, not from the measurement, so it cannot feed the effect its own
+         * output.
+         */
+        `${home}|${pane?.workingDirectory ?? ''}|${pane?.gitBranch ?? ''}|${treeStats === null ? 0 : 1}`
     ]);
     const gaugeWidth = (kind: string): number =>
         statGaugeWidth(kind, {

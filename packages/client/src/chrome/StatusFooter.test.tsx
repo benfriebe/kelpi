@@ -864,3 +864,102 @@ describe('fitStatGauges (N7)', () => {
         expect(fitStatGauges(all, 74, graphed)).toEqual([]);
     });
 });
+
+/**
+ * §N7 residue — the budget is re-measured when the LEFT cluster's content changes, not only
+ * when the row resizes. Focusing a repo pane swaps `~` for a long path plus the branch and
+ * stats chips without the row ever changing size; run-O attempt 1 showed the gauges keeping
+ * the budget they took beside an almost-empty cluster, squeezing the path to 0 px at every
+ * width. Real geometry is stubbed per node so the measurement actually runs under jsdom.
+ */
+describe('the budget re-measures when the left cluster content changes (§N7 residue)', () => {
+    const ROW_WIDTH = 780;
+    const KEEP_WIDTH = 175;
+    let wanted = 30;
+    let rectSpy: ReturnType<typeof vi.spyOn> | null = null;
+    const originalScrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth');
+
+    const install = (): void => {
+        vi.stubGlobal(
+            'ResizeObserver',
+            class {
+                observe(): void {}
+                unobserve(): void {}
+                disconnect(): void {}
+            }
+        );
+        rectSpy = vi
+            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+            .mockImplementation(function (this: HTMLElement) {
+                const id = this.getAttribute('data-testid');
+                const width = id === 'status-footer' ? ROW_WIDTH : id === 'footer-keep' ? KEEP_WIDTH : 0;
+                return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 24, toJSON: () => ({}) } as DOMRect;
+            });
+        // On the CHILD, not the container: the cluster's children shrink, so the container
+        // never overflows — the truncated path span is what still reports its full content.
+        Object.defineProperty(Element.prototype, 'scrollWidth', {
+            configurable: true,
+            get(this: Element) {
+                return this.getAttribute('data-testid') === 'footer-cwd' ? wanted : 0;
+            }
+        });
+    };
+    const restore = (): void => {
+        vi.unstubAllGlobals();
+        rectSpy?.mockRestore();
+        rectSpy = null;
+        if (originalScrollWidth !== undefined) {
+            Object.defineProperty(Element.prototype, 'scrollWidth', originalScrollWidth);
+        }
+    };
+
+    it('yields tail gauges to the reserve once a repo pane fills the cluster', () => {
+        install();
+        try {
+            wanted = 30; // the home pane's `~`: the cluster wants almost nothing
+            const home = '/Users/test';
+            const view = render(
+                <StatusFooter
+                    summary={SUMMARY}
+                    now={NOW}
+                    homeDirectory={home}
+                    focusedPane={pane({ workingDirectory: home })}
+                    systemStats={statsView({
+                        enabled: ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace']
+                    })}
+                />
+            );
+            const rendered = (): string[] =>
+                within(screen.getByTestId('system-stats'))
+                    .getAllByRole('button')
+                    .map((node) => node.getAttribute('data-testid') ?? '');
+            // Beside `~` the reserve is capped at what the cluster WANTS, so all six fit.
+            expect(rendered()).toHaveLength(6);
+
+            // Focus a repo pane: long path + branch + stats — the row itself never resizes.
+            wanted = 320;
+            const repo = '/private/var/folders/zz/audit/worktrees/repo';
+            view.rerender(
+                <StatusFooter
+                    summary={SUMMARY}
+                    now={NOW}
+                    homeDirectory={home}
+                    focusedPane={pane({ workingDirectory: repo, gitBranch: 'main' })}
+                    associations={[association(repo, DIRTY)]}
+                    systemStats={statsView({
+                        enabled: ['cpu', 'memory', 'load', 'network', 'diskIO', 'diskSpace']
+                    })}
+                />
+            );
+            const after = rendered();
+            // The reserve (220) now binds: the tail gauge yields to the path instead of the
+            // path being starved to 0 px. What survives is a canonical-order PREFIX.
+            expect(after.length).toBeLessThan(6);
+            expect(after.length).toBeGreaterThan(0);
+            expect(after).not.toContain('stat-gauge-diskSpace');
+            expect(after[0]).toBe('stat-gauge-cpu');
+        } finally {
+            restore();
+        }
+    });
+});

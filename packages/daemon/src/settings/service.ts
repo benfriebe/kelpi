@@ -288,7 +288,11 @@ export function buildSettingsSnapshot(
             inheritGroupOnNewWorkspace: general.inheritGroupOnNewWorkspace,
             // SET-012: the same shape for the sidebar's drop gesture — the client reads it and
             // puts the answer on `workspace-move` (`expand_on_drop`).
-            expandGroupOnWorkspaceDrop: general.expandGroupOnWorkspaceDrop
+            expandGroupOnWorkspaceDrop: general.expandGroupOnWorkspaceDrop,
+            // §TERM-046: the OSC 52 write gate. Enforced DAEMON-side — `handlers/app/clipboard.ts`
+            // reads it through this snapshot at event time, so a Settings toggle governs the very
+            // next sequence — and carried here because Settings ▸ Workspaces renders it.
+            clipboardWrite: general.clipboardWrite
         },
         appearance: {
             // §APP-014: the theme's own background when the config names none — the "resolved

@@ -18,6 +18,11 @@
  *     its own status socket. A browser client has no ⌘Q, which is why the row says so.
  *   - **Focus follows mouse** + its delay — §10, already read by the pane grid. The slider range
  *     is §10's 0–500 in steps of 25, and it only appears while the toggle is on.
+ *   - **Let programs write the clipboard** — `clipboard-write`, §TERM-046's OSC 52 gate. The one
+ *     control on this tab that is a SECURITY posture rather than a preference: it ships OFF,
+ *     which is stricter than the shipped app (ghostty's own `clipboard-write` defaults to
+ *     `allow`, and `GhosttyApp.swift:114-123` honours every write it is handed), and the row
+ *     states the half no toggle governs — clipboard *reads* are refused outright.
  *
  * Values are read straight off the daemon snapshot; a change is a verb, and the broadcast that
  * follows is what moves the control. There is no optimistic local state, so two windows cannot
@@ -146,6 +151,29 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                         <KeyChip>{`${String(general.focusFollowsMouseDelay)} ms`}</KeyChip>
                     </SettingsRow>
                 ) : null}
+
+                {/*
+                 * §TERM-046. A pane setting rather than a workspace one, which is why it sits in
+                 * this section: it governs what a program RUNNING IN A PANE may do to the
+                 * machine you are looking at. Off by default and stricter than the shipped app
+                 * on purpose — see `daemon/src/term/osc52.ts` — and the row says out loud that
+                 * reads are refused either way, because "clipboard access" reads as both
+                 * directions to anyone who has met OSC 52 before.
+                 */}
+                <SettingsRow
+                    label="Let programs write the clipboard"
+                    detail="A program in a terminal pane can put text on your clipboard with OSC 52 — how tmux, vim and remote shells copy. Off by default. Programs can never READ your clipboard: Nex refuses those requests whatever this is set to."
+                    testID="clipboard-write-row"
+                >
+                    <SettingsToggle
+                        testID="clipboard-write-toggle"
+                        label="Let programs write the clipboard"
+                        checked={general.clipboardWrite}
+                        onChange={(next) => {
+                            props.actions.setGeneralSetting('clipboard-write', next ? 'true' : 'false');
+                        }}
+                    />
+                </SettingsRow>
             </SettingsSection>
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>

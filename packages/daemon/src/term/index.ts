@@ -7,6 +7,17 @@ export {
     type OscNotification
 } from './osc-notify.js';
 export {
+    OSC_52_CODE,
+    OSC_52_MAX_DECODED_BYTES,
+    OSC_52_MAX_ENCODED_LENGTH,
+    parseOsc52,
+    type Osc52Ignored,
+    type Osc52IgnoreReason,
+    type Osc52Read,
+    type Osc52Request,
+    type Osc52Write
+} from './osc52.js';
+export {
     createTerminalStateService,
     DEFAULT_COLS,
     DEFAULT_ROWS,

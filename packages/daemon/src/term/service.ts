@@ -37,6 +37,7 @@ import {
     parseOscNotification,
     type OscNotification
 } from './osc-notify.js';
+import { OSC_52_CODE, parseOsc52, type Osc52Request } from './osc52.js';
 import { DEFAULT_RING_CAPACITY_BYTES, RawRingBuffer } from './ring.js';
 import { searchTerminal, type SearchOptions, type TerminalMatch } from './search.js';
 
@@ -102,6 +103,19 @@ export interface TerminalStateOptions {
     readonly onOscNotification?:
         | ((paneID: string, notification: OscNotification) => void)
         | undefined;
+    /**
+     * **OSC 52** — a program in the pane driving the clipboard (terminal-panes.md §TERM-046).
+     *
+     * Parsed here for the same reason OSC 7 and OSC 9 are, and reported *whatever it turns out
+     * to be*: a write, a refused read, or an ignored/oversize/malformed sequence. Every one of
+     * those has a log line attached to it upstream (`handlers/app/clipboard.ts`), which is why
+     * the callback receives `ignored` requests instead of the parser swallowing them.
+     *
+     * The handler behind it is registered UNCONDITIONALLY and CLAIMS the sequence, whether or
+     * not a sink was supplied — see `create()`. That is the read refusal's structural half: no
+     * later handler can be added that answers one.
+     */
+    readonly onClipboardRequest?: ((paneID: string, request: Osc52Request) => void) | undefined;
     /**
      * A pane's VT modes changed (`modes()`'s value is not what it was).
      *
@@ -251,6 +265,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     private readonly onOscNotification:
         | ((paneID: string, notification: OscNotification) => void)
         | undefined;
+    private readonly onClipboardRequest: ((paneID: string, request: Osc52Request) => void) | undefined;
     private readonly onModesChange: ((paneID: string, modes: VtModes) => void) | undefined;
     private readonly onKittyReply: ((paneID: string, reply: Uint8Array) => void) | undefined;
 
@@ -266,6 +281,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         this.onDirectoryChange = options.onDirectoryChange;
         this.onTitleChange = options.onTitleChange;
         this.onOscNotification = options.onOscNotification;
+        this.onClipboardRequest = options.onClipboardRequest;
         this.onModesChange = options.onModesChange;
         this.onKittyReply = options.onKittyReply;
     }
@@ -573,6 +589,25 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             term.parser.registerOscHandler(OSC_NOTIFY_CODE, notify(OSC_NOTIFY_CODE));
             term.parser.registerOscHandler(OSC_NOTIFY_URXVT_CODE, notify(OSC_NOTIFY_URXVT_CODE));
         }
+        /*
+         * §TERM-046: OSC 52. Two things here are deliberate and neither is like its neighbours.
+         *
+         * **Registered unconditionally**, even with no sink: this handler is the only thing
+         * standing between `OSC 52 ; c ; ?` and a terminal that answers it, and that guarantee
+         * must not depend on which callbacks boot happened to supply.
+         *
+         * **Returns `true`** — "fully handled", where OSC 7 / 9 / 777 return `false` so xterm's
+         * own bookkeeping and any later handler still see the sequence. This port CLAIMS OSC 52
+         * instead. `@xterm/headless` 6.0.0 has no built-in OSC 52 responder (clipboard access is
+         * an addon there, and this service loads no such addon) and this service never
+         * subscribes to `term.onData`, so nothing in the daemon can turn a read into a reply
+         * today; consuming the sequence is what keeps that true when a handler is added later.
+         */
+        const clipboard = this.onClipboardRequest;
+        term.parser.registerOscHandler(OSC_52_CODE, (data) => {
+            clipboard?.(paneID, parseOsc52(data));
+            return true;
+        });
         // Mouse FORMAT has no `IModes` member, so it is tracked off the parser (`mouse-modes.ts`).
         // Registered unconditionally: `modes()` is a synchronous read for every caller, and a
         // pane that starts life without a mode listener can still be attached to later.

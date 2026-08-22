@@ -563,6 +563,33 @@ export interface WsNotificationMessage {
     readonly dedupeKey: string;
 }
 
+export const WS_CLIPBOARD_WRITE_MESSAGE = 'clipboard-write';
+
+/**
+ * §TERM-046: a program in a pane asked to put text on the clipboard (OSC 52), the daemon's
+ * `clipboard-write` setting allowed it, and this is the text.
+ *
+ * A broadcast, on the same seam `notification` uses, because the clipboard is not the daemon's to
+ * own: the PTY runs on the daemon's machine and the clipboard belongs to whichever machine a
+ * client is displayed on (terminal-surface.md §12's port note — "the clipboard belongs to the
+ * *client machine*"). Every attached client writes the text to its own machine's clipboard; two
+ * windows on one machine writing the same string is a no-op.
+ *
+ * `bytes` is the DECODED length as the daemon measured it, carried so a client can log the write
+ * attributably — pane id and size — without logging the content. `text` is the one sensitive
+ * field here and nothing on either side ever logs it.
+ *
+ * Additive: a client that predates it ignores an unknown type and never writes a clipboard,
+ * which is exactly the behaviour it had.
+ */
+export interface WsClipboardWriteMessage {
+    readonly type: typeof WS_CLIPBOARD_WRITE_MESSAGE;
+    readonly paneID: string;
+    readonly workspaceID: string;
+    readonly text: string;
+    readonly bytes: number;
+}
+
 export interface WsPaneExitMessage {
     readonly type: 'pane-exit';
     readonly paneID: string;
@@ -699,6 +726,7 @@ export type WsServerMessage =
     | WsDeltaMessage
     | WsCommandReplyMessage
     | WsNotificationMessage
+    | WsClipboardWriteMessage
     | WsPaneExitMessage
     | WsPaneModesMessage
     | WsResyncRequiredMessage

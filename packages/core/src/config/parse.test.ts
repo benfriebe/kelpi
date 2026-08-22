@@ -61,6 +61,25 @@ describe('parseGeneralSettings', () => {
         expect(parseGeneralSettings('focus-follows-mouse = 1').focusFollowsMouse).toBe(false);
     });
 
+    /**
+     * §TERM-046. `clipboard-write` is a GATE, so it parses the way a gate should: absent means
+     * off, and only the literal `true` opens it — a `yes`, a `1`, a typo all fail closed. (The
+     * default-true flags beside it use the mirror-image rule, which is why this is asserted
+     * rather than assumed.)
+     */
+    it('ships clipboard-write OFF and opens it only for the literal "true"', () => {
+        expect(parseGeneralSettings('').clipboardWrite).toBe(false);
+        expect(parseGeneralSettings('clipboard-write = true').clipboardWrite).toBe(true);
+        expect(parseGeneralSettings('clipboard-write = TRUE').clipboardWrite).toBe(true);
+        expect(parseGeneralSettings('clipboard-write = yes').clipboardWrite).toBe(false);
+        expect(parseGeneralSettings('clipboard-write = 1').clipboardWrite).toBe(false);
+        expect(parseGeneralSettings('clipboard-write =').clipboardWrite).toBe(false);
+        // Later lines win, in both directions.
+        expect(parseGeneralSettings('clipboard-write = true\nclipboard-write = false').clipboardWrite).toBe(
+            false
+        );
+    });
+
     it('clamps the delay at 0 and ignores non-integers', () => {
         expect(parseGeneralSettings('focus-follows-mouse-delay = -20').focusFollowsMouseDelay).toBe(0);
         expect(parseGeneralSettings('focus-follows-mouse-delay = abc').focusFollowsMouseDelay).toBe(

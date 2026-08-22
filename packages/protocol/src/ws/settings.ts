@@ -98,6 +98,16 @@ export interface WsGeneralSettings {
      * always-expand behaviour and only the window's gesture is governed by the toggle.
      */
     readonly expandGroupOnWorkspaceDrop: boolean;
+    /**
+     * §TERM-046 `clipboard-write`, default **false**: may a program running in a pane put text
+     * on the clipboard with OSC 52?
+     *
+     * A DAEMON-side gate — with it off the sequence never reaches a client at all — but it rides
+     * the snapshot for the two reasons every other daemon-enforced flag does: Settings ▸
+     * Workspaces renders it, and two attached windows must not disagree about whether it is on.
+     * There is no `clipboardRead` twin: OSC 52 reads are refused outright, with no key.
+     */
+    readonly clipboardWrite: boolean;
 }
 
 /**
@@ -363,7 +373,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         newWorkspacePlacement: 'end-of-list',
         newGroupPlacement: 'end-of-list',
         inheritGroupOnNewWorkspace: true,
-        expandGroupOnWorkspaceDrop: true
+        expandGroupOnWorkspaceDrop: true,
+        clipboardWrite: false
     },
     appearance: {
         backgroundColor: DEFAULT_SETTINGS_BACKGROUND,
@@ -464,7 +475,11 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // …and the third Workspaces control beside them: SET-011's group inheritance.
     'inherit-group-on-new-workspace',
     // SET-012, the last of §13's six behaviour keys: the drop-into-a-collapsed-group rule.
-    'expand-group-on-workspace-drop'
+    'expand-group-on-workspace-drop',
+    // §TERM-046's OSC 52 gate. Not a Swift key either — ghostty owns `clipboard-write` there and
+    // the app ships it wide open; here it is a nex key that ships OFF, and the Settings ▸
+    // Workspaces toggle is what turns it on.
+    'clipboard-write'
 ] as const;
 export type WsWritableGeneralKey = (typeof WS_WRITABLE_GENERAL_KEYS)[number];
 

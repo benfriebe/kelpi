@@ -5982,6 +5982,40 @@ function buildFlows(ctx) {
                 state.agentPane = paneID;
                 recorder.check('a shell pane to attach an agent to', paneID !== undefined);
                 if (paneID === undefined) return;
+                /*
+                 * PRECONDITION (added by the ninth re-score): the pane under test must not be the
+                 * FOCUSED one, because §AGNT-055's 600 ms focus dwell exists precisely to clear a
+                 * non-idle status on the pane you are looking at — and §AGNT-056 suspends that
+                 * while the app is inactive. These three steps read their status 1.8–2.5 s after
+                 * raising it, so with the agent parked on the focused pane their result was
+                 * decided by whether the audit window happened to be frontmost: nine full runs had
+                 * it in the background and passed, `run-P` attempt 1 had it in front and four
+                 * assertions read exactly the `idle` that `agent-lifecycle` asserts the dwell
+                 * produces two steps later, on byte-identical step code.
+                 *
+                 * The fix is a focus move, not a target move: attempt 2 tried picking a different
+                 * shell pane and pulled one out of a BACKGROUND workspace, whose header is not in
+                 * the DOM at all — three assertions went red on `undefined`, because the active
+                 * workspace holds exactly one shell pane at this point. So keep the pane and move
+                 * the focus ring to a sibling in the same workspace; `agent-stop` hands it back.
+                 * Nothing here asserts anything new — the badge renders on the header whether or
+                 * not the pane is focused, which is the whole point of it.
+                 */
+                const focusedExpr = `(document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null)`;
+                state.agentFocusWas = await page.eval(focusedExpr);
+                if (state.agentFocusWas === paneID) {
+                    const sibling = (await cli.json(['pane', 'list', '--json'])).find(
+                        (item) => item.is_active_workspace === true && item.id !== paneID
+                    );
+                    if (sibling !== undefined) {
+                        await clickPaneHeader(page, sibling.id);
+                        recorder.note(
+                            `focus parked on ${String(sibling.id)} (${String(sibling.type)}) so §AGNT-055's dwell cannot clear ${paneID}`
+                        );
+                    } else {
+                        recorder.note('no sibling pane to park focus on — the dwell may clear this status');
+                    }
+                }
                 // `nex event` takes its hook payload on stdin, exactly as Claude Code delivers
                 // it; the session id is what makes the pane show an agent badge at all.
                 const sessionID = 'audit-0000-1111-2222';
@@ -6073,6 +6107,23 @@ function buildFlows(ctx) {
                 const footer = await page.eval(`(document.querySelector('${PAGE.footer}')?.innerText ?? '').replace(/\\n/g,' ')`);
                 recorder.note(`footer: ${footer}`);
                 recorder.check('the footer shows zero running', /0\s*running/.test(String(footer)), String(footer));
+                /*
+                 * Hand the focus ring back where `agent-start` found it (run-L's rule 1, applied
+                 * to focus rather than to the active workspace). `agent-lifecycle` immediately
+                 * below reads "focused pane before" and restores it too, so leaving this parked
+                 * would quietly redefine what that step hands back.
+                 */
+                if (typeof state.agentFocusWas === 'string' && state.agentFocusWas === paneID) {
+                    await clickPaneHeader(page, paneID);
+                    const restored = await page.eval(
+                        `(document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null)`
+                    );
+                    recorder.check(
+                        'and the step hands the focus ring back where it found it',
+                        restored === state.agentFocusWas,
+                        `${String(state.agentFocusWas)} → ${String(restored)}`
+                    );
+                }
             }
         },
         {
@@ -9193,6 +9244,356 @@ function buildFlows(ctx) {
                         '"preedit-tracked", does the marked text sit ON the cursor cell — underlined, over the cells it ' +
                         'is about to fill — and did it move with the caret between the two? And in "wide-selection", ' +
                         'does the highlight cover whole 漢 glyphs rather than splitting one down the middle?'
+                );
+            }
+        },
+        {
+            id: 'terminal-osc52',
+            expect:
+                'OSC 52 is honoured for WRITES behind a setting that ships OFF, and refused outright for READS. With ' +
+                '`clipboard-write` off, a `printf` of `ESC ] 52 ; c ; <base64> BEL` from a live pane leaves the system ' +
+                'clipboard holding the sentinel this step seeded, and the daemon log names the setting that would have ' +
+                'allowed it. Turning the Settings ▸ Workspaces toggle on writes `clipboard-write = true` into the config ' +
+                'file and the SAME daemon process honours the very next sequence: the clipboard then holds the payload ' +
+                'byte for byte, written by the Electron main process (its log names the pane and the size, never the ' +
+                'text). A `?` READ request is refused with the setting ON — nothing comes back to the PTY, proven by a ' +
+                '`cat -v` that shows the sentinel keystroke and no reply at all.',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * ── WARNING: this step writes the DEVELOPER'S REAL CLIPBOARD ────────────────
+                 *
+                 * There is no sandboxed clipboard. `navigator.clipboard` in the audit's Electron
+                 * window and `clipboard.writeText` in its main process both address the machine's
+                 * one pasteboard, so running this step replaces whatever you had copied. The
+                 * precedent is `terminal-ime`, which seeds a sentinel for the same reason and
+                 * leaves it there; this step goes one better and puts the ORIGINAL contents back
+                 * at the end when it was able to read them.
+                 *
+                 * That is also the honest shape of the assertion. The clipboard is OS state: no
+                 * screenshot reaches it and no daemon-side mock stands in for it, so the only way
+                 * to prove "the text landed on the clipboard" is to read the real one back.
+                 */
+                const target = await widestShellPane(page, cli);
+                const paneID = target?.id ?? state.firstPane;
+                if (paneID === null || paneID === undefined) {
+                    recorder.check('a shell pane to copy from', false);
+                    return;
+                }
+                recorder.note(`target pane: ${String(paneID)} (${String(Math.round(target?.width ?? 0))}px)`);
+
+                const tag = Math.random().toString(36).slice(2, 7).toUpperCase();
+                const SENTINEL = `NEX-OSC52-SENTINEL-${tag}`;
+                const BLOCKED = `NEX-OSC52-BLOCKED-${tag}`;
+                const ALLOWED = `NEX-OSC52-ALLOWED-${tag} (with a space)`;
+                const b64 = (text) => Buffer.from(text, 'utf8').toString('base64');
+                /** `pane capture` reads the daemon's buffer; a marker keeps the assertions local. */
+                const readClipboard = async () =>
+                    page.eval(
+                        `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
+                    );
+                const writeClipboard = async (text) =>
+                    page.eval(
+                        `navigator.clipboard.writeText(${JSON.stringify(text)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                    );
+                /** Everything the daemon logged since a mark, so a line can be attributed here. */
+                const daemonSince = (mark) => (runtime.daemon?.text() ?? '').slice(mark);
+                const daemonMark = () => (runtime.daemon?.text() ?? '').length;
+                const shellSince = (mark) => (runtime.shell?.text() ?? '').slice(mark);
+                const shellMark = () => (runtime.shell?.text() ?? '').length;
+                const clipboardLines = (text) =>
+                    text
+                        .split('\n')
+                        .filter((line) => line.includes('clipboard:'))
+                        .join('\n');
+
+                /*
+                 * The escape is printed as `\033\13552` — octal for `ESC ] 5 2` — rather than as
+                 * `\033]52`, and that is load-bearing rather than clever. The command line stays
+                 * on screen after it runs, so a literal `]52` in it would be indistinguishable
+                 * from a reply the terminal echoed back, and the read assertion below is exactly
+                 * "no `]52` anywhere on this screen".
+                 */
+                const oscWrite = (text) => `printf '\\033\\13552;c;${b64(text)}\\007'`;
+                const oscRead = `printf '\\033\\13552;c;?\\007'`;
+
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+
+                // ── 0. the original clipboard, so the step can put it back ──────────
+                const original = await readClipboard();
+                const restorable = typeof original === 'string' && !original.startsWith('ERR:');
+                recorder.note(
+                    restorable
+                        ? `original clipboard held ${String(original.length)} characters; it will be restored at the end`
+                        : `original clipboard unreadable (${String(original)}) — it cannot be restored`
+                );
+
+                // ── 1. the gate, OFF (the shipped default) ──────────────────────────
+                const seeded = await writeClipboard(SENTINEL);
+                recorder.check('the sentinel is on the system clipboard before anything else', seeded === 'ok', String(seeded));
+
+                const configBefore = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.check(
+                    '`clipboard-write` is not in the config file — the port ships the gate SHUT',
+                    !/clipboard-write\s*=\s*true/.test(configBefore),
+                    configBefore.trim().slice(-160) || '(empty)'
+                );
+                const settingsSnapshot = await page.eval(
+                    `(() => {
+                        const toggle = document.querySelector('[data-testid="clipboard-write-toggle"]');
+                        return toggle === null ? null : toggle.checked;
+                    })()`
+                );
+                recorder.note(`Settings toggle before opening the tab: ${JSON.stringify(settingsSnapshot)}`);
+
+                let mark = daemonMark();
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, oscWrite(BLOCKED), { settleMs: 1100 });
+                await recorder.shot(page, 'clipboard-write-off');
+
+                const afterBlocked = await readClipboard();
+                recorder.note(`clipboard after the blocked write: ${JSON.stringify(afterBlocked)}`);
+                recorder.check(
+                    'with the setting off, the pane’s OSC 52 does NOT reach the clipboard',
+                    afterBlocked === SENTINEL,
+                    JSON.stringify(afterBlocked)
+                );
+                recorder.check(
+                    'and the payload it tried to write is nowhere on the clipboard',
+                    typeof afterBlocked === 'string' && !afterBlocked.includes(BLOCKED),
+                    JSON.stringify(afterBlocked)
+                );
+                const blockedLog = daemonSince(mark);
+                recorder.block('daemon log — the refused write', clipboardLines(blockedLog) || '(nothing)');
+                recorder.check(
+                    'the daemon logged the drop and NAMED the setting that would allow it',
+                    /clipboard-write/.test(blockedLog) && blockedLog.includes(paneID),
+                    clipboardLines(blockedLog).slice(0, 240) || '(no clipboard line)'
+                );
+                recorder.check(
+                    'and the log carries the byte count instead of the text',
+                    !blockedLog.includes(BLOCKED),
+                    blockedLog.includes(BLOCKED) ? 'the payload appeared in the log' : 'no payload in the log'
+                );
+
+                // ── 2. the live-apply flip, through the Settings window ─────────────
+                const pidBefore = Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                await openSettingsTab(page, 'workspaces');
+                const toggleState = async () =>
+                    page.eval(`document.querySelector('[data-testid="clipboard-write-toggle"]')?.checked === true`);
+                recorder.check('Settings ▸ Workspaces carries the toggle, and it ships OFF', (await toggleState()) === false);
+                await page.click('[data-testid="clipboard-write-toggle"]');
+                await sleep(1000);
+                await recorder.shot(page, 'settings-toggle-on');
+                const configOn = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.check(
+                    'clicking it writes `clipboard-write = true` to the config file',
+                    /clipboard-write\s*=\s*true/.test(configOn),
+                    configOn.trim().slice(-160)
+                );
+                recorder.check(
+                    'and the switch follows the daemon’s broadcast, not a local echo',
+                    (await toggleState()) === true,
+                    String(await toggleState())
+                );
+                await page.key('Escape');
+                await sleep(600);
+
+                // ── 3. the same daemon honours the very next sequence ───────────────
+                mark = daemonMark();
+                const shellBefore = shellMark();
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, oscWrite(ALLOWED), { settleMs: 1200 });
+                await recorder.shot(page, 'clipboard-write-on');
+
+                const afterAllowed = await readClipboard();
+                recorder.note(`clipboard after the allowed write: ${JSON.stringify(afterAllowed)}`);
+                recorder.check(
+                    'with the setting on, the clipboard holds the pane’s payload BYTE FOR BYTE',
+                    afterAllowed === ALLOWED,
+                    JSON.stringify(afterAllowed)
+                );
+                const allowedLog = daemonSince(mark);
+                recorder.block('daemon log — the allowed write', clipboardLines(allowedLog) || '(nothing)');
+                recorder.check(
+                    'the daemon logged the write against the pane, with a byte count and no content',
+                    allowedLog.includes(paneID) &&
+                        /clipboard: OSC 52 write/.test(allowedLog) &&
+                        !allowedLog.includes(ALLOWED),
+                    clipboardLines(allowedLog).slice(0, 240) || '(no clipboard line)'
+                );
+                /*
+                 * Which PROCESS wrote it. The page inside a shell window stands down and lets the
+                 * Electron main process do the write (`client/src/state/clipboard.ts` says why:
+                 * `clipboard.writeText` there is not gated on transient activation). This line is
+                 * the only evidence of that split — the clipboard itself cannot say who wrote it.
+                 */
+                const shellLog = shellSince(shellBefore);
+                recorder.block('shell log — the bridge', clipboardLines(shellLog) || '(nothing)');
+                recorder.check(
+                    'the ELECTRON MAIN PROCESS is what wrote it, and its log names the pane and the size',
+                    /clipboard: wrote \d+ bytes from pane/.test(shellLog) && shellLog.includes(paneID.slice(0, 8)),
+                    clipboardLines(shellLog).slice(0, 240) || '(no clipboard line in the shell log)'
+                );
+                recorder.check(
+                    'and the shell log does not contain the text either',
+                    !shellLog.includes(ALLOWED),
+                    shellLog.includes(ALLOWED) ? 'the payload appeared in the shell log' : 'no payload in the shell log'
+                );
+                const pidAfter = Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                recorder.check(
+                    'with no restart in between — the same daemon process throughout',
+                    pidAfter === pidBefore && pidAfter > 0,
+                    `${String(pidBefore)} → ${String(pidAfter)}`
+                );
+
+                /*
+                 * Clear the screen HERE, while the pane is still focused from section 3, and not
+                 * merely at the top of section 4.
+                 *
+                 * `focusPaneBody` clicks INSIDE the terminal canvas, and a click that lands on a
+                 * cell with a glyph in it is a one-cell selection — which the engine copies to
+                 * the system clipboard on mouse-up, exactly as `copy-on-select` is supposed to.
+                 * Section 4's focus click therefore lands on section 3's `printf` line and can
+                 * quietly replace the payload this step is about to assert is still there. It
+                 * did: `run-P` attempt 2 read back `"t"` (one character out of `printf`) where it
+                 * wanted the 38-byte payload, in the crowded grid where the pane is 529 px wide
+                 * and the click lands mid-word; the scoped run's full-width pane put the same
+                 * click on a space and passed. Clearing first makes the click land on an empty
+                 * cell, which selects nothing and copies nothing. Section 4 clears again — that
+                 * is deliberate belt-and-braces, not a leftover.
+                 */
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+
+                // ── 4. the read, refused, with writes ALLOWED ───────────────────────
+                /*
+                 * Deliberately run while `clipboard-write` is still ON, which is the case that
+                 * matters: the gate is about writes, and a reader must be refused even by a
+                 * terminal that has been told to accept writes. What a terminal that answered
+                 * would send is `ESC ] 52 ; c ; <base64 of the clipboard> BEL` INTO the PTY, so
+                 * the assertion is that neither the escape nor that base64 appears anywhere on
+                 * the pane's screen, and that the keystroke typed afterwards arrives alone.
+                 */
+                mark = daemonMark();
+                await focusPaneBody(page, paneID);
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+                await runInTerminal(page, oscRead, { settleMs: 1200 });
+                const readSentinel = `NEXREAD${tag}`;
+                await runInTerminal(page, 'cat -v', { settleMs: 900 });
+                await runInTerminal(page, readSentinel, { settleMs: 900 });
+                const drained = await cli.ok(['pane', 'capture', '--target', paneID]);
+                await recorder.shot(page, 'read-refused');
+                recorder.block('the pane after a `?` read request', drained.trimEnd().split('\n').slice(-12).join('\n'));
+
+                recorder.check(
+                    'the keystroke typed after the read request arrives at `cat -v` — the tty is live',
+                    drained.includes(readSentinel),
+                    drained.trimEnd().split('\n').slice(-3).join(' / ')
+                );
+                recorder.check(
+                    'and NOTHING came back from the terminal: no OSC 52 reply on the wire',
+                    !drained.includes(']52'),
+                    drained.includes(']52') ? 'an OSC 52 sequence appeared in the pane' : 'no `]52` anywhere'
+                );
+                recorder.check(
+                    'no escape byte reached the PTY at all (`cat -v` renders one as `^[`)',
+                    !drained.includes('^['),
+                    drained.includes('^[') ? 'an escape byte was echoed' : 'no `^[` anywhere'
+                );
+                recorder.check(
+                    'and the clipboard’s contents were not handed to the program that asked',
+                    !drained.includes(b64(ALLOWED)) && !drained.includes(ALLOWED),
+                    'neither the payload nor its base64 is on the pane'
+                );
+                const readLog = daemonSince(mark);
+                recorder.block('daemon log — the refused read', clipboardLines(readLog) || '(nothing)');
+                recorder.check(
+                    'the daemon logged the refusal, and did not blame a setting for it',
+                    /READ refused/.test(readLog) && readLog.includes(paneID),
+                    clipboardLines(readLog).slice(0, 240) || '(no clipboard line)'
+                );
+                /*
+                 * A `detail` here is not decoration: this is the one assertion in the step that
+                 * reads the REAL clipboard a second time, and in `run-P` attempt 1 it was the
+                 * step's only failure with nothing recorded to say WHAT the clipboard held —
+                 * a browser refusing the read (`ERR:…`) and something overwriting the value are
+                 * different findings and the bare boolean cannot tell them apart.
+                 */
+                const afterRefusedRead = await readClipboard();
+                recorder.check(
+                    'the clipboard still holds what the pane copied — a refused read changes nothing',
+                    afterRefusedRead === ALLOWED,
+                    JSON.stringify(afterRefusedRead)
+                );
+
+                // ── 5. put the world back ───────────────────────────────────────────
+                await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                await sleep(500);
+                await openSettingsTab(page, 'workspaces');
+                if ((await toggleState()) === true) {
+                    await page.click('[data-testid="clipboard-write-toggle"]');
+                    await sleep(1000);
+                }
+                const configOff = fs.readFileSync(sandbox.configPath, 'utf8');
+                recorder.check(
+                    'the step leaves the gate SHUT again, as it found it',
+                    /clipboard-write\s*=\s*false/.test(configOff) && !/clipboard-write\s*=\s*true/.test(configOff),
+                    configOff.trim().slice(-160)
+                );
+                await page.key('Escape');
+                await sleep(600);
+
+                /**
+                 * Hand the pane back with a live shell, and prove it — `terminal-ime`'s lesson:
+                 * this step runs `cat -v`, and a reader left holding the tty turns every later
+                 * step that types into this pane into an echo test.
+                 */
+                let handedBack = false;
+                for (let attempt = 0; attempt < 3 && !handedBack; attempt++) {
+                    await focusPaneBody(page, paneID);
+                    await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                    await sleep(500);
+                    await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+                    const probe = `OSCOK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 800 });
+                    const back = await cli.run(['pane', 'capture', '--target', paneID]);
+                    handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                }
+                recorder.check('the pane is handed back with a live shell, not a reader on the tty', handedBack);
+                await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
+
+                if (restorable) {
+                    const restored = await writeClipboard(original);
+                    recorder.check(
+                        'and the developer’s own clipboard is put back',
+                        restored === 'ok' && (await readClipboard()) === original,
+                        String(restored)
+                    );
+                } else {
+                    recorder.note(
+                        'the original clipboard could not be read at the start, so it is left holding this step’s ' +
+                            'payload rather than being guessed at.'
+                    );
+                }
+
+                recorder.note(
+                    'WHAT THIS STEP DOES NOT PROVE. It writes the REAL system clipboard (there is no sandboxed one), ' +
+                        'so it is destructive by construction — the precedent is `terminal-ime`, and this step at least ' +
+                        'restores what it found. The READ half proves that nothing came back for THIS request on THIS ' +
+                        'terminal; the structural claim — that no code path in the daemon can answer one — is a unit ' +
+                        'assertion (`term/osc52.test.ts`: the service’s only PTY-write callback is never invoked, and ' +
+                        '`@xterm/headless` has no OSC 52 responder of its own). Also not covered: a BROWSER client’s ' +
+                        'fallback, which goes through `navigator.clipboard.writeText` and is gated by that browser on ' +
+                        'transient activation — the audit runs inside the Electron shell, where the main process owns ' +
+                        'the write, and that is the path measured here.'
+                );
+                recorder.eyes(
+                    'the "clipboard-write-off" and "clipboard-write-on" shots: the pane shows a plain `printf` line and ' +
+                        'a clean prompt in BOTH — an OSC 52 must be consumed by the terminal, never painted as text. In ' +
+                        '"settings-toggle-on", does the row read as a security choice rather than a preference (it says ' +
+                        'reads are refused whatever the switch is set to)? And in "read-refused", is the screen free of ' +
+                        'escape residue below the `cat -v` line?'
                 );
             }
         },

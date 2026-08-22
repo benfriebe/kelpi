@@ -45,6 +45,8 @@ import {
     trayTooltip,
     type AgentCounts
 } from './agents.js';
+// §TERM-046: the OSC 52 clipboard bridge's decode + log line (pure, so it can be tested).
+import { clipboardWriteLogLine, parseClipboardWrite } from './clipboard.js';
 import type { DaemonLocation } from './daemon.js';
 import { shellHello } from './hello.js';
 // §SET-200/§SET-201: the report shape belongs to the module that produces it.
@@ -97,6 +99,20 @@ export interface StatusHost {
      * reveals a FILE inside its folder (a markdown/diff pane's path); false opens a directory.
      */
     revealPath?(path: string, select: boolean): void;
+    /**
+     * §TERM-046: put text on THIS machine's clipboard, because a program in a pane asked to
+     * (OSC 52) and the daemon's `clipboard-write` setting allowed it.
+     *
+     * The same daemon-decides / shell-acts split as `revealPath` above, and here it is load
+     * bearing rather than merely tidy: the PTY runs on the daemon's machine, the clipboard
+     * belongs to the machine a client is displayed on, and the main process is the only writer
+     * that is not subject to a page's transient-activation rules. The page running inside this
+     * window sees the same broadcast and deliberately stands down (`client/src/state/
+     * clipboard.ts`) so there is exactly one writer per machine.
+     *
+     * The text is never logged — `./clipboard.ts` logs the pane and the byte count instead.
+     */
+    writeClipboard?(text: string): void;
     /**
      * The daemon's config files changed (SET-081's other half).
      *
@@ -655,6 +671,23 @@ export function createStatusController(options: StatusOptions): StatusController
             case 'notification':
                 notify(parsed);
                 break;
+            case 'clipboard-write': {
+                /*
+                 * §TERM-046. The daemon has already parsed the OSC 52, refused it if it was a
+                 * READ, and dropped it if `clipboard-write` is off — so anything arriving here
+                 * is a write the user's own setting allowed. All that is left is the part only
+                 * a native process can do.
+                 *
+                 * Unlike `shell-action` there is no window filter, and that is deliberate: a
+                 * clipboard is per MACHINE, not per window, so two shell windows on one host
+                 * writing the same string is a no-op rather than a conflict.
+                 */
+                const write = parseClipboardWrite(parsed);
+                if (write === null) break;
+                host.writeClipboard?.(write.text);
+                log(clipboardWriteLogLine(write));
+                break;
+            }
             case 'reveal-path': {
                 // TERM-110's shell half. Nothing is validated here beyond "there is a path":
                 // the daemon read it off a pane's own record, and Electron's own APIs are what

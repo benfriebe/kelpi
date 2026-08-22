@@ -469,7 +469,12 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             expandGroupOnWorkspaceDrop: bool(
                 general['expandGroupOnWorkspaceDrop'],
                 fallbackGeneral.expandGroupOnWorkspaceDrop
-            )
+            ),
+            // §TERM-046's OSC 52 gate. Additive like the rest, and here the additive default is
+            // the point: a daemon that predates the field sends nothing, the shipped default
+            // (OFF) stands, and the toggle renders unchecked rather than claiming an openness
+            // that daemon does not have.
+            clipboardWrite: bool(general['clipboardWrite'], fallbackGeneral.clipboardWrite)
         },
         // Chrome styling + status-bar settings. A daemon that predates the field sends nothing
         // and the shipped palette / gauge set stands — the same additive rule the rest of this

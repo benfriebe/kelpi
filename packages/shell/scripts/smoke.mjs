@@ -29,6 +29,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -96,6 +97,35 @@ const realHomeSkillDir = path.join(realHome, '.claude', 'skills', 'nex-agentic')
 const realHomeSkillFile = path.join(realHomeSkillDir, 'SKILL.md');
 const realHomeSkillBefore = readIfPresent(realHomeSkillFile);
 const realHomeMarkerBefore = readIfPresent(path.join(realHomeSkillDir, '.nex-skill.json'));
+
+/** The document the app ships — what a heal or an install has to land, byte for byte. */
+const bundledSkillFile = path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic', 'SKILL.md');
+/** The bytes an older build (or a hand edit) left behind, in the fixtures that carry one. */
+const DRIFTED_SKILL = '# nex-agentic\n\nlast month\n';
+
+const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** Every `SKILL.md.bak-…` sitting in a sandbox's skill directory, sorted. */
+function skillBackups(sandbox) {
+    return fs
+        .readdirSync(sandbox.installedSkill)
+        .filter((entry) => entry.startsWith('SKILL.md.bak-'))
+        .sort();
+}
+
+/**
+ * Put a sandbox HOME into the PRE-MARKER state: a drifted document with nothing beside it.
+ *
+ * This is what every copy `nex install-hooks` ever wrote looks like — it leaves no ownership
+ * marker — and it is the case §APP-006's migration exists for. Returns the bytes laid down so
+ * the phase can assert the backup preserved exactly them.
+ */
+function layDriftedSkill(sandbox) {
+    fs.rmSync(sandbox.skillMarkerFile, { force: true });
+    for (const entry of skillBackups(sandbox)) fs.rmSync(path.join(sandbox.installedSkill, entry), { force: true });
+    fs.writeFileSync(sandbox.skillFile, DRIFTED_SKILL);
+    return DRIFTED_SKILL;
+}
 
 function assertRealHomeUntouched(label) {
     check(
@@ -244,7 +274,7 @@ async function ensureBuilds() {
  * Every path the daemon and the shell touch, inside one temp directory. `NEXD_SOCKET_PATH`
  * is asserted to not be the production socket — a bug here would reach the user's real app.
  */
-async function makeSandbox(label, { skill = 'modified' } = {}) {
+async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexshell-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -261,19 +291,49 @@ async function makeSandbox(label, { skill = 'modified' } = {}) {
     /**
      * §APP-006's fixture, inside the throwaway HOME so nothing here can reach a real one.
      *
-     *   - `modified`: the user has the skill installed AND has edited it (no ownership marker).
-     *     The launch must leave it byte-for-byte alone.
+     *   - `marked-edited`: this app installed the document and the user then EDITED it, so the
+     *     ownership marker beside it no longer describes the bytes. The launch must leave the
+     *     document, and the marker, exactly as they are — permanently.
+     *   - `drifted`: a document that differs from the bundle with NO marker beside it (what
+     *     `nex install-hooks` leaves). The launch must migrate it: old bytes moved aside to a
+     *     `.bak-` name, the bundle installed, a marker written. Laid down by `layDriftedSkill`
+     *     rather than here, because phase 1 drives it on its SECOND launch.
      *   - `empty`: the directory exists — the user opted in — but the document is missing. The
      *     launch must fill it in from the bundle.
      *
-     * The third case, a HOME with no skill directory at all, is `skill.test.ts`'s: it needs an
+     * The fourth case, a HOME with no skill directory at all, is `skill.test.ts`'s: it needs an
      * absence to assert, and a smoke phase that installed nothing would be indistinguishable
      * from one where the step never ran.
      */
     const installedSkill = path.join(home, '.claude', 'skills', 'nex-agentic');
     fs.mkdirSync(installedSkill, { recursive: true });
     const skillFile = path.join(installedSkill, 'SKILL.md');
-    if (skill === 'modified') fs.writeFileSync(skillFile, '# nex-agentic\n\nlast month\n');
+    const skillMarkerFile = path.join(installedSkill, '.nex-skill.json');
+    let skillFixtureBytes = null;
+    let skillMarkerBytes = null;
+    if (skill === 'marked-edited') {
+        // The marker records the hash of what this app INSTALLED; the document on disk is that
+        // plus the user's own line, so the two disagree — which is the whole test.
+        const installed = readIfPresent(bundledSkillFile) ?? '# nex-agentic\n';
+        skillFixtureBytes = `${installed}\n## my own notes — hands off\n`;
+        skillMarkerBytes = `${JSON.stringify(
+            {
+                installedHash: sha256(installed),
+                sourceHash: sha256(installed),
+                version: null,
+                appVersion: '0.0.0-smoke',
+                installedAt: '2026-08-01T00:00:00.000Z',
+                by: 'nex-shell'
+            },
+            null,
+            2
+        )}\n`;
+        fs.writeFileSync(skillFile, skillFixtureBytes);
+        fs.writeFileSync(skillMarkerFile, skillMarkerBytes);
+    } else if (skill === 'drifted') {
+        skillFixtureBytes = DRIFTED_SKILL;
+        fs.writeFileSync(skillFile, skillFixtureBytes);
+    }
 
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -301,7 +361,10 @@ async function makeSandbox(label, { skill = 'modified' } = {}) {
         userData,
         installedSkill,
         skillFile,
+        skillMarkerFile,
         skillFixture: skill,
+        skillFixtureBytes,
+        skillMarkerBytes,
         runDir: env.NEXD_RUN_DIR,
         socketPath,
         httpPort: Number(env.NEXD_HTTP_PORT),
@@ -556,29 +619,40 @@ async function adoptPhase() {
         );
 
         /*
-         * §APP-006, the half that matters most: this HOME carries a skill document the user
-         * EDITED (no ownership marker beside it), and the launch step must leave it exactly as
-         * it found it. `phase 2` asserts the other half — an opted-in directory with no
-         * document gets one.
+         * §APP-006 case (a) — the sovereignty rule, which is the half that matters most.
+         *
+         * This HOME carries a document THIS APP INSTALLED (the marker beside it says so) that
+         * the user has since EDITED, so the bytes no longer hash to the marker. The launch must
+         * leave both exactly as it found them, and must never "helpfully" move the document
+         * aside either: this decision is permanent, not a one-launch grace period.
+         *
+         * Case (b) — a drifted document with NO marker, which the launch MIGRATES — is asserted
+         * against the second shell below, and `phase 2` asserts the third case: an opted-in
+         * directory with no document at all gets one.
          */
         const refreshLine = await shell.waitForLine(/skill-refresh:/, 'the skill-refresh step', 20_000);
         check('the launch order reaches its documentation-refresh slot', refreshLine !== undefined, refreshLine.trim());
         check(
-            'it declines to touch a document it cannot prove it wrote',
+            'it declines to touch a marked document whose bytes it cannot account for',
             refreshLine.includes('skipped (user-modified)'),
             refreshLine.trim()
         );
         check(
             'and the edited fixture is byte-for-byte as laid down',
-            fs.readFileSync(sandbox.skillFile, 'utf8') === '# nex-agentic\n\nlast month\n',
-            'fixture unchanged'
+            readIfPresent(sandbox.skillFile) === sandbox.skillFixtureBytes,
+            'document unchanged'
         );
         check(
-            'no ownership marker was written beside it either — no write means no write',
-            !fs.existsSync(path.join(sandbox.installedSkill, '.nex-skill.json')),
-            'no marker'
+            'the marker beside it was not rewritten either — no write means no write',
+            readIfPresent(sandbox.skillMarkerFile) === sandbox.skillMarkerBytes,
+            'marker unchanged'
         );
-        assertRealHomeUntouched('phase 1');
+        check(
+            'and a document it will not replace is never backed up',
+            skillBackups(sandbox).length === 0,
+            'no SKILL.md.bak-* beside it'
+        );
+        assertRealHomeUntouched('phase 1a');
 
         // ── a file opened from outside the app (CONT-124/125, APP-100/101) ──────────
         const markdownTarget = path.join(sandbox.env.HOME, 'smoke-open.md');
@@ -676,10 +750,49 @@ async function adoptPhase() {
         // active agent, and is asked to quit: the gate must hold the quit and ask first. The
         // dialog cannot be clicked from here, so the assertion is that the app is still alive —
         // plus, since §AGNT-116, WHICH dialog the hybrid chose (`./quit-prompt.ts`).
+        //
+        // §APP-006 case (b) rides along on this launch: before it starts, the sandbox HOME is
+        // rewritten into the pre-marker state — a drifted document with NOTHING beside it, which
+        // is what `nex install-hooks` leaves and what case (a)'s rule used to strand forever.
+        const driftedBytes = layDriftedSkill(sandbox);
         const second = startShell(sandbox);
         try {
             await second.waitForLine(/status ws connected/, 'the second shell handshake');
             pass('a second shell attaches to the same daemon');
+
+            /*
+             * The migration, on a real launch: the old bytes are MOVED ASIDE (the divergence
+             * from the Swift, which simply overwrites them), the bundle is installed, and the
+             * marker that makes this one-time goes down beside it. From here the copy is marked,
+             * so the very next user edit lands in case (a) above and is theirs forever.
+             */
+            const healLine = await second.waitForLine(/skill-refresh:/, 'the second shell’s skill-refresh step', 20_000);
+            check(
+                'a drifted copy with no marker is healed rather than declined',
+                healLine.includes('healed (backed up drifted copy to SKILL.md.bak-'),
+                healLine.trim()
+            );
+            const backups = skillBackups(sandbox);
+            check(
+                'the old document was moved aside — exactly one backup, carrying exactly its bytes',
+                backups.length === 1 &&
+                    readIfPresent(path.join(sandbox.installedSkill, backups[0] ?? '')) === driftedBytes,
+                backups.join(', ')
+            );
+            check(
+                'and what replaced it is byte-for-byte the bundled document',
+                readIfPresent(sandbox.skillFile) === readIfPresent(bundledSkillFile),
+                sandbox.skillFile
+            );
+            const healedMarker = JSON.parse(readIfPresent(sandbox.skillMarkerFile) ?? 'null');
+            check(
+                'with the ownership marker that makes the migration a one-time event',
+                healedMarker !== null &&
+                    healedMarker.by === 'nex-shell' &&
+                    healedMarker.installedHash === sha256(readIfPresent(bundledSkillFile) ?? ''),
+                JSON.stringify(healedMarker)
+            );
+            assertRealHomeUntouched('phase 1b');
             // The renderer route needs a page that has finished loading and installed the gate;
             // waiting for the load is what makes the route assertion below deterministic rather
             // than a race with `webContents.isLoading()`.
@@ -769,9 +882,7 @@ async function spawnPhase() {
             refreshLine.includes('installed (absent)'),
             refreshLine.trim()
         );
-        const bundledSkill = readIfPresent(
-            path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic', 'SKILL.md')
-        );
+        const bundledSkill = readIfPresent(bundledSkillFile);
         check(
             'and what landed is byte-for-byte the bundled document',
             bundledSkill !== null && readIfPresent(sandbox.skillFile) === bundledSkill,

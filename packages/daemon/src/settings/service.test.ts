@@ -399,6 +399,24 @@ describe('createSettingsService (write-through)', () => {
         expect(after).toContain('profile = work:CLAUDE_CONFIG_DIR=/tmp/work');
     });
 
+    /**
+     * §TERM-046. The gate has to be writable through the same verb the Settings toggle uses —
+     * and, because it is a security posture rather than a preference, it has to read OFF on a
+     * config file that has never heard of it, and OFF again the moment it is turned back off.
+     */
+    it('round-trips the OSC 52 clipboard gate, which is off until the file says otherwise', () => {
+        const f = fixture({ config: PRESERVED });
+        expect(f.service.snapshot.general.clipboardWrite).toBe(false);
+
+        expect(f.service.setGeneralSetting('clipboard-write', 'true').general.clipboardWrite).toBe(true);
+        expect(f.read() ?? '').toContain('clipboard-write = true');
+        // Every unrelated line survives, as with every other writer here.
+        expect(f.read() ?? '').toContain('keybind = super+d=split_down');
+
+        expect(f.service.setGeneralSetting('clipboard-write', 'false').general.clipboardWrite).toBe(false);
+        expect(f.read() ?? '').toContain('clipboard-write = false');
+    });
+
     it('creates the config file (and its directory) when there is none', () => {
         const root = tmpRoot();
         const configPath = path.join(root, 'nested', 'deeper', 'config');

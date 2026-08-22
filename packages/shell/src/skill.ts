@@ -19,14 +19,25 @@
  *     drifted copy; this one refuses to, because a `SKILL.md` a user has edited is *their*
  *     document. Ownership is proved by a marker written beside the file recording the hash of
  *     exactly what was installed — if the file on disk does not hash to that, someone else
- *     changed it and the refresh declines. No marker (a copy `nex install-hooks` made, or one
- *     the user wrote) is the same answer: decline.
+ *     changed it and the refresh declines, forever.
+ *  3. **The copies that pre-date the marker are migrated ONCE, and nothing is destroyed doing
+ *     it.** Rule 2 as first written declined an *unmarked* drifted copy too, which left every
+ *     install made by `nex install-hooks` (it writes no marker) stranded on whatever bytes it
+ *     had: the step could adopt an identical copy but never refresh a stale one, so the Swift's
+ *     own primary case — "refresh a drifted copy" — never happened. It happens now, in the one
+ *     shape that costs nothing if the guess is wrong: the drifted document is **moved aside** to
+ *     `SKILL.md.bak-<stamp>` (never over an existing backup), the bundled bytes are installed,
+ *     and the marker is written. That is the whole divergence from the Swift, which simply
+ *     overwrites. It is one-time **by construction**: the copy it heals comes out of it marked,
+ *     so the very next edit the user makes lands in rule 2 and is theirs forever.
  *
  * On top of ownership, the refresh is version-aware: when both documents declare a `version:` in
  * their front matter, an older bundled copy never replaces a newer installed one, so running an
- * old build once cannot roll a user's tooling backwards. The current document declares no
- * version, in which case "the bundle carries different bytes from the ones we installed" is the
- * upgrade signal — the same test the Swift makes, narrowed by rule 2.
+ * old build once cannot roll a user's tooling backwards. That guard is checked BEFORE the
+ * migration in rule 3 as well — an unmarked copy that declares a newer version is left where it
+ * is rather than backed up and rolled back. The current document declares no version, in which
+ * case "the bundle carries different bytes from the ones we installed" is the upgrade signal —
+ * the same test the Swift makes, narrowed by rules 2 and 3.
  */
 
 import { createHash } from 'node:crypto';
@@ -44,6 +55,15 @@ export interface SkillFs {
     readFile(file: string): string | null;
     writeFile(file: string, contents: string): void;
     isDirectory(dir: string): boolean;
+    /**
+     * Anything at this path at all, readable or not — a *link* counts. This is the check that
+     * makes "never overwrite an existing backup" true rather than nearly true: `readFile`
+     * answers `null` for a file it merely cannot read, and treating that as free space would
+     * hand the next `rename` a live file to clobber.
+     */
+    exists(file: string): boolean;
+    /** Move, not copy: the drifted document keeps its exact bytes and mode. */
+    rename(from: string, to: string): void;
 }
 
 export const nodeSkillFs: SkillFs = {
@@ -63,6 +83,18 @@ export const nodeSkillFs: SkillFs = {
         } catch {
             return false;
         }
+    },
+    exists(file) {
+        try {
+            // `lstat`, so a dangling symlink named like a backup still counts as occupied.
+            fs.lstatSync(file);
+            return true;
+        } catch {
+            return false;
+        }
+    },
+    rename(from, to) {
+        fs.renameSync(from, to);
     }
 };
 
@@ -79,7 +111,7 @@ export interface SkillRefreshOptions {
     readonly now?: (() => Date) | undefined;
 }
 
-export type SkillRefreshAction = 'installed' | 'updated' | 'unchanged' | 'skipped' | 'failed';
+export type SkillRefreshAction = 'installed' | 'updated' | 'unchanged' | 'skipped' | 'healed' | 'failed';
 
 export type SkillRefreshReason =
     /** `$HOME` was empty or not absolute: there is no destination to speak of. */
@@ -90,8 +122,14 @@ export type SkillRefreshReason =
     | 'not-installed'
     /** The installed copy is already the bundled one. */
     | 'identical'
-    /** Someone other than this app wrote the installed copy. It is left exactly as it is. */
+    /** A marker beside the copy does not describe it: this app installed it and the user edited
+     * it. Theirs, permanently — rule 2. */
     | 'user-modified'
+    /**
+     * A copy with NO marker beside it whose bytes differ from the bundle — the pre-marker
+     * install. Backed up and replaced, once; rule 3.
+     */
+    | 'drifted-unmarked'
     /** The installed copy declares a version at or ahead of the bundled one. */
     | 'not-newer'
     /** The document was absent under an existing skill directory, and was written. */
@@ -99,7 +137,12 @@ export type SkillRefreshReason =
     /** Ours, older, replaced. */
     | 'stale'
     /** The write threw (a read-only home, a full disk). */
-    | 'write-failed';
+    | 'write-failed'
+    /**
+     * The drifted copy could not be moved aside — so it was not replaced either. Nothing is
+     * ever destroyed to make room for the bundle.
+     */
+    | 'backup-failed';
 
 export interface SkillRefreshResult {
     readonly action: SkillRefreshAction;
@@ -107,6 +150,8 @@ export interface SkillRefreshResult {
     /** The destination document, once a home could be resolved. */
     readonly path?: string;
     readonly source?: string;
+    /** Where a drifted copy was moved to, on a `healed` (or attempted on a `backup-failed`). */
+    readonly backup?: string;
     readonly detail?: string;
 }
 
@@ -147,6 +192,32 @@ export function bundledSkillDir(options: SkillRefreshOptions): string | null {
 
 export function hashContents(contents: string): string {
     return createHash('sha256').update(contents, 'utf8').digest('hex');
+}
+
+/**
+ * The timestamp in a backup's name: ISO 8601 with the parts a filename dislikes flattened —
+ * `2026-08-22T13-45-01Z`. Sortable, unambiguous, and it survives a copy to any filesystem.
+ */
+export function skillBackupStamp(when: Date): string {
+    return when.toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
+}
+
+/** How many same-second collisions to walk past before giving up and keeping the original. */
+const MAX_BACKUP_SUFFIXES = 1000;
+
+/**
+ * `SKILL.md.bak-<stamp>`, or `…-2`, `…-3`, … — the first name in that series that nothing
+ * occupies. `null` when even that runs out, which the caller must treat as "do not migrate":
+ * a backup that would overwrite an earlier backup is worse than no refresh at all.
+ */
+export function skillBackupFile(destDir: string, stamp: string, fsys: SkillFs): string | null {
+    const base = path.join(destDir, `${SKILL_FILE}.bak-${stamp}`);
+    if (!fsys.exists(base)) return base;
+    for (let suffix = 2; suffix <= MAX_BACKUP_SUFFIXES; suffix += 1) {
+        const candidate = `${base}-${suffix}`;
+        if (!fsys.exists(candidate)) return candidate;
+    }
+    return null;
 }
 
 /** `version:` out of a leading `---` front-matter block, when the document declares one. */
@@ -286,37 +357,96 @@ export function refreshBundledSkill(options: SkillRefreshOptions, fsys: SkillFs 
     }
 
     let reason: SkillRefreshReason = 'absent';
+    let backup: string | undefined;
     if (existing !== null) {
-        const marker = parseSkillMarker(fsys.readFile(markerFile));
-        if (marker === null || marker.installedHash !== hashContents(existing)) {
-            // Rule 2. This is the branch that keeps a real home safe even when everything else
-            // about the environment is wrong.
+        const markerRaw = fsys.readFile(markerFile);
+        const marker = parseSkillMarker(markerRaw);
+        const ours = marker !== null && marker.installedHash === hashContents(existing);
+        if (!ours && markerRaw !== null) {
+            /*
+             * Rule 2, and the branch that keeps a real home safe even when everything else about
+             * the environment is wrong. There IS a marker beside this document and it does not
+             * describe these bytes — this app installed it and someone has edited it since (or
+             * the marker is unreadable, which is the same evidence: something wrote here and we
+             * cannot prove what). Never touched again, not once, not with a backup.
+             */
             return { action: 'skipped', reason: 'user-modified', path: destFile, source: sourceFile };
         }
+
+        // The version guard runs for BOTH the marked and the unmarked case, and before the
+        // migration below: a copy declaring a newer version is never rolled backwards, whoever
+        // wrote it.
         const order = compareSkillVersions(skillVersion(source), skillVersion(existing));
         if (order !== null && order <= 0) {
             return { action: 'skipped', reason: 'not-newer', path: destFile, source: sourceFile };
         }
-        reason = 'stale';
+
+        if (ours) {
+            reason = 'stale';
+        } else {
+            /*
+             * Rule 3 — the one-time migration. Nothing beside this document says who wrote it,
+             * and it is not the bundle's bytes: it is a copy `nex install-hooks` (or an older
+             * build) left, drifted, from before this app kept receipts. It is moved aside rather
+             * than overwritten, so the Swift's "refresh a drifted copy" finally happens without
+             * the Swift's cost if the copy turns out to have been precious. Once, because what
+             * this writes in its place carries a marker.
+             */
+            const candidate = skillBackupFile(destDir, skillBackupStamp(options.now?.() ?? new Date()), fsys);
+            if (candidate === null) {
+                return {
+                    action: 'failed',
+                    reason: 'backup-failed',
+                    path: destFile,
+                    source: sourceFile,
+                    detail: 'every backup name for this timestamp is taken'
+                };
+            }
+            try {
+                fsys.rename(destFile, candidate);
+            } catch (error) {
+                return {
+                    action: 'failed',
+                    reason: 'backup-failed',
+                    path: destFile,
+                    source: sourceFile,
+                    backup: candidate,
+                    detail: error instanceof Error ? error.message : String(error)
+                };
+            }
+            backup = candidate;
+            reason = 'drifted-unmarked';
+        }
     }
 
     try {
         fsys.writeFile(destFile, source);
         fsys.writeFile(markerFile, `${JSON.stringify(buildMarker(source, options), null, 2)}\n`);
     } catch (error) {
+        // A failed write must not be how a user loses the copy that was there: put it back.
+        if (backup !== undefined) {
+            try {
+                fsys.rename(backup, destFile);
+            } catch {
+                // Then the bytes are still in the backup, under their own name, and the detail
+                // below is what leads a support question to them.
+            }
+        }
         return {
             action: 'failed',
             reason: 'write-failed',
             path: destFile,
             source: sourceFile,
+            ...(backup === undefined ? {} : { backup }),
             detail: error instanceof Error ? error.message : String(error)
         };
     }
     return {
-        action: existing === null ? 'installed' : 'updated',
+        action: reason === 'drifted-unmarked' ? 'healed' : existing === null ? 'installed' : 'updated',
         reason,
         path: destFile,
-        source: sourceFile
+        source: sourceFile,
+        ...(backup === undefined ? {} : { backup })
     };
 }
 
@@ -324,5 +454,11 @@ export function refreshBundledSkill(options: SkillRefreshOptions, fsys: SkillFs 
 export function describeSkillRefresh(result: SkillRefreshResult): string {
     const where = result.path === undefined ? '' : ` ${result.path}`;
     const detail = result.detail === undefined ? '' : ` — ${result.detail}`;
-    return `skill-refresh: ${result.action} (${result.reason})${where}${detail}`;
+    // A heal names the backup rather than its reason slug: the one thing a person reading this
+    // line needs is where their old document went.
+    const note =
+        result.action === 'healed' && result.backup !== undefined
+            ? `backed up drifted copy to ${path.basename(result.backup)}`
+            : result.reason;
+    return `skill-refresh: ${result.action} (${note})${where}${detail}`;
 }

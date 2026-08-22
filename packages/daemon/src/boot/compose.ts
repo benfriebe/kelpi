@@ -64,6 +64,8 @@ import {
 import { createAppHandlers } from '../handlers/app/index.js';
 // §TERM-050: the OSC desktop-notification sink, the sibling of the agent-event path.
 import { createOscNotificationSink } from '../handlers/app/osc-notifications.js';
+// §TERM-046: the OSC 52 clipboard sink — the gate, the log lines and the client broadcast.
+import { createClipboardWriteSink } from '../handlers/app/clipboard.js';
 import { paneHandlers, spawnEnvVars, spawnPaneIfShell, type PaneHandlerContext, type PaneSpawnDefaults } from '../handlers/pane/index.js';
 import {
     clearRunFiles,
@@ -101,6 +103,7 @@ import {
 import { createSystemStatsSampler } from '../stats/index.js';
 import {
     createTerminalStateService,
+    type Osc52Request,
     type OscNotification,
     type TerminalStateServiceImpl
 } from '../term/index.js';
@@ -394,6 +397,11 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * `ws`, both of which are built below.
      */
     let onPaneOscNotification: (paneID: string, notification: OscNotification) => void = () => {};
+    /**
+     * §TERM-046's delivery, deferred for the same reason as the three above: the gate reads
+     * `settings`, the routing reads `store` and the broadcast needs `ws`.
+     */
+    let onPaneClipboardRequest: (paneID: string, request: Osc52Request) => void = () => {};
     const term = createTerminalStateService({
         onDirectoryChange: (paneID, directory) => {
             try {
@@ -421,6 +429,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 onPaneOscNotification(paneID, notification);
             } catch (error) {
                 report(error, 'pane osc notification');
+            }
+        },
+        // §TERM-046: OSC 52 out of the PTY stream. The gate (`clipboard-write`, default off),
+        // the log lines and the broadcast are `handlers/app/clipboard.ts`; a READ request never
+        // gets an answer, and there is deliberately no path from here back to the PTY.
+        onClipboardRequest: (paneID, request) => {
+            try {
+                onPaneClipboardRequest(paneID, request);
+            } catch (error) {
+                report(error, 'pane clipboard request');
             }
         },
         // §TERM-037…§TERM-039: the CLIENT encodes DEC mouse reports (no renderer this port ships
@@ -879,6 +897,21 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         broadcast: (message) => {
             ws?.broadcast(message);
         }
+    });
+
+    /**
+     * §TERM-046's delivery. The rule lives in `handlers/app/clipboard.ts`; what boot supplies is
+     * the LIVE gate read — `settings.snapshot` is re-read per sequence, so flipping the toggle in
+     * Settings (or hand-editing the config) governs the very next OSC 52 with no restart, the
+     * same live-apply shape `auto-detect-repos` uses above.
+     */
+    onPaneClipboardRequest = createClipboardWriteSink({
+        getState: () => store.getState(),
+        enabled: () => settings.snapshot.general.clipboardWrite,
+        broadcast: (message) => {
+            ws?.broadcast(message);
+        },
+        log: (message) => log(message)
     });
 
     /**

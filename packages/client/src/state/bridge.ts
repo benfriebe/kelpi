@@ -21,6 +21,7 @@ import { forgetStoredToken, type StorageLike } from '../app/config';
 import { CommandClient, NexConnection, PtyClient, type NexConnectionOptions } from '../connection';
 import { readShellWindowID } from '../webpane/shell-window';
 import { activationAppliesHere, parseShellActivation } from './activation';
+import { createClipboardWriteHandler, type ClipboardWriteHandlerOptions } from './clipboard';
 import { createNotificationManager, type NotificationManager } from './notifications';
 import { useNexStore, type NexStoreApi } from './store';
 
@@ -50,12 +51,20 @@ export interface StoreBridgeOptions {
      * tests pass it explicitly rather than rewriting `location`.
      */
     readonly shellWindowID?: string | null | undefined;
+    /**
+     * §TERM-046: the seams `./clipboard.ts` takes for the OSC 52 clipboard write (the writer,
+     * the log). Omitted in production — it defaults to `navigator.clipboard` and `console.info`
+     * — and supplied by tests, which have neither.
+     */
+    readonly clipboard?: Omit<ClipboardWriteHandlerOptions, 'shellWindowID'> | undefined;
 }
 
 /** Subscribe the store to a connection. Returns the unsubscribe. */
 export function connectStore(options: StoreBridgeOptions): () => void {
     const { store, connection } = options;
     const shellWindowID = options.shellWindowID === undefined ? readShellWindowID() : options.shellWindowID;
+    // §TERM-046. Built once, because the shell-vs-browser decision is fixed for this page's life.
+    const clipboardWrite = createClipboardWriteHandler({ ...(options.clipboard ?? {}), shellWindowID });
     const offs: (() => void)[] = [];
 
     offs.push(
@@ -127,6 +136,19 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             if (report === null || !activationAppliesHere(report, shellWindowID)) return;
             store.getState().setAppActive(report.active);
         })
+    );
+
+    offs.push(
+        /*
+         * §TERM-046: `clipboard-write` — a program in a pane put text on the clipboard with
+         * OSC 52 and the daemon's gate allowed it. Subscribed here for the same reason
+         * `settings-changed` and `system-stats` are: a fire-and-forget broadcast with no
+         * ordering relationship to the snapshot/delta stream.
+         *
+         * Note there is no store write. The clipboard is not application state — it is the
+         * user's machine — and mirroring it would put a copied password in a React store.
+         */
+        connection.on('message', clipboardWrite)
     );
 
     offs.push(
@@ -233,6 +255,8 @@ export interface NexRuntimeOptions extends NexConnectionOptions {
     readonly tokenStorage?: StorageLike | null | undefined;
     /** §AGNT-056: see `StoreBridgeOptions.shellWindowID`. */
     readonly shellWindowID?: string | null | undefined;
+    /** §TERM-046: see `StoreBridgeOptions.clipboard`. */
+    readonly clipboard?: StoreBridgeOptions['clipboard'];
 }
 
 export interface NexRuntime {
@@ -286,7 +310,8 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
         notifications,
         ...(options.onAttention !== undefined ? { onAttention: options.onAttention } : {}),
         ...(options.tokenStorage !== undefined ? { tokenStorage: options.tokenStorage } : {}),
-        ...(options.shellWindowID !== undefined ? { shellWindowID: options.shellWindowID } : {})
+        ...(options.shellWindowID !== undefined ? { shellWindowID: options.shellWindowID } : {}),
+        ...(options.clipboard !== undefined ? { clipboard: options.clipboard } : {})
     });
 
     const visiblePanesFor = (workspaceID: string): readonly string[] => {

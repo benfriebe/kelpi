@@ -94,6 +94,24 @@ export interface GeneralSettings {
      * one — keeps the always-expand behaviour it has always had.
      */
     readonly expandGroupOnWorkspaceDrop: boolean;
+    /**
+     * `clipboard-write` (terminal-panes.md §TERM-046), default **false**.
+     *
+     * May a program running in a pane put text on the clipboard with OSC 52? ghostty's own key
+     * of the same name defaults to `allow`, and the shipped Swift app honours every write
+     * unconditionally (`GhosttyApp.swift:114-123`). This port ships it OFF, and it is the one
+     * place the port is deliberately *stricter* than the baseline rather than merely different:
+     * here the clipboard belongs to the machine running the CLIENT, the pane may be an agent or
+     * an `ssh` session on someone else's box, and a silent cross-machine clipboard write is not
+     * something to opt users into by default.
+     *
+     * Strict parsing, like `focus-follows-mouse` and unlike the default-true flags above: only
+     * the literal `true` enables it, so a typo fails closed.
+     *
+     * There is no `clipboard-read` twin. OSC 52 reads are refused outright and no key turns
+     * them on (`daemon/src/term/osc52.ts` says why).
+     */
+    readonly clipboardWrite: boolean;
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
@@ -113,7 +131,8 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     newWorkspacePlacement: 'end-of-list',
     newGroupPlacement: 'end-of-list',
     inheritGroupOnNewWorkspace: true,
-    expandGroupOnWorkspaceDrop: true
+    expandGroupOnWorkspaceDrop: true,
+    clipboardWrite: false
 };
 
 const INTEGER = /^[+-]?\d+$/;
@@ -194,6 +213,11 @@ export function parseGeneralSettings(contents: string): GeneralSettings {
                 break;
             case 'expand-group-on-workspace-drop':
                 settings = { ...settings, expandGroupOnWorkspaceDrop: lowered !== 'false' };
+                break;
+            case 'clipboard-write':
+                // §TERM-046: default OFF, so only the literal `true` opens it — the opposite
+                // rule from the default-true flags above, and the right way round for a gate.
+                settings = { ...settings, clipboardWrite: lowered === 'true' };
                 break;
             default:
                 break;

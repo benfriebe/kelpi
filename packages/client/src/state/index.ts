@@ -8,6 +8,8 @@
  *                        the assembled connection + commands + PTY + store object
  *   `activation.ts`    — §AGNT-056's "is anybody looking?", from the shell's relayed
  *                        `shell-activation` plus the document's own visibility
+ *   `clipboard.ts`     — §TERM-046's client end: a daemon `clipboard-write` (an OSC 52 the
+ *                        `clipboard-write` setting allowed) onto THIS machine's clipboard
  */
 
 export {
@@ -17,6 +19,15 @@ export {
     parseShellActivation,
     type ShellActivationReport
 } from './activation';
+
+export {
+    CLIPBOARD_WRITE_MESSAGE,
+    createClipboardWriteHandler,
+    parseClipboardWrite,
+    type ClipboardWriteHandlerOptions,
+    type ClipboardWriteOutcome,
+    type ClipboardWriteRequest
+} from './clipboard';
 
 export {
     DOMAIN_EVENT_KINDS,

@@ -223,6 +223,34 @@ describe('Settings ▸ Workspaces', () => {
         expect((screen.getByTestId('expand-group-on-drop-toggle') as HTMLInputElement).checked).toBe(false);
     });
 
+    /**
+     * §TERM-046. The one control on this tab whose DEFAULT is the behaviour: it ships OFF, which
+     * is stricter than the shipped Swift app, so "unchecked out of the box" is the assertion —
+     * and the row states the half no toggle governs, because a switch labelled "clipboard" reads
+     * as both directions to anyone who has met OSC 52 before.
+     */
+    it('ships the OSC 52 clipboard gate OFF and writes it as a general setting', () => {
+        const bound = actions();
+        const view = render(
+            <WorkspacesTab settings={snapshot()} actions={bound} paths={DEFAULT_SETTINGS_PATHS} />
+        );
+        const toggle = screen.getByTestId('clipboard-write-toggle') as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        fireEvent.click(toggle);
+        expect(bound.general).toEqual([{ key: 'clipboard-write', value: 'true' }]);
+        // No local echo: the switch only moves when the daemon's snapshot says so.
+        expect((screen.getByTestId('clipboard-write-toggle') as HTMLInputElement).checked).toBe(false);
+        view.rerender(
+            <WorkspacesTab
+                settings={snapshot({ general: { ...DEFAULT_WS_SETTINGS.general, clipboardWrite: true } })}
+                actions={bound}
+                paths={DEFAULT_SETTINGS_PATHS}
+            />
+        );
+        expect((screen.getByTestId('clipboard-write-toggle') as HTMLInputElement).checked).toBe(true);
+        expect(screen.getByTestId('clipboard-write-row').textContent ?? '').toContain('never READ');
+    });
+
     it('reflects the daemon’s value rather than a local echo', () => {
         const bound = actions();
         const view = render(

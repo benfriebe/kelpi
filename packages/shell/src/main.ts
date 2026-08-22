@@ -23,7 +23,18 @@
  * link is handed to the system browser.
  */
 
-import { BrowserWindow, Menu, Notification, app, dialog, globalShortcut, screen, session, shell } from 'electron';
+import {
+    BrowserWindow,
+    Menu,
+    Notification,
+    app,
+    clipboard,
+    dialog,
+    globalShortcut,
+    screen,
+    session,
+    shell
+} from 'electron';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, unlinkSync } from 'node:fs';
 
@@ -1020,6 +1031,18 @@ function startStatusController(): void {
                         if (error !== '') logError(`reveal-path failed for ${target}: ${error}`);
                         else log(`reveal-path: opened ${target}`);
                     });
+                },
+                /**
+                 * §TERM-046: an OSC 52 write the daemon's `clipboard-write` setting allowed.
+                 *
+                 * One line, and it is the whole reason the bridge ends here rather than in the
+                 * page: `clipboard.writeText` in the main process is not gated on transient
+                 * activation the way `navigator.clipboard` is, so a program that copies while
+                 * the user is reading rather than typing still lands on the clipboard. The
+                 * decode, the guards and the (content-free) log line are `./clipboard.ts`.
+                 */
+                writeClipboard: (text) => {
+                    clipboard.writeText(text);
                 },
                 /**
                  * SET-081: Settings can now record the global hotkey, and the write lands in

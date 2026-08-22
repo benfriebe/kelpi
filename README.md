@@ -15,9 +15,12 @@ Behavioural contracts for every subsystem live in [`docs/current/`](docs/current
 
 ## Status
 
-**Wire parity, a 107-flow UI audit with nothing left failing on purpose, and 99.9% of the shipped
-app's feature surface — eight of its ten domains complete, nothing left unimplemented, and every one
-of the three remaining partials an argument rather than a piece of work (`TERM-033`, the IME caret rect, closed 2026-08-22 the only way it could — a human session with a real Japanese input method, `docs/audit/ime-human-session/`).** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
+**Wire parity, a 108-flow UI audit with nothing left failing on purpose, and 99.97% of the shipped
+app's feature surface — nine of its ten domains complete, nothing left unimplemented, and a single
+remaining partial that is a thing a browser has no counterpart for rather than a piece of work
+(`TERM-034`, the selection half of macOS text services; its sibling `TERM-033` closed 2026-08-22 the
+only way it could — a human session with a real Japanese input method,
+`docs/audit/ime-human-session/`).** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
 `nex` CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
 binary. The window has been driven end to end and photographed a dozen times over: the campaign
 opened with **17 defects + 6 nits, two of them blockers**, and stands at **no blockers — 1 accepted
@@ -39,12 +42,15 @@ on purpose — a coin flip that had been winning every run until this one.
 
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
 app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
-domains — found 285 behaviours with no port-side implementation at all. Seven burn-downs took that
-column to **zero** and coverage from 73.6% to **99.9%**, while the audit grew to **107 flows, 1018
-assertions**. Eight of the ten domains now have no partials and no gaps left at all, and **the four
-partials that remain are all arguments** — two things a browser has no counterpart for, one security
-decline, and one refusal with its reasoning recorded. Nothing on the list is work anybody plans to
-do. The last three that were are what the seventh wave closed: it put the shipped app's whole File
+domains — found 285 behaviours with no port-side implementation at all. Eight burn-downs took that
+column to **zero** and coverage from 73.6% to **99.97%**, while the audit grew to **108 flows, 1042
+assertions**. Nine of the ten domains now have no partials and no gaps left at all, and **the one
+partial that remains is unobservable from a browser** rather than unwritten. Nothing on the list is
+work anybody plans to do. The last two entries that were *arguments* are what the eighth wave turned
+into code: the launch-time skill refresh now migrates a drifted `SKILL.md` exactly once — backing
+the old bytes up rather than destroying them the way the Swift does — and OSC 52 is implemented on
+the daemon's own VT, with writes behind a `clipboard-write` key that ships **off** and reads refused
+outright. The seventh wave before it put the shipped app's whole File
 menu in the menu bar, made `theme = <name>` resolve to a real terminal palette, and gave the legacy
 label→preset migration its one-shot marker. The sixth wave's subject was the window itself: a hidden
 title bar with the traffic lights drawn into the client's own 32 px strip, ⌘N opening the New
@@ -70,12 +76,14 @@ into the port, byte-identically to ghostty's own encoder.
 - [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
   against `nex 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
   defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-O/`](docs/audit/run-O/index.md) is
-  **current** — 107 flows, 1018 assertions, **0 failed, 0 step errors**, taken on a loaded machine
-  after the harness's own two cleanup defects were closed (the story is in its
-  [`README`](docs/audit/README.md) row and the failed attempts'
-  [`run-O-attempts/`](docs/audit/run-O-attempts/README.md)); [`run-N/`](docs/audit/run-N/index.md)
-  precedes it; the scoped runs beside them are one per feature area;
+- [`docs/audit/`](docs/audit/) — the audit runs. [`run-P/`](docs/audit/run-P/index.md) is
+  **current** — 108 flows, 1042 assertions, **0 failed, 0 step errors**, one new flow
+  (`terminal-osc52`) and every pre-existing step carrying exactly the assertion count it carried in
+  `run-O`. It took six attempts, and the five that failed are recorded because the first two bought two latent
+  harness hazards nine runs had been passing by luck
+  ([`run-P-attempts/`](docs/audit/run-P-attempts/README.md));
+  [`run-O/`](docs/audit/run-O/index.md) and [`run-N/`](docs/audit/run-N/index.md)
+  precede it; the scoped runs beside them are one per feature area;
   [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
   the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
   policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
@@ -83,13 +91,13 @@ into the port, byte-identically to ghostty's own encoder.
   against `nexd`, as measured.
 - [`PLAN.md`](PLAN.md) — the milestone lineage.
 
-Gates (2026-08-22): `pnpm check` **4947 passed**, 1 skipped; the compat suite 103/103 against
-**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 51,
+Gates (2026-08-22): `pnpm check` **5008 passed**, 1 skipped; the compat suite 103/103 against
+**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 58,
 web 46, terminal 19) and the packaged one too, **60/60** against a bundle repackaged from this tree,
 which also quits cleanly and leaves its daemon running; the terminal-renderer start stress
-**0 stranded in 48 panes**; the UI audit **1018 of 1018 assertions, 0 failed, 0 step errors, 0 renderer console
-errors** across **107 real user flows** (`run-O`). The assertion that named the open footer bug for three runs
-now **passes** — `192.9 → 0.0 px`, reproduced in two independent runs — so nothing in the harness is
+**0 stranded in 48 panes**; the UI audit **1042 of 1042 assertions, 0 failed, 0 step errors, 0 renderer console
+errors** across **108 real user flows** (`run-P`). The assertion that named the open footer bug for three runs
+now **passes** — `192.9 → 0.0 px`, reproduced in four independent runs — so nothing in the harness is
 failing on purpose any more. The results that carry the most weight are again on steps that did
 **not** change: the terminal input matrix is assertion-for-assertion identical to the previous three
 runs' and still passes, and the reattach-after-relaunch flow is 11/11 with the window's whole title
@@ -98,8 +106,9 @@ harness defect with two faces — a coin-flip pane cleanup and a centre-aimed "f
 could land on a split button — both fixed, both asserted, with the diagnosis instrumentation
 (per-step state timeline, CLI invocation log, process logs) now part of every run's artefact
 ([`docs/audit/run-O-attempts/`](docs/audit/run-O-attempts/README.md)).
-Capability coverage against the shipped app is **99.9%** of 1490 inventoried items, up from 73.6%
-before the burn-downs, with eight of the ten domains complete and the "missing" column empty.
+Capability coverage against the shipped app is **99.97%** of 1490 inventoried items, up from 73.6%
+before the burn-downs, with nine of the ten domains complete, the "missing" column empty, and a
+single partial left that no browser can observe.
 Nothing here is called done without a screenshot that shows it.
 
 ## Quickstart

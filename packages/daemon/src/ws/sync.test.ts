@@ -1052,6 +1052,84 @@ describe('shell-activation relay', () => {
 });
 
 /**
+ * §WS-151: `workspace-selection`, relayed — `shell-activation` with the arrow reversed.
+ *
+ * The shipped app's File ▸ "Deselect All Workspaces" is `.disabled(selectedWorkspaceIDs.isEmpty)`,
+ * one reducer read away from the menu that shows it. Here the menu is in the main process and
+ * the selection is the sidebar's client-local state, so the count travels the one channel both
+ * share. The daemon's job is fan-out and nothing else, and — like activation, unlike the hotkey
+ * outcome — it must NOT remember: a replayed "3 selected" would un-grey the row for a window
+ * whose page has since reloaded with nothing selected.
+ */
+describe('workspace-selection relay', () => {
+    it('fans a client report out to every attached party, windowID intact', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(
+            JSON.stringify({ type: 'workspace-selection', selected: 3, windowID: 'WIN-1' })
+        );
+        expect(shell.transport.ofType('workspace-selection')[0]).toEqual({
+            type: 'workspace-selection',
+            selected: 3,
+            windowID: 'WIN-1'
+        });
+
+        window.session.handleMessage(
+            JSON.stringify({ type: 'workspace-selection', selected: 0, windowID: 'WIN-1' })
+        );
+        expect(shell.transport.ofType('workspace-selection')[1]).toEqual({
+            type: 'workspace-selection',
+            selected: 0,
+            windowID: 'WIN-1'
+        });
+    });
+
+    it('relays an unscoped report without inventing a window id', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', selected: 1 }));
+        expect(shell.transport.ofType('workspace-selection')[0]).toEqual({
+            type: 'workspace-selection',
+            selected: 1
+        });
+    });
+
+    it('never replays a selection to a party that attaches afterwards', () => {
+        const f = fixture();
+        const window = f.connect();
+        window.session.handleMessage(hello());
+        window.session.handleMessage(
+            JSON.stringify({ type: 'workspace-selection', selected: 2, windowID: 'WIN-1' })
+        );
+
+        const late = f.connect();
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        expect(late.transport.ofType('workspace-selection')).toHaveLength(0);
+    });
+
+    it('drops an unusable count rather than guessing one', () => {
+        const f = fixture();
+        const shell = f.connect();
+        const window = f.connect();
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        window.session.handleMessage(hello());
+
+        window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', windowID: 'WIN-1' }));
+        window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', selected: '2' }));
+        window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', selected: -1 }));
+        expect(shell.transport.ofType('workspace-selection')).toHaveLength(0);
+    });
+});
+
+/**
  * §WS-156 / §APP-067 — the GUI's own workspace delete.
  *
  * The clause it exists for is the shipped app's asymmetry: `nex workspace delete` refuses at one

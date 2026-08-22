@@ -142,7 +142,7 @@ export interface AppStateRow {
 }
 
 /**
- * `appState` keys. The first two are the Swift app's (§2.4); the last two are daemon-owned
+ * `appState` keys. The first two are the Swift app's (§2.4); the rest are daemon-owned
  * singletons — the table is upsert-only and never cleared, so adding keys is forward- and
  * backward-compatible (an older reader ignores them, a newer one defaults them).
  */
@@ -152,6 +152,13 @@ export const APP_STATE_TOP_LEVEL_ORDER = 'topLevelOrder';
 export const APP_STATE_LABEL_PRESETS = 'nexd.labelPresets';
 /** Daemon-owned: `PersistedSnapshot.version`, independent of the DB migration ledger. */
 export const APP_STATE_SNAPSHOT_VERSION = 'nexd.snapshotVersion';
+/**
+ * Daemon-owned, app-state-core.md §6.5 / §13: the one-shot legacy-label → preset marker. This
+ * is the port's home for the Swift app's `settings.labelPresets.migrated` UserDefaults flag —
+ * the same place the presets themselves live, because a daemon has no UserDefaults. A database
+ * written before this key existed has NO row for it, which decodes as "never migrated".
+ */
+export const APP_STATE_LABEL_PRESETS_MIGRATED = 'nexd.labelPresetsMigrated';
 
 // ---------------------------------------------------------------------------
 // Column readers
@@ -292,6 +299,18 @@ export function decodeLabelPresetsJSON(text: string | null): LabelPreset[] {
     return presets;
 }
 
+/**
+ * A boolean `appState` singleton. Absent (a database written before the key existed), empty or
+ * unrecognised all read as `false` — for a one-shot marker, "I cannot tell" must mean "not yet
+ * done", because running an idempotent back-fill twice is cheap and skipping it is not.
+ * `'1'`/`'true'`/`'yes'` (case-insensitive) are true; the writer only ever emits `'1'`/`'0'`.
+ */
+export function decodeAppStateFlag(text: string | null): boolean {
+    if (text === null) return false;
+    const value = text.trim().toLowerCase();
+    return value === '1' || value === 'true' || value === 'yes';
+}
+
 // ---------------------------------------------------------------------------
 // Encode: snapshot → rows (§5.3 / §5.4)
 // ---------------------------------------------------------------------------
@@ -402,7 +421,13 @@ export function encodeAppStateRows(snapshot: PersistedSnapshot): AppStateRow[] {
         },
         { key: APP_STATE_TOP_LEVEL_ORDER, value: encodeTopLevelOrderJSON(snapshot.topLevelOrder) },
         { key: APP_STATE_LABEL_PRESETS, value: encodeLabelPresetsJSON(snapshot.labelPresets) },
-        { key: APP_STATE_SNAPSHOT_VERSION, value: String(snapshot.version) }
+        { key: APP_STATE_SNAPSHOT_VERSION, value: String(snapshot.version) },
+        // '1' / '0' rather than 'true' / 'false': the column is TEXT and the decoder is
+        // deliberately permissive, but the writer only ever emits one form.
+        {
+            key: APP_STATE_LABEL_PRESETS_MIGRATED,
+            value: snapshot.labelPresetsMigrated === true ? '1' : '0'
+        }
     ];
 }
 
@@ -735,6 +760,7 @@ export function snapshotFromRows(rows: LoadedRows, options: DecodePaneOptions = 
         topLevelOrder,
         activeWorkspaceID: parseUUID(state.get(APP_STATE_ACTIVE_WORKSPACE) ?? null),
         repos,
-        labelPresets: decodeLabelPresetsJSON(state.get(APP_STATE_LABEL_PRESETS) ?? null)
+        labelPresets: decodeLabelPresetsJSON(state.get(APP_STATE_LABEL_PRESETS) ?? null),
+        labelPresetsMigrated: decodeAppStateFlag(state.get(APP_STATE_LABEL_PRESETS_MIGRATED) ?? null)
     };
 }

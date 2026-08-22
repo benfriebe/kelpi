@@ -1,7 +1,54 @@
 import { describe, expect, it } from 'vitest';
 
-import { isForwardableOpenPath, parseShellAction, shellActionAppliesHere } from './shell-actions.js';
+import {
+    isForwardableOpenPath,
+    parseShellAction,
+    parseWorkspaceSelection,
+    shellActionAppliesHere
+} from './shell-actions.js';
 import { AUTO_UPDATE_ENV, checkForUpdatesNow } from './updater.js';
+
+/**
+ * §WS-151 — `workspace-selection`, the client's report that greys File ▸ Deselect All Workspaces.
+ *
+ * The rule under test is the refusal, not the happy path: a frame whose count cannot be trusted
+ * must produce NO report at all, because both defaults are wrong in a visible way (0 greys a row
+ * over a frame nobody understood; anything else un-greys one).
+ */
+describe('parseWorkspaceSelection', () => {
+    it('decodes a count, with and without a window scope', () => {
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: 3, windowID: 'w1' })).toEqual(
+            { selected: 3, windowID: 'w1' }
+        );
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: 0 })).toEqual({
+            selected: 0,
+            windowID: null
+        });
+    });
+
+    it('refuses anything that is not a usable count', () => {
+        expect(parseWorkspaceSelection({ type: 'workspace-selection' })).toBeNull();
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: -1 })).toBeNull();
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: 1.5 })).toBeNull();
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: '2' })).toBeNull();
+        expect(parseWorkspaceSelection({ type: 'workspace-selection', selected: Number.NaN })).toBeNull();
+    });
+
+    it('is not confused by another message that happens to carry a count', () => {
+        expect(parseWorkspaceSelection({ type: 'shell-activation', selected: 4 })).toBeNull();
+        expect(parseWorkspaceSelection({ selected: 4 })).toBeNull();
+    });
+
+    it('shares the window filter with `shell-action`, so two windows keep two menus', () => {
+        const report = parseWorkspaceSelection({
+            type: 'workspace-selection',
+            selected: 2,
+            windowID: 'w2'
+        });
+        expect(shellActionAppliesHere(report?.windowID ?? null, 'w2')).toBe(true);
+        expect(shellActionAppliesHere(report?.windowID ?? null, 'w1')).toBe(false);
+    });
+});
 
 describe('parseShellAction', () => {
     it('decodes the three actions with their optional scope fields', () => {

@@ -107,10 +107,20 @@ import {
     type MenuItemSpec,
     type PaletteItem,
     type SidebarPhase,
+    type SidebarSelectionCommands,
     type StatusBarItem,
     type SystemStatsView,
     type WorkspaceWorktreeRequest
 } from './chrome';
+import {
+    COMMAND_PALETTE_COMMAND,
+    DESELECT_ALL_WORKSPACES_COMMAND,
+    NEW_GROUP_COMMAND,
+    NEW_WEB_PANE_COMMAND,
+    SELECT_ALL_WORKSPACES_COMMAND,
+    switchWorkspacePosition,
+    workspaceSelectionReport
+} from './app/file-menu';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
@@ -129,7 +139,12 @@ import {
 } from './connection';
 import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient, type FontSizeStep } from './content';
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
-import { SettingsOverlay, type SettingsActions, type SettingsTabID } from './settings';
+import {
+    SettingsOverlay,
+    globalHotkeyErrorFrom,
+    type SettingsActions,
+    type SettingsTabID
+} from './settings';
 import {
     isAppActive,
     selectActiveWorkspace,
@@ -147,8 +162,10 @@ import {
 import {
     TerminalPane,
     createMountPolicy,
+    mergeTerminalPalette,
     resolveTerminalTheme,
     terminalFontStack,
+    terminalPaletteCssVars,
     terminalThemePreset,
     visiblePaneIDs,
     type TerminalGeometry,
@@ -195,6 +212,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** §WS-151: the "nothing is selected" report, hoisted so the mount-time one is not a new Set. */
+const EMPTY_WORKSPACE_SELECTION: ReadonlySet<string> = new Set<string>();
+
 export interface AppProps {
     readonly runtime: NexRuntime;
     /** What the connection screens name as the target (main.tsx passes the resolved one). */
@@ -232,6 +252,18 @@ export function App(props: AppProps): ReactElement {
         if (!settings.loaded) return undefined;
         return {
             '--nex-term-bg': paneFill,
+            /*
+             * §APP-014: the resolved `theme = <name>` palette, as the terminal tokens.
+             *
+             * `TERMINAL_TOKEN_NAMES` documents these variables as the seam that "unifies the
+             * palette" for everything that reads a terminal colour out of CSS; the light/dark
+             * preset defines them in `styles.css` and this overlays the theme's own values on
+             * top — which is the same layering the engines get through `setTheme` below, so a
+             * canvas and the CSS around it cannot disagree. `--nex-term-bg` is NOT among them
+             * (see `terminalPaletteCssVars`): the pane fill is the background at the ghostty
+             * OPACITY, and the theme reaches it daemon-side instead.
+             */
+            ...terminalPaletteCssVars(appearance.terminalTheme.palette),
             // SET-037/038's sidebar tint knobs. They ride here as CSS variables rather than as
             // props for the reason `sidebarTintCssVars` documents: the three places that read
             // them are deep inside `Sidebar.tsx`, and one assignment on this container reaches
@@ -247,7 +279,7 @@ export function App(props: AppProps): ReactElement {
                 presetChromeTheme(appearance.isDark ? 'dark' : 'light')
             )
         } as CSSProperties;
-    }, [settings.loaded, paneFill, chromeSettings, appearance.isDark]);
+    }, [settings.loaded, paneFill, chromeSettings, appearance.isDark, appearance.terminalTheme]);
     /**
      * SET-031: the chrome's light/dark is now a **user preference** (`chrome-appearance`), not
      * a derivation. `'system'` — the shipped default — keeps exactly the behaviour this client
@@ -567,6 +599,35 @@ function Shell(props: AppProps): ReactElement {
      */
     const shellWindowRef = useRef(shellWindowID);
     shellWindowRef.current = shellWindowID;
+
+    /**
+     * §WS-151 — tell the shell how many workspaces the sidebar has multi-selected, so File ▸
+     * "Deselect All Workspaces" can be greyed exactly as `.disabled(selectedWorkspaceIDs.isEmpty)`
+     * greys it in the shipped app.
+     *
+     * Deduped against the last value SENT rather than debounced: the count only changes on a
+     * click, and what matters is that a shift-click over forty rows produces one report rather
+     * than forty. It is deliberately not React state — a ⌘-click must not re-render assembly.
+     *
+     * The 0 on mount is not redundant. A page RELOAD leaves a shell whose menu still carries
+     * the last selection this page reported before it went away, and the reloaded page has no
+     * selection at all; the socket queues the frame until the handshake settles, so it costs
+     * nothing to state it. (`connection.send` is the queue.)
+     */
+    const reportedSelectionRef = useRef<number | null>(null);
+    const reportWorkspaceSelection = useCallback(
+        (ids: ReadonlySet<string>): void => {
+            const selected = ids.size;
+            if (reportedSelectionRef.current === selected) return;
+            reportedSelectionRef.current = selected;
+            runtime.connection.send(workspaceSelectionReport(selected, shellWindowID));
+        },
+        [runtime, shellWindowID]
+    );
+    useEffect(() => {
+        reportWorkspaceSelection(EMPTY_WORKSPACE_SELECTION);
+    }, [reportWorkspaceSelection]);
+
     /**
      * One reporter for the whole client: it dedupes and throttles per pane, so a divider drag
      * across a workspace full of web panes is a handful of frames rather than one per render.
@@ -976,6 +1037,37 @@ function Shell(props: AppProps): ReactElement {
     useEffect(() => {
         const scheduler = searchNeedleRef.current;
         return () => scheduler.cancel();
+    }, []);
+
+    /**
+     * §WS-151 — File ▸ Select All Workspaces / Deselect All Workspaces.
+     *
+     * The sidebar fills this while it is mounted (`SidebarProps.selectionCommandsRef`), exactly
+     * as it fills §SET-186's Escape predicate: the multi-selection and the full workspace set
+     * (collapsed groups included) are both its own, and assembly's part is to hold the ref and
+     * ask.
+     *
+     * It is a ref-LIKE object rather than a `useRef` for one reason: Select All on a HIDDEN
+     * sidebar has to show the sidebar first, and the sidebar does not exist to be asked until
+     * React has committed that. Parking the request and letting the arriving handle drain it is
+     * deterministic where a `queueMicrotask` or a `setTimeout(0)` would be a race with the
+     * scheduler. The shipped app has no such problem — its selection is reducer state that
+     * exists whether or not anything is drawing it.
+     */
+    const pendingSelectAllRef = useRef(false);
+    const sidebarSelectionRef = useMemo<{ current: SidebarSelectionCommands | null }>(() => {
+        let handle: SidebarSelectionCommands | null = null;
+        return {
+            get current(): SidebarSelectionCommands | null {
+                return handle;
+            },
+            set current(next: SidebarSelectionCommands | null) {
+                handle = next;
+                if (next === null || !pendingSelectAllRef.current) return;
+                pendingSelectAllRef.current = false;
+                next.selectAll();
+            }
+        };
     }, []);
 
     /**
@@ -1757,6 +1849,33 @@ function Shell(props: AppProps): ReactElement {
                 return true;
             },
 
+            /**
+             * §WS-151 — File ▸ Select All Workspaces / Deselect All Workspaces.
+             *
+             * Menu-only in the shipped app: two plain `Button`s outside the binding map
+             * (`NexCommands.swift:49-57`), so there is no action name to bind and nothing here
+             * is reachable from the key dispatcher. Both open the sidebar first — a selection
+             * nobody can see is not a selection — and then run the sidebar's OWN closures, the
+             * same ones its context menu's rows run (§WS-053).
+             *
+             * A hidden sidebar has published no handle on the tick the menu row arrives, so
+             * Select All PARKS the request and the arriving handle drains it, rather than
+             * declining a click the user did make. Deselect All never needs that: an unmounted
+             * sidebar has no selection to clear.
+             */
+            selectAllWorkspaces(): boolean {
+                setSidebarVisible(true);
+                if (sidebarSelectionRef.current !== null) return sidebarSelectionRef.current.selectAll();
+                // Nothing to ask yet — the sidebar was hidden. It drains this the moment it
+                // publishes its handle (see `sidebarSelectionRef`'s setter).
+                pendingSelectAllRef.current = true;
+                return true;
+            },
+
+            deselectAllWorkspaces(): boolean {
+                return sidebarSelectionRef.current?.deselectAll() ?? false;
+            },
+
             renameGroup(groupID: string, name: string): boolean {
                 const trimmed = name.trim();
                 if (trimmed.length === 0) return false;
@@ -2204,9 +2323,20 @@ function Shell(props: AppProps): ReactElement {
      * instead of the dark one. Before both, the first light→dark transition left the terminal
      * painting a `#2B2B2E` foreground on a `#0A0A0C` background — text that reads as SGR-dim.
      */
+    /*
+     * §APP-014 adds a third layer, and adds it HERE rather than in a parallel path: the
+     * daemon's resolved `theme = <name>` palette is merged over the DOM answer, so the theme
+     * decides the colours it names and the preset keeps the rest. Because it rides the settings
+     * snapshot, a `theme` line edited in the config file (or picked in Settings) re-runs this
+     * effect and every mounted renderer takes `setTheme` — live, with no relaunch, which is
+     * what libghostty's `ghostty_app_update_config` did for the Swift app.
+     */
+    const themePalette = settings.appearance.terminalTheme.palette;
     useEffect(() => {
-        setTerminalTheme(resolveTerminalTheme(null, terminalThemePreset(bucket)));
-    }, [bucket]);
+        setTerminalTheme(
+            mergeTerminalPalette(resolveTerminalTheme(null, terminalThemePreset(bucket)), themePalette)
+        );
+    }, [bucket, themePalette]);
 
     // The ghostty background overrides whatever the chrome palette says, and it must stay an
     // opaque hex: ghostty-web's parser maps `rgba()` (and every other non-hex form) to BLACK.
@@ -2607,6 +2737,26 @@ function Shell(props: AppProps): ReactElement {
             // §APP-018: File ▸ New Workspace. It opens the SHEET, exactly as ⌘N does inside the
             // page — the main process never creates a workspace of its own.
             else if (command === 'new-workspace') actRef.current.newWorkspace();
+            /*
+             * §WS-151: the rest of the shipped app's File group. Each row lands on the SAME
+             * `act.*` its keybinding does — ⌘⇧G, ⌘⇧O, ⌘P and ⌘1…⌘9 — so a menu click and a
+             * chord are one gesture by two routes, and neither can drift from the other.
+             *
+             * `switch-workspace-N` is parsed with the shell's own parser rather than a second
+             * regex here, so the two sides cannot disagree about the format they share.
+             */
+            else if (command === NEW_GROUP_COMMAND) actRef.current.newGroupWithRename();
+            else if (command === NEW_WEB_PANE_COMMAND) actRef.current.newWebPaneFocused();
+            else if (command === COMMAND_PALETTE_COMMAND) actRef.current.togglePalette();
+            // The two menu-only rows: no binding in the Swift, so none here either.
+            else if (command === SELECT_ALL_WORKSPACES_COMMAND) actRef.current.selectAllWorkspaces();
+            else if (command === DESELECT_ALL_WORKSPACES_COMMAND) actRef.current.deselectAllWorkspaces();
+            else if (typeof command === 'string' && switchWorkspacePosition(command) !== null) {
+                // ⌘1…⌘9 by another route. `switchToIndex` is 0-based over the sidebar's visible
+                // order — the same resolution `switch_to_workspace_N` uses, so the row and the
+                // chord always land on the same workspace.
+                actRef.current.switchToIndex((switchWorkspacePosition(command) as number) - 1);
+            }
             /*
              * §APP-028 / §SET-194: Debug ▸ Seed Test Group, a row the shell only builds in a dev
              * build (`shell/src/menu.ts` ▸ `debugMenuSection`). The fixture is composed out of
@@ -3503,6 +3653,13 @@ function Shell(props: AppProps): ReactElement {
                     onSetGroupColor={act.setGroupColor}
                     // SET-186 / APP-109: the sidebar publishes "did I consume this Escape?".
                     escapeRef={sidebarEscapeRef}
+                    // §WS-151: …and its two selection verbs, for File ▸ Select/Deselect All.
+                    selectionCommandsRef={sidebarSelectionRef}
+                    // §WS-151's other direction: how big the selection is now, so the shell can
+                    // grey File ▸ Deselect All Workspaces while it is empty. Observer only —
+                    // the sidebar keeps owning the selection (no `selectedWorkspaceIDs` prop),
+                    // so nothing about the existing gesture changes.
+                    onSelectionChange={reportWorkspaceSelection}
                     onRenameGroup={act.renameGroup}
                     onDeleteGroup={act.deleteGroup}
                     onCreateWorkspace={(name, groupID, worktree, extras) => {
@@ -3773,14 +3930,14 @@ function Shell(props: AppProps): ReactElement {
                 /* §SET-021: what the daemon's TCP listener actually did, for Settings ▸ Network. */
                 transport={daemon.transport}
                 /*
-                 * §SET-200/§SET-201: the shell's registration failure, for Settings ▸
-                 * Keybindings ▸ Global. Undefined (no warning) until a shell has reported, and
-                 * cleared the moment one reports success — so re-recording a chord that works
-                 * takes the message away without anything having to remember it was there.
+                 * §SET-200/§SET-201/§APP-014: the shell's registration failure, for Settings ▸
+                 * Keybindings ▸ Global. Null (no error) until a shell has reported, and cleared
+                 * the moment one reports success — so clearing the hotkey, or re-recording a
+                 * chord that works, takes the message away without anything having to remember
+                 * it was there. The rule lives in `globalHotkeyErrorFrom` rather than in this
+                 * ternary because it also has to answer the case the OS gives no reason for.
                  */
-                globalHotkeyError={
-                    hotkeyStatus === null || hotkeyStatus.ok ? null : hotkeyStatus.error
-                }
+                globalHotkeyError={globalHotkeyErrorFrom(hotkeyStatus)}
                 onClose={closeSettings}
                 web={{
                     favourites: webUI.favourites,

@@ -10,10 +10,12 @@
  *
  *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`;
  *   - every other key is ignored (ghostty has hundreds);
- *   - `config-file = …` includes are NOT followed, and a `theme` name is NOT resolved to the
- *     theme file's own `background` — a user whose background comes from a theme gets the
- *     default until they set `background` explicitly. `theme` is still reported so a client
- *     can say what it is;
+ *   - `config-file = …` includes are NOT followed;
+ *   - a `theme` name is reported verbatim here and RESOLVED next door in `./theme.ts`
+ *     (§APP-014): this module only reads the config file, so the theme file lookup — which
+ *     touches other paths on disk — lives beside it rather than inside it. `background` from a
+ *     resolved theme is applied by `service.ts`, and only when this file names none
+ *     (`hasExplicitBackground`);
  *   - a missing / unreadable file is not an error: it yields the defaults.
  *
  * Value rules follow ghostty's own where they are cheap: a later line wins for a scalar key,
@@ -34,6 +36,16 @@ export interface GhosttyAppearance {
     readonly fontSize: number | null;
     /** ghostty's `theme` value verbatim (it may be `dark:X,light:Y`); null when unset. */
     readonly theme: string | null;
+    /**
+     * Did the file actually carry a parseable `background = …` line?
+     *
+     * `backgroundColor` is always concrete (the luminance rule needs a real colour), so "the
+     * user asked for `#0a0a0c`" and "nobody asked for anything" are otherwise the same value.
+     * §APP-014 needs them apart: a resolved THEME supplies the background when the config names
+     * none, and must never outrank a `background` line the user wrote (§SET-217/§SET-218, and
+     * terminal-surface.md §3.2's "the *resolved* value, i.e. after any `theme` is applied").
+     */
+    readonly hasExplicitBackground: boolean;
 }
 
 export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
@@ -41,7 +53,8 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
     backgroundOpacity: 1,
     fontFamily: null,
     fontSize: null,
-    theme: null
+    theme: null,
+    hasExplicitBackground: false
 };
 
 const HEX3 = /^[0-9a-f]{3}$/;
@@ -92,12 +105,16 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
     let fontSize: number | null = null;
     let theme: string | null = null;
     let families: string[] = [];
+    let hasExplicitBackground = false;
 
     for (const { key, value } of parseConfigLines(contents)) {
         switch (key) {
             case 'background': {
                 const color = parseGhosttyColor(value);
-                if (color !== null) backgroundColor = color;
+                if (color !== null) {
+                    backgroundColor = color;
+                    hasExplicitBackground = true;
+                }
                 break;
             }
             case 'background-opacity': {
@@ -130,6 +147,7 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
         backgroundOpacity,
         fontFamily: families.length === 0 ? null : families.map(cssFamily).join(', '),
         fontSize,
-        theme
+        theme,
+        hasExplicitBackground
     };
 }

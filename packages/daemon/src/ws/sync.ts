@@ -35,6 +35,7 @@ import {
     WS_HOTKEY_STATUS_MESSAGE,
     WS_PROTOCOL_VERSION,
     WS_SHELL_ACTIVATION_MESSAGE,
+    WS_WORKSPACE_SELECTION_MESSAGE,
     WS_SETTINGS_CHANGED_MESSAGE,
     WS_SETTINGS_COMMANDS,
     decodeWireObject,
@@ -1357,6 +1358,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 case WS_SHELL_ACTIVATION_MESSAGE:
                     shellActivationReport(parsed);
                     return;
+                case WS_WORKSPACE_SELECTION_MESSAGE:
+                    workspaceSelectionReport(parsed);
+                    return;
                 case 'ping': {
                     const id = text(parsed['id']);
                     this.send({ type: 'pong', id: id ?? '' });
@@ -2424,6 +2428,29 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         revealPane({
             type: WS_SHELL_ACTIVATION_MESSAGE,
             active: message['active'],
+            ...(windowID === undefined ? {} : { windowID })
+        });
+    }
+
+    /**
+     * §WS-151: `workspace-selection` from a client → every attached party, and NOT remembered.
+     *
+     * `shell-activation` with the arrow reversed, and the daemon has exactly as little opinion
+     * about it: a workspace multi-selection is the sidebar's own client-local state, and this is
+     * a routing hint so the shell that owns that window's menu bar can grey (or un-grey) File ▸
+     * Deselect All Workspaces. Nothing is stored — a client that has said nothing has nothing
+     * selected, which is the state a freshly built menu is already in.
+     *
+     * A malformed or negative count is dropped rather than defaulted: guessing 0 would silently
+     * grey a row over a frame nobody understood, and guessing 1 would un-grey one.
+     */
+    function workspaceSelectionReport(message: Record<string, unknown>): void {
+        const selected = message['selected'];
+        if (typeof selected !== 'number' || !Number.isFinite(selected) || selected < 0) return;
+        const windowID = text(message['windowID']);
+        revealPane({
+            type: WS_WORKSPACE_SELECTION_MESSAGE,
+            selected: Math.floor(selected),
             ...(windowID === undefined ? {} : { windowID })
         });
     }

@@ -256,9 +256,14 @@ describe('a recorded keybinding, end to end', () => {
                 source: 'launch'
             });
         });
-        expect(screen.getByTestId('global-hotkey-failure').textContent).toBe(
-            'This shortcut is already claimed by another app.'
-        );
+        // `toContain`, not equality: §APP-014 gave the row the Swift view's warning glyph, so
+        // the node carries `⚠ ` ahead of the OS's own sentence.
+        const failure = screen.getByTestId('global-hotkey-failure');
+        expect(failure.textContent).toContain('This shortcut is already claimed by another app.');
+        // …and it renders as the destructive state a user cannot mistake for the shadow
+        // advisory beneath it (§APP-014's client-visible error).
+        expect(failure.getAttribute('role')).toBe('alert');
+        expect(failure.dataset['tone']).toBe('destructive');
 
         // …and re-recording something that works takes it away again.
         act(() => {

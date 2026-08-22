@@ -461,6 +461,10 @@ export function reduceWorkspaceAction(state: DaemonState, action: DomainAction):
         }
         case 'set-label-presets':
             return { ...state, labelPresets: [...action.presets] };
+        case 'set-label-presets-migrated':
+            // §6.5: one-shot and one-way. Already-set returns the identical object, so the
+            // store notifies nobody and the debounced save is not woken for a no-op.
+            return state.labelPresetsMigrated ? state : { ...state, labelPresetsMigrated: true };
 
         // ── repo registry / associations ──────────────────────────────────
         case 'add-repo':

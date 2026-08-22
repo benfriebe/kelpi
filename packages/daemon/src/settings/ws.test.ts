@@ -66,7 +66,16 @@ function fixture(options: { config?: string; ghostty?: string; withSettings?: bo
 
     let settings: SettingsService | undefined;
     if (options.withSettings !== false) {
-        settings = createSettingsService({ configPath, ghosttyPath, watch: false });
+        settings = createSettingsService({
+            configPath,
+            ghosttyPath,
+            watch: false,
+            // §APP-014: pin the theme lookup inside this tmp root. Without it, a machine with
+            // Ghostty installed resolves `theme = Nord` out of the real app bundle and this
+            // fixture's colours stop being the fixture's.
+            env: { NEXD_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
+            home: root
+        });
         services.push(settings);
     }
 

@@ -779,6 +779,19 @@ class AdapterRenderer implements TerminalRenderer {
         this.options = { ...this.options, theme };
         if (this.disposed || this.poisoned) return;
         this.swallow(() => this.handle?.setTheme?.(theme));
+        /*
+         * …and REDRAW what is already on screen (§APP-014).
+         *
+         * Both engines paint incrementally, so a new palette otherwise applies only to the next
+         * cell they draw: the audit caught exactly that — a canvas whose most-painted colour
+         * was still the old background while the new theme's cursor colour was already on it.
+         * libghostty had no equivalent gap, because `ghostty_app_update_config` rebuilt the
+         * surface's whole frame.
+         *
+         * Cheap and idempotent (one walk of the cell buffer), and a theme only changes when a
+         * config file does.
+         */
+        this.repaint();
     }
 
     cellSize(): CellSize {
@@ -1060,7 +1073,22 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             // `terminal.options.theme = …` only logs "theme changes after open() are not yet
             // fully supported" (ghostty-web#125); the renderer's own setter is the one that
             // takes effect (it re-derives the 16-color palette).
-            terminal.renderer?.setTheme(compactTheme(theme));
+            const renderer = terminal.renderer;
+            renderer?.setTheme(compactTheme(theme));
+            /*
+             * …then CLEAR the canvas to the new background (§APP-014).
+             *
+             * The forced render that follows (`repaint`) walks the VT's rows and fills each
+             * one — but only the rows the buffer actually has. On a screen with two lines of
+             * output that is two rows of new background over ~50 rows of the OLD one, which
+             * the audit photographed: `--nex-term-bg` and the pane container had followed the
+             * theme while the canvas underneath them was still `10,10,12`.
+             *
+             * `clear()` is the engine's own one-line "fill the whole canvas with
+             * `theme.background`", so it costs one `fillRect` and cannot disagree with the
+             * palette the line above just set.
+             */
+            renderer?.clear();
         },
         remeasure: (): void => {
             // Belt and braces: the loader already awaited the font, but a face that landed

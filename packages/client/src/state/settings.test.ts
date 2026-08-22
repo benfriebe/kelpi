@@ -35,7 +35,16 @@ const SETTINGS: WsSettingsSnapshot = {
         fontFamily: 'Menlo',
         fontSize: 15,
         isDark: false,
-        theme: 'Catppuccin Latte'
+        theme: 'Catppuccin Latte',
+        // §APP-014: and what that name RESOLVED to — the palette the daemon read out of the
+        // theme FILE. Partial on purpose: a theme sets the keys it sets, and the client merges
+        // them over its own light/dark preset.
+        terminalTheme: {
+            name: 'Catppuccin Latte',
+            path: '/themes/Catppuccin Latte',
+            palette: { background: '#eff1f5', foreground: '#4c4f69' },
+            error: null
+        }
     }
 };
 

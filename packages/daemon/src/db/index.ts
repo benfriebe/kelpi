@@ -29,9 +29,11 @@ export type {
 export {
     APP_STATE_ACTIVE_WORKSPACE,
     APP_STATE_LABEL_PRESETS,
+    APP_STATE_LABEL_PRESETS_MIGRATED,
     APP_STATE_SNAPSHOT_VERSION,
     APP_STATE_TOP_LEVEL_ORDER,
     decodeAgentKind,
+    decodeAppStateFlag,
     decodeGroupColor,
     decodeGroupRow,
     decodeLabelPresetsJSON,

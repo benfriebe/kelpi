@@ -22,14 +22,18 @@ export { SettingsOverlay, type SettingsOverlayProps } from './SettingsOverlay';
 export { GeneralTab, DEFAULT_TCP_PORT, type GeneralTabProps } from './GeneralTab';
 export { KeybindingsTab, type KeybindingsTabProps } from './KeybindingsTab';
 export {
+    FAILURE_COLOR,
     GlobalHotkeySection,
     WARNING_COLOR,
+    globalHotkeyErrorFrom,
     inAppConflict,
     type GlobalHotkeySectionProps
 } from './GlobalHotkeySection';
 export {
     AppearanceTab,
     BUILT_IN_TERMINAL_THEMES,
+    THEME_NOTE_WARNING_COLOR,
+    TerminalThemeNote,
     appearancePercentLabel,
     type AppearanceTabProps
 } from './AppearanceTab';

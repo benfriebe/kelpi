@@ -63,7 +63,15 @@ import {
     type HotkeySwapResult
 } from './hotkey.js';
 import { log, logError, warn } from './log.js';
-import { appMenuTemplate, debugMenuSection, fileMenuTemplate, menuLogLine, viewMenuTemplate } from './menu.js';
+import {
+    appMenuTemplate,
+    applyWorkspaceSelection,
+    debugMenuSection,
+    fileMenuTemplate,
+    menuLogLine,
+    viewMenuTemplate,
+    workspaceSelectionLogLine
+} from './menu.js';
 import { isForwardableOpenPath } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
@@ -797,6 +805,29 @@ function applyCliInstallPolicy(): void {
 
 // ── application menu ────────────────────────────────────────────────────────────────
 
+/**
+ * §WS-151: the last workspace multi-selection count this window's client reported.
+ *
+ * Kept here rather than read at build time because it outlives a menu: `buildMenu()` runs at
+ * launch and on nothing else, while a selection changes with every ⌘-click. It is also what a
+ * REBUILD would have to seed the row from, so the two facts stay one variable.
+ */
+let workspaceSelectionCount = 0;
+
+/**
+ * Move File ▸ Deselect All Workspaces to match the reported selection.
+ *
+ * Applied to the LIVE menu rather than by rebuilding one: rebuilding drops any open menu and
+ * re-registers every accelerator in it, which is a lot of collateral for one greyed row. The
+ * log line is the only trace visible from outside the process, so the smoke and the audit can
+ * assert a menu state that is otherwise unobservable — the same reason `menuLogLine` exists.
+ */
+function applyWorkspaceSelectionCount(selectedCount: number): void {
+    workspaceSelectionCount = selectedCount;
+    applyWorkspaceSelection(Menu.getApplicationMenu(), selectedCount);
+    log(workspaceSelectionLogLine(selectedCount));
+}
+
 function buildMenu(): void {
     // Keep it minimal: the UI owns its own commands, but macOS needs an app menu for ⌘Q,
     // and Edit needs its roles for copy/paste to reach the web contents.
@@ -824,14 +855,20 @@ function buildMenu(): void {
               ] as Electron.MenuItemConstructorOptions[])
             : []),
         {
-            // §APP-018 / §WS-151: New Workspace (⌘N) in place of the stock New Window, then
-            // Preview Markdown… (⌘O). Both relay to the client, which owns the sheet and the
-            // picker; ⌘O falls back to raising the native panel from here.
+            // §APP-018 / §WS-151: the shipped app's whole File group in place of the stock New
+            // Window — New Workspace (⌘N), New Group (⌘⇧G), Preview Markdown… (⌘O), New Web
+            // Pane (⌘⇧O), Command Palette (⌘P), Switch to Workspace 1–9 (⌘1…⌘9), Select All /
+            // Deselect All Workspaces. Every one relays to the client, which owns the sheet, the
+            // picker, the palette and the sidebar's selection; ⌘O alone falls back to raising
+            // the native panel from here.
             label: 'File',
             submenu: fileMenuTemplate({
                 ...relay,
                 promptOpenFile: () => promptOpenFile(null),
-                platform: process.platform
+                platform: process.platform,
+                // A rebuild (there is only the launch one today) must not un-grey a row the
+                // client has already told us belongs greyed.
+                hasWorkspaceSelection: workspaceSelectionCount > 0
             })
         },
         { role: 'editMenu' },
@@ -996,6 +1033,15 @@ function startStatusController(): void {
                 settingsChanged: () => {
                     registerGlobalHotkey('settings');
                     applyAppearanceSettings();
+                },
+                /**
+                 * §WS-151: the sidebar's multi-selection, arriving from the page the long way
+                 * round so File ▸ Deselect All Workspaces can be greyed while it is empty —
+                 * `.disabled(store.selectedWorkspaceIDs.isEmpty)` in `NexCommands.swift`, where
+                 * the menu and the selection are one process apart instead of two.
+                 */
+                workspaceSelectionChanged: (selectedCount) => {
+                    applyWorkspaceSelectionCount(selectedCount);
                 }
             }
         });

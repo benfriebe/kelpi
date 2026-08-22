@@ -216,7 +216,10 @@ function richSnapshot(): PersistedSnapshot {
                 color: { kind: 'custom', hex: '#ff00aa' },
                 textColor: { kind: 'named', color: 'black' }
             }
-        ]
+        ],
+        // §APP-116: the one-shot label→preset marker is an `appState` singleton like the
+        // presets themselves, so the byte-for-byte round trip below covers it too.
+        labelPresetsMigrated: true
     };
 }
 

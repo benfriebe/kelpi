@@ -127,6 +127,85 @@ function ThemeSwatch(props: { readonly preset: BuiltInChromeTheme }): ReactEleme
     );
 }
 
+/**
+ * §APP-014 — the terminal theme's RESOLUTION, said out loud.
+ *
+ * The Swift app never needed this row: libghostty owned the lookup, and a name it could not
+ * find simply left the palette alone. Here the daemon does the lookup, which means it can also
+ * report what happened — and the report is the difference between "I picked Dracula and
+ * nothing changed" and "Dracula is not installed on this machine".
+ *
+ * Three states, and only two of them draw:
+ *
+ *   - **resolved** — the palette came from a file: a strip of the colours it defines and the
+ *     path they came from, so the answer is checkable rather than asserted.
+ *   - **unresolved** — the name is set and produced no palette: the daemon's sentence, in the
+ *     advisory tone this tab uses elsewhere. The terminal keeps the preset it had, which is
+ *     the pre-§APP-014 behaviour — the note is what stops that being silent.
+ *   - **nothing configured** — nothing to say.
+ */
+export const THEME_NOTE_WARNING_COLOR = '#D08A28';
+
+/** The order a swatch strip reads in: document colours first, then the ANSI eight. */
+const SWATCH_KEYS = [
+    'background',
+    'foreground',
+    'black',
+    'red',
+    'green',
+    'yellow',
+    'blue',
+    'magenta',
+    'cyan',
+    'white'
+] as const;
+
+export function TerminalThemeNote(props: {
+    readonly resolution: WsSettingsSnapshot['appearance']['terminalTheme'];
+}): ReactElement | null {
+    const { resolution } = props;
+    if (resolution.error !== null) {
+        return (
+            <span
+                data-testid="terminal-theme-error"
+                role="status"
+                className="rounded px-2 py-1 text-[11px]"
+                style={{
+                    color: THEME_NOTE_WARNING_COLOR,
+                    background: withAlpha(THEME_NOTE_WARNING_COLOR, 0.1)
+                }}
+            >
+                {resolution.error}
+            </span>
+        );
+    }
+    const swatches = SWATCH_KEYS.map((key) => resolution.palette[key]).filter(
+        (value): value is string => typeof value === 'string'
+    );
+    if (resolution.path === null || swatches.length === 0) return null;
+    return (
+        <span
+            data-testid="terminal-theme-resolved"
+            className="flex items-center gap-2 px-2 text-[11px]"
+            style={{ color: tokens.textTertiary }}
+        >
+            <span aria-hidden className="flex h-3 overflow-hidden rounded-sm">
+                {swatches.map((color, index) => (
+                    <span
+                        key={`${color}-${String(index)}`}
+                        data-testid="terminal-theme-swatch"
+                        className="h-3 w-3"
+                        style={{ background: color }}
+                    />
+                ))}
+            </span>
+            <span data-testid="terminal-theme-path" className="truncate font-mono">
+                {resolution.path}
+            </span>
+        </span>
+    );
+}
+
 export function AppearanceTab(props: AppearanceTabProps): ReactElement {
     const appearance = props.settings.appearance;
     const chrome = props.settings.chrome;
@@ -518,6 +597,9 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                         actions.setGhosttySetting('background', null);
                     }}
                 />
+
+                {/* §APP-014: what the picked name actually RESOLVED to, or why it did not. */}
+                <TerminalThemeNote resolution={appearance.terminalTheme} />
 
                 {appearance.theme === null ? (
                     <ColorField

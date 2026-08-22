@@ -7,8 +7,10 @@
  *
  * What behaviour there is: the shipped app's View group is `CommandGroup(after: .sidebar)` with
  * "Toggle Sidebar" (⌘⇧S) and "Toggle Inspector" (⌘I), and its File group REPLACES the stock
- * "New Window" with "New Workspace" (⌘N), all of them sending straight into the reducer
- * (`Nex/Commands/NexCommands.swift:8-13,61-68`). This shell has no preload and no reducer, so
+ * "New Window" with New Workspace (⌘N), New Group (⌘⇧G), Preview Markdown… (⌘O), New Web Pane
+ * (⌘⇧O), Command Palette (⌘P), then Switch to Workspace 1–9 (⌘1…⌘9) and Select All / Deselect
+ * All Workspaces, all of them sending straight into the reducer
+ * (`Nex/Commands/NexCommands.swift:8-58,61-68`). This shell has no preload and no reducer, so
  * every one of those rows goes the long way round — `menu-request` → the daemon → `menu-command`
  * → the client's own `act.*` (`client/src/App.tsx`), which is the SAME entry point the keybinding
  * and the on-screen button use. One state, three gestures.
@@ -39,6 +41,46 @@ export const NEW_WORKSPACE_COMMAND = 'new-workspace';
 export const OPEN_FILE_COMMAND = 'open-file';
 /** §APP-028 / §SET-194 — the client answers by seeding the "Test Group" fixture (dev builds). */
 export const SEED_TEST_GROUP_COMMAND = 'seed-test-group';
+/** §WS-151 / §SET-144 — the client answers with `act.newGroupWithRename()` (⌘⇧G's own gesture). */
+export const NEW_GROUP_COMMAND = 'new-group';
+/** §WS-151 / §SET-145 — the client answers with `act.newWebPaneFocused()` (⌘⇧O's own gesture). */
+export const NEW_WEB_PANE_COMMAND = 'new-web-pane';
+/** §WS-151 — the client answers by toggling the command palette (⌘P's own gesture). */
+export const COMMAND_PALETTE_COMMAND = 'command-palette';
+/** §WS-151 — the client answers by selecting every workspace in the sidebar. */
+export const SELECT_ALL_WORKSPACES_COMMAND = 'select-all-workspaces';
+/** §WS-151 — the client answers by clearing the sidebar's workspace multi-selection. */
+export const DESELECT_ALL_WORKSPACES_COMMAND = 'deselect-all-workspaces';
+
+/**
+ * §WS-151's "Switch to Workspace N" rows: `switch-workspace-1` … `switch-workspace-9`.
+ *
+ * One command per row rather than one command with an argument, because `menu-request` carries a
+ * bare `command` string (`ws/sync.ts`) and inventing a second field for nine rows would change a
+ * wire message every other row already fits inside.
+ */
+export const SWITCH_WORKSPACE_COMMAND_PREFIX = 'switch-workspace-';
+
+/** 1-based, matching the row's own label and the ⌘N accelerator on it. */
+export function switchWorkspaceCommand(position: number): string {
+    return `${SWITCH_WORKSPACE_COMMAND_PREFIX}${String(position)}`;
+}
+
+/**
+ * The 1-based position a `switch-workspace-N` command names, or null.
+ *
+ * Exported so the CLIENT can parse the same string it is sent without re-deriving the format
+ * (`client/src/App.tsx`); the two sides then cannot drift.
+ */
+export function switchWorkspacePosition(command: string): number | null {
+    if (!command.startsWith(SWITCH_WORKSPACE_COMMAND_PREFIX)) return null;
+    const rest = command.slice(SWITCH_WORKSPACE_COMMAND_PREFIX.length);
+    if (!/^[1-9]$/.test(rest)) return null;
+    return Number(rest);
+}
+
+/** How many "Switch to Workspace N" rows the File menu carries (⌘1…⌘9). */
+export const SWITCH_WORKSPACE_ROWS = 9;
 
 // ── accelerators, each one its action's own default trigger ─────────────────────────
 
@@ -50,6 +92,17 @@ export const TOGGLE_INSPECTOR_ACCELERATOR = 'CommandOrControl+I';
 export const NEW_WORKSPACE_ACCELERATOR = 'CommandOrControl+N';
 /** ⌘O — `open_file`'s default trigger. */
 export const OPEN_FILE_ACCELERATOR = 'CommandOrControl+O';
+/** ⌘⇧G — `new_group`'s default trigger (`core/src/config/bindings.ts`; `KeyBinding.swift:557`). */
+export const NEW_GROUP_ACCELERATOR = 'CommandOrControl+Shift+G';
+/** ⌘⇧O — `open_web_pane`'s default trigger (`KeyBinding.swift:516`). */
+export const NEW_WEB_PANE_ACCELERATOR = 'CommandOrControl+Shift+O';
+/** ⌘P — `command_palette`'s default trigger (`KeyBinding.swift:551`). */
+export const COMMAND_PALETTE_ACCELERATOR = 'CommandOrControl+P';
+
+/** ⌘1…⌘9 — `switch_to_workspace_1..9`'s default triggers. */
+export function switchWorkspaceAccelerator(position: number): string {
+    return `CommandOrControl+${String(position)}`;
+}
 
 // ── row titles, matching `NexCommands.swift`'s ──────────────────────────────────────
 
@@ -57,6 +110,22 @@ export const TOGGLE_SIDEBAR_LABEL = 'Toggle Sidebar';
 export const TOGGLE_INSPECTOR_LABEL = 'Toggle Inspector';
 export const NEW_WORKSPACE_LABEL = 'New Workspace';
 export const OPEN_FILE_LABEL = 'Preview Markdown…';
+export const NEW_GROUP_LABEL = 'New Group';
+export const NEW_WEB_PANE_LABEL = 'New Web Pane';
+export const COMMAND_PALETTE_LABEL = 'Command Palette';
+export const SELECT_ALL_WORKSPACES_LABEL = 'Select All Workspaces';
+export const DESELECT_ALL_WORKSPACES_LABEL = 'Deselect All Workspaces';
+
+/** `Switch to Workspace 1` … `Switch to Workspace 9`, exactly as `NexCommands.swift:38-45` builds them. */
+export function switchWorkspaceLabel(position: number): string {
+    return `Switch to Workspace ${String(position)}`;
+}
+
+/**
+ * The id the Deselect All row carries, so its enabled state can be moved after the menu is built
+ * (`main.ts` ▸ `applyWorkspaceSelection`). Every other row is stateless and needs none.
+ */
+export const DESELECT_ALL_WORKSPACES_MENU_ID = 'deselect-all-workspaces';
 export const CHECK_FOR_UPDATES_LABEL = 'Check for Updates…';
 export const DEBUG_MENU_LABEL = 'Debug';
 export const SEED_TEST_GROUP_LABEL = 'Seed Test Group';
@@ -116,6 +185,40 @@ export interface FileMenuDeps extends MenuRelayDeps {
     readonly promptOpenFile: () => void;
     /** `process.platform`, injected so the non-darwin tail can be exercised in a test. */
     readonly platform: string;
+    /**
+     * §WS-151's "(the latter disabled with an empty selection)". Absent/false at build time —
+     * a window that has not reported a selection has none — and moved afterwards through
+     * `applyWorkspaceSelection` rather than by rebuilding the menu, because rebuilding one
+     * would drop an open menu and re-register every accelerator for one greyed row.
+     */
+    readonly hasWorkspaceSelection?: boolean | undefined;
+}
+
+/**
+ * Move the Deselect All row's enabled state on a LIVE menu (§WS-151).
+ *
+ * Split out of `main.ts` for the reason every other behaviour in this module is: it can then be
+ * exercised without an Electron process. The menu is passed in (rather than read from
+ * `Menu.getApplicationMenu()`) so a test can hand it a plain object, and a menu that does not
+ * carry the row — a non-darwin build, or one built before this row existed — is a no-op rather
+ * than a throw.
+ *
+ * Returns what it applied, so the caller can log a state that is otherwise invisible from
+ * outside the process (the smoke and the audit read exactly that line).
+ */
+export function applyWorkspaceSelection(
+    menu: { getMenuItemById(id: string): { enabled: boolean } | null } | null | undefined,
+    selectedCount: number
+): boolean {
+    const enabled = selectedCount > 0;
+    const item = menu?.getMenuItemById(DESELECT_ALL_WORKSPACES_MENU_ID);
+    if (item !== null && item !== undefined) item.enabled = enabled;
+    return enabled;
+}
+
+/** The line `main.ts` logs when a selection report moves the row (asserted by the audit). */
+export function workspaceSelectionLogLine(selectedCount: number): string {
+    return `menu: ${DESELECT_ALL_WORKSPACES_LABEL} ${selectedCount > 0 ? 'enabled' : 'disabled'} (${String(selectedCount)} selected)`;
 }
 
 /**
@@ -125,11 +228,22 @@ export interface FileMenuDeps extends MenuRelayDeps {
  * BrowserWindow is not a thing this app has (`showWindow()` only ever raises the one), and the
  * shipped app spends ⌘N on New Workspace, so a "New Window" row here would be both a lie and a
  * shortcut collision waiting to happen.
+ *
+ * The shape is `NexCommands.swift:10-58`'s, row for row: five product rows contiguous (the Swift
+ * `CommandGroup` has no divider among them), a divider, the nine "Switch to Workspace N" rows,
+ * a divider, then Select All / Deselect All Workspaces. Every one is a RELAY — the main process
+ * owns none of this state — so each row, its keybinding and its on-screen gesture are three
+ * routes into one `act.*` in the client.
+ *
+ * **Deselect All Workspaces is the one row with a state**, and the state does not live here: a
+ * workspace multi-selection is the sidebar's, in the page. It is built disabled (a fresh window
+ * has no selection) and moved by `applyWorkspaceSelection` when the client reports one —
+ * client → daemon → shell, mirroring §AGNT-056's `shell-activation` in the other direction.
  */
 export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions[] {
     return [
         relayRow(deps, NEW_WORKSPACE_LABEL, NEW_WORKSPACE_ACCELERATOR, NEW_WORKSPACE_COMMAND),
-        { type: 'separator' },
+        relayRow(deps, NEW_GROUP_LABEL, NEW_GROUP_ACCELERATOR, NEW_GROUP_COMMAND),
         // CONT-120 / APP-020. It goes to the CLIENT rather than opening the panel here, so the
         // picker behaves identically however it is raised (⌘O in the window, this item, the •••
         // menu) and so the caller pane travels with the request.
@@ -139,6 +253,41 @@ export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions
             click: () => {
                 if (deps.sendMenuRequest(OPEN_FILE_COMMAND)) return;
                 deps.promptOpenFile();
+            }
+        },
+        relayRow(deps, NEW_WEB_PANE_LABEL, NEW_WEB_PANE_ACCELERATOR, NEW_WEB_PANE_COMMAND),
+        relayRow(deps, COMMAND_PALETTE_LABEL, COMMAND_PALETTE_ACCELERATOR, COMMAND_PALETTE_COMMAND),
+        { type: 'separator' },
+        // ⌘1…⌘9. The client resolves the POSITION against the sidebar's visible order, exactly
+        // as `switch_to_workspace_N` does, so the row and the chord cannot pick different rows.
+        ...Array.from({ length: SWITCH_WORKSPACE_ROWS }, (_unused, index) => {
+            const position = index + 1;
+            return relayRow(
+                deps,
+                switchWorkspaceLabel(position),
+                switchWorkspaceAccelerator(position),
+                switchWorkspaceCommand(position)
+            );
+        }),
+        { type: 'separator' },
+        // No accelerators: the Swift builds these two as plain `Button`s, outside the binding
+        // map (`NexCommands.swift:49-57`), and §4's action list has no name for either.
+        {
+            label: SELECT_ALL_WORKSPACES_LABEL,
+            click: () => {
+                if (deps.sendMenuRequest(SELECT_ALL_WORKSPACES_COMMAND)) return;
+                deps.onUndelivered?.(SELECT_ALL_WORKSPACES_COMMAND);
+            }
+        },
+        {
+            id: DESELECT_ALL_WORKSPACES_MENU_ID,
+            label: DESELECT_ALL_WORKSPACES_LABEL,
+            // `.disabled(store.selectedWorkspaceIDs.isEmpty)`, and a window that has told us
+            // nothing yet has nothing selected — so the safe initial state is also the true one.
+            enabled: deps.hasWorkspaceSelection === true,
+            click: () => {
+                if (deps.sendMenuRequest(DESELECT_ALL_WORKSPACES_COMMAND)) return;
+                deps.onUndelivered?.(DESELECT_ALL_WORKSPACES_COMMAND);
             }
         },
         { type: 'separator' },
@@ -262,8 +411,20 @@ export function debugMenuLogFragment(isPackaged: boolean): string {
  */
 export const VIEW_MENU_LOG_FRAGMENT = `View ▸ ${TOGGLE_SIDEBAR_LABEL} (⌘⇧S) + ${TOGGLE_INSPECTOR_LABEL} (⌘I)`;
 
-/** `File ▸ …`, as `main.ts` logs it. */
-export const FILE_MENU_LOG_FRAGMENT = `File ▸ ${NEW_WORKSPACE_LABEL} (⌘N) · ${OPEN_FILE_LABEL} (⌘O)`;
+/**
+ * `File ▸ …`, as `main.ts` logs it.
+ *
+ * Prefix-stable for the same reason the View fragment is: `scripts/smoke.mjs` and the audit's
+ * `mac-chrome` both match `New Workspace (⌘N)` and `Preview Markdown… (⌘O)` as substrings, so
+ * §WS-151's four extra product rows are INSERTED in the Swift's order rather than the line being
+ * reshaped. The nine ⌘1…⌘9 rows are summarised as a range — nine near-identical entries would
+ * bury everything else in a line whose whole job is to be read by eye.
+ */
+export const FILE_MENU_LOG_FRAGMENT =
+    `File ▸ ${NEW_WORKSPACE_LABEL} (⌘N) · ${NEW_GROUP_LABEL} (⌘⇧G) · ${OPEN_FILE_LABEL} (⌘O)` +
+    ` · ${NEW_WEB_PANE_LABEL} (⌘⇧O) · ${COMMAND_PALETTE_LABEL} (⌘P)` +
+    ` · ${switchWorkspaceLabel(1)}–${String(SWITCH_WORKSPACE_ROWS)} (⌘1…⌘${String(SWITCH_WORKSPACE_ROWS)})` +
+    ` · ${SELECT_ALL_WORKSPACES_LABEL} · ${DESELECT_ALL_WORKSPACES_LABEL}`;
 
 /**
  * The one-line summary `buildMenu` logs, so `scripts/smoke.mjs` and the audit can assert the

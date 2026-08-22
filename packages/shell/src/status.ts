@@ -52,7 +52,11 @@ import type { HotkeyStatusReport } from './hotkey.js';
 import { trayIconDataUrl, trayIconIsTemplate, type IconIndicator } from './icon.js';
 // §AGNT-073: the `nex-agent` category — its two actions and the index→action mapping.
 import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
-import { parseShellAction, shellActionAppliesHere } from './shell-actions.js';
+import {
+    parseShellAction,
+    parseWorkspaceSelection,
+    shellActionAppliesHere
+} from './shell-actions.js';
 import { log, logError, warn } from './log.js';
 
 const RECONNECT_INITIAL_MS = 500;
@@ -130,6 +134,14 @@ export interface StatusHost {
     checkForUpdates?(): void;
     /** The ••• menu's "Install CLI" — the same action the tray item runs. */
     installCLINow?(): void;
+    /**
+     * §WS-151: this window's sidebar reported how many workspaces it has multi-selected.
+     *
+     * The mirror of `sendActivation` below — the shipped app's File ▸ "Deselect All Workspaces"
+     * is disabled while the selection is empty, and the selection is client-local state in the
+     * page. The count travels client → daemon → here so the row's enabled state can follow it.
+     */
+    workspaceSelectionChanged?(selectedCount: number): void;
 }
 
 /**
@@ -689,6 +701,21 @@ export function createStatusController(options: StatusOptions): StatusController
             case 'attention-request':
                 if (!host.isWindowFocused()) bounce();
                 break;
+            case 'workspace-selection': {
+                /*
+                 * §WS-151: the sidebar's multi-selection, relayed so File ▸ Deselect All
+                 * Workspaces can be greyed exactly as `.disabled(selectedWorkspaceIDs.isEmpty)`
+                 * greys it in the shipped app.
+                 *
+                 * The window filter is `shell-action`'s, and it matters for the same reason: two
+                 * shell windows have two menus and two independent selections, and an unscoped
+                 * report (a browser with no `?shellWindow=`) is everyone's.
+                 */
+                const report = parseWorkspaceSelection(parsed);
+                if (report === null || !shellActionAppliesHere(report.windowID, options.windowID)) break;
+                host.workspaceSelectionChanged?.(report.selected);
+                break;
+            }
             case 'rejected': {
                 const code = readString(parsed, 'code') ?? 'server-error';
                 const message = readString(parsed, 'message') ?? '';

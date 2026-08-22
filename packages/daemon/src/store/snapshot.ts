@@ -99,6 +99,13 @@ export interface PersistedSnapshot {
     readonly repos: readonly Repo[];
     /** Stored beside the DB in the current app (settings JSON); carried here for one save path. */
     readonly labelPresets: readonly LabelPreset[];
+    /**
+     * app-state-core.md §6.5's one-shot marker (the Swift app's
+     * `settings.labelPresets.migrated` UserDefaults key). OPTIONAL because a database written
+     * before this key existed simply has no `appState` row for it — absent decodes as `false`,
+     * which is exactly "this database has never been migrated".
+     */
+    readonly labelPresetsMigrated?: boolean;
 }
 
 function persistPane(pane: Pane, sidecar: WebPaneState | undefined): PersistedPane {
@@ -160,7 +167,8 @@ export function toSnapshot(state: DaemonState): PersistedSnapshot {
         topLevelOrder: [...state.topLevelOrder],
         activeWorkspaceID: state.lastActiveWorkspaceID,
         repos: state.repos.map((repo) => ({ ...repo })),
-        labelPresets: state.labelPresets.map((preset) => ({ ...preset }))
+        labelPresets: state.labelPresets.map((preset) => ({ ...preset })),
+        labelPresetsMigrated: state.labelPresetsMigrated
     };
 }
 
@@ -279,6 +287,8 @@ export function fromSnapshot(
         lastActiveWorkspaceID,
         repos: snapshot.repos ?? [],
         labelPresets: snapshot.labelPresets ?? [],
+        // A pre-key database has no marker at all, which is "never migrated" (§6.5).
+        labelPresetsMigrated: snapshot.labelPresetsMigrated ?? false,
         homeDirectory: options.homeDirectory
     };
 }

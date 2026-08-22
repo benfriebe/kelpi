@@ -210,6 +210,83 @@ export interface WsProfile {
 }
 
 /**
+ * The keys of one resolved terminal palette — the client's `TerminalTheme` field names, as
+ * data, so the daemon can name a colour without importing the client.
+ *
+ * Sixteen ANSI slots plus the six document colours ghostty theme files carry
+ * (`background`, `foreground`, `cursor-color`, `cursor-text`, `selection-background`,
+ * `selection-foreground`). The order is `palette = 0..15` order, which is what makes
+ * `TERMINAL_PALETTE_ANSI_KEYS[n]` the key a `palette = n=#hex` line writes.
+ */
+export const TERMINAL_PALETTE_ANSI_KEYS = [
+    'black',
+    'red',
+    'green',
+    'yellow',
+    'blue',
+    'magenta',
+    'cyan',
+    'white',
+    'brightBlack',
+    'brightRed',
+    'brightGreen',
+    'brightYellow',
+    'brightBlue',
+    'brightMagenta',
+    'brightCyan',
+    'brightWhite'
+] as const;
+
+export const TERMINAL_PALETTE_KEYS = [
+    'background',
+    'foreground',
+    'cursor',
+    'cursorAccent',
+    'selectionBackground',
+    'selectionForeground',
+    ...TERMINAL_PALETTE_ANSI_KEYS
+] as const;
+
+export type TerminalPaletteKey = (typeof TERMINAL_PALETTE_KEYS)[number];
+
+/**
+ * §APP-014 — what `theme = <name>` actually resolved to.
+ *
+ * The Swift app handed the name to libghostty, which found the theme FILE and gave the
+ * resolved palette back through the config it hands every surface. There is no libghostty
+ * here, so the daemon does the same lookup itself: it finds the file, parses its palette keys
+ * with the same reader it uses for the ghostty config, and puts the answer on the snapshot —
+ * where it reaches every attached client through the ordinary `settings-changed` broadcast,
+ * i.e. LIVE, without a relaunch.
+ *
+ * `palette` carries only the keys the theme file actually defined (a theme is allowed to set
+ * six colours and no more), so a client merges it OVER its own light/dark preset rather than
+ * treating it as a whole palette.
+ *
+ * `error` is the half that keeps an unresolvable name from being silent: the name stays
+ * exactly where the user typed it, the terminal keeps the palette it already had, and the
+ * reason ("no theme file named X in …") is a string a client can render.
+ */
+export interface WsTerminalThemeResolution {
+    /** The theme name the lookup was performed for (after any `dark:`/`light:` split). */
+    readonly name: string | null;
+    /** Absolute path of the theme file the palette came from; null when nothing resolved. */
+    readonly path: string | null;
+    /** Only the keys the theme file defined, `#rrggbb` lowercase. Empty when unresolved. */
+    readonly palette: Readonly<Partial<Record<TerminalPaletteKey, string>>>;
+    /** Why the name did not resolve. Null when it did, and when no theme is configured. */
+    readonly error: string | null;
+}
+
+/** "No theme configured, nothing resolved, nothing wrong." */
+export const DEFAULT_WS_TERMINAL_THEME: WsTerminalThemeResolution = {
+    name: null,
+    path: null,
+    palette: {},
+    error: null
+};
+
+/**
  * `~/.config/ghostty/config` appearance (content-panes.md §3.1, §3.8).
  *
  * `backgroundColor` and `backgroundOpacity` are what the pane container paints as
@@ -233,6 +310,13 @@ export interface WsAppearanceSettings {
     readonly isDark: boolean;
     /** ghostty's own `theme = <name>` value, passed through opaquely. Null when unset. */
     readonly theme: string | null;
+    /**
+     * §APP-014: `theme` RESOLVED — the palette read out of the theme file, or the reason it
+     * could not be. Additive: a daemon that predates it omits the field and a client's
+     * hydrator fills `DEFAULT_WS_TERMINAL_THEME`, which is exactly the pre-§APP-014 behaviour
+     * (preset palette, no note).
+     */
+    readonly terminalTheme: WsTerminalThemeResolution;
 }
 
 export interface WsSettingsSnapshot {
@@ -287,7 +371,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         fontFamily: null,
         fontSize: null,
         isDark: true,
-        theme: null
+        theme: null,
+        terminalTheme: DEFAULT_WS_TERMINAL_THEME
     }
 };
 

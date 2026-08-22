@@ -796,6 +796,19 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
 
 // ── the sidebar ─────────────────────────────────────────────────────────────────────
 
+/**
+ * §WS-151's two menu-only selection verbs, published imperatively (`SidebarProps.selectionCommandsRef`).
+ *
+ * Each returns whether it CHANGED anything, so a caller can treat "nothing to do" the way every
+ * other conditional gesture in this client does — as a decline, not as a silent success.
+ */
+export interface SidebarSelectionCommands {
+    /** Select every workspace, members of collapsed groups included (§WS-045). */
+    selectAll(): boolean;
+    /** Clear the multi-selection; false when there was none. */
+    deselectAll(): boolean;
+}
+
 export interface SidebarProps extends SidebarCallbacks {
     /** Daemon order: `selectSidebarEntries(store)`. */
     readonly entries: readonly ChromeSidebarEntry[];
@@ -821,6 +834,17 @@ export interface SidebarProps extends SidebarCallbacks {
      * nulls it on unmount, so a torn-down sidebar can never consume a key.
      */
     readonly escapeRef?: { current: (() => boolean) | null } | undefined;
+    /**
+     * §WS-151: File ▸ Select All Workspaces / Deselect All Workspaces, published the same way
+     * §SET-186's Escape predicate above is.
+     *
+     * The two rows are menu-only in the shipped app (plain `Button`s outside the binding map,
+     * `NexCommands.swift:49-57`), and both need something assembly does not have: the set of
+     * every workspace id INCLUDING the members of collapsed groups (§WS-045), and the setter
+     * that moves §WS-044's selection anchor with it. Assembly holds the ref; the sidebar fills
+     * it while mounted and nulls it on unmount, so a torn-down sidebar can never be driven.
+     */
+    readonly selectionCommandsRef?: { current: SidebarSelectionCommands | null } | undefined;
     /** Shortcut hints on the menu rows that have one; absent = no hints. */
     readonly keyBindings?: KeyBindingMap | undefined;
     /**
@@ -1268,6 +1292,52 @@ export function Sidebar(props: SidebarProps): ReactElement {
             escapeRefProp.current = null;
         };
     }, [escapeRefProp, overlayOpen, selectionSize, setSelection]);
+
+    /**
+     * §WS-151's File ▸ Select All / Deselect All Workspaces, published to assembly.
+     *
+     * The SAME two closures the row context menu's own rows run (§WS-053) — `workspaceByID`'s
+     * key set and `EMPTY_SELECTION` — so the menu bar and the context menu cannot select two
+     * different things. No overlay check: unlike Escape, these are not a key that something
+     * above the sidebar might want; they are an explicit menu choice.
+     */
+    const selectionCommandsRefProp = props.selectionCommandsRef;
+    useEffect(() => {
+        if (selectionCommandsRefProp === undefined) return;
+        selectionCommandsRefProp.current = {
+            selectAll: (): boolean => {
+                if (workspaceByID.size === 0) return false;
+                setSelection(new Set(workspaceByID.keys()));
+                return true;
+            },
+            deselectAll: (): boolean => {
+                if (selectionSize === 0) return false;
+                setSelection(EMPTY_SELECTION);
+                return true;
+            }
+        };
+        return () => {
+            selectionCommandsRefProp.current = null;
+        };
+    }, [selectionCommandsRefProp, selectionSize, setSelection, workspaceByID]);
+
+    /**
+     * §WS-151: an unmounting sidebar has no selection any more, and says so ONCE.
+     *
+     * The selection lives in this component's own state, so hiding the sidebar (§WS-001's
+     * toggle) really does discard it — and a listener that only ever hears about changes made
+     * through `setSelection` would be left believing in a selection that no longer exists. The
+     * callback is read through a ref so the effect can carry an empty dep list: it must fire on
+     * UNMOUNT, not every time assembly hands down a new closure.
+     */
+    const selectionListenerRef = useRef(props.onSelectionChange);
+    selectionListenerRef.current = props.onSelectionChange;
+    useEffect(
+        () => () => {
+            selectionListenerRef.current?.(EMPTY_SELECTION);
+        },
+        []
+    );
 
     // ── activation ──────────────────────────────────────────────────────────────
     const onActivate = useCallback(

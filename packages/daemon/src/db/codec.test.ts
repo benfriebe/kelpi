@@ -8,9 +8,11 @@ import type { SqlRow } from './adapter.js';
 import {
     APP_STATE_ACTIVE_WORKSPACE,
     APP_STATE_LABEL_PRESETS,
+    APP_STATE_LABEL_PRESETS_MIGRATED,
     APP_STATE_SNAPSHOT_VERSION,
     APP_STATE_TOP_LEVEL_ORDER,
     decodeAgentKind,
+    decodeAppStateFlag,
     decodeGroupColor,
     decodeGroupRow,
     decodeLabelPresetsJSON,
@@ -664,7 +666,7 @@ describe('snapshotToRows', () => {
         expect(rows.repoAssociations).toEqual([]);
     });
 
-    it('emits the four appState keys', () => {
+    it('emits the five appState keys', () => {
         const rows = snapshotToRows({
             version: PERSISTED_SNAPSHOT_VERSION,
             workspaces: [],
@@ -678,7 +680,30 @@ describe('snapshotToRows', () => {
             { key: APP_STATE_ACTIVE_WORKSPACE, value: W1 },
             { key: APP_STATE_TOP_LEVEL_ORDER, value: `[{"group":{"_0":"${G1}"}}]` },
             { key: APP_STATE_LABEL_PRESETS, value: '[]' },
-            { key: APP_STATE_SNAPSHOT_VERSION, value: String(PERSISTED_SNAPSHOT_VERSION) }
+            { key: APP_STATE_SNAPSHOT_VERSION, value: String(PERSISTED_SNAPSHOT_VERSION) },
+            // §APP-116: absent on the snapshot means "never migrated", written as '0'.
+            { key: APP_STATE_LABEL_PRESETS_MIGRATED, value: '0' }
         ]);
+    });
+
+    it('writes the label-preset migration marker as 1 and reads back every truthy spelling', () => {
+        const rows = snapshotToRows({
+            version: PERSISTED_SNAPSHOT_VERSION,
+            workspaces: [],
+            groups: [],
+            topLevelOrder: [],
+            activeWorkspaceID: null,
+            repos: [],
+            labelPresets: [],
+            labelPresetsMigrated: true
+        });
+        expect(rows.appState).toContainEqual({ key: APP_STATE_LABEL_PRESETS_MIGRATED, value: '1' });
+        // A pre-key database has no row at all — that is "never migrated", never "unknown".
+        expect(decodeAppStateFlag(null)).toBe(false);
+        expect(decodeAppStateFlag('')).toBe(false);
+        expect(decodeAppStateFlag('0')).toBe(false);
+        expect(decodeAppStateFlag('nonsense')).toBe(false);
+        expect(decodeAppStateFlag('1')).toBe(true);
+        expect(decodeAppStateFlag(' TRUE ')).toBe(true);
     });
 });

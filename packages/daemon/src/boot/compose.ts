@@ -127,6 +127,7 @@ import {
 } from '../webpane/index.js';
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
+import { runLabelPresetMigration } from './labels.js';
 import { readPortFile, writePortFile } from './port.js';
 import { spawnRestoredPanes, typeResumeCommands, type ResumeOutcome } from './resume.js';
 import { resolveDaemonVersion, type DaemonVersion } from './version.js';
@@ -1231,6 +1232,21 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         repoWatch.start();
         // §GIT-091: resolve a branch for every restored pane, then keep resolving as panes move.
         branchWatch.start();
+        // persistence.md §6.2 step 9 / app-state-core.md §6.5: the one-shot legacy-label →
+        // preset back-fill, one launch only. Runs AFTER `ensureDefaultWorkspace` above, so the
+        // fresh-install path reaches it too and sets the marker with nothing to migrate —
+        // §13's requirement, without which a LATER launch would treat the user's own new
+        // labels as legacy ones and resurrect presets they had deleted.
+        try {
+            const migration = runLabelPresetMigration(store);
+            if (migration.backfilled.length > 0) {
+                log(
+                    `labels: back-filled ${String(migration.backfilled.length)} gray preset(s) (${migration.backfilled.join(', ')}) — recolor them in Settings ▸ Labels`
+                );
+            }
+        } catch (error) {
+            report(error, 'label preset migration');
+        }
         // CONT-087: resolve the user's `$EDITOR` in the background now, so the first
         // "Open in $EDITOR" does not pay for a login-shell init. Failures are cached with a
         // TTL and simply mean the built-in editor keeps the pane.

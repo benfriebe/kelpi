@@ -52,10 +52,12 @@ import {
 } from '@nex/core/config';
 import {
     DEFAULT_WS_SETTINGS,
+    DEFAULT_WS_TERMINAL_THEME,
     isWsWritableGeneralKey,
     isWsWritableGhosttyKey,
     type WsProfile,
-    type WsSettingsSnapshot
+    type WsSettingsSnapshot,
+    type WsTerminalThemeResolution
 } from '@nex/protocol';
 
 import { writeFileAtomic } from '../content/editor.js';
@@ -63,6 +65,7 @@ import { isDarkBackground } from '../content/html.js';
 import { expandTilde } from '../lifecycle/rundir.js';
 import { readConfigContents, resolveConfigPath } from '../boot/config.js';
 import { DEFAULT_GHOSTTY_APPEARANCE, parseGhosttyAppearance } from './ghostty.js';
+import { resolveGhosttyTheme } from './theme.js';
 import { watchConfigFile, type ConfigWatchFn, type ConfigWatcher } from './watch.js';
 
 /** Override for the ghostty config location. Additive; exists so tests never read the user's. */
@@ -181,14 +184,52 @@ export function resolveTerminalTheme(
     return namedTerminalTheme(nexTheme)?.id ?? null;
 }
 
+/**
+ * §APP-014: the theme-file lookup, injected.
+ *
+ * `buildSettingsSnapshot` is a pure function of two file contents and stays that way — the
+ * lookup reads OTHER files (the theme itself, on a search path), so it arrives as a callback
+ * whose default resolves nothing. A caller that passes none gets the pre-§APP-014 snapshot,
+ * which is what keeps every existing test of this function a test of parsing.
+ */
+export type ThemeFileResolver = (name: string | null, isDark: boolean) => WsTerminalThemeResolution;
+
+const NO_THEME_RESOLUTION: ThemeFileResolver = () => DEFAULT_WS_TERMINAL_THEME;
+
+export interface BuildSnapshotOptions {
+    readonly resolveTheme?: ThemeFileResolver | undefined;
+}
+
 export function buildSettingsSnapshot(
     nexConfig: string,
-    ghosttyConfig: string
+    ghosttyConfig: string,
+    options: BuildSnapshotOptions = {}
 ): SettingsSnapshot {
     const general = nexConfig === '' ? DEFAULT_GENERAL_SETTINGS : parseGeneralSettings(nexConfig);
     const appearance =
         ghosttyConfig === '' ? DEFAULT_GHOSTTY_APPEARANCE : parseGhosttyAppearance(ghosttyConfig);
     const chrome = parseChromeSettings(nexConfig);
+    /**
+     * §APP-014, in three steps that have to happen in this order:
+     *
+     *   1. **which name** — §SET-105's existing rule (ghostty's own `theme` line wins; the nex
+     *      config's key is the fallback and only when it names one of the ten built-ins).
+     *   2. **which file** — the injected resolver. The light/dark verdict it is given is the
+     *      one the CONFIG produces, before any theme background: a `theme = dark:X,light:Y`
+     *      cannot depend on the background the theme it selects is about to supply.
+     *   3. **which background** — a theme's `background` is the resolved background
+     *      (terminal-surface.md §3.2), but only when the user's own config names none. An
+     *      explicit `background = …` line always wins, which is the same precedence
+     *      §SET-217/§SET-218 give the user's file over ours.
+     */
+    const themeName = resolveTerminalTheme(appearance.theme, general.theme);
+    const configuredIsDark = isDarkBackground(appearance.backgroundColor);
+    const terminalTheme = (options.resolveTheme ?? NO_THEME_RESOLUTION)(themeName, configuredIsDark);
+    const themeBackground = terminalTheme.palette.background;
+    const backgroundColor =
+        appearance.hasExplicitBackground || themeBackground === undefined
+            ? appearance.backgroundColor
+            : themeBackground;
     return {
         keybindLines: keybindLinesFrom(nexConfig),
         // §9.5: the Settings editor is the only consumer, and it must round-trip `~` values
@@ -250,16 +291,23 @@ export function buildSettingsSnapshot(
             expandGroupOnWorkspaceDrop: general.expandGroupOnWorkspaceDrop
         },
         appearance: {
-            backgroundColor: appearance.backgroundColor,
+            // §APP-014: the theme's own background when the config names none — the "resolved
+            // value, i.e. after any `theme` is applied" terminal-surface.md §3.2 specifies.
+            // Everything downstream (pane fill, window compositing, the daemon's markdown /
+            // diff HTML) reads this one field, so the theme reaches all of them at once.
+            backgroundColor,
             backgroundOpacity: appearance.backgroundOpacity,
             fontFamily: appearance.fontFamily,
             fontSize: appearance.fontSize,
             // The luminance rule, computed once by the authority so the daemon's rendered
             // HTML and the client's chrome cannot disagree (content-panes.md port note 9).
-            isDark: isDarkBackground(appearance.backgroundColor),
+            isDark: isDarkBackground(backgroundColor),
             // §SET-105: ghostty's own `theme` line, or — when it has none — the nex config's
             // `theme` key, but only when it names one of the ten built-ins (§SET-216).
-            theme: resolveTerminalTheme(appearance.theme, general.theme)
+            theme: themeName,
+            // §APP-014: and what that name actually resolved to — the palette read out of the
+            // theme file, or the reason it could not be read. Never silent either way.
+            terminalTheme
         }
     };
 }
@@ -296,8 +344,21 @@ export function createSettingsService(options: SettingsServiceOptions = {}): Set
         options.onError?.(toError(error), context);
     };
 
+    /**
+     * §APP-014: the real theme-file lookup, bound to THIS service's paths.
+     *
+     * `ghosttyPath` comes first in the search order, so a daemon pointed at a sandbox config
+     * (`NEXD_GHOSTTY_CONFIG`) resolves themes from that sandbox's own `themes/` directory and
+     * never from the developer's home — the same containment `resolveGhosttyConfigPath` gives
+     * the config file itself.
+     */
+    const resolveTheme = (name: string | null, isDark: boolean): WsTerminalThemeResolution =>
+        resolveGhosttyTheme(name, { env, home, ghosttyPath, isDark });
+
     const read = (): SettingsSnapshot =>
-        buildSettingsSnapshot(readConfigContents(configPath), readConfigContents(ghosttyPath));
+        buildSettingsSnapshot(readConfigContents(configPath), readConfigContents(ghosttyPath), {
+            resolveTheme
+        });
 
     const emit = (next: SettingsSnapshot): SettingsSnapshot => {
         if (sameSnapshot(next, current)) return current;

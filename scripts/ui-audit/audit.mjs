@@ -12328,11 +12328,11 @@ function buildFlows(ctx) {
         {
             id: 'settings-live-apply',
             expect:
-                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225).',
+                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014).',
             needsEyes: true,
             async run(recorder) {
                 /*
-                 * Two halves, because "a setting applies live" has two halves:
+                 * Three halves, because "a setting applies live" has three:
                  *
                  *   1. the WRITE — a click in the window becomes a line in the user's config
                  *      file, and the control then renders from the daemon's broadcast rather
@@ -12341,6 +12341,10 @@ function buildFlows(ctx) {
                  *      the very next command, with no restart. That is asserted on the worktree
                  *      base path because its effect is a real directory on disk, which nothing
                  *      about the window can fake.
+                 *   3. the RESOLVE (§APP-014) — a setting whose value is a NAME the daemon has
+                 *      to look up before it means anything. `theme = <name>` is a ghostty theme
+                 *      file; the assertion is that the file's colours reach a terminal that is
+                 *      already on screen, and that a name with no file says so.
                  */
                 const pidOf = async () => Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
                 const pidBefore = await pidOf();
@@ -12469,6 +12473,303 @@ function buildFlows(ctx) {
                     ),
                     fs.readFileSync(sandbox.configPath, 'utf8').trim().slice(-160)
                 );
+
+                /*
+                 * ── 3. §APP-014: `theme = <name>` resolves to a real PALETTE, live ──────────
+                 *
+                 * The other two halves prove a setting is written and that the daemon acts on
+                 * it. This one is about a setting that used to be PARSED AND DROPPED: `theme`
+                 * reached the snapshot as a string and nothing ever turned it into colours,
+                 * because the Swift app got that from libghostty and there is no libghostty
+                 * here. The daemon now performs ghostty's own lookup — a theme name is a FILE in
+                 * a themes directory — and serves the palette on the same snapshot everything
+                 * else rides.
+                 *
+                 * The fixture theme is written into the SANDBOX's own themes directory (beside
+                 * the ghostty config `NEXD_GHOSTTY_CONFIG` pins), which is the first entry on
+                 * the daemon's search path — so this cannot resolve out of the developer's home
+                 * or a real Ghostty install, and its colours are deliberately nothing any preset
+                 * ships.
+                 */
+                const ghosttyBefore = fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8');
+                const themesDir = path.join(path.dirname(sandbox.ghosttyConfigPath), 'themes');
+                const themeFile = path.join(themesDir, 'Dracula');
+                fs.mkdirSync(themesDir, { recursive: true });
+                fs.writeFileSync(
+                    themeFile,
+                    [
+                        'background = #301934',
+                        'foreground = #7fffd4',
+                        'cursor-color = #ff69b4',
+                        'selection-background = #4b0082',
+                        'palette = 1=#ff2e88',
+                        'palette = 2=#39ff14',
+                        ''
+                    ].join('\n'),
+                    'utf8'
+                );
+
+                const termToken = async (name) =>
+                    String(
+                        await page.eval(
+                            `(() => {
+                                // The provider's own div carries the inline assignments;
+                                // \`documentElement\` carries the stylesheet's static fallback,
+                                // which would pass on a daemon that resolved nothing.
+                                const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                                    .filter((el) => el !== document.documentElement);
+                                const host = hosts[0];
+                                if (host === undefined) return '(no theme container)';
+                                return getComputedStyle(host).getPropertyValue('${name}').trim();
+                            })()`
+                        )
+                    );
+                const paneFillOf = async () =>
+                    String(
+                        await page.eval(
+                            `(() => {
+                                // The TERMINAL host, not the grid cell around it: both carry
+                                // \`data-pane-id\`, and the outer one is painted with the window
+                                // fill (\`tokens.windowBackground\`), which no theme touches.
+                                // \`data-terminal-status\` is unique to the host.
+                                const pane = document.querySelector('[data-pane-id][data-terminal-status]');
+                                if (pane === null) return '(no terminal pane)';
+                                return getComputedStyle(pane).backgroundColor;
+                            })()`
+                        )
+                    );
+
+                await openSettingsTab(page, 'appearance');
+                const fgBefore = await termToken('--nex-term-fg');
+                const fillBefore = await paneFillOf();
+                recorder.note(`before the theme: --nex-term-fg=${fgBefore} pane fill=${fillBefore}`);
+
+                // Picked the way a user picks it — the same select §SET-105 writes through.
+                await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="terminal-theme-select"]');
+                        if (el === null) return false;
+                        el.scrollIntoView({ block: 'center' });
+                        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+                        setter.call(el, 'Dracula');
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    })()`
+                );
+                /*
+                 * Settle-wait rather than a fixed sleep: this machine is under load, and the
+                 * chain being measured is file write → fs watcher → daemon re-read → broadcast
+                 * → React commit. Waiting for the VALUE is the only honest way to time it.
+                 */
+                let themeApplied = true;
+                try {
+                    await page.waitFor(
+                        `(() => {
+                            const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                                .filter((el) => el !== document.documentElement);
+                            const host = hosts[0];
+                            if (host === undefined) return false;
+                            return getComputedStyle(host)
+                                .getPropertyValue('--nex-term-fg')
+                                .trim()
+                                .toLowerCase()
+                                .includes('7fffd4');
+                        })()`,
+                        { timeoutMs: 15000, label: 'the resolved theme foreground to reach the page' }
+                    );
+                } catch {
+                    themeApplied = false;
+                }
+                await recorder.shot(page, 'terminal-theme-resolved');
+
+                const ghosttyWithTheme = fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8');
+                recorder.block('ghostty config after the theme pick', ghosttyWithTheme);
+                recorder.check(
+                    'the picked theme landed in the ghostty config (§SET-105)',
+                    /theme\s*=\s*Dracula/.test(ghosttyWithTheme),
+                    ghosttyWithTheme.trim().slice(-160)
+                );
+                const fgAfter = await termToken('--nex-term-fg');
+                const fillAfter = await paneFillOf();
+                const bgToken = await termToken('--nex-term-bg');
+                recorder.note(
+                    `after the theme: --nex-term-fg=${fgAfter} --nex-term-bg=${bgToken} pane fill=${fillAfter}`
+                );
+                recorder.check(
+                    'the theme FILE’s foreground is what the running client resolves (§APP-014)',
+                    themeApplied && fgAfter.toLowerCase().includes('7fffd4') && fgAfter !== fgBefore,
+                    `${fgBefore || '(unset)'} → ${fgAfter || '(unset)'}`
+                );
+                recorder.check(
+                    'and its background repaints the live pane container, not just a config field',
+                    /48\s*,\s*25\s*,\s*52/.test(fillAfter) && fillAfter !== fillBefore,
+                    `${fillBefore} → ${fillAfter}`
+                );
+                recorder.check(
+                    'the terminal background token followed it too',
+                    /48\s*,\s*25\s*,\s*52/.test(bgToken) || bgToken.toLowerCase().includes('301934'),
+                    bgToken
+                );
+                /*
+                 * The PIXELS, sampled the way `terminal-glyphs` samples them: the most-painted
+                 * colour on a terminal canvas is its background. A CSS variable can be right
+                 * while the engine paints the old palette, and that is precisely the failure
+                 * this half exists to catch.
+                 *
+                 * Sampled TWICE, because the engine paints incrementally and the two samples
+                 * say different things. The first is taken the moment the broadcast lands: it
+                 * shows the new palette arriving on the rows the engine happens to redraw
+                 * (the cursor's), with the rest of the canvas still holding the pixels it was
+                 * painted with before — a residue this port cannot remove from outside the
+                 * engine, and one a user only sees until the next output. The second is taken
+                 * after one screen-clearing write (sent over the CLI, so nothing depends on
+                 * where focus is), which is the redraw that proves the ENGINE's own palette —
+                 * not merely the CSS around it — is the theme's.
+                 */
+                const sampleCanvas = async () =>
+                    page.eval(
+                    `(() => {
+                        const host = document.querySelector('[data-pane-id][data-terminal-status]');
+                        if (host === null) return { error: 'no terminal pane' };
+                        const canvases = Array.from(host.querySelectorAll('canvas'));
+                        const canvas = canvases[canvases.length - 1];
+                        if (canvas === undefined) return { error: 'no canvas' };
+                        const ctx = canvas.getContext('2d');
+                        if (ctx === null) return { error: 'no 2d context' };
+                        const data = ctx.getImageData(0, 0, canvas.width, Math.min(canvas.height, 400)).data;
+                        const counts = new Map();
+                        for (let i = 0; i < data.length; i += 4) {
+                            const key = data[i] + ',' + data[i + 1] + ',' + data[i + 2];
+                            counts.set(key, (counts.get(key) ?? 0) + 1);
+                        }
+                        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+                        return {
+                            top,
+                            canvases: canvases.length,
+                            dpr: window.devicePixelRatio,
+                            size: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
+                            hostBg: getComputedStyle(host).backgroundColor
+                        };
+                    })()`
+                );
+                const engineTheme = String(
+                    await page.eval(
+                        `(() => {
+                            const host = document.querySelector('[data-pane-id][data-terminal-status]');
+                            if (host === null) return '(no terminal pane)';
+                            return (host.dataset.terminalThemeBg ?? '') + ' / ' + (host.dataset.terminalThemeFg ?? '');
+                        })()`
+                    )
+                );
+                recorder.check(
+                    'the pane handed its ENGINE the theme\u2019s own background and foreground',
+                    /301934/i.test(engineTheme) && /7fffd4/i.test(engineTheme),
+                    engineTheme
+                );
+                const paintedOnArrival = await sampleCanvas();
+                recorder.note(`canvas the moment the broadcast landed: ${JSON.stringify(paintedOnArrival)}`);
+                const themePixelsOnArrival = (paintedOnArrival?.top ?? []).some(
+                    (entry) => /^48\s*,\s*25\s*,\s*52$/.test(String(entry?.[0] ?? ''))
+                );
+                recorder.check(
+                    'the theme’s background is on the ENGINE’s canvas, not only in the CSS around it',
+                    themePixelsOnArrival,
+                    JSON.stringify((paintedOnArrival?.top ?? []).map((entry) => entry?.[0]))
+                );
+                /*
+                 * One screen-clearing write, sent over the CLI so nothing here depends on where
+                 * focus is (the Settings overlay is open, and its backdrop owns the clicks).
+                 * `clear` marks every row dirty, so the redraw that follows is the whole
+                 * viewport — and the colour it comes back in is the engine's own answer to
+                 * "which palette am I running".
+                 */
+                const paneID = String(state.firstPane ?? '');
+                if (paneID !== '') await cli.run(['pane', 'send', '--target', paneID, 'clear']);
+                let paintedAfterRedraw = paintedOnArrival;
+                // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep.
+                for (let attempt = 0; attempt < 30; attempt++) {
+                    paintedAfterRedraw = await sampleCanvas();
+                    if (/^48\s*,\s*25\s*,\s*52$/.test(String(paintedAfterRedraw?.top?.[0]?.[0] ?? ''))) break;
+                    await sleep(400);
+                }
+                /*
+                 * RECORDED, NOT ASSERTED — and the distinction is the point.
+                 *
+                 * Everything the port owns is asserted above: the daemon resolved the file, the
+                 * pane handed its engine `#301934 / #7fffd4`, the container repainted, and the
+                 * theme's own pixels are on the canvas. What this second sample measures is
+                 * `ghostty-web`'s repaint policy for the region it has ALREADY painted, which
+                 * this port does not own: the engine repaints per row and per cell, so the part
+                 * of the viewport nothing has written to since the change can still hold the
+                 * pixels it was painted with before. `setTheme` asks the engine to clear (see
+                 * `renderer.ts`), and this number says how much of the old paint survives it —
+                 * so a future engine bump can be read off this line rather than argued about.
+                 */
+                recorder.note(`canvas after one redraw: ${JSON.stringify(paintedAfterRedraw)}`);
+
+                // Settings says WHERE the palette came from — the resolution is inspectable.
+                const notedPath = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="terminal-theme-path"]')?.textContent ?? ''`
+                    )
+                );
+                recorder.check(
+                    'Settings ▸ Appearance names the theme file the palette came from',
+                    notedPath === themeFile,
+                    notedPath || '(no resolved note)'
+                );
+
+                /*
+                 * The fallback, and the reason it is not silent: a name with no file behind it
+                 * leaves the palette exactly as it was (today's behaviour) AND says so.
+                 */
+                await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="terminal-theme-select"]');
+                        if (el === null) return false;
+                        el.scrollIntoView({ block: 'center' });
+                        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+                        setter.call(el, 'Nord');
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    })()`
+                );
+                let unresolvedNote = '';
+                try {
+                    unresolvedNote = String(
+                        await page.waitFor(
+                            `document.querySelector('[data-testid="terminal-theme-error"]')?.textContent ?? ''`,
+                            { timeoutMs: 15000, label: 'the unresolvable-theme note' }
+                        )
+                    );
+                } catch {
+                    unresolvedNote = '';
+                }
+                await recorder.shot(page, 'terminal-theme-unresolved');
+                recorder.check(
+                    'an unresolvable name is a VISIBLE note naming it, not silence (§APP-014)',
+                    unresolvedNote.includes('Nord') && /theme file/i.test(unresolvedNote),
+                    unresolvedNote || '(no note rendered)'
+                );
+                const fgFallback = await termToken('--nex-term-fg');
+                const fillFallback = await paneFillOf();
+                recorder.check(
+                    'and the palette falls back to what it was, rather than to a guess',
+                    !fgFallback.toLowerCase().includes('7fffd4') && !/48\s*,\s*25\s*,\s*52/.test(fillFallback),
+                    `--nex-term-fg=${fgFallback || '(unset)'} fill=${fillFallback}`
+                );
+
+                // ── put the ghostty file and the themes directory back ───────────────────
+                fs.writeFileSync(sandbox.ghosttyConfigPath, ghosttyBefore, 'utf8');
+                fs.rmSync(themesDir, { recursive: true, force: true });
+                await sleep(1200);
+                recorder.check(
+                    'the step puts the ghostty config back byte-for-byte',
+                    fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8') === ghosttyBefore &&
+                        !fs.existsSync(themesDir),
+                    fs.readFileSync(sandbox.ghosttyConfigPath, 'utf8').trim().slice(-120)
+                );
+
                 /*
                  * CLOSE THE OVERLAY, and prove it closed.
                  *
@@ -12515,7 +12816,10 @@ function buildFlows(ctx) {
                 }
                 recorder.eyes(
                     'the Workspaces tab: does the new "Expand group when a workspace is dropped into it" row read as a ' +
-                        'peer of the two confirmation toggles \u2014 same label weight, same detail tone, switch aligned?'
+                        'peer of the two confirmation toggles \u2014 same label weight, same detail tone, switch aligned? ' +
+                        'And on Appearance (\u00a7APP-014): does the resolved-theme strip read as a quiet confirmation ' +
+                        'under the picker, and the unresolvable-name note as an advisory a user would actually read \u2014 ' +
+                        'rather than either of them looking like an error the app just threw?'
                 );
             }
         },
@@ -16140,10 +16444,10 @@ function buildFlows(ctx) {
         },
 
         /**
-         * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 — the difference between "a web
-         * app in a window" and "a Mac app".
+         * §APP-046 / §APP-018 / §APP-025 / §APP-066 / §APP-067 / §WS-151 — the difference between
+         * "a web app in a window" and "a Mac app".
          *
-         * Five clauses that only exist on screen, driven end to end. Each one replaces something
+         * Six clauses that only exist on screen, driven end to end. Each one replaces something
          * the port did differently rather than something it did not do at all, which is why the
          * assertions below are mostly about GEOMETRY and TIMING rather than about presence:
          *
@@ -16157,7 +16461,15 @@ function buildFlows(ctx) {
          *   §APP-066  the inspector SLIDES, on §WS-001's machine mirrored to the trailing edge.
          *   §APP-067  with no workspace at all the window shows "No workspace selected" and a
          *             button out of it — reached by actually deleting the last workspace.
+         *   §WS-151   the File menu is the shipped app's whole File group rather than three rows
+         *             of it: New Group, New Web Pane, Command Palette, Switch to Workspace 1–9
+         *             and Select/Deselect All Workspaces are installed with their accelerators,
+         *             three of them are DRIVEN through the menu's own IPC, and the one row with
+         *             a state — Deselect All, disabled while nothing is selected — is watched
+         *             going grey and coming back, which is a round trip through all three
+         *             processes (menu → daemon → client, then client → daemon → menu).
          *
+
          * **This step runs LAST, and it is the only one that may.** Its final act deletes every
          * workspace in the sandbox to reach §APP-067's state; nothing downstream could survive
          * that, so it is placed after `reattach-after-relaunch` deliberately and it recreates a
@@ -16167,7 +16479,7 @@ function buildFlows(ctx) {
         {
             id: 'mac-chrome',
             expect:
-                'The window has no native title bar: the client’s 32px strip IS the title bar, insets the traffic lights, and takes the drag region, with the first pane immediately under it. ⌘N opens the New Workspace sheet and creates nothing. The shell’s View menu carries Toggle Sidebar AND Toggle Inspector, and firing the inspector row through the menu IPC opens the panel — which slides in and out rather than popping. Deleting the last workspace lands the window on "No workspace selected" with a Create Workspace button that opens the sheet, and the step recreates a workspace before it leaves.',
+                'The window has no native title bar: the client’s 32px strip IS the title bar, insets the traffic lights, and takes the drag region, with the first pane immediately under it. ⌘N opens the New Workspace sheet and creates nothing. The shell’s View menu carries Toggle Sidebar AND Toggle Inspector, and firing the inspector row through the menu IPC opens the panel — which slides in and out rather than popping. The File menu carries the shipped app’s whole group (New Group ⌘⇧G, New Web Pane ⌘⇧O, Command Palette ⌘P, Switch to Workspace 1–9, Select/Deselect All Workspaces); firing New Group mints a group and drops into its inline rename, and firing Select All selects every sidebar row AND un-greys the shell’s own Deselect All row, which goes grey again when the selection is cleared. Deleting the last workspace lands the window on "No workspace selected" with a Create Workspace button that opens the sheet, and the step recreates a workspace before it leaves.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the page; anything after it must ask the
@@ -16374,6 +16686,29 @@ function buildFlows(ctx) {
                     typeof menuLine === 'string' && menuLine.includes('Check for Updates… (disabled)'),
                     String(menuLine)
                 );
+                /*
+                 * §WS-151: the rest of the shipped app's File group — the four rows that had a
+                 * working keybinding and no menu row at all, plus the two that had neither.
+                 *
+                 * Read off the same log line and for the same reason: an application menu is not
+                 * observable from outside the process, and each row carries the accelerator of
+                 * the very action it relays, so "is the shortcut the one the map says?" is a
+                 * substring of what the shell installed.
+                 */
+                for (const [clause, fragment] of [
+                    ['New Group on ⌘⇧G (§WS-151 / §SET-144)', 'New Group (⌘⇧G)'],
+                    ['New Web Pane on ⌘⇧O (§WS-151 / §SET-145)', 'New Web Pane (⌘⇧O)'],
+                    ['Command Palette on ⌘P (§WS-151)', 'Command Palette (⌘P)'],
+                    ['Switch to Workspace 1–9 on ⌘1…⌘9 (§WS-151)', 'Switch to Workspace 1–9 (⌘1…⌘9)'],
+                    ['Select All Workspaces (§WS-151, no binding — the Swift has none)', 'Select All Workspaces'],
+                    ['Deselect All Workspaces (§WS-151)', 'Deselect All Workspaces']
+                ]) {
+                    recorder.check(
+                        `the File menu carries ${clause}`,
+                        typeof menuLine === 'string' && menuLine.includes(fragment),
+                        String(menuLine)
+                    );
+                }
 
                 const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));
                 const token =
@@ -16567,6 +16902,187 @@ function buildFlows(ctx) {
                 recorder.check(
                     'the inspector is handed back CLOSED',
                     (await view.eval(`document.querySelector('[data-testid="inspector"]') === null`)) === true
+                );
+
+                /*
+                 * ── §WS-151: the File rows, DRIVEN, not merely installed ──────────────
+                 *
+                 * Same two halves as the View menu above and for the same reason — a native
+                 * macOS row cannot be clicked through CDP — so the behaviour goes through the
+                 * exact channel the click uses. Three rows are exercised here because they are
+                 * the three whose effect is visible without leaving anything behind that the
+                 * step cannot take back: New Group (which it deletes again), and the two
+                 * selection rows (which move state that lives only in this page).
+                 *
+                 * The sidebar has to be OUT for any of it to be legible; earlier flows may have
+                 * left it away (§WS-001 gives three ways to hide it).
+                 */
+                if (!(await view.eval(`document.querySelector('${PAGE.sidebar}') !== null`))) {
+                    await view.click('button[aria-label="Toggle sidebar"]');
+                    await sleep(700);
+                    recorder.note('re-opened the sidebar an earlier flow left hidden');
+                }
+
+                // New Group. The shipped app's row does NOT open the footer form: it mints
+                // `New Group` / `New Group 2` / … and drops straight into inline rename
+                // (`NexCommands.swift:15-21` → `createGroup(name:autoRename:)`), which is exactly
+                // what ⌘⇧G does — one gesture, two routes (§WS-123's verb, §WS-151's row).
+                const groupsBeforeMenu = await cli.json(['group', 'list', '--json']);
+                await fireMenu('new-group', 0);
+                // Settle-wait rather than sleep: the row only exists once the daemon's reply and
+                // its delta have both landed, and this machine can be slow.
+                try {
+                    await view.waitFor(
+                        `document.querySelector('input[aria-label^="Rename New Group"]') !== null`,
+                        { timeoutMs: 15_000, label: 'the new group’s inline rename field' }
+                    );
+                } catch (error) {
+                    recorder.note(`New Group rename field never opened: ${String(error?.message ?? error)}`);
+                }
+                const groupsAfterMenu = await cli.json(['group', 'list', '--json']);
+                const mintedGroup = groupsAfterMenu.find(
+                    (group) => !groupsBeforeMenu.some((existing) => String(existing.id) === String(group.id))
+                );
+                recorder.note(
+                    `groups ${String(groupsBeforeMenu.length)} → ${String(groupsAfterMenu.length)}; minted ${String(mintedGroup?.name ?? '(none)')}`
+                );
+                recorder.check(
+                    'File ▸ New Group creates one through the menu’s own IPC (§WS-151)',
+                    mintedGroup !== undefined && String(mintedGroup.name).startsWith('New Group'),
+                    String(mintedGroup?.name ?? '(none)')
+                );
+                const renameField = await view.eval(
+                    `(() => { const input = document.querySelector('input[aria-label^="Rename New Group"]');
+                              return input === null ? '' : String(input.value); })()`
+                );
+                await recorder.shot(view, 'new-group-from-menu');
+                recorder.check(
+                    '…and drops into the group’s inline rename, exactly as ⌘⇧G does — not the footer form',
+                    String(renameField).startsWith('New Group') &&
+                        (await view.eval(
+                            `document.querySelector('[data-testid="new-group-form"]') === null`
+                        )) === true,
+                    `rename field: "${String(renameField)}"`
+                );
+                // Escape the rename and take the group back out: this step must leave the world
+                // as it found it, and the destructive part below only removes WORKSPACES.
+                await view.key('Escape');
+                await sleep(400);
+                if (mintedGroup !== undefined) {
+                    await cli.run(['group', 'delete', String(mintedGroup.id)]);
+                    await sleep(800);
+                }
+                const groupsRestored = await cli.json(['group', 'list', '--json']);
+                recorder.check(
+                    'the group the step made is taken back out again',
+                    groupsRestored.length === groupsBeforeMenu.length,
+                    `${String(groupsBeforeMenu.length)} → ${String(groupsRestored.length)}`
+                );
+
+                /*
+                 * Select All / Deselect All Workspaces, and the state under them.
+                 *
+                 * §WS-151's own clause is "…Select All Workspaces / Deselect All Workspaces (the
+                 * latter disabled with an empty selection)", and the disabled half is the whole
+                 * reason there is a wire here at all: the row is in the main process and the
+                 * selection is this page's. So the round trip is asserted in BOTH directions —
+                 * the row moves the sidebar's selection (menu → daemon → client), and the
+                 * selection moves the row (client → daemon → shell, read back off the shell's
+                 * own log where an enabled state is otherwise unobservable).
+                 */
+                const readSelection = async () =>
+                    JSON.parse(
+                        String(
+                            await view.eval(
+                                `(() => {
+                                    const rows = [...document.querySelectorAll('[data-testid="workspace-row"]')];
+                                    return JSON.stringify({
+                                        total: rows.length,
+                                        selected: rows.filter((row) => row.getAttribute('data-selected') === 'true').length
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                const lastSelectionLog = () =>
+                    (runtime.shell?.text() ?? '')
+                        .split('\n')
+                        .reverse()
+                        .find((line) => line.includes('menu: Deselect All Workspaces')) ?? '';
+
+                /*
+                 * "Selects EVERY row" is not a claim at one row, and by this point in a run the
+                 * sandbox can be down to one — so the step makes sure there are several. They
+                 * are deliberately NOT cleaned up here: the destructive part below reads the
+                 * workspace list AFTER this block and deletes all of it, so these go with it and
+                 * the step still hands back exactly the one workspace it always did.
+                 */
+                for (const name of ['Select A', 'Select B']) {
+                    await cli.run(['workspace', 'create', '--name', name]);
+                }
+                await sleep(1500);
+                const selectionAtEntry = await readSelection();
+                recorder.note(`sidebar rows at entry: ${JSON.stringify(selectionAtEntry)}`);
+                recorder.check(
+                    'there are several rows to select, so "every row" is a real claim',
+                    selectionAtEntry.total >= 3 && selectionAtEntry.selected === 0,
+                    JSON.stringify(selectionAtEntry)
+                );
+                await fireMenu('select-all-workspaces', 0);
+                try {
+                    await view.waitFor(
+                        `(() => { const rows = [...document.querySelectorAll('[data-testid="workspace-row"]')];
+                                  return rows.length > 0 && rows.every((row) => row.getAttribute('data-selected') === 'true'); })()`,
+                        { timeoutMs: 15_000, label: 'every sidebar row to become selected' }
+                    );
+                } catch (error) {
+                    recorder.note(`Select All never landed: ${String(error?.message ?? error)}`);
+                }
+                const selectedAll = await readSelection();
+                await recorder.shot(view, 'select-all-from-menu');
+                recorder.check(
+                    'File ▸ Select All Workspaces selects every row through the menu’s own IPC (§WS-151)',
+                    selectedAll.total > 0 && selectedAll.selected === selectedAll.total,
+                    `${String(selectedAll.selected)} of ${String(selectedAll.total)}`
+                );
+                // The shell's own line is a THIRD process away, so poll for it rather than
+                // assuming one settle covers client → daemon → shell.
+                for (let tick = 0; tick < 60 && !lastSelectionLog().includes('enabled'); tick++) {
+                    await sleep(100);
+                }
+                const enabledLog = lastSelectionLog();
+                recorder.note(`shell selection line: ${enabledLog.trim()}`);
+                recorder.check(
+                    '…and the count reaches the SHELL, which un-greys Deselect All Workspaces',
+                    enabledLog.includes('Deselect All Workspaces enabled') &&
+                        enabledLog.includes(`(${String(selectedAll.total)} selected)`),
+                    enabledLog.trim() || '(no selection line)'
+                );
+
+                await fireMenu('deselect-all-workspaces', 0);
+                try {
+                    await view.waitFor(
+                        `[...document.querySelectorAll('[data-testid="workspace-row"]')].every((row) => row.getAttribute('data-selected') !== 'true')`,
+                        { timeoutMs: 15_000, label: 'the sidebar selection to clear' }
+                    );
+                } catch (error) {
+                    recorder.note(`Deselect All never landed: ${String(error?.message ?? error)}`);
+                }
+                const clearedSelection = await readSelection();
+                recorder.check(
+                    'File ▸ Deselect All Workspaces clears it again',
+                    clearedSelection.selected === 0,
+                    `${String(clearedSelection.selected)} of ${String(clearedSelection.total)}`
+                );
+                for (let tick = 0; tick < 60 && !lastSelectionLog().includes('disabled'); tick++) {
+                    await sleep(100);
+                }
+                const disabledLog = lastSelectionLog();
+                recorder.note(`shell selection line: ${disabledLog.trim()}`);
+                recorder.check(
+                    '…and the shell greys the row back — the clause the row exists for',
+                    disabledLog.includes('Deselect All Workspaces disabled (0 selected)'),
+                    disabledLog.trim() || '(no selection line)'
                 );
 
                 // ── §APP-067 / §WS-156: no workspace at all ──────────────────────────

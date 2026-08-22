@@ -49,6 +49,36 @@ export function shellActionAppliesHere(target: string | null, ourWindowID: strin
 }
 
 // ---------------------------------------------------------------------------
+// The sidebar's workspace multi-selection (WS-151)
+// ---------------------------------------------------------------------------
+
+/** §WS-151: `workspace-selection`, decoded (protocol `WS_WORKSPACE_SELECTION_MESSAGE`). */
+export interface WorkspaceSelectionReport {
+    /** How many workspaces the reporting window's sidebar has selected; never negative. */
+    readonly selected: number;
+    /** Which shell window it is about; null = whichever shell hears it. */
+    readonly windowID: string | null;
+}
+
+/**
+ * Read a `workspace-selection` frame, or null when it is not one (or says nothing usable).
+ *
+ * Pure and here rather than in `status.ts` for the reason the whole module is: `status.ts`
+ * imports Electron and cannot be unit-tested, and "is this frame usable?" is the part with a
+ * rule in it. A non-integer, negative or missing count is REFUSED rather than defaulted —
+ * defaulting to 0 would grey the Deselect All row over a frame nobody understood, and
+ * defaulting to 1 would un-grey it.
+ */
+export function parseWorkspaceSelection(
+    message: Record<string, unknown>
+): WorkspaceSelectionReport | null {
+    if (message['type'] !== 'workspace-selection') return null;
+    const selected = message['selected'];
+    if (typeof selected !== 'number' || !Number.isInteger(selected) || selected < 0) return null;
+    return { selected, windowID: readString(message, 'windowID') };
+}
+
+// ---------------------------------------------------------------------------
 // Finder "Open With" (CONT-123 / CONT-124)
 // ---------------------------------------------------------------------------
 

@@ -22,7 +22,8 @@ export {
     SPRING_LOAD_MS,
     Sidebar,
     type NewEntryDraft,
-    type SidebarProps
+    type SidebarProps,
+    type SidebarSelectionCommands
 } from './Sidebar';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {

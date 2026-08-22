@@ -900,6 +900,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             /* Cell metrics in CSS pixels, so the audit can compute the cell a pixel lands in
                and assert a mouse report byte for byte instead of pattern-matching it. */
             data-terminal-cell={cellHint}
+            /* §APP-014 — the background and foreground this pane last handed its ENGINE.
+               Published for the same reason as the mouse mode and the kitty flags above: "the
+               resolved theme reached the renderer" has to be an observable fact about the pane
+               rather than an inference from a CSS variable assigned somewhere else entirely. */
+            data-terminal-theme-bg={theme?.background ?? ''}
+            data-terminal-theme-fg={theme?.foreground ?? ''}
             /*
              * §TERM-036 — the pane IS the accessibility element (`SurfaceView.swift:703-715`).
              *

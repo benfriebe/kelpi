@@ -50,6 +50,13 @@ export {
     unknownCommandError,
     type DispatcherOptions
 } from './dispatch.js';
+export {
+    collectMissingLabelPresets,
+    MIGRATED_LABEL_PRESET_COLOR,
+    runLabelPresetMigration,
+    type LabelPresetMigrationDeps,
+    type LabelPresetMigrationOutcome
+} from './labels.js';
 export { clearPortFile, portFilePath, readPortFile, writePortFile } from './port.js';
 export {
     runRestorePipeline,

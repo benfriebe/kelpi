@@ -23,6 +23,7 @@ import { applyDomainEvents, type DaemonState, type DomainEvent } from '@nex/daem
 import {
     DEFAULT_WS_CHROME_SETTINGS,
     DEFAULT_WS_SETTINGS,
+    DEFAULT_WS_TERMINAL_THEME,
     SYSTEM_STATS_INTERVAL_MS,
     WS_DELTA_KINDS,
     ZERO_SYSTEM_STATS,
@@ -30,6 +31,7 @@ import {
     type WsNotificationKind,
     type WsSettingsSnapshot,
     type WsSystemStats,
+    type WsTerminalThemeResolution,
     type WsTransportStatus
 } from '@nex/protocol';
 import { create } from 'zustand';
@@ -72,6 +74,9 @@ export function emptyDaemonState(): DaemonState {
         lastActiveWorkspaceID: null,
         repos: [],
         labelPresets: [],
+        // Server-only, like `homeDirectory` below: §APP-116's one-shot label→preset marker is a
+        // daemon boot concern, never crosses the wire, and nothing on this side reads it.
+        labelPresetsMigrated: false,
         homeDirectory: ''
     };
 }
@@ -482,8 +487,36 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             fontFamily: nullableText(appearance['fontFamily']),
             fontSize: nullableNum(appearance['fontSize']),
             isDark: bool(appearance['isDark'], fallbackAppearance.isDark),
-            theme: nullableText(appearance['theme'])
+            theme: nullableText(appearance['theme']),
+            // §APP-014: what that theme name RESOLVED to. Additive in the same way as every
+            // field above — a daemon that predates it sends nothing, the neutral resolution
+            // stands, and the client keeps its light/dark preset with no note.
+            terminalTheme: hydrateTerminalTheme(appearance['terminalTheme'])
         }
+    };
+}
+
+/**
+ * §APP-014's `appearance.terminalTheme` — the resolved theme file, structurally.
+ *
+ * The palette is filtered to STRINGS keyed by name; the merge that applies it
+ * (`terminal/palette.ts`) checks each value is a colour an engine can parse, so a hostile or
+ * simply old daemon cannot put `rgba(…)` — which ghostty-web renders as black — into a pane.
+ */
+function hydrateTerminalTheme(raw: unknown): WsTerminalThemeResolution {
+    if (!isRecord(raw)) return DEFAULT_WS_TERMINAL_THEME;
+    const palette: Record<string, string> = {};
+    const rawPalette = raw['palette'];
+    if (isRecord(rawPalette)) {
+        for (const [key, value] of Object.entries(rawPalette)) {
+            if (typeof value === 'string') palette[key] = value;
+        }
+    }
+    return {
+        name: typeof raw['name'] === 'string' ? raw['name'] : null,
+        path: typeof raw['path'] === 'string' ? raw['path'] : null,
+        palette,
+        error: typeof raw['error'] === 'string' && raw['error'] !== '' ? raw['error'] : null
     };
 }
 

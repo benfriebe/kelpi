@@ -275,6 +275,35 @@ export interface WsShellActivationMessage {
     readonly windowID?: string;
 }
 
+/**
+ * §WS-151: how many workspaces this window's sidebar has multi-selected, reported by the client.
+ *
+ * `shell-activation` in the other direction, and for the mirror-image reason. The shipped app's
+ * File ▸ "Deselect All Workspaces" is `.disabled(store.selectedWorkspaceIDs.isEmpty)` — one
+ * reducer, one menu, no distance between them (`NexCommands.swift:49-57`). Here the menu is in
+ * the main process and the selection is client-local state in the page, so the fact has to
+ * travel: client → daemon → the shell that owns that window's menu.
+ *
+ * `windowID` scopes it exactly as `shell-activation` does: two shell windows have two menus and
+ * two independent selections. An unscoped report is every shell's (the single-window case).
+ *
+ * Deliberately NOT remembered by the daemon, for the same reason activation is not: it describes
+ * a moment, and a client that has said nothing has nothing selected — which is also the state a
+ * freshly built menu is in, so silence and the truth agree.
+ *
+ * A count rather than a boolean: it costs the same on the wire, and a boolean would have to be
+ * widened the first time a row wants to say "Delete N Workspaces…".
+ */
+export const WS_WORKSPACE_SELECTION_MESSAGE = 'workspace-selection';
+
+export interface WsWorkspaceSelectionMessage {
+    readonly type: typeof WS_WORKSPACE_SELECTION_MESSAGE;
+    /** How many workspaces are multi-selected right now; 0 = none. */
+    readonly selected: number;
+    /** The shell window this is about; absent = every shell. */
+    readonly windowID?: string;
+}
+
 export type WsClientMessage =
     | WsHelloMessage
     | WsAttachPaneMessage
@@ -291,7 +320,8 @@ export type WsClientMessage =
     | WsHostRpcReplyMessage
     | WsHostEventMessage
     | WsHotkeyStatusMessage
-    | WsShellActivationMessage;
+    | WsShellActivationMessage
+    | WsWorkspaceSelectionMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -681,6 +711,7 @@ export type WsServerMessage =
     | WsWebConsoleLineMessage
     | WsRevealPaneMessage
     | WsHotkeyStatusMessage
-    | WsShellActivationMessage;
+    | WsShellActivationMessage
+    | WsWorkspaceSelectionMessage;
 
 export type WsMessage = WsClientMessage | WsServerMessage;

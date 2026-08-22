@@ -161,6 +161,13 @@ export interface DaemonState {
     readonly lastActiveWorkspaceID: string | null;
     readonly repos: readonly Repo[];
     readonly labelPresets: readonly LabelPreset[];
+    /**
+     * app-state-core.md §6.5 / §13 — the one-shot legacy-label → preset marker. Persisted
+     * (appState key `nexd.labelPresetsMigrated`), server-only: `serializeState` never sends it.
+     * Once true the boot back-fill never runs again, so a preset the user deletes while its
+     * label is still applied somewhere is not resurrected by the next launch.
+     */
+    readonly labelPresetsMigrated: boolean;
     /** Environment, not persisted: the default cwd for new panes. */
     readonly homeDirectory: string;
 }
@@ -288,6 +295,12 @@ export type DomainAction =
     | { readonly type: 'remove-label-preset'; readonly id: string }
     | { readonly type: 'move-label-preset'; readonly from: number; readonly to: number }
     | { readonly type: 'set-label-presets'; readonly presets: readonly LabelPreset[] }
+    /**
+     * app-state-core.md §6.5 — flip the one-shot legacy-label → preset marker. Dispatched by
+     * the boot migration (`boot/labels.ts`) AFTER the back-fill presets have landed, so a crash
+     * between the two leaves the migration still pending rather than half-done.
+     */
+    | { readonly type: 'set-label-presets-migrated' }
 
     // ── repo registry / associations ───────────────────────────────────────
     | { readonly type: 'add-repo'; readonly repo: Repo }
@@ -688,6 +701,10 @@ export function emptyDaemonState(homeDirectory: string): DaemonState {
         lastActiveWorkspaceID: null,
         repos: [],
         labelPresets: [],
+        // A state with no DB behind it has nothing legacy to migrate; boot sets the marker on
+        // the fresh-install path (§6.5) rather than defaulting it true here, so a state built
+        // from an UNREADABLE database still gets the same one-shot treatment.
+        labelPresetsMigrated: false,
         homeDirectory
     };
 }

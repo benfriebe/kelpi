@@ -38,8 +38,22 @@ mouse-hide-while-typing = true
             backgroundOpacity: 0.85,
             fontFamily: '"JetBrains Mono"',
             fontSize: 15,
-            theme: 'Catppuccin Latte'
+            theme: 'Catppuccin Latte',
+            hasExplicitBackground: true
         });
+    });
+
+    /**
+     * §APP-014: "the user set this background" vs "nobody did" — the same VALUE, and the
+     * difference decides whether a resolved theme's own background is allowed to stand in.
+     */
+    it('records whether the background came from the file or from the default', () => {
+        expect(parseGhosttyAppearance('background = #1a1b26\n').hasExplicitBackground).toBe(true);
+        expect(parseGhosttyAppearance('theme = Nord\n').hasExplicitBackground).toBe(false);
+        // An unparseable value is not a background: the default stands, and so does `false`.
+        expect(parseGhosttyAppearance('background = mauve\n').hasExplicitBackground).toBe(false);
+        // Even when the file names exactly the default colour, saying it is a decision.
+        expect(parseGhosttyAppearance('background = #0a0a0c\n').hasExplicitBackground).toBe(true);
     });
 
     it('is the defaults for an empty or comment-only file', () => {

@@ -50,7 +50,12 @@ function fixture(options: { config?: string; ghostty?: string; watch?: boolean }
         ghosttyPath,
         watch: options.watch ?? false,
         debounceMs: 10,
-        reattachDelayMs: 20
+        reattachDelayMs: 20,
+        // §APP-014: pin the theme lookup inside this tmp root, so a machine with Ghostty
+        // installed cannot resolve `theme = Nord` out of the real app bundle and repaint a
+        // fixture's background from a file this test never wrote.
+        env: { NEXD_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
+        home: root
     });
     services.push(service);
     return {

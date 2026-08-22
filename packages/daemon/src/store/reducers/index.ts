@@ -38,6 +38,7 @@ const ROUTES = {
     'remove-label-preset': 'workspace',
     'move-label-preset': 'workspace',
     'set-label-presets': 'workspace',
+    'set-label-presets-migrated': 'workspace',
     'add-repo': 'workspace',
     'remove-repo': 'workspace',
     'rename-repo': 'workspace',

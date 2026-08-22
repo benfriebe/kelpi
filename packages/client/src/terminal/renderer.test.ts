@@ -483,7 +483,10 @@ describe('TerminalRenderer adapter', () => {
         renderer.repaint();
 
         expect(engine.themes).toEqual([{ background: '#101013' }]);
-        expect(engine.repaints).toBe(1);
+        // TWO: §APP-014 made `setTheme` redraw what is already on screen (both engines paint
+        // incrementally, so a palette change would otherwise apply to the next cell only), and
+        // the explicit `repaint()` above is the second.
+        expect(engine.repaints).toBe(2);
         renderer.dispose();
     });
 

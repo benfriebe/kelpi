@@ -12,10 +12,19 @@
  *      that this needs no Accessibility permission.
  *   2. **"Press again to hide"** (SET-082) sits under the row and is DISABLED while no hotkey
  *      is set — a repress rule with nothing to repress is not a meaningful choice.
- *   3. **Registration failure** (SET-083) is an inline orange warning carrying the OS's reason.
- *      In the Swift app that came from Carbon's `OSStatus`; here the shell registers through
- *      Electron's `globalShortcut` and reports through the same wording ("This shortcut is
- *      already claimed by another app."), so the string a user reads is unchanged.
+ *   3. **Registration failure** (SET-083, §APP-014) is an inline error carrying the OS's own
+ *      reason. In the Swift app that came from Carbon's `OSStatus`; here the shell registers
+ *      through Electron's `globalShortcut` and reports through the same wording ("This
+ *      shortcut is already claimed by another app."), so the string a user reads is unchanged.
+ *      **Its tone is destructive, deliberately unlike rule 4's amber.** The Swift view paints
+ *      both warnings the same orange, and the two mean opposite things: a *failure* means the
+ *      hotkey does not work at all and needs a different chord, while the *advisory* below
+ *      means it works and something else will not. The row is `role="alert"`, because a
+ *      registration failure is the one state here a screen reader has to be told about — it is
+ *      reported asynchronously by another process, not in response to a keystroke.
+ *      It comes off the `hotkey-status` broadcast (§SET-200/§SET-201): a report with `ok: true`
+ *      — which is what CLEARING the hotkey and re-recording a working chord both produce —
+ *      leaves `registrationError` null, so the error disappears with no state of its own.
  *   4. **The in-app collision advisory** (SET-084): a global hotkey that also matches an in-app
  *      binding wins while Nex is frontmost, so the in-app shortcut silently stops working. That
  *      is worth an advisory, not a refusal — the combination is legal and sometimes wanted.
@@ -37,8 +46,14 @@ import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
 import { KeyChip, SettingsButton, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
-/** The advisory colour the Swift view uses for both warnings. */
+/** The advisory colour the Swift view uses for its warnings (SET-084's shadow notice). */
 export const WARNING_COLOR = '#D08A28';
+
+/**
+ * The destructive colour for a registration FAILURE (SET-083) — the same red the recorder's
+ * own rejection message uses, so "this did not work" reads the same everywhere in Settings.
+ */
+export const FAILURE_COLOR = '#E0685F';
 
 export interface GlobalHotkeySectionProps {
     /** The config-file trigger string (`"ctrl+alt+space"`), or null when unset. */
@@ -52,6 +67,24 @@ export interface GlobalHotkeySectionProps {
      * warning — which is correct: nothing tried to register anything.
      */
     readonly registrationError?: string | null | undefined;
+}
+
+/**
+ * §APP-014 / §SET-200 — the `hotkey-status` broadcast, as the row's error state.
+ *
+ * One rule, in one place, because the alternative (an inline ternary at the call site) is how
+ * "the shell reported a failure and nothing rendered" happens: a report that is absent or `ok`
+ * is NO error — which is what makes clearing the hotkey, or re-recording a chord that works,
+ * take the message away without anything having to remember it was there — and a report that
+ * failed always yields a sentence, even when the OS gave no reason. A silent `ok: false` is
+ * the one outcome a user cannot act on.
+ */
+export function globalHotkeyErrorFrom(
+    status: { readonly ok: boolean; readonly error: string | null } | null | undefined
+): string | null {
+    if (status === null || status === undefined || status.ok) return null;
+    const reason = status.error?.trim() ?? '';
+    return reason === '' ? 'The global hotkey could not be registered.' : reason;
 }
 
 /**
@@ -207,9 +240,14 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
             {failure === null ? null : (
                 <span
                     data-testid="global-hotkey-failure"
+                    role="alert"
+                    data-tone="destructive"
                     className="rounded px-2 py-1 text-[11px]"
-                    style={{ color: WARNING_COLOR, background: withAlpha(WARNING_COLOR, 0.1) }}
+                    style={{ color: FAILURE_COLOR, background: withAlpha(FAILURE_COLOR, 0.1) }}
                 >
+                    {/* The Swift row is a `Label(…, systemImage: "exclamationmark.triangle.fill")`;
+                        the glyph is `aria-hidden` because the sentence beside it already says it. */}
+                    <span aria-hidden>⚠ </span>
                     {failure}
                 </span>
             )}

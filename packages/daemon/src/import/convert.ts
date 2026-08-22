@@ -225,7 +225,12 @@ export function convertLegacySnapshot(legacy: PersistedSnapshot, options: Conver
             topLevelOrder,
             activeWorkspaceID,
             repos,
-            labelPresets
+            labelPresets,
+            // app-state-core.md §6.5: the import IS the back-fill (above), so the first boot
+            // after it must not run the migration again. It also honours an explicit
+            // `backfillLabelPresets: false` — a caller who opted out of presets would
+            // otherwise have them minted anyway by the very next launch.
+            labelPresetsMigrated: true
         },
         warnings,
         resumable,

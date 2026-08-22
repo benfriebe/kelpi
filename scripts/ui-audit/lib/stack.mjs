@@ -161,6 +161,9 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         NEXD_HTTP_PORT: String(httpPort),
         NEXD_HTTP_HOST: '127.0.0.1',
         NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'),
+        // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
+        // instead of orphaning a window when the harness (or a probe script) is hard-killed.
+        NEX_HARNESS: '1',
         ...(clientDir === undefined ? {} : { NEXD_CLIENT_DIR: clientDir })
     };
 

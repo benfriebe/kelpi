@@ -254,9 +254,40 @@ export interface CliIO {
 }
 
 function defaultIO(): CliIO {
+    /*
+     * Writes never throw, and a dead pipe never kills the daemon. `nexd start --foreground`
+     * under a supervisor (the audit harness, a crashed probe script, a terminal that closed)
+     * has stdout/stderr as pipes whose reader can die first — from then on every write raises
+     * EPIPE, and an uncaught EPIPE would take a healthy daemon down with the process that was
+     * merely WATCHING it. Logging is best-effort: swallow both the synchronous throw and the
+     * async 'error' event (Node surfaces EPIPE either way depending on timing).
+     */
+    const supervisorGone = (): void => {
+        // Under the audit harness the daemon must not outlive its supervisor: a dead stdout
+        // pipe or a reparent to pid 1 means the harness was hard-killed, so take the graceful
+        // SIGTERM path (flush + socket teardown) instead of lingering as an orphan. A user's
+        // daemon (packaged, or `nexd start` from a terminal) never carries the marker.
+        if (process.env['NEX_HARNESS'] === '1') process.kill(process.pid, 'SIGTERM');
+    };
+    for (const stream of [process.stdout, process.stderr]) {
+        if (stream.listenerCount('error') === 0) stream.on('error', supervisorGone);
+    }
+    if (process.env['NEX_HARNESS'] === '1') {
+        const watchdog = setInterval(() => {
+            if (process.ppid === 1) supervisorGone();
+        }, 10_000);
+        watchdog.unref();
+    }
+    const write = (stream: NodeJS.WriteStream, line: string): void => {
+        try {
+            stream.write(`${line}\n`);
+        } catch {
+            // dead pipe — the log goes quiet, the daemon stays up
+        }
+    };
     return {
-        out: (line) => process.stdout.write(`${line}\n`),
-        err: (line) => process.stderr.write(`${line}\n`)
+        out: (line) => write(process.stdout, line),
+        err: (line) => write(process.stderr, line)
     };
 }
 

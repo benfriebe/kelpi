@@ -1184,6 +1184,34 @@ if (!app.requestSingleInstanceLock()) {
         forwardOpen(filePath);
     });
 
+    /*
+     * Harness watchdog: when the audit harness (or a probe script) that spawned this shell is
+     * hard-killed, its `finally` never runs and the shell would sit on screen forever, its
+     * stdout a dead pipe raising EPIPE on every log write (the "Uncaught Exception" dialogs a
+     * user found over leftover audit windows). Under NEX_HARNESS, the first failed stdout
+     * write is taken as "my supervisor is gone" and the shell quits. A real user's shell never
+     * carries the marker, so closing the terminal that launched `electron .` still detaches
+     * normally, and the packaged app is unaffected.
+     */
+    if (process.env['NEX_HARNESS'] === '1') {
+        let closing = false;
+        const supervisorGone = (): void => {
+            if (closing) return;
+            closing = true;
+            app.quit();
+        };
+        // A dead stdout pipe fires only on the NEXT write; an idle shell could sit silent for
+        // minutes first. The parent pid is the deterministic signal: when the supervisor dies,
+        // the shell is reparented and `process.ppid` becomes 1.
+        for (const stream of [process.stdout, process.stderr]) {
+            stream.on('error', supervisorGone);
+        }
+        const watchdog = setInterval(() => {
+            if (process.ppid === 1) supervisorGone();
+        }, 10_000);
+        watchdog.unref();
+    }
+
     app.whenReady().then(
         () => {
             void boot();

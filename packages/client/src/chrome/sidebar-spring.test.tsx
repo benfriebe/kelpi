@@ -285,7 +285,18 @@ describe('the sidebar’s reorder is driven by the spring (§WS-008)', () => {
         fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
         // y=58 is the collapsed group header's lower half → the dwell starts.
         fireEvent.mouseMove(window, { clientY: 58 });
+        const ghost = (): HTMLElement | null =>
+            document.querySelector('[data-testid="sidebar-drag-ghost"]');
         expect(document.querySelectorAll('[data-testid="sidebar-drag-ghost"]')).toHaveLength(1);
+        /*
+         * The clone has RESTYLED for the group under the cursor (this pass). The identity of the
+         * node is captured here on purpose: the restyle must be a restyle, so what survives the
+         * tick below has to be the same element, not a fresh one wearing the same clothes.
+         */
+        expect(ghost()?.dataset['ghostDepth']).toBe('1');
+        expect(ghost()?.querySelectorAll('[data-ghost-guide]')).toHaveLength(1);
+        const restyled = ghost();
+        const placed = restyled?.style.transform;
 
         // The tick: same entries, a brand-new props object, exactly as the parent hands down.
         act(() => {
@@ -293,6 +304,12 @@ describe('the sidebar’s reorder is driven by the spring (§WS-008)', () => {
             rerender(<Sidebar {...baseProps()} rowHeight={20} entries={collapsed} springLoadMs={650} />);
         });
         expect(document.querySelectorAll('[data-testid="sidebar-drag-ghost"]')).toHaveLength(1);
+        // The re-render did not tear the restyled clone down and mint a replacement: same node,
+        // same cursor offset, same dressing.
+        expect(ghost()).toBe(restyled);
+        expect(ghost()?.style.transform).toBe(placed);
+        expect(ghost()?.dataset['ghostDepth']).toBe('1');
+        expect(ghost()?.querySelectorAll('[data-ghost-guide]')).toHaveLength(1);
 
         // …and the dwell that started before it still fires at 650 ms, not 650 ms after the tick.
         act(() => {
@@ -305,6 +322,97 @@ describe('the sidebar’s reorder is driven by the spring (§WS-008)', () => {
             fireEvent.mouseUp(window);
         });
         expect(document.querySelectorAll('[data-testid="sidebar-drag-ghost"]')).toHaveLength(0);
+    });
+
+    /**
+     * The clone wears the container the drop RESOLVES to, not the one the row came from.
+     *
+     * The user's report: dragging a workspace out of a group left the thing under the cursor
+     * still wearing that group's left guide rail all the way to a top-level drop. The in-flow
+     * rows had always restyled — §WS-089's depth spring moves them the moment the shadow says
+     * the container changed — but the clone is a photograph taken at the threshold and nothing
+     * re-took it.
+     */
+    it('the clone sheds the group band and the member width when the target leaves the group', () => {
+        vi.useFakeTimers();
+        // jsdom's all-zero rects again, so the drop zones are the uniform `rowHeight` fallback:
+        // alpha 4–24 · header 24–44 · beta 44–64 (beta being the group's only child).
+        const grouped: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+            {
+                kind: 'group',
+                group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+                workspaces: [workspace(W2, 'beta')]
+            }
+        ];
+        render(<Sidebar {...baseProps()} rowHeight={20} entries={grouped} springLoadMs={100_000} />);
+        const ghost = (): HTMLElement => {
+            const node = document.querySelector('[data-testid="sidebar-drag-ghost"]');
+            if (!(node instanceof HTMLElement)) throw new Error('no drag ghost');
+            return node;
+        };
+        const rail = (): HTMLElement | null => ghost().querySelector('[data-ghost-guide]');
+
+        // Grab the group's member and drag it up to the very top of the list.
+        fireEvent.mouseDown(rowFor(W2), { clientY: 54 });
+        fireEvent.mouseMove(window, { clientY: 8 }); // alpha's top half → top level, index 0
+        expect(ghost().dataset['ghostDepth']).toBe('0');
+        expect(ghost().dataset['ghostGroup']).toBeUndefined();
+        // The band is GONE from the clone's output, not merely hidden — a query for it is empty.
+        expect(rail()).toBeNull();
+        // The clone's own indent is zero: it is positioned by the raw cursor and nothing else.
+        expect(ghost().style.marginLeft).toBe('0px');
+        const topLevelWidth = ghost().style.width;
+
+        // Back over the group: the band comes back, tinted with THAT group's colour, and the
+        // clone gives up the nesting indent's worth of width again.
+        fireEvent.mouseMove(window, { clientY: 58 });
+        expect(ghost().dataset['ghostDepth']).toBe('1');
+        expect(ghost().dataset['ghostGroup']).toBe(G1);
+        expect(rail()?.style.background).not.toBe('');
+        expect(rail()?.style.width).toBe('1.5px');
+        expect(ghost().style.width).not.toBe(topLevelWidth);
+
+        /*
+         * And out again — the restyle is symmetric, and there is never more than one rail.
+         *
+         * y=38 rather than back to the top: the row is live-applied at index 0 by now, and the
+         * top of the list is the dragged row's OWN slot, which the zone walk excludes (a row
+         * cannot be dropped on itself). That resolves to no zone at all, which is deliberately
+         * not a container change — so it would leave the clone dressed for the group and prove
+         * nothing. y=38 is the row below, whose bottom half is a real top-level slot.
+         */
+        fireEvent.mouseMove(window, { clientY: 38 });
+        expect(ghost().dataset['ghostDepth']).toBe('0');
+        expect(ghost().querySelectorAll('[data-ghost-guide]')).toHaveLength(0);
+        expect(ghost().style.width).toBe(topLevelWidth);
+
+        fireEvent.mouseUp(window);
+        expect(document.querySelectorAll('[data-testid="sidebar-drag-ghost"]')).toHaveLength(0);
+        // The clone answers to no row selector, rail included: §WS-007's guide must never match
+        // something floating over the pane grid.
+        expect(document.querySelectorAll('[data-ghost-guide]')).toHaveLength(0);
+    });
+
+    /** A dragged GROUP header is top level by construction, so it never takes a band. */
+    it('never dresses a dragged group header as a member', () => {
+        vi.useFakeTimers();
+        const grouped: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+            {
+                kind: 'group',
+                group: { id: G1, name: 'squad', color: 'green', icon: null, isCollapsed: false },
+                workspaces: [workspace(W2, 'beta')]
+            }
+        ];
+        render(<Sidebar {...baseProps()} rowHeight={20} entries={grouped} onMoveGroup={vi.fn()} />);
+        fireEvent.mouseDown(screen.getByTestId('group-header'), { clientY: 34 });
+        fireEvent.mouseMove(window, { clientY: 8 });
+        const ghost = document.querySelector('[data-testid="sidebar-drag-ghost"]');
+        expect(ghost).not.toBeNull();
+        expect(ghost?.querySelectorAll('[data-ghost-guide]')).toHaveLength(0);
+        expect((ghost as HTMLElement).dataset['ghostDepth']).toBeUndefined();
+        fireEvent.mouseUp(window);
     });
 
     it('leaves nothing behind when a springing row is removed', () => {

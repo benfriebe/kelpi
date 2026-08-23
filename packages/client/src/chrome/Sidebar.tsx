@@ -119,10 +119,13 @@ const CONTENT_TOP_PADDING = 4;
  */
 export const SPRING_LOAD_MS = 650;
 /**
- * §WS-092's landing: a single row released onto a COLLAPSED group's header is pinned where it
- * is, shrunk toward the header, and the move commits when the animation ends (~400 ms).
+ * The nesting indent, in px — one number rather than three literals.
+ *
+ * It is the row's `margin-left` when it lives inside a group (§WS-089), the amount §WS-007's
+ * guide rule is inset behind, and — since this pass — the width the cursor clone gives up when
+ * the resolved drop target is inside a group and takes back when it leaves one.
  */
-export const LANDING_MS = 400;
+export const NEST_INDENT_PX = 24;
 export const AUTO_SCROLL_EDGE_PX = 40;
 export const AUTO_SCROLL_STEP_PX = 3;
 export const AUTO_SCROLL_INTERVAL_MS = 15;
@@ -160,9 +163,9 @@ export const REORDER_MS = 350;
  * The channel the spring writes, and the reason it is `translate` rather than `transform`.
  *
  * `translate` is an independent transform property: it composes with whatever `transform` the
- * row already carries (the drag lift's `scale(1.03)`, §WS-092's `scale(0.2)` landing) without
- * either one having to know about the other, and — the part that matters — the row's inline
- * `transform` transition cannot touch it. Writing a spring's per-frame value into a property
+ * row already carries without either one having to know about the other, and — the part that
+ * matters — the row's inline `transform` transition cannot touch it. Writing a spring's
+ * per-frame value into a property
  * that is ALSO transitioning is the §WS-001/§WS-002 mistake (an animation left attached to a
  * property a gesture writes every frame); keeping the two on separate properties makes that
  * impossible by construction rather than by discipline.
@@ -433,8 +436,16 @@ interface WorkspaceRowProps {
      * indentation it is ABOUT to have — state still says it is in its old container.
      */
     readonly nestPreview?: boolean | undefined;
-    /** §WS-092: the row is playing its "falls into the collapsed group" landing. */
-    readonly landing?: boolean | undefined;
+    /**
+     * §WS-084, this pass: the gesture IS a drag, so this row's in-flow element is the VACATED
+     * SLOT — the gap the drop lands in. Its box is untouched (so every measurement, §WS-093's
+     * gate included, still answers exactly what it did) and nothing in it is painted; the
+     * cursor clone is the single visible representation of the item being moved.
+     *
+     * Distinct from `dragging`, which is true from the `mousedown`: a press that never crosses
+     * the 5px threshold must not blank the row it is resting on.
+     */
+    readonly gap?: boolean | undefined;
     /**
      * §WS-007's guide line: the colour of the 1.5px rule that joins an expanded group's
      * children, or absent for a top-level row. The three props are primitives rather than one
@@ -490,7 +501,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
 
     const hidden = props.dragHidden === true;
     const nested = props.depth === 1 || props.nestPreview === true;
-    const landing = props.landing === true;
+    const gap = props.gap === true;
     const style: CSSProperties = {
         background,
         ...(backgroundImage === undefined ? {} : { backgroundImage }),
@@ -510,31 +521,37 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
          * `offsetLeft` mid-transition reports the *animating* value, which would have made the
          * next measurement read this animation's own frame as a layout change).
          */
-        marginLeft: nested ? 24 : 0,
-        transition: landing
-            ? 'transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 380ms ease'
-            : props.dragging === true
-              ? // The lift is instant: a 350 ms transform transition would make grabbing a row
-                // feel like it lagged the cursor.
-                'none'
-              : // The reorder is the SPRING (`data-reorder`); what is left on `transform` is the
-                // lift's `scale(1.03)` relaxing once the gesture ends.
-                `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
-        // §5.5: a dragged row lifts to 80% opacity and scales up; the OTHER rows of a
-        // multi-selection collapse to zero height so the grid closes over them.
-        // §WS-092: a row landing in a collapsed group shrinks toward the header instead.
-        opacity: hidden ? 0 : landing ? 0.15 : props.dragging ? 0.8 : 1,
-        ...(landing
-            ? { transform: 'scale(0.2)' }
-            : props.dragging && !hidden
-              ? // §WS-084: the lift is scale + opacity + a drop shadow, so the row reads as
-                // picked up off the list rather than merely faded. The §WS-027 ring rides
-                // along, or a selected row would lose it for the length of the gesture.
-                {
-                    transform: 'scale(1.03)',
-                    boxShadow: `0 6px 18px rgba(0,0,0,0.45)${selectionRing === null ? '' : `, ${selectionRing}`}`
-                }
-              : {}),
+        marginLeft: nested ? NEST_INDENT_PX : 0,
+        transition: props.dragging === true
+            ? // The lift is instant: a 350 ms transform transition would make grabbing a row
+              // feel like it lagged the cursor.
+              'none'
+            : // The reorder is the SPRING (`data-reorder`); what is left on `transform` is the
+              // lift's `scale(1.03)` relaxing once the gesture ends.
+              `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
+        // §5.5: the OTHER rows of a multi-selection collapse to zero height so the grid closes
+        // over them.
+        opacity: hidden ? 0 : 1,
+        /*
+         * THE GAP (§WS-084, this pass).
+         *
+         * The row the user grabbed leaves an EMPTY SLOT behind it and the cursor clone is the
+         * only picture of the item — which is what the shipped app does for free, because there
+         * the grabbed row IS the thing under the cursor (`.offset(y: dragCurrentY …)`,
+         * `WorkspaceListView.swift:1392`) and SwiftUI's `.offset` does not touch layout, so the
+         * slot it came out of is visibly vacant for the whole gesture. The port draws the row in
+         * flow (it is the live preview the drop zones are measured from), so the vacancy has to
+         * be asked for.
+         *
+         * `visibility` is the property that asks for it, and the choice is load-bearing three
+         * times over: the box is UNCHANGED, so `offsetTop`/`offsetLeft`/`getBoundingClientRect`
+         * answer exactly what they answered before and §WS-093's measure gate cannot tell the
+         * difference; nothing in the subtree is painted, chrome included (fill, outline, the
+         * §WS-027 ring, §WS-007's guide), which `opacity: 0` would also do but a `height: 0`
+         * would not; and it is the one hiding primitive a CHILD can opt back out of — which is
+         * how §WS-088's insertion line stays on screen inside an invisible row.
+         */
+        ...(gap ? { visibility: 'hidden' as const } : {}),
         ...(hidden
             ? {
                   height: 0,
@@ -570,7 +587,9 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                outside the component could assert it. */
             data-selected={props.selected ? 'true' : 'false'}
             data-nest-preview={props.nestPreview === true ? 'true' : undefined}
-            data-landing={landing ? 'true' : undefined}
+            /* The vacated slot, legible from outside the component — an audit can ask "is the
+               drop landing in a gap?" without reading a computed style. */
+            data-drag-gap={gap ? 'true' : undefined}
             role="option"
             tabIndex={-1}
             aria-selected={props.active}
@@ -632,7 +651,12 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                         height: 2,
                         borderRadius: 1,
                         background: tokens.accent,
-                        pointerEvents: 'none'
+                        pointerEvents: 'none',
+                        // The row around it is the GAP (`visibility: hidden`); the rule marking
+                        // the boundary the drop lands on is the one thing in it that still
+                        // paints. Inheritance makes this a one-word opt-out rather than a
+                        // second render path.
+                        visibility: 'visible'
                     }}
                 />
             ) : null}
@@ -944,8 +968,6 @@ export interface SidebarProps extends SidebarCallbacks {
     /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
     readonly springLoadMs?: number | undefined;
     readonly autoScrollIntervalMs?: number | undefined;
-    /** §WS-092's landing duration; 0 commits immediately (no animation). */
-    readonly landingMs?: number | undefined;
     /**
      * The footer's gear and the Labels submenu's "Manage Labels…" deep link (M8 Settings,
      * shell-ui.md §5.7). Absent = neither is rendered, which keeps every existing fixture and
@@ -1041,7 +1063,7 @@ const GHOST_STRIPPED_ATTRIBUTES = [
     'data-guide',
     'data-insert-line',
     'data-nest-preview',
-    'data-landing',
+    'data-drag-gap',
     'data-drag-hidden',
     'data-collapsed',
     'data-drop-preview',
@@ -1056,6 +1078,26 @@ const GHOST_STRIPPED_ATTRIBUTES = [
 function sanitizeGhost(element: Element): void {
     for (const name of GHOST_STRIPPED_ATTRIBUTES) element.removeAttribute(name);
     for (const child of Array.from(element.children)) sanitizeGhost(child);
+}
+
+/**
+ * The attribute naming §WS-007's guide rail ON THE CURSOR CLONE.
+ *
+ * Deliberately not `data-testid="group-guide"`: the rail on the clone is a picture that answers
+ * to nothing (the same rule the rest of `sanitizeGhost` enforces), and a query for the guide
+ * rule must never find one floating over the pane grid. Its presence or absence is also the
+ * cheapest statement of "is the drop resolving inside a group?", which is what the audit reads.
+ */
+const GHOST_GUIDE_ATTR = 'data-ghost-guide';
+
+/** What the cursor clone needs to know in order to re-dress itself for a new container. */
+interface DragGhostChrome {
+    /** False for a dragged GROUP header: groups are top level and never take an indent. */
+    readonly nestable: boolean;
+    /** The clone's width at depth 0 — a member row gives up `NEST_INDENT_PX` of it. */
+    readonly baseWidth: number;
+    /** The container last applied: a group id, `null` for top level, `undefined` for never. */
+    groupID: string | null | undefined;
 }
 
 /**
@@ -1134,7 +1176,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const rowHeight = props.rowHeight ?? DEFAULT_ROW_HEIGHT;
     const springLoadMs = props.springLoadMs ?? SPRING_LOAD_MS;
     const autoScrollIntervalMs = props.autoScrollIntervalMs ?? AUTO_SCROLL_INTERVAL_MS;
-    const landingMs = props.landingMs ?? LANDING_MS;
 
     const [collapseOverrides, setCollapseOverrides] = useState<ReadonlyMap<string, boolean>>(EMPTY_OVERRIDES);
     const [shadow, setShadow] = useState<SidebarOrderModel | null>(null);
@@ -1159,8 +1200,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [previewGroupID, setPreviewGroupID] = useState<string | null>(null);
     /** §5.5 spring-loading: a collapsed group held open for the rest of THIS drag. */
     const [springLoadedGroupID, setSpringLoadedGroupID] = useState<string | null>(null);
-    /** §WS-092: the row currently playing its "falls into the group" landing, if any. */
-    const [landing, setLanding] = useState<{ workspaceID: string; groupID: string } | null>(null);
     /** The workspace whose icon is being picked in the custom-emoji sheet. */
     const [emojiSheet, setEmojiSheet] = useState<{ kind: 'workspace' | 'group'; id: string } | null>(null);
     /**
@@ -1210,12 +1249,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const dragRef = useRef<DragState | null>(null);
     /** A finished drag is followed by a `click` on the row; that click must not activate it. */
     const suppressClickRef = useRef(false);
+    /** Removes the one-shot window listener that retires the flag above, if one is armed. */
+    const retireSuppressRef = useRef<(() => void) | null>(null);
     const shadowRef = useRef<SidebarOrderModel | null>(null);
     /** Read by `onUp`, which runs from a window listener and cannot close over the render. */
     const springLoadedRef = useRef<string | null>(null);
-    const landingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    /** The commit a running §WS-092 landing owes; flushed early if a new gesture starts. */
-    const pendingLandingRef = useRef<(() => void) | null>(null);
     const entriesRef = useRef(props.entries);
     const collapseRef = useRef(collapse);
     const rowsRef = useRef(rows);
@@ -1246,6 +1284,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const ghostLayerRef = useRef<HTMLDivElement | null>(null);
     /** §WS-084's cursor-following drag ghost: a detached clone parked on `document.body`. */
     const dragGhostRef = useRef<HTMLElement | null>(null);
+    /** …and the container it is currently dressed for (`styleDragGhost`). */
+    const ghostChromeRef = useRef<DragGhostChrome | null>(null);
 
     const registerRow = useCallback((key: string, element: HTMLElement | null): void => {
         if (element === null) {
@@ -1469,6 +1509,42 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     // ── activation ──────────────────────────────────────────────────────────────
+    /**
+     * Arm the "the click that follows this drag is not an activation" flag, and arrange for it
+     * to be retired whether or not a row consumes it.
+     *
+     * It used to be retired by the row itself, and that worked only while the dragged row was
+     * still painted in flow: it was under the cursor at `mouseup`, so the browser's click landed
+     * on it, `onActivate` ran, and the flag was cleared on the way past. The row is now the GAP
+     * — `visibility: hidden`, and a hidden box is not hit-testable — so `mouseup` lands on the
+     * scroller instead and no row handler ever sees the click. Left as it was, the flag would
+     * survive the gesture and swallow the user's NEXT genuine click on a row.
+     *
+     * One window-level listener retires it instead. Bubble phase, deliberately: React attaches
+     * its own handlers at the root container, which is below `window`, so a row's `onClick`
+     * still runs FIRST and still gets the suppression it is owed — this only cleans up after it.
+     */
+    const suppressNextClick = useCallback((): void => {
+        suppressClickRef.current = true;
+        retireSuppressRef.current?.();
+        const target = globalThis.window;
+        const clear = (): void => {
+            suppressClickRef.current = false;
+            retireSuppressRef.current = null;
+        };
+        target.addEventListener('click', clear, { once: true });
+        retireSuppressRef.current = (): void => {
+            target.removeEventListener('click', clear);
+            retireSuppressRef.current = null;
+        };
+    }, []);
+    useEffect(
+        () => () => {
+            retireSuppressRef.current?.();
+        },
+        []
+    );
+
     const onActivate = useCallback(
         (workspaceID: string, event: React.MouseEvent): void => {
             if (dragRef.current?.active === true) return;
@@ -1612,27 +1688,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
         return rowsRef.current.every((row) => heights.has(row.key));
     }, [measuredHeights]);
 
-    /**
-     * Finish a §WS-092 landing NOW rather than letting its timer race a new gesture. The move
-     * still lands — dropping it would lose a drop the user already made — it simply lands
-     * without the rest of its animation.
-     */
-    const flushLanding = useCallback((): void => {
-        if (landingTimerRef.current !== null) {
-            clearTimeout(landingTimerRef.current);
-            landingTimerRef.current = null;
-        }
-        const pending = pendingLandingRef.current;
-        if (pending === null) return;
-        pendingLandingRef.current = null;
-        setLanding(null);
-        pending();
-    }, []);
-
     const onDragStart = useCallback(
         (kind: 'workspace' | 'group', id: string, event: React.MouseEvent): void => {
             if (event.button !== 0) return;
-            flushLanding();
             if (rename !== null) return;
             const target = event.target as HTMLElement | null;
             if (target !== null && target.closest('input, button') !== null) return;
@@ -1664,7 +1722,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
             };
             setDragID(id);
         },
-        [baseModel, flushLanding, rename, selection, visibleOrder]
+        [baseModel, rename, selection, visibleOrder]
     );
 
     /**
@@ -1675,8 +1733,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
      * are built from. So the thing that follows the cursor is a sanitised clone parked on
      * `document.body`: fixed-position, `pointer-events: none`, addressable by nothing
      * (`sanitizeGhost`), and — the point — never registered as a row, so `measuredHeights()`,
-     * `measuredOffsets()` and §WS-093's `geometryReady()` cannot see it. It carries the lift the
-     * item names: 1.03 scale, 0.8-ish opacity and a real drop shadow.
+     * `measuredOffsets()` and §WS-093's `geometryReady()` cannot see it. Since the row it came
+     * off is now the GAP, this clone carries §WS-084's whole lift on its own: 1.03 scale, 0.8
+     * opacity and a real drop shadow, and it is the SINGLE visible representation of the item
+     * for the length of the gesture.
      *
      * Position is written straight onto the node from the mousemove handler rather than through
      * state: a React commit per pointer sample would re-render every row in the sidebar 60
@@ -1685,7 +1745,61 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const endDragGhost = useCallback((): void => {
         dragGhostRef.current?.remove();
         dragGhostRef.current = null;
+        ghostChromeRef.current = null;
     }, []);
+
+    /**
+     * Re-dress the clone for the container the drop has RESOLVED to (this pass).
+     *
+     * The clone is a photograph of the row at the instant it was grabbed, and it used to stay
+     * that photograph: drag a workspace out of a group and the thing under the cursor still wore
+     * that group's left guide rail and its member width all the way to a top-level drop. The
+     * in-flow rows already restyle — §WS-089's depth spring moves them on the x axis the moment
+     * the shadow (or the nest preview) says the container changed — so the clone was the last
+     * surface still describing where the row came FROM rather than where it is going.
+     *
+     * It is a RESTYLE, never a rebuild: rebuilding would drop the node the cursor offset is
+     * written to and flash one frame of the old picture at the new one's position. Two things
+     * change and nothing else — the guide rail (removed outright at top level, minted fresh in
+     * the destination group's colour inside one) and the width (a member row is
+     * `NEST_INDENT_PX` narrower). The left edge is untouched, because §WS-084's cursor tracking
+     * is raw and is not something a restyle is allowed to move.
+     *
+     * `undefined` means "the cursor resolved to no zone at all", which is not a container change
+     * and must leave the clone exactly as it is.
+     */
+    const styleDragGhost = useCallback(
+        (groupID: string | null | undefined, guideColor: string | undefined): void => {
+            const ghost = dragGhostRef.current;
+            const chrome = ghostChromeRef.current;
+            if (ghost === null || chrome === null || groupID === undefined) return;
+            if (!chrome.nestable) return;
+            if (chrome.groupID === groupID) return;
+            chrome.groupID = groupID;
+            const nested = groupID !== null;
+            ghost.style.width = `${String(Math.max(0, chrome.baseWidth - (nested ? NEST_INDENT_PX : 0)))}px`;
+            ghost.dataset['ghostDepth'] = nested ? '1' : '0';
+            if (groupID === null) delete ghost.dataset['ghostGroup'];
+            else ghost.dataset['ghostGroup'] = groupID;
+            ghost.querySelector(`[${GHOST_GUIDE_ATTR}]`)?.remove();
+            if (!nested || guideColor === undefined) return;
+            // §WS-007's rule, rebuilt rather than borrowed: the cloned one was thrown away at
+            // mint precisely so this never has to reason about what the photograph contained.
+            const rail = ghost.ownerDocument.createElement('span');
+            rail.setAttribute(GHOST_GUIDE_ATTR, 'true');
+            rail.setAttribute('aria-hidden', 'true');
+            rail.style.position = 'absolute';
+            rail.style.left = '-6px';
+            rail.style.top = '0px';
+            rail.style.bottom = '0px';
+            rail.style.width = '1.5px';
+            rail.style.borderRadius = '1px';
+            rail.style.background = guideColor;
+            rail.style.pointerEvents = 'none';
+            ghost.append(rail);
+        },
+        []
+    );
 
     const moveDragGhost = useCallback((drag: DragState): void => {
         const ghost = dragGhostRef.current;
@@ -1704,6 +1818,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const body = globalThis.document?.body;
             if (source === undefined || body === undefined || body === null) return;
             const ghost = source.cloneNode(true) as HTMLElement;
+            /*
+             * Two things the photograph must NOT bring with it, taken out before the sanitiser
+             * strips the `data-testid`s that name them:
+             *
+             *   - §WS-007's guide rail, because `styleDragGhost` owns the rail from here on and
+             *     re-mints it per resolved container rather than inheriting one;
+             *   - §WS-088's insertion line, which marks a slot in the LIST and would otherwise
+             *     ride the cursor as a stray accent rule. (It cannot be present at mint —
+             *     `insertLine` needs `dragActive`, which commits a frame later — so this is a
+             *     guard against the render order changing under us, not a live case.)
+             */
+            for (const part of ghost.querySelectorAll('[data-testid="group-guide"]')) part.remove();
+            for (const part of ghost.querySelectorAll('[data-testid="drop-insert-line"]')) part.remove();
             sanitizeGhost(ghost);
             ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
             ghost.setAttribute('aria-hidden', 'true');
@@ -1721,7 +1848,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
             // positioned by `transform` from the raw pointer, so a leftover `translate` would
             // add the row's animation on top of the cursor. The ghost NEVER springs (§WS-084).
             ghost.style.translate = 'none';
-            ghost.style.opacity = '0.92';
+            // The row it was lifted off is a `visibility: hidden` gap by the very next commit;
+            // the clone must never inherit that, and saying so is cheaper than depending on the
+            // commit order.
+            ghost.style.visibility = 'visible';
+            // §WS-084's lift, whole, because the clone is now the only picture of the item:
+            // `WorkspaceListView.swift:1361` puts the dragged row at 0.8.
+            ghost.style.opacity = '0.8';
             // The row itself is usually transparent (its fill comes from the list behind it), so
             // an unpainted clone over the pane grid would be a floating column of text.
             ghost.style.background = tokens.sidebarBackground;
@@ -1732,9 +1865,27 @@ export function Sidebar(props: SidebarProps): ReactElement {
             ghost.style.transformOrigin = 'top left';
             body.appendChild(ghost);
             dragGhostRef.current = ghost;
+            /*
+             * The clone's own container, tracked from the row it was lifted off.
+             *
+             * `baseWidth` is the TOP-LEVEL width — a member row is measured `NEST_INDENT_PX`
+             * narrower, so the indent is added back here and taken off again per resolved
+             * target. `groupID` starts deliberately `undefined` so the seeding call below always
+             * runs and the clone opens dressed exactly like the row it replaced (no flicker at
+             * the threshold). Groups are top level by construction and never restyle, which is
+             * what `nestable` says.
+             */
+            const nestable = drag.kind === 'workspace';
+            const sourceGroupID = nestable ? (source.dataset['groupId'] ?? null) : null;
+            ghostChromeRef.current = {
+                nestable,
+                baseWidth: source.offsetWidth + (source.dataset['depth'] === '1' ? NEST_INDENT_PX : 0),
+                groupID: undefined
+            };
+            styleDragGhost(sourceGroupID, guideColorFor(sourceGroupID));
             moveDragGhost(drag);
         },
-        [endDragGhost, moveDragGhost]
+        [endDragGhost, guideColorFor, moveDragGhost, styleDragGhost]
     );
 
     /**
@@ -1742,9 +1893,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
      *
      * `measureDropSettle` runs while the ghost is still on screen and answers "how far above or
      * below its slot did the user let go?"; `applyDropSettle` turns that into the row's spring
-     * offset once the §WS-092 landing has declined the drop. The row's own live offset is taken
-     * back out of both, so the seed is measured against where the row is SETTLING rather than
-     * where it happens to be drawn this frame.
+     * offset. The row's own live offset is taken back out of both, so the seed is measured
+     * against where the row is SETTLING rather than where it happens to be drawn this frame.
+     *
+     * This seam is the whole of the drop now. There used to be a scripted 400 ms fall on top of
+     * it for one case (§WS-092), and running both is what the user saw as a double animation.
      */
     const measureDropSettle = useCallback((drag: DragState | null): DropSettleSeed | null => {
         if (drag === null || !drag.active || prefersReducedMotion()) return null;
@@ -1866,6 +2019,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const target = resolveDropTarget(layout, y);
             diagnose(drag, target === null ? null : describeTarget(target));
             updateSpring(drag, target);
+            /*
+             * The clone follows the CONTAINER as well as the cursor.
+             *
+             * All three targets name one: `topLevel` is "out of every group", and both
+             * `intoGroup` and `ontoGroupHeader` name the group the row is going into — including
+             * a group that is not the one it came from. `null` (the walk found no band) is not a
+             * container change and leaves the clone as it is. Done before the early return
+             * below, so a preview-only header target — the case that never touches the shadow,
+             * and therefore the one where the in-flow row's own depth spring cannot speak for
+             * the clone — restyles like every other.
+             */
+            const destination = target === null ? undefined : target.kind === 'topLevel' ? null : target.groupID;
+            styleDragGhost(destination, destination == null ? undefined : guideColorFor(destination));
             if (target === null) return;
             if (target.kind === 'ontoGroupHeader') {
                 // Preview-only: the cursor transits headers constantly (§5.5), so the order
@@ -1967,25 +2133,51 @@ export function Sidebar(props: SidebarProps): ReactElement {
              * the row is simply already there — the one moment in the whole gesture where
              * nothing moves.
              *
-             * Taken BEFORE `endDragGhost()`, for the obvious reason, and skipped for the §WS-092
-             * landing below, which is a different animation with its own script.
+             * Taken BEFORE `endDragGhost()`, for the obvious reason. It is the ONLY drop
+             * animation now: the §WS-092 script that used to run on top of it for one case is
+             * gone, and with it the double motion the user reported.
              */
             const settleSeed = measureDropSettle(drag);
-            // §WS-084: the ghost dies with the gesture, before any landing animation — what
-            // happens next belongs to the real row.
+            /*
+             * THE HANDOVER, and why it cannot show two copies or none.
+             *
+             * The clone is removed here and the gap is un-gapped by the `setDragID(null)` /
+             * `setDragActive(false)` immediately below — one synchronous handler, so the browser
+             * cannot paint between them, and React 18 flushes the pair in a microtask before the
+             * next frame. The painted sequence is therefore exactly `gap + clone` → `row`, with
+             * no frame carrying both pictures and none carrying neither.
+             */
             endDragGhost();
             const list = listRef.current;
             if (list !== null) list.dataset['dragActive'] = 'false';
             if (drag !== null) cancelSpring(drag);
-            const springLoaded = springLoadedRef.current;
             setDragID(null);
             setDragActive(false);
             setPreviewGroupID(null);
             // §5.5: the spring-loaded group stays open through the drop, then collapses.
             setSpringLoadedGroupID(null);
             if (drag === null || !drag.active) return;
-            suppressClickRef.current = true;
+            suppressNextClick();
 
+            /*
+             * §WS-092's landing is DELIBERATELY not here, and the reason belongs in the code
+             * rather than only in a note.
+             *
+             * The Swift plays it — a row released onto a collapsed header is pinned, shrunk to
+             * `scale(0.2)` at 0.15 opacity and committed ~400 ms later
+             * (`WorkspaceListView.swift:1509-1537`) — but the predicate that reaches it ends in
+             * `!store.settings.expandGroupOnWorkspaceDrop`, and that setting SHIPS TRUE
+             * (`SettingsFeature.swift:41`). On a default install the shipped app therefore takes
+             * the ordinary branch at `:1539`, which is one `withAnimation(.spring)` bringing the
+             * row's own offset home — precisely the settle seeded above. The port had the
+             * landing unconditionally, so it played a second, scripted animation on top of the
+             * settle in a case where the app plays none; that is the double motion the user
+             * asked to remove, and removing it moves the DEFAULT configuration onto parity.
+             *
+             * What is knowingly given up is the same app with `expand-group-on-workspace-drop =
+             * false`, where the Swift does play the fall. That is a divergence, and it is named
+             * here so the next reader does not have to re-derive it from two files.
+             */
             const commitDrop = (): void => {
                 let final = shadowRef.current ?? drag.originModel;
                 if (drag.preview !== null) final = applyWorkspaceDrop(final, drag.id, drag.preview);
@@ -2015,46 +2207,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 });
             };
 
-            /**
-             * §WS-092: a SINGLE row released onto a collapsed group's header "falls into" it —
-             * pinned where it is, shrunk toward the header — and the move commits when the
-             * animation ends. Skipped for a spring-loaded group, which is visibly OPEN, so the
-             * row already lands in a slot the user can see.
-             *
-             * One term of the Swift predicate has no counterpart here and is stated rather than
-             * faked: the app also skips this when `expandGroupOnWorkspaceDrop` is on. This port
-             * has no such setting — the daemon's drop always expands (`expandOnDrop ?? true`) —
-             * so the group opens right after the landing and the row appears inside it, which
-             * is the motion the animation exists to explain.
-             */
-            const preview = drag.preview;
-            if (
-                drag.kind === 'workspace' &&
-                drag.ids.length === 1 &&
-                preview !== null &&
-                preview.kind === 'ontoGroupHeader' &&
-                preview.groupID !== springLoaded &&
-                landingMs > 0
-            ) {
-                const group = groupsRef.current.find((candidate) => candidate.id === preview.groupID);
-                if (
-                    group !== undefined &&
-                    isGroupCollapsed(group, { overrides: collapseRef.current.overrides })
-                ) {
-                    setLanding({ workspaceID: drag.id, groupID: group.id });
-                    pendingLandingRef.current = commitDrop;
-                    landingTimerRef.current = setTimeout(() => {
-                        landingTimerRef.current = null;
-                        pendingLandingRef.current = null;
-                        setLanding(null);
-                        commitDrop();
-                    }, landingMs);
-                    return;
-                }
-            }
-            // Not a landing, so the released row springs home from where the ghost left it —
-            // seeded BEFORE the commit, so the layout delta the commit produces is added on top
-            // of the seed by the FLIP pass rather than replacing it.
+            // The released row springs home from where the ghost left it — seeded BEFORE the
+            // commit, so the layout delta the commit produces is added on top of the seed by the
+            // FLIP pass rather than replacing it.
             applyDropSettle(settleSeed);
             commitDrop();
         };
@@ -2093,7 +2248,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         dragID,
         endDragGhost,
         geometryReady,
-        landingMs,
+        guideColorFor,
         measureDropSettle,
         measuredHeights,
         measuredOffsets,
@@ -2101,16 +2256,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
         props,
         rowHeight,
         springLoadMs,
-        startDragGhost
+        startDragGhost,
+        styleDragGhost,
+        suppressNextClick
     ]);
-
-    // A landing in flight when the sidebar unmounts must not fire into a dead tree.
-    useEffect(
-        () => () => {
-            if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current);
-        },
-        []
-    );
 
     /**
      * §WS-084's ghost lives on `document.body`, so it is the one thing here that React will not
@@ -2129,9 +2278,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
     //
     // Keyed on the RENDERED entry list, as the Swift's `.animation(...,​ value:)` is: a row
     // that appears plays the entry keyframes once, and a row that merely changed place is
-    // FLIPped — measured before and after, offset back to where it was, then transitioned to
-    // where it now is. Both are skipped mid-drag, because the drag owns `transform` (the lift,
-    // the landing) and owns the row order it is live-applying.
+    // FLIPped — measured before and after, offset back to where it was, then sprung to where it
+    // now is. A live drag runs the pass too: it is the whole point of the spring wave, and the
+    // gap slot springs between resolved positions exactly as its neighbours do.
     //
     // The baseline is `offsetTop`, not `getBoundingClientRect().top`: a FLIP applies a
     // `translateY` that DOES move the client rect, so measuring the next commit against a rect
@@ -2241,15 +2390,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
         // on mount is a worse sidebar than one that is simply there.
         if (previous === null) return;
         /*
-         * §WS-092's landing owns the row it is shrinking — that one is not a reorder, it is a
-         * scripted 400 ms fall into a header, and springing its slot underneath it would fight it.
+         * Nothing is excluded from the pass any more.
          *
-         * A live DRAG, on the other hand, is exactly what this pass now runs FOR. It used to bail
-         * here, which is why the rows a cursor crossed snapped into their new places with no
-         * motion at all while every other reorder in the app animated. The drag geometry is safe
-         * from what happens below because `measuredOffsets()` subtracts these offsets back out.
+         * It used to bail out for a live DRAG, which is why the rows a cursor crossed snapped
+         * into their new places with no motion at all while every other reorder in the app
+         * animated — fixed in the spring wave. It then bailed out for §WS-092's scripted landing,
+         * on the reasoning that springing a row's slot underneath a 400 ms fall would fight it.
+         * That fall is gone (see `onUp`), so the exclusion has nothing left to protect and the
+         * drop is the settle seam and the FLIP, in that order, with nothing scripted on top.
+         *
+         * The drag geometry is safe from what happens below because `measuredOffsets()`
+         * subtracts these offsets back out (§WS-093).
          */
-        if (landingTimerRef.current !== null) return;
 
         // §WS-008's removals. The rows below have already been FLIPped up by the pass below;
         // this is the dead row itself, collapsing where it stood.
@@ -3269,10 +3421,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             dragging={dragID === workspace.id}
                             dragHidden={dragCompanions.has(workspace.id)}
                             dragExtra={dragID === workspace.id ? dragCompanions.size : 0}
-                            // §WS-089 / §WS-092: the dragged row previews the nesting it is
-                            // about to get, and plays the landing when it falls into one.
+                            // §WS-089: the dragged row previews the nesting it is about to get.
                             nestPreview={dragID === workspace.id && previewGroupID !== null}
-                            landing={landing?.workspaceID === workspace.id}
+                            // …and, once the gesture IS a drag, its slot is the empty space the
+                            // drop lands in. `dragActive` rather than `dragging`: a press that
+                            // never moved must not blank the row under the cursor.
+                            gap={dragID === workspace.id && dragActive}
                             groupCaption={null}
                             // §WS-007: the guide rule, tinted with the group's own colour (or
                             // the theme divider when it has none), bridging the gaps to its

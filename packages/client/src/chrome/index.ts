@@ -18,7 +18,7 @@ export {
     AUTO_SCROLL_EDGE_PX,
     AUTO_SCROLL_INTERVAL_MS,
     AUTO_SCROLL_STEP_PX,
-    LANDING_MS,
+    NEST_INDENT_PX,
     SPRING_LOAD_MS,
     Sidebar,
     type NewEntryDraft,

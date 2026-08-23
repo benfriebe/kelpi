@@ -13657,7 +13657,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-drag-nest-preview',
             expect:
-                'Dragging a top-level workspace over a collapsed group’s header previews the nesting before the drop: the header tints, the dragged row takes the nested indent, and releasing plays the "falls into the group" landing before the move commits (§WS-088/§WS-089/§WS-092).',
+                'Dragging a top-level workspace over a collapsed group’s header previews the nesting before the drop: the header tints, the dragged row’s slot becomes an EMPTY GAP at the nested indent with the cursor clone as the only picture of the item, and releasing commits the move at once — no scripted "falls into the group" fall on top of the drop settle, and no landing node anywhere in the output (§WS-088/§WS-089/§WS-092).',
             needsEyes: true,
             async run(recorder) {
                 // A group with a member, collapsed, plus a top-level workspace to drag into it.
@@ -13756,9 +13756,19 @@ function buildFlows(ctx) {
                                 const head = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
                                     .find(node => (node.innerText ?? '').includes('Drop Target'));
                                 const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                const sibling = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                    .find(el => el !== dragged && el.getBoundingClientRect().height > 0) ?? null;
                                 return JSON.stringify({
                                     nest: dragged?.getAttribute('data-nest-preview') ?? null,
                                     indent: dragged === null ? null : getComputedStyle(dragged).marginLeft,
+                                    // The GAP: the slot keeps its box and paints nothing, so the
+                                    // cursor clone is the only picture of the item on screen.
+                                    gap: dragged?.getAttribute('data-drag-gap') ?? null,
+                                    visibility: dragged === null ? null : getComputedStyle(dragged).visibility,
+                                    gapHeight: dragged === null ? null : Math.round(dragged.getBoundingClientRect().height * 10) / 10,
+                                    siblingHeight: sibling === null ? null : Math.round(sibling.getBoundingClientRect().height * 10) / 10,
+                                    gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                    clones: document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length,
                                     tint: head?.getAttribute('data-drop-preview') ?? null,
                                     // Defect N4b's instrumentation: what the drag loop DECIDED,
                                     // which is the difference between "the gesture never began"
@@ -13828,6 +13838,29 @@ function buildFlows(ctx) {
                 recorder.check('the group header tints as a drop target (§WS-088)', preview.tint === 'true', String(preview.tint));
                 recorder.check('the dragged row previews its nested indent (§WS-089)', preview.nest === 'true', String(preview.nest));
                 recorder.check('and the indent is really applied, not just flagged', preview.indent === '24px', String(preview.indent));
+                /*
+                 * THE GAP, and the invariant it exists to make true.
+                 *
+                 * The dragged row's in-flow element is the vacated slot: it keeps the row's box
+                 * — to the tenth of a pixel, measured against a live sibling, because §WS-093's
+                 * measure gate resolves the drop against exactly this geometry — and paints
+                 * nothing at all, so the cursor clone is the SINGLE visible representation of
+                 * the item for the whole gesture.
+                 */
+                recorder.check(
+                    'the dragged row’s slot is an EMPTY GAP, keeping the row’s own height (§WS-084)',
+                    preview.gap === 'true' &&
+                        preview.visibility === 'hidden' &&
+                        typeof preview.gapHeight === 'number' &&
+                        preview.gapHeight > 0 &&
+                        Math.abs(preview.gapHeight - preview.siblingHeight) < 0.6,
+                    `${String(preview.gapHeight)}px vs a live row’s ${String(preview.siblingHeight)}px, visibility ${String(preview.visibility)}`
+                );
+                recorder.check(
+                    'and there is exactly ONE picture of the item: one gap, one clone',
+                    preview.gaps === 1 && preview.clones === 1,
+                    `${String(preview.gaps)} gap(s) · ${String(preview.clones)} clone(s)`
+                );
 
                 /**
                  * Re-arm §5.5's spring dwell before releasing.
@@ -13909,39 +13942,64 @@ function buildFlows(ctx) {
 
                 await page.mouse('mouseReleased', after.x, after.y, { button: 'left', clickCount: 1 });
                 /**
-                 * §WS-092: the row is pinned and shrinking, and the move has not committed yet —
-                 * but that state lasts `landingMs` (400 ms) and a single `page.eval` round trip
-                 * can land on either side of it. Poll for the first frame that shows the landing
-                 * instead of hoping one read catches it; if the window closes first the row is
-                 * gone into the collapsed group, which the daemon-side assertion below covers.
+                 * REPLACES the §WS-092 landing assertion, and is strictly stronger than it.
+                 *
+                 * That assertion polled for the frame in which the row was pinned at
+                 * `scale(0.2)` with `data-landing="true"` — one flag and one transform, on one
+                 * frame. What is asserted now is the whole 400 ms window the fall used to
+                 * occupy, sampled the same way: across EVERY frame of it there is no landing
+                 * node, no `scale(0.2)`, no gap left behind, and never a second copy of the item
+                 * beside the row — i.e. the scripted fall is gone from the output rather than
+                 * merely unasserted, and the handover from clone to row shows one picture
+                 * throughout.
+                 *
+                 * Parity note for the ledger, not for this step: the shipped app reaches its
+                 * fall only when `expandGroupOnWorkspaceDrop` is FALSE
+                 * (`WorkspaceListView.swift:1513`) and that setting ships TRUE
+                 * (`SettingsFeature.swift:41`), so a default install plays the ordinary
+                 * spring-home at `:1539` — which is what the port now does here.
                  */
-                let landing = { landing: null, transform: null };
+                const afterRelease = { frames: 0, landings: 0, shrunk: 0, gaps: 0, doubles: 0, clones: 0 };
                 for (let tick = 0; tick < 40; tick++) {
                     const seen = JSON.parse(
                         String(
                             await page.eval(
                                 `(() => {
                                     const el = document.querySelector('[data-workspace-id="${grabbed.id}"]');
+                                    const clones = document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length;
+                                    const painted = el === null ? 0 : (getComputedStyle(el).visibility === 'hidden' ? 0 : 1);
                                     return JSON.stringify({
-                                        landing: el?.getAttribute('data-landing') ?? null,
-                                        transform: el === null ? null : el.style.transform
+                                        landing: document.querySelectorAll('[data-landing]').length,
+                                        shrunk: el !== null && el.style.transform === 'scale(0.2)' ? 1 : 0,
+                                        gap: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                        clones,
+                                        // Two pictures of the same item on one frame is the
+                                        // failure the handover is written to make impossible.
+                                        double: painted === 1 && clones > 0 ? 1 : 0
                                     });
                                 })()`
                             )
                         )
                     );
-                    if (seen.landing !== null) {
-                        landing = seen;
-                        break;
-                    }
+                    afterRelease.frames += 1;
+                    afterRelease.landings += seen.landing;
+                    afterRelease.shrunk += seen.shrunk;
+                    afterRelease.gaps += seen.gap;
+                    afterRelease.clones += seen.clones;
+                    afterRelease.doubles += seen.double;
                     await sleep(10);
                 }
-                recorder.note(`on release: ${JSON.stringify(landing)}`);
+                recorder.note(`after release, over ${String(afterRelease.frames)} samples: ${JSON.stringify(afterRelease)}`);
                 await recorder.shot(page, 'landing');
                 recorder.check(
-                    'releasing onto a collapsed header plays the falls-into-the-group landing (§WS-092)',
-                    landing.landing === 'true' && landing.transform === 'scale(0.2)',
-                    JSON.stringify(landing)
+                    'releasing plays NO scripted landing: no landing node and no scale(0.2), on any frame (§WS-092)',
+                    afterRelease.frames >= 20 && afterRelease.landings === 0 && afterRelease.shrunk === 0,
+                    `${String(afterRelease.landings)} landing node(s) · ${String(afterRelease.shrunk)} shrunk frame(s) over ${String(afterRelease.frames)} samples`
+                );
+                recorder.check(
+                    'and the clone dies with the gesture: never two pictures of the item after release (§WS-084)',
+                    afterRelease.doubles === 0 && afterRelease.clones === 0 && afterRelease.gaps === 0,
+                    `${String(afterRelease.doubles)} double frame(s) · ${String(afterRelease.clones)} clone-frames · ${String(afterRelease.gaps)} gap-frames`
                 );
 
                 await sleep(1200);
@@ -14089,7 +14147,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-drag-affordances',
             expect:
-                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), a cursor-following drag ghost with a drop shadow, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
+                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), a cursor-following drag ghost carrying §WS-084’s whole lift over an EMPTY GAP where the row it was lifted off used to paint, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
             needsEyes: true,
             async run(recorder) {
                 // Expand the group this run has been dropping into, so it has visible children.
@@ -14243,6 +14301,16 @@ function buildFlows(ctx) {
                                         if (el === null) return JSON.stringify({ present: false });
                                         const r = el.getBoundingClientRect();
                                         const style = getComputedStyle(el);
+                                        /*
+                                         * The GAP the clone was lifted out of. Its box is the
+                                         * row's, to the tenth of a pixel — §WS-093's measure
+                                         * gate resolves the drop against exactly this geometry —
+                                         * and nothing in it paints, so the clone above is the
+                                         * only picture of the item on screen.
+                                         */
+                                        const gap = document.querySelector('[data-drag-gap="true"]');
+                                        const sibling = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                            .find(node => node !== gap && node.getBoundingClientRect().height > 0) ?? null;
                                         return JSON.stringify({
                                             present: true,
                                             x: Math.round(r.x),
@@ -14250,10 +14318,23 @@ function buildFlows(ctx) {
                                             width: Math.round(r.width),
                                             position: style.position,
                                             shadow: style.boxShadow,
+                                            opacity: Number(style.opacity),
                                             pointerEvents: style.pointerEvents,
                                             parent: el.parentElement?.tagName ?? null,
                                             workspaceID: el.getAttribute('data-workspace-id'),
-                                            rows: document.querySelectorAll('[data-testid="workspace-row"]').length
+                                            rows: document.querySelectorAll('[data-testid="workspace-row"]').length,
+                                            gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                            gapVisibility: gap === null ? null : getComputedStyle(gap).visibility,
+                                            gapHeight: gap === null ? null : Math.round(gap.getBoundingClientRect().height * 10) / 10,
+                                            siblingHeight: sibling === null ? null : Math.round(sibling.getBoundingClientRect().height * 10) / 10,
+                                            // §WS-088's rule opts back OUT of the gap's
+                                            // invisibility — the slot is empty, the boundary
+                                            // marking it is not.
+                                            lineVisibility: (() => {
+                                                const line = gap === null ? null : gap.querySelector('[data-testid="drop-insert-line"]');
+                                                return line === null ? null : getComputedStyle(line).visibility;
+                                            })(),
+                                            landings: document.querySelectorAll('[data-landing]').length
                                         });
                                     })()`
                                 )
@@ -14296,6 +14377,34 @@ function buildFlows(ctx) {
                         ghostB.workspaceID === null && ghostB.rows === rowsBeforeGhost,
                         `${String(ghostB.workspaceID)} · ${String(ghostB.rows)} rows of ${String(rowsBeforeGhost)}`
                     );
+                    /*
+                     * STRENGTHENED where the lift used to be asserted on the in-flow row.
+                     *
+                     * §WS-084's lift (`WorkspaceListView.swift:1361-1368` — 1.03 scale, 0.8
+                     * opacity, a drop shadow) now belongs to the clone alone, because the row it
+                     * came off is the gap. So the same three clauses are read HERE, on the one
+                     * thing that is painted, and the slot is asserted to be genuinely empty
+                     * rather than merely faded.
+                     */
+                    recorder.check(
+                        'it carries §WS-084’s whole lift — 0.8 opacity beside the shadow and the 1.03 scale',
+                        typeof ghostB.opacity === 'number' && Math.abs(ghostB.opacity - 0.8) < 0.02,
+                        String(ghostB.opacity)
+                    );
+                    recorder.check(
+                        'the row it was lifted off is an EMPTY GAP that keeps the row’s height (§WS-084)',
+                        ghostB.gaps === 1 &&
+                            ghostB.gapVisibility === 'hidden' &&
+                            typeof ghostB.gapHeight === 'number' &&
+                            ghostB.gapHeight > 0 &&
+                            Math.abs(ghostB.gapHeight - ghostB.siblingHeight) < 0.6,
+                        `${String(ghostB.gaps)} gap(s), ${String(ghostB.gapHeight)}px vs a live row’s ${String(ghostB.siblingHeight)}px, visibility ${String(ghostB.gapVisibility)}`
+                    );
+                    recorder.check(
+                        'and nothing anywhere is playing a scripted landing (§WS-092, removed)',
+                        ghostB.landings === 0,
+                        String(ghostB.landings)
+                    );
                     await sleep(250);
                     const line = JSON.parse(
                         String(
@@ -14310,6 +14419,11 @@ function buildFlows(ctx) {
                                         height: Math.round(r.height * 10) / 10,
                                         width: Math.round(r.width),
                                         colour: getComputedStyle(el).backgroundColor,
+                                        // The rule lives INSIDE the gap, whose own visibility is
+                                        // hidden — it opts back out, or the empty slot would
+                                        // have no boundary marked on it at all.
+                                        visibility: getComputedStyle(el).visibility,
+                                        insideGap: el.closest('[data-drag-gap="true"]') !== null,
                                         target: list?.getAttribute('data-drag-target') ?? null,
                                         tinted: document.querySelectorAll('[data-drop-preview="true"]').length
                                     });
@@ -14331,6 +14445,11 @@ function buildFlows(ctx) {
                         line.tinted === 0,
                         String(line.tinted)
                     );
+                    recorder.check(
+                        'it is drawn INSIDE the empty gap and is still painted there (§WS-088 × the gap)',
+                        line.insideGap === true && line.visibility === 'visible',
+                        `insideGap ${String(line.insideGap)} · visibility ${String(line.visibility)}`
+                    );
                     await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
                     await sleep(900);
                     const gone = await page.eval(`document.querySelectorAll('[data-testid="drop-insert-line"]').length`);
@@ -14339,6 +14458,24 @@ function buildFlows(ctx) {
                         `document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`
                     );
                     recorder.check('and so does the ghost (§WS-084)', ghostGone === 0, String(ghostGone));
+                    const settledGap = JSON.parse(
+                        String(
+                            await page.eval(
+                                `JSON.stringify({
+                                    gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                    landings: document.querySelectorAll('[data-landing]').length,
+                                    hidden: Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                        .filter(el => getComputedStyle(el).visibility === 'hidden').length
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`after release: ${JSON.stringify(settledGap)}`);
+                    recorder.check(
+                        'the gap is a row again and nothing is left mid-air (no gap, no landing node)',
+                        settledGap.gaps === 0 && settledGap.landings === 0 && settledGap.hidden === 0,
+                        JSON.stringify(settledGap)
+                    );
                 }
 
                 // ── §WS-008: a newly inserted row plays its entry ────────────────────
@@ -14871,13 +15008,13 @@ function buildFlows(ctx) {
                     `${String(activeBefore)} → ${String(handedBack)}`
                 );
 
-                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, is the insertion line legible against the row fill, and does the drag ghost read as a row lifted off the list?');
+                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, is the insertion line legible against the empty gap, and does the drag ghost read as the row itself lifted off the list — with the space it came out of genuinely blank rather than a second, faded copy of it?');
             }
         },
         {
             id: 'sidebar-spring',
             expect:
-                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion — the visual position continuous through the retarget and the velocity carried past it — instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; §WS-093’s drop geometry is unmoved by any of it; and a collapsed group spring-loads open at 650 ms and NOT at 300 ms (§WS-008/§WS-093/§5.5).',
+                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion — the visual position continuous through the retarget and the velocity carried past it — instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; the cursor clone restyles LIVE with the resolved container (a member dragged out of a group sheds its band and its indent, and takes both back on the way in) and hands over to the row on release with no frame showing two copies, none showing zero and none showing a landing node; §WS-093’s drop geometry is unmoved by any of it; and a collapsed group spring-loads open at 650 ms and NOT at 300 ms (§WS-008/§WS-084/§WS-089/§WS-092/§WS-093/§5.5).',
             needsEyes: true,
             async run(recorder) {
                 const activeBefore = String(
@@ -15301,7 +15438,351 @@ function buildFlows(ctx) {
                     `half ${String(halfMs === null ? '?' : Math.round(halfMs))}ms of ${String(settleMs === null ? '?' : Math.round(settleMs))}ms`
                 );
 
-                // ── (d) §5.5's spring-load, at 650 ms and not at 300 ────────────────
+                /*
+                 * ── (d) the clone's own container, and the handover on release ──────
+                 *
+                 * Two refinements the user asked for, measured on the one gesture that shows
+                 * both: a member of a group dragged OUT of it.
+                 *
+                 *   1. the clone is a photograph taken at the 5 px threshold, and it used to
+                 *      stay one — drag a workspace out of a group and the thing under the cursor
+                 *      still wore that group's left guide rail and its member width all the way
+                 *      to a top-level drop, while the in-flow rows had restyled the moment the
+                 *      shadow said the container changed (§WS-089's depth spring);
+                 *   2. the release is the settle seam and nothing else. There is no scripted
+                 *      fall on top of it any more, so the frames after `mouseup` must show ONE
+                 *      picture of the item — the row, springing home from where the clone died —
+                 *      with no landing node and no second copy on any frame.
+                 */
+                const nestedBoxes = await measure(['Spring Nested', 'Spring 1']);
+                const springboard = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                    .find(node => (node.innerText ?? '').includes('Springboard'));
+                                if (el === undefined) return JSON.stringify({ found: false });
+                                const r = el.getBoundingClientRect();
+                                return JSON.stringify({
+                                    found: true,
+                                    collapsed: el.getAttribute('data-collapsed'),
+                                    x: r.x + r.width / 2,
+                                    y: r.y + r.height * 0.75
+                                });
+                            })()`
+                        )
+                    )
+                );
+                const haveNested =
+                    springboard.found === true &&
+                    springboard.collapsed === 'false' &&
+                    nestedBoxes['Spring Nested'] !== undefined &&
+                    nestedBoxes['Spring 1'] !== undefined;
+                recorder.check(
+                    'the group is open with a member to drag out of it',
+                    haveNested,
+                    `${JSON.stringify(springboard)} · ${JSON.stringify(Object.keys(nestedBoxes))}`
+                );
+                if (haveNested) {
+                    /** Everything the two refinements are decided by, in one round trip. */
+                    const readDressing = async () =>
+                        JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const clone = document.querySelector('[data-testid="sidebar-drag-ghost"]');
+                                        const gap = document.querySelector('[data-drag-gap="true"]');
+                                        const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                        const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                        const topLevel = rows.find(el => el !== gap && el.getAttribute('data-depth') === '0') ?? null;
+                                        const member = rows.find(el => el !== gap && el.getAttribute('data-depth') === '1') ?? null;
+                                        const box = (el) => el === null ? null : (() => {
+                                            const r = el.getBoundingClientRect();
+                                            return { left: Math.round(r.left * 10) / 10, top: Math.round(r.top * 10) / 10, height: Math.round(r.height * 10) / 10 };
+                                        })();
+                                        return JSON.stringify({
+                                            clone: clone === null ? null : {
+                                                depth: clone.getAttribute('data-ghost-depth'),
+                                                group: clone.getAttribute('data-ghost-group'),
+                                                // The BAND, as a node rather than as a style: a
+                                                // query for it is the statement "the clone is
+                                                // dressed as a member of a group".
+                                                bands: clone.querySelectorAll('[data-ghost-guide]').length,
+                                                marginLeft: getComputedStyle(clone).marginLeft,
+                                                width: Math.round(clone.getBoundingClientRect().width * 10) / 10
+                                            },
+                                            gap: gap === null ? null : {
+                                                id: gap.getAttribute('data-workspace-id'),
+                                                depth: gap.getAttribute('data-depth'),
+                                                marginLeft: getComputedStyle(gap).marginLeft,
+                                                index: rows.indexOf(gap),
+                                                ...box(gap)
+                                            },
+                                            topLevelLeft: box(topLevel)?.left ?? null,
+                                            memberLeft: box(member)?.left ?? null,
+                                            target: list?.getAttribute('data-drag-target') ?? null,
+                                            clones: document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length,
+                                            gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                            landings: document.querySelectorAll('[data-landing]').length
+                                        });
+                                    })()`
+                                )
+                            )
+                        );
+
+                    const nestedX = nestedBoxes['Spring Nested'].x;
+                    const nestedGrabY = nestedBoxes['Spring Nested'].top + 3;
+
+                    /*
+                     * A top-level slot has to be SOUGHT rather than computed, and the first
+                     * version of this learned that the expensive way.
+                     *
+                     * Every resolution live-applies the order, so the y that was a top-level
+                     * band a moment ago can be the dragged row's OWN slot the next time the
+                     * cursor passes through it — and that slot is excluded from the zones (a row
+                     * cannot be dropped on itself), so it resolves to nothing, which is NOT a
+                     * target change and leaves the previous preview standing. Probing the
+                     * currently-rendered top-level rows and taking the first y that answers
+                     * `topLevel:` makes the phase independent of where the row has been moved to
+                     * so far.
+                     */
+                    const seekTopLevel = async () => {
+                        const probes = JSON.parse(
+                            String(
+                                await page.eval(
+                                    `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                        .filter(el => el.getAttribute('data-depth') === '0' && el.getAttribute('data-drag-gap') !== 'true')
+                                        .map(el => { const r = el.getBoundingClientRect(); return Math.round(r.y + r.height * 0.8); })
+                                        .filter(y => y > 0))`
+                                )
+                            )
+                        );
+                        for (const y of probes) {
+                            await page.mouse('mouseMoved', nestedX, y, { button: 'left', buttons: 1 });
+                            await sleep(140);
+                            const target = String(
+                                await page.eval(
+                                    `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
+                                )
+                            );
+                            if (target.startsWith('topLevel:')) return { y, target };
+                        }
+                        return null;
+                    };
+
+                    await page.mouse('mouseMoved', nestedX, nestedGrabY, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', nestedX, nestedGrabY, { button: 'left', clickCount: 1 });
+                    await page.mouse('mouseMoved', nestedX, nestedGrabY - 8, { button: 'left', buttons: 1 });
+                    await sleep(60);
+                    const inside = await readDressing();
+                    const out = await seekTopLevel();
+                    recorder.check(
+                        'the drag can be resolved to a top-level slot to leave the group by',
+                        out !== null,
+                        JSON.stringify(out)
+                    );
+                    if (out === null) {
+                        await page.mouse('mouseReleased', nestedX, nestedGrabY, { button: 'left', clickCount: 1 });
+                        await sleep(600);
+                        return;
+                    }
+                    await sleep(120);
+                    const outside = await readDressing();
+                    recorder.note(`clone dressing: inside ${JSON.stringify(inside)} → outside ${JSON.stringify(outside)}`);
+                    await recorder.shot(page, 'clone-shed-group');
+
+                    recorder.check(
+                        'the clone starts dressed as the member it was lifted from (band present, depth 1)',
+                        inside.clone !== null && inside.clone.bands === 1 && inside.clone.depth === '1',
+                        JSON.stringify(inside.clone)
+                    );
+                    recorder.check(
+                        'and SHEDS the group band the moment the target resolves outside the group',
+                        outside.clone !== null &&
+                            outside.clone.bands === 0 &&
+                            outside.clone.depth === '0' &&
+                            outside.clone.group === null,
+                        `${JSON.stringify(outside.clone)} @ ${String(outside.target)}`
+                    );
+                    recorder.check(
+                        'its own indent is zero and it is a whole nesting indent WIDER than it was',
+                        outside.clone !== null &&
+                            inside.clone !== null &&
+                            outside.clone.marginLeft === '0px' &&
+                            Math.abs(outside.clone.width - inside.clone.width - 24) < 1.5,
+                        `marginLeft ${String(outside.clone?.marginLeft)} · width ${String(inside.clone?.width)} → ${String(outside.clone?.width)}`
+                    );
+                    recorder.check(
+                        'the gap moved with it: the empty slot is at the resolved top-level position, un-indented',
+                        outside.gap !== null &&
+                            outside.gap.depth === '0' &&
+                            outside.gap.marginLeft === '0px' &&
+                            outside.gap.height > 0 &&
+                            outside.topLevelLeft !== null &&
+                            Math.abs(outside.gap.left - outside.topLevelLeft) < 1.5,
+                        `gap left ${String(outside.gap?.left)} vs a top-level row's ${String(outside.topLevelLeft)} (a member sits at ${String(inside.memberLeft)})`
+                    );
+                    recorder.check(
+                        'and there is still exactly one picture of the item throughout',
+                        inside.clones === 1 && inside.gaps === 1 && outside.clones === 1 && outside.gaps === 1,
+                        `${String(inside.clones)}/${String(inside.gaps)} → ${String(outside.clones)}/${String(outside.gaps)}`
+                    );
+
+                    /*
+                     * …and it comes BACK when the cursor returns to the group.
+                     *
+                     * RE-MEASURED, not re-used: the move above live-applied the order, so the
+                     * header has been pushed down the list and the group it heads is now empty
+                     * (its "No workspaces" placeholder took the member's place). The y measured
+                     * before the drag started resolves to a top-level band by now — which is how
+                     * the first version of this check failed while the product was correct.
+                     */
+                    const headerNow = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                        .find(node => (node.innerText ?? '').includes('Springboard'));
+                                    if (el === undefined) return JSON.stringify({ found: false });
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({ found: true, x: r.x + r.width / 2, y: r.y + r.height * 0.75 });
+                                })()`
+                            )
+                        )
+                    );
+                    await page.mouse('mouseMoved', headerNow.x, headerNow.y, { button: 'left', buttons: 1 });
+                    await sleep(220);
+                    const back = await readDressing();
+                    recorder.note(
+                        `clone back over the group at ${JSON.stringify(headerNow)}: ${JSON.stringify(back.clone)} @ ${String(back.target)}`
+                    );
+                    recorder.check(
+                        'the band comes back when the target returns to a group (the restyle is symmetric)',
+                        back.clone !== null && back.clone.bands === 1 && back.clone.depth === '1',
+                        `${JSON.stringify(back.clone)} @ ${String(back.target)}`
+                    );
+
+                    /*
+                     * THE HANDOVER. Out to the top-level slot again, then slide down inside the
+                     * dragged row's OWN slot — excluded from the zones, so the layout stays put
+                     * while the clone walks half a row away from it, which is exactly the gap the
+                     * released row has to spring back across (phase (c)'s recipe, re-used).
+                     */
+                    const finalOut = await seekTopLevel();
+                    recorder.check(
+                        'and back out to a top-level slot for the release',
+                        finalOut !== null && finalOut.target.startsWith('topLevel:'),
+                        JSON.stringify(finalOut)
+                    );
+                    if (finalOut === null) {
+                        await page.mouse('mouseReleased', nestedX, nestedGrabY, { button: 'left', clickCount: 1 });
+                        await sleep(600);
+                        return;
+                    }
+                    await sleep(120);
+                    const beforeRelease = await readDressing();
+                    const releaseY = finalOut.y + pitch * 0.45;
+                    await page.mouse('mouseMoved', nestedX, releaseY, { button: 'left', buttons: 1 });
+                    await sleep(60);
+                    const nestedID = nestedBoxes['Spring Nested'].id;
+                    await page.eval(
+                        `(() => {
+                            const id = ${JSON.stringify(nestedID)};
+                            const samples = [];
+                            let running = true;
+                            const tick = (time) => {
+                                if (!running) return;
+                                const el = document.querySelector('[data-workspace-id="' + id + '"]');
+                                const raw = el === null ? '' : el.style.translate;
+                                let y = 0;
+                                if (raw !== '' && raw !== 'none') y = Number.parseFloat((raw.split(/\\s+/))[1] ?? '0') || 0;
+                                samples.push([
+                                    Math.round(time * 100) / 100,
+                                    el === null ? 0 : 1,
+                                    el !== null && getComputedStyle(el).visibility !== 'hidden' ? 1 : 0,
+                                    document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length,
+                                    document.querySelectorAll('[data-landing]').length,
+                                    Math.round(y * 1000) / 1000
+                                ]);
+                                requestAnimationFrame(tick);
+                            };
+                            requestAnimationFrame(tick);
+                            window.__nexHandover = { samples, stop: () => { running = false; } };
+                            return true;
+                        })()`
+                    );
+                    await sleep(80);
+                    await page.mouse('mouseReleased', nestedX, releaseY, { button: 'left', clickCount: 1 });
+                    await sleep(900);
+                    await page.eval(`(() => { window.__nexHandover?.stop?.(); return true; })()`);
+                    const handover = JSON.parse(
+                        String(await page.eval(`JSON.stringify(window.__nexHandover?.samples ?? [])`))
+                    );
+                    await page.eval(`(() => { delete window.__nexHandover; return true; })()`);
+
+                    const present = handover.filter((sample) => sample[1] === 1);
+                    const doubles = handover.filter((sample) => sample[2] === 1 && sample[3] > 0).length;
+                    const blanks = present.filter((sample) => sample[2] === 0 && sample[3] === 0).length;
+                    const landingFrames = handover.filter((sample) => sample[4] > 0).length;
+                    const offsets = handover.map((sample) => sample[5]);
+                    const seeded = Math.max(0, ...offsets.map((value) => Math.abs(value)));
+                    const distinct = new Set(
+                        offsets.filter((value) => value !== 0).map((value) => value.toFixed(2))
+                    ).size;
+                    recorder.note(
+                        `handover: ${String(handover.length)} frames · ${String(doubles)} with two copies · ` +
+                            `${String(blanks)} with none · ${String(landingFrames)} with a landing node · ` +
+                            `seed ${String(Math.round(seeded * 100) / 100)}px over ${String(distinct)} distinct offsets · ` +
+                            `trace ${JSON.stringify(offsets.slice(0, 24))}`
+                    );
+                    await recorder.shot(page, 'clone-handover-settled');
+                    recorder.check(
+                        'the handover sampled real frames on both sides of the release',
+                        handover.length > 30,
+                        `${String(handover.length)} frames`
+                    );
+                    recorder.check(
+                        'NO frame after the release carries two pictures of the item, and none carries zero',
+                        doubles === 0 && blanks === 0,
+                        `${String(doubles)} double · ${String(blanks)} blank`
+                    );
+                    recorder.check(
+                        'no frame anywhere in the handover carries a landing node (§WS-092’s script is gone)',
+                        landingFrames === 0,
+                        `${String(landingFrames)} of ${String(handover.length)}`
+                    );
+                    recorder.check(
+                        'the released row springs home from where the clone died, frame by frame, landing on exactly zero',
+                        seeded > 0.5 && distinct >= 6 && (offsets.at(-1) ?? 1) === 0,
+                        `seed ${String(Math.round(seeded * 100) / 100)}px · ${String(distinct)} distinct positions · last ${String(offsets.at(-1))}`
+                    );
+                    const landedTopLevel = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-workspace-id="${nestedID}"]');
+                                    return JSON.stringify({
+                                        depth: el?.getAttribute('data-depth') ?? null,
+                                        group: el?.getAttribute('data-group-id') ?? null,
+                                        gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                        clones: document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`landed: ${JSON.stringify(landedTopLevel)} (was ${String(beforeRelease.target)})`);
+                    recorder.check(
+                        'and the drop really left the group: the row is top level, with nothing left mid-air',
+                        landedTopLevel.depth === '0' &&
+                            landedTopLevel.group === null &&
+                            landedTopLevel.gaps === 0 &&
+                            landedTopLevel.clones === 0,
+                        JSON.stringify(landedTopLevel)
+                    );
+                }
+
+                // ── (e) §5.5's spring-load, at 650 ms and not at 300 ────────────────
                 await sleep(400);
                 const header = JSON.parse(
                     String(
@@ -15430,6 +15911,9 @@ function buildFlows(ctx) {
                 // ── hand the run back exactly as it was found ────────────────────────
                 await page.eval(`(() => { delete window.__nexSpring; return true; })()`);
                 await cli.run(['group', 'delete', 'Springboard', '--cascade']);
+                // Phase (d) drags `Spring Nested` OUT of the group, so the cascade above may no
+                // longer own it. Deleting it by name is a no-op when the cascade already did.
+                await cli.run(['workspace', 'delete', 'Spring Nested', '--force']);
                 for (let n = 1; n <= 4; n++) {
                     await cli.run(['workspace', 'delete', `Spring ${String(n)}`, '--force']);
                 }
@@ -15464,7 +15948,7 @@ function buildFlows(ctx) {
                 );
 
                 recorder.eyes(
-                    'in the mid-flight frame, does the row the cursor just crossed read as sliding out of the way rather than as having already moved — and does the settled frame show the released row seated in its slot with nothing left mid-air?'
+                    'in the mid-flight frame, does the row the cursor just crossed read as sliding out of the way rather than as having already moved; in the clone-shed frame, does the thing under the cursor read as a TOP-LEVEL row (no group rail down its left, full width) with the group it left behind closing over an empty slot; and does the settled frame show the released row seated in its slot with nothing left mid-air?'
                 );
             }
         },

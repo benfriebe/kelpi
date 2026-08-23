@@ -394,105 +394,113 @@ describe('drag polish', () => {
 
         // The ORDER is untouched (a header target is preview-only, §WS-087) …
         expect(rowIDs()).toEqual([W1, W4, W2, W3]);
-        // … but the row already shows the indentation it is about to have.
+        // … but the SLOT already shows the indentation it is about to have.
         const row = rowFor(W1);
         expect(row.dataset['nestPreview']).toBe('true');
         expect(row.style.marginLeft).toBe('24px');
-        // §WS-084's lift: scale, opacity AND the drop shadow.
-        expect(row.style.transform).toBe('scale(1.03)');
-        expect(row.style.opacity).toBe('0.8');
-        expect(row.style.boxShadow).not.toBe('');
+        /*
+         * REPLACED, not dropped. This used to assert §WS-084's lift on the in-flow row —
+         * `scale(1.03)`, `opacity: 0.8`, a drop shadow — which is now the CURSOR CLONE's, since
+         * the row's own slot is the gap the drop lands in. The lift is asserted on the clone in
+         * "the dragged row follows the cursor (§WS-084)" below; what this asserts instead is the
+         * stronger half: the slot keeps its box and paints nothing at all.
+         */
+        expect(row.dataset['dragGap']).toBe('true');
+        expect(row.style.visibility).toBe('hidden');
+        expect(row.style.transform).toBe('');
+        expect(row.style.opacity).toBe('1');
 
         // Leaving the header for a real drop target takes the preview away again.
         fireEvent.mouseMove(window, { clientY: 30 });
         expect(rowFor(W1).dataset['nestPreview']).toBeUndefined();
+        // …and the gap is still a gap: it belongs to the gesture, not to the target.
+        expect(rowFor(W1).dataset['dragGap']).toBe('true');
         fireEvent.mouseUp(window);
+        // The gesture ended, so the slot is a row again — in the same commit the clone died in.
+        expect(rowFor(W1).dataset['dragGap']).toBeUndefined();
+        expect(rowFor(W1).style.visibility).toBe('');
     });
 
-    it('plays the falls-into-the-group landing before committing (§WS-092)', () => {
+    /**
+     * REPLACES the three §WS-092 landing tests ("plays the falls-into-the-group landing", "a new
+     * drag flushes a landing still in flight", "skips the landing for a spring-loaded group").
+     *
+     * The scripted 400 ms fall is gone, so there is no pending commit to flush and no branch to
+     * skip: every drop commits on release, on the one settle seam. The assertions here are
+     * strictly stronger than the three they replace — each configuration is asserted to commit
+     * SYNCHRONOUSLY (the old tests allowed a timer), to leave no landing node behind, and to
+     * leave nothing pending on the clock afterwards.
+     *
+     * Parity is stated rather than assumed: the Swift plays the fall only when
+     * `expandGroupOnWorkspaceDrop` is FALSE (`WorkspaceListView.swift:1513`) and that setting
+     * ships TRUE (`SettingsFeature.swift:41`), so a default install takes the ordinary
+     * spring-home branch at `:1539` — which is what this now does in every configuration.
+     */
+    it('commits a drop onto a collapsed header at once, with no landing (§WS-092)', () => {
         vi.useFakeTimers();
-        const onMoveWorkspace = vi.fn();
-        render(
-            <Sidebar
-                {...baseProps()}
-                entries={entries({ collapsed: true })}
-                springLoadMs={100_000}
-                landingMs={400}
-                onMoveWorkspace={onMoveWorkspace}
-            />
-        );
+        for (const springLoaded of [false, true]) {
+            const onMoveWorkspace = vi.fn();
+            render(
+                <Sidebar
+                    {...baseProps()}
+                    entries={entries({ collapsed: true })}
+                    springLoadMs={springLoaded ? 650 : 100_000}
+                    onMoveWorkspace={onMoveWorkspace}
+                />
+            );
 
-        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
-        fireEvent.mouseMove(window, { clientY: 58 }); // collapsed group's header
-        fireEvent.mouseUp(window);
+            fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+            fireEvent.mouseMove(window, { clientY: 58 }); // collapsed group's header
+            if (springLoaded) {
+                act(() => {
+                    vi.advanceTimersByTime(700); // the group springs open under the cursor
+                });
+            }
+            fireEvent.mouseUp(window);
 
-        // The row is pinned where it was and shrinks toward the header; nothing has committed.
-        const row = rowFor(W1);
-        expect(row.dataset['landing']).toBe('true');
-        expect(row.style.transform).toBe('scale(0.2)');
-        expect(onMoveWorkspace).not.toHaveBeenCalled();
-
-        act(() => {
-            vi.advanceTimersByTime(400);
-        });
-        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
-        expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 2 });
-        // The shadow applied with the commit, so the row is now inside the collapsed group.
-        expect(rowIDs()).toEqual([W4]);
+            // The move is already out, on the release itself.
+            expect(onMoveWorkspace, String(springLoaded)).toHaveBeenCalledTimes(1);
+            expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 2 });
+            // No scripted fall anywhere in the output, and no second commit waiting on a clock.
+            expect(document.querySelectorAll('[data-landing]')).toHaveLength(0);
+            act(() => {
+                vi.advanceTimersByTime(2000);
+            });
+            expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+            cleanup();
+        }
     });
 
-    it('a new drag flushes a landing still in flight, so no drop is lost (§WS-092)', () => {
-        vi.useFakeTimers();
-        const onMoveWorkspace = vi.fn();
-        render(
-            <Sidebar
-                {...baseProps()}
-                entries={entries({ collapsed: true })}
-                springLoadMs={100_000}
-                landingMs={400}
-                onMoveWorkspace={onMoveWorkspace}
-            />
-        );
+    /**
+     * The gap is the drop target's own slot, and it MOVES with the resolution — the shadow
+     * re-orders the list live, so the empty space is always where the row would land.
+     */
+    it('the gap tracks the resolved slot rather than the row’s origin (§WS-084)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+
+        // rows: alpha 4–24 · delta 24–44 · header 44–64 · beta 64–84 · gamma 84–104.
+        const gaps = (): HTMLElement[] =>
+            screen.getAllByTestId('workspace-row').filter((row) => row.dataset['dragGap'] === 'true');
+        const gapIndex = (): number => rowIDs().indexOf(gaps()[0]?.dataset['workspaceId'] ?? '');
 
         fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
-        fireEvent.mouseMove(window, { clientY: 58 });
-        fireEvent.mouseUp(window);
-        expect(onMoveWorkspace).not.toHaveBeenCalled();
+        fireEvent.mouseMove(window, { clientY: 78 }); // deep inside the group's children
+        // Exactly ONE slot is vacant, it is the dragged row's, and it has taken the depth of the
+        // container the drop resolved to.
+        expect(gaps()).toHaveLength(1);
+        expect(gaps()[0]?.dataset['workspaceId']).toBe(W1);
+        expect(gaps()[0]?.dataset['depth']).toBe('1');
+        const inGroup = gapIndex();
 
-        // Grabbing another row mid-animation commits the pending drop immediately rather
-        // than leaving a timer to race the new gesture.
-        fireEvent.mouseDown(rowFor(W4), { clientY: 30 });
-        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
-        expect(onMoveWorkspace).toHaveBeenCalledWith({ workspaceID: W1, groupID: G1, index: 2 });
+        fireEvent.mouseMove(window, { clientY: 8 }); // back out to the top of the list
+        expect(gaps()).toHaveLength(1);
+        expect(gaps()[0]?.dataset['workspaceId']).toBe(W1);
+        expect(gaps()[0]?.dataset['depth']).toBe('0');
+        // …and it MOVED: the empty space is the resolved slot, not the row's origin.
+        expect(gapIndex()).toBe(0);
+        expect(inGroup).toBeGreaterThan(0);
         fireEvent.mouseUp(window);
-        act(() => {
-            vi.advanceTimersByTime(500);
-        });
-        // …and the flushed timer does not fire a second time.
-        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
-    });
-
-    it('skips the landing for a spring-loaded group, which is visibly open (§WS-092)', () => {
-        vi.useFakeTimers();
-        const onMoveWorkspace = vi.fn();
-        render(
-            <Sidebar
-                {...baseProps()}
-                entries={entries({ collapsed: true })}
-                springLoadMs={650}
-                landingMs={400}
-                onMoveWorkspace={onMoveWorkspace}
-            />
-        );
-
-        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
-        fireEvent.mouseMove(window, { clientY: 58 });
-        act(() => {
-            vi.advanceTimersByTime(700); // the group springs open
-        });
-        fireEvent.mouseUp(window);
-        // No landing to wait for: the commit is immediate.
-        expect(onMoveWorkspace).toHaveBeenCalledTimes(1);
+        expect(gaps()).toHaveLength(0);
     });
 
     /**
@@ -591,7 +599,6 @@ describe('drag polish', () => {
                     entries={tall}
                     rowHeight={40}
                     springLoadMs={100_000}
-                    landingMs={0}
                     onMoveWorkspace={onMoveWorkspace}
                 />
             );
@@ -1159,6 +1166,13 @@ describe('the dragged row follows the cursor (§WS-084)', () => {
         expect(ghost.style.position).toBe('fixed');
         expect(ghost.style.boxShadow).not.toBe('');
         expect(ghost.style.pointerEvents).toBe('none');
+        /*
+         * §WS-084's LIFT, which the clone now carries whole because the row it came off is the
+         * gap: 1.03 scale (in the transform below), 0.8 opacity and the shadow above — the three
+         * `WorkspaceListView.swift:1361-1368` puts on the dragged row itself.
+         */
+        expect(ghost.style.opacity).toBe('0.8');
+        expect(ghost.style.visibility).toBe('visible');
         // The grab point stays under the cursor: the press was 22px right of the row's left
         // edge and 6px below its top, so the ghost sits at (34-22, 30-6).
         expect(ghost.style.transform).toBe('translate3d(12px, 24px, 0) scale(1.03)');
@@ -1190,8 +1204,74 @@ describe('the dragged row follows the cursor (§WS-084)', () => {
         grab();
         fireEvent.mouseMove(window, { clientX: 31, clientY: 12 }); // 2px: below the threshold
         expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+        // …and a press is not a gap either: the row under the cursor is still painted.
+        expect(rowFor(W1).dataset['dragGap']).toBeUndefined();
+        expect(rowFor(W1).style.visibility).toBe('');
         fireEvent.mouseUp(window);
         expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+    });
+
+    /**
+     * THE SINGLE-REPRESENTATION INVARIANT, at the two moments it can be observed.
+     *
+     * Mid-drag there is exactly one picture of the item — the clone — and the row it came off
+     * keeps its box but paints nothing. On release the clone is gone and the row is back, in the
+     * same synchronous handler: the browser cannot paint between `endDragGhost()` and the state
+     * flip beside it, so no painted frame carries two copies and none carries zero.
+     */
+    it('shows exactly one picture of the dragged item, before and after release (§WS-084)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+        stubRowGeometry();
+        const visible = (): number => {
+            const rows = screen
+                .getAllByTestId('workspace-row')
+                .filter((row) => row.dataset['workspaceId'] === W1 && row.style.visibility !== 'hidden');
+            return rows.length + document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length;
+        };
+        expect(visible()).toBe(1);
+
+        fireEvent.mouseDown(rowFor(W1), { clientX: 30, clientY: 10 });
+        fireEvent.mouseMove(window, { clientX: 30, clientY: 78 });
+        // The gap keeps the row's box — the height is what makes it a slot rather than a hole.
+        expect(rowFor(W1).getBoundingClientRect().height).toBe(20);
+        expect(visible()).toBe(1);
+
+        fireEvent.mouseMove(window, { clientX: 30, clientY: 30 });
+        expect(visible()).toBe(1);
+
+        fireEvent.mouseUp(window);
+        expect(visible()).toBe(1);
+        expect(screen.queryByTestId('sidebar-drag-ghost')).toBeNull();
+        expect(rowFor(W1).style.visibility).toBe('');
+    });
+
+    /**
+     * The gap is not hit-testable, so the `click` that follows a drag no longer lands on the row
+     * that used to retire the "do not activate" flag. A window-level listener retires it
+     * instead; without that, the user's NEXT click on any row would be swallowed.
+     */
+    it('does not swallow the click AFTER the one that ends a drag', () => {
+        const onActivateWorkspace = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                onMoveWorkspace={vi.fn()}
+                onActivateWorkspace={onActivateWorkspace}
+            />
+        );
+        stubRowGeometry();
+
+        fireEvent.mouseDown(rowFor(W1), { clientX: 30, clientY: 10 });
+        fireEvent.mouseMove(window, { clientX: 30, clientY: 78 });
+        fireEvent.mouseUp(window);
+        // The browser's click after a drag lands on the scroller, not on the (hidden) row.
+        fireEvent.click(screen.getByRole('listbox'));
+        expect(onActivateWorkspace).not.toHaveBeenCalled();
+
+        // A genuine click, afterwards, still activates.
+        fireEvent.click(rowFor(W4));
+        expect(onActivateWorkspace).toHaveBeenCalledWith(W4);
     });
 });
 

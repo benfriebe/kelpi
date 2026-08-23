@@ -35,13 +35,12 @@ import {
     useRef,
     useState,
     type CSSProperties,
-    type ReactElement,
-    type ReactNode
+    type ReactElement
 } from 'react';
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
-import { RepoPicker } from './RepoPicker';
+import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
     CURATED_EMOJI,
@@ -99,10 +98,8 @@ import {
     type ChromeRepo,
     type ChromeSidebarEntry,
     type ChromeWorkspace,
-    type SidebarCallbacks,
-    type WorkspaceWorktreeRequest
+    type SidebarCallbacks
 } from './types';
-import { worktreePreview } from './worktree';
 
 const DRAG_THRESHOLD_PX = 5;
 const DEFAULT_ROW_HEIGHT = 34;
@@ -167,10 +164,11 @@ const UNSELECTABLE_TEXT_STYLE = {
  * class of regression a "parity polish" is supposed not to introduce.
  *
  * Applied to every `<input type="text">` under `[data-testid="sidebar"]`: `InlineEditor` (the
- * workspace AND group rename), the filter field, and `NewEntryForm`'s name / worktree-name /
- * branch-name fields. Checkboxes and `<select>`s have no text to select and are left alone.
- * The emoji sheet and the confirm dialog are `createPortal`'d onto `document.body`, so they are
- * outside the container and never inherit the rule in the first place.
+ * workspace AND group rename) and the filter field. Checkboxes and `<select>`s have no text to
+ * select and are left alone. The emoji sheet, the confirm dialog and the create sheet are
+ * `createPortal`'d onto `document.body`, so they are outside the container and never inherit the
+ * rule in the first place — the sheet still declares the opt-in beside its own fields, because
+ * where a node happens to be parented is a weaker guarantee than a rule next to what it protects.
  */
 const SELECTABLE_TEXT_STYLE = {
     userSelect: 'text'
@@ -1165,6 +1163,14 @@ export interface SidebarProps extends SidebarCallbacks {
         | null
         | undefined;
     readonly onCreateRequestHandled?: (() => void) | undefined;
+    /**
+     * "The create SHEET is up" — published because a modal is a whole-window fact, not a sidebar
+     * one. Assembly folds it into the same `modalOpen` the Settings window and the palette feed:
+     * the key dispatcher stops handing chords to panes behind it (a ⌘D must not split under the
+     * sheet), and the Electron shell parks a web pane's native `WebContentsView`, which no
+     * z-index in this document can otherwise get above.
+     */
+    readonly onCreateSheetOpenChange?: ((open: boolean) => void) | undefined;
     /** Timer overrides so drag tests do not have to wait 650 ms in real time. */
     readonly springLoadMs?: number | undefined;
     readonly autoScrollIntervalMs?: number | undefined;
@@ -2842,9 +2848,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
      * §APP-018's other half: "open the New Workspace form", asked for from outside.
      *
      * The same one-shot contract as the rename above — consumed once, cleared immediately — so
-     * ⌘N pressed twice re-opens the form the second time rather than being swallowed as a
-     * no-change prop, and a re-render after the user cancels cannot bring it back. The form's
-     * own autofocus does the rest: `NewEntryForm` focuses its name field on mount, so the
+     * ⌘N pressed twice re-opens the sheet the second time rather than being swallowed as a
+     * no-change prop, and a re-render after the user cancels cannot bring it back. The sheet's
+     * own autofocus does the rest: `NewEntrySheet` focuses its name field on mount, so the
      * gesture lands the caret exactly where the shipped sheet does.
      */
     const createRequest = props.createRequest ?? null;
@@ -2854,6 +2860,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
         setNewForm({ kind: createRequest.kind, groupID: createRequest.groupID ?? null });
         onCreateRequestHandled?.();
     }, [createRequest, onCreateRequestHandled]);
+
+    /**
+     * …and the sheet's open state, published upward: a modal is a whole-window fact (see
+     * `onCreateSheetOpenChange`). The cleanup matters as much as the call — a sidebar unmounted
+     * with the sheet up (the panel sliding away under it) must not leave assembly believing a
+     * modal is still on screen.
+     */
+    const createSheetOpen = newForm !== null;
+    const onCreateSheetOpenChange = props.onCreateSheetOpenChange;
+    useEffect(() => {
+        if (onCreateSheetOpenChange === undefined) return;
+        onCreateSheetOpenChange(createSheetOpen);
+        return () => {
+            if (createSheetOpen) onCreateSheetOpenChange(false);
+        };
+    }, [createSheetOpen, onCreateSheetOpenChange]);
 
     // ── menus ───────────────────────────────────────────────────────────────────
     const closeMenu = useCallback((): void => {
@@ -3428,6 +3450,20 @@ export function Sidebar(props: SidebarProps): ReactElement {
         [bucket, collapseOverrides, groups, iconSubmenu, props, shortcut, toggleCollapse]
     );
 
+    /**
+     * The background context menu — `WorkspaceListView.swift:343-350`, the two rows the trailing
+     * spacer absorbs a right-click into.
+     *
+     * Its New Group is the SAME one-shot the chevron's is: `createGroup(name: placeholder,
+     * autoRename: true)`, byte for byte the call at `:414-417`. It was the last route in this
+     * client still opening a form for a group, which 776a776 recorded as a follow-up and this
+     * change closes — leaving group creation with exactly two shapes, both the Swift's: a mint
+     * that drops into inline rename (⌘⇧G, File ▸ New Group, the chevron, here), and the New
+     * Group SHEET, which `NewGroupSheet.swift`'s own comment says is the bulk "Group Selected
+     * Workspaces…" flow's (§WS-082) — the one place a group is created around a selection and so
+     * the one place a name and a colour are worth asking for up front.
+     */
+    const onNewGroupWithRename = props.onNewGroupWithRename;
     const backgroundMenuItems = useCallback(
         (): MenuItemSpec[] => [
             {
@@ -3443,23 +3479,28 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 label: 'New Group',
                 ...(shortcut('new_group') === undefined ? {} : { shortcut: shortcut('new_group') }),
                 onSelect: () => {
+                    // Assembly supplies the one-shot; without it the row falls back to the sheet
+                    // rather than doing nothing.
+                    if (onNewGroupWithRename !== undefined) {
+                        onNewGroupWithRename();
+                        return;
+                    }
                     setNewForm({ kind: 'group', groupID: null });
                 }
             }
         ],
-        [shortcut]
+        [onNewGroupWithRename, shortcut]
     );
 
     /**
      * §WS-004's chevron menu: exactly the two rows `WorkspaceListView.swift:412-422` puts
-     * behind it — New Workspace (the sheet, which here is the footer form) and New Group.
+     * behind it — New Workspace (the sheet) and New Group.
      *
-     * New Group is NOT the form: the shipped menu runs `createGroup(name:autoRename:)`, the
-     * same one-shot ⌘⇧G / File ▸ New Group run (§WS-123), so all three routes mint the
+     * New Group is NOT the sheet: the shipped menu runs `createGroup(name:autoRename:)`, the
+     * same one-shot ⌘⇧G / File ▸ New Group run (§WS-123), so all four routes mint the
      * placeholder and drop into inline rename. Assembly supplies it; without it the row falls
-     * back to the form rather than doing nothing.
+     * back to the sheet rather than doing nothing.
      */
-    const onNewGroupWithRename = props.onNewGroupWithRename;
     const footerMenuItems = useCallback(
         (): MenuItemSpec[] => [
             {
@@ -3904,124 +3945,134 @@ export function Sidebar(props: SidebarProps): ReactElement {
             </div>
 
             <div
-                /* The footer grows into the create form (§WS-075's swatches, pickers, repo rows
-                   and worktree section), so it is capped at half the sidebar and scrolls rather
-                   than pushing its own Create button off the bottom of the window. */
-                className="flex max-h-[50%] shrink-0 flex-col gap-1 overflow-y-auto border-t"
+                /* §WS-004's bar is the whole footer now: the create form it used to expand into
+                   is a modal sheet over the window (`NewWorkspaceSheet.tsx`), the way
+                   `ContentView.swift:289-294` presents it, so the bar never has to grow, scroll
+                   or push its own controls off the bottom of the window. */
+                className="flex shrink-0 flex-col gap-1 border-t"
                 style={{
                     borderColor: tokens.divider,
                     background: tokens.sidebarBackground,
                     padding: FOOTER_PADDING_PX
                 }}
             >
-                {newForm === null ? (
-                    /*
-                     * §WS-004, in `WorkspaceListView.swift:394-446`'s own composition: a plain
-                     * "+ New Workspace" button, a small chevron MENU beside it carrying New
-                     * Workspace / New Group, a spacer, and the ⌘N hint at the trailing edge.
-                     *
-                     * The user's words on the shipped version of this row: "this is meant to be
-                     * a dropdown toggle like the swift version". What was here instead were
-                     * three sibling controls — a second "New Group" text button and a settings
-                     * gear the Swift footer has neither of.
-                     *
-                     * The ⌘N hint is back at the trailing edge, where the Swift puts it. It had
-                     * been moved INSIDE the button because trailing it after a "New Group"
-                     * button read as New Group's shortcut (the run-B nit) — that button is gone,
-                     * so the hint now trails the only labelled action in the row, which is the
-                     * reading the Swift relies on too.
-                     */
-                    <div className="flex items-center" style={{ gap: FOOTER_GAP_PX }}>
-                        <button
-                            type="button"
-                            data-testid="sidebar-new-workspace"
-                            aria-label="New Workspace"
-                            title="New Workspace (⌘N)"
-                            className="flex items-center text-[12px]"
-                            style={{ color: tokens.textSecondary, gap: FOOTER_GAP_PX }}
-                            onClick={() => {
-                                setNewForm({ kind: 'workspace', groupID: null });
-                            }}
-                        >
-                            <ChromeIcon name="plus" /> New Workspace
-                        </button>
-                        {/*
-                          * `Menu { … } label: Image("chevron.down").font(.system(size: 9,
-                          * weight: .semibold))` — a single-glyph borderless menu in the
-                          * secondary text colour, which is why the Swift composes the row from
-                          * a Button PLUS a Menu rather than one Menu with a custom label.
-                          */}
-                        <button
-                            ref={footerMenuButtonRef}
-                            type="button"
-                            data-testid="sidebar-new-menu-toggle"
-                            aria-label="New Workspace options"
-                            aria-haspopup="menu"
-                            aria-expanded={menu !== null && menu.kind === 'footer'}
-                            title="New Workspace options"
-                            className="flex items-center"
-                            style={{ color: tokens.textSecondary }}
-                            onClick={toggleFooterMenu}
-                        >
-                            <ChromeIcon name="chevron-down" size={9} />
-                        </button>
-                        <span
-                            data-testid="sidebar-new-workspace-hint"
-                            className="ml-auto font-mono text-[11px]"
-                            style={{ color: tokens.textTertiary }}
-                        >
-                            ⌘N
-                        </span>
-                    </div>
-                ) : (
-                    <NewEntryForm
-                        kind={newForm.kind}
-                        repos={props.repos ?? EMPTY_REPOS}
-                        groups={groups}
-                        profiles={props.profiles ?? EMPTY_PROFILES}
-                        defaultColor={newFormColor}
-                        // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
-                        // wins; otherwise SET-011's inherited group, which assembly resolves.
-                        defaultGroupID={newForm.groupID ?? props.inheritGroupID ?? null}
-                        {...(newForm.kind === 'group'
-                            ? { defaultName: defaultGroupName(groups.map((group) => group.name)) }
-                            : {})}
-                        {...(newForm.workspaceIDs === undefined
-                            ? {}
-                            : { workspaceCount: newForm.workspaceIDs.length })}
-                        onCancel={() => {
-                            setNewForm(null);
+                {/*
+                  * §WS-004, in `WorkspaceListView.swift:394-446`'s own composition: a plain
+                  * "+ New Workspace" button, a small chevron MENU beside it carrying New
+                  * Workspace / New Group, a spacer, and the ⌘N hint at the trailing edge.
+                  *
+                  * The user's words on the shipped version of this row: "this is meant to be
+                  * a dropdown toggle like the swift version". What was here instead were
+                  * three sibling controls — a second "New Group" text button and a settings
+                  * gear the Swift footer has neither of.
+                  *
+                  * The ⌘N hint is back at the trailing edge, where the Swift puts it. It had
+                  * been moved INSIDE the button because trailing it after a "New Group"
+                  * button read as New Group's shortcut (the run-B nit) — that button is gone,
+                  * so the hint now trails the only labelled action in the row, which is the
+                  * reading the Swift relies on too.
+                  */}
+                <div className="flex items-center" style={{ gap: FOOTER_GAP_PX }}>
+                    <button
+                        type="button"
+                        data-testid="sidebar-new-workspace"
+                        aria-label="New Workspace"
+                        title="New Workspace (⌘N)"
+                        className="flex items-center text-[12px]"
+                        style={{ color: tokens.textSecondary, gap: FOOTER_GAP_PX }}
+                        onClick={() => {
+                            setNewForm({ kind: 'workspace', groupID: null });
                         }}
-                        onSubmit={async (draft) => {
-                            const members = newForm.workspaceIDs;
-                            if (newForm.kind === 'group') {
-                                // §WS-058: a group raised from the bulk menu is created AROUND
-                                // the selection, in one command, and the selection is released.
-                                if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
-                                    props.onCreateGroupForWorkspaces(draft.name, members, draft.color);
-                                    setSelection(EMPTY_SELECTION);
-                                } else props.onCreateGroup?.(draft.name, draft.color);
-                                setNewForm(null);
-                                return null;
-                            }
-                            const result = await props.onCreateWorkspace?.(
-                                draft.name,
-                                draft.groupID,
-                                draft.worktree,
-                                {
-                                    ...(draft.color === null ? {} : { color: draft.color }),
-                                    profile: draft.profile,
-                                    repoPaths: draft.repoPaths
-                                }
-                            );
-                            // §WS-079: a failed worktree create keeps the form open, inline.
-                            if (typeof result === 'string') return result;
+                    >
+                        <ChromeIcon name="plus" /> New Workspace
+                    </button>
+                    {/*
+                      * `Menu { … } label: Image("chevron.down").font(.system(size: 9,
+                      * weight: .semibold))` — a single-glyph borderless menu in the
+                      * secondary text colour, which is why the Swift composes the row from
+                      * a Button PLUS a Menu rather than one Menu with a custom label.
+                      */}
+                    <button
+                        ref={footerMenuButtonRef}
+                        type="button"
+                        data-testid="sidebar-new-menu-toggle"
+                        aria-label="New Workspace options"
+                        aria-haspopup="menu"
+                        aria-expanded={menu !== null && menu.kind === 'footer'}
+                        title="New Workspace options"
+                        className="flex items-center"
+                        style={{ color: tokens.textSecondary }}
+                        onClick={toggleFooterMenu}
+                    >
+                        <ChromeIcon name="chevron-down" size={9} />
+                    </button>
+                    <span
+                        data-testid="sidebar-new-workspace-hint"
+                        className="ml-auto font-mono text-[11px]"
+                        style={{ color: tokens.textTertiary }}
+                    >
+                        ⌘N
+                    </span>
+                </div>
+            </div>
+
+            {/*
+             * §WS-075's sheet, presented the way the shipped app presents it: a MODAL over the
+             * window (`ContentView.swift:289-294`), not a form the footer expands into. Every
+             * route that raises it — the bar's + button, the chevron's first row, a group
+             * header's "New Workspace" (which preselects that group, the `pendingSheetGroupID`
+             * contract), and assembly's `createRequest` (⌘N, File ▸ New Workspace, the palette,
+             * the empty state's Create button) — lands here.
+             */}
+            {newForm === null ? null : (
+                <NewEntrySheet
+                    kind={newForm.kind}
+                    repos={props.repos ?? EMPTY_REPOS}
+                    groups={groups}
+                    profiles={props.profiles ?? EMPTY_PROFILES}
+                    defaultColor={newFormColor}
+                    // §WS-076: an explicitly scoped group (the group menu's "New Workspace")
+                    // wins; otherwise SET-011's inherited group, which assembly resolves.
+                    defaultGroupID={newForm.groupID ?? props.inheritGroupID ?? null}
+                    {...(newForm.kind === 'group'
+                        ? { defaultName: defaultGroupName(groups.map((group) => group.name)) }
+                        : {})}
+                    {...(newForm.workspaceIDs === undefined
+                        ? {}
+                        : { workspaceCount: newForm.workspaceIDs.length })}
+                    onCancel={() => {
+                        setNewForm(null);
+                    }}
+                    onSubmit={async (draft) => {
+                        const members = newForm.workspaceIDs;
+                        if (newForm.kind === 'group') {
+                            // §WS-058: a group raised from the bulk menu is created AROUND
+                            // the selection, in one command, and the selection is released.
+                            if (members !== undefined && props.onCreateGroupForWorkspaces !== undefined) {
+                                props.onCreateGroupForWorkspaces(draft.name, members, draft.color);
+                                setSelection(EMPTY_SELECTION);
+                            } else props.onCreateGroup?.(draft.name, draft.color);
                             setNewForm(null);
                             return null;
-                        }}
-                    />
-                )}
-            </div>
+                        }
+                        const result = await props.onCreateWorkspace?.(
+                            draft.name,
+                            draft.groupID,
+                            draft.worktree,
+                            {
+                                ...(draft.color === null ? {} : { color: draft.color }),
+                                profile: draft.profile,
+                                repoPaths: draft.repoPaths
+                            }
+                        );
+                        // §WS-079: a failed worktree create keeps the SHEET open, with the
+                        // daemon's message inline under the fields.
+                        if (typeof result === 'string') return result;
+                        setNewForm(null);
+                        return null;
+                    }}
+                />
+            )}
 
             {menu === null ? null : (
                 <ContextMenu
@@ -4086,542 +4137,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
 }
 
 // ── inline forms & dialogs ──────────────────────────────────────────────────────────
-
-/** Everything the New Workspace / New Group form collects, in one submit (§WS-075/§WS-082). */
-export interface NewEntryDraft {
-    readonly name: string;
-    /** `null` = the group form's "None" swatch; a workspace always carries a colour. */
-    readonly color: WorkspaceColor | null;
-    readonly groupID: string | null;
-    /** `null` = the built-in `default` baseline, which the daemon normalizes to "unassigned". */
-    readonly profile: string | null;
-    /** Repo PATHS to associate once the workspace exists (§WS-075's Repositories section). */
-    readonly repoPaths: readonly string[];
-    readonly worktree?: WorkspaceWorktreeRequest | undefined;
-}
-
-interface NewEntryFormProps {
-    readonly kind: 'workspace' | 'group';
-    /** The registry: the Repositories section and the worktree section both read it. */
-    readonly repos?: readonly ChromeRepo[] | undefined;
-    /** Groups for the picker; empty hides it, exactly as the shipped sheet does. */
-    readonly groups?: readonly ChromeGroup[] | undefined;
-    /** Config-defined profile names. `default` leads the list and is never expected in it. */
-    readonly profiles?: readonly string[] | undefined;
-    /** The group the picker opens on: the menu's explicit one, else SET-011's inherited one. */
-    readonly defaultGroupID?: string | null | undefined;
-    /** The swatch the row opens on — `nextCreateColor`, which avoids the neighbour's colour. */
-    readonly defaultColor?: WorkspaceColor | undefined;
-    /** The group form's pre-filled unique default name ("New Group 2", §WS-083). */
-    readonly defaultName?: string | undefined;
-    /** Set when the bulk menu raised this form: "Group N selected workspace(s)." */
-    readonly workspaceCount?: number | undefined;
-    readonly onSubmit: (draft: NewEntryDraft) => Promise<string | null>;
-    readonly onCancel: () => void;
-}
-
-/**
- * The footer's New Workspace / New Group form — `NewWorkspaceSheet.swift` and
- * `NewGroupSheet.swift`, in the shape this port gives them.
- *
- * Everything the two sheets collect is here: the name, the ten-colour swatch row opening on a
- * random colour that avoids the trailing workspace's (§WS-075), the Group picker (shown only
- * when groups exist, preselected by §WS-076's rule), the Profile picker leading with the
- * built-in `default` (§SET-214), the Repositories section that associates repos at create
- * (§WS-075) with §GIT-073's multi-select picker behind its Add button, and §WS-078's inline
- * **Create git worktree** section. The group form adds the bulk flow's "Group N selected
- * workspace(s)." line, a colour row with a "None" option, and a pre-filled unique default name
- * (§WS-082/§WS-083).
- *
- * §WS-077's Tab loop is driven by hand, for the reason the sheet drives its own: the colour row
- * is ONE stop (←/→ move within it) rather than ten, and a disabled Create is skipped rather
- * than landed on. §WS-080's rule is here too — removing a repo row moves focus to the next row
- * (or to Add Repository) BEFORE the array shrinks, so the loop is never stranded on a control
- * that no longer exists.
- *
- * Divergence from the shipped app, stated: this is an expanding inline form anchored to the
- * sidebar footer, not a modal sheet — the same divergence §WS-081's rename editor already
- * carries. Every field, rule and default is the sheet's.
- */
-function NewEntryForm(props: NewEntryFormProps): ReactElement {
-    const repos = props.repos ?? EMPTY_REPOS;
-    const groups = props.groups ?? EMPTY_GROUPS;
-    const profiles = props.profiles ?? EMPTY_PROFILES;
-    const isWorkspace = props.kind === 'workspace';
-
-    const [value, setValue] = useState(props.defaultName ?? '');
-    const [color, setColor] = useState<WorkspaceColor | null>(
-        // The group sheet opens on "None"; the workspace sheet opens on the random colour.
-        isWorkspace ? (props.defaultColor ?? 'blue') : null
-    );
-    const [groupID, setGroupID] = useState<string | null>(props.defaultGroupID ?? null);
-    const [profile, setProfile] = useState<string>(DEFAULT_PROFILE_NAME);
-    const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
-    const [pickerOpen, setPickerOpen] = useState(false);
-    const [worktree, setWorktree] = useState(false);
-    const [repoID, setRepoID] = useState<string>(repos[0]?.id ?? '');
-    const [worktreeName, setWorktreeName] = useState('');
-    const [branch, setBranch] = useState('');
-    const [branchEdited, setBranchEdited] = useState(false);
-    const [updateMain, setUpdateMain] = useState(false);
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-
-    const ref = useRef<HTMLInputElement | null>(null);
-    /** Every focusable stop, by field id — the Tab loop's address book (§WS-077). */
-    const stops = useRef(new Map<string, HTMLElement>());
-    const registerStop = (id: string, element: HTMLElement | null): void => {
-        if (element === null) stops.current.delete(id);
-        else stops.current.set(id, element);
-    };
-
-    useEffect(() => {
-        ref.current?.focus();
-        ref.current?.select();
-    }, []);
-
-    const chosenRepos = chosenRepoIDs.flatMap((id) => {
-        const repo = repos.find((candidate) => candidate.id === id);
-        return repo === undefined ? [] : [repo];
-    });
-
-    // §WS-078: the worktree is cut from the ONE selected repo when the Repositories section
-    // named exactly one; otherwise the section offers the registry to choose from.
-    const soleChosen = chosenRepos.length === 1 ? chosenRepos[0] : null;
-    const repo = soleChosen ?? repos.find((candidate) => candidate.id === repoID) ?? repos[0] ?? null;
-    const preview = worktreePreview({
-        name: worktreeName,
-        branch,
-        base: repo?.worktreeBase ?? ''
-    });
-    const worktreeOn = isWorkspace && worktree && repo !== null;
-    const canSubmit = value.trim() !== '' && !busy && (!worktreeOn || preview.valid);
-
-    const submit = async (): Promise<void> => {
-        if (!canSubmit) return;
-        setBusy(true);
-        setError(null);
-        const failure = await props.onSubmit({
-            name: value.trim(),
-            color,
-            groupID,
-            profile: profile === DEFAULT_PROFILE_NAME ? null : profile,
-            repoPaths: chosenRepos.map((entry) => entry.path),
-            ...(worktreeOn && repo !== null
-                ? { worktree: { repoID: repo.id, name: worktreeName, branch, updateMain } }
-                : {})
-        });
-        setBusy(false);
-        if (failure !== null) setError(failure);
-    };
-
-    /** Visible stops in reading order. A disabled Create is omitted, never landed on. */
-    const fieldOrder = (): string[] => {
-        const order = ['name', 'colors'];
-        if (isWorkspace) {
-            if (groups.length > 0) order.push('group');
-            order.push('profile');
-            if (repos.length > 0) {
-                for (const entry of chosenRepos) order.push(`repo:${entry.id}`);
-                order.push('add-repo');
-                order.push('worktree-toggle');
-                if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
-            }
-        }
-        if (canSubmit) order.push('submit');
-        return order;
-    };
-
-    const onFormKeyDown = (event: React.KeyboardEvent): void => {
-        if (event.key !== 'Tab') return;
-        const order = fieldOrder();
-        const active = globalThis.document?.activeElement ?? null;
-        const currentIndex = order.findIndex((id) => stops.current.get(id) === active);
-        if (currentIndex < 0) return;
-        event.preventDefault();
-        const nextID = order[(currentIndex + (event.shiftKey ? -1 : 1) + order.length) % order.length];
-        if (nextID !== undefined) stops.current.get(nextID)?.focus();
-    };
-
-    /**
-     * §WS-080: focus the row that will take this one's place BEFORE the array shrinks, so the
-     * Tab loop never points at a control that has just been unmounted.
-     */
-    const removeRepo = (id: string): void => {
-        const index = chosenRepoIDs.indexOf(id);
-        const next = chosenRepoIDs.filter((candidate) => candidate !== id);
-        if (stops.current.get(`repo:${id}`) === globalThis.document?.activeElement) {
-            const successor = next[index] ?? null;
-            stops.current.get(successor === null ? 'add-repo' : `repo:${successor}`)?.focus();
-        }
-        setChosenRepoIDs(next);
-    };
-
-    const swatchRow = (
-        <div
-            ref={(element) => {
-                registerStop('colors', element);
-            }}
-            role="radiogroup"
-            aria-label={isWorkspace ? 'Workspace color' : 'Group color'}
-            tabIndex={0}
-            data-testid={`new-${props.kind}-colors`}
-            className="flex items-center gap-1 rounded outline-none"
-            onKeyDown={(event) => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                event.preventDefault();
-                // The row is a single Tab stop with the arrows cycling inside it (§WS-077).
-                const options: (WorkspaceColor | null)[] = isWorkspace
-                    ? [...WORKSPACE_COLORS]
-                    : [null, ...WORKSPACE_COLORS];
-                const index = options.indexOf(color);
-                const delta = event.key === 'ArrowRight' ? 1 : -1;
-                const next = options[(index + delta + options.length) % options.length];
-                setColor(next ?? null);
-            }}
-        >
-            {isWorkspace ? null : (
-                <button
-                    type="button"
-                    role="radio"
-                    aria-checked={color === null}
-                    aria-label="No color"
-                    tabIndex={-1}
-                    data-testid="new-group-color-none"
-                    className="h-4 w-4 shrink-0 rounded-full text-[8px] leading-none"
-                    style={{
-                        border: `1px solid ${tokens.textTertiary}`,
-                        color: tokens.textSecondary
-                    }}
-                    onClick={() => {
-                        setColor(null);
-                    }}
-                >
-                    {color === null ? '✓' : ''}
-                </button>
-            )}
-            {WORKSPACE_COLORS.map((candidate) => (
-                <button
-                    key={candidate}
-                    type="button"
-                    role="radio"
-                    aria-checked={color === candidate}
-                    aria-label={candidate}
-                    tabIndex={-1}
-                    data-testid={`new-${props.kind}-color-${candidate}`}
-                    data-selected={color === candidate ? 'true' : 'false'}
-                    className="h-4 w-4 shrink-0 rounded-full"
-                    style={{
-                        background: workspaceColorHex(candidate, 'dark'),
-                        outline: color === candidate ? `2px solid ${tokens.textPrimary}` : 'none',
-                        outlineOffset: '1px'
-                    }}
-                    onClick={() => {
-                        setColor(candidate);
-                    }}
-                />
-            ))}
-        </div>
-    );
-
-    return (
-        <form
-            data-testid={`new-${props.kind}-form`}
-            className="flex flex-col gap-1"
-            onKeyDown={onFormKeyDown}
-            onSubmit={(event) => {
-                event.preventDefault();
-                void submit();
-            }}
-        >
-            {props.workspaceCount === undefined ? null : (
-                <div data-testid="new-group-count" className="text-[11px]" style={{ color: tokens.textSecondary }}>
-                    Group {props.workspaceCount} selected workspace
-                    {props.workspaceCount === 1 ? '' : 's'}.
-                </div>
-            )}
-            <div className="flex items-center gap-1">
-                <input
-                    ref={(element) => {
-                        ref.current = element;
-                        registerStop('name', element);
-                    }}
-                    aria-label={isWorkspace ? 'New workspace name' : 'New group name'}
-                    placeholder={isWorkspace ? 'Workspace name' : 'Group name'}
-                    className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                    style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
-                    value={value}
-                    onChange={(event) => {
-                        setValue(event.target.value);
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                            event.stopPropagation();
-                            props.onCancel();
-                        }
-                    }}
-                />
-                <button
-                    ref={(element) => {
-                        registerStop('submit', element);
-                    }}
-                    type="submit"
-                    data-testid={`new-${props.kind}-submit`}
-                    disabled={!canSubmit}
-                    className="text-[12px]"
-                    style={{ color: canSubmit ? tokens.accent : tokens.textTertiary }}
-                >
-                    {busy ? 'Creating…' : 'Create'}
-                </button>
-            </div>
-
-            {swatchRow}
-
-            {isWorkspace && groups.length > 0 ? (
-                <select
-                    ref={(element) => {
-                        registerStop('group', element);
-                    }}
-                    aria-label="Group"
-                    data-testid="new-workspace-group"
-                    className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
-                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                    value={groupID ?? ''}
-                    onChange={(event) => {
-                        setGroupID(event.target.value === '' ? null : event.target.value);
-                    }}
-                >
-                    <option value="" style={{ color: '#000' }}>
-                        No group
-                    </option>
-                    {groups.map((group) => (
-                        <option key={group.id} value={group.id} style={{ color: '#000' }}>
-                            {group.name}
-                        </option>
-                    ))}
-                </select>
-            ) : null}
-
-            {isWorkspace ? (
-                <select
-                    ref={(element) => {
-                        registerStop('profile', element);
-                    }}
-                    aria-label="Profile"
-                    data-testid="new-workspace-profile"
-                    className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
-                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                    value={profile}
-                    onChange={(event) => {
-                        setProfile(event.target.value);
-                    }}
-                >
-                    {/* The built-in baseline leads, then the config's own (§SET-214). */}
-                    {[DEFAULT_PROFILE_NAME, ...profiles.filter((name) => name !== DEFAULT_PROFILE_NAME)].map(
-                        (name) => (
-                            <option key={name} value={name} style={{ color: '#000' }}>
-                                {name}
-                            </option>
-                        )
-                    )}
-                </select>
-            ) : null}
-
-            {isWorkspace && repos.length > 0 ? (
-                <div className="flex flex-col gap-1" data-testid="new-workspace-repos">
-                    {chosenRepos.map((entry) => (
-                        <div key={entry.id} className="flex items-center gap-1 text-[11px]">
-                            <ChromeIcon name="folder" size={10} />
-                            <span className="min-w-0 flex-1 truncate" style={{ color: tokens.textSecondary }}>
-                                {entry.name}
-                            </span>
-                            <button
-                                ref={(element) => {
-                                    registerStop(`repo:${entry.id}`, element);
-                                }}
-                                type="button"
-                                aria-label={`Remove ${entry.name}`}
-                                data-testid={`new-workspace-repo-remove-${entry.id}`}
-                                style={{ color: tokens.textTertiary }}
-                                onClick={() => {
-                                    removeRepo(entry.id);
-                                }}
-                            >
-                                ✕
-                            </button>
-                        </div>
-                    ))}
-                    <button
-                        ref={(element) => {
-                            registerStop('add-repo', element);
-                        }}
-                        type="button"
-                        data-testid="new-workspace-add-repo"
-                        className="self-start text-[11px]"
-                        style={{ color: tokens.accent }}
-                        onClick={() => {
-                            setPickerOpen(true);
-                        }}
-                    >
-                        + Add Repository
-                    </button>
-                </div>
-            ) : null}
-
-            {isWorkspace && repos.length > 0 ? (
-                <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
-                    <input
-                        ref={(element) => {
-                            registerStop('worktree-toggle', element);
-                        }}
-                        type="checkbox"
-                        data-testid="new-workspace-worktree-toggle"
-                        checked={worktree}
-                        onChange={(event) => {
-                            setWorktree(event.target.checked);
-                        }}
-                    />
-                    Create git worktree
-                </label>
-            ) : null}
-
-            {worktreeOn && repo !== null ? (
-                <div className="flex flex-col gap-1 pl-4" data-testid="new-workspace-worktree">
-                    {soleChosen === null && repos.length > 1 ? (
-                        <select
-                            aria-label="Worktree repository"
-                            data-testid="new-workspace-worktree-repo"
-                            className="w-full rounded border bg-transparent px-1 py-[2px] text-[11px]"
-                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                            value={repo.id}
-                            onChange={(event) => {
-                                setRepoID(event.target.value);
-                            }}
-                        >
-                            {repos.map((candidate) => (
-                                <option key={candidate.id} value={candidate.id} style={{ color: '#000' }}>
-                                    {candidate.name}
-                                </option>
-                            ))}
-                        </select>
-                    ) : null}
-                    <input
-                        ref={(element) => {
-                            registerStop('worktree-name', element);
-                        }}
-                        aria-label="Worktree name"
-                        data-testid="new-workspace-worktree-name"
-                        placeholder="Worktree name"
-                        className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
-                        style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
-                        value={worktreeName}
-                        onChange={(event) => {
-                            const next = event.target.value;
-                            setWorktreeName(next);
-                            if (!branchEdited) setBranch(next);
-                        }}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Escape') {
-                                event.stopPropagation();
-                                props.onCancel();
-                            }
-                        }}
-                    />
-                    <input
-                        ref={(element) => {
-                            registerStop('worktree-branch', element);
-                        }}
-                        aria-label="Branch name"
-                        data-testid="new-workspace-worktree-branch"
-                        placeholder="Branch name"
-                        className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
-                        style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
-                        value={branch}
-                        onChange={(event) => {
-                            setBranch(event.target.value);
-                            setBranchEdited(event.target.value !== worktreeName);
-                        }}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Escape') {
-                                event.stopPropagation();
-                                props.onCancel();
-                            }
-                        }}
-                    />
-                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: tokens.textSecondary }}>
-                        <input
-                            ref={(element) => {
-                                registerStop('update-main', element);
-                            }}
-                            type="checkbox"
-                            data-testid="new-workspace-worktree-update-main"
-                            checked={updateMain}
-                            onChange={(event) => {
-                                setUpdateMain(event.target.checked);
-                            }}
-                        />
-                        Update main first (fetch + branch off origin)
-                    </label>
-                    <div data-testid="new-workspace-worktree-preview" className="text-[10px]" style={{ color: tokens.textTertiary }}>
-                        <div className="truncate">{preview.path}</div>
-                        <div>{preview.branchLine}</div>
-                    </div>
-                </div>
-            ) : null}
-
-            {error === null ? null : (
-                <div data-testid="new-workspace-error" className="text-[11px]" style={{ color: '#E0655C' }}>
-                    {error}
-                </div>
-            )}
-
-            {pickerOpen ? (
-                <SheetOverlay testID="new-workspace-repo-picker" label="Add repositories">
-                    <div className="mb-2 text-[13px] font-semibold">Add Repositories</div>
-                    <RepoPicker
-                        repos={repos}
-                        mode="multiple"
-                        disabledRepoIDs={new Set(chosenRepoIDs)}
-                        onConfirm={(picked) => {
-                            setChosenRepoIDs([...chosenRepoIDs, ...picked.map((entry) => entry.id)]);
-                            setPickerOpen(false);
-                        }}
-                        onCancel={() => {
-                            setPickerOpen(false);
-                        }}
-                    />
-                </SheetOverlay>
-            ) : null}
-        </form>
-    );
-}
-
-/** A centred portal panel — the emoji sheet's chrome, reused by the form's repo picker. */
-function SheetOverlay(props: {
-    readonly testID: string;
-    readonly label: string;
-    readonly children: ReactNode;
-}): ReactElement | null {
-    const container = globalThis.document?.body;
-    if (container === undefined || container === null) return null;
-    return createPortal(
-        <div
-            data-testid={props.testID}
-            role="dialog"
-            aria-label={props.label}
-            className="fixed left-1/2 top-1/4 z-50 w-[320px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
-            style={{
-                background: tokens.surfaceBackground,
-                border: `1px solid ${tokens.divider}`,
-                color: tokens.textPrimary,
-                boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
-            }}
-        >
-            {props.children}
-        </div>,
-        container
-    );
-}
 
 interface CustomEmojiSheetProps {
     readonly onSubmit: (grapheme: string) => void;
@@ -4875,8 +4390,6 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
 
 const EMPTY_PRESETS: readonly ChromeLabelPreset[] = [];
 const EMPTY_REPOS: readonly ChromeRepo[] = [];
-const EMPTY_GROUPS: readonly ChromeGroup[] = [];
 const EMPTY_PROFILES: readonly string[] = [];
-const EMPTY_REPO_IDS: readonly string[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
 const EMPTY_OVERRIDES: ReadonlyMap<string, boolean> = new Map<string, boolean>();

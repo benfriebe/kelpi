@@ -427,20 +427,27 @@ function Shell(props: AppProps): ReactElement {
         id: string;
     } | null>(null);
     /**
-     * §APP-018 / §WS-156: "open the New Workspace form", set by ⌘N, by the Electron File ▸ New
+     * §APP-018 / §WS-156: "raise the New Workspace sheet", set by ⌘N, by the Electron File ▸ New
      * Workspace row, by the command palette and by the no-workspace empty state's Create button.
      *
-     * The shipped app's ⌘N is `showNewWorkspaceSheet()` — a SHEET, not a create — and this is the
-     * port's equivalent: the sidebar's own footer form, the one place the port collects a name, a
-     * colour, a group, a profile and repositories in one submit (§WS-075). One-shot; the sidebar
-     * clears it through `onCreateRequestHandled`, and it carries a `seq` so pressing ⌘N again
-     * after cancelling is a NEW request rather than an unchanged prop the effect ignores.
+     * The shipped app's ⌘N is `showNewWorkspaceSheet()` — a SHEET, not a create — and this is
+     * exactly that: `NewEntrySheet`, a modal over the window, the one place the port collects a
+     * name, a colour, a group, a profile and repositories in one submit (§WS-075). One-shot; the
+     * sidebar clears it through `onCreateRequestHandled`, and it carries a `seq` so pressing ⌘N
+     * again after cancelling is a NEW request rather than an unchanged prop the effect ignores.
      */
     const [sidebarCreateRequest, setSidebarCreateRequest] = useState<{
         kind: 'workspace' | 'group';
         groupID: string | null;
         seq: number;
     } | null>(null);
+    /**
+     * Whether that sheet is on screen. It is a MODAL, so it is a whole-window fact rather than a
+     * sidebar one: it joins `modalOpen` (which parks a web pane's native view, since no z-index
+     * in this document can get above one) and the key dispatcher's overlay gate (so a ⌘D behind
+     * the sheet does not split a pane). The sidebar owns the sheet and reports the transition.
+     */
+    const [createSheetOpen, setCreateSheetOpen] = useState(false);
     /**
      * Where the terminal search's selected match sits, for the pane whose renderer has to scroll
      * to it. The search itself is DAEMON state (needle, total, selected all ride the workspace's
@@ -1657,11 +1664,15 @@ function Shell(props: AppProps): ReactElement {
              * say any of that — the create was there and the SHEET was not, which is what kept
              * the item partial.
              *
-             * The sheet is the sidebar's own footer form (`Sidebar.tsx` ▸ `NewEntryForm`), so
-             * this reveals the sidebar first: a form in a panel that is off screen is not an
-             * affordance. Every other route to the same form — the footer button, the group
-             * menu's "New Workspace", File ▸ New Workspace, the palette, §WS-156's empty state —
-             * lands on this one action, so there is a single sheet with a single set of rules.
+             * The sheet is `chrome/NewWorkspaceSheet.tsx` ▸ `NewEntrySheet` — a MODAL centred over
+             * the window, which is how `ContentView.swift:289-294` presents it. The sidebar is
+             * still revealed first, and the reason is now the RESULT rather than the form: the
+             * created workspace's row is the confirmation the gesture worked, and a row that
+             * appears in a panel nobody can see confirms nothing. (It is also what mounts the
+             * sheet's owner — the sidebar raises it, since the sidebar is where every other route
+             * to it lives.) The footer button, the chevron's first row, the group menu's "New
+             * Workspace", File ▸ New Workspace, the palette and §WS-156's empty state all land on
+             * this one action, so there is a single sheet with a single set of rules.
              *
              * SET-011's group inheritance is preserved and moves INTO the sheet: the picker opens
              * preselected on the active workspace's group (`inheritGroupID`, which the sidebar
@@ -2609,6 +2620,9 @@ function Shell(props: AppProps): ReactElement {
     settingsOpenRef.current = settingsTab !== null;
     const helpOpenRef = useRef(helpOpen);
     helpOpenRef.current = helpOpen;
+    /** §WS-075's create sheet is modal too — same gate, same reason (see `createSheetOpen`). */
+    const createSheetOpenRef = useRef(createSheetOpen);
+    createSheetOpenRef.current = createSheetOpen;
     // SET-187's input, as a ref: the dispatcher is installed once and must see the CURRENT
     // global hotkey, not the one that was configured when it was built.
     const globalHotkeyRef = useRef(settings.general.globalHotkey);
@@ -2636,7 +2650,10 @@ function Shell(props: AppProps): ReactElement {
             // modal overlay is up every keystroke belongs to IT — a ⌘D behind the sheet must not
             // split a pane, and the key recorder needs to see combos the map would have eaten.
             isPaletteOpen: () =>
-                store.getState().ui.palette.open || settingsOpenRef.current || helpOpenRef.current,
+                store.getState().ui.palette.open ||
+                settingsOpenRef.current ||
+                helpOpenRef.current ||
+                createSheetOpenRef.current,
             hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null,
             // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
             // lookup, which is `close_search` by default.
@@ -3230,7 +3247,7 @@ function Shell(props: AppProps): ReactElement {
      * and the shell parks the view off-screen (`webpane/geometry.ts` → `shell/webhost/embed.ts`).
      * The page keeps running; only its placement is suspended.
      */
-    const modalOpen = settingsTab !== null || ui.palette.open || helpOpen;
+    const modalOpen = settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen;
 
     // ── drag-and-drop + ⌘-click (CONT-121/122, APP-103, TERM-040/041/052) ────────────
 
@@ -3687,6 +3704,8 @@ function Shell(props: AppProps): ReactElement {
                     // no-workspace empty state all open THIS form.
                     createRequest={sidebarCreateRequest}
                     onCreateRequestHandled={() => setSidebarCreateRequest(null)}
+                    // …and the sheet's own open/closed edge, for `modalOpen` and the key gate.
+                    onCreateSheetOpenChange={setCreateSheetOpen}
                     onOpenSettings={(section) => {
                         openSettings(section === 'labels' ? 'labels' : 'keybindings');
                     }}

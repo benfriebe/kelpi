@@ -2,6 +2,7 @@
  * The app chrome (WP3.4 + WP3.5): everything around the pane grid.
  *
  *   `Sidebar.tsx`        — groups + workspace rows, context menus, drag-drop, filter, footer
+ *   `NewWorkspaceSheet.tsx` — the modal New Workspace / New Group sheet every create route raises
  *   `TopBar.tsx`         — workspace identity, layout control, sync indicator, connection pill
  *   `StatusFooter.tsx`   — focused-pane context, agent buckets, sparkline slot, clock
  *   `CommandPalette.tsx` — the ⌘P overlay (substring matching, `w:`/`p:` scopes)
@@ -21,10 +22,11 @@ export {
     NEST_INDENT_PX,
     SPRING_LOAD_MS,
     Sidebar,
-    type NewEntryDraft,
     type SidebarProps,
     type SidebarSelectionCommands
 } from './Sidebar';
+/** §WS-075's create sheet — a modal over the window, no longer a form inside the sidebar. */
+export { NewEntrySheet, type NewEntryDraft, type NewEntrySheetProps } from './NewWorkspaceSheet';
 export { TopBar, identityDotColor, type TopBarProps } from './TopBar';
 export {
     CreateWorktreeSheet,

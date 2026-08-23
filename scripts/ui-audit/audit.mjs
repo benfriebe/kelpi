@@ -13561,9 +13561,39 @@ function buildFlows(ctx) {
         {
             id: 'workspace-create-full',
             expect:
-                'The New Workspace form is the shipped sheet, not a name field: it opens on a colour that is not the neighbour’s, carries a Group picker and a Profile picker, and the workspace it creates comes back from the daemon with the colour, the group and the profile the form chose (§WS-075/§WS-076/§SET-214).',
+                'The New Workspace form is the shipped SHEET, and is presented as one: a modal centred over the window on a backdrop that dims the app behind it, portalled out of the sidebar, with the footer bar still standing underneath. It opens on a colour that is not the neighbour’s, carries a Group picker and a Profile picker, its colour row is ONE tab stop with the arrows moving inside it, Tab walks the Swift’s Field order (name → colours → group → profile → repos → Cancel → Create), Escape and a backdrop click each cancel it without creating anything, and the workspace it finally creates comes back from the daemon with the colour, the group and the profile the sheet chose (§WS-075/§WS-076/§WS-077/§SET-214).',
             needsEyes: true,
             async run(recorder) {
+                /*
+                 * BARE THE WINDOW FIRST — `docs/audit/README.md`'s precondition, now owed to one
+                 * more surface.
+                 *
+                 * The New Workspace form is a MODAL, so its backdrop is `fixed inset-0` over the
+                 * whole window: an earlier flow that ends with the sheet still up (the worktree
+                 * flow returns early when no repo is registered, and a scoped run can leave it
+                 * exactly there) turns this flow's first click on the footer button into a click
+                 * on that backdrop — which cancels the sheet, and then this step waits forever
+                 * for a form nothing opened. Identical in shape to the Settings-overlay hazard
+                 * the burn-down-5 re-score recorded, and the cheapest place to answer it is at
+                 * the door of the flow that needs the window clear.
+                 */
+                for (const testid of ['new-workspace-sheet', 'new-group-sheet']) {
+                    if (await page.eval(`document.querySelector('[data-testid="${testid}"]') !== null`)) {
+                        recorder.note(`a create sheet was still open on entry (${testid}); dismissing it`);
+                        await page.key('Escape', { key: 'Escape' });
+                        await sleep(500);
+                    }
+                }
+                recorder.check(
+                    'the window is bare, so the footer button below is not clicking a backdrop',
+                    (await page.eval(
+                        `document.querySelector('[data-testid="new-workspace-sheet"]') === null
+                            && document.querySelector('[data-testid="new-group-sheet"]') === null
+                            && document.querySelector('${PAGE.settingsPanel}') === null`
+                    )) === true,
+                    'no modal on entry'
+                );
+
                 // Self-provisioning: a group to pick, and a profile to pick. The profile is a
                 // config line, which the daemon's watcher turns into a settings broadcast.
                 await cli.ok(['group', 'create', 'Audit Group']);
@@ -13589,13 +13619,90 @@ function buildFlows(ctx) {
                     { timeoutMs: 20_000, label: 'the seeded group header' }
                 );
 
-                await page.click('[data-testid="sidebar-new-workspace"]');
-                await page.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
-                    timeoutMs: 10_000,
-                    label: 'the New Workspace form'
-                });
-                await sleep(500);
+                const openSheet = async () => {
+                    await page.click('[data-testid="sidebar-new-workspace"]');
+                    await page.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the New Workspace sheet'
+                    });
+                    await sleep(400);
+                };
+                await openSheet();
+                await sleep(100);
                 await recorder.shot(page, 'form');
+
+                /*
+                 * ── THE SURFACE ITSELF (`ContentView.swift:289-294`) ─────────────────
+                 *
+                 * The shipped app hangs this form off the WINDOW with `.sheet(isPresented:)`.
+                 * The port used to expand it inline in the sidebar footer, which is where the
+                 * user's report landed: everything it collected was the sheet's, and where it
+                 * appeared was not. So the first read is about the surface, not the fields —
+                 * is it out of the sidebar, is it centred on the window, does the backdrop dim
+                 * what is behind it, and is the bar it was raised from still there.
+                 */
+                const surface = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const backdrop = document.querySelector('[data-testid="new-workspace-backdrop"]');
+                                const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                                const sidebar = document.querySelector('[data-testid="sidebar"]');
+                                if (backdrop === null || sheet === null) return JSON.stringify({ found: false });
+                                const back = backdrop.getBoundingClientRect();
+                                const panel = sheet.getBoundingClientRect();
+                                const style = getComputedStyle(backdrop);
+                                return JSON.stringify({
+                                    found: true,
+                                    inSidebar: sidebar !== null && sidebar.contains(sheet),
+                                    modal: sheet.getAttribute('aria-modal'),
+                                    label: sheet.getAttribute('aria-label'),
+                                    title: (document.querySelector('[data-testid="new-workspace-title"]')?.innerText ?? '').trim(),
+                                    coversWindow: Math.round(back.width) === window.innerWidth
+                                        && Math.round(back.height) === window.innerHeight,
+                                    dim: style.backgroundColor,
+                                    zIndex: style.zIndex,
+                                    // The panel's horizontal centre against the WINDOW's.
+                                    centreOffset: Math.round(Math.abs((panel.left + panel.right) / 2 - window.innerWidth / 2)),
+                                    onScreen: panel.top >= 0 && panel.bottom <= window.innerHeight,
+                                    footerBar: document.querySelector('[data-testid="sidebar-new-workspace"]') !== null,
+                                    footerHint: (document.querySelector('[data-testid="sidebar-new-workspace-hint"]')?.innerText ?? '').trim()
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`surface: ${JSON.stringify(surface)}`);
+                recorder.check(
+                    'the sheet is portalled OUT of the sidebar — it is a window-level surface, not a panel one',
+                    surface.found === true && surface.inSidebar === false,
+                    JSON.stringify([surface.found, surface.inSidebar])
+                );
+                recorder.check(
+                    'it is a labelled modal dialog titled "New Workspace" (`NewWorkspaceSheet.swift:77`)',
+                    surface.modal === 'true' && surface.label === 'New Workspace' && surface.title === 'New Workspace',
+                    JSON.stringify([surface.modal, surface.label, surface.title])
+                );
+                recorder.check(
+                    'it is CENTRED over the window — within 2px of the window’s own centre line',
+                    typeof surface.centreOffset === 'number' && surface.centreOffset <= 2 && surface.onScreen === true,
+                    `${String(surface.centreOffset)}px off centre, on screen ${String(surface.onScreen)}`
+                );
+                recorder.check(
+                    'the backdrop covers the whole window and DIMS what is behind it',
+                    surface.coversWindow === true && /rgba\(0,\s*0,\s*0,\s*0\.[1-9]/.test(String(surface.dim)),
+                    `${String(surface.dim)} over ${String(surface.coversWindow)}`
+                );
+                recorder.check(
+                    'and sits above every chrome layer (the sidebar’s own ghost layer is z-10)',
+                    Number(surface.zIndex) >= 50,
+                    String(surface.zIndex)
+                );
+                recorder.check(
+                    'the footer bar it was raised from is still standing underneath, hint and all',
+                    surface.footerBar === true && surface.footerHint === '⌘N',
+                    JSON.stringify([surface.footerBar, surface.footerHint])
+                );
 
                 const opened = await page.eval(
                     `(() => {
@@ -13627,6 +13734,146 @@ function buildFlows(ctx) {
                     String(form.opened)
                 );
 
+                /*
+                 * ── THE KEYBOARD (§WS-077 / the Swift's #64) ─────────────────────────
+                 *
+                 * Two rules that only a real key event can settle. The colour row is ONE stop
+                 * with ←/→ moving the selection inside it (a macOS radio group, not ten tab
+                 * stops), and Tab walks `visibleFields` — including Cancel, which the Swift
+                 * lists and the port's footer form did not have at all.
+                 */
+                await page.eval(`document.querySelector('[data-testid="new-workspace-colors"]')?.focus()`);
+                await sleep(120);
+                const swatchAt = async () =>
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const row = document.querySelector('[data-testid="new-workspace-colors"]');
+                                const chosen = row === null ? null : Array.from(row.querySelectorAll('[role="radio"]'))
+                                    .find(el => el.getAttribute('aria-checked') === 'true');
+                                return chosen?.getAttribute('aria-label') ?? '';
+                            })()`
+                        )
+                    );
+                const swatchStart = await swatchAt();
+                await page.key('ArrowRight', { key: 'ArrowRight' });
+                await sleep(150);
+                const swatchRight = await swatchAt();
+                await page.key('ArrowLeft', { key: 'ArrowLeft' });
+                await sleep(150);
+                const swatchBack = await swatchAt();
+                recorder.note(`swatch: ${swatchStart} →→ ${swatchRight} →← ${swatchBack}`);
+                recorder.check(
+                    'the arrow keys move the swatch selection INSIDE the row, and come back',
+                    swatchStart !== '' && swatchRight !== swatchStart && swatchBack === swatchStart,
+                    `${swatchStart} / ${swatchRight} / ${swatchBack}`
+                );
+
+                // A name, so Create is enabled and therefore part of the loop (a disabled Create
+                // is omitted rather than landed on, the same rule the Swift states).
+                await page.eval(`document.querySelector('[aria-label="New workspace name"]')?.focus()`);
+                await sleep(120);
+                await page.insertText('Tab Walk');
+                await sleep(200);
+                /*
+                 * The expected order is DERIVED from what is on screen rather than hard-coded:
+                 * whether a repo is registered by the time this flow runs depends on the run's
+                 * shape, and a sequence that silently shortens is not an assertion. What is
+                 * fixed is the ORDER (`NewWorkspaceSheet.swift:378-399`).
+                 */
+                const expectedStops = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const has = (id) => document.querySelector('[data-testid="' + id + '"]') !== null;
+                                const order = ['New workspace name', 'new-workspace-colors'];
+                                if (has('new-workspace-group')) order.push('new-workspace-group');
+                                order.push('new-workspace-profile');
+                                if (has('new-workspace-repos')) {
+                                    for (const el of document.querySelectorAll('[data-testid^="new-workspace-repo-remove-"]')) {
+                                        order.push(el.getAttribute('data-testid'));
+                                    }
+                                    order.push('new-workspace-add-repo');
+                                    order.push('new-workspace-worktree-toggle');
+                                }
+                                order.push('new-workspace-cancel', 'new-workspace-submit');
+                                return JSON.stringify(order);
+                            })()`
+                        )
+                    )
+                );
+                const focusedStop = async () =>
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.activeElement;
+                                if (el === null) return '';
+                                return el.getAttribute('data-testid') ?? el.getAttribute('aria-label') ?? el.tagName;
+                            })()`
+                        )
+                    );
+                const walked = [];
+                for (let step = 0; step < expectedStops.length; step++) {
+                    await page.key('Tab', { key: 'Tab' });
+                    await sleep(90);
+                    walked.push(await focusedStop());
+                }
+                // Starting on the name field, `n` tabs visit stops 1…n-1 and then wrap to 0.
+                const expectedWalk = [...expectedStops.slice(1), expectedStops[0]];
+                recorder.note(`tab walk: ${JSON.stringify(walked)}`);
+                recorder.check(
+                    'Tab walks the Swift’s Field order and wraps — Cancel and Create at the end (§WS-077)',
+                    JSON.stringify(walked) === JSON.stringify(expectedWalk),
+                    `${JSON.stringify(walked)} vs ${JSON.stringify(expectedWalk)}`
+                );
+
+                /*
+                 * ── THE TWO DISMISSALS A MODAL OWES THE USER ────────────────────────
+                 *
+                 * Both are asserted against the DAEMON, not against the DOM alone: a sheet that
+                 * closes having quietly created the workspace it was holding would pass a
+                 * "the sheet is gone" check and be exactly the wrong behaviour.
+                 */
+                const beforeCancels = await cli.json(['workspace', 'list', '--json']);
+                await page.key('Escape', { key: 'Escape' });
+                await sleep(500);
+                const afterEscape = await cli.json(['workspace', 'list', '--json']);
+                recorder.check(
+                    'Escape cancels the sheet, and creates nothing (§WS-075)',
+                    (await page.eval(`document.querySelector('[data-testid="new-workspace-sheet"]') === null`)) ===
+                        true && afterEscape.length === beforeCancels.length,
+                    `${String(beforeCancels.length)} → ${String(afterEscape.length)} workspaces`
+                );
+
+                await openSheet();
+                const backdropPoint = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                                if (sheet === null) return JSON.stringify({ found: false });
+                                const panel = sheet.getBoundingClientRect();
+                                // Straight above the panel, on its centre line: backdrop, never the sheet.
+                                return JSON.stringify({ found: true, x: Math.round(window.innerWidth / 2), y: Math.max(4, Math.round(panel.top / 2)) });
+                            })()`
+                        )
+                    )
+                );
+                recorder.check('a point on the backdrop, clear of the panel', backdropPoint.found === true, JSON.stringify(backdropPoint));
+                if (backdropPoint.found === true) {
+                    await page.clickAt(backdropPoint.x, backdropPoint.y);
+                    await sleep(500);
+                }
+                const afterBackdrop = await cli.json(['workspace', 'list', '--json']);
+                recorder.check(
+                    'a click on the backdrop cancels it too, and still creates nothing',
+                    (await page.eval(`document.querySelector('[data-testid="new-workspace-sheet"]') === null`)) ===
+                        true && afterBackdrop.length === beforeCancels.length,
+                    `${String(beforeCancels.length)} → ${String(afterBackdrop.length)} workspaces`
+                );
+
+                // ── and now the create the flow is actually named for ────────────────
+                await openSheet();
                 await page.insertText('Full Create');
                 await page.click('[data-testid="new-workspace-color-purple"]');
                 await page.eval(
@@ -13667,7 +13914,10 @@ function buildFlows(ctx) {
                 );
                 recorder.check('with the profile the picker chose (§SET-214)', profile === 'audit', String(profile));
                 await recorder.shot(page, 'inspector');
-                recorder.eyes('does the form read as a create SHEET — swatches, pickers and Create all legible at sidebar width?');
+                recorder.eyes(
+                    'Does it read as a macOS SHEET — a panel centred over a dimmed window, the app clearly behind it and clearly unreachable — rather than a panel bolted to the sidebar? ' +
+                        'And inside it: are the title, the swatch row, the two pickers and the Cancel/Create pair spaced like a form somebody would fill in, with nothing crowded against the panel edge?'
+                );
             }
         },
         {
@@ -17479,7 +17729,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-remaining',
             expect:
-                'The last five sidebar gestures the sweep had open: the shell’s real View ▸ Toggle Sidebar item (⌘⇧S) and the SLIDE the toggle plays in both directions (§WS-001); a row’s "Color ▸" reaching the daemon and coming back ticked (§WS-048); "Move to Group ▸ New Group…" creating a group AROUND the row and dropping into its rename (§WS-052); the active-agents gate on a row delete (§WS-054); and the single confirmation a multi-select delete raises (§WS-062). Then the FOOTER (§WS-004): "+ New Workspace" and a chevron and nothing else — no second New Group button, no settings gear — at the Swift’s 12px/6px, with the ⌘N hint trailing outside the button; the chevron opening a two-row dropdown; its New Group minting a group and dropping into inline rename (⌘⇧G’s contract, not the footer form); and the + button raising the sheet.',
+                'The last five sidebar gestures the sweep had open: the shell’s real View ▸ Toggle Sidebar item (⌘⇧S) and the SLIDE the toggle plays in both directions (§WS-001); a row’s "Color ▸" reaching the daemon and coming back ticked (§WS-048); "Move to Group ▸ New Group…" creating a group AROUND the row and dropping into its rename (§WS-052); the active-agents gate on a row delete (§WS-054); and the single confirmation a multi-select delete raises (§WS-062). Then the FOOTER (§WS-004): "+ New Workspace" and a chevron and nothing else — no second New Group button, no settings gear — at the Swift’s 12px/6px, with the ⌘N hint trailing outside the button; the chevron opening a two-row dropdown; its New Group minting a group and dropping into inline rename (⌘⇧G’s contract, not the footer form); and the + button raising the New Workspace sheet as a MODAL over the window — portalled out of the sidebar, with the whole bar still standing underneath it rather than being replaced by the form.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -17506,10 +17756,26 @@ function buildFlows(ctx) {
                     await sleep(400);
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
+                /*
+                 * …and the same rule for the create SHEET, which is modal for the same reason and
+                 * therefore owes the same precondition: its `fixed inset-0` backdrop would take
+                 * every click this flow aims at a row or the footer.
+                 */
+                for (const testid of ['new-workspace-sheet', 'new-group-sheet']) {
+                    if (await page.eval(`document.querySelector('[data-testid="${testid}"]') !== null`)) {
+                        await page.key('Escape', { key: 'Escape' });
+                        await sleep(400);
+                        recorder.note(`dismissed the ${testid} an earlier flow left open`);
+                    }
+                }
                 recorder.check(
                     'the window is bare, so the ⌘⇧S below is not swallowed by an overlay',
-                    (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
-                    'no settings overlay'
+                    (await page.eval(
+                        `document.querySelector('${PAGE.settingsPanel}') === null
+                            && document.querySelector('[data-testid="new-workspace-sheet"]') === null
+                            && document.querySelector('[data-testid="new-group-sheet"]') === null`
+                    )) === true,
+                    'no settings overlay, no create sheet'
                 );
                 const activeBefore = String(
                     await page.eval(
@@ -18208,11 +18474,18 @@ function buildFlows(ctx) {
                 await page.key('Escape');
                 await sleep(400);
 
-                // The + button raises the sheet (§WS-075's form), which is the other row.
+                /*
+                 * The + button raises the SHEET (§WS-075), which is the other row — and the
+                 * sheet is a modal over the window, so the bar it was pressed on does not go
+                 * anywhere. That is the half this flow can settle that no component test can:
+                 * the footer used to be REPLACED by the form, taking the chevron and the ⌘N hint
+                 * with it, and "the bar is still there" is a claim about the same DOM the shape
+                 * assertions above were made against.
+                 */
                 await page.click('[data-testid="sidebar-new-workspace"]');
                 let footerSheet = false;
                 try {
-                    await page.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
+                    await page.waitFor(`document.querySelector('[data-testid="new-workspace-sheet"]') !== null`, {
                         timeoutMs: 10_000,
                         label: 'the New Workspace sheet from the + button'
                     });
@@ -18221,10 +18494,38 @@ function buildFlows(ctx) {
                     recorder.note(`the + button opened no sheet: ${String(error?.message ?? error)}`);
                 }
                 recorder.check('the + button opens the New Workspace sheet (§WS-004)', footerSheet === true);
-                await page.key('Escape');
-                await page.waitFor(`document.querySelector('[data-testid="sidebar-new-workspace"]') !== null`, {
+                const barUnderSheet = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                                const sidebar = document.querySelector('[data-testid="sidebar"]');
+                                return JSON.stringify({
+                                    outOfSidebar: sheet !== null && sidebar !== null && !sidebar.contains(sheet),
+                                    plus: document.querySelector('[data-testid="sidebar-new-workspace"]') !== null,
+                                    chevron: document.querySelector('[data-testid="sidebar-new-menu-toggle"]') !== null,
+                                    hint: (document.querySelector('[data-testid="sidebar-new-workspace-hint"]')?.innerText ?? '').trim()
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`bar under the sheet: ${JSON.stringify(barUnderSheet)}`);
+                await recorder.shot(page, 'footer-sheet-open');
+                recorder.check(
+                    'the sheet is a modal OVER the window, not a form the footer grew into (§WS-004/§WS-075)',
+                    barUnderSheet.outOfSidebar === true,
+                    String(barUnderSheet.outOfSidebar)
+                );
+                recorder.check(
+                    'so the whole bar is still standing underneath it — + button, chevron and ⌘N hint',
+                    barUnderSheet.plus === true && barUnderSheet.chevron === true && barUnderSheet.hint === '⌘N',
+                    JSON.stringify(barUnderSheet)
+                );
+                await page.key('Escape', { key: 'Escape' });
+                await page.waitFor(`document.querySelector('[data-testid="new-workspace-sheet"]') === null`, {
                     timeoutMs: 10_000,
-                    label: 'the footer bar to come back after cancelling the sheet'
+                    label: 'the sheet to close on Escape'
                 });
                 await sleep(300);
 
@@ -19181,7 +19482,7 @@ function buildFlows(ctx) {
         {
             id: 'mac-chrome',
             expect:
-                'The window has no native title bar: the client’s 32px strip IS the title bar, insets the traffic lights, and takes the drag region, with the first pane immediately under it. ⌘N opens the New Workspace sheet and creates nothing. The shell’s View menu carries Toggle Sidebar AND Toggle Inspector, and firing the inspector row through the menu IPC opens the panel — which slides in and out rather than popping. The File menu carries the shipped app’s whole group (New Group ⌘⇧G, New Web Pane ⌘⇧O, Command Palette ⌘P, Switch to Workspace 1–9, Select/Deselect All Workspaces); firing New Group mints a group and drops into its inline rename, and firing Select All selects every sidebar row AND un-greys the shell’s own Deselect All row, which goes grey again when the selection is cleared. Deleting the last workspace lands the window on "No workspace selected" with a Create Workspace button that opens the sheet, and the step recreates a workspace before it leaves.',
+                'The window has no native title bar: the client’s 32px strip IS the title bar, insets the traffic lights, and takes the drag region, with the first pane immediately under it. ⌘N opens the New Workspace sheet — a MODAL centred over the window on a dimmed backdrop, portalled out of the sidebar, offering Cancel and Create — and creates nothing. The shell’s View menu carries Toggle Sidebar AND Toggle Inspector, and firing the inspector row through the menu IPC opens the panel — which slides in and out rather than popping. The File menu carries the shipped app’s whole group (New Group ⌘⇧G, New Web Pane ⌘⇧O, Command Palette ⌘P, Switch to Workspace 1–9, Select/Deselect All Workspaces); firing New Group mints a group and drops into its inline rename, and firing Select All selects every sidebar row AND un-greys the shell’s own Deselect All row, which goes grey again when the selection is cleared. Deleting the last workspace lands the window on "No workspace selected" with a Create Workspace button that opens the sheet, and the step recreates a workspace before it leaves.',
             needsEyes: true,
             async run(recorder) {
                 // `reattach-after-relaunch` replaces the page; anything after it must ask the
@@ -19206,10 +19507,23 @@ function buildFlows(ctx) {
                     await sleep(400);
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
+                // The create sheet is modal too, and gates the dispatcher for the same reason —
+                // so an earlier flow that left one up would eat this step's ⌘N as well.
+                for (const testid of ['new-workspace-sheet', 'new-group-sheet']) {
+                    if (await view.eval(`document.querySelector('[data-testid="${testid}"]') !== null`)) {
+                        await view.key('Escape', { key: 'Escape' });
+                        await sleep(400);
+                        recorder.note(`dismissed the ${testid} an earlier flow left open`);
+                    }
+                }
                 recorder.check(
                     'the window is bare, so the chords below are not swallowed by an overlay',
-                    (await view.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
-                    'no settings overlay'
+                    (await view.eval(
+                        `document.querySelector('${PAGE.settingsPanel}') === null
+                            && document.querySelector('[data-testid="new-workspace-sheet"]') === null
+                            && document.querySelector('[data-testid="new-group-sheet"]') === null`
+                    )) === true,
+                    'no settings overlay, no create sheet'
                 );
                 await recorder.shot(view, 'chrome');
 
@@ -19328,6 +19642,53 @@ function buildFlows(ctx) {
                 await sleep(300);
                 await recorder.shot(view, 'new-workspace-sheet');
                 recorder.check('⌘N opens the New Workspace sheet (§APP-018)', sheetOpen);
+                /*
+                 * …and it is a SHEET, in the sense `ContentView.swift:289-294` means: a modal
+                 * over the WINDOW, not a form the sidebar footer grows into. ⌘N is the shipped
+                 * app's own gesture for `showNewWorkspaceSheet()`, so this is the flow that
+                 * should say what the gesture actually raises.
+                 */
+                const sheetSurface = JSON.parse(
+                    String(
+                        await view.eval(
+                            `(() => {
+                                const backdrop = document.querySelector('[data-testid="new-workspace-backdrop"]');
+                                const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                                const sidebar = document.querySelector('[data-testid="sidebar"]');
+                                if (backdrop === null || sheet === null) return JSON.stringify({ found: false });
+                                const back = backdrop.getBoundingClientRect();
+                                const panel = sheet.getBoundingClientRect();
+                                const style = getComputedStyle(backdrop);
+                                return JSON.stringify({
+                                    found: true,
+                                    modal: sheet.getAttribute('aria-modal') === 'true',
+                                    inSidebar: sidebar !== null && sidebar.contains(sheet),
+                                    coversWindow: Math.round(back.width) === window.innerWidth
+                                        && Math.round(back.height) === window.innerHeight,
+                                    dim: style.backgroundColor,
+                                    zIndex: Number(style.zIndex),
+                                    centreOffset: Math.round(Math.abs((panel.left + panel.right) / 2 - window.innerWidth / 2))
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`⌘N surface: ${JSON.stringify(sheetSurface)}`);
+                recorder.check(
+                    '…and it is a MODAL centred over the window, not a panel inside the sidebar',
+                    sheetSurface.found === true &&
+                        sheetSurface.modal === true &&
+                        sheetSurface.inSidebar === false &&
+                        sheetSurface.centreOffset <= 2,
+                    JSON.stringify(sheetSurface)
+                );
+                recorder.check(
+                    'on a backdrop that covers the window and dims it, above every chrome layer',
+                    sheetSurface.coversWindow === true &&
+                        /rgba\(0,\s*0,\s*0,\s*0\.[1-9]/.test(String(sheetSurface.dim)) &&
+                        sheetSurface.zIndex >= 50,
+                    `${String(sheetSurface.dim)} z=${String(sheetSurface.zIndex)}`
+                );
                 const sheetFields = await view.eval(
                     `(() => {
                         const form = document.querySelector('[data-testid="new-workspace-form"]');
@@ -19336,6 +19697,13 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`sheet contents: ${String(sheetFields)}`);
+                recorder.check(
+                    'it offers both ways out the shipped sheet does — Cancel and Create',
+                    (await view.eval(
+                        `document.querySelector('[data-testid="new-workspace-cancel"]') !== null
+                            && document.querySelector('[data-testid="new-workspace-submit"]') !== null`
+                    )) === true
+                );
                 const workspacesAfterN = await cli.json(['workspace', 'list', '--json']);
                 recorder.check(
                     'and creates NOTHING by itself — the sheet is the gesture, not a side effect',

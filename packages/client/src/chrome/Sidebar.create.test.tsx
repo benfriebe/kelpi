@@ -1,11 +1,15 @@
 /**
- * The New Workspace / New Group form — `NewWorkspaceSheet.swift` + `NewGroupSheet.swift`
+ * The New Workspace / New Group sheet's FIELDS — `NewWorkspaceSheet.swift` + `NewGroupSheet.swift`
  * (§WS-075…§WS-083, §SET-214).
  *
- * Everything asserted here is a field the shipped sheet collects and this form used not to:
- * the colour swatch row and its avoid-the-neighbour default, the group picker and its
- * preselection, the profile picker, the Repositories section that associates at create, the
- * bulk flow's count line, the uniquified default group name, and the sheet's own Tab loop.
+ * Everything asserted here is a field the shipped sheet collects: the colour swatch row and its
+ * avoid-the-neighbour default, the group picker and its preselection, the profile picker, the
+ * Repositories section that associates at create, the bulk flow's count line, the uniquified
+ * default group name, and the sheet's own Tab loop.
+ *
+ * Its PRESENTATION — a modal centred over the window rather than a form the footer expands into —
+ * is `NewWorkspaceSheet.test.tsx`. Both drive it through `Sidebar`, because the sidebar is what
+ * every route to the sheet goes through.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -62,7 +66,7 @@ function base() {
     return { activeWorkspaceID: W1, filter: '', onFilterChange: vi.fn(), rowHeight: 20 };
 }
 
-/** Opens the footer's New Workspace form and returns the create spy. */
+/** Raises the New Workspace sheet from the footer's + button and returns the create spy. */
 function openWorkspaceForm(props: Record<string, unknown> = {}) {
     const onCreateWorkspace = vi.fn().mockResolvedValue(null);
     render(
@@ -79,11 +83,11 @@ function openWorkspaceForm(props: Record<string, unknown> = {}) {
 }
 
 /**
- * Opens the footer's New Group form.
+ * Raises the New Group sheet.
  *
  * It used to be a sibling text button in the footer; §WS-004 put it back where the Swift keeps
  * it — behind the chevron menu (`WorkspaceListView.swift:412-422`). With no
- * `onNewGroupWithRename` wired (assembly's ⌘⇧G one-shot) the row falls back to this form,
+ * `onNewGroupWithRename` wired (assembly's ⌘⇧G one-shot) the row falls back to this sheet,
  * which is what these two cases are about.
  */
 function openGroupForm(): void {
@@ -271,7 +275,7 @@ describe('the Repositories section (§WS-075/§WS-080)', () => {
 });
 
 describe('the Tab loop (§WS-077)', () => {
-    it('walks name → colours → group → profile → repos → Create, and wraps', () => {
+    it('walks the Swift’s Field order — name → colours → group → profile → repos → Cancel → Create — and wraps', () => {
         openWorkspaceForm({ repos: REPOS });
         const name = screen.getByLabelText('New workspace name');
         fireEvent.change(name, { target: { value: 'ws' } }); // enables Create, so it joins
@@ -286,6 +290,8 @@ describe('the Tab loop (§WS-077)', () => {
         expect(step()).toBe(screen.getByTestId('new-workspace-profile'));
         expect(step()).toBe(screen.getByTestId('new-workspace-add-repo'));
         expect(step()).toBe(screen.getByTestId('new-workspace-worktree-toggle'));
+        // `NewWorkspaceSheet.swift:394-397`: Cancel, then Create.
+        expect(step()).toBe(screen.getByTestId('new-workspace-cancel'));
         expect(step()).toBe(screen.getByTestId('new-workspace-submit'));
         // …and round again.
         expect(step()).toBe(name);
@@ -294,21 +300,26 @@ describe('the Tab loop (§WS-077)', () => {
         expect(document.activeElement).toBe(screen.getByTestId('new-workspace-submit'));
     });
 
-    it('omits a disabled Create from the loop', () => {
+    it('omits a disabled Create from the loop, but never Cancel', () => {
         openWorkspaceForm();
         const name = screen.getByLabelText('New workspace name');
         name.focus();
         for (let i = 0; i < 3; i += 1) {
             fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
         }
-        // name → colours → group → profile, and the next stop wraps past the disabled Create.
+        // name → colours → group → profile…
         expect(document.activeElement).toBe(screen.getByTestId('new-workspace-profile'));
+        // …then Cancel, which is always reachable — a sheet whose only way out is the mouse is
+        // the defect the Swift's own `.cancel` stop exists to prevent…
+        fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
+        expect(document.activeElement).toBe(screen.getByTestId('new-workspace-cancel'));
+        // …and the next stop wraps past the disabled Create.
         fireEvent.keyDown(document.activeElement as Element, { key: 'Tab' });
         expect(document.activeElement).toBe(name);
     });
 });
 
-describe('the New Group form (§WS-082/§WS-083)', () => {
+describe('the New Group sheet (§WS-082/§WS-083)', () => {
     it('pre-fills a unique default name', () => {
         render(<Sidebar {...base()} entries={entries('New Group')} onCreateGroup={vi.fn()} />);
         openGroupForm();

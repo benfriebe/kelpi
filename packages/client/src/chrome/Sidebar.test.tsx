@@ -380,11 +380,32 @@ describe('context menus (portal-based)', () => {
         expect(onSetGroupColor).toHaveBeenCalledWith(G1, null);
     });
 
-    it('offers New Workspace / New Group on the background', () => {
+    it('offers New Workspace / New Group on the background, and New Group MINTS (`WorkspaceListView.swift:347-350`)', () => {
+        // The background menu's New Group runs `createGroup(name: placeholder, autoRename: true)`
+        // — the same one-shot the chevron, ⌘⇧G and File ▸ New Group run. It was the last route in
+        // this client that opened a form for a group instead.
+        const onNewGroupWithRename = vi.fn();
+        const onCreateGroup = vi.fn();
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={entries()}
+                onCreateGroup={onCreateGroup}
+                onNewGroupWithRename={onNewGroupWithRename}
+            />
+        );
+        fireEvent.contextMenu(screen.getByTestId('sidebar-spacer'));
+        // Scoped to the menu: §WS-004's footer chevron offers the same two labels.
+        fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Group'));
+        expect(onNewGroupWithRename).toHaveBeenCalledTimes(1);
+        expect(screen.queryByTestId('new-group-sheet')).toBeNull();
+        expect(onCreateGroup).not.toHaveBeenCalled();
+    });
+
+    it('…and falls back to the New Group sheet when assembly has not wired the one-shot', () => {
         const onCreateGroup = vi.fn();
         render(<Sidebar {...noopProps()} entries={entries()} onCreateGroup={onCreateGroup} />);
         fireEvent.contextMenu(screen.getByTestId('sidebar-spacer'));
-        // Scoped to the menu: §WS-004's footer chevron offers the same two labels.
         fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Group'));
 
         const input = screen.getByLabelText('New group name') as HTMLInputElement;

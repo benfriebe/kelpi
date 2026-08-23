@@ -304,6 +304,32 @@ describe('Move to Group ▸ New Group… (§WS-052)', () => {
             });
             expect(revealedHeader()).toBe(true);
         });
+
+        /**
+         * …and the FOURTH route, which was the last one still disagreeing: the sidebar
+         * background's own context menu. `WorkspaceListView.swift:347-350` makes the identical
+         * `createGroup(name: placeholder, autoRename: true)` call the chevron does, so once the
+         * New Workspace form became a modal sheet this was the only remaining place in the
+         * client where a group was created by filling in a form. Asserted at the wire beside the
+         * other three, for the same reason: four routes onto one contract, or they drift.
+         */
+        it('from the sidebar background menu ▸ New Group, identically to ⌘⇧G', async () => {
+            const h = setup();
+            fireEvent.contextMenu(screen.getByTestId('sidebar-spacer'));
+            fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Group'));
+            expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({
+                command: 'create-group-for-workspaces',
+                name: 'New Group',
+                workspace_ids: []
+            });
+            expect(h.lastCommand('group-create')).toBeUndefined();
+            expect(screen.queryByTestId('new-group-sheet')).toBeNull();
+            answer(h);
+            await waitFor(() => {
+                expect(screen.getByLabelText('Rename New Group')).toBeTruthy();
+            });
+            expect(revealedHeader()).toBe(true);
+        });
     });
 });
 

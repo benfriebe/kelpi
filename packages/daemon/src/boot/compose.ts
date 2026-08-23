@@ -76,10 +76,13 @@ import {
     type RunPaths
 } from '../lifecycle/index.js';
 import {
+    DEFAULT_SPAWN_DEFER_TIMEOUT_MS,
     GEOMETRY_FILE_NAME,
     createPaneGeometryStore,
+    createPaneSpawnGate,
     createPtyManager,
     createTerminalInput,
+    withSpawnGate,
     type NexPtyManager
 } from '../pty/index.js';
 import { createEditorResolver } from '../content/external-editor.js';
@@ -155,6 +158,20 @@ export const PERSISTENCE_DEGRADED_EVENT = 'persistence-degraded';
 /** Name of the workspace created on a fresh install (app-state-core.md §12.2). */
 export const DEFAULT_WORKSPACE_NAME = 'Default';
 
+/**
+ * How long after `start()` a restored pane may still be held for a client's first geometry
+ * report (`pty/spawn-gate.ts`).
+ *
+ * Boot is the one moment where the spawn gate cannot ask "is a client attached?" and get a
+ * useful answer: panes are restored BEFORE the WS server is listening (§12.2 — a CLI that
+ * connects the instant the socket appears must never see a half-restored daemon), so at that
+ * point the answer is always no. A window launched alongside the daemon attaches within about
+ * a second; this window is that expectation, and every deferral inside it is still bounded by
+ * the gate's own timeout, so a daemon nothing ever attaches to pays the timeout once and then
+ * behaves exactly as it always did.
+ */
+export const DEFAULT_BOOT_DEFER_WINDOW_MS = 2500;
+
 function isTruthyEnv(raw: string | undefined): boolean {
     if (raw === undefined) return false;
     const value = raw.trim().toLowerCase();
@@ -194,6 +211,20 @@ export interface DaemonOptions {
     readonly spawn?: PaneSpawnDefaults | undefined;
     /** Resume settle delay; defaults to the spec's 2 s. */
     readonly settleMs?: number | undefined;
+    /**
+     * How long a pane whose grid nobody has ever reported waits for a client to measure it
+     * before being spawned at the fallback grid (`pty/spawn-gate.ts`). Defaults to
+     * `DEFAULT_SPAWN_DEFER_TIMEOUT_MS`; `0` makes every deferral expire on the next tick,
+     * which is the closest thing to switching the gate off.
+     */
+    readonly spawnDeferTimeoutMs?: number | undefined;
+    /**
+     * How long after `start()` a boot-restored pane may still be deferred, in the expectation
+     * that a window is on its way (nothing is attached yet at restore time — the WS server is
+     * not even listening). Defaults to `DEFAULT_BOOT_DEFER_WINDOW_MS`; `0` restricts deferral
+     * to panes created while a client is genuinely attached.
+     */
+    readonly bootDeferWindowMs?: number | undefined;
     /** Injected clock for the settle (tests). */
     readonly sleep?: ((ms: number) => Promise<void>) | undefined;
     /** Epoch ms clock for handlers (tests). */
@@ -370,7 +401,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         }
     }
     const store = createStore(loaded.state);
-    const pty = createPtyManager({
+    const rawPty = createPtyManager({
         onError: (paneID, error) => report(error, `pty ${paneID}`)
     });
     // What each pane was last rendered at, so a shell is BORN at that size instead of at
@@ -382,6 +413,28 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         path: dbPath === ':memory:' ? null : join(dirname(dbPath), GEOMETRY_FILE_NAME),
         onError: (error, context) => report(error, context)
     });
+    /**
+     * …and for the panes the cache has never seen — a fresh install's first pane, a split's
+     * child, a markdown pane's first ⌘E — the other half of the same argument: wait for the
+     * client to say how big the pane is instead of guessing (`pty/spawn-gate.ts`).
+     *
+     * The policy is here because only boot knows whether anybody is looking: defer while a
+     * client is attached, or while we are inside the boot window where one is expected, and
+     * never otherwise. A CLI-only daemon — the compat suite, every headless flow — therefore
+     * spawns exactly as it did before the gate existed.
+     */
+    let bootDeferUntil = 0;
+    const spawnGate = createPaneSpawnGate({
+        timeoutMs: options.spawnDeferTimeoutMs ?? DEFAULT_SPAWN_DEFER_TIMEOUT_MS,
+        shouldDefer: () => (ws?.clients ?? 0) > 0 || (options.now ?? Date.now)() < bootDeferUntil,
+        onError: (error, context) => report(error, context)
+    });
+    /**
+     * Everything downstream — the handler context, the input encoder, the WS stream hub — gets
+     * the GATED manager, so a keystroke, a `pane send` or a pane close resolves a pending spawn
+     * without any caller knowing the gate is there (`withSpawnGate`).
+     */
+    const pty = withSpawnGate(rawPty, spawnGate);
     /** Assigned once the store, the settings and auto-detect exist (just below `term`). */
     let onPaneDirectory: (paneID: string, directory: string) => void = () => {};
     /**
@@ -730,11 +783,27 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         if (pane !== null && pane.type !== 'shell') term.dispose(paneID);
     });
 
-    // Every spawn path (boot restore, `pane-split`, `pane create`) asks the geometry cache
-    // first and only falls back to the fixed grid for a pane nothing has ever rendered.
+    // Every spawn path (boot restore, `pane-split`, `pane create`, the external editor) asks
+    // the geometry cache first and only falls back to the fixed grid for a pane nothing has
+    // ever rendered — and for exactly those panes it offers the spawn to the gate instead, so
+    // the fallback grid is a timeout's worth of patience away rather than the first thing the
+    // shell sees.
     const spawnDefaults: PaneSpawnDefaults = {
         ...(options.spawn ?? {}),
-        sizeFor: (paneID: string) => geometry.sizeFor(paneID)
+        sizeFor: (paneID: string) => geometry.sizeFor(paneID),
+        deferSpawn: (paneID, spawn) => {
+            // `get`, not `sizeFor`: the fallback-to-latest read is a good GUESS for a brand-new
+            // pane and a bad reason to skip waiting for the truth. A split's child is the case
+            // that makes the difference — `latest` is its parent's full width, i.e. about twice
+            // what the child will actually be rendered at.
+            if (geometry.get(paneID) !== null) return false;
+            return spawnGate.defer(paneID, (size) => {
+                spawn(size);
+            });
+        },
+        flushSpawn: (paneID) => {
+            spawnGate.flush(paneID);
+        }
     };
     const ctx: PaneHandlerContext = {
         store,
@@ -1081,6 +1150,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     `ERROR: nexd shut down WITHOUT saving state — ${health.path}: ${health.error ?? 'the database was never opened'}. Everything created in this session is lost.`
                 );
             }
+            // A spawn still waiting for a client's geometry must not start a shell into a
+            // daemon that is shutting down — `killAll` would have nothing to kill (the child
+            // would be born a moment later) and the pane would outlive the process.
+            spawnGate.close();
             await pty.killAll();
             // The last-known pane grids are what the NEXT boot spawns at, so they have to
             // survive this one (`pty/geometry.ts`); the write is debounced and may be pending.
@@ -1170,9 +1243,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     content.assetPath(paneID, relativePath)
                 ),
                 // Remember what each pane is actually rendered at, so the next spawn of it
-                // (a restart, the next daemon boot) starts there (`pty/geometry.ts`).
+                // (a restart, the next daemon boot) starts there (`pty/geometry.ts`) — and, for
+                // a pane whose first spawn is still being held, this IS the number it was
+                // waiting for: the shell is born here, at the size the client just reported,
+                // before the attach that carried it has even taken its snapshot.
                 onGeometry: (paneID, cols, rows) => {
                     geometry.record(paneID, cols, rows);
+                    spawnGate.report(paneID, cols, rows);
                 },
                 ...(distDir !== undefined ? { distDir } : {}),
                 ...(onError !== undefined ? { onError } : {})
@@ -1206,6 +1283,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // §12.2 + step 3 BEFORE any listener: a CLI that connects the instant the socket
         // appears must never see an empty daemon that is still restoring its workspaces.
         ensureDefaultWorkspace();
+        // Nothing is attached yet (the WS server starts below), so the spawn gate's "is anyone
+        // looking?" question has no useful answer here. This window is the expectation that a
+        // window is on its way — see `DEFAULT_BOOT_DEFER_WINDOW_MS`.
+        bootDeferUntil = (options.now ?? Date.now)() + (options.bootDeferWindowMs ?? DEFAULT_BOOT_DEFER_WINDOW_MS);
         const spawned = spawnRestoredPanes(store.getState(), {
             pty,
             term,

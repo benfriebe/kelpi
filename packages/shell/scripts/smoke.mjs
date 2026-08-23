@@ -11,7 +11,12 @@
  *      snapshot (that is what drives the dock badge and the tray);
  *   4. **quitting the app leaves the daemon running** — the single most important rule in the
  *      architecture, asserted by pinging the daemon after Electron has exited;
- *   5. with no daemon running, the shell SPAWNS one, detached, and it survives the shell.
+ *   5. with no daemon running, the shell SPAWNS one, detached, and it survives the shell;
+ *   6. a pane's shell is BORN at the width the window will render it at — on a fresh install,
+ *      where only the daemon waiting for the client's first measurement can achieve it, and on
+ *      a relaunch after a daemon restart, where the persisted grid does. Both are asserted
+ *      against a real zsh with a p10k-shaped instant prompt, because the defect they exist for
+ *      (a stranded half-width prompt copy that never reflows) is only visible there.
  *
  * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
  * machine): every path is inside a fresh `mkdtemp` directory, the control socket is
@@ -925,6 +930,168 @@ async function spawnPhase() {
     }
 }
 
+// ── phase 3: a shell that is BORN at the width it will be shown at ───────────────────
+
+/**
+ * The p10k-instant-prompt fixture, and why it is shaped like this.
+ *
+ * A modern zsh prompt (powerlevel10k's instant prompt, and anything else that prints before
+ * `zle` owns the line) draws a full-width line during INIT — before the client has measured
+ * anything — and only later hands a real `PROMPT` to zle. The daemon's terminal never reflows
+ * (`@xterm/headless`), so if the PTY was born at a guessed grid and resized once the window
+ * measured it, that first line is stranded in the scrollback at the wrong width, permanently,
+ * above the correctly-drawn one. That strand is the user-visible defect: a stack of half-width
+ * prompt copies down the pane, all stamped with the same second.
+ *
+ * The marker line is `+NEXWIDTH ` (10 characters) plus dots padded to `COLUMNS - 20`, so it is
+ * exactly `COLUMNS - 10` long: a direct read of the grid the shell believed it had when it
+ * printed, and comfortably short of the wrap column, where a line the full width of the screen
+ * would be at the mercy of deferred-wrap behaviour instead. The `sleep` stands in for the init
+ * work a real prompt framework does between the printed prompt and the real one.
+ */
+const STRAND_MARKER_SLACK = 10;
+const INSTANT_PROMPT_ZSHRC = [
+    'setopt prompt_subst',
+    'print -P "+NEXWIDTH ${(l:$((COLUMNS - 20))::.:)}"',
+    'print -n "+NEXPS1> "',
+    'sleep 0.6',
+    "PROMPT=$'+NEXWIDTH ${(l:$((COLUMNS - 20))::.:)}\\n+NEXPS1> '",
+    ''
+].join('\n');
+
+/** Every marker line's length, in the order the pane holds them. */
+function strandWidths(text) {
+    return text
+        .split('\n')
+        .filter((line) => line.includes('+NEXWIDTH'))
+        .map((line) => line.trimEnd().length);
+}
+
+/**
+ * Read a pane's whole buffer over the control socket, exactly as `nex pane capture
+ * --scrollback` does.
+ */
+async function capturePane(sandbox, paneID) {
+    const reply = await controlCommand(sandbox.runSocket, {
+        command: 'pane-capture',
+        target: paneID,
+        scrollback: true
+    });
+    return typeof reply?.text === 'string' ? reply.text : '';
+}
+
+/** The first pane the daemon holds, whatever workspace it is in. */
+async function firstPaneID(sandbox) {
+    const reply = await controlCommand(sandbox.runSocket, { command: 'pane-list' });
+    return reply?.panes?.[0]?.id ?? null;
+}
+
+/**
+ * Assert the pane's scrollback holds NO strand at a width other than the one it ended up at.
+ *
+ * The count of strands is a property of the zshrc, not of the daemon — this fixture prints the
+ * marker once during init and once from zle's own prompt, so two is correct and would be two
+ * in a perfect terminal. What must never happen is two DIFFERENT widths: that is the resize
+ * that landed during shell init, and everything above it is wrong forever.
+ */
+function checkNoWidthStrand(label, text) {
+    const widths = strandWidths(text);
+    const settled = widths[widths.length - 1];
+    const stranded = widths.filter((width) => width !== settled);
+    check(`${label}: the shell printed something at all`, widths.length > 0, `widths ${JSON.stringify(widths)}`);
+    check(
+        `${label}: every prompt line is at the pane's final width`,
+        widths.length > 0 && stranded.length === 0,
+        `widths ${JSON.stringify(widths)} (settled ${String(settled)})`
+    );
+    // A pane born at the 80×24 fallback is the specific failure this phase exists for, and it
+    // is worth naming rather than leaving to the generic mismatch above.
+    check(
+        `${label}: no line was printed at the 80-column fallback grid`,
+        !widths.includes(80 - STRAND_MARKER_SLACK),
+        `widths ${JSON.stringify(widths)}`
+    );
+    return widths;
+}
+
+/**
+ * Bring the whole stack up against `sandbox`, wait for the window to have measured the pane,
+ * and hand back the pane's scrollback.
+ */
+async function bootAndCapture(sandbox) {
+    const daemon = startDaemon(sandbox);
+    let shell;
+    try {
+        await waitForHealthz(sandbox.base);
+        shell = startShell(sandbox);
+        await shell.waitForLine(/did-finish-load/, 'did-finish-load');
+        // The renderer measures the pane and attaches a moment after the load event; the shell
+        // has to have finished printing too (the fixture sleeps 600 ms mid-init).
+        await sleep(4000);
+        const paneID = await firstPaneID(sandbox);
+        if (paneID === null) throw new Error('the daemon has no panes to capture');
+        const text = await capturePane(sandbox, paneID);
+        return { paneID, text, daemonLog: daemon.log() };
+    } finally {
+        await shell?.quit();
+        // SIGTERM, so the geometry cache is flushed the way a real quit flushes it — the
+        // relaunch below depends on that file having been written.
+        await daemon.stop();
+    }
+}
+
+async function promptWidthPhase() {
+    process.stdout.write('\nphase 3 — a shell is born at the width it will be shown at\n');
+    const sandbox = await makeSandbox('width');
+    // zsh is the shell the defect was reported against, and the only one with the two-stage
+    // prompt shape that makes the strand visible. `/bin/zsh` ships with macOS.
+    sandbox.env.SHELL = '/bin/zsh';
+    fs.writeFileSync(path.join(sandbox.root, 'home', '.zshrc'), INSTANT_PROMPT_ZSHRC);
+    try {
+        // ── first boot: nothing has ever rendered this pane ─────────────────────────
+        // The geometry cache is empty (fresh install), so the ONLY thing that can save the
+        // first prompt is the daemon waiting for the window to report a grid before it spawns
+        // the shell (`pty/spawn-gate.ts`).
+        const first = await bootAndCapture(sandbox);
+        const firstWidths = checkNoWidthStrand('first boot', first.text);
+
+        const geometryFile = path.join(sandbox.root, 'pane-geometry.json');
+        check(
+            'the daemon persisted the grid it was rendered at',
+            fs.existsSync(geometryFile),
+            geometryFile
+        );
+        const remembered = fs.existsSync(geometryFile)
+            ? JSON.parse(fs.readFileSync(geometryFile, 'utf8')).panes?.[first.paneID]
+            : null;
+        // The strand's own length says what the shell was given; the cache has to agree, or
+        // the relaunch below is spawning at a number nobody rendered.
+        check(
+            '…for the pane that was on screen, at the width its prompt printed at',
+            remembered != null && remembered.cols === (firstWidths[0] ?? -1) + STRAND_MARKER_SLACK,
+            `${JSON.stringify(remembered)} vs printed ${JSON.stringify(firstWidths)}`
+        );
+
+        // ── relaunch: the reported case ─────────────────────────────────────────────
+        // A daemon restart respawns the persisted pane. With the grid remembered, the shell is
+        // born at it and the client's first measurement matches, so no resize lands during
+        // init at all — and the trail the user reported (every copy stamped with the daemon's
+        // own start second) never gets written.
+        const second = await bootAndCapture(sandbox);
+        check(
+            'the relaunched daemon restored the same pane',
+            second.paneID === first.paneID,
+            `${String(first.paneID)} → ${String(second.paneID)}`
+        );
+        checkNoWidthStrand('relaunch after a daemon restart', second.text);
+
+        assertRealHomeUntouched('phase 3');
+        return { daemonLog: second.daemonLog };
+    } finally {
+        sandbox.cleanup();
+    }
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -940,6 +1107,11 @@ async function main() {
         logs.push(await spawnPhase());
     } catch (error) {
         fail('phase 2 (spawn)', error instanceof Error ? error.message : String(error));
+    }
+    try {
+        logs.push(await promptWidthPhase());
+    } catch (error) {
+        fail('phase 3 (prompt width)', error instanceof Error ? error.message : String(error));
     }
 
     const failed = results.filter((result) => !result.ok);

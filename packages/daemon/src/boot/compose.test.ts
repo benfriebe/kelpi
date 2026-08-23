@@ -59,6 +59,11 @@ function daemonFor(paths: Scratch, overrides: Parameters<typeof createDaemon>[0]
         httpPort: 0,
         settleMs: 0,
         spawn: { cols: 80, rows: 24, shell: '/bin/sh' },
+        // Nothing will ever attach to a daemon a unit test composes, so there is no window
+        // whose measurement a restored pane's spawn should wait for (`pty/spawn-gate.ts`).
+        // Zero is the headless daemon's own policy; the two tests at the bottom of this file
+        // drive the boot window deliberately.
+        bootDeferWindowMs: 0,
         ...overrides
     });
     cleanups.push(() => daemon.stop());
@@ -287,4 +292,44 @@ describe('createDaemon', () => {
         expect(fs.readFileSync(paths.configPath, 'utf8')).toContain('tcp-port = 0');
         await daemon.stop();
     }, 30_000);
+
+    /*
+     * The spawn gate, composed (`pty/spawn-gate.ts`).
+     *
+     * `pid()` is the honest probe here and `has()` is not: a pane whose spawn is still being
+     * held deliberately reads as live (a write to it lands, because the write flushes the
+     * gate), so only the child process id distinguishes "waiting" from "running".
+     */
+    it('spawns a fresh install pane immediately when no window is expected', async () => {
+        const paths = scratch();
+        // A CLI-only daemon: the compat suite, CI, `nexd start` on a headless box. There is
+        // nobody to report a grid, so waiting for one would buy nothing and cost a second.
+        const daemon = daemonFor(paths, { bootDeferWindowMs: 0 });
+        await daemon.start();
+
+        const paneID = daemon.store.getState().workspaces[0]?.panes[0]?.id as string;
+        expect(daemon.pty.pid(paneID)).toEqual(expect.any(Number));
+    }, 20_000);
+
+    it('holds that spawn inside the boot window, then gives up and spawns anyway', async () => {
+        const paths = scratch();
+        // The launched-with-a-window case: nothing is attached yet (the WS server is not even
+        // listening when panes are restored), so boot bets on the window that is on its way.
+        const daemon = daemonFor(paths, { bootDeferWindowMs: 5000, spawnDeferTimeoutMs: 250 });
+        await daemon.start();
+
+        const paneID = daemon.store.getState().workspaces[0]?.panes[0]?.id as string;
+        // Nothing has measured the pane, so no shell has printed a prompt at a guessed width.
+        expect(daemon.pty.pid(paneID)).toBeUndefined();
+        // …and it still reads as a live pane, which is what keeps a `pane send` landing.
+        expect(daemon.pty.has(paneID)).toBe(true);
+
+        // No window ever arrives: the wait is bounded, and what follows it is exactly the
+        // behaviour this daemon had before the gate existed.
+        const deadline = Date.now() + 5000;
+        while (daemon.pty.pid(paneID) === undefined && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(daemon.pty.pid(paneID)).toEqual(expect.any(Number));
+    }, 20_000);
 });

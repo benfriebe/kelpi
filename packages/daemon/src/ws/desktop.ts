@@ -390,33 +390,49 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
         });
 
         const after = workspaceByID(ctx.store.getState(), workspace.id);
-        const cols = ctx.spawn?.sizeFor?.(paneID)?.cols ?? ctx.spawn?.cols ?? 80;
-        const rows = ctx.spawn?.sizeFor?.(paneID)?.rows ?? ctx.spawn?.rows ?? 24;
-        try {
-            ctx.pty.spawn({
-                paneID,
-                cwd: pane.workingDirectory,
-                // CONT-089: the editor's PTY gets the workspace profile env every terminal pane
-                // gets — same `mergedEnvVars` call, same `NEX_PANE_ID`, same profile overlay.
-                env: (after === null ? [] : spawnEnvVars(ctx, paneID, after)).map(
-                    (entry) => [entry.key, entry.value] as const
-                ),
-                cols,
-                rows,
-                command,
-                ...(ctx.spawn?.shell === undefined ? {} : { shell: ctx.spawn.shell })
-            });
-            ctx.term.attach(paneID, cols, rows);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            options.onError?.(error instanceof Error ? error : new Error(message), 'external-editor spawn');
-            ctx.store.dispatch({
-                type: 'set-markdown-editing',
-                workspaceID: workspace.id,
-                paneID,
-                editing: false
-            });
-            return failure(`could not launch ${resolution.editor}: ${message}`);
+        /**
+         * `$EDITOR` is as unreflowable as a shell prompt — vim paints for the grid it was
+         * born into — and a markdown pane has never had a terminal, so the geometry cache has
+         * nothing for this pane and `sizeFor` answers with the last size some OTHER pane was
+         * rendered at. The gate holds the spawn for the client's own measurement of THIS pane,
+         * which arrives as soon as the renderer mounts a surface for the editing pane
+         * (`pty/spawn-gate.ts`). It declines when nobody is attached, and this is then the
+         * immediate spawn it always was.
+         */
+        const spawnEditor = (size: { cols: number; rows: number } | null): string | null => {
+            const cols = size?.cols ?? ctx.spawn?.sizeFor?.(paneID)?.cols ?? ctx.spawn?.cols ?? 80;
+            const rows = size?.rows ?? ctx.spawn?.sizeFor?.(paneID)?.rows ?? ctx.spawn?.rows ?? 24;
+            try {
+                ctx.pty.spawn({
+                    paneID,
+                    cwd: pane.workingDirectory,
+                    // CONT-089: the editor's PTY gets the workspace profile env every terminal
+                    // pane gets — same `mergedEnvVars` call, same `NEX_PANE_ID`, same overlay.
+                    env: (after === null ? [] : spawnEnvVars(ctx, paneID, after)).map(
+                        (entry) => [entry.key, entry.value] as const
+                    ),
+                    cols,
+                    rows,
+                    command,
+                    ...(ctx.spawn?.shell === undefined ? {} : { shell: ctx.spawn.shell })
+                });
+                ctx.term.attach(paneID, cols, rows);
+                return null;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                options.onError?.(error instanceof Error ? error : new Error(message), 'external-editor spawn');
+                ctx.store.dispatch({
+                    type: 'set-markdown-editing',
+                    workspaceID: workspace.id,
+                    paneID,
+                    editing: false
+                });
+                return message;
+            }
+        };
+        if (ctx.spawn?.deferSpawn?.(paneID, (size) => void spawnEditor(size)) !== true) {
+            const message = spawnEditor(null);
+            if (message !== null) return failure(`could not launch ${resolution.editor}: ${message}`);
         }
         refreshSyncGroup(ctx, workspace.id);
         return {

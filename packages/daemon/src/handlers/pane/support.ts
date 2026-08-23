@@ -192,22 +192,46 @@ export function spawnPaneIfShell(
     const pane = visiblePane(workspace, paneID);
     if (pane === null || pane.type !== 'shell') return;
     if (ctx.pty.has(paneID)) return;
-    // Last-known geometry first: a split's child that starts at 80×24 prints its first prompt
-    // at a width nothing will ever render it at, and that line never reflows (`pty/geometry.ts`).
-    const remembered = ctx.spawn?.sizeFor?.(paneID) ?? null;
-    const cols = remembered?.cols ?? ctx.spawn?.cols ?? DEFAULT_COLS;
-    const rows = remembered?.rows ?? ctx.spawn?.rows ?? DEFAULT_ROWS;
-    ctx.pty.spawn({
-        paneID,
-        cwd: pane.workingDirectory,
-        env: spawnEnvVars(ctx, paneID, workspace).map(
-            (entry) => [entry.key, entry.value] as const
-        ),
-        cols,
-        rows,
-        shell: ctx.spawn?.shell
-    });
-    ctx.term.attach(paneID, cols, rows);
+
+    /**
+     * The spawn itself, in a form the gate can run LATER.
+     *
+     * State is re-read rather than captured: a deferred spawn runs up to a couple of seconds
+     * after this call, and in that window the pane can be closed, moved or turned into
+     * something that is not a shell. `size` is the client's measurement when there is one, and
+     * `null` when the gate ran out of patience — in which case we fall back to exactly the
+     * grid this function has always used.
+     */
+    const spawnAt = (size: { cols: number; rows: number } | null): void => {
+        const current = workspaceByID(ctx.store.getState(), workspaceID);
+        if (current === null) return;
+        const target = visiblePane(current, paneID);
+        if (target === null || target.type !== 'shell') return;
+        if (ctx.pty.has(paneID)) return;
+        // Last-known geometry first: a split's child that starts at 80×24 prints its first
+        // prompt at a width nothing will ever render it at, and that line never reflows
+        // (`pty/geometry.ts`).
+        const remembered = ctx.spawn?.sizeFor?.(paneID) ?? null;
+        const cols = size?.cols ?? remembered?.cols ?? ctx.spawn?.cols ?? DEFAULT_COLS;
+        const rows = size?.rows ?? remembered?.rows ?? ctx.spawn?.rows ?? DEFAULT_ROWS;
+        ctx.pty.spawn({
+            paneID,
+            cwd: target.workingDirectory,
+            env: spawnEnvVars(ctx, paneID, current).map(
+                (entry) => [entry.key, entry.value] as const
+            ),
+            cols,
+            rows,
+            shell: ctx.spawn?.shell
+        });
+        ctx.term.attach(paneID, cols, rows);
+    };
+
+    // A pane nothing has ever measured is worth waiting a moment for (`pty/spawn-gate.ts`).
+    // The gate declines whenever the size is already known or nobody is there to report one,
+    // and then this is the same immediate spawn it always was.
+    if (ctx.spawn?.deferSpawn?.(paneID, spawnAt) === true) return;
+    spawnAt(null);
 }
 
 // ---------------------------------------------------------------------------

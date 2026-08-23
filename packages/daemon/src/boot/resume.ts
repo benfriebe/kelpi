@@ -123,24 +123,40 @@ export function spawnRestoredPanes(state: DaemonState, deps: RestoreDeps): strin
             // before a window exists, so without the pane's remembered size that prompt is
             // 80 columns wide in a 200-column pane — forever, because the headless emulator
             // never reflows it (`pty/geometry.ts`).
-            const remembered = deps.spawn?.sizeFor?.(pane.id) ?? null;
-            const cols = remembered?.cols ?? defaultCols;
-            const rows = remembered?.rows ?? defaultRows;
-            try {
-                deps.pty.spawn({
-                    paneID: pane.id,
-                    cwd: pane.workingDirectory,
-                    env: env.map((entry) => [entry.key, entry.value] as const),
-                    cols,
-                    rows,
-                    ...(deps.spawn?.shell !== undefined ? { shell: deps.spawn.shell } : {})
-                });
-                deps.term.attach(pane.id, cols, rows);
+            const spawnAt = (size: { cols: number; rows: number } | null): boolean => {
+                if (deps.pty.has(pane.id)) return false;
+                const remembered = deps.spawn?.sizeFor?.(pane.id) ?? null;
+                const cols = size?.cols ?? remembered?.cols ?? defaultCols;
+                const rows = size?.rows ?? remembered?.rows ?? defaultRows;
+                try {
+                    deps.pty.spawn({
+                        paneID: pane.id,
+                        cwd: pane.workingDirectory,
+                        env: env.map((entry) => [entry.key, entry.value] as const),
+                        cols,
+                        rows,
+                        ...(deps.spawn?.shell !== undefined ? { shell: deps.spawn.shell } : {})
+                    });
+                    deps.term.attach(pane.id, cols, rows);
+                    return true;
+                } catch (error) {
+                    // One bad pane (vanished cwd, broken shell) must not abort the restore.
+                    deps.onError?.(toError(error), `spawn ${pane.id}`);
+                    return false;
+                }
+            };
+            // A pane the geometry cache has never seen — a fresh install, or a state file that
+            // outlived its cache — is held for the first client geometry report rather than
+            // being born at 80×24 (`pty/spawn-gate.ts`). The gate declines when nothing is
+            // there to report one, and boot is then byte-identical to what it always did.
+            // `spawned` counts the panes this pass took responsibility for, deferred included:
+            // the resume step that reads it re-checks `pty.has` (which a pending spawn answers
+            // for) before it types anything.
+            if (deps.spawn?.deferSpawn?.(pane.id, (size) => void spawnAt(size)) === true) {
                 spawned.push(pane.id);
-            } catch (error) {
-                // One bad pane (vanished cwd, broken shell) must not abort the restore.
-                deps.onError?.(toError(error), `spawn ${pane.id}`);
+                continue;
             }
+            if (spawnAt(null)) spawned.push(pane.id);
         }
     }
     return spawned;

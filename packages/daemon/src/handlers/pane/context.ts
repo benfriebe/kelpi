@@ -52,6 +52,35 @@ export interface PaneSpawnDefaults {
      * workspace looking like one clean prompt history instead of a stack of half-width copies.
      */
     readonly sizeFor?: ((paneID: string) => { cols: number; rows: number } | null | undefined) | undefined;
+    /**
+     * Offer this pane's FIRST spawn to the deferral gate (`pty/spawn-gate.ts`).
+     *
+     * `sizeFor` has nothing to say about a pane nobody has ever rendered — a fresh install's
+     * first pane, a split's child, a markdown pane on its first ⌘E — and the fallback grid is
+     * exactly the wrong-width prompt this whole mechanism exists to prevent. When a client is
+     * attached (or one is expected, at boot), the gate holds the spawn for the few hundred
+     * milliseconds it takes that client to measure the pane and report a real grid.
+     *
+     * Returns `true` when the gate took ownership: the caller must NOT spawn, and the callback
+     * it handed over will run later — with the reported size, or with `null` meaning "you were
+     * right, use your fallback" when the wait timed out or something demanded the PTY first.
+     * Returns `false` (and boot leaves it undefined entirely, as does every test) when the
+     * caller should spawn immediately, exactly as it did before the gate existed.
+     */
+    readonly deferSpawn?:
+        | ((
+              paneID: string,
+              spawn: (size: { cols: number; rows: number } | null) => void
+          ) => boolean)
+        | undefined;
+    /**
+     * Run a pending deferred spawn NOW, because this call needs the pane's terminal state.
+     *
+     * The PTY-shaped demands (a keystroke, `pane send`, a resume command) flush the gate inside
+     * the `PtyManager` wrapper and never reach here. Reads of the SERVER-SIDE VT do not touch
+     * the PTY at all, so `pane capture` is the one caller that has to say so itself.
+     */
+    readonly flushSpawn?: ((paneID: string) => void) | undefined;
 }
 
 export interface PaneHandlerContext

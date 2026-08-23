@@ -168,6 +168,100 @@ describe('spawnPaneIfShell', () => {
         expect(h.pty.spawns[0]?.cols).toBe(80);
         expect(h.pty.spawns[0]?.rows).toBe(24);
     });
+
+    /**
+     * The deferral half (`pty/spawn-gate.ts`). The cache's answer for a pane it has never seen
+     * is a guess — for a split's child it is the PARENT's full width — and a guess printed at
+     * the top of the scrollback is permanent. When boot says a client is about to measure the
+     * pane, this function hands the spawn over instead of guessing.
+     */
+    it('hands a never-seen pane to the gate instead of spawning it', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const deferred: ((size: { cols: number; rows: number } | null) => void)[] = [];
+        const ctx: PaneHandlerContext = {
+            ...h.ctx,
+            spawn: {
+                ...h.ctx.spawn,
+                sizeFor: () => ({ cols: 169, rows: 47 }),
+                deferSpawn: (_paneID, spawn) => {
+                    deferred.push(spawn);
+                    return true;
+                }
+            }
+        };
+
+        spawnPaneIfShell(ctx, W1, P1);
+        expect(h.pty.spawns).toEqual([]); // nothing is born until somebody measures it
+
+        deferred[0]?.({ cols: 84, rows: 47 });
+
+        // The client's own measurement of THIS pane, not the cache's guess about its parent.
+        expect(h.pty.spawns[0]?.cols).toBe(84);
+        expect(h.pty.spawns[0]?.rows).toBe(47);
+        expect(h.term.attached).toContainEqual({ paneID: P1, cols: 84, rows: 47 });
+    });
+
+    it('falls back to the remembered grid when the gate gives up waiting', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const deferred: ((size: { cols: number; rows: number } | null) => void)[] = [];
+        const ctx: PaneHandlerContext = {
+            ...h.ctx,
+            spawn: {
+                ...h.ctx.spawn,
+                sizeFor: () => ({ cols: 169, rows: 47 }),
+                deferSpawn: (_paneID, spawn) => {
+                    deferred.push(spawn);
+                    return true;
+                }
+            }
+        };
+
+        spawnPaneIfShell(ctx, W1, P1);
+        deferred[0]?.(null); // the timeout: "you were right, use your fallback"
+
+        expect(h.pty.spawns[0]?.cols).toBe(169);
+        expect(h.pty.spawns[0]?.rows).toBe(47);
+    });
+
+    it('never spawns a pane that was closed while its spawn waited', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const deferred: ((size: { cols: number; rows: number } | null) => void)[] = [];
+        const ctx: PaneHandlerContext = {
+            ...h.ctx,
+            spawn: {
+                ...h.ctx.spawn,
+                deferSpawn: (_paneID, spawn) => {
+                    deferred.push(spawn);
+                    return true;
+                }
+            }
+        };
+
+        spawnPaneIfShell(ctx, W1, P1);
+        // The gate cancels on `pty.kill`, but state can also move under a spawn that is
+        // already running: the callback re-reads the store rather than trusting its closure.
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: P1 });
+        deferred[0]?.({ cols: 100, rows: 40 });
+
+        expect(h.pty.spawns).toEqual([]);
+    });
+
+    it('spawns immediately when the gate declines — the CLI/headless daemon', () => {
+        const h = harness();
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P1 });
+        const ctx: PaneHandlerContext = {
+            ...h.ctx,
+            spawn: { ...h.ctx.spawn, sizeFor: () => null, deferSpawn: () => false }
+        };
+
+        spawnPaneIfShell(ctx, W1, P1);
+
+        expect(h.pty.spawns[0]?.cols).toBe(80);
+        expect(h.pty.spawns[0]?.rows).toBe(24);
+    });
 });
 
 describe('the context widening', () => {

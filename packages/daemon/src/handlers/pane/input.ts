@@ -92,6 +92,11 @@ export const handlePaneCapture: CommandHandler<PaneHandlerContext> = (msg, ctx, 
         return;
     }
 
+    // 5. A pane whose first spawn is still waiting for a client's geometry has no server-side
+    // terminal yet, and a capture is a demand for one: run that spawn now rather than
+    // answering with an empty screen (`pty/spawn-gate.ts`). A no-op for every other pane.
+    ctx.spawn?.flushSpawn?.(paneID);
+
     void readCapture(ctx, reply, {
         paneID,
         workspaceID: workspace.id,

@@ -35,5 +35,17 @@ export {
 } from './geometry.js';
 export type { GridSize, PaneGeometryStore, PaneGeometryStoreOptions } from './geometry.js';
 
+export {
+    DEFAULT_SPAWN_DEFER_TIMEOUT_MS,
+    createPaneSpawnGate,
+    withSpawnGate
+} from './spawn-gate.js';
+export type {
+    DeferredSpawn,
+    DeferredSpawnReason,
+    PaneSpawnGate,
+    PaneSpawnGateOptions
+} from './spawn-gate.js';
+
 export { loadNodePty, nodePtySpawner } from './spawner.js';
 export type { PtyProcessHandle, PtySpawnRequest, PtySpawner } from './types.js';

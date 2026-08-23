@@ -78,6 +78,19 @@ function openWorkspaceForm(props: Record<string, unknown> = {}) {
     return onCreateWorkspace;
 }
 
+/**
+ * Opens the footer's New Group form.
+ *
+ * It used to be a sibling text button in the footer; §WS-004 put it back where the Swift keeps
+ * it — behind the chevron menu (`WorkspaceListView.swift:412-422`). With no
+ * `onNewGroupWithRename` wired (assembly's ⌘⇧G one-shot) the row falls back to this form,
+ * which is what these two cases are about.
+ */
+function openGroupForm(): void {
+    fireEvent.click(screen.getByTestId('sidebar-new-menu-toggle'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^New Group/ }));
+}
+
 function selectedSwatch(kind: 'workspace' | 'group'): string | null {
     const row = screen.getByTestId(`new-${kind}-colors`);
     const chosen = within(row)
@@ -298,14 +311,14 @@ describe('the Tab loop (§WS-077)', () => {
 describe('the New Group form (§WS-082/§WS-083)', () => {
     it('pre-fills a unique default name', () => {
         render(<Sidebar {...base()} entries={entries('New Group')} onCreateGroup={vi.fn()} />);
-        fireEvent.click(screen.getByText('New Group', { selector: 'button' }));
+        openGroupForm();
         expect((screen.getByLabelText('New group name') as HTMLInputElement).value).toBe('New Group 2');
     });
 
     it('offers a colour row including "None", and sends what is picked', () => {
         const onCreateGroup = vi.fn();
         render(<Sidebar {...base()} entries={entries()} onCreateGroup={onCreateGroup} />);
-        fireEvent.click(screen.getByText('New Group', { selector: 'button' }));
+        openGroupForm();
         // The group sheet opens on "None" (unlike the workspace sheet's random colour).
         expect(selectedSwatch('group')).toBe('No color');
         fireEvent.click(screen.getByTestId('new-group-color-orange'));

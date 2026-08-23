@@ -3697,6 +3697,11 @@ function Shell(props: AppProps): ReactElement {
                     // §WS-052: "Move to Group ▸ New Group…" — one gesture from a row to a new
                     // group with that row already in it, then straight into inline rename.
                     onCreateGroupWithWorkspace={act.newGroupForWorkspace}
+                    // §WS-004 / §WS-123: the footer chevron's "New Group" is ⌘⇧G's own gesture,
+                    // not the footer form — mint the placeholder, drop into inline rename,
+                    // reveal the header. Same closure the chord and File ▸ New Group run, so
+                    // all three routes land on one set of rules.
+                    onNewGroupWithRename={act.newGroupWithRename}
                     onDeleteWorkspaces={act.deleteWorkspaces}
                     repos={inspectorData.repos}
                 />

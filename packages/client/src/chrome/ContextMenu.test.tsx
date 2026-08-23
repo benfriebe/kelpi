@@ -127,4 +127,26 @@ describe('ContextMenu', () => {
         fireEvent.keyDown(document, { key: 'Escape' });
         expect(closed).toBe(true);
     });
+
+    /**
+     * `autoFocus` — §WS-004's footer chevron opens this panel by CLICKING a toggle, which makes
+     * it a dropdown, and a dropdown takes the keyboard. A right-click context menu must not: it
+     * would pull focus out of a rename field or the terminal for a menu the user may dismiss
+     * with the next click. Both halves are asserted, because the default is the load-bearing one.
+     */
+    const items = [
+        { id: 'disabled', label: 'Unavailable', disabled: true },
+        { id: 'first', label: 'New Workspace' },
+        { id: 'second', label: 'New Group' }
+    ];
+
+    it('leaves focus alone by default', () => {
+        render(<ContextMenu x={0} y={0} items={items} onClose={() => undefined} />);
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('lands on the first ENABLED row when asked to take the keyboard', () => {
+        render(<ContextMenu x={0} y={0} items={items} autoFocus onClose={() => undefined} />);
+        expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('first');
+    });
 });

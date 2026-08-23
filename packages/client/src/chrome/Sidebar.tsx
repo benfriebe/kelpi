@@ -109,6 +109,29 @@ const DEFAULT_ROW_HEIGHT = 34;
 const CONTENT_TOP_PADDING = 4;
 
 /**
+ * §WS-004's footer bar, in the Swift's own numbers (`WorkspaceListView.swift:400,437`):
+ * `HStack(spacing: 6)` inside `.padding(12)`.
+ */
+const FOOTER_PADDING_PX = 12;
+const FOOTER_GAP_PX = 6;
+/**
+ * How tall the footer's two-row chevron menu is. `ContextMenu` is a portal positioned by its
+ * TOP edge, and this menu drops UPWARD from a bar that sits against the bottom of the window,
+ * so the height has to be supplied rather than read back.
+ *
+ * Derived rather than guessed, and then MEASURED: one `MenuRow` is `py-1` around the panel's
+ * `text-[12px]`, which lays out at 18px, and the panel adds its own `p-1` top and bottom. The
+ * 44 that falls out matches the 43px the rendered menu actually reports
+ * (docs/audit/ws004-footer), so the menu hangs ~5px above the chevron rather than the ~17px a
+ * round-number guess of 56 left it at.
+ */
+const FOOTER_MENU_ROW_HEIGHT = 18;
+const FOOTER_MENU_PANEL_PADDING = 4;
+const FOOTER_MENU_ESTIMATED_HEIGHT = FOOTER_MENU_ROW_HEIGHT * 2 + FOOTER_MENU_PANEL_PADDING * 2;
+/** The gap the menu leaves above the chevron, matching `TopBar`'s 4px drop below its •••. */
+const FOOTER_MENU_GAP = 4;
+
+/**
  * THE SIDEBAR'S TEXT IS CHROME, NOT CONTENT (2026-08-23).
  *
  * The user's words: "dragging around on the sidebar selects the text, it shouldn't do that."
@@ -1185,6 +1208,17 @@ export interface SidebarProps extends SidebarCallbacks {
      * offered (the submenu is then exactly what it was before).
      */
     readonly onCreateGroupWithWorkspace?: ((workspaceID: string) => void) | undefined;
+    /**
+     * §WS-004 / §WS-123: the footer chevron menu's "New Group", which is `⌘⇧G`'s own gesture
+     * — `createGroup(name:autoRename:)` in `WorkspaceListView.swift:414-417`, i.e. mint the
+     * placeholder name, drop into inline rename, reveal the header. Assembly owns it for the
+     * reason §WS-052's does: both halves need the CREATED group's id and that only exists in
+     * the command reply, which this component never sees.
+     *
+     * Absent (every fixture that predates the chevron) falls back to the footer's New Group
+     * FORM, so the menu row is never inert.
+     */
+    readonly onNewGroupWithRename?: (() => void) | undefined;
 }
 
 interface DragState {
@@ -1316,7 +1350,13 @@ function describeTarget(target: DropTarget): string {
 type MenuState =
     | { readonly kind: 'workspace'; readonly id: string; readonly x: number; readonly y: number }
     | { readonly kind: 'group'; readonly id: string; readonly x: number; readonly y: number }
-    | { readonly kind: 'background'; readonly x: number; readonly y: number };
+    | { readonly kind: 'background'; readonly x: number; readonly y: number }
+    /**
+     * §WS-004's footer chevron. It shares `menu` with the three context menus rather than
+     * carrying its own state, so opening it closes a row menu and vice versa — one menu at a
+     * time, which is what a native menu bar does and what `closeMenu` already guarantees.
+     */
+    | { readonly kind: 'footer'; readonly x: number; readonly y: number };
 
 type RenameState = { readonly kind: 'workspace' | 'group'; readonly id: string };
 type ConfirmState =
@@ -1422,6 +1462,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     const listRef = useRef<HTMLDivElement | null>(null);
+    /**
+     * §WS-004's footer chevron. The menu is a portal, so opening it needs the button's VIEWPORT
+     * rect (the same reason `TopBar`'s ••• menu keeps a ref), and closing it needs the button
+     * back so Escape returns focus to where the keyboard user left it.
+     */
+    const footerMenuButtonRef = useRef<HTMLButtonElement | null>(null);
     const rowElements = useRef(new Map<string, HTMLElement>());
     const dragRef = useRef<DragState | null>(null);
     /** A finished drag is followed by a `click` on the row; that click must not activate it. */
@@ -3404,14 +3450,59 @@ export function Sidebar(props: SidebarProps): ReactElement {
         [shortcut]
     );
 
+    /**
+     * §WS-004's chevron menu: exactly the two rows `WorkspaceListView.swift:412-422` puts
+     * behind it — New Workspace (the sheet, which here is the footer form) and New Group.
+     *
+     * New Group is NOT the form: the shipped menu runs `createGroup(name:autoRename:)`, the
+     * same one-shot ⌘⇧G / File ▸ New Group run (§WS-123), so all three routes mint the
+     * placeholder and drop into inline rename. Assembly supplies it; without it the row falls
+     * back to the form rather than doing nothing.
+     */
+    const onNewGroupWithRename = props.onNewGroupWithRename;
+    const footerMenuItems = useCallback(
+        (): MenuItemSpec[] => [
+            {
+                id: 'new-workspace',
+                label: 'New Workspace',
+                ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
+                onSelect: () => {
+                    setNewForm({ kind: 'workspace', groupID: null });
+                }
+            },
+            {
+                id: 'new-group',
+                label: 'New Group',
+                ...(shortcut('new_group') === undefined ? {} : { shortcut: shortcut('new_group') }),
+                onSelect: () => {
+                    if (onNewGroupWithRename !== undefined) {
+                        onNewGroupWithRename();
+                        return;
+                    }
+                    setNewForm({ kind: 'group', groupID: null });
+                }
+            }
+        ],
+        [onNewGroupWithRename, shortcut]
+    );
+
     const menuItems = useMemo((): readonly MenuItemSpec[] => {
         if (menu === null) return [];
         // §WS-055: a right-click ON a row that belongs to a ≥2 selection is a BULK gesture.
         if (menu.kind === 'workspace' && selection.size > 1 && selection.has(menu.id)) return bulkMenuItems();
         if (menu.kind === 'workspace') return workspaceMenuItems(menu.id);
         if (menu.kind === 'group') return groupMenuItems(menu.id);
+        if (menu.kind === 'footer') return footerMenuItems();
         return backgroundMenuItems();
-    }, [backgroundMenuItems, bulkMenuItems, groupMenuItems, menu, selection, workspaceMenuItems]);
+    }, [
+        backgroundMenuItems,
+        bulkMenuItems,
+        footerMenuItems,
+        groupMenuItems,
+        menu,
+        selection,
+        workspaceMenuItems
+    ]);
 
     /**
      * The row itself is what the menu must not cover (run-B m7): `currentTarget` is the row
@@ -3435,6 +3526,37 @@ export function Sidebar(props: SidebarProps): ReactElement {
         event.preventDefault();
         const anchor = menuAnchorFromEvent(event);
         setMenu({ kind: 'background', x: anchor.x, y: anchor.y });
+    }, []);
+
+    /**
+     * The footer chevron toggles its own menu — click to open, click again to dismiss, the way
+     * `TopBar`'s ••• toggle behaves. `ContextMenu` positions by its TOP-LEFT corner, and this
+     * one drops UPWARD (the footer is the last thing before the window edge), so the height has
+     * to be supplied rather than measured: `FOOTER_MENU_ESTIMATED_HEIGHT`. The clamp is what
+     * keeps it on screen in a short window.
+     */
+    const toggleFooterMenu = useCallback((): void => {
+        setMenu((current) => {
+            if (current !== null && current.kind === 'footer') return null;
+            const box = footerMenuButtonRef.current?.getBoundingClientRect();
+            if (box === undefined) return { kind: 'footer', x: 8, y: 8 };
+            return {
+                kind: 'footer',
+                x: Math.round(box.left),
+                y: Math.round(Math.max(8, box.top - FOOTER_MENU_ESTIMATED_HEIGHT - FOOTER_MENU_GAP))
+            };
+        });
+    }, []);
+
+    /**
+     * Escape / an outside click hands the keyboard back to the chevron, so a keyboard user is
+     * not dropped on `<body>`. When a row was CHOSEN the button is about to be replaced by the
+     * create form, whose own mount effect focuses the name field after this call — so the form
+     * still wins, and the only case this focus survives is the dismissal it is for.
+     */
+    const closeFooterMenu = useCallback((): void => {
+        setMenu(null);
+        footerMenuButtonRef.current?.focus();
     }, []);
 
     // ── rename commits ──────────────────────────────────────────────────────────
@@ -3785,57 +3907,71 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 /* The footer grows into the create form (§WS-075's swatches, pickers, repo rows
                    and worktree section), so it is capped at half the sidebar and scrolls rather
                    than pushing its own Create button off the bottom of the window. */
-                className="flex max-h-[50%] shrink-0 flex-col gap-1 overflow-y-auto border-t p-2"
-                style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
+                className="flex max-h-[50%] shrink-0 flex-col gap-1 overflow-y-auto border-t"
+                style={{
+                    borderColor: tokens.divider,
+                    background: tokens.sidebarBackground,
+                    padding: FOOTER_PADDING_PX
+                }}
             >
                 {newForm === null ? (
-                    <div className="flex items-center gap-2">
-                        {/*
-                          * ⌘N is New Workspace's shortcut, so it rides INSIDE that button. It
-                          * used to sit `ml-auto` after "New Group", which reads as New Group's
-                          * shortcut — the audit's nit list opened with it (run-B).
-                          */}
+                    /*
+                     * §WS-004, in `WorkspaceListView.swift:394-446`'s own composition: a plain
+                     * "+ New Workspace" button, a small chevron MENU beside it carrying New
+                     * Workspace / New Group, a spacer, and the ⌘N hint at the trailing edge.
+                     *
+                     * The user's words on the shipped version of this row: "this is meant to be
+                     * a dropdown toggle like the swift version". What was here instead were
+                     * three sibling controls — a second "New Group" text button and a settings
+                     * gear the Swift footer has neither of.
+                     *
+                     * The ⌘N hint is back at the trailing edge, where the Swift puts it. It had
+                     * been moved INSIDE the button because trailing it after a "New Group"
+                     * button read as New Group's shortcut (the run-B nit) — that button is gone,
+                     * so the hint now trails the only labelled action in the row, which is the
+                     * reading the Swift relies on too.
+                     */
+                    <div className="flex items-center" style={{ gap: FOOTER_GAP_PX }}>
                         <button
                             type="button"
                             data-testid="sidebar-new-workspace"
                             aria-label="New Workspace"
                             title="New Workspace (⌘N)"
-                            className="flex items-center gap-1 text-[12px]"
-                            style={{ color: tokens.textSecondary }}
+                            className="flex items-center text-[12px]"
+                            style={{ color: tokens.textSecondary, gap: FOOTER_GAP_PX }}
                             onClick={() => {
                                 setNewForm({ kind: 'workspace', groupID: null });
                             }}
                         >
                             <ChromeIcon name="plus" /> New Workspace
-                            <span className="font-mono text-[10px]" style={{ color: tokens.textTertiary }}>
-                                ⌘N
-                            </span>
                         </button>
+                        {/*
+                          * `Menu { … } label: Image("chevron.down").font(.system(size: 9,
+                          * weight: .semibold))` — a single-glyph borderless menu in the
+                          * secondary text colour, which is why the Swift composes the row from
+                          * a Button PLUS a Menu rather than one Menu with a custom label.
+                          */}
                         <button
+                            ref={footerMenuButtonRef}
                             type="button"
-                            className="text-[12px]"
+                            data-testid="sidebar-new-menu-toggle"
+                            aria-label="New Workspace options"
+                            aria-haspopup="menu"
+                            aria-expanded={menu !== null && menu.kind === 'footer'}
+                            title="New Workspace options"
+                            className="flex items-center"
                             style={{ color: tokens.textSecondary }}
-                            onClick={() => {
-                                setNewForm({ kind: 'group', groupID: null });
-                            }}
+                            onClick={toggleFooterMenu}
                         >
-                            New Group
+                            <ChromeIcon name="chevron-down" size={9} />
                         </button>
-                        {props.onOpenSettings === undefined ? null : (
-                            <button
-                                type="button"
-                                data-testid="sidebar-settings"
-                                aria-label="Settings"
-                                title="Settings (⌘,)"
-                                className="ml-auto flex items-center"
-                                style={{ color: tokens.textSecondary }}
-                                onClick={() => {
-                                    props.onOpenSettings?.();
-                                }}
-                            >
-                                <ChromeIcon name="gear" />
-                            </button>
-                        )}
+                        <span
+                            data-testid="sidebar-new-workspace-hint"
+                            className="ml-auto font-mono text-[11px]"
+                            style={{ color: tokens.textTertiary }}
+                        >
+                            ⌘N
+                        </span>
                     </div>
                 ) : (
                     <NewEntryForm
@@ -3892,8 +4028,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     x={menu.x}
                     y={menu.y}
                     items={menuItems}
-                    onClose={closeMenu}
-                    label={menu.kind === 'group' ? 'Group menu' : 'Workspace menu'}
+                    /* §WS-004's menu is opened by a CLICK, not a right-click, so it takes the
+                       keyboard the way a dropdown does — first row focused, Escape back to the
+                       chevron. The three context menus keep the pointer-driven behaviour they
+                       have always had. */
+                    {...(menu.kind === 'footer' ? { autoFocus: true } : {})}
+                    onClose={menu.kind === 'footer' ? closeFooterMenu : closeMenu}
+                    label={
+                        menu.kind === 'footer'
+                            ? 'New'
+                            : menu.kind === 'group'
+                              ? 'Group menu'
+                              : 'Workspace menu'
+                    }
                 />
             )}
 

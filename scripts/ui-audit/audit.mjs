@@ -517,7 +517,6 @@ const PAGE = {
     footer: '[data-testid="status-footer"]',
     topBar: '[data-testid="top-bar"]',
     settingsPanel: '[data-testid="settings-panel"]',
-    settingsButton: '[data-testid="sidebar-settings"]',
     contextMenu: '[data-testid="context-menu"]'
 };
 
@@ -534,18 +533,26 @@ const paneCountExpr = `document.querySelectorAll('[data-testid^="pane-header-"]'
 const paneIDsExpr = `Array.from(document.querySelectorAll('[data-testid^="pane-header-"]')).map(el => el.getAttribute('data-testid').slice('pane-header-'.length))`;
 
 /**
- * Open the Settings overlay on a given tab, whatever state it is in.
+ * Open the Settings overlay, whatever state it is in.
  *
- * Clicking the sidebar gear while the overlay is ALREADY open lands on the modal backdrop and
- * closes it — which is correct behaviour and a trap for any step that assumes the gear is a
- * plain "open". Steps that need a particular tab call this instead of re-deriving the dance.
+ * The sidebar footer's gear is gone: the Swift footer (`WorkspaceListView.swift:394-446`,
+ * §WS-004) carries a "+ New Workspace" button, a chevron menu and a ⌘N hint, and no gear at
+ * all. Settings keeps three routes without it — ⌘, (the platform chord `App.tsx` installs
+ * outside the binding map), the ••• menu's "Settings…" row (§APP-053, which is the shipped
+ * app's own gesture) and the command palette — and this presses the chord.
+ *
+ * It is also strictly better behaved than the click it replaces: the gear, pressed while the
+ * overlay was already up, landed on the modal backdrop and CLOSED it, so every caller had to
+ * re-derive the "only if it isn't open" dance. The chord is idempotent, so nobody does.
  */
+async function openSettingsRoot(page) {
+    await page.key('Comma', { modifiers: MOD.meta });
+    await sleep(700);
+}
+
+/** The same, then a named tab. */
 async function openSettingsTab(page, tab) {
-    const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
-    if (open !== true) {
-        await page.click(PAGE.settingsButton);
-        await sleep(700);
-    }
+    await openSettingsRoot(page);
     await page.click(`[data-testid="settings-tab-button-${tab}"]`);
     await sleep(600);
 }
@@ -1117,6 +1124,15 @@ async function main() {
             consoleErrors.push(`exception: ${params.exceptionDetails?.exception?.description ?? params.exceptionDetails?.text ?? '?'}`);
         });
 
+        /*
+         * Un-occlude the window before anything animates. Chromium throttles rAF to ~0 Hz for
+         * an occluded window, and §WS-001's slide advances on a double rAF — with the audit
+         * window behind others, the sidebar sticks at phase 'opening' forever and every step
+         * waiting on it dies with 'timed out waiting for …' (the run-P attempts 3-4 death
+         * class, root-caused during the footer-menu work). bringToFront raises the target
+         * without the resign/become-key churn that blurs an inline rename mid-typing.
+         */
+        await page.send('Page.bringToFront').catch(() => {});
         await page.waitFor(`document.querySelector('${PAGE.app}') !== null`, {
             timeoutMs: 60_000,
             label: 'the app to mount'
@@ -5538,10 +5554,10 @@ function buildFlows(ctx) {
         // ── settings ────────────────────────────────────────────────────────────────
         {
             id: 'settings-open',
-            expect: 'The gear in the sidebar footer opens a settings overlay whose tab rail carries General, Appearance, Workspaces, Keybindings, Labels, Profiles and Web, over a dimmed backdrop.',
+            expect: '⌘, opens a settings overlay whose tab rail carries General, Appearance, Workspaces, Keybindings, Labels, Profiles and Web, over a dimmed backdrop. (The sidebar footer’s gear is gone — the Swift footer has none, §WS-004 — so the chord, the ••• menu’s "Settings…" row and the palette are the routes.)',
             needsEyes: true,
             async run(recorder) {
-                await page.click(PAGE.settingsButton);
+                await openSettingsRoot(page);
                 await sleep(900);
                 await recorder.shot(page);
                 const shape = await page.eval(
@@ -10273,7 +10289,7 @@ function buildFlows(ctx) {
                 // binding map through the ••• menu, and that menu is behind the modal backdrop.
                 const splitBinding = await liveShortcut(page, 'split_right');
                 const beforeSettings = await page.eval(paneCountExpr);
-                await page.click(PAGE.settingsButton);
+                await openSettingsRoot(page);
                 await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') !== null`, {
                     timeoutMs: 8000,
                     label: 'the Settings overlay'
@@ -12868,7 +12884,7 @@ function buildFlows(ctx) {
                 const extra = autoDetectRepo();
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
                 if (open !== true) {
-                    await page.click(PAGE.settingsButton);
+                    await openSettingsRoot(page);
                     await sleep(800);
                 }
                 await page.click('[data-testid="settings-tab-button-repositories"]');
@@ -17001,7 +17017,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
                 if (open !== true) {
-                    await page.click(PAGE.settingsButton);
+                    await openSettingsRoot(page);
                     await sleep(800);
                 }
                 await page.click('[data-testid="settings-tab-button-labels"]');
@@ -17153,7 +17169,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
                 if (open !== true) {
-                    await page.click(PAGE.settingsButton);
+                    await openSettingsRoot(page);
                     await sleep(800);
                 }
                 await page.click('[data-testid="settings-tab-button-appearance"]');
@@ -17298,7 +17314,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
                 if (open !== true) {
-                    await page.click(PAGE.settingsButton);
+                    await openSettingsRoot(page);
                     await sleep(800);
                 }
                 await page.click('[data-testid="settings-tab-button-keybindings"]');
@@ -17463,7 +17479,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-remaining',
             expect:
-                'The last five sidebar gestures the sweep had open: the shell’s real View ▸ Toggle Sidebar item (⌘⇧S) and the SLIDE the toggle plays in both directions (§WS-001); a row’s "Color ▸" reaching the daemon and coming back ticked (§WS-048); "Move to Group ▸ New Group…" creating a group AROUND the row and dropping into its rename (§WS-052); the active-agents gate on a row delete (§WS-054); and the single confirmation a multi-select delete raises (§WS-062).',
+                'The last five sidebar gestures the sweep had open: the shell’s real View ▸ Toggle Sidebar item (⌘⇧S) and the SLIDE the toggle plays in both directions (§WS-001); a row’s "Color ▸" reaching the daemon and coming back ticked (§WS-048); "Move to Group ▸ New Group…" creating a group AROUND the row and dropping into its rename (§WS-052); the active-agents gate on a row delete (§WS-054); and the single confirmation a multi-select delete raises (§WS-062). Then the FOOTER (§WS-004): "+ New Workspace" and a chevron and nothing else — no second New Group button, no settings gear — at the Swift’s 12px/6px, with the ⌘N hint trailing outside the button; the chevron opening a two-row dropdown; its New Group minting a group and dropping into inline rename (⌘⇧G’s contract, not the footer form); and the + button raising the sheet.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -17993,7 +18009,227 @@ function buildFlows(ctx) {
                     );
                 }
 
+                /*
+                 * ── §WS-004: the footer bar, and the chevron that got it reported ────
+                 *
+                 * The user's words about what shipped here: "this is meant to be a dropdown
+                 * toggle like the swift version". `WorkspaceListView.swift:394-446` is ONE
+                 * `HStack(spacing: 6)` under `.padding(12)` — a plain "+ New Workspace" button,
+                 * a small `chevron.down` Menu holding New Workspace / New Group, a spacer, and
+                 * an 11pt monospaced ⌘N hint. What is NOT in it is half the claim: no second
+                 * "New Group" text button, and no settings gear (Settings keeps ⌘,, the •••
+                 * menu's "Settings…" row and the palette).
+                 *
+                 * Placed at the END of this step deliberately: the New Group row MINTS a group
+                 * named `New Group`, and §WS-052 above waits on `input[aria-label="Rename New
+                 * Group"]` by its exact name — running this first would rename that field to
+                 * "New Group 2" and break a flow that has nothing to do with the footer. The
+                 * minted group is deleted in the hand-back below.
+                 */
+                const footerShape = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const plus = document.querySelector('[data-testid="sidebar-new-workspace"]');
+                                if (plus === null) return JSON.stringify({ present: false });
+                                const row = plus.parentElement;
+                                const bar = row.parentElement;
+                                const hint = document.querySelector('[data-testid="sidebar-new-workspace-hint"]');
+                                const buttons = Array.from(row.querySelectorAll('button'));
+                                return JSON.stringify({
+                                    present: true,
+                                    controls: buttons.map(el => el.getAttribute('data-testid')),
+                                    plusLabel: (plus.innerText || '').trim(),
+                                    plusIcon: plus.querySelector('[data-icon="plus"]') !== null,
+                                    chevronIcon: document.querySelector('[data-testid="sidebar-new-menu-toggle"] [data-icon="chevron-down"]') !== null,
+                                    hint: hint === null ? null : (hint.textContent || '').trim(),
+                                    hintInsideButton: hint !== null && plus.contains(hint),
+                                    hintSize: hint === null ? null : getComputedStyle(hint).fontSize,
+                                    newGroupButton: buttons.some(el => (el.innerText || '').trim() === 'New Group'),
+                                    gear: document.querySelector('[data-testid="sidebar-settings"]') !== null,
+                                    gap: getComputedStyle(row).columnGap,
+                                    padding: getComputedStyle(bar).padding
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`footer: ${JSON.stringify(footerShape)}`);
+                await recorder.shot(page, 'footer-closed');
+                recorder.check(
+                    'the footer carries exactly the Swift’s two controls — "+ New Workspace" and a chevron (§WS-004)',
+                    JSON.stringify(footerShape.controls) ===
+                        JSON.stringify(['sidebar-new-workspace', 'sidebar-new-menu-toggle']),
+                    JSON.stringify(footerShape.controls)
+                );
+                recorder.check(
+                    'the primary button reads "+ New Workspace" and the chevron is a chevron',
+                    footerShape.plusLabel === 'New Workspace' &&
+                        footerShape.plusIcon === true &&
+                        footerShape.chevronIcon === true,
+                    `${String(footerShape.plusLabel)} · plus=${String(footerShape.plusIcon)} · chevron=${String(footerShape.chevronIcon)}`
+                );
+                recorder.check(
+                    'the ⌘N hint trails the row at 11px, OUTSIDE the button (the Swift’s own placement)',
+                    footerShape.hint === '⌘N' &&
+                        footerShape.hintInsideButton === false &&
+                        footerShape.hintSize === '11px',
+                    JSON.stringify([footerShape.hint, footerShape.hintInsideButton, footerShape.hintSize])
+                );
+                recorder.check(
+                    'there is NO second "New Group" button in the bar — it belongs behind the chevron',
+                    footerShape.newGroupButton === false,
+                    String(footerShape.newGroupButton)
+                );
+                recorder.check(
+                    'and NO settings gear: the Swift footer has none (⌘, / ••• ▸ Settings… / the palette remain)',
+                    footerShape.gear === false,
+                    String(footerShape.gear)
+                );
+                recorder.check(
+                    'the bar spends the Swift’s numbers: 12px padding, 6px between the controls',
+                    footerShape.padding === '12px' && footerShape.gap === '6px',
+                    `padding ${String(footerShape.padding)} · gap ${String(footerShape.gap)}`
+                );
+
+                // The chevron OPENS a menu — the whole point of the report.
+                await page.click('[data-testid="sidebar-new-menu-toggle"]');
+                await sleep(450);
+                const footerMenu = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const toggle = document.querySelector('[data-testid="sidebar-new-menu-toggle"]');
+                                const menu = document.querySelector('[data-testid="context-menu"]');
+                                const expanded = toggle === null ? null : toggle.getAttribute('aria-expanded');
+                                if (menu === null) return JSON.stringify({ open: false, expanded });
+                                const rows = Array.from(menu.querySelectorAll('[data-menu-item]'));
+                                return JSON.stringify({
+                                    open: true,
+                                    expanded,
+                                    ids: rows.map(el => el.getAttribute('data-menu-item')),
+                                    labels: rows.map(el => (el.textContent || '').trim()),
+                                    focusedRow: document.activeElement === null ? null : document.activeElement.getAttribute('data-menu-item'),
+                                    aboveTheBar: toggle === null ? null : menu.getBoundingClientRect().bottom <= toggle.getBoundingClientRect().top + 1
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`footer menu: ${JSON.stringify(footerMenu)}`);
+                await recorder.shot(page, 'footer-menu-open');
+                recorder.check(
+                    'the chevron opens a menu and says so (§WS-004)',
+                    footerMenu.open === true && footerMenu.expanded === 'true',
+                    JSON.stringify([footerMenu.open, footerMenu.expanded])
+                );
+                recorder.check(
+                    'holding exactly two rows: New Workspace, New Group',
+                    JSON.stringify(footerMenu.ids) === JSON.stringify(['new-workspace', 'new-group']),
+                    JSON.stringify(footerMenu.labels)
+                );
+                recorder.check(
+                    'it drops UPWARD, clear of the bar it hangs off',
+                    footerMenu.aboveTheBar === true,
+                    String(footerMenu.aboveTheBar)
+                );
+                recorder.check(
+                    'and it takes the keyboard, so the first row is one Enter away',
+                    footerMenu.focusedRow === 'new-workspace',
+                    String(footerMenu.focusedRow)
+                );
+
+                /*
+                 * New Group through the chevron is ⌘⇧G's contract, not the footer FORM: mint the
+                 * placeholder, drop straight into inline rename (§WS-123). The port used to open
+                 * a form here — a name up front, a blank one refused — which is a different
+                 * gesture wearing the same label.
+                 */
+                const groupsBeforeFooter = await cli.json(['group', 'list', '--json']);
+                await clickMenuItem(page, 'New Group');
+                let mintedOpen = false;
+                try {
+                    await page.waitFor(
+                        `document.querySelector('input[aria-label^="Rename New Group"]') !== null`,
+                        { timeoutMs: 20_000, label: 'the chevron-minted group’s inline rename field' }
+                    );
+                    mintedOpen = true;
+                } catch (error) {
+                    recorder.note(`chevron ▸ New Group opened no rename field: ${String(error?.message ?? error)}`);
+                }
+                const mintedField = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('input[aria-label^="Rename New Group"]');
+                                if (el === null) return JSON.stringify({ open: false });
+                                return JSON.stringify({
+                                    open: true,
+                                    focused: document.activeElement === el,
+                                    value: el.value,
+                                    selected: el.selectionEnd - el.selectionStart,
+                                    formInstead: document.querySelector('[data-testid="new-group-form"]') !== null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`chevron ▸ New Group: ${JSON.stringify(mintedField)}`);
+                await recorder.shot(page, 'footer-menu-new-group');
+                recorder.check(
+                    'chevron ▸ New Group mints a group and drops into inline rename, focused and selected (§WS-004/§WS-123)',
+                    mintedOpen === true &&
+                        mintedField.open === true &&
+                        mintedField.focused === true &&
+                        mintedField.selected === String(mintedField.value).length,
+                    JSON.stringify(mintedField)
+                );
+                recorder.check(
+                    'rather than opening the footer form — the divergence this closed',
+                    mintedField.formInstead === false,
+                    String(mintedField.formInstead)
+                );
+                let footerGroup = null;
+                for (let attempt = 0; attempt < 10; attempt++) {
+                    footerGroup =
+                        (await cli.json(['group', 'list', '--json'])).find(
+                            (group) =>
+                                String(group.name).startsWith('New Group') &&
+                                !groupsBeforeFooter.some((before) => before.id === group.id)
+                        ) ?? null;
+                    if (footerGroup !== null) break;
+                    await sleep(400);
+                }
+                recorder.check(
+                    'and the DAEMON has it — the mint is a real create, not a field on screen',
+                    footerGroup !== null,
+                    JSON.stringify(footerGroup)
+                );
+                await page.key('Escape');
+                await sleep(400);
+
+                // The + button raises the sheet (§WS-075's form), which is the other row.
+                await page.click('[data-testid="sidebar-new-workspace"]');
+                let footerSheet = false;
+                try {
+                    await page.waitFor(`document.querySelector('[data-testid="new-workspace-form"]') !== null`, {
+                        timeoutMs: 10_000,
+                        label: 'the New Workspace sheet from the + button'
+                    });
+                    footerSheet = true;
+                } catch (error) {
+                    recorder.note(`the + button opened no sheet: ${String(error?.message ?? error)}`);
+                }
+                recorder.check('the + button opens the New Workspace sheet (§WS-004)', footerSheet === true);
+                await page.key('Escape');
+                await page.waitFor(`document.querySelector('[data-testid="sidebar-new-workspace"]') !== null`, {
+                    timeoutMs: 10_000,
+                    label: 'the footer bar to come back after cancelling the sheet'
+                });
+                await sleep(300);
+
                 // ── hand the run back where it found it ──────────────────────────────
+                if (footerGroup !== null) await cli.run(['group', 'delete', String(footerGroup.id)]);
                 await cli.run(['group', 'delete', 'Remain Group']);
                 await page.waitFor(`document.querySelectorAll('${PAGE.workspaceRows}').length > 0`, {
                     timeoutMs: 20_000,

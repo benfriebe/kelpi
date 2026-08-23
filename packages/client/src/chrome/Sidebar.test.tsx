@@ -384,7 +384,7 @@ describe('context menus (portal-based)', () => {
         const onCreateGroup = vi.fn();
         render(<Sidebar {...noopProps()} entries={entries()} onCreateGroup={onCreateGroup} />);
         fireEvent.contextMenu(screen.getByTestId('sidebar-spacer'));
-        // Scoped: the footer carries a "New Group" button of its own.
+        // Scoped to the menu: §WS-004's footer chevron offers the same two labels.
         fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Group'));
 
         const input = screen.getByLabelText('New group name') as HTMLInputElement;
@@ -720,5 +720,167 @@ describe('move to group', () => {
     it('drops the entry entirely when assembly has not wired it', () => {
         // The submenu is then exactly what it was before §WS-052, rather than an inert row.
         expect(menuLabels(openMoveSubmenu(0))).toEqual(['squad']);
+    });
+});
+
+// ── §WS-004: the footer bar and its chevron menu ────────────────────────────────────
+//
+// `WorkspaceListView.swift:394-446`: one `HStack(spacing: 6)` under `.padding(12)` — a plain
+// "+ New Workspace" button, a small `chevron.down` MENU offering New Workspace / New Group, a
+// spacer, and an 11pt monospaced `⌘N` hint. What is NOT in it matters as much as what is:
+// there is no second "New Group" text button and no settings gear.
+
+/** The footer row — the always-present bar, not the create form that replaces it. */
+function footerRow(): HTMLElement {
+    return screen.getByTestId('sidebar-new-workspace').parentElement as HTMLElement;
+}
+
+function openFooterMenu(): HTMLElement {
+    fireEvent.click(screen.getByTestId('sidebar-new-menu-toggle'));
+    return screen.getByTestId('context-menu');
+}
+
+describe('the footer bar (§WS-004)', () => {
+    it('carries exactly the Swift’s controls: "+ New Workspace", a chevron, a ⌘N hint', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const row = footerRow();
+        const buttons = [...row.querySelectorAll('button')];
+        expect(buttons.map((button) => button.getAttribute('data-testid'))).toEqual([
+            'sidebar-new-workspace',
+            'sidebar-new-menu-toggle'
+        ]);
+        expect((buttons[0]?.textContent ?? '').trim()).toBe('New Workspace');
+        expect(buttons[0]?.querySelector('[data-icon="plus"]')).not.toBeNull();
+        expect(buttons[1]?.querySelector('[data-icon="chevron-down"]')).not.toBeNull();
+        expect(screen.getByTestId('sidebar-new-workspace-hint').textContent).toBe('⌘N');
+    });
+
+    it('has NO separate New Group button in the footer', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onCreateGroup={vi.fn()} />);
+        // The label exists only inside the chevron menu, which is closed.
+        expect(within(footerRow()).queryByText('New Group')).toBeNull();
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+    });
+
+    it('has NO settings gear, even when assembly wires onOpenSettings', () => {
+        // `onOpenSettings` is still read — the Labels submenu's "Manage Labels…" deep link uses
+        // it — so its presence must not put a control back in the footer. Settings keeps ⌘,,
+        // the ••• menu's "Settings…" row (§APP-053) and the command palette.
+        render(<Sidebar {...noopProps()} entries={entries()} onOpenSettings={vi.fn()} />);
+        expect(screen.queryByTestId('sidebar-settings')).toBeNull();
+        expect(footerRow().querySelector('[data-icon="gear"]')).toBeNull();
+    });
+
+    it('spends the Swift’s numbers: 12px bar padding, 6px between the controls', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const row = footerRow();
+        expect(row.style.gap).toBe('6px');
+        expect((row.parentElement as HTMLElement).style.padding).toBe('12px');
+    });
+
+    it('puts the ⌘N hint at the trailing edge, outside the button it belongs to', () => {
+        // It used to ride INSIDE the button, because trailing it after a "New Group" button
+        // read as New Group's shortcut (the run-B nit). That button is gone.
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const hint = screen.getByTestId('sidebar-new-workspace-hint');
+        expect(screen.getByTestId('sidebar-new-workspace').contains(hint)).toBe(false);
+        expect(hint.parentElement).toBe(footerRow());
+        expect(hint.className).toContain('ml-auto');
+        expect(hint.className).toContain('font-mono');
+        expect(hint.className).toContain('text-[11px]');
+    });
+
+    it('opens the New Workspace form from the + button', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onCreateWorkspace={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('sidebar-new-workspace'));
+        expect(screen.getByTestId('new-workspace-form')).toBeDefined();
+    });
+});
+
+describe('the footer chevron menu (§WS-004)', () => {
+    it('opens on click with exactly two rows, and closes on a second click', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        const toggle = screen.getByTestId('sidebar-new-menu-toggle');
+        expect(toggle.getAttribute('aria-haspopup')).toBe('menu');
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+        expect(menuLabels(openFooterMenu())).toEqual(['New Workspace', 'New Group']);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+        fireEvent.click(toggle);
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('"New Workspace" opens the same form the + button does', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onCreateWorkspace={vi.fn()} />);
+        fireEvent.click(within(openFooterMenu()).getByText('New Workspace'));
+        expect(screen.getByTestId('new-workspace-form')).toBeDefined();
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+    });
+
+    it('"New Group" runs ⌘⇧G’s own one-shot, not the form', () => {
+        // `WorkspaceListView.swift:414-417` — `createGroup(name:autoRename:)`, the same call the
+        // chord and File ▸ New Group make (§WS-123): mint, inline rename, reveal.
+        const onNewGroupWithRename = vi.fn();
+        const onCreateGroup = vi.fn();
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={entries()}
+                onCreateGroup={onCreateGroup}
+                onNewGroupWithRename={onNewGroupWithRename}
+            />
+        );
+        fireEvent.click(within(openFooterMenu()).getByText('New Group'));
+        expect(onNewGroupWithRename).toHaveBeenCalledTimes(1);
+        // The form is what it must NOT do — a name typed up front is the divergence this closed.
+        expect(screen.queryByTestId('new-group-form')).toBeNull();
+        expect(onCreateGroup).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the New Group form when assembly has not wired the one-shot', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} onCreateGroup={vi.fn()} />);
+        fireEvent.click(within(openFooterMenu()).getByText('New Group'));
+        expect(screen.getByTestId('new-group-form')).toBeDefined();
+    });
+
+    it('takes the keyboard on open, so the first row is one Enter away', () => {
+        const onNewGroupWithRename = vi.fn();
+        render(
+            <Sidebar {...noopProps()} entries={entries()} onNewGroupWithRename={onNewGroupWithRename} />
+        );
+        const menu = openFooterMenu();
+        const rows = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+        expect(document.activeElement).toBe(rows[0]);
+
+        // Enter on a focused button IS a click; jsdom does not synthesise it, so the assertion
+        // is that activating the FOCUSED row runs that row's action.
+        rows[1]?.focus();
+        fireEvent.click(document.activeElement as HTMLElement);
+        expect(onNewGroupWithRename).toHaveBeenCalledTimes(1);
+    });
+
+    it('dismisses on Escape and hands the keyboard back to the chevron', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        openFooterMenu();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+        expect(document.activeElement).toBe(screen.getByTestId('sidebar-new-menu-toggle'));
+    });
+
+    it('dismisses on an outside click', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        openFooterMenu();
+        fireEvent.mouseDown(document.body);
+        expect(screen.queryByTestId('context-menu')).toBeNull();
+    });
+
+    it('is one menu at a time — a row’s context menu replaces it', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} />);
+        openFooterMenu();
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        expect(screen.getAllByTestId('context-menu')).toHaveLength(1);
+        expect(menuLabels(screen.getByTestId('context-menu'))).toContain('Rename…');
     });
 });

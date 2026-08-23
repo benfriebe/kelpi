@@ -138,7 +138,9 @@ describe('§TERM-154 — the dispatcher defers to a key secondary window', () =>
     it('does NOT dispatch a pane binding while Settings is open', async () => {
         const h = setup();
         act(() => {
-            fireEvent.click(screen.getByTestId('sidebar-settings'));
+            // ⌘, — the sidebar footer's gear is gone (§WS-004: the Swift footer has none), so
+            // the overlay is raised by the chord the app installs outside the binding map.
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
         });
         await screen.findByTestId('settings-panel');
         const before = h.commandNames().length;

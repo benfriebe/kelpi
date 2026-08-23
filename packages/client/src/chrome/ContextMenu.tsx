@@ -85,6 +85,16 @@ export interface ContextMenuProps {
     readonly items: readonly MenuItemSpec[];
     readonly onClose: () => void;
     readonly label?: string | undefined;
+    /**
+     * Take the keyboard on open, landing on the first enabled row.
+     *
+     * Off by default, and deliberately: a *context* menu is raised by a right-click over a row,
+     * and pulling focus out of whatever the user was in (a rename field, the terminal) to a
+     * menu they may dismiss with one more click is a worse trade than leaving focus alone. A
+     * menu opened by CLICKING a toggle — §WS-004's footer chevron — is the opposite case: it is
+     * a dropdown, so it behaves like one, and Escape hands focus back through `onClose`.
+     */
+    readonly autoFocus?: boolean | undefined;
     /** Test seam: where the portal mounts (defaults to `document.body`). */
     readonly container?: Element | undefined;
 }
@@ -211,6 +221,13 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             doc.removeEventListener('keydown', onKeyDown, true);
         };
     }, [onClose]);
+
+    const autoFocus = props.autoFocus ?? false;
+    useEffect(() => {
+        if (!autoFocus) return;
+        const first = rootRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])');
+        first?.focus();
+    }, [autoFocus]);
 
     const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
     const submenu = useSubmenuFlip(openSubmenuID !== null && submenuItems !== undefined);

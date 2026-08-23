@@ -120,12 +120,32 @@ describe('opening the Settings window', () => {
         expect(screen.getByTestId('settings-window')).toBeDefined();
     });
 
-    it('opens from the sidebar gear', () => {
+    /*
+     * This used to press the sidebar footer's gear. The Swift footer has no gear (§WS-004:
+     * "+ New Workspace", a chevron menu, a ⌘N hint), so the port's was removed and the POINTER
+     * route to Settings is the ••• menu's "Settings…" row — the shipped app's own gesture
+     * (§APP-053, `WindowTitleBar.swift:243-251`). Same claim, stricter evidence: it opens a
+     * menu, finds the row by its label, and clicks it.
+     */
+    it('opens from the ••• menu’s Settings… row', () => {
         setup();
         act(() => {
-            fireEvent.click(screen.getByTestId('sidebar-settings'));
+            fireEvent.click(screen.getByTestId('titlebar-menu-toggle'));
+        });
+        const row = [...screen.getByTestId('context-menu').querySelectorAll('[data-menu-item]')].find(
+            (node) => (node.querySelector('span.flex-1')?.textContent ?? '').trim() === 'Settings…'
+        );
+        expect(row).toBeDefined();
+        act(() => {
+            fireEvent.click(row as HTMLElement);
         });
         expect(screen.getByTestId('settings-window')).toBeDefined();
+    });
+
+    /* The footer carries no Settings control at all any more — the parity claim, asserted. */
+    it('has no gear in the sidebar footer', () => {
+        setup();
+        expect(screen.queryByTestId('sidebar-settings')).toBeNull();
     });
 
     it('opens from the command palette', () => {
@@ -204,7 +224,8 @@ describe('a recorded keybinding, end to end', () => {
     it('records → set-keybinding → settings-changed → the table shows the new chip', () => {
         const h = setup();
         act(() => {
-            fireEvent.click(screen.getByTestId('sidebar-settings'));
+            // ⌘, — the footer gear these three used to press is gone (§WS-004).
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
         });
 
         // Before: `open_diff` ships unbound.
@@ -242,7 +263,8 @@ describe('a recorded keybinding, end to end', () => {
     it('shows the shell’s registration failure on Keybindings, and clears it on success', () => {
         const h = setup();
         act(() => {
-            fireEvent.click(screen.getByTestId('sidebar-settings'));
+            // ⌘, — the footer gear these three used to press is gone (§WS-004).
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
         });
         expect(screen.queryByTestId('global-hotkey-failure')).toBeNull();
 
@@ -292,7 +314,8 @@ describe('a recorded keybinding, end to end', () => {
 describe('the other tabs on the wire', () => {
     const openTab = (tab: string): void => {
         act(() => {
-            fireEvent.click(screen.getByTestId('sidebar-settings'));
+            // ⌘, — the footer gear these three used to press is gone (§WS-004).
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
         });
         act(() => {
             fireEvent.click(screen.getByTestId(`settings-tab-button-${tab}`));

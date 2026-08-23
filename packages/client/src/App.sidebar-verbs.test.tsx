@@ -277,6 +277,33 @@ describe('Move to Group ▸ New Group… (§WS-052)', () => {
             });
             expect(revealedHeader()).toBe(true);
         });
+
+        /**
+         * §WS-004's chevron menu — the third route, and the one that used to disagree with the
+         * other two. The Swift footer's menu runs the same `createGroup(name:autoRename:)` the
+         * chord and the File row do (`WorkspaceListView.swift:414-417`); the port's footer used
+         * to open the New Group FORM instead, which is a different contract (a name up front, a
+         * blank one refused, no reveal). Asserted at the wire, beside ⌘⇧G's own frame, so the
+         * two cannot drift apart again.
+         */
+        it('from the footer chevron menu ▸ New Group, identically to ⌘⇧G', async () => {
+            const h = setup();
+            fireEvent.click(screen.getByTestId('sidebar-new-menu-toggle'));
+            fireEvent.click(within(screen.getByTestId('context-menu')).getByText('New Group'));
+            expect(h.lastCommand('create-group-for-workspaces')).toMatchObject({
+                command: 'create-group-for-workspaces',
+                name: 'New Group',
+                workspace_ids: []
+            });
+            expect(h.lastCommand('group-create')).toBeUndefined();
+            // Not the form: that is the divergence this menu closed.
+            expect(screen.queryByTestId('new-group-form')).toBeNull();
+            answer(h);
+            await waitFor(() => {
+                expect(screen.getByLabelText('Rename New Group')).toBeTruthy();
+            });
+            expect(revealedHeader()).toBe(true);
+        });
     });
 });
 

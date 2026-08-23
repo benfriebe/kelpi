@@ -109,6 +109,67 @@ const DEFAULT_ROW_HEIGHT = 34;
 const CONTENT_TOP_PADDING = 4;
 
 /**
+ * THE SIDEBAR'S TEXT IS CHROME, NOT CONTENT (2026-08-23).
+ *
+ * The user's words: "dragging around on the sidebar selects the text, it shouldn't do that."
+ * The parity statement is stronger than the bug report: an AppKit/SwiftUI `List` row's labels
+ * are drawn `Text`, and drawn `Text` has no selection model at all — you cannot smear a
+ * workspace name in the shipped app however hard you drag, and you cannot double-click one to
+ * highlight a word either. The port renders real text nodes, so it inherits the browser's
+ * default and every drag across a row leaves a blue smear trailing the cursor clone.
+ *
+ * `user-select: none` on the sidebar CONTAINER is both halves of the answer: it is the parity
+ * behaviour, and it kills the drag-smear at the root rather than at the symptom — a `mousedown`
+ * that lands on unselectable text never begins a selection, so there is nothing to grow as the
+ * pointer moves and nothing to clear on release. Doing it at the container (one place) rather
+ * than per row also covers the group headers, the label chips, the footer captions and every
+ * row-shaped thing added later, which a per-component rule would not.
+ *
+ * Unprefixed, and deliberately only unprefixed: the shell is Electron/Chromium, which has
+ * answered to plain `user-select` since Chrome 54, and a `-webkit-` twin would be a property
+ * no test in this repo could see — jsdom's `cssstyle` drops vendor-prefixed declarations on
+ * the floor, so it would be an unobservable claim sitting next to an observable one.
+ */
+const UNSELECTABLE_TEXT_STYLE = {
+    userSelect: 'none'
+} as const satisfies CSSProperties;
+
+/**
+ * …and the explicit opt-BACK-IN, for every editable inside that container.
+ *
+ * `user-select` INHERITS, and a text field under a `user-select: none` ancestor loses caret
+ * dragging, double-click-to-word and shift-arrow selection in WebKit-derived engines — the UA
+ * stylesheet does not re-assert it on `<input>`. So the rule above would quietly break typing
+ * ergonomics in the rename editor, the filter field and the create form, which is exactly the
+ * class of regression a "parity polish" is supposed not to introduce.
+ *
+ * Applied to every `<input type="text">` under `[data-testid="sidebar"]`: `InlineEditor` (the
+ * workspace AND group rename), the filter field, and `NewEntryForm`'s name / worktree-name /
+ * branch-name fields. Checkboxes and `<select>`s have no text to select and are left alone.
+ * The emoji sheet and the confirm dialog are `createPortal`'d onto `document.body`, so they are
+ * outside the container and never inherit the rule in the first place.
+ */
+const SELECTABLE_TEXT_STYLE = {
+    userSelect: 'text'
+} as const satisfies CSSProperties;
+
+/**
+ * A selection made ELSEWHERE — in a terminal pane, the inspector, or an earlier caret drag
+ * inside the filter field — survives into a sidebar drag and smears as the pointer moves, and
+ * `user-select: none` cannot help with it: the ranges already exist and the selection simply
+ * EXTENDS through the unselectable region rather than starting in it.
+ *
+ * So the drag drops it, at the exact moment the press becomes a drag (5px + §WS-093's measure
+ * gate) rather than on `mousedown` — a press that never moves must not destroy the user's
+ * selection somewhere else on screen.
+ */
+function clearDocumentSelection(): void {
+    const selection = globalThis.getSelection?.();
+    if (selection === null || selection === undefined) return;
+    selection.removeAllRanges();
+}
+
+/**
  * §5.5's drag timers, verbatim from the timer inventory (§15):
  *
  *   - hovering a COLLAPSED group for 650 ms transiently expands it for the rest of the drag
@@ -382,8 +443,11 @@ function InlineEditor(props: InlineEditorProps): ReactElement {
         <input
             ref={ref}
             aria-label={props.label}
+            data-testid="inline-editor"
             className="w-full rounded border bg-transparent px-1 py-0.5 text-[13px] outline-none"
-            style={{ borderColor: tokens.accent, color: tokens.textPrimary }}
+            // The rename field is INSIDE the unselectable sidebar, so it has to opt back in or
+            // caret-dragging and double-click-to-word die with the smear.
+            style={{ borderColor: tokens.accent, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
             value={value}
             onChange={(event) => {
                 setValue(event.target.value);
@@ -455,12 +519,11 @@ interface WorkspaceRowProps {
     /** Bridge the 2px gap above / below so the rule reads as ONE line, not one dash per row. */
     readonly guideExtendUp?: boolean | undefined;
     readonly guideExtendDown?: boolean | undefined;
-    /**
-     * §WS-088: this row is the landing slot of a live drag, so a 2px accent rule marks the
-     * insertion point. (`nestPreview` covers the other half — the `ontoGroupHeader` case,
-     * whose indicator is the header band's own tint.)
+    /*
+     * §WS-088's 2px accent insertion line USED TO BE A PROP HERE, and is deliberately gone —
+     * see the note above `WorkspaceRow`. The GAP is the slot indicator; the group header's own
+     * tint (`dropPreview`) is the `ontoGroupHeader` indicator. There is no third one.
      */
-    readonly insertLine?: boolean | undefined;
     /** §WS-008: the row is newly inserted, so it plays the entry animation once. */
     readonly entering?: boolean | undefined;
     readonly groupCaption: string | null;
@@ -472,6 +535,41 @@ interface WorkspaceRowProps {
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
 }
 
+/**
+ * THE DROP INDICATOR, and why there is no line in it (2026-08-23).
+ *
+ * The user's words: "I don't want the highlighted line that appears at the drop zone." Reading
+ * the Swift to size the divergence turned it into a PARITY FIX instead, and the finding is
+ * worth stating precisely because §WS-088's own item text reads the other way.
+ *
+ * `dropIndicatorOverlay` (`WorkspaceListView.swift:1864-1901`) is gated on
+ * `!shouldLiveApplyDropTarget(target)`, and `shouldLiveApplyDropTarget` (`:2248-2255`) is
+ * `true` for `.topLevel` and `.intoGroup` and `false` only for `.ontoGroupHeader`. So the
+ * overlay renders for `.ontoGroupHeader` and nothing else — and inside it, the ONE case that
+ * would draw the 2pt accent `Rectangle` is `case .topLevel, .intoGroup`, which the gate has
+ * already excluded. `dropIndicatorLineY` returns `nil` for `.ontoGroupHeader` by construction
+ * (`:1904-1905`, and the explicit `case .ontoGroupHeader: return nil` at `:1948`). The line
+ * branch is unreachable in the shipped app: **the original never draws an insertion line on
+ * any drop.** Its comment says so in prose — "All targets that point at a specific slot are
+ * live-reordered via the reducer, so the row movement itself is the indicator" — and the port
+ * now says it in code.
+ *
+ * What indicates what, after this:
+ *
+ *   - a SLOT target (`topLevel:` / `intoGroup:`, including a specific position *inside* an
+ *     expanded group) is live-applied, so the rows have already moved and the vacated GAP
+ *     (§WS-084, d2a7a04) sits exactly where the drop will land. That is the indicator, and it
+ *     is the same one the Swift has;
+ *   - an `ontoGroupHeader` target is preview-only in both apps, so the header band's 18%
+ *     accent tint (`dropPreview`, `GroupHeaderRow`) is the indicator, and it is untouched.
+ *
+ * No case is left without one: the two are disjoint by construction (`previewGroupID` is
+ * non-null exactly when the resolved target is `ontoGroupHeader`), and the gap exists for the
+ * whole gesture regardless of which target is live. The dead machinery went with the line —
+ * the `insertLine` prop, the `data-insert-line` attribute, the child's `visibility: visible`
+ * opt-out of the gap's inherited invisibility, and both ghost-sanitiser entries that existed
+ * only to stop the rule riding the cursor.
+ */
 const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
     const counts = agentCounts([workspace]);
@@ -543,13 +641,17 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
          * flow (it is the live preview the drop zones are measured from), so the vacancy has to
          * be asked for.
          *
-         * `visibility` is the property that asks for it, and the choice is load-bearing three
-         * times over: the box is UNCHANGED, so `offsetTop`/`offsetLeft`/`getBoundingClientRect`
+         * `visibility` is the property that asks for it, and the choice is load-bearing twice
+         * over: the box is UNCHANGED, so `offsetTop`/`offsetLeft`/`getBoundingClientRect`
          * answer exactly what they answered before and §WS-093's measure gate cannot tell the
-         * difference; nothing in the subtree is painted, chrome included (fill, outline, the
-         * §WS-027 ring, §WS-007's guide), which `opacity: 0` would also do but a `height: 0`
-         * would not; and it is the one hiding primitive a CHILD can opt back out of — which is
-         * how §WS-088's insertion line stays on screen inside an invisible row.
+         * difference; and nothing in the subtree is painted, chrome included (fill, outline,
+         * the §WS-027 ring, §WS-007's guide), which `opacity: 0` would also do but a
+         * `height: 0` would not.
+         *
+         * (It used to be load-bearing a third time — `visibility` is the one hiding primitive a
+         * CHILD can opt back out of, which is how §WS-088's insertion line stayed painted
+         * inside an invisible row. The line is gone, so nothing opts out any more and the slot
+         * is empty in the strong sense: no descendant of a gap paints anything.)
          */
         ...(gap ? { visibility: 'hidden' as const } : {}),
         ...(hidden
@@ -564,7 +666,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                   pointerEvents: 'none' as const
               }
             : {}),
-        // §WS-007's rule and §WS-088's insertion line are absolutely positioned inside the row.
+        // §WS-007's guide rule is absolutely positioned inside the row.
         position: 'relative',
         // §WS-008: a row that has just appeared plays its entry once — a ONE-SHOT, never
         // retargeted, so it stays on the keyframes while the reorder half went to real physics.
@@ -578,7 +680,6 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             }}
             data-drag-hidden={hidden ? 'true' : undefined}
             data-guide={props.guideColor === undefined ? undefined : 'true'}
-            data-insert-line={props.insertLine === true ? 'true' : undefined}
             data-entering={props.entering === true ? 'true' : undefined}
             /* §WS-008: the reorder channel this row is displaced on, so an audit can tell a
                spring-driven sidebar from a transition-driven one without reading the source. */
@@ -634,32 +735,6 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                     }}
                 />
             )}
-            {/*
-             * §WS-088: the 2px accent rule at the landing slot. The shadow-commit model has
-             * already moved the row into the slot, so the line marks the boundary the row will
-             * be inserted at — the same information the Swift's preview-only indicator carries.
-             */}
-            {props.insertLine === true ? (
-                <span
-                    aria-hidden
-                    data-testid="drop-insert-line"
-                    style={{
-                        position: 'absolute',
-                        left: 0,
-                        right: 0,
-                        top: -3,
-                        height: 2,
-                        borderRadius: 1,
-                        background: tokens.accent,
-                        pointerEvents: 'none',
-                        // The row around it is the GAP (`visibility: hidden`); the rule marking
-                        // the boundary the drop lands on is the one thing in it that still
-                        // paints. Inheritance makes this a one-word opt-out rather than a
-                        // second render path.
-                        visibility: 'visible'
-                    }}
-                />
-            ) : null}
             <Avatar
                 name={workspace.name}
                 color={workspace.color}
@@ -1061,7 +1136,6 @@ const GHOST_STRIPPED_ATTRIBUTES = [
     'data-selected',
     'data-entering',
     'data-guide',
-    'data-insert-line',
     'data-nest-preview',
     'data-drag-gap',
     'data-drag-hidden',
@@ -1192,8 +1266,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const [dragID, setDragID] = useState<string | null>(null);
     /**
      * The gesture has passed the 5px threshold AND §WS-093's measure gate — i.e. it is a drag
-     * rather than a press. Rendered state (not just the mutable `DragState`) because §WS-088's
-     * insertion line must not appear on a press the user has not yet moved.
+     * rather than a press. Rendered state (not just the mutable `DragState`) because the GAP
+     * must not blank a row the user is merely resting on: a press that never moved leaves the
+     * list exactly as it found it.
      */
     const [dragActive, setDragActive] = useState(false);
     /** The group a preview-only `ontoGroupHeader` target is tinting (§5.5). */
@@ -1819,18 +1894,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (source === undefined || body === undefined || body === null) return;
             const ghost = source.cloneNode(true) as HTMLElement;
             /*
-             * Two things the photograph must NOT bring with it, taken out before the sanitiser
-             * strips the `data-testid`s that name them:
+             * The one thing the photograph must NOT bring with it, taken out before the
+             * sanitiser strips the `data-testid` that names it: §WS-007's guide rail, because
+             * `styleDragGhost` owns the rail from here on and re-mints it per resolved
+             * container rather than inheriting one.
              *
-             *   - §WS-007's guide rail, because `styleDragGhost` owns the rail from here on and
-             *     re-mints it per resolved container rather than inheriting one;
-             *   - §WS-088's insertion line, which marks a slot in the LIST and would otherwise
-             *     ride the cursor as a stray accent rule. (It cannot be present at mint —
-             *     `insertLine` needs `dragActive`, which commits a frame later — so this is a
-             *     guard against the render order changing under us, not a live case.)
+             * (§WS-088's insertion line used to need a second line here for the same reason —
+             * it marks a slot in the LIST and would have ridden the cursor as a stray accent
+             * rule. The line no longer exists, so neither does the guard.)
              */
             for (const part of ghost.querySelectorAll('[data-testid="group-guide"]')) part.remove();
-            for (const part of ghost.querySelectorAll('[data-testid="drop-insert-line"]')) part.remove();
             sanitizeGhost(ghost);
             ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
             ghost.setAttribute('aria-hidden', 'true');
@@ -2108,6 +2181,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 if (!geometryReady()) return;
                 drag.active = true;
                 setDragActive(true);
+                // A selection the user made SOMEWHERE ELSE would otherwise extend through the
+                // sidebar as the pointer travels — `user-select: none` stops one starting here,
+                // not one growing into here. Dropped at the threshold, not at the `mousedown`,
+                // so a press that never becomes a drag leaves it alone.
+                clearDocumentSelection();
                 // §WS-084: the ghost is minted only once the gesture IS a drag — a press that
                 // never moves must leave no floating row behind it.
                 startDragGhost(drag);
@@ -3434,10 +3512,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             guideColor={guideColorFor(row.groupID)}
                             guideExtendUp={sibling(above)}
                             guideExtendDown={sibling(below)}
-                            // §WS-088: the 2px accent rule at the landing slot — shown for the
-                            // SLOT targets (`topLevel` / `intoGroup`); a group-header target is
-                            // marked by the header band's own tint instead.
-                            insertLine={dragID === workspace.id && dragActive && previewGroupID === null}
+                            // §WS-088's insertion line was passed here and is gone: a SLOT
+                            // target's indicator is the vacated gap the rows have already moved
+                            // around, and an `ontoGroupHeader` target's is the header band's own
+                            // tint. Both are the Swift's — see the note above `WorkspaceRow`.
                             entering={entering.has(row.key)}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
@@ -3455,7 +3533,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
         <div
             data-testid="sidebar"
             className="flex h-full min-h-0 flex-col"
-            style={{ background: tokens.sidebarBackground, color: tokens.textPrimary }}
+            style={{
+                background: tokens.sidebarBackground,
+                color: tokens.textPrimary,
+                // The sidebar's labels are chrome, not content — and an unselectable row is
+                // also a row a drag cannot smear. See `UNSELECTABLE_TEXT_STYLE`.
+                ...UNSELECTABLE_TEXT_STYLE
+            }}
         >
             <div className="p-2">
                 <div
@@ -3471,8 +3555,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     <input
                         aria-label="Filter workspaces or labels"
                         placeholder="Filter workspaces or labels"
+                        data-testid="sidebar-filter"
                         className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
-                        style={{ color: tokens.textPrimary }}
+                        style={{ color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
                         value={props.filter}
                         onChange={(event) => {
                             props.onFilterChange(event.target.value);
@@ -3991,7 +4076,7 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                     aria-label={isWorkspace ? 'New workspace name' : 'New group name'}
                     placeholder={isWorkspace ? 'Workspace name' : 'Group name'}
                     className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
                     value={value}
                     onChange={(event) => {
                         setValue(event.target.value);
@@ -4155,7 +4240,7 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                         data-testid="new-workspace-worktree-name"
                         placeholder="Worktree name"
                         className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
-                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
                         value={worktreeName}
                         onChange={(event) => {
                             const next = event.target.value;
@@ -4177,7 +4262,7 @@ function NewEntryForm(props: NewEntryFormProps): ReactElement {
                         data-testid="new-workspace-worktree-branch"
                         placeholder="Branch name"
                         className="w-full rounded border bg-transparent px-1.5 py-1 text-[11px] outline-none"
-                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        style={{ borderColor: tokens.divider, color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
                         value={branch}
                         onChange={(event) => {
                             setBranch(event.target.value);

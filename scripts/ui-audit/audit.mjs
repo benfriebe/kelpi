@@ -14147,7 +14147,7 @@ function buildFlows(ctx) {
         {
             id: 'sidebar-drag-affordances',
             expect:
-                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, a 2pt accent insertion line at a slot landing (as distinct from the header band’s tint), a cursor-following drag ghost carrying §WS-084’s whole lift over an EMPTY GAP where the row it was lifted off used to paint, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
+                'The sidebar’s motion and chrome: a continuous guide rule joining an expanded group’s children, NO insertion line at a slot landing in ANY drag phase — the vacated GAP is the slot indicator and the header band’s tint is the onto-header one, which is what the shipped app does (its own line branch is unreachable: `dropIndicatorOverlay` is gated on `!shouldLiveApplyDropTarget`, and every slot target IS live-applied) — a cursor-following drag ghost carrying §WS-084’s whole lift over that empty gap, sidebar text that cannot be selected and a drag that smears none while every editable in the sidebar still types and selects, the entry animation a new row plays, the collapse a removed row (and an emptied group) plays on the way out, and the scroll-into-view that follows an activation (§WS-007/§WS-008/§WS-084/§WS-088/§WS-100/§WS-102).',
             needsEyes: true,
             async run(recorder) {
                 // Expand the group this run has been dropping into, so it has visible children.
@@ -14236,10 +14236,30 @@ function buildFlows(ctx) {
                     JSON.stringify(gaps)
                 );
 
-                // ── §WS-088: the insertion line at a slot target ─────────────────────
-                //
-                // By this point in a full run most workspaces live inside a group, so the two
-                // top-level rows this needs are created rather than assumed.
+                /*
+                 * ── §WS-088: the SLOT indicator, which is the gap and NOT a line ──────
+                 *
+                 * REPLACES this block's "a slot target draws the 2pt accent insertion line".
+                 * The swap is a parity fix, not a preference: `dropIndicatorOverlay`
+                 * (`WorkspaceListView.swift:1864`) only renders when
+                 * `!shouldLiveApplyDropTarget(target)`, and `shouldLiveApplyDropTarget`
+                 * (`:2248`) is true for `.topLevel` and `.intoGroup` — so the `case .topLevel,
+                 * .intoGroup` branch that draws the 2pt `Rectangle` is unreachable, and the one
+                 * target that does reach the overlay (`.ontoGroupHeader`) is exactly the one
+                 * `dropIndicatorLineY` returns `nil` for. The shipped app draws a header tint
+                 * and nothing else; its own comment says the row movement IS the slot
+                 * indicator. Here that movement leaves the vacated gap, which this block
+                 * already measures against a live row's height a few assertions up.
+                 *
+                 * What is asserted instead is strictly stronger than what was here: the line's
+                 * absence at EVERY phase of the gesture (press · slot · header · release)
+                 * rather than its presence at one, by two independent queries, plus the
+                 * assertion the old shape could not make — nothing inside a gap paints at all,
+                 * because nothing opts back out of its inherited invisibility any more.
+                 *
+                 * By this point in a full run most workspaces live inside a group, so the two
+                 * top-level rows this needs are created rather than assumed.
+                 */
                 await cli.ok(['workspace', 'create', '--name', 'Slot A']);
                 await cli.ok(['workspace', 'create', '--name', 'Slot B']);
                 await page.waitFor(
@@ -14265,12 +14285,25 @@ function buildFlows(ctx) {
                     const to = rows[0];
                     await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
                     await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
-                    // A press alone must not draw the line: the gesture is not a drag yet.
+                    // A press alone draws nothing at all: not a line (there is none any more),
+                    // and not a gap either — the gesture is not a drag yet.
                     await sleep(120);
-                    const onPress = await page.eval(
-                        `document.querySelectorAll('[data-testid="drop-insert-line"]').length`
+                    const onPress = JSON.parse(
+                        String(
+                            await page.eval(
+                                `JSON.stringify({
+                                    lines: document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                                        + document.querySelectorAll('[data-insert-line]').length,
+                                    gaps: document.querySelectorAll('[data-drag-gap="true"]').length
+                                })`
+                            )
+                        )
                     );
-                    recorder.check('a press with no movement draws no insertion line', onPress === 0, String(onPress));
+                    recorder.check(
+                        'a press with no movement draws no insertion line and vacates no slot',
+                        onPress.lines === 0 && onPress.gaps === 0,
+                        JSON.stringify(onPress)
+                    );
                     // §WS-084: and no ghost either — a press is not a drag.
                     const ghostOnPress = await page.eval(
                         `document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`
@@ -14327,13 +14360,23 @@ function buildFlows(ctx) {
                                             gapVisibility: gap === null ? null : getComputedStyle(gap).visibility,
                                             gapHeight: gap === null ? null : Math.round(gap.getBoundingClientRect().height * 10) / 10,
                                             siblingHeight: sibling === null ? null : Math.round(sibling.getBoundingClientRect().height * 10) / 10,
-                                            // §WS-088's rule opts back OUT of the gap's
-                                            // invisibility — the slot is empty, the boundary
-                                            // marking it is not.
-                                            lineVisibility: (() => {
-                                                const line = gap === null ? null : gap.querySelector('[data-testid="drop-insert-line"]');
-                                                return line === null ? null : getComputedStyle(line).visibility;
-                                            })(),
+                                            /*
+                                             * §WS-088's rule USED to opt back out of the gap's
+                                             * inherited invisibility, so the slot was empty but
+                                             * the boundary marking it was not. The rule is gone
+                                             * and so is the opt-out, so the two numbers that
+                                             * replace lineVisibility are both zero for the
+                                             * whole gesture: no line node anywhere (by either
+                                             * query), and nothing inside the gap painting.
+                                             * (No backticks in here — this comment lives inside
+                                             * a template literal.)
+                                             */
+                                            lines: document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                                                + document.querySelectorAll('[data-insert-line]').length,
+                                            gapPainted: gap === null
+                                                ? 0
+                                                : Array.from(gap.querySelectorAll('*'))
+                                                      .filter(node => getComputedStyle(node).visibility !== 'hidden').length,
                                             landings: document.querySelectorAll('[data-landing]').length
                                         });
                                     })()`
@@ -14405,25 +14448,41 @@ function buildFlows(ctx) {
                         ghostB.landings === 0,
                         String(ghostB.landings)
                     );
+                    // Mid-flight, at both sampled positions: no line node by either query, and
+                    // the gap paints NOTHING — no descendant opts back out of its invisibility
+                    // the way §WS-088's rule used to (§WS-088, removed).
+                    recorder.check(
+                        'mid-drag there is no insertion line, and nothing inside the gap paints (§WS-088, removed)',
+                        ghostA.lines === 0 && ghostB.lines === 0 && ghostA.gapPainted === 0 && ghostB.gapPainted === 0,
+                        `lines ${String(ghostA.lines)}/${String(ghostB.lines)} · painted-in-gap ${String(ghostA.gapPainted)}/${String(ghostB.gapPainted)}`
+                    );
                     await sleep(250);
-                    const line = JSON.parse(
+                    const slot = JSON.parse(
                         String(
                             await page.eval(
                                 `(() => {
-                                    const el = document.querySelector('[data-testid="drop-insert-line"]');
                                     const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
-                                    if (el === null) return JSON.stringify({ present: false, target: list?.getAttribute('data-drag-target') ?? null });
-                                    const r = el.getBoundingClientRect();
+                                    const gap = document.querySelector('[data-drag-gap="true"]');
+                                    const r = gap === null ? null : gap.getBoundingClientRect();
                                     return JSON.stringify({
-                                        present: true,
-                                        height: Math.round(r.height * 10) / 10,
-                                        width: Math.round(r.width),
-                                        colour: getComputedStyle(el).backgroundColor,
-                                        // The rule lives INSIDE the gap, whose own visibility is
-                                        // hidden — it opts back out, or the empty slot would
-                                        // have no boundary marked on it at all.
-                                        visibility: getComputedStyle(el).visibility,
-                                        insideGap: el.closest('[data-drag-gap="true"]') !== null,
+                                        /*
+                                         * Both queries for the removed rule, so a re-introduction
+                                         * under a different name still trips this: the element's
+                                         * own testid, and the row attribute that used to flag the
+                                         * row carrying it.
+                                         */
+                                        lines: document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                                            + document.querySelectorAll('[data-insert-line]').length,
+                                        // The SLOT indicator that replaced it: a vacated,
+                                        // full-height, entirely unpainted gap at the resolved
+                                        // position.
+                                        gaps: document.querySelectorAll('[data-drag-gap="true"]').length,
+                                        gapHeight: r === null ? null : Math.round(r.height * 10) / 10,
+                                        gapVisibility: gap === null ? null : getComputedStyle(gap).visibility,
+                                        gapPainted: gap === null
+                                            ? 0
+                                            : Array.from(gap.querySelectorAll('*'))
+                                                  .filter(node => getComputedStyle(node).visibility !== 'hidden').length,
                                         target: list?.getAttribute('data-drag-target') ?? null,
                                         tinted: document.querySelectorAll('[data-drop-preview="true"]').length
                                     });
@@ -14431,29 +14490,49 @@ function buildFlows(ctx) {
                             )
                         )
                     );
-                    recorder.note(`insertion line: ${JSON.stringify(line)}`);
-                    await recorder.shot(page, 'insert-line');
+                    recorder.note(`slot indicator: ${JSON.stringify(slot)}`);
+                    await recorder.shot(page, 'slot-indicator');
+                    /*
+                     * REPLACES three assertions, one for one, and none of them is weakened:
+                     *
+                     *   "a slot target draws the 2pt accent insertion line"          → no line, by two queries
+                     *   "it is drawn INSIDE the empty gap and is still painted there" → the gap paints nothing at all
+                     *   "no header band is tinted at the same time"                   → kept verbatim
+                     */
                     recorder.check(
-                        // 2 CSS px measures back as ~2.1 on a retina display; the assertion is
-                        // "a 2pt rule", not "exactly 2.0 device pixels".
-                        'a slot target draws the 2pt accent insertion line (§WS-088)',
-                        line.present === true && line.height >= 1.5 && line.height <= 2.5,
-                        JSON.stringify(line)
+                        /*
+                         * The gap is read in the same breath so the zero cannot pass vacuously:
+                         * a gap exists exactly while a drag is live, which is the same
+                         * non-vacuity the replaced assertion got from `line.present === true`
+                         * (the rule only rendered for `dragActive && previewGroupID === null`).
+                         * The `tinted === 0` check below supplies the other half — that the
+                         * resolved target is a SLOT one, the only case the rule existed for.
+                         */
+                        'a slot target draws NO insertion line — the shipped app draws none either (§WS-088)',
+                        slot.lines === 0 && slot.gaps === 1,
+                        `${String(slot.lines)} line node(s) · ${String(slot.gaps)} gap(s) · target ${String(slot.target)}`
+                    );
+                    recorder.check(
+                        'the indicator is the vacated GAP at the resolved slot, and it paints nothing at all',
+                        slot.gaps === 1 &&
+                            slot.gapVisibility === 'hidden' &&
+                            slot.gapPainted === 0 &&
+                            typeof slot.gapHeight === 'number' &&
+                            slot.gapHeight > 0,
+                        JSON.stringify(slot)
                     );
                     recorder.check(
                         'and it is the SLOT indicator, so no header band is tinted at the same time',
-                        line.tinted === 0,
-                        String(line.tinted)
-                    );
-                    recorder.check(
-                        'it is drawn INSIDE the empty gap and is still painted there (§WS-088 × the gap)',
-                        line.insideGap === true && line.visibility === 'visible',
-                        `insideGap ${String(line.insideGap)} · visibility ${String(line.visibility)}`
+                        slot.tinted === 0,
+                        String(slot.tinted)
                     );
                     await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
                     await sleep(900);
-                    const gone = await page.eval(`document.querySelectorAll('[data-testid="drop-insert-line"]').length`);
-                    recorder.check('the line goes away on release', gone === 0, String(gone));
+                    const gone = await page.eval(
+                        `document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                            + document.querySelectorAll('[data-insert-line]').length`
+                    );
+                    recorder.check('no line node survives the release either', gone === 0, String(gone));
                     const ghostGone = await page.eval(
                         `document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`
                     );
@@ -14477,6 +14556,291 @@ function buildFlows(ctx) {
                         JSON.stringify(settledGap)
                     );
                 }
+
+                /*
+                 * ── the sidebar's text is not selectable, and a drag smears none ──────
+                 *
+                 * NEW this pass, on the user's second refinement: "dragging around on the
+                 * sidebar selects the text, it shouldn't do that." Parity is the stronger
+                 * statement — an AppKit/SwiftUI list row's labels are drawn `Text`, and drawn
+                 * `Text` carries no selection model at all, so the shipped app cannot smear a
+                 * workspace name however hard the pointer is dragged across it, and cannot
+                 * double-click one to highlight a word either.
+                 *
+                 * Four things, in the order a person would find them: the computed property
+                 * (which must INHERIT from the container rather than be restated per row), a
+                 * real double-click that selects nothing, a real multi-row drag that leaves the
+                 * document selection empty at every sample — including one seeded BEFORE the
+                 * gesture, which `user-select: none` alone cannot answer for — and the
+                 * editables inside the sidebar still typing and still selecting.
+                 */
+                const selectStyles = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const pick = (el) => (el === null ? null : getComputedStyle(el).userSelect);
+                                const sidebar = document.querySelector('[data-testid="sidebar"]');
+                                const row = document.querySelector('[data-testid="workspace-row"]');
+                                const head = document.querySelector('[data-testid="group-header"]');
+                                return JSON.stringify({
+                                    sidebar: pick(sidebar),
+                                    row: pick(row),
+                                    // The deepest text node's own box: the rule has to reach the
+                                    // label, not merely sit on an ancestor.
+                                    label: pick(row === null ? null : row.querySelector('span')),
+                                    header: pick(head),
+                                    filter: pick(document.querySelector('[data-testid="sidebar-filter"]')),
+                                    // …and it must NOT have leaked outside the sidebar: the
+                                    // terminal and the inspector still select normally.
+                                    outside: pick(document.querySelector('[data-testid="inspector"]') ?? document.body)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`user-select: ${JSON.stringify(selectStyles)}`);
+                recorder.check(
+                    'the sidebar is user-select: none, and it INHERITS to the rows, labels and group headers',
+                    selectStyles.sidebar === 'none' &&
+                        selectStyles.row === 'none' &&
+                        selectStyles.label === 'none' &&
+                        (selectStyles.header === null || selectStyles.header === 'none'),
+                    JSON.stringify(selectStyles)
+                );
+                recorder.check(
+                    'the filter field opts back IN, and the rule has not leaked outside the sidebar',
+                    selectStyles.filter === 'text' && selectStyles.outside !== 'none',
+                    `filter ${String(selectStyles.filter)} · outside ${String(selectStyles.outside)}`
+                );
+
+                const readSelection = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const sel = getSelection();
+                                    const sidebar = document.querySelector('[data-testid="sidebar"]');
+                                    const inSidebar = (sel === null || sel.rangeCount === 0 || sidebar === null)
+                                        ? 0
+                                        : Array.from(sidebar.querySelectorAll('*'))
+                                              .filter(node => sel.containsNode(node, true)).length;
+                                    return JSON.stringify({
+                                        ranges: sel === null ? 0 : sel.rangeCount,
+                                        text: sel === null ? '' : String(sel).slice(0, 60),
+                                        inSidebar
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+
+                const labelPoint = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                /*
+                                 * The ACTIVE row, so the double-click below cannot change the
+                                 * active workspace out from under the flows that follow — the
+                                 * audit README's rule about steps that move the activation.
+                                 */
+                                const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                const row = rows.find((el) => el.getAttribute('data-active') === 'true') ?? rows[0];
+                                if (row === undefined) return JSON.stringify(null);
+                                /*
+                                 * The NAME, found without a test hook: the first leaf span
+                                 * carrying real text. The guide rule is empty and the avatar
+                                 * holds a single initial, so a >2-character leaf is the label.
+                                 */
+                                const label = Array.from(row.querySelectorAll('span')).find(
+                                    (el) => el.children.length === 0 && (el.textContent ?? '').trim().length > 2
+                                ) ?? row;
+                                const r = label.getBoundingClientRect();
+                                return JSON.stringify({ x: Math.round(r.x + Math.min(12, r.width / 2)), y: Math.round(r.y + r.height / 2) });
+                            })()`
+                        )
+                    )
+                );
+                if (labelPoint !== null) {
+                    // A real double-click. On any ordinary page this selects the word under the
+                    // pointer; here it must select nothing at all.
+                    for (const clickCount of [1, 2]) {
+                        await page.mouse('mousePressed', labelPoint.x, labelPoint.y, { button: 'left', clickCount });
+                        await page.mouse('mouseReleased', labelPoint.x, labelPoint.y, { button: 'left', clickCount });
+                    }
+                    await sleep(150);
+                    const afterDoubleClick = await readSelection();
+                    recorder.note(`after a double-click on a row label: ${JSON.stringify(afterDoubleClick)}`);
+                    recorder.check(
+                        'double-clicking a workspace name selects no text (§WS-084, parity with drawn Text)',
+                        afterDoubleClick.text === '' && afterDoubleClick.inSidebar === 0,
+                        JSON.stringify(afterDoubleClick)
+                    );
+                }
+
+                const smear = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="workspace-row"]'))
+                                .map(el => {
+                                    const r = el.getBoundingClientRect();
+                                    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+                                }))`
+                        )
+                    )
+                );
+                recorder.check('there are rows to drag across for the smear test', smear.length >= 3, String(smear.length));
+                if (smear.length >= 3) {
+                    /*
+                     * The half `user-select: none` cannot fix on its own: a selection made
+                     * ELSEWHERE already has ranges, and a selection EXTENDS through an
+                     * unselectable region rather than refusing to start in it. So the drag
+                     * drops it as the gesture crosses the 5px threshold — seeded here on a
+                     * sidebar row precisely because that is the worst case (the ranges are
+                     * already inside the region the pointer is about to travel).
+                     */
+                    const seeded = await page.eval(
+                        `(() => {
+                            const row = document.querySelectorAll('[data-testid="workspace-row"]')[0];
+                            const sel = getSelection();
+                            if (row === undefined || sel === null) return 0;
+                            const range = document.createRange();
+                            range.selectNodeContents(row);
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                            return sel.rangeCount;
+                        })()`
+                    );
+                    recorder.check('a selection can be seeded before the gesture', Number(seeded) === 1, String(seeded));
+
+                    /*
+                     * A ROUND TRIP: down through every row and back to the row's own slot, so
+                     * the resolved target on release is where it started and `workspaceCommit`
+                     * returns null (sidebar-model.ts:174). The gesture is a real drag across
+                     * several rows either way — which is all the smear needs — and the order
+                     * this step hands to the flows after it is untouched.
+                     */
+                    const origin = smear[0];
+                    const far = smear[smear.length - 1];
+                    await page.mouse('mouseMoved', origin.x, origin.y, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', origin.x, origin.y, { button: 'left', clickCount: 1 });
+                    // A press is not a drag: a selection made elsewhere must survive one.
+                    await sleep(120);
+                    const onPressSelection = await readSelection();
+                    recorder.check(
+                        'a press with no movement leaves an existing selection alone',
+                        onPressSelection.ranges === 1,
+                        JSON.stringify(onPressSelection)
+                    );
+
+                    const samples = [];
+                    const legs = [...Array.from({ length: 8 }, (_, i) => (i + 1) / 8), ...Array.from({ length: 8 }, (_, i) => (7 - i) / 8)];
+                    for (const t of legs) {
+                        await page.mouse('mouseMoved', origin.x + (far.x - origin.x) * t, origin.y + (far.y - origin.y) * t, {
+                            button: 'left',
+                            buttons: 1
+                        });
+                        await sleep(25);
+                        samples.push(await readSelection());
+                    }
+                    await recorder.shot(page, 'drag-no-smear');
+                    await page.mouse('mouseReleased', origin.x, origin.y, { button: 'left', clickCount: 1 });
+                    await sleep(900);
+                    samples.push(await readSelection());
+                    const dirty = samples.filter(
+                        (sample) => sample.ranges !== 0 || sample.text !== '' || sample.inSidebar !== 0
+                    );
+                    recorder.note(
+                        `selection across ${String(samples.length)} samples of a ${String(smear.length)}-row drag: ${JSON.stringify(samples[0])} … ${JSON.stringify(samples[samples.length - 1])}`
+                    );
+                    recorder.check(
+                        'the drag clears the seeded selection at the threshold and never smears one after it',
+                        dirty.length === 0,
+                        dirty.length === 0
+                            ? `${String(samples.length)} clean samples`
+                            : `${String(dirty.length)} dirty sample(s): ${JSON.stringify(dirty[0])}`
+                    );
+                }
+
+                // The editables, which the container rule would otherwise have broken: the
+                // inline rename editor and the filter field both still take text.
+                await page.rightClick(`${PAGE.workspaceRows}`);
+                await sleep(400);
+                await clickMenuItem(page, 'Rename…');
+                await sleep(300);
+                await page.eval(`document.activeElement?.select?.()`);
+                await page.insertText('Selectable Rename');
+                await sleep(150);
+                const renameField = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.activeElement;
+                                if (el === null || el.tagName !== 'INPUT') return JSON.stringify({ focused: false });
+                                el.setSelectionRange(0, 10);
+                                return JSON.stringify({
+                                    focused: true,
+                                    value: el.value,
+                                    userSelect: getComputedStyle(el).userSelect,
+                                    start: el.selectionStart,
+                                    end: el.selectionEnd
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`inline rename editor: ${JSON.stringify(renameField)}`);
+                recorder.check(
+                    'the inline rename editor still types, and a caret selection inside it still resolves',
+                    renameField.focused === true &&
+                        renameField.value === 'Selectable Rename' &&
+                        renameField.userSelect === 'text' &&
+                        renameField.start === 0 &&
+                        renameField.end === 10,
+                    JSON.stringify(renameField)
+                );
+                // Escape, not Enter: the rename is a probe, and the flows after this one expect
+                // the workspace names they were handed.
+                await page.key('Escape');
+                await sleep(300);
+
+                await page.click(`[data-testid="sidebar-filter"]`);
+                await page.insertText('Slot');
+                await sleep(300);
+                const filterField = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('[data-testid="sidebar-filter"]');
+                                if (el === null) return JSON.stringify({ present: false });
+                                el.setSelectionRange(1, 4);
+                                return JSON.stringify({
+                                    present: true,
+                                    value: el.value,
+                                    userSelect: getComputedStyle(el).userSelect,
+                                    start: el.selectionStart,
+                                    end: el.selectionEnd,
+                                    rows: document.querySelectorAll('[data-testid="workspace-row"]').length
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`filter field: ${JSON.stringify(filterField)}`);
+                recorder.check(
+                    'the filter field still types, selects, and filters',
+                    filterField.value === 'Slot' &&
+                        filterField.userSelect === 'text' &&
+                        filterField.start === 1 &&
+                        filterField.end === 4,
+                    JSON.stringify(filterField)
+                );
+                // Put the list back the way the rest of the step found it.
+                await page.click(`[aria-label="Clear filter"]`);
+                await sleep(400);
+                const filterCleared = await page.eval(
+                    `document.querySelector('[data-testid="sidebar-filter"]')?.value ?? null`
+                );
+                recorder.check('and clears', filterCleared === '', JSON.stringify(filterCleared));
 
                 // ── §WS-008: a newly inserted row plays its entry ────────────────────
                 await cli.ok(['workspace', 'create', '--name', 'Springy']);
@@ -15008,7 +15372,7 @@ function buildFlows(ctx) {
                     `${String(activeBefore)} → ${String(handedBack)}`
                 );
 
-                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, is the insertion line legible against the empty gap, and does the drag ghost read as the row itself lifted off the list — with the space it came out of genuinely blank rather than a second, faded copy of it?');
+                recorder.eyes('does the guide rule read as ONE continuous line down the group’s children; does the EMPTY GAP alone read as "the row will land here" without any accent line drawn on it; does the drag ghost read as the row itself lifted off the list, with the space it came out of genuinely blank rather than a second faded copy; and is there no blue text smear anywhere in the drag-no-smear frame?');
             }
         },
         {

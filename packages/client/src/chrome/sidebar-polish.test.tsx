@@ -814,26 +814,104 @@ describe('sidebar drag affordances', () => {
         expect(tinted).not.toBe(plain);
     });
 
-    it('marks the landing slot with a 2px accent rule while dragging (§WS-088)', () => {
+    /**
+     * REPLACES "marks the landing slot with a 2px accent rule while dragging (§WS-088)", and is
+     * strictly stronger than it: where that asserted the line's presence at ONE phase and its
+     * absence at three, this asserts its absence at EVERY phase of a whole gesture — press,
+     * top-level slot, group header, a slot inside the group, and release — by two independent
+     * queries (the node's `data-testid` and the row attribute that used to flag it), and adds
+     * the assertion the old one could not make: that nothing inside a gap paints at all.
+     *
+     * Parity, not preference. `dropIndicatorOverlay` (`WorkspaceListView.swift:1864`) is gated
+     * on `!shouldLiveApplyDropTarget(target)`, which is false for every SLOT target — so the
+     * `case .topLevel, .intoGroup` branch that draws the 2pt `Rectangle` is unreachable in the
+     * shipped app, and `dropIndicatorLineY` returns `nil` for the one target that does reach
+     * the overlay. The original draws a header tint and nothing else, which is now what this
+     * does. The slot indicator in both apps is the row movement itself — here, the vacated gap.
+     */
+    it('draws NO insertion line at any phase of a drag; the gap is the slot indicator (§WS-088)', () => {
         render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
 
-        // A press alone is not a drag: no line until the gesture passes the threshold.
+        /** Every way the removed rule could still be on screen, at once. */
+        const lineNodes = (): number =>
+            document.querySelectorAll('[data-testid="drop-insert-line"]').length +
+            document.querySelectorAll('[data-insert-line]').length;
+        const gaps = (): HTMLElement[] =>
+            screen.getAllByTestId('workspace-row').filter((row) => row.dataset['dragGap'] === 'true');
+        /**
+         * The gap hides by `visibility: hidden`, which a CHILD can opt back out of — that is
+         * exactly how the line used to stay painted inside an invisible row. Nothing may do
+         * that any more, so the empty slot is empty in the strong sense.
+         */
+        const optOuts = (): number =>
+            gaps().flatMap((gap) =>
+                Array.from(gap.querySelectorAll<HTMLElement>('*')).filter(
+                    (child) => child.style.visibility === 'visible'
+                )
+            ).length;
+
+        // Phase 1 — a press is not a drag: no line, and no gap either.
         fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
-        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+        expect(lineNodes()).toBe(0);
+        expect(gaps()).toHaveLength(0);
 
-        // y=30 is delta's zone (24–44) — a `topLevel` slot target, not a group header.
+        // Phase 2 — y=30 is delta's zone (24–44): a `topLevel` SLOT target. The old line's one
+        // and only case, and the indicator here is the vacated gap.
         fireEvent.mouseMove(window, { clientY: 30 });
-        const line = screen.getByTestId('drop-insert-line');
-        expect(line.style.height).toBe('2px');
-        expect(rowFor(W1).dataset['insertLine']).toBe('true');
+        expect(lineNodes()).toBe(0);
+        expect(optOuts()).toBe(0);
+        expect(gaps()).toHaveLength(1);
+        expect(gaps()[0]?.dataset['workspaceId']).toBe(W1);
+        expect(gaps()[0]?.style.visibility).toBe('hidden');
+        // …and a slot target tints no header, so the two indicators never overlap.
+        expect(screen.getByTestId('group-header').dataset['dropPreview']).toBe('false');
 
-        // Over a group HEADER the indicator is the band tint instead, never both.
+        // Phase 3 — over a group HEADER (44–64) the indicator is the band tint, which stays.
         fireEvent.mouseMove(window, { clientY: 58 });
-        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+        expect(lineNodes()).toBe(0);
+        expect(optOuts()).toBe(0);
         expect(screen.getByTestId('group-header').dataset['dropPreview']).toBe('true');
+        expect(gaps()).toHaveLength(1);
 
+        // Phase 4 — a slot INSIDE the group (beta 64–84): still a gap, now at the nested depth,
+        // and still no line. This is the case that would have lost its only indicator if the
+        // gap did not follow the resolution.
+        fireEvent.mouseMove(window, { clientY: 78 });
+        expect(lineNodes()).toBe(0);
+        expect(optOuts()).toBe(0);
+        expect(gaps()).toHaveLength(1);
+        expect(gaps()[0]?.dataset['depth']).toBe('1');
+        expect(screen.getByTestId('group-header').dataset['dropPreview']).toBe('false');
+
+        // Phase 5 — release.
         fireEvent.mouseUp(window);
-        expect(screen.queryByTestId('drop-insert-line')).toBeNull();
+        expect(lineNodes()).toBe(0);
+        expect(gaps()).toHaveLength(0);
+    });
+
+    /**
+     * The other half of the removal: the cursor clone is minted by `cloneNode(true)` off a live
+     * row, so anything the row paints rides the pointer unless it is taken out. There is one
+     * such thing left (§WS-007's guide rail, re-minted per resolved container by
+     * `styleDragGhost`) and the insertion line is no longer one of them — this proves the clone
+     * carries neither, from either origin.
+     */
+    it('the cursor clone carries no insertion line and no inherited rail (§WS-088 × §WS-084)', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+
+        for (const [id, y] of [
+            [W1, 10],
+            [W2, 70]
+        ] as const) {
+            fireEvent.mouseDown(rowFor(id), { clientY: y });
+            fireEvent.mouseMove(window, { clientY: 30 });
+            const ghost = document.querySelector<HTMLElement>('[data-testid="sidebar-drag-ghost"]');
+            expect(ghost, id).not.toBeNull();
+            expect(ghost?.querySelectorAll('[data-testid="drop-insert-line"]')).toHaveLength(0);
+            expect(ghost?.querySelectorAll('[data-insert-line]')).toHaveLength(0);
+            expect(ghost?.querySelectorAll('[data-testid="group-guide"]')).toHaveLength(0);
+            fireEvent.mouseUp(window);
+        }
     });
 
     /**
@@ -1272,6 +1350,113 @@ describe('the dragged row follows the cursor (§WS-084)', () => {
         // A genuine click, afterwards, still activates.
         fireEvent.click(rowFor(W4));
         expect(onActivateWorkspace).toHaveBeenCalledWith(W4);
+    });
+});
+
+/**
+ * The user's second refinement: "dragging around on the sidebar selects the text, it shouldn't
+ * do that."
+ *
+ * Parity is the stronger statement. An AppKit/SwiftUI list row's labels are drawn `Text` and
+ * drawn `Text` has no selection model at all — the shipped app cannot smear a workspace name
+ * however hard you drag it, and cannot double-click one to highlight a word either. The port
+ * renders real text nodes, so it inherited the browser default and every drag left a blue smear
+ * trailing the cursor clone.
+ *
+ * Three clauses, and the third is the one a container rule cannot cover on its own:
+ *
+ *   1. the container is `user-select: none`, which is the parity behaviour AND the root cure
+ *      (a `mousedown` on unselectable text never starts a selection to begin with);
+ *   2. every editable INSIDE it opts back in, or the rule would silently break caret dragging
+ *      and double-click-to-word in the rename editor, the filter field and the create form;
+ *   3. a selection made ELSEWHERE still extends *through* an unselectable region, so the drag
+ *      drops it as the gesture crosses the 5px threshold.
+ */
+describe('the sidebar’s text is never selectable, and a drag never smears one', () => {
+    const selection = (): Selection | null => globalThis.getSelection?.() ?? null;
+
+    afterEach(() => {
+        selection()?.removeAllRanges();
+    });
+
+    it('the container is unselectable, and says so in one place', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        const sidebar = screen.getByTestId('sidebar');
+        expect(sidebar.style.userSelect).toBe('none');
+        // It is on the CONTAINER, so it inherits to everything row-shaped rather than being
+        // re-stated per component — the rows, the group headers, the label chips, the footer.
+        expect(rowFor(W1).style.userSelect).toBe('');
+        expect(screen.getByTestId('group-header').style.userSelect).toBe('');
+    });
+
+    it('every editable in the sidebar opts back IN, and still accepts typing and selection', () => {
+        const onFilterChange = vi.fn();
+        render(
+            <Sidebar
+                {...baseProps()}
+                onFilterChange={onFilterChange}
+                entries={entries()}
+                renameRequest={{ kind: 'workspace', id: W1 }}
+            />
+        );
+
+        // 1 — the filter field.
+        const filter = screen.getByTestId('sidebar-filter') as HTMLInputElement;
+        expect(filter.style.userSelect).toBe('text');
+        fireEvent.change(filter, { target: { value: 'gam' } });
+        expect(onFilterChange).toHaveBeenCalledWith('gam');
+
+        // 2 — the inline rename editor (the same component backs the group rename).
+        const rename = screen.getByTestId('inline-editor') as HTMLInputElement;
+        expect(rename.style.userSelect).toBe('text');
+        fireEvent.change(rename, { target: { value: 'alpha renamed' } });
+        expect(rename.value).toBe('alpha renamed');
+        // …and a caret selection inside it still resolves, which is what `user-select: none`
+        // would have taken away on a WebKit engine.
+        rename.setSelectionRange(0, 5);
+        expect(rename.selectionStart).toBe(0);
+        expect(rename.selectionEnd).toBe(5);
+    });
+
+    it('the create form’s fields opt back in too', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onCreateWorkspace={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('sidebar-new-workspace'));
+
+        const name = screen.getByLabelText('New workspace name') as HTMLInputElement;
+        expect(name.style.userSelect).toBe('text');
+        fireEvent.change(name, { target: { value: 'epsilon' } });
+        expect(name.value).toBe('epsilon');
+    });
+
+    it('a drag across several rows clears a selection made elsewhere and leaves none behind', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} onMoveWorkspace={vi.fn()} />);
+
+        // A selection the user made SOMEWHERE ELSE, before the drag — the case `user-select:
+        // none` cannot answer, because the ranges already exist and simply extend through the
+        // unselectable region as the pointer travels.
+        const elsewhere = document.createElement('p');
+        elsewhere.textContent = 'a selection made outside the sidebar';
+        document.body.append(elsewhere);
+        const range = document.createRange();
+        range.selectNodeContents(elsewhere);
+        selection()?.addRange(range);
+        expect(selection()?.rangeCount).toBe(1);
+
+        // A press alone must NOT destroy it — the user may simply be clicking a row.
+        fireEvent.mouseDown(rowFor(W1), { clientY: 10 });
+        expect(selection()?.rangeCount).toBe(1);
+
+        // Crossing the threshold does. rows: alpha 4–24 · delta 24–44 · header 44–64 ·
+        // beta 64–84 · gamma 84–104 — a real traverse of the whole list.
+        for (const clientY of [30, 58, 78, 100, 58, 8]) {
+            fireEvent.mouseMove(window, { clientY });
+            expect(selection()?.rangeCount, String(clientY)).toBe(0);
+            expect(selection()?.toString(), String(clientY)).toBe('');
+        }
+
+        fireEvent.mouseUp(window);
+        expect(selection()?.rangeCount).toBe(0);
+        elsewhere.remove();
     });
 });
 

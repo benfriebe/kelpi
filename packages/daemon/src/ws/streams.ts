@@ -18,6 +18,14 @@
  * That gives exactly-once delivery: everything up to the snapshot is in the replay, and
  * everything after it arrives as `output`.
  *
+ * Resize semantics: the same three steps run again once a pane's geometry has held still for
+ * `DEFAULT_RESIZE_RESYNC_MS`. A pane has two emulators — this one and the client's — and a
+ * resize is what makes them disagree over identical bytes; the settled-resize replay is what
+ * puts the client's VT back onto this buffer. It is server-initiated (no new wire verb: the
+ * client already applies a mid-stream `replay` by resetting and rewriting) and it cannot
+ * loop, because a replay provokes no resize on the client and an unchanged grid arms no
+ * timer here.
+ *
  * Flow control (`PTY_FLOW_CONTROL_WINDOW_BYTES`): the daemon counts unacked payload bytes
  * per (client, pane). Past the window it stops sending to THAT client and queues; past the
  * queue bound it drops the queue and marks the pane for resync — the PTY is never paused
@@ -64,6 +72,25 @@ function wireModes(modes: VtModes): WsVtModes {
 /** Per-(client, pane) bytes buffered while the client is over its window before we drop. */
 export const DEFAULT_CLIENT_QUEUE_BYTES = 1024 * 1024;
 
+/**
+ * How long a pane's geometry must hold still before every attached client is reconciled to
+ * the daemon's buffer — the settle window of the post-resize resync (see `resyncPane`).
+ *
+ * There are TWO terminal emulators per pane: this daemon's `@xterm/headless`, which owns the
+ * buffer everything server-side reads, and the client's engine, fed the same bytes over the
+ * wire. They resize independently, on independent schedules, and a resize is the one event
+ * that makes two VTs holding identical bytes disagree — one may rewrap where the other does
+ * not, and a chunk that crosses the gesture is parsed at a different width on each side.
+ * Nothing used to reconcile them afterwards, so a live window drag could leave the CLIENT
+ * painting a stack of stale prompt copies while `pane capture` (this side) read a clean
+ * screen. The client is what the user is looking at, so the divergence is the defect.
+ *
+ * 150 ms sits behind the client's own resize debounce (100 ms, with a 100 ms ceiling so a
+ * continuous gesture still republishes ~10×/s — `TerminalPane.tsx`), which is what turns a
+ * drag storm into exactly ONE resync per settled gesture instead of one per step.
+ */
+export const DEFAULT_RESIZE_RESYNC_MS = 150;
+
 /** JSON notice that a client's stream was truncated and has been re-seeded from a replay. */
 export const PTY_RESYNC_MESSAGE_TYPE = 'pty-resync';
 
@@ -96,7 +123,11 @@ export interface PaneStreamSession {
     detach(paneID: string): void;
     /** One binary frame from the client (`input` / `ack` / `resize`). */
     handleFrame(frame: Uint8Array): void;
-    /** Client-measured geometry is authoritative: PTY first, then the server-side VT. */
+    /**
+     * Client-measured geometry is authoritative: the server-side VT first, then the PTY (the
+     * ioctl is what raises SIGWINCH, so the VT must already be at the new width when the
+     * shell's repaint arrives), and a settled change is followed by a resync.
+     */
     resize(paneID: string, cols: number, rows: number): void;
     stats(paneID: string): PaneStreamStats | undefined;
     close(): void;
@@ -109,6 +140,11 @@ export interface PaneStreamHubOptions {
     readonly windowBytes?: number | undefined;
     /** Queue bound before the drop-oldest + resync path kicks in. */
     readonly maxQueuedBytes?: number | undefined;
+    /**
+     * Settle window for the post-resize resync (`DEFAULT_RESIZE_RESYNC_MS`). Tests shorten
+     * it; a negative value turns the resync off entirely.
+     */
+    readonly resizeResyncMs?: number | undefined;
     /**
      * Every client-reported grid, as it is applied. Boot uses it to remember what a pane was
      * last rendered at so the next spawn starts there instead of at 80×24 (`pty/geometry.ts`).
@@ -149,6 +185,21 @@ function toError(value: unknown): Error {
 
 interface AsyncSnapshotCapable {
     snapshotAsync?: (paneID: string) => Promise<{ data: Uint8Array; cols: number; rows: number }>;
+    has?: (paneID: string) => boolean;
+}
+
+/**
+ * Does the emulator still hold this pane? `TerminalStateService` widens with `has()` and the
+ * seam does not declare it, so an implementation without it answers "yes" — the same
+ * duck-typing `snapshotOf` uses.
+ *
+ * The resync is the only caller: `snapshot()` of a pane the service has already disposed is
+ * an EMPTY snapshot, and an empty replay would reset a client's screen to nothing.
+ */
+function paneIsKnown(term: TerminalStateService, paneID: string): boolean {
+    const has = (term as TerminalStateService & AsyncSnapshotCapable).has;
+    if (typeof has !== 'function') return true;
+    return has.call(term, paneID);
 }
 
 /**
@@ -168,11 +219,112 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
     const { pty, term } = options;
     const windowBytes = Math.max(1, options.windowBytes ?? PTY_FLOW_CONTROL_WINDOW_BYTES);
     const maxQueuedBytes = Math.max(1, options.maxQueuedBytes ?? DEFAULT_CLIENT_QUEUE_BYTES);
+    const resizeResyncMs = options.resizeResyncMs ?? DEFAULT_RESIZE_RESYNC_MS;
     const sessions = new Set<SessionImpl>();
+    /** Last grid APPLIED per pane — the resync's change detector, hub-wide. */
+    const grids = new Map<string, PaneGeometry>();
+    /** In-flight settle timers, one per pane: a storm re-arms, it never stacks. */
+    const resyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let closed = false;
 
     const report = (error: unknown, context: string): void => {
         options.onError?.(toError(error), context);
+    };
+
+    const clearResyncTimer = (paneID: string): void => {
+        const pending = resyncTimers.get(paneID);
+        if (pending === undefined) return;
+        clearTimeout(pending);
+        resyncTimers.delete(paneID);
+    };
+
+    /**
+     * A grid was applied to a pane. Arm the settle timer **only when it actually changed**.
+     *
+     * This is the first of the two guards that make a resync-triggered loop impossible: a
+     * resize to the size the pane already has schedules nothing, so nothing a replay could
+     * provoke on the client (it provokes nothing — a replay is bytes into a VT, and the
+     * client's own `resize()` short-circuits on an unchanged grid) can come back round.
+     *
+     * The FIRST grid seen for a pane is recorded and nothing else: `attach()` sizes the pane
+     * and then snapshots, so a fresh client is already looking at that geometry and a replay
+     * 150 ms later would be pure traffic.
+     */
+    const noteGeometry = (paneID: string, cols: number, rows: number): void => {
+        const previous = grids.get(paneID);
+        grids.set(paneID, { cols, rows });
+        if (closed || resizeResyncMs < 0) return;
+        if (previous === undefined) return;
+        if (previous.cols === cols && previous.rows === rows) return;
+        clearResyncTimer(paneID);
+        const timer = setTimeout(() => {
+            resyncTimers.delete(paneID);
+            void resyncPane(paneID);
+        }, resizeResyncMs);
+        // A pending resync must never be the reason the daemon cannot exit.
+        if (typeof (timer as { unref?: () => void }).unref === 'function') {
+            (timer as { unref: () => void }).unref();
+        }
+        resyncTimers.set(paneID, timer);
+    };
+
+    /**
+     * The pane's geometry has settled: hand every attached client a fresh snapshot so its VT
+     * is the daemon's VT again, whatever the two did to themselves during the gesture.
+     *
+     * The ordering is the attach path's, for the same reason and with the same guarantee
+     * (see the module header). Each target is taken OFF live before the snapshot is
+     * requested, so bytes that land while it settles are dropped from the stream rather than
+     * racing ahead of the replay — and they are not lost, because `snapshotAsync()` flushes
+     * the emulator's write queue in a loop (`term/service.ts` `flush`) and boot feeds the
+     * terminal from the same synchronous `pty.onData` emission this hub delivers from. A
+     * chunk is therefore either inside the snapshot or arrives after the pane is live again;
+     * nothing in between can run, because everything after the await is microtask-only.
+     *
+     * One snapshot serves every session — they are all being reconciled to the same buffer.
+     */
+    const resyncPane = async (paneID: string): Promise<void> => {
+        if (closed) return;
+        // A pane the emulator has already disposed would snapshot EMPTY, and an empty replay
+        // is not a reconciliation — it is a client screen wiped by a resize that raced a
+        // close. Leave it to the detach that is already on its way.
+        if (!paneIsKnown(term, paneID)) return;
+        const targets: { session: SessionImpl; entry: PaneEntry }[] = [];
+        for (const session of sessions) {
+            const entry = session.entryFor(paneID);
+            // Skip a pane still attaching (its own replay is coming, and it is being taken
+            // AFTER this resize) and one already marked for a flow-control re-seed (the ack
+            // path owns that replay and will send a newer snapshot than this one).
+            if (entry === undefined || !entry.live || entry.resyncPending) continue;
+            targets.push({ session, entry });
+        }
+        if (targets.length === 0) return;
+
+        for (const target of targets) {
+            target.entry.live = false;
+            // Anything queued predates the snapshot, so the snapshot supersedes it.
+            target.entry.queue = [];
+            target.entry.queuedBytes = 0;
+        }
+
+        let snapshot: { data: Uint8Array; cols: number; rows: number };
+        try {
+            snapshot = await snapshotOf(term, paneID);
+        } catch (error) {
+            report(error, `pty-resize-resync ${paneID}`);
+            for (const target of targets) {
+                if (target.session.entryFor(paneID) === target.entry) target.entry.live = true;
+            }
+            return;
+        }
+
+        // Nothing below may await — same rule as `attach`.
+        for (const target of targets) {
+            // Identity, not presence: a detach + re-attach during the settle installs a NEW
+            // entry with a replay of its own, and this stale one must not paint over it.
+            if (target.session.entryFor(paneID) !== target.entry) continue;
+            target.session.sendResync(paneID, target.entry, snapshot.data);
+        }
     };
 
     class SessionImpl implements PaneStreamSession {
@@ -187,6 +339,11 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
 
         has(paneID: string): boolean {
             return this.panes.has(paneID);
+        }
+
+        /** The hub's read of this session's stream state for a pane (resync targeting). */
+        entryFor(paneID: string): PaneEntry | undefined {
+            return this.panes.get(paneID);
         }
 
         async attach(paneID: string, size?: PaneGeometry | undefined): Promise<void> {
@@ -247,21 +404,40 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             const safeCols = Math.trunc(cols);
             const safeRows = Math.trunc(rows);
             if (safeCols <= 0 || safeRows <= 0) return;
-            try {
-                pty.resize(paneID, safeCols, safeRows);
-            } catch (error) {
-                report(error, `pty-resize ${paneID}`);
-            }
+            /*
+             * VT FIRST, then PTY.
+             *
+             * The PTY resize is the ioctl that raises SIGWINCH, and the shell starts
+             * repainting for the NEW geometry the moment it lands. If the server-side VT were
+             * still at the old width when that output arrived, a repaint emitted for geometry
+             * N would be parsed at geometry N-1 — wrapped at the wrong column, with cursor
+             * arithmetic that no longer matches the screen. Doing the VT first closes that
+             * window down to the output already in flight when the ioctl fires, which is the
+             * same race an in-process terminal has.
+             *
+             * Honest about what this ordering did NOT buy: it was measured against the
+             * resize-trail defect on its own and moved the count not at all (that was the
+             * emulator's reflow policy — `term/service.ts` `NO_REFLOW` — and the resync
+             * below). It is here because the argument stands, not because it fixed a bug.
+             */
             try {
                 term.resize(paneID, safeCols, safeRows);
             } catch (error) {
                 report(error, `term-resize ${paneID}`);
             }
             try {
+                pty.resize(paneID, safeCols, safeRows);
+            } catch (error) {
+                report(error, `pty-resize ${paneID}`);
+            }
+            try {
                 options.onGeometry?.(paneID, safeCols, safeRows);
             } catch (error) {
                 report(error, `geometry ${paneID}`);
             }
+            // Last, and hub-wide rather than per-session: a resize by ANY client diverges
+            // EVERY client's VT from this one, so the settle timer belongs to the pane.
+            noteGeometry(paneID, safeCols, safeRows);
         }
 
         handleFrame(frame: Uint8Array): void {
@@ -339,6 +515,25 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             if (!this.panes.has(paneID)) return;
             this.transport.sendJson({ type: 'pane-exit', paneID, exitCode });
             this.panes.delete(paneID);
+        }
+
+        /**
+         * Re-seed this session's view of a pane from a snapshot taken a moment ago
+         * (`resyncPane`). Sends the SAME `replay` frame an attach does, so the client applies
+         * it through the machinery it already has: `ingest.replay()` resets the engine and
+         * writes the snapshot, which is the only way to erase a divergence rather than paint
+         * over it. No JSON notice rides with it — a notice that arrived without its replay
+         * (a snapshot that threw) would leave the client's ingest holding live bytes forever.
+         */
+        sendResync(paneID: string, entry: PaneEntry, data: Uint8Array): void {
+            if (this.disposed || closed) return;
+            // The client zeroes its own unacked/pending counters the moment a replay lands
+            // (`client/src/connection/pty.ts`), which drops the acks it had not flushed yet.
+            // Zero ours in the same breath or those bytes stay charged against this client's
+            // window for the life of the pane — and enough of them stall it.
+            entry.unacked = 0;
+            this.send(paneID, entry, PTY_FRAME_TYPES.replay, data);
+            entry.live = true;
         }
 
         /** Push this pane's current VT modes, if this session is attached to it. */
@@ -433,6 +628,11 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
 
     const offExit = pty.onExit((paneID, exitCode) => {
         if (closed) return;
+        // The process is gone: a settle timer would snapshot a terminal that is being torn
+        // down, and the remembered grid would make the NEXT process in this pane id look
+        // like it had never been resized.
+        clearResyncTimer(paneID);
+        grids.delete(paneID);
         for (const session of sessions) session.paneExited(paneID, exitCode);
     });
 
@@ -459,6 +659,8 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             closed = true;
             offData();
             offExit();
+            for (const paneID of [...resyncTimers.keys()]) clearResyncTimer(paneID);
+            grids.clear();
             for (const session of [...sessions]) session.close();
             sessions.clear();
         }

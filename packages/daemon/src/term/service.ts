@@ -51,6 +51,58 @@ export const DEFAULT_SCROLLBACK_LINES = 10_000;
 export const DEFAULT_COLS = 80;
 export const DEFAULT_ROWS = 24;
 
+/** `ITerminalOptions['windowsPty']`, minus the `undefined` `exactOptionalPropertyTypes` adds. */
+type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof Terminal>[0]>['windowsPty']>;
+
+/**
+ * THE REFLOW POLICY — read this before touching `applyGrid`.
+ *
+ * A shell's line editor repaints on `SIGWINCH` assuming the terminal did **not** move its
+ * text: zle walks the cursor up by the number of rows it believes its prompt occupies and
+ * redraws from there. `@xterm/headless` 6.0.0, left alone, *does* reflow on a column change —
+ * it rewraps every line that no longer fits and slides everything below it down. Each shrink
+ * therefore inserts a row underneath zle's arithmetic, zle redraws one row too low, and the
+ * previous prompt's top line is stranded on screen. A 90-step width drag over a p10k-shaped
+ * two-line prompt left **13** stale copies in the daemon's buffer; with reflow off, **1** (the
+ * live prompt). Not a hypothesis — both numbers came out of running the UI audit's unchanged
+ * `terminal-resize-storm` step against the two policies, product change only.
+ *
+ * xterm exposes exactly one switch for "this pty wraps its own lines, do not reflow", and it
+ * has two spellings:
+ *
+ *   - `windowsMode: true` — **deprecated**, and unusable here for a second reason. Besides
+ *     disabling reflow it installs `updateWindowsModeWrappedState`, a heuristic that on every
+ *     LF and every CUP sets `isWrapped` on the current row whenever the previous row's last
+ *     cell is not blank. That FABRICATES soft wraps: a line that happens to fill the width is
+ *     glued to the next one, which corrupts everything downstream that joins wrapped rows —
+ *     `serialize()` (so the replay a client renders), `capture()` (so `nex pane capture`),
+ *     `search()` and `cellText()`. Measured on 6.0.0: a full-width `AAAA…` followed by a hard
+ *     newline and `short-b` serializes as the single line `AAAA…AAAAshort-b`.
+ *   - `windowsPty: { backend, buildNumber }` — the maintained replacement, and the one used
+ *     here. `CoreTerminal._handleWindowsPtyOptionChange` only arms the wrapping heuristic for
+ *     `backend === 'conpty'` with `buildNumber < 21376`, so a **winpty** backend turns reflow
+ *     off and leaves the heuristic uninstalled — reflow-off and nothing else.
+ *
+ * This daemon is not on Windows and this value never leaves the emulator; it is xterm's name
+ * for a policy, not a claim about the host.
+ */
+const NO_REFLOW: TerminalReflowPolicy = {
+    backend: 'winpty',
+    buildNumber: 1
+};
+
+/**
+ * xterm's stock policy, restored for the duration of a ROW-only resize (see `applyGrid`).
+ *
+ * Reflow-off is a column-axis decision. Rows are the other half of the same option and the
+ * only thing they gate is where a *grown* viewport finds its extra lines: stock xterm pulls
+ * them back out of scrollback (history slides down into view, which is what ghostty and the
+ * shipped app do), while every windows spelling pushes blank rows onto the bottom. Keeping
+ * the stock behaviour for the row half costs one extra `resize()` call and keeps a taller
+ * window showing history instead of empty space.
+ */
+const STOCK_REFLOW: TerminalReflowPolicy = {};
+
 export interface TerminalStateOptions {
     /** Scrollback lines retained per pane. Default 10 000. */
     readonly scrollback?: number;
@@ -298,9 +350,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         const wantRows = sanitizeRows(rows, this.defaultRows);
         const existing = this.panes.get(paneID);
         if (existing) {
-            if (existing.term.cols !== wantCols || existing.term.rows !== wantRows) {
-                existing.term.resize(wantCols, wantRows);
-            }
+            this.applyGrid(existing, wantCols, wantRows);
             return;
         }
         this.panes.set(paneID, this.create(paneID, wantCols, wantRows));
@@ -375,10 +425,7 @@ export class TerminalStateServiceImpl implements TerminalStateService {
     resize(paneID: string, cols: number, rows: number): void {
         const entry = this.panes.get(paneID);
         if (!entry) return;
-        const wantCols = sanitizeCols(cols, entry.term.cols);
-        const wantRows = sanitizeRows(rows, entry.term.rows);
-        if (entry.term.cols === wantCols && entry.term.rows === wantRows) return;
-        entry.term.resize(wantCols, wantRows);
+        this.applyGrid(entry, sanitizeCols(cols, entry.term.cols), sanitizeRows(rows, entry.term.rows));
     }
 
     /** Await every write handed to the emulator so far. Resolves immediately if idle. */
@@ -539,6 +586,34 @@ export class TerminalStateServiceImpl implements TerminalStateService {
 
     // ── internals ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Apply a grid to the emulator — **one axis at a time**, because the two axes want
+     * different reflow policies (see `NO_REFLOW` / `STOCK_REFLOW` above).
+     *
+     * Rows first, at the OLD width and under xterm's stock policy, so a taller viewport still
+     * pulls history down out of scrollback. Then columns, under the standing no-reflow policy
+     * the terminal was built with, so a narrower window never rewraps text underneath a line
+     * editor that is repainting on the assumption that it will not.
+     *
+     * Both calls are synchronous and nothing between them can observe the intermediate grid:
+     * `Terminal.resize()` mutates the buffer inline and this service never subscribes to
+     * `onResize`. The option is read live by `Buffer._isReflowEnabled` at resize time, which
+     * is what makes a per-axis policy possible at all.
+     */
+    private applyGrid(entry: PaneTerminal, cols: number, rows: number): void {
+        const term = entry.term;
+        if (term.cols === cols && term.rows === rows) return;
+        if (term.rows !== rows) {
+            term.options.windowsPty = STOCK_REFLOW;
+            try {
+                term.resize(term.cols, rows);
+            } finally {
+                term.options.windowsPty = NO_REFLOW;
+            }
+        }
+        if (term.cols !== cols) term.resize(cols, term.rows);
+    }
+
     /** Emit `onModesChange` when this pane's modes are not what they last were. */
     private publishModes(paneID: string, entry: PaneTerminal): void {
         if (this.onModesChange === undefined || entry.disposed) return;
@@ -555,7 +630,10 @@ export class TerminalStateServiceImpl implements TerminalStateService {
             scrollback: this.scrollback,
             allowProposedApi: true,
             // Headless has no renderer; these only affect parsing/serialization behavior.
-            convertEol: false
+            convertEol: false,
+            // The standing policy: no column reflow (see NO_REFLOW). `applyGrid` lifts it for
+            // the row half of a resize and puts it straight back.
+            windowsPty: NO_REFLOW
         });
         const serializer = new SerializeAddon();
         term.loadAddon(serializer);
@@ -661,8 +739,11 @@ function readModes(entry: PaneTerminal): VtModes {
  *   preserved (null cells render as spaces), the trailing run of blanks is dropped.
  * - Soft-wrapped rows are re-joined into one logical line — a region read in ghostty is
  *   non-rectangular, so a wrapped command line must not come back with a spurious newline.
- *   (`@xterm/headless` 6.0.0 does not reflow on resize, so a widened pane leaves padded
- *   wrapped rows behind; the per-row trim above is what keeps the joined text clean.)
+ *   (this emulator is configured NOT to reflow — see `NO_REFLOW` — so a widened pane leaves
+ *   its wrapped rows split where they were and a narrowed one leaves rows wider than the
+ *   grid; the per-row trim above and this join are what keep the read a logical line either
+ *   way. Stock `@xterm/headless` 6.0.0 *does* reflow, so this sentence is a statement about
+ *   the configuration, not about the library.)
  * - Trailing blank lines are trimmed. An empty region yields `''`.
  */
 function readRegion(term: HeadlessTerminal, includeScrollback: boolean): string {

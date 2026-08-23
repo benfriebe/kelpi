@@ -1825,6 +1825,249 @@ function buildFlows(ctx) {
                 await recorder.shot(page, 'restored');
             }
         },
+        {
+            id: 'terminal-resize-storm',
+            expect:
+                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; and the pane is still a live shell when the window is handed back.',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * THE DEFECT THIS PINS DOWN.
+                 *
+                 * A pane has two terminal emulators: the daemon's `@xterm/headless` (which
+                 * `pane capture` reads) and the client's engine, fed the same bytes. A width
+                 * change is the one event that makes them disagree, and it disagrees with the
+                 * SHELL too: zle repaints on SIGWINCH assuming the terminal did not move its
+                 * text, so a VT that rewraps on shrink strands one copy of a full-width prompt
+                 * line per step. A 90-step drag left 14 copies in the daemon buffer and ~20 on
+                 * screen. Two fixes, and this step is deliberately the only thing that can see
+                 * both: the daemon's reflow policy (`term/service.ts` `NO_REFLOW`) fixes the
+                 * buffer, and the settled-resize resync (`ws/streams.ts` `resyncPane`) is what
+                 * puts the CLIENT back onto that buffer — without it the daemon reads clean
+                 * while the user still looks at the ladder, which is why the client-side count
+                 * below is the load-bearing assertion, not the server one.
+                 *
+                 * Self-provisioning, and it works in its OWN pane: the prompt fixture replaces
+                 * the shell (`exec zsh`), so borrowing the run's first pane would hand every
+                 * later step a different shell with a dot-filled prompt.
+                 */
+                const anchor = state.firstPane ?? (await domPaneIDs(page))[0];
+                const CLIP_SENTINEL_STORM = 'NEX-AUDIT-RESIZE-STORM-SENTINEL';
+                const zdotdir = path.join(work, 'resize-storm');
+                fs.mkdirSync(zdotdir, { recursive: true });
+                /*
+                 * The prompt is the whole fixture. Two lines, the first dot-filled to exactly
+                 * $COLUMNS (so every shrink has a full-width line to rewrap) and re-expanded by
+                 * zle on every SIGWINCH (`prompt_subst`). `NEXTRAIL` marks the line that gets
+                 * stranded; `NEXPROMPT` marks the line the cursor sits on. ZDOTDIR rather than
+                 * $HOME so the sandbox's home is left exactly as the rest of the run found it.
+                 */
+                fs.writeFileSync(
+                    path.join(zdotdir, '.zshrc'),
+                    "setopt prompt_subst\n" + "PROMPT=$'┌NEXTRAIL ${(l:$((COLUMNS - 12))::.:)}\n└NEXPROMPT%% '\n"
+                );
+
+                const split = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', anchor, '--json']);
+                const paneID = String(split.pane_id ?? '');
+                recorder.check('a pane to storm was provisioned', paneID.length > 0, JSON.stringify(split));
+                if (paneID.length === 0) return;
+                await sleep(2500);
+
+                let original = null;
+                try {
+                    original = (await windowBounds(page)).bounds;
+                } catch {
+                    recorder.note('Browser domain unavailable; the window is measured and restored through window.outerWidth/resizeTo');
+                }
+                // The window as the rest of the run left it, read from the page itself — the
+                // Browser domain is not always there (Electron builds differ), and a step that
+                // resizes 90 times MUST be able to hand back what it borrowed either way.
+                const outerBefore = JSON.parse(
+                    String(await page.eval('JSON.stringify({ w: window.outerWidth, h: window.outerHeight })'))
+                );
+
+                /** One resize step, as cheap as the harness can make it (no 1.4 s settle). */
+                const stormStep = async (width, height) => {
+                    await page.eval(`window.resizeTo(${String(width)}, ${String(height)})`);
+                };
+                /** Put the window back the size this step found it. */
+                const restoreWindow = async () => {
+                    if (original !== null) {
+                        await resizeWindow(page, original.width, original.height);
+                        return;
+                    }
+                    await stormStep(outerBefore.w, outerBefore.h);
+                    await sleep(1400);
+                };
+
+                try {
+                    // ── 1. a shell whose prompt fills the width ──────────────────────
+                    await focusPaneBody(page, paneID);
+                    await runInTerminal(page, `exec env ZDOTDIR=${zdotdir} zsh`, { settleMs: 2500 });
+                    const armed = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    recorder.artifact('armed-capture.txt', armed);
+                    const armedTrails = (armed.match(/NEXTRAIL/g) ?? []).length;
+                    recorder.check(
+                        'the two-line dot-filled prompt is up, once (fixture integrity)',
+                        armedTrails === 1 && armed.includes('NEXPROMPT'),
+                        `NEXTRAIL x${String(armedTrails)} · ${JSON.stringify(armed.trimEnd().split('\n').slice(-2))}`
+                    );
+                    await recorder.shot(page, 'armed');
+
+                    // ── 2. the storm ─────────────────────────────────────────────────
+                    //
+                    // `window.resizeTo` is a REAL native resize here (Electron wires it to the
+                    // NSWindow), so this goes through the OS, the compositor, the client's
+                    // ResizeObserver, the debounce, the daemon and SIGWINCH — the same path a
+                    // dragged corner takes, 90 times, faster than a human can drag.
+                    const before = await page.eval('JSON.stringify({ w: window.outerWidth, h: window.outerHeight })');
+                    await stormStep(900, 600);
+                    await sleep(400);
+                    const probe = JSON.parse(String(await page.eval('JSON.stringify({ w: window.outerWidth, h: window.outerHeight })')));
+                    const nativeResize = probe.w === 900;
+                    recorder.note(`resizeTo probe: ${String(before)} → ${JSON.stringify(probe)} · native=${String(nativeResize)}`);
+                    recorder.check(
+                        'the harness can drive a real window resize (otherwise this step proves nothing)',
+                        nativeResize,
+                        JSON.stringify(probe)
+                    );
+                    if (!nativeResize) return;
+
+                    for (let step = 0; step <= 90; step += 1) {
+                        // Width is the axis under test (a height-only storm was always clean);
+                        // height moves too, because a real drag moves both.
+                        const width = Math.round(1280 - 800 * Math.abs(Math.sin(step * 0.21)));
+                        const height = Math.round(820 - 300 * Math.abs(Math.sin(step * 0.17)));
+                        await stormStep(width, height);
+                        await sleep(33);
+                    }
+                    await stormStep(1280, 820);
+                    // Longer than the client's 100 ms debounce + the daemon's 150 ms settle, so
+                    // what is asserted below is the SETTLED state, not the middle of a gesture.
+                    await sleep(3000);
+                    await recorder.shot(page, 'after-storm');
+
+                    // ── 3. what the DAEMON's buffer holds ────────────────────────────
+                    const capture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    recorder.artifact('after-storm-capture.txt', capture);
+                    const serverTrails = (capture.match(/NEXTRAIL/g) ?? []).length;
+                    recorder.note(`server buffer: NEXTRAIL x${String(serverTrails)} after 90 resize steps`);
+                    recorder.check(
+                        'the daemon buffer holds exactly ONE prompt after the storm (reflow policy)',
+                        serverTrails === 1,
+                        `NEXTRAIL x${String(serverTrails)}`
+                    );
+                    const viewport = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const viewportTrails = (viewport.match(/NEXTRAIL/g) ?? []).length;
+                    recorder.check(
+                        'and exactly one on the visible screen',
+                        viewportTrails === 1,
+                        `NEXTRAIL x${String(viewportTrails)}`
+                    );
+
+                    // ── 4. what the CLIENT ENGINE holds ──────────────────────────────
+                    //
+                    // Read through the engine's own selection (`getSelection()` behind a real
+                    // drag, which ghostty-web copies to the clipboard on mouse-up) rather than
+                    // off the pixels: this is the engine's buffer talking, and it is the half
+                    // of the defect a server-side capture cannot see.
+                    const paneRoot = `[data-pane-id="${paneID}"][data-terminal-status]`;
+                    const grid = await page.eval(
+                        `(() => {
+                            const root = document.querySelector('${paneRoot}');
+                            if (root === null) return null;
+                            const host = root.querySelector('[data-terminal-host]');
+                            const node = host?.querySelector('canvas') ?? host ?? root;
+                            const rect = node.getBoundingClientRect();
+                            const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
+                            return {
+                                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+                                cellWidth: Number(cell[0] ?? 0), cellHeight: Number(cell[1] ?? 0)
+                            };
+                        })()`
+                    );
+                    recorder.note(`client grid: ${JSON.stringify(grid)}`);
+                    if (grid === null || !(grid.cellWidth > 0) || !(grid.cellHeight > 0)) {
+                        recorder.check('the pane publishes its cell metrics (data-terminal-cell)', false, JSON.stringify(grid));
+                        return;
+                    }
+                    // A sentinel first, so "the engine copied nothing" cannot pass as a clean
+                    // read of somebody else's clipboard (the OSC 52 step's rule).
+                    const seeded = await page.eval(
+                        `navigator.clipboard.writeText(${JSON.stringify(CLIP_SENTINEL_STORM)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                    );
+                    recorder.note(`clipboard sentinel: ${String(seeded)}`);
+
+                    const from = { x: grid.x + grid.cellWidth * 0.5, y: grid.y + grid.cellHeight * 0.5 };
+                    const to = {
+                        x: grid.x + grid.width - grid.cellWidth * 0.5,
+                        y: grid.y + grid.height - grid.cellHeight * 0.5
+                    };
+                    await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                    await sleep(80);
+                    await page.mouse('mouseMoved', (from.x + to.x) / 2, (from.y + to.y) / 2, { button: 'left', buttons: 1 });
+                    await sleep(60);
+                    await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
+                    await sleep(80);
+                    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                    await sleep(600);
+
+                    const selectedChars = await page.eval(
+                        `Number(document.querySelector('${paneRoot}')?.getAttribute('data-terminal-selection') ?? 0)`
+                    );
+                    const copied = await page.eval(
+                        `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
+                    );
+                    const clientText = typeof copied === 'string' ? copied : '';
+                    recorder.artifact('after-storm-client-selection.txt', clientText);
+                    recorder.check(
+                        'the client engine handed back its own buffer (a real selection, not a stale clipboard)',
+                        selectedChars > 0 && clientText !== CLIP_SENTINEL_STORM && !clientText.startsWith('ERR:'),
+                        `${String(selectedChars)} chars selected · ${JSON.stringify(clientText.slice(0, 60))}`
+                    );
+                    const clientTrails = (clientText.match(/NEXTRAIL/g) ?? []).length;
+                    recorder.note(`client engine screen: NEXTRAIL x${String(clientTrails)}`);
+                    recorder.check(
+                        'THE DEFECT: the client engine shows exactly ONE prompt too (post-resize resync)',
+                        clientTrails === 1,
+                        `NEXTRAIL x${String(clientTrails)} in the engine's own selection`
+                    );
+
+                    // ── 5. still a live shell when the window is handed back ─────────
+                    await restoreWindow();
+                    await focusPaneBody(page, paneID);
+                    await runInTerminal(page, 'echo NEX_STILL_ALIVE_$((6*7))', { settleMs: 1500 });
+                    const alive = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    recorder.artifact('restored-capture.txt', alive);
+                    recorder.check(
+                        'the pane is still a live shell after the storm and the restore',
+                        alive.includes('NEX_STILL_ALIVE_42'),
+                        JSON.stringify(alive.trimEnd().split('\n').slice(-3))
+                    );
+                    await recorder.shot(page, 'restored');
+                    recorder.eyes(
+                        'the stormed pane must show ONE two-line prompt (┌NEXTRAIL …dots… / └NEXPROMPT), not a ladder of ┌NEXTRAIL rows climbing the pane'
+                    );
+
+                    // Put the machine's clipboard back (this step wrote to the real one).
+                    await page.eval(
+                        `navigator.clipboard.writeText(${JSON.stringify(CLIP_SENTINEL_STORM)}).then(() => 'ok').catch(() => 'ERR')`
+                    );
+                } finally {
+                    // Hand the run back exactly what it lent: its window, its pane count and
+                    // the focus on the pane it was using.
+                    try {
+                        await restoreWindow();
+                    } catch {
+                        // best effort — the close below matters more
+                    }
+                    await cli.run(['pane', 'close', '--target', paneID]);
+                    await sleep(1500);
+                    if (anchor) await focusPaneBody(page, anchor);
+                }
+            }
+        },
 
         // ── splitting ───────────────────────────────────────────────────────────────
         {

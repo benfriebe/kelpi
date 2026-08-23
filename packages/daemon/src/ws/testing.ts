@@ -110,10 +110,22 @@ export function stubTerm(): StubTerm {
         rows: 24
     });
 
+    /**
+     * Panes the emulator has thrown away. The real service answers `has()` false for these and
+     * hands back an EMPTY snapshot, which is the difference the resync path cares about (an
+     * empty replay would wipe a client's screen), so the stub has to be able to be in that
+     * state too.
+     */
+    const disposed = new Set<string>();
+
     const service: TerminalStateService & {
         snapshotAsync(paneID: string): Promise<{ data: Uint8Array; cols: number; rows: number }>;
+        has(paneID: string): boolean;
     } = {
-        attach: () => {},
+        attach: (paneID) => {
+            disposed.delete(paneID);
+        },
+        has: (paneID) => !disposed.has(paneID),
         feed(paneID, data) {
             fed.push({ paneID, data: textOf(data) });
             snapshots.set(paneID, (snapshots.get(paneID) ?? '') + textOf(data));
@@ -130,6 +142,7 @@ export function stubTerm(): StubTerm {
         modes: () => state.modes,
         dispose: (paneID) => {
             snapshots.delete(paneID);
+            disposed.add(paneID);
         }
     };
 

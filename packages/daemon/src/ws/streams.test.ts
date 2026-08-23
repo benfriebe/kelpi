@@ -1,5 +1,5 @@
 import { PTY_FRAME_TYPES, decodePtyFrame, encodeAckPayload, encodePtyFrame, encodeResizePayload } from '@nex/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPaneStreamHub, type PaneStreamHub, type PaneStreamSession } from './streams.js';
 import { PANE_A, PANE_B, bytes, recordingTransport, stubPty, stubTerm, textOf, type RecordedTransport, type StubPty, type StubTerm } from './testing.js';
@@ -16,7 +16,9 @@ interface Harness {
     frames(): { type: number; paneID: string; text: string }[];
 }
 
-function harness(options: { windowBytes?: number; maxQueuedBytes?: number } = {}): Harness {
+function harness(
+    options: { windowBytes?: number; maxQueuedBytes?: number; resizeResyncMs?: number } = {}
+): Harness {
     const pty = stubPty();
     const term = stubTerm();
     const transport = recordingTransport();
@@ -26,7 +28,8 @@ function harness(options: { windowBytes?: number; maxQueuedBytes?: number } = {}
         term: term.service,
         onGeometry: (paneID, cols, rows) => geometry.push({ paneID, cols, rows }),
         ...(options.windowBytes !== undefined ? { windowBytes: options.windowBytes } : {}),
-        ...(options.maxQueuedBytes !== undefined ? { maxQueuedBytes: options.maxQueuedBytes } : {})
+        ...(options.maxQueuedBytes !== undefined ? { maxQueuedBytes: options.maxQueuedBytes } : {}),
+        ...(options.resizeResyncMs !== undefined ? { resizeResyncMs: options.resizeResyncMs } : {})
     });
     const session = hub.createSession(transport);
     return {
@@ -391,5 +394,239 @@ describe('VT modes on the stream (§TERM-037…§TERM-039)', () => {
         const before = h.transport.ofType('pane-modes').length;
         h.hub.modesChanged(PANE_A, { applicationCursorKeys: false, bracketedPaste: false });
         expect(h.transport.ofType('pane-modes')).toHaveLength(before);
+    });
+});
+
+/**
+ * The post-resize resync (`DEFAULT_RESIZE_RESYNC_MS`).
+ *
+ * A pane has two emulators — the daemon's and the client's — and a resize is what makes them
+ * disagree over identical bytes. These cover the three properties the seam has to hold: one
+ * replay per SETTLED gesture, no byte lost or doubled around it, and no way for it to loop.
+ */
+describe('settled-resize resync', () => {
+    const SETTLE = 40;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** Replay frames for a pane, oldest first. */
+    const replays = (h: Harness, paneID: string): string[] =>
+        h.frames()
+            .filter((frame) => frame.type === PTY_FRAME_TYPES.replay && frame.paneID === paneID)
+            .map((frame) => frame.text);
+
+    it('reconciles the client to the daemon buffer once the geometry settles', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'attached');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+
+        h.term.setSnapshot(PANE_A, 'reflowed-screen');
+        h.session.resize(PANE_A, 60, 24);
+        expect(replays(h, PANE_A)).toEqual(['attached']); // nothing yet: the gesture is live
+
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(replays(h, PANE_A)).toEqual(['attached', 'reflowed-screen']);
+    });
+
+    it('coalesces a resize STORM into exactly one resync', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.term.setSnapshot(PANE_A, 'settled');
+
+        // 40 steps of a live drag, each one inside the settle window of the last.
+        for (let step = 0; step < 40; step += 1) {
+            h.session.resize(PANE_A, 80 - step, 24);
+            await vi.advanceTimersByTimeAsync(SETTLE / 2);
+        }
+        expect(replays(h, PANE_A)).toHaveLength(1); // the attach replay only
+
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        expect(replays(h, PANE_A)).toEqual(['', 'settled']);
+    });
+
+    it('never resyncs twice for one settled gesture, however long the pane then idles', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+
+        await vi.advanceTimersByTimeAsync(SETTLE);
+        const afterSettle = replays(h, PANE_A).length;
+        await vi.advanceTimersByTimeAsync(SETTLE * 20);
+
+        expect(replays(h, PANE_A)).toHaveLength(afterSettle);
+    });
+
+    it('cannot loop: a resize to the grid the pane already has arms nothing', async () => {
+        // The replay itself provokes no resize on the client (its `resize()` short-circuits on
+        // an unchanged grid), and this is the other half of the same guard — so even a client
+        // that re-published its geometry on every replay could not ping-pong.
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const before = replays(h, PANE_A).length;
+
+        h.session.resize(PANE_A, 80, 24);
+        h.session.resize(PANE_A, 80, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE * 4);
+
+        expect(replays(h, PANE_A)).toHaveLength(before);
+    });
+
+    it('does not resync the geometry an attach just snapshotted at', async () => {
+        // `attach()` sizes the pane and THEN snapshots, so the first grid a pane is seen at is
+        // already what the client is looking at; a replay 150 ms later would be pure traffic.
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 120, rows: 40 });
+        await vi.advanceTimersByTimeAsync(SETTLE * 4);
+
+        expect(replays(h, PANE_A)).toHaveLength(1);
+    });
+
+    it('loses no byte that lands while the snapshot settles, and doubles none', async () => {
+        /*
+         * REAL timers, because the ordering under test is the event loop's own: the settle
+         * timer and the emit are both `setTimeout(…, 0)` (timers phase, registration order)
+         * and the stub's async snapshot resolves on a `setImmediate` (check phase), so the
+         * bytes land *strictly inside* the snapshot's await — the window the attach path
+         * calls "pre-live bytes are already inside the pending replay". Nothing about that
+         * window is expressible with a clock that can be advanced by hand.
+         */
+        vi.useRealTimers();
+        const h = harness({ resizeResyncMs: 0 });
+        h.term.asyncSnapshots = true;
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        const framesBefore = h.frames().length;
+
+        h.session.resize(PANE_A, 60, 24);
+        // Fast typing across the settle: boot feeds the terminal from the same synchronous
+        // `pty.onData` emission this hub delivers from, so `snapshotAsync()`'s flush loop
+        // picks these up — they are dropped from the STREAM precisely because they are
+        // inside the snapshot.
+        setTimeout(() => {
+            h.pty.emit(PANE_A, 'typed-1');
+            h.term.service.feed(PANE_A, bytes('typed-1'));
+            h.pty.emit(PANE_A, 'typed-2');
+            h.term.service.feed(PANE_A, bytes('typed-2'));
+        }, 0);
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+
+        expect(h.frames().slice(framesBefore)).toEqual([
+            { type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'typed-1typed-2' }
+        ]);
+
+        // …and the stream is live again straight behind it.
+        h.pty.emit(PANE_A, 'after');
+        expect(h.frames().slice(framesBefore + 1)).toEqual([
+            { type: PTY_FRAME_TYPES.output, paneID: PANE_A, text: 'after' }
+        ]);
+    });
+
+    it('re-seeds every client attached to the pane from ONE snapshot', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        const secondTransport = recordingTransport();
+        const second = h.hub.createSession(secondTransport);
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        await second.attach(PANE_A, { cols: 80, rows: 24 });
+        h.term.setSnapshot(PANE_A, 'shared');
+
+        // One client drags its window; the OTHER client's VT is just as diverged.
+        h.session.resize(PANE_A, 61, 25);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        const decodeReplays = (frames: Uint8Array[]): string[] =>
+            frames
+                .map((frame) => decodePtyFrame(frame))
+                .filter((frame) => frame !== undefined && frame.type === PTY_FRAME_TYPES.replay)
+                .map((frame) => textOf((frame as { payload: Uint8Array }).payload));
+        expect(decodeReplays(h.transport.frames)).toEqual(['', 'shared']);
+        expect(decodeReplays(secondTransport.frames)).toEqual(['', 'shared']);
+    });
+
+    it('keeps the flow-control counters in step with the client on a resync', async () => {
+        // The client zeroes its own unacked/pending the moment a replay lands, dropping any ack
+        // it had not flushed. A daemon that kept charging those bytes would stall the pane.
+        const h = harness({ resizeResyncMs: SETTLE, windowBytes: 64 });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.pty.emit(PANE_A, 'x'.repeat(50));
+        expect(h.session.stats(PANE_A)?.unacked).toBe(50);
+
+        h.term.setSnapshot(PANE_A, 'seed');
+        h.session.resize(PANE_A, 60, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        expect(h.session.stats(PANE_A)?.unacked).toBe('seed'.length);
+        expect(h.session.stats(PANE_A)?.live).toBe(true);
+    });
+
+    it('leaves the flow-control re-seed to the ack path when one is already pending', async () => {
+        const h = harness({ resizeResyncMs: SETTLE, windowBytes: 16, maxQueuedBytes: 8 });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.pty.emit(PANE_A, 'x'.repeat(20)); // over the window
+        h.pty.emit(PANE_A, 'y'.repeat(20)); // over the queue bound → resyncPending
+        expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
+        const before = replays(h, PANE_A).length;
+
+        h.session.resize(PANE_A, 60, 24);
+        await vi.advanceTimersByTimeAsync(SETTLE);
+
+        expect(replays(h, PANE_A)).toHaveLength(before);
+        expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
+    });
+
+    it('sends nothing to a client that detached during the settle', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+        h.session.detach(PANE_A);
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+        expect(replays(h, PANE_A)).toHaveLength(1);
+    });
+
+    it('drops a pending resync when the pane process exits', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+        h.pty.exit(PANE_A, 0);
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+        expect(replays(h, PANE_A)).toHaveLength(1);
+    });
+
+    it('drops pending resyncs when the hub closes', async () => {
+        const h = harness({ resizeResyncMs: SETTLE });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+        h.hub.close();
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+        expect(replays(h, PANE_A)).toHaveLength(1);
+    });
+
+    it('does not wipe a client screen when the pane was disposed mid-gesture', async () => {
+        // `snapshot()` of a disposed pane is EMPTY, and an empty replay resets the engine to
+        // a blank screen. A resize that races a pane close must not do that.
+        const h = harness({ resizeResyncMs: SETTLE });
+        h.term.setSnapshot(PANE_A, 'content');
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+        h.term.service.dispose(PANE_A);
+
+        await vi.advanceTimersByTimeAsync(SETTLE * 2);
+
+        expect(replays(h, PANE_A)).toEqual(['content']);
+    });
+
+    it('can be switched off entirely', async () => {
+        const h = harness({ resizeResyncMs: -1 });
+        await h.session.attach(PANE_A, { cols: 80, rows: 24 });
+        h.session.resize(PANE_A, 60, 24);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(replays(h, PANE_A)).toHaveLength(1);
     });
 });

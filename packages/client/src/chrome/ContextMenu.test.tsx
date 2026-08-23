@@ -5,7 +5,7 @@
  * what lives here is `menuAnchorFromEvent`, whose whole job is deciding where the panel lands.
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ContextMenu, menuAnchorFromEvent } from './ContextMenu';
@@ -148,5 +148,125 @@ describe('ContextMenu', () => {
     it('lands on the first ENABLED row when asked to take the keyboard', () => {
         render(<ContextMenu x={0} y={0} items={items} autoFocus onClose={() => undefined} />);
         expect((document.activeElement as HTMLElement).getAttribute('data-menu-item')).toBe('first');
+    });
+});
+
+/**
+ * The highlight — the user's second report, and the only feedback a menu gives about which row
+ * a click is about to hit.
+ *
+ * The rule this replaces lit up exactly one kind of row: a submenu parent, and only because its
+ * submenu had opened under the pointer. "Rename…", "Duplicate", "Close Pane", every row in the
+ * footer chevron and the titlebar ••• stayed transparent under the cursor. Because every menu
+ * in the client renders through this component's `MenuRow`, the fix is asserted here once
+ * rather than per call site.
+ *
+ * The background is read off `style` rather than `getComputedStyle`: the token is
+ * `var(--nex-selection-fill, …)`, and jsdom resolves an unset custom property to the empty
+ * string, which would make every row's *computed* background identical and the assertion
+ * vacuous. The real computed-colour read is the audit's, in a browser with the theme mounted.
+ */
+describe('every enabled row highlights — hover, focus, or an open submenu', () => {
+    const HIGHLIGHT = 'var(--nex-selection-fill, rgba(82, 118, 184, 0.24))';
+    const rows = [
+        { id: 'rename', label: 'Rename…' },
+        { id: 'status', label: 'Status', submenu: [{ id: 'idle', label: 'Idle' }] },
+        { id: 'delete', label: 'Delete', danger: true },
+        { id: 'unavailable', label: 'Unavailable', disabled: true }
+    ];
+    const row = (id: string): HTMLElement => {
+        const found = screen.getByTestId('context-menu').querySelector<HTMLElement>(`[data-menu-item="${id}"]`);
+        if (found === null) throw new Error(`no menu row ${id}`);
+        return found;
+    };
+    const fill = (id: string): string => row(id).style.background;
+
+    const open = (): void => {
+        render(<ContextMenu x={0} y={0} items={rows} onClose={() => undefined} />);
+    };
+
+    it('a PLAIN row highlights under the pointer, and gives it back on the way out', () => {
+        open();
+        expect(fill('rename')).toBe('transparent');
+        expect(row('rename').getAttribute('data-highlighted')).toBe('false');
+
+        fireEvent.mouseEnter(row('rename'));
+        expect(fill('rename')).toBe(HIGHLIGHT);
+        expect(row('rename').getAttribute('data-highlighted')).toBe('true');
+
+        fireEvent.mouseLeave(row('rename'));
+        expect(fill('rename')).toBe('transparent');
+    });
+
+    it('a DISABLED row does not — it reads as unavailable and must not offer itself', () => {
+        open();
+        fireEvent.mouseEnter(row('unavailable'));
+        expect(fill('unavailable')).toBe('transparent');
+        expect(row('unavailable').getAttribute('data-highlighted')).toBe('false');
+        // The dimming that says so is still the only thing marking it.
+        expect(row('unavailable').className).toContain('disabled:opacity-40');
+    });
+
+    it('keyboard focus renders the SAME highlight as hover — one appearance, two ways in', () => {
+        open();
+        fireEvent.focus(row('rename'));
+        const focused = fill('rename');
+        fireEvent.blur(row('rename'));
+        expect(fill('rename')).toBe('transparent');
+
+        fireEvent.mouseEnter(row('rename'));
+        expect(focused).toBe(fill('rename'));
+        expect(focused).toBe(HIGHLIGHT);
+    });
+
+    it('the autoFocus landing row is highlighted on arrival, not just focused', () => {
+        render(<ContextMenu x={0} y={0} items={rows} autoFocus onClose={() => undefined} />);
+        expect(document.activeElement).toBe(row('rename'));
+        expect(row('rename').getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('a DANGER row highlights too, and keeps the red that is the only thing marking it', () => {
+        open();
+        fireEvent.mouseEnter(row('delete'));
+        expect(fill('delete')).toBe(HIGHLIGHT);
+        // rgb, because jsdom normalises the hex.
+        expect(row('delete').style.color).toBe('rgb(224, 101, 92)');
+    });
+
+    it('a submenu parent keeps its existing behaviour: lit while its child panel is open', () => {
+        open();
+        fireEvent.mouseEnter(row('status'));
+        expect(screen.getByTestId('context-submenu')).toBeTruthy();
+        expect(fill('status')).toBe(HIGHLIGHT);
+
+        // The pointer moves off the parent and INTO the submenu: hover is gone, the submenu is
+        // not, and the parent must stay lit or the trail back is invisible.
+        fireEvent.mouseLeave(row('status'));
+        expect(fill('status')).toBe(HIGHLIGHT);
+        expect(row('status').getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('and a submenu’s OWN rows highlight by the same rule', () => {
+        open();
+        fireEvent.mouseEnter(row('status'));
+        const child = within(screen.getByTestId('context-submenu')).getByText('Idle').closest('button');
+        if (child === null) throw new Error('no submenu row');
+        expect(child.style.background).toBe('transparent');
+        fireEvent.mouseEnter(child);
+        expect(child.style.background).toBe(HIGHLIGHT);
+    });
+
+    it('hovering a plain row closes an open submenu AND highlights itself', () => {
+        open();
+        fireEvent.mouseEnter(row('status'));
+        expect(screen.queryByTestId('context-submenu')).toBeTruthy();
+
+        // The pointer's real journey: out of one row, into the next. (jsdom fires only what it
+        // is asked to; a browser pairs them, which is what the audit's `mouseMoved` exercises.)
+        fireEvent.mouseLeave(row('status'));
+        fireEvent.mouseEnter(row('rename'));
+        expect(screen.queryByTestId('context-submenu')).toBeNull();
+        expect(fill('rename')).toBe(HIGHLIGHT);
+        expect(fill('status')).toBe('transparent');
     });
 });

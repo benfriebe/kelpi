@@ -9,6 +9,11 @@
  *
  * Everything is data: `MenuItemSpec[]` in, `onSelect` callbacks out. Submenus are one level
  * deep (that is all §5.6/§5.7 use) and open on hover, matching the native menus.
+ *
+ * Row *highlighting* is owned here too, and by nothing else: every menu in the client — the
+ * sidebar's row and background menus, the footer chevron, the pane context menu, the titlebar
+ * ••• — renders through `MenuRow`, so the rule lives in one function (`rowHighlight`) and no
+ * call site restyles its own rows. See its comment for what the rule is and what it replaced.
  */
 
 import {
@@ -132,8 +137,47 @@ interface RowProps {
     readonly onActivate: () => void;
 }
 
+/**
+ * The one place a menu row's highlight is decided (the user's second report).
+ *
+ * The rule this replaces was `background: openSubmenu ? selectionFill : 'transparent'` — which
+ * meant the ONLY row in any menu in the app that ever lit up was a submenu parent, and only
+ * because its submenu had opened underneath the pointer. "Rename…", "Duplicate", "Close Pane",
+ * every row in the footer chevron and the titlebar ••• stayed transparent under the cursor, so
+ * a menu gave no feedback at all about which row a click was about to hit. Native menus (and
+ * every other selectable surface in this client — the repo picker's rows, the palette) do the
+ * opposite: the row under the pointer is the row that acts, so it is painted.
+ *
+ * Three sources, ONE appearance, which is the part that matters:
+ *
+ *   - **hover** on any enabled row;
+ *   - **keyboard focus**, so `autoFocus`'s landing row and a Tab walk read identically to a
+ *     pointer — a menu that highlights only for the mouse is unusable from the keyboard, and
+ *     two different-looking highlights would be worse than one;
+ *   - **an open submenu**, which is the existing behaviour and is kept: the parent stays lit
+ *     while the pointer is away in its child panel, where hover alone would have dropped it.
+ *
+ * `disabled` rows are excluded at the source (`interactive`) rather than by relying on the
+ * browser not to dispatch mouse events to a disabled `<button>`: they already read as
+ * unavailable through `disabled:opacity-40`, and a dimmed row that still lights up would be
+ * telling the user it can be clicked.
+ *
+ * The fill is `selectionFill` — the token the submenu-parent highlight already used, and the
+ * one the repo picker paints a selected row with — so a highlight means the same thing
+ * everywhere in the chrome. Text colour is deliberately unchanged: the fill is a 24%-alpha
+ * wash rather than a solid accent, so `textPrimary` keeps its contrast over it and a `danger`
+ * row keeps the red that is the only thing marking it destructive (macOS keeps its destructive
+ * rows red under the highlight too).
+ */
+function rowHighlight(interactive: boolean, hovered: boolean, focused: boolean, openSubmenu: boolean): boolean {
+    if (!interactive) return false;
+    return hovered || focused || openSubmenu;
+}
+
 function MenuRow(props: RowProps): ReactElement {
     const { item } = props;
+    const [hovered, setHovered] = useState(false);
+    const [focused, setFocused] = useState(false);
     if (item.kind === 'separator') {
         return <div role="separator" className="my-1 h-px" style={{ background: tokens.divider }} />;
     }
@@ -145,6 +189,7 @@ function MenuRow(props: RowProps): ReactElement {
         );
     }
     const interactive = item.disabled !== true;
+    const highlighted = rowHighlight(interactive, hovered, focused, props.openSubmenu);
     return (
         <button
             type="button"
@@ -163,12 +208,27 @@ function MenuRow(props: RowProps): ReactElement {
              * these rows by `role="menuitem"`.
              */
             data-checked={item.checked === undefined ? undefined : String(item.checked)}
-            className="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[12px] disabled:opacity-40"
+            /* The highlight as an attribute, for the same reason `data-checked` is one: the
+               harness and three suites read row state without having to resolve a colour. */
+            data-highlighted={highlighted ? 'true' : 'false'}
+            className="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[12px] outline-none disabled:opacity-40"
             style={{
                 color: item.danger === true ? '#E0655C' : tokens.textPrimary,
-                background: props.openSubmenu ? tokens.selectionFill : 'transparent'
+                background: highlighted ? tokens.selectionFill : 'transparent'
             }}
-            onMouseEnter={props.onHover}
+            onMouseEnter={() => {
+                setHovered(true);
+                props.onHover();
+            }}
+            onMouseLeave={() => {
+                setHovered(false);
+            }}
+            onFocus={() => {
+                setFocused(true);
+            }}
+            onBlur={() => {
+                setFocused(false);
+            }}
             onClick={(event) => {
                 event.stopPropagation();
                 if (!interactive) return;

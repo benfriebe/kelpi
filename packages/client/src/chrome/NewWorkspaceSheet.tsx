@@ -32,14 +32,21 @@
  *     "unassigned".
  *   - **Escape cancels and the backdrop cancels**, innermost surface first: with the repo picker
  *     open, both close the picker and leave the sheet standing.
+ *   - **The repo picker is a SUB-SHEET over this one** (`NewWorkspaceSheet.swift:227-239` hangs
+ *     `RepoPickerView` off the sheet with its own `.sheet(isPresented:)`): its own dimming
+ *     layer above the sheet, landing at the sheet's top edge and at the sheet's width, so
+ *     "which panel is live" is never a question.
  *   - **A second Create cannot race the first.** The in-flight guard is a ref, not the rendered
  *     `busy` flag, so two submits in the SAME tick cannot both pass (`isSubmittingWorktree`,
  *     `NewWorkspaceSheet.swift:52-56`).
  *
- * One divergence, stated: the worktree section is offered whenever the registry is non-empty (with
+ * Two divergences, stated. The worktree section is offered whenever the registry is non-empty (with
  * a repo picker inside it when the Repositories section did not name exactly one), where the Swift
  * shows it only for `selectedRepos.count == 1`. That is the port's existing, exercised behaviour —
  * `workspace-create-worktree` drives it with no repo chosen — and this change did not touch it.
+ * And an EMPTY registry gets the Repositories heading plus one line saying where repositories come
+ * from, where the Swift renders the section not at all; see the section's own comment for why a
+ * silent gap was the user's report and why the line is not a focusable stop.
  */
 
 import type { WorkspaceColor } from '@nex/daemon/store';
@@ -493,6 +500,35 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         </label>
                     ) : null}
 
+                    {/*
+                     * §WS-075's Repositories section. The Swift gates the WHOLE section on
+                     * `!store.repoRegistry.isEmpty` (`NewWorkspaceSheet.swift:142`), and the
+                     * port copied the gate — so on the state every user is in before they have
+                     * ever opened Settings ▸ Repositories (a fresh install; the audit's own
+                     * fresh boot), the New Workspace sheet renders name, colour, profile and
+                     * nothing else. That is the user's report: there is no "add repo" in the
+                     * create sheet, and no reason given for its absence.
+                     *
+                     * The divergence, stated: an empty registry gets the heading and one line
+                     * saying where repositories come from, where the Swift shows a gap. It is
+                     * NOT a focusable stop — `fieldOrder()` below is unchanged, so the Tab loop
+                     * is byte-identical to the Swift's `visibleFields` in both states, and a
+                     * picker that could only ever offer an empty list is not put in the user's
+                     * path. (The Swift's own picker has no browse and no scan either —
+                     * `RepoPickerView.swift:74-84` sends you to Settings in the same words.)
+                     */}
+                    {isWorkspace && repos.length === 0 ? (
+                        <div className="flex flex-col gap-1" data-testid="new-workspace-repos-empty">
+                            <span className="text-[11px]" style={{ color: tokens.textSecondary }}>
+                                Repositories
+                            </span>
+                            <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
+                                No repositories registered yet — add one in Settings ▸ Repositories, and it
+                                will be offered here.
+                            </span>
+                        </div>
+                    ) : null}
+
                     {isWorkspace && repos.length > 0 ? (
                         <div className="flex flex-col gap-1" data-testid="new-workspace-repos">
                             <span className="text-[11px]" style={{ color: tokens.textSecondary }}>
@@ -686,36 +722,66 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                 </form>
             </div>
 
+            {/*
+             * The repo picker is the Swift's SUB-SHEET — `.sheet(isPresented:)` hung off the
+             * New Workspace sheet itself (`NewWorkspaceSheet.swift:227-239`), which AppKit
+             * presents over its presenter, dimming it, at the presenter's own top edge.
+             *
+             * So it gets its own layer rather than being a loose `fixed` panel at `top-1/4` of
+             * the VIEWPORT: that placement was measured against the window, not the sheet, so
+             * the picker landed across the middle of the panel — slicing the colour swatch row
+             * in half — in the same surface colour as the sheet with nothing between them, and
+             * the two panels read as one blob. The layer restores the two things a sub-sheet
+             * owes: the parent is dimmed (so which panel is live is never a question), and the
+             * child sits at the parent's top edge and at the parent's width.
+             *
+             * `z-[60]` is on the LAYER now, inside the backdrop's own stacking context — the
+             * picker paints above the sheet because its ancestor does, not because a sibling's
+             * z-index happens to win. The layer is also the picker's outside-click target, and
+             * it closes the picker ONLY (the innermost-first contract, the same resolution
+             * Escape and the backdrop take); `stopPropagation` keeps that click off the
+             * backdrop's own cancel path.
+             */}
             {pickerOpen ? (
                 <div
-                    data-testid="new-workspace-repo-picker"
-                    role="dialog"
-                    aria-label="Add repositories"
-                    /* Above the sheet it was raised from, and its own click target. */
-                    className="fixed left-1/2 top-1/4 z-[60] w-[320px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
-                    style={{
-                        background: tokens.surfaceBackground,
-                        border: `1px solid ${tokens.divider}`,
-                        color: tokens.textPrimary,
-                        boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
-                    }}
+                    data-testid="new-workspace-repo-picker-layer"
+                    className="fixed inset-0 z-[60] flex items-start justify-center"
+                    style={{ background: 'rgba(0,0,0,0.35)' }}
                     onMouseDown={(event) => {
                         event.stopPropagation();
+                        if (event.target !== event.currentTarget) return;
+                        setPickerOpen(false);
                     }}
                 >
-                    <div className="mb-2 text-[13px] font-semibold">Add Repositories</div>
-                    <RepoPicker
-                        repos={repos}
-                        mode="multiple"
-                        disabledRepoIDs={new Set(chosenRepoIDs)}
-                        onConfirm={(picked) => {
-                            setChosenRepoIDs([...chosenRepoIDs, ...picked.map((entry) => entry.id)]);
-                            setPickerOpen(false);
+                    <div
+                        data-testid="new-workspace-repo-picker"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Add repositories"
+                        /* The sheet's own `mt-[12vh]` and `w-[360px]`: the sub-sheet lands on
+                           the panel it was raised from rather than beside it. */
+                        className="mt-[12vh] max-h-[76vh] w-[360px] overflow-y-auto rounded-lg p-4 text-[12px]"
+                        style={{
+                            background: tokens.surfaceBackground,
+                            border: `1px solid ${tokens.divider}`,
+                            color: tokens.textPrimary,
+                            boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
                         }}
-                        onCancel={() => {
-                            setPickerOpen(false);
-                        }}
-                    />
+                    >
+                        <div className="mb-2 text-[13px] font-semibold">Add Repositories</div>
+                        <RepoPicker
+                            repos={repos}
+                            mode="multiple"
+                            disabledRepoIDs={new Set(chosenRepoIDs)}
+                            onConfirm={(picked) => {
+                                setChosenRepoIDs([...chosenRepoIDs, ...picked.map((entry) => entry.id)]);
+                                setPickerOpen(false);
+                            }}
+                            onCancel={() => {
+                                setPickerOpen(false);
+                            }}
+                        />
+                    </div>
                 </div>
             ) : null}
         </div>,

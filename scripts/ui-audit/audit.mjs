@@ -13872,6 +13872,210 @@ function buildFlows(ctx) {
                     `${String(beforeCancels.length)} → ${String(afterBackdrop.length)} workspaces`
                 );
 
+                /*
+                 * ── THE REPOSITORIES SECTION, AND ITS PICKER ────────────────────────
+                 *
+                 * "Where's the add repo functionality in the workspace create?" — the user's
+                 * report, and it had two halves.
+                 *
+                 * The first is the state a fresh install is in: the whole section was gated on
+                 * `repos.length > 0` (the Swift's own `!store.repoRegistry.isEmpty`), so a sheet
+                 * opened before anybody had visited Settings ▸ Repositories showed name, colour,
+                 * profile and NOTHING ELSE — no heading, no button, and no reason given. The
+                 * check that catches that shape is "exactly one of the two sections is on
+                 * screen", because "neither" is precisely the silent gap.
+                 *
+                 * The second is the picker itself. Presence proves nothing here: the panel it
+                 * opens is over another modal, so the question is whether it PAINTS above the
+                 * sheet and can be CLICKED. Both are read the only way that settles them —
+                 * `elementFromPoint` at the row's own centre (the picker is on top only if the
+                 * hit lands inside it), then a real `clickAt` on that row, then Add, then the
+                 * removable row it puts back in the sheet.
+                 */
+                await openSheet();
+                const repoSection = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const populated = document.querySelector('[data-testid="new-workspace-repos"]');
+                                const empty = document.querySelector('[data-testid="new-workspace-repos-empty"]');
+                                return JSON.stringify({
+                                    populated: populated !== null,
+                                    empty: empty !== null,
+                                    emptyText: (empty?.innerText ?? '').replace(/\\n/g, ' | '),
+                                    // An empty state must not add a Tab stop: visibleFields
+                                    // has to stay the Swift's in BOTH registry states.
+                                    emptyFocusables: empty === null ? 0 : empty.querySelectorAll('button, input, select, [tabindex]').length,
+                                    addRepo: document.querySelector('[data-testid="new-workspace-add-repo"]') !== null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`repositories section: ${JSON.stringify(repoSection)}`);
+                recorder.check(
+                    'the sheet ALWAYS shows a Repositories section — the populated one or an honest empty one, never neither',
+                    repoSection.populated !== repoSection.empty,
+                    `populated ${String(repoSection.populated)} / empty ${String(repoSection.empty)}`
+                );
+                if (repoSection.empty === true) {
+                    await recorder.shot(page, 'repos-empty-registry');
+                    recorder.check(
+                        'the empty registry says where repositories come from instead of showing a gap',
+                        /Repositories/.test(String(repoSection.emptyText)) &&
+                            /Settings/.test(String(repoSection.emptyText)),
+                        String(repoSection.emptyText)
+                    );
+                    recorder.check(
+                        'and adds no Tab stop, so the Field order is the Swift’s in both states',
+                        repoSection.emptyFocusables === 0,
+                        `${String(repoSection.emptyFocusables)} focusables`
+                    );
+                    // Self-provisioning, the `settings-repositories` idiom: under `--only`
+                    // nothing has registered a repo yet, and the picker below needs one row.
+                    await page.key('Escape', { key: 'Escape' });
+                    await sleep(400);
+                    await openSettingsTab(page, 'repositories');
+                    await page.click('[data-testid="repo-path"]');
+                    await page.insertText(repo);
+                    await page.click('[data-testid="repo-add"]');
+                    await page.waitFor(`document.querySelectorAll('[data-testid^="repo-row-"]').length > 0`, {
+                        timeoutMs: 20_000,
+                        label: 'the seeded repository row'
+                    });
+                    for (let attempt = 0; attempt < 4; attempt++) {
+                        const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
+                        if (open !== true) break;
+                        if (attempt === 0) await page.key('Escape');
+                        else await page.click('[data-testid="settings-close"]');
+                        await sleep(600);
+                    }
+                    await page.waitFor(`document.querySelector('${PAGE.settingsPanel}') === null`, {
+                        timeoutMs: 10_000,
+                        label: 'the settings overlay closing'
+                    });
+                    await sleep(400);
+                    await openSheet();
+                }
+                recorder.check(
+                    'with a registry behind it the sheet offers "+ Add Repository"',
+                    (await page.eval(`document.querySelector('[data-testid="new-workspace-add-repo"]') !== null`)) === true,
+                    'add-repo button'
+                );
+
+                await page.click('[data-testid="new-workspace-add-repo"]');
+                await sleep(700);
+                await recorder.shot(page, 'repo-picker-over-sheet');
+                const stacking = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                                const layer = document.querySelector('[data-testid="new-workspace-repo-picker-layer"]');
+                                const picker = document.querySelector('[data-testid="new-workspace-repo-picker"]');
+                                const backdrop = document.querySelector('[data-testid="new-workspace-backdrop"]');
+                                if (sheet === null || picker === null || layer === null) {
+                                    return JSON.stringify({ found: false, sheet: sheet !== null, layer: layer !== null, picker: picker !== null });
+                                }
+                                const pr = picker.getBoundingClientRect();
+                                const sr = sheet.getBoundingClientRect();
+                                const row = document.querySelector('[data-testid^="repo-choice-"]');
+                                const rr = row === null ? null : row.getBoundingClientRect();
+                                // WHO IS ON TOP: what the browser hit-tests at the row's centre.
+                                const hit = rr === null
+                                    ? null
+                                    : document.elementFromPoint(Math.round(rr.left + rr.width / 2), Math.round(rr.top + rr.height / 2));
+                                return JSON.stringify({
+                                    found: true,
+                                    inSheet: sheet.contains(picker),
+                                    inLayer: layer.contains(picker),
+                                    layerZ: Number(getComputedStyle(layer).zIndex),
+                                    backdropZ: backdrop === null ? null : Number(getComputedStyle(backdrop).zIndex),
+                                    // The panel lands ON the sheet rather than beside it.
+                                    overSheet: pr.top >= sr.top - 2 && pr.left >= sr.left - 2 && pr.right <= sr.right + 2,
+                                    rows: document.querySelectorAll('[data-testid^="repo-choice-"]').length,
+                                    hitInsidePicker: hit !== null && picker.contains(hit),
+                                    rowID: row === null ? null : row.getAttribute('data-testid'),
+                                    rowPoint: rr === null ? null : { x: rr.left + rr.width / 2, y: rr.top + rr.height / 2 }
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`picker stacking: ${JSON.stringify(stacking)}`);
+                recorder.check(
+                    'clicking "+ Add Repository" opens the picker, with the registry in it',
+                    stacking.found === true && stacking.rows >= 1,
+                    JSON.stringify(stacking.found === true ? stacking.rows : stacking)
+                );
+                recorder.check(
+                    'it is a SUB-SHEET over the sheet: its own layer, above the backdrop’s z, never a descendant of the scrolling panel',
+                    stacking.inSheet === false &&
+                        stacking.inLayer === true &&
+                        Number(stacking.layerZ) > Number(stacking.backdropZ),
+                    `inSheet ${String(stacking.inSheet)} · layer z ${String(stacking.layerZ)} over backdrop z ${String(stacking.backdropZ)}`
+                );
+                recorder.check(
+                    'and it lands ON the panel it was raised from, at its top edge and inside its width',
+                    stacking.overSheet === true,
+                    String(stacking.overSheet)
+                );
+                recorder.check(
+                    'the browser hit-tests a repo row to the PICKER — it is genuinely on top, not merely later in the DOM',
+                    stacking.hitInsidePicker === true,
+                    String(stacking.hitInsidePicker)
+                );
+                if (stacking.rowPoint !== null && stacking.rowPoint !== undefined) {
+                    // For real: a click at the row's own centre, the way a user reaches it.
+                    await page.clickAt(stacking.rowPoint.x, stacking.rowPoint.y);
+                    await sleep(400);
+                    const picked = await page.eval(
+                        `document.querySelector('[data-testid="${String(stacking.rowID)}"]')?.getAttribute('data-selected') ?? 'gone'`
+                    );
+                    recorder.check(
+                        'a real click on a repo row selects it THROUGH the sheet underneath',
+                        String(picked) === 'true',
+                        String(picked)
+                    );
+                    await recorder.shot(page, 'repo-picker-row-picked');
+                    await page.click('[data-testid="repo-picker-choose"]');
+                    await sleep(600);
+                    const chosen = JSON.parse(
+                        String(
+                            await page.eval(
+                                `JSON.stringify({
+                                    picker: document.querySelector('[data-testid="new-workspace-repo-picker"]') !== null,
+                                    removes: Array.from(document.querySelectorAll('[data-testid^="new-workspace-repo-remove-"]'))
+                                        .map(el => el.getAttribute('aria-label'))
+                                })`
+                            )
+                        )
+                    );
+                    recorder.note(`chosen repos: ${JSON.stringify(chosen)}`);
+                    recorder.check(
+                        'Add closes the picker and leaves a REMOVABLE row in the sheet (§WS-080)',
+                        chosen.picker === false && chosen.removes.length === 1 && /^Remove /.test(String(chosen.removes[0])),
+                        JSON.stringify(chosen)
+                    );
+                    await recorder.shot(page, 'repo-chosen-in-sheet');
+                }
+                /*
+                 * Nothing from this block survives into the create below — and the way out is a
+                 * LOOP rather than one Escape, because the innermost-first contract means the
+                 * number of surfaces to dismiss depends on how far this block got. A sheet left
+                 * standing turns the next `openSheet()`'s footer click into a backdrop click,
+                 * which is the leftover-sheet hazard this step's own preamble exists for.
+                 */
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const up = await page.eval(
+                        `document.querySelector('[data-testid="new-workspace-sheet"]') !== null
+                            || document.querySelector('[data-testid="new-workspace-repo-picker"]') !== null`
+                    );
+                    if (up !== true) break;
+                    await page.key('Escape', { key: 'Escape' });
+                    await sleep(450);
+                }
+
                 // ── and now the create the flow is actually named for ────────────────
                 await openSheet();
                 await page.insertText('Full Create');
@@ -14596,6 +14800,97 @@ function buildFlows(ctx) {
                     JSON.parse(String(menu)).some((label) => String(label).startsWith('Profile')),
                     String(menu)
                 );
+
+                /*
+                 * ── THE HIGHLIGHT, on the menu this step already has open ────────────
+                 *
+                 * The user's report: rows only lit up if they carried a submenu. They were
+                 * right, and this is the read that proves it either way — a COMPUTED colour off
+                 * a real pointer, in a browser with the theme mounted, rather than a class name
+                 * or an inline `var(...)` a unit test can only compare to itself.
+                 *
+                 * Three rows, one appearance: the row under the pointer, a DIFFERENT row given
+                 * the keyboard, and a third row that has neither. Hover must differ from rest,
+                 * focus must equal hover (a menu that answers only the mouse is unusable from
+                 * the keyboard, and two different highlights would be worse than one), and the
+                 * untouched row must still read as the resting value.
+                 */
+                const plainRows = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const menu = document.querySelector('[data-testid="context-menu"]');
+                                if (menu === null) return '[]';
+                                return JSON.stringify(Array.from(menu.querySelectorAll('[role="menuitem"]'))
+                                    .filter(el => el.getAttribute('aria-haspopup') !== 'menu' && !el.hasAttribute('disabled'))
+                                    .map(el => {
+                                        const r = el.getBoundingClientRect();
+                                        return {
+                                            id: el.getAttribute('data-menu-item'),
+                                            rest: getComputedStyle(el).backgroundColor,
+                                            x: r.x + r.width / 2,
+                                            y: r.y + r.height / 2
+                                        };
+                                    }));
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`plain (no-submenu) rows at rest: ${JSON.stringify(plainRows)}`);
+                recorder.check(
+                    'the row menu has at least two plain rows and a third to leave alone',
+                    plainRows.length >= 2,
+                    `${String(plainRows.length)} plain rows`
+                );
+                if (plainRows.length >= 2) {
+                    const [hoverRow, focusRow] = plainRows;
+                    await page.mouse('mouseMoved', hoverRow.x, hoverRow.y, { button: 'none', buttons: 0 });
+                    await sleep(300);
+                    // The keyboard lands on a DIFFERENT row, so the two states are read off two
+                    // rows at the same instant rather than off one row at two instants.
+                    await page.eval(`document.querySelector('[data-menu-item="${focusRow.id}"]')?.focus()`);
+                    await sleep(300);
+                    const lit = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const read = (id) => {
+                                        const el = document.querySelector('[data-menu-item="' + id + '"]');
+                                        if (el === null) return null;
+                                        return { bg: getComputedStyle(el).backgroundColor, flag: el.getAttribute('data-highlighted') };
+                                    };
+                                    const menu = document.querySelector('[data-testid="context-menu"]');
+                                    const other = menu === null ? null : Array.from(menu.querySelectorAll('[role="menuitem"]'))
+                                        .find(el => el.getAttribute('aria-haspopup') === 'menu');
+                                    return JSON.stringify({
+                                        hovered: read(${JSON.stringify(hoverRow.id)}),
+                                        focused: read(${JSON.stringify(focusRow.id)}),
+                                        untouched: other === null || other === undefined
+                                            ? null
+                                            : { bg: getComputedStyle(other).backgroundColor, flag: other.getAttribute('data-highlighted') }
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.note(`highlight: ${JSON.stringify(lit)}`);
+                    await recorder.shot(page, 'row-menu-hover');
+                    recorder.check(
+                        'a PLAIN row under the pointer paints a highlight it does not have at rest',
+                        lit.hovered !== null && lit.hovered.bg !== hoverRow.rest && lit.hovered.flag === 'true',
+                        `${String(hoverRow.rest)} → ${String(lit.hovered?.bg)}`
+                    );
+                    recorder.check(
+                        'and the row holding the KEYBOARD paints exactly the same one',
+                        lit.focused !== null && lit.focused.bg === lit.hovered?.bg,
+                        `focus ${String(lit.focused?.bg)} vs hover ${String(lit.hovered?.bg)}`
+                    );
+                    recorder.check(
+                        'while a row with neither is still at rest — the highlight marks ONE row',
+                        lit.untouched !== null && lit.untouched.bg === hoverRow.rest && lit.untouched.flag === 'false',
+                        `${String(lit.untouched?.bg)} vs rest ${String(hoverRow.rest)}`
+                    );
+                }
 
                 const profiles = await openSubmenu(page, 'Profile');
                 recorder.note(`profile submenu: ${JSON.stringify(profiles)}`);

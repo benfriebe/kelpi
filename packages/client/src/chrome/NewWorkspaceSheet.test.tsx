@@ -202,6 +202,113 @@ describe('the two dismissals a modal owes the user (§WS-075)', () => {
     });
 });
 
+/**
+ * "Where's the add repo functionality in the workspace create?" — the user's first report, and
+ * the two halves of the answer.
+ *
+ * With an empty registry the whole Repositories section was gated away, so a fresh install's
+ * create sheet showed name, colour, profile and nothing else, with no reason given. With a
+ * non-empty registry the button existed and its picker rendered — but as a loose `fixed` panel
+ * at a quarter of the VIEWPORT's height, measured against the window rather than the sheet, in
+ * the sheet's own surface colour with nothing between them.
+ *
+ * jsdom has no paint and no layout, so what is asserted here is the STACKING RELATIONSHIP the
+ * paint follows from — whose descendant the picker is, which layer carries the z-index, and DOM
+ * order inside the backdrop, which decides the winner at equal z. The pixels are the audit's
+ * `workspace-create-full` step, which clicks a repo row for real.
+ */
+describe('the repo picker is a sub-sheet OVER the sheet (§WS-075, `NewWorkspaceSheet.swift:227-239`)', () => {
+    const openPicker = (): { sheet: HTMLElement; layer: HTMLElement; picker: HTMLElement } => {
+        openSheet({ repos: REPOS });
+        fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+        return {
+            sheet: screen.getByTestId('new-workspace-sheet'),
+            layer: screen.getByTestId('new-workspace-repo-picker-layer'),
+            picker: screen.getByTestId('new-workspace-repo-picker')
+        };
+    };
+
+    it('paints ABOVE the sheet: its own layer, above the backdrop’s z, later in the DOM', () => {
+        const { sheet, layer, picker } = openPicker();
+        const backdrop = screen.getByTestId('new-workspace-backdrop');
+
+        // It is NOT inside the sheet — a descendant of a scrolling `overflow-y-auto` panel
+        // could not paint outside it however high its z-index went.
+        expect(sheet.contains(picker)).toBe(false);
+        expect(layer.contains(picker)).toBe(true);
+        expect(backdrop.contains(layer)).toBe(true);
+
+        // The z-index rides on the LAYER, inside the backdrop's own stacking context, and is
+        // above it. Read as numbers, so a class rename cannot quietly invert the comparison.
+        const zOf = (element: HTMLElement): number =>
+            Number(/(?:^|\s)z-\[?(\d+)\]?(?:\s|$)/.exec(element.className)?.[1] ?? NaN);
+        expect(zOf(backdrop)).toBe(50);
+        expect(zOf(layer)).toBe(60);
+        expect(zOf(layer)).toBeGreaterThan(zOf(backdrop));
+
+        // …and it is the later sibling, so it wins the paint order even at equal z.
+        expect(sheet.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+        // The layer dims the sheet behind it, which is the other half of "which panel is live".
+        expect(layer.style.background).toBe('rgba(0, 0, 0, 0.35)');
+        // And the panel lands ON the sheet — same top offset, same width, not beside it.
+        expect(picker.className).toContain('mt-[12vh]');
+        expect(picker.className).toContain('w-[360px]');
+        expect(sheet.className).toContain('mt-[12vh]');
+        expect(sheet.className).toContain('w-[360px]');
+        expect(picker.getAttribute('aria-modal')).toBe('true');
+    });
+
+    it('is interactable over the sheet: a repo picked there becomes a removable row here', () => {
+        const { picker } = openPicker();
+        fireEvent.click(within(picker).getByTestId('repo-choice-r1'));
+        fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
+
+        expect(screen.queryByTestId('new-workspace-repo-picker')).toBeNull();
+        const remove = screen.getByTestId('new-workspace-repo-remove-r1');
+        expect(remove.getAttribute('aria-label')).toBe('Remove app');
+        // …and the row is removable, which is what makes it a chosen row rather than a label.
+        fireEvent.click(remove);
+        expect(screen.queryByTestId('new-workspace-repo-remove-r1')).toBeNull();
+    });
+
+    it('the layer is the picker’s outside-click target, and closes ONLY the picker', () => {
+        const { layer } = openPicker();
+        fireEvent.mouseDown(layer);
+        expect(screen.queryByTestId('new-workspace-repo-picker')).toBeNull();
+        expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy();
+    });
+
+    it('a click INSIDE the picker panel dismisses nothing', () => {
+        const { picker } = openPicker();
+        fireEvent.mouseDown(picker);
+        expect(screen.getByTestId('new-workspace-repo-picker')).toBeTruthy();
+        expect(screen.getByTestId('new-workspace-sheet')).toBeTruthy();
+    });
+
+    it('an EMPTY registry says where repositories come from, instead of showing a gap', () => {
+        openSheet({ repos: [] });
+        // The Swift renders the section not at all (`NewWorkspaceSheet.swift:142`); the gap is
+        // what the user read as "the add-repo functionality is missing".
+        const empty = screen.getByTestId('new-workspace-repos-empty');
+        expect(empty.textContent).toContain('Repositories');
+        expect(empty.textContent).toContain('Settings');
+
+        // No picker that could only ever offer an empty list, and no dead button…
+        expect(screen.queryByTestId('new-workspace-add-repo')).toBeNull();
+        expect(screen.queryByTestId('new-workspace-repos')).toBeNull();
+        // …and nothing focusable in it, so `visibleFields` — and therefore the Tab loop — is
+        // byte-identical to the Swift's in both registry states.
+        expect(empty.querySelectorAll('button, input, select, [tabindex]').length).toBe(0);
+    });
+
+    it('and a registry with repos in it offers the button rather than the explanation', () => {
+        openSheet({ repos: REPOS });
+        expect(screen.getByTestId('new-workspace-add-repo')).toBeTruthy();
+        expect(screen.queryByTestId('new-workspace-repos-empty')).toBeNull();
+    });
+});
+
 describe('the colour row is a radio group, not ten tab stops (§WS-077, #64)', () => {
     it('moves the selection with ←/→ and wraps in both directions', () => {
         openSheet();

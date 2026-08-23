@@ -14379,9 +14379,16 @@ function buildFlows(ctx) {
                 const settled = await page.eval(
                     `(() => {
                         const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                        const offset = (el) => {
+                            const raw = el.style.translate;
+                            if (raw === '' || raw === 'none') return 0;
+                            return Math.max(...raw.split(/\\s+/).map(part => Math.abs(Number.parseFloat(part) || 0)));
+                        };
                         return JSON.stringify({
                             entering: rows.filter(el => el.getAttribute('data-entering') === 'true').length,
                             reorderable: rows.filter(el => (el.style.transition ?? '').includes('transform')).length,
+                            sprung: rows.filter(el => el.getAttribute('data-reorder') === 'spring').length,
+                            resting: rows.filter(el => offset(el) === 0).length,
                             total: rows.length
                         });
                     })()`
@@ -14389,10 +14396,22 @@ function buildFlows(ctx) {
                 recorder.note(`settled: ${String(settled)}`);
                 const state = JSON.parse(String(settled));
                 recorder.check('and stops playing it once settled', state.entering === 0, String(state.entering));
+                /*
+                 * Kept and STRENGTHENED rather than replaced when the reorder moved from a
+                 * transition to a real spring (`chrome/spring.ts`). The transition clause is the
+                 * original assertion, unchanged — what it now describes is the drag lift's scale
+                 * relaxing, which is the only thing left on `transform`. The two new clauses are
+                 * the reorder itself: every row declares the spring channel, and every settled
+                 * row is at rest on it, with no offset left on the node. `sidebar-spring` is
+                 * where the motion that channel carries is measured.
+                 */
                 recorder.check(
-                    'every settled row declares the reorder transition (§WS-008)',
-                    state.total > 0 && state.reorderable === state.total,
-                    `${String(state.reorderable)} of ${String(state.total)}`
+                    'every settled row declares the reorder channel, the lift transition, and rests at zero (§WS-008)',
+                    state.total > 0 &&
+                        state.reorderable === state.total &&
+                        state.sprung === state.total &&
+                        state.resting === state.total,
+                    `transition ${String(state.reorderable)} · spring ${String(state.sprung)} · at rest ${String(state.resting)} of ${String(state.total)}`
                 );
                 await recorder.shot(page, 'settled');
 
@@ -14853,6 +14872,600 @@ function buildFlows(ctx) {
                 );
 
                 recorder.eyes('does the guide rule read as ONE continuous line down the group’s children, is the insertion line legible against the row fill, and does the drag ghost read as a row lifted off the list?');
+            }
+        },
+        {
+            id: 'sidebar-spring',
+            expect:
+                'The sidebar’s drag-time motion is a REAL interruptible spring, not a curve shaped like one: a row the cursor crosses runs home frame by frame and overshoots its slot; a second crossing that lands MID-FLIGHT retargets the same motion — the visual position continuous through the retarget and the velocity carried past it — instead of restarting at zero velocity; the released row springs into its slot from where the ghost left it; §WS-093’s drop geometry is unmoved by any of it; and a collapsed group spring-loads open at 650 ms and NOT at 300 ms (§WS-008/§WS-093/§5.5).',
+            needsEyes: true,
+            async run(recorder) {
+                const activeBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                    )
+                );
+
+                /*
+                 * A group ABOVE the rows this step drags, so §5.5's spring-load has something
+                 * below it to push down when it opens, and four contiguous top-level rows to
+                 * drag across. Everything here is created by the step and deleted at the end.
+                 */
+                await cli.run(['group', 'create', 'Springboard']);
+                await cli.ok(['workspace', 'create', '--name', 'Spring Nested', '--group', 'Springboard']);
+                for (let n = 1; n <= 4; n++) {
+                    await cli.ok(['workspace', 'create', '--name', `Spring ${String(n)}`]);
+                }
+                await page.waitFor(
+                    `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring 4'))`,
+                    { timeoutMs: 40_000, label: 'the fourth spring row' }
+                );
+                // Everything this step touches was just created, so it is at the END of a list
+                // that is long enough to overflow its scroller by this point in a full run.
+                await page.eval(
+                    `(() => { const el = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                              if (el === null) return false;
+                              el.scrollTop = el.scrollHeight;
+                              return true; })()`
+                );
+                await sleep(900);
+
+                const measure = async (names) =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const wanted = ${JSON.stringify(names)};
+                                    const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
+                                    const found = {};
+                                    for (const name of wanted) {
+                                        const el = rows.find(node => (node.innerText ?? '').includes(name));
+                                        if (el === undefined) continue;
+                                        const r = el.getBoundingClientRect();
+                                        found[name] = {
+                                            id: el.getAttribute('data-workspace-id'),
+                                            x: r.x + r.width / 2,
+                                            top: r.y,
+                                            mid: r.y + r.height / 2,
+                                            height: r.height
+                                        };
+                                    }
+                                    return JSON.stringify(found);
+                                })()`
+                            )
+                        )
+                    );
+
+                const names = ['Spring 1', 'Spring 2', 'Spring 3', 'Spring 4'];
+                const boxes = await measure(names);
+                recorder.note(`spring rows: ${JSON.stringify(boxes)}`);
+                const haveRows = names.every((name) => boxes[name] !== undefined);
+                recorder.check('the four rows this step drags across are on screen', haveRows, JSON.stringify(Object.keys(boxes)));
+                if (!haveRows) return;
+
+                const pitch = boxes['Spring 4'].top - boxes['Spring 3'].top;
+                recorder.check(
+                    'and they are contiguous, so a one-pitch move really crosses one row',
+                    pitch > 8 && Math.abs(boxes['Spring 3'].top - boxes['Spring 2'].top - pitch) < 2,
+                    `pitch ${String(Math.round(pitch * 10) / 10)}px`
+                );
+
+                /**
+                 * A page-side sampler at the display's own rate.
+                 *
+                 * A `page.eval` per frame cannot sample an animation — the round trip IS most of
+                 * a frame — so the samples are collected inside the renderer on its own
+                 * `requestAnimationFrame` and read out once, afterwards. Two numbers per row per
+                 * frame, and the pair is the whole point:
+                 *
+                 *   - `y` is the spring's own output (the inline `translate`), which JUMPS by a
+                 *     row pitch at every retarget, because a FLIP moves the layout and the offset
+                 *     in opposite directions in the same commit;
+                 *   - `top` is where the row is actually DRAWN, which must not jump at all.
+                 *
+                 * Reading only one of them would prove nothing: the first would look like a snap
+                 * and the second would look like a transition.
+                 */
+                const startSampler = async (ids) => {
+                    await page.eval(
+                        `(() => {
+                            const ids = ${JSON.stringify(ids)};
+                            const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                            const samples = [];
+                            const targets = [];
+                            let running = true;
+                            const read = (id) => {
+                                const el = document.querySelector('[data-workspace-id="' + id + '"]');
+                                if (el === null) return [0, 0];
+                                const raw = el.style.translate;
+                                let y = 0;
+                                if (raw !== '' && raw !== 'none') {
+                                    const parts = raw.split(/\\s+/);
+                                    y = Number.parseFloat(parts[1] ?? '0') || 0;
+                                }
+                                const rect = el.getBoundingClientRect();
+                                const scroll = list === null ? 0 : list.scrollTop;
+                                return [Math.round(y * 1000) / 1000, Math.round((rect.top + scroll) * 1000) / 1000];
+                            };
+                            const tick = (time) => {
+                                if (!running) return;
+                                samples.push([Math.round(time * 100) / 100, ...ids.map(read)]);
+                                targets.push(list === null ? null : list.getAttribute('data-drag-target'));
+                                requestAnimationFrame(tick);
+                            };
+                            requestAnimationFrame(tick);
+                            window.__nexSpring = { samples, targets, stop: () => { running = false; } };
+                            return true;
+                        })()`
+                    );
+                };
+                const readSamples = async () =>
+                    JSON.parse(String(await page.eval(`JSON.stringify(window.__nexSpring?.samples ?? [])`)));
+                const readTargets = async () =>
+                    JSON.parse(String(await page.eval(`JSON.stringify(window.__nexSpring?.targets ?? [])`)));
+                const stopSampler = async () => {
+                    await page.eval(`(() => { window.__nexSpring?.stop?.(); return true; })()`);
+                };
+
+                /*
+                 * ── the drag ────────────────────────────────────────────────────────
+                 *
+                 * `Spring 3` is grabbed and `Spring 2` is the row it crosses — a pair in the
+                 * MIDDLE of the four, deliberately, so neither end of the gesture lands in the
+                 * scroller's 40 px auto-scroll margin.
+                 *
+                 * Grabbed near the row's TOP edge, also deliberately: the drop settle below is
+                 * the gap between the ghost's top and the slot's top, and a known grab offset is
+                 * what makes that number mean something.
+                 *
+                 * The three y values are all taken from the SETTLED layout at the top of the
+                 * step, and they stay valid throughout because the gesture returns the list to
+                 * that layout between phases:
+                 *
+                 *   - `crossY` is high in `Spring 2`'s band, which lifts the grabbed row above it;
+                 *   - `backY` is low in `Spring 3`'s own original band, which puts it back below.
+                 *     (The MIDDLE of that band is the boundary between the two slots and resolves
+                 *     to the one the row already occupies — a no-op that costs a crossing.)
+                 */
+                const grabX = boxes['Spring 3'].x;
+                const grabY = boxes['Spring 3'].top + 3;
+                const crossY = boxes['Spring 2'].top + 4;
+                const backY = boxes['Spring 3'].top + pitch * 0.8;
+
+                /** The visible row order — the thing a polluted geometry would make flicker. */
+                const orderNow = async () =>
+                    String(
+                        await page.eval(
+                            `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).map(el => el.getAttribute('data-workspace-id')).join(',')`
+                        )
+                    );
+
+                await startSampler([boxes['Spring 2'].id, boxes['Spring 3'].id]);
+                await page.mouse('mouseMoved', grabX, grabY, { button: 'none', buttons: 0 });
+                await page.mouse('mousePressed', grabX, grabY, { button: 'left', clickCount: 1 });
+                await page.mouse('mouseMoved', grabX, grabY - 8, { button: 'left', buttons: 1 });
+                await sleep(60);
+
+                // PHASE A — one clean crossing, then hold still and let it settle.
+                await page.mouse('mouseMoved', grabX, crossY, { button: 'left', buttons: 1 });
+                /*
+                 * §WS-093, while a spring is in flight.
+                 *
+                 * The drop zones are built from client rects, and a `translate` moves a client
+                 * rect — so an animating row could put its own animation into the geometry the
+                 * next resolve is decided by. Re-dispatching the SAME cursor position ten times
+                 * over the next ~200 ms, while the row it just displaced is visibly travelling,
+                 * must produce the same ORDER every time; if the offset leaked into
+                 * `measuredOffsets()` the bands would be sliding under a stationary pointer and
+                 * the list would churn. The resolved zone is recorded alongside it —
+                 * legitimately `none` when the cursor is over the dragged row's own slot, which
+                 * is where a completed crossing leaves it.
+                 */
+                const stable = [];
+                const stableOrders = [];
+                for (let tick = 0; tick < 10; tick++) {
+                    await page.mouse('mouseMoved', grabX, crossY, { button: 'left', buttons: 1 });
+                    stableOrders.push(await orderNow());
+                    stable.push(
+                        String(
+                            await page.eval(
+                                `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
+                            )
+                        )
+                    );
+                }
+                await recorder.shot(page, 'mid-flight');
+                await sleep(700);
+
+                // PHASE B — a second crossing, and then the RETARGET: back across the same row
+                // ~80 ms later, while the displacement it just started is still unwinding.
+                await page.mouse('mouseMoved', grabX, backY, { button: 'left', buttons: 1 });
+                await sleep(70);
+                await page.mouse('mouseMoved', grabX, crossY, { button: 'left', buttons: 1 });
+                await sleep(800);
+
+                /*
+                 * PHASE C — the drop settle.
+                 *
+                 * Slide DOWN inside the dragged row's own slot before letting go. That slot is
+                 * excluded from the drop zones (a row cannot be dropped on itself), so the order
+                 * does not change and the layout stays put while the ghost walks half a row away
+                 * from it — which is exactly the gap the released row has to spring back across.
+                 */
+                const settleY = crossY + pitch * 0.45;
+                const targetBefore = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
+                    )
+                );
+                const orderBefore = await orderNow();
+                await page.mouse('mouseMoved', grabX, settleY, { button: 'left', buttons: 1 });
+                await sleep(60);
+                const targetAfter = String(
+                    await page.eval(
+                        `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
+                    )
+                );
+                const orderAfter = await orderNow();
+                const releaseMark = Number(await page.eval(`window.__nexSpring?.samples?.length ?? 0`));
+                await page.mouse('mouseReleased', grabX, settleY, { button: 'left', clickCount: 1 });
+                await sleep(900);
+                await stopSampler();
+
+                const samples = await readSamples();
+                const targets = await readTargets();
+                const span = (samples.at(-1)?.[0] ?? 0) - (samples[0]?.[0] ?? 0);
+                /*
+                 * Frames are not 16.7 ms: this runs on whatever the machine's display does, and
+                 * a 120 Hz panel halves every frame count. Everything below that could be
+                 * expressed as "how many frames" is expressed as "how many milliseconds" from
+                 * the sampler's own timestamps instead, so the assertions describe the motion
+                 * rather than the refresh rate.
+                 */
+                const hz = span > 0 ? Math.round((samples.length / span) * 1000) : 0;
+                recorder.note(
+                    `sampled ${String(samples.length)} frames over ~${String(Math.round(span) / 1000)}s (~${String(hz)}Hz); ` +
+                        `drop target ${targetBefore} → ${targetAfter}; order ${orderBefore === orderAfter ? 'unchanged' : 'CHANGED'} for the release`
+                );
+
+                recorder.check(
+                    'the renderer really produced frames to sample (a still cannot hold an animation)',
+                    samples.length > 60 && hz >= 30,
+                    `${String(samples.length)} frames at ~${String(hz)}Hz`
+                );
+                recorder.check(
+                    '§WS-093: a stationary cursor resolves the SAME order and zone while a row springs past it',
+                    stable.length === 10 &&
+                        new Set(stable).size === 1 &&
+                        stableOrders.length === 10 &&
+                        new Set(stableOrders).size === 1,
+                    `${String(new Set(stableOrders).size)} distinct orders · zones ${JSON.stringify([...new Set(stable)])}`
+                );
+
+                // Series for the crossed row (index 1 in a sample) and the dragged row (index 2).
+                const times = samples.map((sample) => sample[0]);
+                const crossedY = samples.map((sample) => sample[1][0]);
+                const crossedTop = samples.map((sample) => sample[1][1]);
+                const draggedY = samples.map((sample) => sample[2][0]);
+                /** The index `ms` after `from`, or the last sample — how a window is taken. */
+                const after = (from, ms) => {
+                    const start = times[from] ?? 0;
+                    for (let index = from; index < times.length; index++) {
+                        if ((times[index] ?? 0) - start >= ms) return index;
+                    }
+                    return times.length - 1;
+                };
+
+                /** Frames where the OFFSET jumps by most of a row pitch — i.e. a FLIP landed. */
+                const flips = [];
+                for (let index = 1; index < crossedY.length; index++) {
+                    if (Math.abs(crossedY[index] - crossedY[index - 1]) >= pitch * 0.5) flips.push(index);
+                }
+                recorder.note(
+                    `FLIP frames on the crossed row: ${JSON.stringify(flips)}; ` +
+                        `zones the drag passed through: ${JSON.stringify([...new Set(targets)])}`
+                );
+                recorder.check(
+                    'crossing a row displaces it by a whole row pitch, three times over this drag',
+                    flips.length >= 3,
+                    `${String(flips.length)} displacements`
+                );
+
+                // ── (a) the shape: dense, then through the target and back ───────────
+                const first = flips[0] ?? -1;
+                // 620 ms is the whole of this displacement: `sleep(700)` follows the crossing,
+                // and a 0.35 s response is home inside half a second at any refresh rate.
+                const shape = first < 0 ? [] : crossedY.slice(first, after(first, 620));
+                const sign = Math.sign(shape[0] ?? 0);
+                const extreme = sign > 0 ? Math.min(...shape) : Math.max(...shape);
+                recorder.note(
+                    `displacement trace: ${JSON.stringify(shape.slice(0, 30).map((value) => Math.round(value * 100) / 100))}`
+                );
+                recorder.check(
+                    'the displaced row is animated FRAME BY FRAME, not in two keyframes',
+                    new Set(shape.map((value) => value.toFixed(2))).size >= 15,
+                    `${String(new Set(shape.map((value) => value.toFixed(2))).size)} distinct positions in ${String(shape.length)} frames`
+                );
+                recorder.check(
+                    'it starts a whole pitch out of place and comes home to EXACTLY zero',
+                    Math.abs(shape[0] ?? 0) >= pitch * 0.6 && (shape.at(-1) ?? 1) === 0,
+                    `${String(Math.round((shape[0] ?? 0) * 10) / 10)}px → ${String(shape.at(-1))}`
+                );
+                /*
+                 * ζ = 0.8 is underdamped: `exp(-ζπ/√(1−ζ²)) ≈ 1.52 %` of the displacement, so a
+                 * ~34px row pitch overshoots by ~0.5px and comes back. The threshold is a third
+                 * of that, which a decelerating curve — including the cubic-bezier this replaced,
+                 * whose overshoot is in the first half and never crosses the target from the far
+                 * side — does not reach.
+                 */
+                recorder.check(
+                    'and it OVERSHOOTS: it crosses its slot and comes back (ζ = 0.8, underdamped)',
+                    sign !== 0 && Math.abs(extreme) >= 0.15 && Math.sign(extreme) === -sign,
+                    `overshoot ${String(Math.round(extreme * 1000) / 1000)}px on a ${String(Math.round(pitch))}px pitch`
+                );
+
+                // ── (b) THE DISCRIMINATOR: a retarget mid-flight ─────────────────────
+                //
+                // The last FLIP of the drag is the one that landed ~80 ms into the previous
+                // one. Two things have to be true of it, and no CSS transition can make both:
+                // the DRAWN position does not jump across the retarget frame (position
+                // continuity), and the row keeps travelling the way it already was for the next
+                // frame (velocity continuity — a restarted transition begins at v = 0 and
+                // reverses immediately).
+                const retarget = flips.length >= 2 ? flips[flips.length - 1] : -1;
+                const inFlight = retarget > 0 ? Math.abs(crossedY[retarget - 1]) : 0;
+                const delta = (index) => (crossedTop[index] ?? 0) - (crossedTop[index - 1] ?? 0);
+                const jumps = [];
+                for (let index = Math.max(1, retarget - 6); index < Math.min(crossedTop.length, retarget + 24); index++) {
+                    jumps.push(Math.abs(delta(index)));
+                }
+                recorder.note(
+                    `retarget at frame ${String(retarget)}: was ${String(Math.round(inFlight * 100) / 100)}px from home; ` +
+                        `drawn Δ before ${String(Math.round(delta(retarget - 1) * 1000) / 1000)}, ` +
+                        `at ${String(Math.round(delta(retarget) * 1000) / 1000)}, ` +
+                        `after ${String(Math.round(delta(retarget + 1) * 1000) / 1000)}`
+                );
+                recorder.check(
+                    'the second crossing really landed MID-FLIGHT, before the first had settled',
+                    retarget > 0 && inFlight > 1,
+                    `${String(Math.round(inFlight * 100) / 100)}px still to travel`
+                );
+                /*
+                 * The envelope, not an absolute number: the retarget frame also contains one
+                 * frame of ordinary physics, so "no jump" means "no bigger than the step the row
+                 * was already taking", not "zero". At the moment this was written the row was
+                 * moving 3.15px per frame and the retarget frame moved 4.31px — while the OFFSET
+                 * it is driven by moved 52.5px. A snap would put that 52.5 on screen.
+                 */
+                const envelope = retarget > 1 ? Math.max(2, 1.8 * Math.abs(delta(retarget - 1))) : 0;
+                recorder.check(
+                    'the retarget does not move the row on screen: the offset jumps a whole pitch, the DRAWN position stays inside the step it was already taking',
+                    retarget > 0 &&
+                        Math.abs(crossedY[retarget] - crossedY[retarget - 1]) >= pitch * 0.5 &&
+                        Math.abs(delta(retarget)) <= envelope,
+                    `offset Δ ${String(Math.round((crossedY[retarget] - crossedY[retarget - 1]) * 10) / 10)}px · drawn Δ ${String(Math.round(delta(retarget) * 1000) / 1000)}px of an envelope of ${String(Math.round(envelope * 100) / 100)}px`
+                );
+                recorder.check(
+                    'and VELOCITY survives it: the row keeps travelling the way it was for the next frame (a restarted transition reverses at once)',
+                    retarget > 0 &&
+                        Math.sign(delta(retarget + 1)) === Math.sign(delta(retarget - 1)) &&
+                        Math.abs(delta(retarget + 1)) >= 0.2,
+                    `${String(Math.round(delta(retarget - 1) * 1000) / 1000)} → ${String(Math.round(delta(retarget + 1) * 1000) / 1000)}`
+                );
+                recorder.check(
+                    'no frame around the retarget snaps: every step is a fraction of a row',
+                    jumps.length > 0 && Math.max(...jumps) <= pitch * 0.4,
+                    `largest drawn step ${String(Math.round(Math.max(...jumps) * 100) / 100)}px of a ${String(Math.round(pitch))}px pitch`
+                );
+
+                // ── (c) the drop settle ─────────────────────────────────────────────
+                //
+                // §WS-084's ghost is destroyed at `mouseup`; what springs into the slot is the
+                // real row, seeded with the gap the ghost left behind. The trace is checked for
+                // the spring's own SHAPE rather than its length: for a linear system the time to
+                // cover half the distance does not depend on the amplitude, and at
+                // response 0.35 it is ~85 ms — a fifth of the way through the settle, where a
+                // linear ramp would need half of it.
+                const settleStart = Math.max(0, releaseMark - 3);
+                const settle = draggedY.slice(settleStart).map((value) => Math.abs(value));
+                const seedIndex = settle.findIndex((value) => value > 0.5);
+                const seed = seedIndex < 0 ? 0 : settle[seedIndex];
+                const settleTail = seedIndex < 0 ? [] : settle.slice(seedIndex);
+                const zeroAt = settleTail.findIndex((value) => value === 0);
+                const halfAt = settleTail.findIndex((value) => value <= seed / 2);
+                const seedFrame = settleStart + Math.max(0, seedIndex);
+                const elapsed = (offset) =>
+                    offset < 0 || seedIndex < 0 ? null : (times[seedFrame + offset] ?? 0) - (times[seedFrame] ?? 0);
+                const halfMs = elapsed(halfAt);
+                const settleMs = elapsed(zeroAt);
+                recorder.note(
+                    `drop settle: seed ${String(Math.round(seed * 100) / 100)}px · half at ${String(halfMs === null ? '?' : Math.round(halfMs))}ms · ` +
+                        `home at ${String(settleMs === null ? '?' : Math.round(settleMs))}ms · ` +
+                        `trace ${JSON.stringify(settleTail.slice(0, 20).map((value) => Math.round(value * 100) / 100))}`
+                );
+                await recorder.shot(page, 'settled');
+                recorder.check(
+                    'the released row is seeded with the gap the ghost left, and the ghost is already gone',
+                    seed > 0.5 &&
+                        Number(await page.eval(`document.querySelectorAll('[data-testid="sidebar-drag-ghost"]').length`)) === 0,
+                    `${String(Math.round(seed * 100) / 100)}px`
+                );
+                recorder.check(
+                    'and it springs home over many frames, landing on exactly zero',
+                    zeroAt >= 6 && (settleTail.at(-1) ?? 1) === 0,
+                    `${String(zeroAt)} frames`
+                );
+                recorder.check(
+                    'on the spring’s own shape: half the distance in ~85ms whatever the amplitude, a fifth of the way through the settle',
+                    halfMs !== null && settleMs !== null && halfMs >= 40 && halfMs <= 140 && settleMs >= 150 && settleMs <= 900,
+                    `half ${String(halfMs === null ? '?' : Math.round(halfMs))}ms of ${String(settleMs === null ? '?' : Math.round(settleMs))}ms`
+                );
+
+                // ── (d) §5.5's spring-load, at 650 ms and not at 300 ────────────────
+                await sleep(400);
+                const header = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                    .find(node => (node.innerText ?? '').includes('Springboard'));
+                                if (el === undefined) return JSON.stringify({ found: false });
+                                const r = el.getBoundingClientRect();
+                                return JSON.stringify({
+                                    found: true,
+                                    collapsed: el.getAttribute('data-collapsed'),
+                                    x: r.x + r.width / 2,
+                                    y: r.y + r.height * 0.7,
+                                    top: r.y,
+                                    height: r.height
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.check('the spring-load target group is on screen', header.found === true, JSON.stringify(header));
+                if (header.found === true) {
+                    if (header.collapsed !== 'true') {
+                        await page.clickAt(header.x, header.top + header.height / 2);
+                        await sleep(700);
+                    }
+                    const reMeasured = JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                        .find(node => (node.innerText ?? '').includes('Springboard'));
+                                    if (el === undefined) return JSON.stringify({ found: false });
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({ found: true, collapsed: el.getAttribute('data-collapsed'), x: r.x + r.width / 2, y: r.y + r.height * 0.7 });
+                                })()`
+                            )
+                        )
+                    );
+                    recorder.check(
+                        'and it is collapsed, which is the only state that can spring open',
+                        reMeasured.found === true && reMeasured.collapsed === 'true',
+                        JSON.stringify(reMeasured)
+                    );
+
+                    const below = await measure(['Spring 1']);
+                    const dragRow = await measure(['Spring 2']);
+                    if (reMeasured.found === true && below['Spring 1'] !== undefined && dragRow['Spring 2'] !== undefined) {
+                        await startSampler([below['Spring 1'].id]);
+                        await page.mouse('mouseMoved', dragRow['Spring 2'].x, dragRow['Spring 2'].mid, { button: 'none', buttons: 0 });
+                        await page.mouse('mousePressed', dragRow['Spring 2'].x, dragRow['Spring 2'].mid, { button: 'left', clickCount: 1 });
+                        for (let step = 1; step <= 5; step++) {
+                            await page.mouse(
+                                'mouseMoved',
+                                dragRow['Spring 2'].x,
+                                dragRow['Spring 2'].mid + ((reMeasured.y - dragRow['Spring 2'].mid) * step) / 5,
+                                { button: 'left', buttons: 1 }
+                            );
+                            await sleep(16);
+                        }
+                        // 300 ms of dwell: a cursor merely transiting a header must not open it.
+                        await sleep(300);
+                        const at300 = String(
+                            await page.eval(
+                                `Array.from(document.querySelectorAll('[data-testid="group-header"]')).find(node => (node.innerText ?? '').includes('Springboard'))?.getAttribute('data-collapsed') ?? 'gone'`
+                            )
+                        );
+                        await recorder.shot(page, 'spring-load-300ms');
+                        // …and past 650 ms it does.
+                        let at650 = at300;
+                        for (let tick = 0; tick < 60; tick++) {
+                            at650 = String(
+                                await page.eval(
+                                    `Array.from(document.querySelectorAll('[data-testid="group-header"]')).find(node => (node.innerText ?? '').includes('Springboard'))?.getAttribute('data-collapsed') ?? 'gone'`
+                                )
+                            );
+                            if (at650 === 'false') break;
+                            await sleep(20);
+                        }
+                        await recorder.shot(page, 'spring-loaded');
+                        const loadSamples = await readSamples();
+                        await stopSampler();
+                        const pushed = loadSamples.map((sample) => sample[1][0]);
+                        const moved = pushed.filter((value) => Math.abs(value) > 0.5).length;
+                        recorder.note(
+                            `spring-load: collapsed at 300ms = ${at300}, after the dwell = ${at650}; ` +
+                                `the row below moved on ${String(moved)} of ${String(pushed.length)} frames`
+                        );
+                        recorder.check(
+                            'a collapsed group does NOT open after 300 ms of hovering (§5.5)',
+                            at300 === 'true',
+                            at300
+                        );
+                        recorder.check(
+                            'and DOES after the 650 ms dwell',
+                            at650 === 'false',
+                            at650
+                        );
+                        recorder.check(
+                            'and the rows it pushed down travel there on the spring, over many frames',
+                            moved >= 6,
+                            `${String(moved)} frames of motion`
+                        );
+                        // Step off the group so the dwell is cancelled and it re-collapses, then
+                        // release above everything — this step's rows are deleted next anyway.
+                        const listTop = JSON.parse(
+                            String(
+                                await page.eval(
+                                    `(() => {
+                                        const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                        if (list === null) return 'null';
+                                        const r = list.getBoundingClientRect();
+                                        return JSON.stringify({ x: r.x + r.width / 2, y: Math.round(r.top + 6) });
+                                    })()`
+                                )
+                            )
+                        );
+                        await page.mouse('mouseMoved', listTop.x, listTop.y, { button: 'left', buttons: 1 });
+                        await sleep(120);
+                        await page.mouse('mouseReleased', listTop.x, listTop.y, { button: 'left', clickCount: 1 });
+                        await sleep(700);
+                    }
+                }
+
+                // ── hand the run back exactly as it was found ────────────────────────
+                await page.eval(`(() => { delete window.__nexSpring; return true; })()`);
+                await cli.run(['group', 'delete', 'Springboard', '--cascade']);
+                for (let n = 1; n <= 4; n++) {
+                    await cli.run(['workspace', 'delete', `Spring ${String(n)}`, '--force']);
+                }
+                await page.waitFor(
+                    `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
+                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring '))`,
+                    { timeoutMs: 30_000, label: 'the spring rows to leave the sidebar' }
+                );
+                await sleep(900);
+                let handedBack = '';
+                for (let attempt = 0; attempt < 6; attempt++) {
+                    await page.eval(
+                        `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                    );
+                    await sleep(700);
+                    handedBack = String(
+                        await page.eval(
+                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                        )
+                    );
+                    if (handedBack === activeBefore) break;
+                }
+                recorder.check(
+                    'the step hands the run back on the workspace it found active',
+                    activeBefore !== '' && handedBack === activeBefore,
+                    `${String(activeBefore)} → ${String(handedBack)}`
+                );
+
+                recorder.eyes(
+                    'in the mid-flight frame, does the row the cursor just crossed read as sliding out of the way rather than as having already moved — and does the settled frame show the released row seated in its slot with nothing left mid-air?'
+                );
             }
         },
         {

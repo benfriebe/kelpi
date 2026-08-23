@@ -77,6 +77,12 @@ import {
 } from './sidebar-model';
 import { animateScrollTop, revealScrollTop } from './sidebar-scroll';
 import {
+    SPRING_DAMPING_FRACTION,
+    SPRING_RESPONSE_S,
+    createSpringDriver,
+    type SpringDriver
+} from './spring';
+import {
     SIDEBAR_TINT_VARS,
     resolveLabelStyle,
     tintedColor,
@@ -124,16 +130,61 @@ export const AUTO_SCROLL_INTERVAL_MS = 15;
 /**
  * §WS-008: the sidebar's rendered entry list animates on insert and on reorder.
  *
- * `.spring(response: 0.35, dampingFraction: 0.8)` has no CSS equivalent, so it is approximated
- * by a slightly overshooting curve over the response time. Two mechanisms share it: a new row
- * plays `nex-sidebar-row-enter` once (styles.css), and a row that only CHANGED PLACE is moved
- * by the FLIP pass below — measured before/after tops, the delta applied instantly and then
- * transitioned away. Removals are the third mechanism (`ROW_EXIT_MS`), and they animate a
- * ghost rather than the row, for the reason recorded there.
+ * **The reorder half is a real spring now** (`chrome/spring.ts`), not a curve that looks like
+ * one. The distinction is not cosmetic and it is not about the still frame: a CSS transition
+ * restarted mid-flight begins again from the current position with ZERO velocity and a fresh
+ * fixed duration, so a drag crossing three rows in 200 ms produced three stop-and-restart eases
+ * where SwiftUI produces one continuous motion. Every displacement below is therefore integrated
+ * per frame from `.spring(response: 0.35, dampingFraction: 0.8)`'s own constants and RETARGETED
+ * (position and velocity both carried) whenever the layout changes under it.
+ *
+ * Three mechanisms share the response, and only the first is interruptible:
+ *
+ *   1. a row that CHANGED PLACE — including mid-drag, which is the motion the user reported as
+ *      dead — is FLIPped: measured before/after (`offsetTop`/`offsetLeft`, which no transform
+ *      can move) and the delta handed to the spring driver, which unwinds it to zero;
+ *   2. a row that APPEARS plays `nex-sidebar-row-enter` once (styles.css). A one-shot entry is
+ *      never retargeted, so live physics buys it nothing and it stays on the keyframes;
+ *   3. a row that is REMOVED animates a ghost (`ROW_EXIT_MS`), for the reason recorded there —
+ *      also a one-shot, also left on its transition.
+ *
+ * `SPRING_EASING` / `REORDER_MS` are what 2 and 3 still use, plus the row's own `transform`
+ * transition, which after this change describes ONE thing: the drag lift's scale relaxing when
+ * the gesture ends. The reorder no longer rides on it.
  */
 export const ROW_ENTER_ANIMATION = 'nex-sidebar-row-enter';
 export const SPRING_EASING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
 export const REORDER_MS = 350;
+
+/**
+ * The channel the spring writes, and the reason it is `translate` rather than `transform`.
+ *
+ * `translate` is an independent transform property: it composes with whatever `transform` the
+ * row already carries (the drag lift's `scale(1.03)`, §WS-092's `scale(0.2)` landing) without
+ * either one having to know about the other, and — the part that matters — the row's inline
+ * `transform` transition cannot touch it. Writing a spring's per-frame value into a property
+ * that is ALSO transitioning is the §WS-001/§WS-002 mistake (an animation left attached to a
+ * property a gesture writes every frame); keeping the two on separate properties makes that
+ * impossible by construction rather than by discipline.
+ *
+ * It is also invisible to layout: `offsetTop` / `offsetLeft` — the FLIP's own baseline — are
+ * transform-free by definition, so a spring can never feed its own output back into the
+ * measurement that started it.
+ */
+export interface RowOffset {
+    readonly x: number;
+    readonly y: number;
+}
+
+/** Write a row's spring offset into its `translate`, or clear it when the row is home. */
+export function writeRowTranslate(element: HTMLElement, offset: RowOffset | undefined): void {
+    if (offset === undefined || (offset.x === 0 && offset.y === 0)) {
+        element.style.translate = '';
+        return;
+    }
+    const round = (value: number): string => (Math.round(value * 100) / 100).toFixed(2);
+    element.style.translate = `${round(offset.x)}px ${round(offset.y)}px`;
+}
 
 /**
  * §WS-008's third mechanism: REMOVAL, on the same response as the other two.
@@ -401,12 +452,6 @@ interface WorkspaceRowProps {
     readonly insertLine?: boolean | undefined;
     /** §WS-008: the row is newly inserted, so it plays the entry animation once. */
     readonly entering?: boolean | undefined;
-    /**
-     * §WS-008's FLIP first frame: how far the row has to be pushed back to where it WAS, in
-     * px. Present for exactly one commit; the next one drops it and the transition carries the
-     * row to its new place.
-     */
-    readonly flipDelta?: number | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -452,16 +497,29 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
         outline,
         outlineOffset: '-1px',
         ...(selectionRing === null ? {} : { boxShadow: selectionRing }),
-        // §WS-089: the indent previews the container the row is being dropped INTO while the
-        // cursor holds a group header, and animates so the nesting reads as a movement.
+        /*
+         * §WS-089: the indent previews the container the row is being dropped INTO while the
+         * cursor holds a group header.
+         *
+         * The property itself is DISCRETE — it lands on 24px in the commit that decides the
+         * nesting, which is what keeps `getComputedStyle(row).marginLeft` an exact answer for
+         * anything asking whether the indent is really applied. What the eye sees slide is the
+         * horizontal half of the FLIP spring: `offsetLeft` moved by 24, so the row is offset
+         * back by −24 and springs to zero. Same motion, on a channel that cannot lie to a
+         * measurement (and, unlike a `margin-left` transition, cannot lie to the FLIP itself —
+         * `offsetLeft` mid-transition reports the *animating* value, which would have made the
+         * next measurement read this animation's own frame as a layout change).
+         */
         marginLeft: nested ? 24 : 0,
         transition: landing
             ? 'transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 380ms ease'
             : props.dragging === true
               ? // The lift is instant: a 350 ms transform transition would make grabbing a row
                 // feel like it lagged the cursor.
-                'margin-left 120ms ease'
-              : `margin-left 120ms ease, transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
+                'none'
+              : // The reorder is the SPRING (`data-reorder`); what is left on `transform` is the
+                // lift's `scale(1.03)` relaxing once the gesture ends.
+                `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
         // §5.5: a dragged row lifts to 80% opacity and scales up; the OTHER rows of a
         // multi-selection collapse to zero height so the grid closes over them.
         // §WS-092: a row landing in a collapsed group shrinks toward the header instead.
@@ -491,14 +549,8 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             : {}),
         // §WS-007's rule and §WS-088's insertion line are absolutely positioned inside the row.
         position: 'relative',
-        // §WS-008's FLIP first frame: pushed back to where the row was, with the transition
-        // suppressed so the offset lands instantly and only the RETURN is animated.
-        ...(props.flipDelta !== undefined && !landing && props.dragging !== true
-            ? { transform: `translateY(${String(props.flipDelta)}px)`, transition: 'none' }
-            : {}),
-        // §WS-008: a row that has just appeared plays its entry once. The curve is the CSS
-        // approximation of `spring(response: 0.35, dampingFraction: 0.8)` — slightly
-        // overshooting, settling in ~350ms — since CSS has no spring primitive.
+        // §WS-008: a row that has just appeared plays its entry once — a ONE-SHOT, never
+        // retargeted, so it stays on the keyframes while the reorder half went to real physics.
         ...(props.entering === true ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` } : {})
     };
 
@@ -511,6 +563,9 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             data-guide={props.guideColor === undefined ? undefined : 'true'}
             data-insert-line={props.insertLine === true ? 'true' : undefined}
             data-entering={props.entering === true ? 'true' : undefined}
+            /* §WS-008: the reorder channel this row is displaced on, so an audit can tell a
+               spring-driven sidebar from a transition-driven one without reading the source. */
+            data-reorder="spring"
             /* §WS-053/§SET-186: multi-selection was legible only as a fill colour, so nothing
                outside the component could assert it. */
             data-selected={props.selected ? 'true' : 'false'}
@@ -674,8 +729,7 @@ interface GroupHeaderRowProps {
     readonly onCommitRename: (groupID: string, name: string) => void;
     readonly onCancelRename: () => void;
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
-    /** §WS-008: the FLIP first frame and the entry animation, as for a workspace row. */
-    readonly flipDelta?: number | undefined;
+    /** §WS-008: the entry animation, as for a workspace row. The reorder is the FLIP spring. */
     readonly entering?: boolean | undefined;
 }
 
@@ -702,6 +756,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
             data-collapsed={props.collapsed ? 'true' : 'false'}
             data-drop-preview={props.dropPreview ? 'true' : 'false'}
             data-entering={props.entering === true ? 'true' : undefined}
+            data-reorder="spring"
             className="my-0.5 flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5"
             style={{
                 background: props.dropPreview
@@ -715,11 +770,10 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                 border: props.dropPreview
                     ? `1px solid ${tokens.accent}`
                     : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`,
-                // §WS-008: a header reorders (a whole group block moving) exactly like a row.
+                // §WS-008: a header reorders (a whole group block moving) exactly like a row —
+                // on the same FLIP spring, written to `translate`. What is left on `transform`
+                // is the lift, as on a workspace row.
                 transition: `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
-                ...(props.flipDelta === undefined
-                    ? {}
-                    : { transform: `translateY(${String(props.flipDelta)}px)`, transition: 'none' }),
                 ...(props.entering === true
                     ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` }
                     : {})
@@ -1020,6 +1074,12 @@ function prefersReducedMotion(): boolean {
     }
 }
 
+/** How far the released row is from its slot at `mouseup` — the drop settle's starting offset. */
+interface DropSettleSeed {
+    readonly key: string;
+    readonly offset: number;
+}
+
 /** The box a row occupied, in the scroller's content space — what a removal ghost inherits. */
 interface RowBox {
     readonly top: number;
@@ -1200,7 +1260,76 @@ export function Sidebar(props: SidebarProps): ReactElement {
         }
         rowElements.current.set(key, element);
         dyingRows.current.delete(key);
+        // A row that re-mounted under a key whose spring is still unwinding gets its offset put
+        // back on the new node, or the motion would vanish at the seam.
+        const offset = rowOffsets.current.get(key);
+        if (offset !== undefined) writeRowTranslate(element, offset);
     }, []);
+
+    /**
+     * §WS-008's spring, and the two structures that keep it out of every measurement.
+     *
+     * `springs` is the physics (`chrome/spring.ts`): one channel per row per axis, keyed
+     * `y:<rowKey>` / `x:<rowKey>`. `rowOffsets` is the mirror of what has actually been written
+     * to the DOM, and it exists for one reason beyond bookkeeping — `measuredOffsets()` reads
+     * client rects, which a `translate` DOES move, so the drag geometry subtracts the live spring
+     * offset back out and resolves drop zones against the SETTLED layout. Without that the zones
+     * would follow the animation that the zones themselves caused, which is a feedback loop, not
+     * a sidebar.
+     *
+     * The Swift has this for free (`.offset` is applied after the animation modifiers, so the
+     * spring never covers the cursor-tracking offset — `WorkspaceListView.swift:1380`). Here the
+     * subtraction IS that ordering.
+     */
+    const springs = useRef<SpringDriver | null>(null);
+    springs.current ??= createSpringDriver({
+        response: SPRING_RESPONSE_S,
+        dampingFraction: SPRING_DAMPING_FRACTION
+    });
+    const rowOffsets = useRef(new Map<string, RowOffset>());
+
+    /** Write one axis of a row's spring offset, and drop the entry once the row is home. */
+    const setRowOffset = useCallback((key: string, axis: 'x' | 'y', value: number): void => {
+        const current = rowOffsets.current.get(key) ?? { x: 0, y: 0 };
+        const next: RowOffset = axis === 'x' ? { x: value, y: current.y } : { x: current.x, y: value };
+        if (next.x === 0 && next.y === 0) rowOffsets.current.delete(key);
+        else rowOffsets.current.set(key, next);
+        const element = rowElements.current.get(key);
+        if (element !== undefined) writeRowTranslate(element, rowOffsets.current.get(key));
+    }, []);
+
+    /** Hand a row's layout delta to the spring — the FLIP retarget, one axis at a time. */
+    const displaceRow = useCallback(
+        (key: string, axis: 'x' | 'y', delta: number): void => {
+            const driver = springs.current;
+            if (driver === null) return;
+            if (prefersReducedMotion()) {
+                driver.cancel(`${axis}:${key}`);
+                setRowOffset(key, axis, 0);
+                return;
+            }
+            driver.displace(`${axis}:${key}`, delta, (value) => {
+                setRowOffset(key, axis, value);
+            });
+        },
+        [setRowOffset]
+    );
+
+    /** Forget every channel and offset for a row that has left the list. */
+    const forgetRowSprings = useCallback((key: string): void => {
+        springs.current?.cancel(`y:${key}`);
+        springs.current?.cancel(`x:${key}`);
+        rowOffsets.current.delete(key);
+    }, []);
+
+    // A spring still integrating when the sidebar unmounts must not keep calling back into it.
+    useEffect(
+        () => () => {
+            springs.current?.cancelAll();
+            rowOffsets.current.clear();
+        },
+        []
+    );
 
     const workspaceByID = useMemo(() => {
         const map = new Map<string, ChromeWorkspace>();
@@ -1446,6 +1575,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
      * see and a drop three quarters of the way down a group header hit no band at all. The
      * measurement is one pass over the already-registered row elements, taken per resolve so
      * it survives a mid-drag reflow.
+     *
+     * **§WS-093, extended to spring-driven motion.** A client rect includes every transform on
+     * the box, so a row that is mid-flight on the reorder spring would report where it is being
+     * DRAWN rather than where it belongs — and the drop zones built from that would chase the
+     * animation they just caused. The live spring offset is therefore subtracted back out, which
+     * makes this function answer the settled layout and nothing else. It is the same exclusion
+     * the removal ghost and §WS-084's cursor clone get by never being registered at all; a row
+     * that is animating cannot use that trick, because it is a real row the whole time.
      */
     const measuredOffsets = useCallback((): ReadonlyMap<string, number> => {
         const list = listRef.current;
@@ -1455,7 +1592,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         for (const [key, element] of rowElements.current) {
             const rect = element.getBoundingClientRect();
             if (rect.height <= 0) continue;
-            offsets.set(key, rect.top - origin);
+            offsets.set(key, rect.top - origin - (rowOffsets.current.get(key)?.y ?? 0));
         }
         return offsets;
     }, []);
@@ -1580,6 +1717,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             ghost.style.pointerEvents = 'none';
             ghost.style.animation = 'none';
             ghost.style.transition = 'none';
+            // The clone inherits whatever the row's reorder spring had written; the ghost is
+            // positioned by `transform` from the raw pointer, so a leftover `translate` would
+            // add the row's animation on top of the cursor. The ghost NEVER springs (§WS-084).
+            ghost.style.translate = 'none';
             ghost.style.opacity = '0.92';
             // The row itself is usually transparent (its fill comes from the list behind it), so
             // an unpainted clone over the pane grid would be a floating column of text.
@@ -1594,6 +1735,40 @@ export function Sidebar(props: SidebarProps): ReactElement {
             moveDragGhost(drag);
         },
         [endDragGhost, moveDragGhost]
+    );
+
+    /**
+     * The drop settle, in two halves because the ghost dies before the drop is decided.
+     *
+     * `measureDropSettle` runs while the ghost is still on screen and answers "how far above or
+     * below its slot did the user let go?"; `applyDropSettle` turns that into the row's spring
+     * offset once the §WS-092 landing has declined the drop. The row's own live offset is taken
+     * back out of both, so the seed is measured against where the row is SETTLING rather than
+     * where it happens to be drawn this frame.
+     */
+    const measureDropSettle = useCallback((drag: DragState | null): DropSettleSeed | null => {
+        if (drag === null || !drag.active || prefersReducedMotion()) return null;
+        const ghost = dragGhostRef.current;
+        const element = rowElements.current.get(drag.ghostKey);
+        if (ghost === null || element === undefined) return null;
+        const ghostTop = ghost.getBoundingClientRect().top;
+        const rowTop = element.getBoundingClientRect().top;
+        if (!Number.isFinite(ghostTop) || !Number.isFinite(rowTop)) return null;
+        const settledTop = rowTop - (rowOffsets.current.get(drag.ghostKey)?.y ?? 0);
+        const offset = ghostTop - settledTop;
+        // A release within a pixel of the slot has nothing to settle, and seeding it would only
+        // put a channel on screen for one frame.
+        if (Math.abs(offset) < 1) return null;
+        return { key: drag.ghostKey, offset };
+    }, []);
+
+    const applyDropSettle = useCallback(
+        (seed: DropSettleSeed | null): void => {
+            if (seed === null) return;
+            const current = rowOffsets.current.get(seed.key)?.y ?? 0;
+            displaceRow(seed.key, 'y', seed.offset - current);
+        },
+        [displaceRow]
     );
 
     useEffect(() => {
@@ -1780,6 +1955,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const drag = dragRef.current;
             dragRef.current = null;
             stopAutoScroll();
+            /*
+             * §WS-008's drop settle, and the Swift's `withAnimation(.spring(…)) { dragCurrentY = 0 }`
+             * (`WorkspaceListView.swift:1538`).
+             *
+             * There the grabbed row IS the thing under the cursor, so releasing simply springs
+             * its own offset back to zero. Here the cursor carries a clone and the real row
+             * never left the flow, so the same motion has to be handed over: measure the gap
+             * between where the ghost died and where the row is, seed that as the row's spring
+             * offset, and let it spring home. Without this the ghost vanishes at the pointer and
+             * the row is simply already there — the one moment in the whole gesture where
+             * nothing moves.
+             *
+             * Taken BEFORE `endDragGhost()`, for the obvious reason, and skipped for the §WS-092
+             * landing below, which is a different animation with its own script.
+             */
+            const settleSeed = measureDropSettle(drag);
             // §WS-084: the ghost dies with the gesture, before any landing animation — what
             // happens next belongs to the real row.
             endDragGhost();
@@ -1861,6 +2052,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     return;
                 }
             }
+            // Not a landing, so the released row springs home from where the ghost left it —
+            // seeded BEFORE the commit, so the layout delta the commit produces is added on top
+            // of the seed by the FLIP pass rather than replacing it.
+            applyDropSettle(settleSeed);
             commitDrop();
         };
 
@@ -1871,17 +2066,35 @@ export function Sidebar(props: SidebarProps): ReactElement {
             target.removeEventListener('mousemove', onMove);
             target.removeEventListener('mouseup', onUp);
             stopAutoScroll();
-            endDragGhost();
+            /*
+             * A RE-RUN is not the end of the gesture, and this cleanup used to treat it as one.
+             *
+             * `props` is in this effect's dependency list, and React hands down a fresh props
+             * object on every parent render — including the 1-second agent-status tick (§15). So
+             * every second of a live drag tore down §WS-084's ghost and cancelled §5.5's 650 ms
+             * spring-load dwell, while the drag itself carried on in `dragRef`: a drag longer
+             * than a second lost the row that was following the cursor, and a group held for
+             * 650 ms across a tick never opened. Found by `sidebar-spring`, whose drop settle is
+             * measured from where the ghost died and came back zero for exactly this reason.
+             *
+             * The gesture's own state lives in `dragRef` and outlives the closure, so the fix is
+             * to tear those two down only when there IS no gesture. `onUp` ends the ghost itself,
+             * and the unmount case is handled by its own effect below — the one place where
+             * "this component is going away" is actually true.
+             */
             const drag = dragRef.current;
-            if (drag !== null) cancelSpring(drag);
+            if (drag !== null) return;
+            endDragGhost();
         };
     }, [
+        applyDropSettle,
         autoScrollIntervalMs,
         contentY,
         dragID,
         endDragGhost,
         geometryReady,
         landingMs,
+        measureDropSettle,
         measuredHeights,
         measuredOffsets,
         moveDragGhost,
@@ -1897,6 +2110,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
             if (landingTimerRef.current !== null) clearTimeout(landingTimerRef.current);
         },
         []
+    );
+
+    /**
+     * §WS-084's ghost lives on `document.body`, so it is the one thing here that React will not
+     * collect for us. This runs on UNMOUNT only (`endDragGhost` is stable), which is the single
+     * moment "the sidebar is going away" is true — the drag effect above deliberately no longer
+     * treats its own re-runs as that moment.
+     */
+    useEffect(
+        () => () => {
+            endDragGhost();
+        },
+        [endDragGhost]
     );
 
     // ── §WS-008: insert and reorder animations ──────────────────────────────────
@@ -1947,6 +2173,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 ghost.style.overflow = 'hidden';
                 ghost.style.pointerEvents = 'none';
                 ghost.style.animation = 'none';
+                // Pinned at the box the row occupied, which came from `offsetTop` — a
+                // transform-free number — so an inherited spring `translate` would move the
+                // ghost off it. (The removal ghost is a one-shot that is never retargeted, so it
+                // stays on its transition; the spring's job is the interruptible motion.)
+                ghost.style.translate = 'none';
                 ghost.style.transformOrigin = 'top center';
                 ghost.style.opacity = '1';
                 ghost.style.transition =
@@ -1971,8 +2202,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
         []
     );
 
-    const previousLayoutRef = useRef<{ keys: ReadonlySet<string>; tops: ReadonlyMap<string, number> } | null>(null);
-    const [flip, setFlip] = useState<ReadonlyMap<string, number>>(EMPTY_FLIP);
+    const previousLayoutRef = useRef<{
+        keys: ReadonlySet<string>;
+        tops: ReadonlyMap<string, number>;
+        lefts: ReadonlyMap<string, number>;
+    } | null>(null);
     const [entering, setEntering] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
     const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1984,11 +2218,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
         dyingRows.current.clear();
 
         const tops = new Map<string, number>();
+        const lefts = new Map<string, number>();
         const boxes = new Map<string, RowBox>();
         for (const row of rows) {
             const element = rowElements.current.get(row.key);
             if (element === undefined) continue;
             tops.set(row.key, element.offsetTop);
+            lefts.set(row.key, element.offsetLeft);
             boxes.set(row.key, {
                 top: element.offsetTop,
                 left: element.offsetLeft,
@@ -1998,13 +2234,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
         }
         const previous = previousLayoutRef.current;
         const previousBoxes = rowBoxes.current;
-        previousLayoutRef.current = { keys: new Set(rows.map((row) => row.key)), tops };
+        previousLayoutRef.current = { keys: new Set(rows.map((row) => row.key)), tops, lefts };
         rowBoxes.current = boxes;
 
         // First commit: everything is "new", and a sidebar that animates its whole contents in
         // on mount is a worse sidebar than one that is simply there.
         if (previous === null) return;
-        if (dragRef.current !== null || landingTimerRef.current !== null) return;
+        /*
+         * §WS-092's landing owns the row it is shrinking — that one is not a reorder, it is a
+         * scripted 400 ms fall into a header, and springing its slot underneath it would fight it.
+         *
+         * A live DRAG, on the other hand, is exactly what this pass now runs FOR. It used to bail
+         * here, which is why the rows a cursor crossed snapped into their new places with no
+         * motion at all while every other reorder in the app animated. The drag geometry is safe
+         * from what happens below because `measuredOffsets()` subtracts these offsets back out.
+         */
+        if (landingTimerRef.current !== null) return;
 
         // §WS-008's removals. The rows below have already been FLIPped up by the pass below;
         // this is the dead row itself, collapsing where it stood.
@@ -2015,6 +2260,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 gone.map((key) => ({ key, node: dying.get(key), box: previousBoxes.get(key) }))
             );
         }
+        // A key that has left the list keeps no channel: the callback would write into a node
+        // nothing can see, and the offset would be re-applied if the key ever came back.
+        for (const key of gone) forgetRowSprings(key);
 
         const fresh = rows.map((row) => row.key).filter((key) => !previous.keys.has(key));
         if (fresh.length > 0) {
@@ -2026,30 +2274,38 @@ export function Sidebar(props: SidebarProps): ReactElement {
             }, REORDER_MS + 60);
         }
 
-        const moved = new Map<string, number>();
+        /*
+         * §WS-008's FLIP, on both axes, handed to the spring.
+         *
+         * The baseline is `offsetTop` / `offsetLeft`, not `getBoundingClientRect()`: the spring's
+         * output is a `translate`, which DOES move a client rect, so measuring against one would
+         * read the animation's own frame back as a layout change and re-FLIP forever. The offset
+         * pair is transform-free by definition, which is what makes the loop closed.
+         *
+         * `displace` is a RETARGET, not a restart. A row that is crossed again before its last
+         * displacement has unwound keeps both its current offset and its current velocity, and
+         * the new delta is added on top — so a drag over three rows in 200 ms is one motion. That
+         * is the whole difference from the transition this replaces, and the reason the `x` axis
+         * (§WS-089's nest indent) rides here too instead of on a `margin-left` transition.
+         *
+         * jsdom reports 0 for every offset, which is exactly the right degradation: no layout, no
+         * deltas, no springs, and the spring driver would fall back to instant anyway.
+         */
         for (const row of rows) {
-            const before = previous.tops.get(row.key);
-            const after = tops.get(row.key);
-            if (before === undefined || after === undefined) continue;
-            const delta = before - after;
-            if (Math.abs(delta) < 1) continue;
-            moved.set(row.key, delta);
+            const beforeTop = previous.tops.get(row.key);
+            const afterTop = tops.get(row.key);
+            if (beforeTop !== undefined && afterTop !== undefined) {
+                const delta = beforeTop - afterTop;
+                if (Math.abs(delta) >= 1) displaceRow(row.key, 'y', delta);
+            }
+            const beforeLeft = previous.lefts.get(row.key);
+            const afterLeft = lefts.get(row.key);
+            if (beforeLeft !== undefined && afterLeft !== undefined) {
+                const delta = beforeLeft - afterLeft;
+                if (Math.abs(delta) >= 1) displaceRow(row.key, 'x', delta);
+            }
         }
-        if (moved.size > 0) setFlip(moved);
-    }, [rows, spawnRemovalGhosts]);
-
-    // Second half of the FLIP: the offset is in the DOM, so release it on the next frame and
-    // let the transition carry the row home. Owned by React (rather than written straight onto
-    // the node) so an unrelated re-render mid-animation cannot overwrite the transition.
-    useLayoutEffect(() => {
-        if (flip.size === 0) return;
-        const frame = requestAnimationFrame(() => {
-            setFlip(EMPTY_FLIP);
-        });
-        return () => {
-            cancelAnimationFrame(frame);
-        };
-    }, [flip]);
+    }, [displaceRow, forgetRowSprings, rows, spawnRemovalGhosts]);
 
     useEffect(
         () => () => {
@@ -2967,7 +3223,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onCommitRename={commitGroupRename}
                                 onCancelRename={cancelRename}
                                 registerRow={registerRow}
-                                flipDelta={flip.get(row.key)}
                                 entering={entering.has(row.key)}
                             />
                         );
@@ -2977,6 +3232,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             <div
                                 key={row.key}
                                 data-testid="group-empty"
+                                data-reorder="spring"
                                 className="ml-6 py-1.5 pl-2 text-[12px]"
                                 style={{ color: tokens.textTertiary }}
                                 onContextMenu={(event) => {
@@ -3028,7 +3284,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             // SLOT targets (`topLevel` / `intoGroup`); a group-header target is
                             // marked by the header band's own tint instead.
                             insertLine={dragID === workspace.id && dragActive && previewGroupID === null}
-                            flipDelta={flip.get(row.key)}
                             entering={entering.has(row.key)}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
@@ -4112,5 +4367,4 @@ const EMPTY_GROUPS: readonly ChromeGroup[] = [];
 const EMPTY_PROFILES: readonly string[] = [];
 const EMPTY_REPO_IDS: readonly string[] = [];
 const EMPTY_SELECTION: ReadonlySet<string> = new Set<string>();
-const EMPTY_FLIP: ReadonlyMap<string, number> = new Map<string, number>();
 const EMPTY_OVERRIDES: ReadonlyMap<string, boolean> = new Map<string, boolean>();

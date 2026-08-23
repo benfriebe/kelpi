@@ -831,9 +831,10 @@ describe('sidebar drag affordances', () => {
 
     /**
      * §WS-008. jsdom reports `offsetTop === 0` for everything, so the FLIP pass measures no
-     * movement and only the INSERT half is observable here — which is the honest split: the
-     * reorder half is asserted by the transition being declared on the row, and its motion is
-     * a browser concern the audit photographs.
+     * movement here and only the INSERT half is observable — which is the honest split. The
+     * reorder half is a spring now, and it is exercised where it can be: `spring.test.ts` for
+     * the physics, `sidebar-spring.test.tsx` for the wiring (which supplies the box model this
+     * file deliberately does not), and the `sidebar-spring` audit step for the real renderer.
      */
     it('plays the entry animation for a row that appears, not for one that was there (§WS-008)', () => {
         const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} />);
@@ -856,12 +857,20 @@ describe('sidebar drag affordances', () => {
         expect(rows.filter((row) => row.dataset['entering'] === 'true')).toHaveLength(1);
     });
 
-    it('declares the reorder transition on every settled row (§WS-008)', () => {
+    it('declares the reorder channel and the lift transition on every settled row (§WS-008)', () => {
         render(<Sidebar {...baseProps()} entries={entries()} />);
         for (const row of screen.getAllByTestId('workspace-row')) {
+            // The lift's `scale(1.03)` relaxing when a gesture ends — all that is left on
+            // `transform` now that the reorder is the spring.
             expect(row.style.transition).toContain('transform');
+            expect(row.dataset['reorder']).toBe('spring');
+            // A settled row carries no offset at all.
+            expect(row.style.translate).toBe('');
         }
-        expect(screen.getByTestId('group-header').style.transition).toContain('transform');
+        const header = screen.getByTestId('group-header');
+        expect(header.style.transition).toContain('transform');
+        expect(header.dataset['reorder']).toBe('spring');
+        expect(header.style.translate).toBe('');
     });
 
     /**

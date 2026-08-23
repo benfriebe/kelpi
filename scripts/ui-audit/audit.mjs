@@ -13655,6 +13655,292 @@ function buildFlows(ctx) {
             }
         },
         {
+            id: 'sidebar-ring-clearance',
+            expect:
+                'The active row’s ring keeps AIR around it: with the active workspace sitting directly under a group band and directly above a plain row, the ring’s painted outer edge (border box + outline offset + outline width) clears both neighbours’ painted edges by the Swift’s 3.25px — to within the one device pixel Blink rounds an outline onto, and never less than 1px — and the ring itself is the Swift’s geometry: a 1.5px stroke specified centred (`outline-offset: -0.75px`) on a 7px-radius row box, against an 8px band (§WS-027).',
+            needsEyes: true,
+            async run(recorder) {
+                /**
+                 * THE USER'S CONFIGURATION, provisioned rather than assumed.
+                 *
+                 * The report was "the highlight touches the group", and the screenshot showed the
+                 * active row immediately BELOW a group header. That adjacency is the whole test,
+                 * so the step builds it: a group, a first member (which will be the active row),
+                 * and a second member underneath it — so the same row is measured against a
+                 * painted BAND above and a plain ROW below in one read.
+                 *
+                 * `workspace create` makes each new workspace active, so the first member is
+                 * re-activated by clicking its row afterwards — which is also the gesture a user
+                 * performs to get into the state they complained about.
+                 */
+                await cli.ok(['group', 'create', 'Ring Band']);
+                await cli.ok(['workspace', 'create', '--name', 'Ring Active', '--group', 'Ring Band']);
+                await cli.ok(['workspace', 'create', '--name', 'Ring Below', '--group', 'Ring Band']);
+                const listed = await cli.json(['workspace', 'list', '--json']);
+                const activeID = listed.find((workspace) => workspace.name === 'Ring Active')?.id ?? null;
+                const belowID = listed.find((workspace) => workspace.name === 'Ring Below')?.id ?? null;
+                recorder.check(
+                    'the two group members exist to measure',
+                    activeID !== null && belowID !== null,
+                    `${String(activeID)} / ${String(belowID)}`
+                );
+                if (activeID === null || belowID === null) return;
+
+                await page.waitFor(
+                    `document.querySelector('[data-workspace-id="${activeID}"]') !== null` +
+                        ` && document.querySelector('[data-workspace-id="${belowID}"]') !== null`,
+                    { timeoutMs: 20_000, label: 'both Ring Band rows' }
+                );
+                const point = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const el = document.querySelector('[data-workspace-id="${activeID}"]');
+                                if (el === null) return JSON.stringify({ found: false });
+                                const r = el.getBoundingClientRect();
+                                return JSON.stringify({ found: true, x: r.x + Math.min(60, r.width / 2), y: r.y + r.height / 2 });
+                            })()`
+                        )
+                    )
+                );
+                if (point.found === true) await page.clickAt(point.x, point.y);
+                // The switch remounts a workspace's panes; the ring is painted long before that
+                // settles, but a screenshot taken mid-remount is a screenshot of a spinner.
+                await sleep(1800);
+                await recorder.shot(page, 'active-under-band');
+
+                /**
+                 * PAINTED edges, not layout boxes.
+                 *
+                 * `getBoundingClientRect` is the BORDER box, and an outline is painted outside it:
+                 * it starts at `outline-offset` from the border edge and extends `outline-width`
+                 * OUTWARD, so a ring bleeds `max(0, offset + width)` past the rect. That bleed is
+                 * exactly what §WS-027 never measured — the item asserted the 1.5px width and the
+                 * 0.7 opacity and said nothing about where the 1.5px lands. A group band paints to
+                 * its border box (its 1px stroke is an inset `border`, as the Swift's
+                 * `.strokeBorder` is), so its rect IS its painted edge.
+                 */
+                const measured = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const list = document.querySelector('[data-testid="sidebar-list"]');
+                                if (list === null) return JSON.stringify({ found: false, why: 'no list' });
+                                const items = Array.from(list.children);
+                                const index = items.findIndex(el => el.getAttribute('data-active') === 'true');
+                                if (index < 0) return JSON.stringify({ found: false, why: 'no active row' });
+                                const describe = (el) => {
+                                    if (el === undefined || el === null) return null;
+                                    const style = getComputedStyle(el);
+                                    const rect = el.getBoundingClientRect();
+                                    const painted = style.outlineStyle === 'none'
+                                        ? 0
+                                        : Math.max(0, parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth));
+                                    return {
+                                        testid: el.getAttribute('data-testid'),
+                                        name: (el.innerText ?? '').replace(/\\n/g, ' ').trim().slice(0, 32),
+                                        top: rect.top,
+                                        bottom: rect.bottom,
+                                        paintedTop: rect.top - painted,
+                                        paintedBottom: rect.bottom + painted,
+                                        bleed: painted,
+                                        marginTop: style.marginTop,
+                                        marginBottom: style.marginBottom,
+                                        radius: style.borderTopLeftRadius,
+                                        outlineWidth: style.outlineWidth,
+                                        outlineOffset: style.outlineOffset,
+                                        outlineStyle: style.outlineStyle,
+                                        // What the COMPONENT asked for, before the engine rounded it.
+                                        specifiedOffset: el.style.outlineOffset,
+                                        specifiedOutline: el.style.outline
+                                    };
+                                };
+                                /*
+                                 * The engine's own quantization, measured rather than assumed.
+                                 *
+                                 * Blink snaps a painted outline to the device pixel grid, so a
+                                 * -0.75px offset comes back -0.5px at dpr 2. That is a property of
+                                 * the renderer, not of this component, and an assertion that
+                                 * demands the specified number back would be asserting Blink.
+                                 * The probe asks it directly — same document, same dpr — so the
+                                 * tolerance below is a measurement.
+                                 */
+                                const probe = document.createElement('div');
+                                probe.style.cssText =
+                                    'position:absolute;left:-9999px;width:40px;height:20px;outline:1.5px solid red;outline-offset:-0.75px';
+                                document.body.appendChild(probe);
+                                const probed = getComputedStyle(probe).outlineOffset;
+                                probe.remove();
+                                return JSON.stringify({
+                                    found: true,
+                                    display: getComputedStyle(list).display,
+                                    direction: getComputedStyle(list).flexDirection,
+                                    dpr: window.devicePixelRatio,
+                                    probedOffset: probed,
+                                    above: describe(items[index - 1]),
+                                    active: describe(items[index]),
+                                    below: describe(items[index + 1])
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`ring geometry: ${JSON.stringify(measured)}`);
+                recorder.check(
+                    'there is an active row with a neighbour on each side to measure',
+                    measured.found === true && measured.above !== null && measured.below !== null,
+                    JSON.stringify(measured.why ?? null)
+                );
+                if (measured.found !== true || measured.above === null || measured.below === null) return;
+
+                recorder.check(
+                    'the active row really is the one directly under a GROUP BAND — the reported configuration',
+                    measured.above.testid === 'group-header' && measured.below.testid === 'workspace-row',
+                    `above ${String(measured.above.testid)} · below ${String(measured.below.testid)}`
+                );
+
+                /*
+                 * The two numbers the whole bug reduces to. `WorkspaceRowView.swift:97` +
+                 * `GroupHeaderRow.swift:110` put 2pt outside each item's ring and
+                 * `WorkspaceListView.swift:291` adds none between them, so the boxes are 4pt
+                 * apart; `WorkspaceRowView.swift:168`'s centred `.stroke(lineWidth: 1.5)` spends
+                 * 0.75 of that. 4 − 0.75 = 3.25.
+                 */
+                const clearAbove = measured.active.paintedTop - measured.above.paintedBottom;
+                const clearBelow = measured.below.paintedTop - measured.active.paintedBottom;
+                const round = (value) => Math.round(value * 100) / 100;
+                /**
+                 * ONE DEVICE PIXEL, which is the resolution any claim about painted edges has.
+                 *
+                 * Blink rounds a painted outline onto the device grid, so the −0.75px this
+                 * component specifies is painted at −0.5px on a 2× display — 0.25px more bleed
+                 * and 0.25px less air than the Swift's antialiased stroke, in the direction that
+                 * matters (less air), and still four times the 1px the contract demands. The
+                 * probe above measured that rounding in this very document, so the tolerance is
+                 * not a guess and a regression cannot hide inside it: the SPECIFIED geometry is
+                 * asserted exactly, and only the engine's rounding gets the slack.
+                 */
+                const devicePixel = 1 / (typeof measured.dpr === 'number' && measured.dpr > 0 ? measured.dpr : 1);
+                recorder.note(
+                    `clear air: ${String(round(clearAbove))}px above the ring (band “${String(measured.above.name)}”), ` +
+                        `${String(round(clearBelow))}px below it (row “${String(measured.below.name)}”); ` +
+                        `ring bleed ${String(measured.active.bleed)}px past the border box; ` +
+                        `dpr ${String(measured.dpr)} (device pixel ${String(round(devicePixel))}px), ` +
+                        `engine paints a specified −0.75px offset at ${String(measured.probedOffset)}`
+                );
+
+                recorder.check(
+                    'the ring’s painted edge keeps ≥ 1px of clear air from the GROUP BAND above it (§WS-027)',
+                    clearAbove >= 1,
+                    `${String(round(clearAbove))}px between the ring at ${String(round(measured.active.paintedTop))} and the band at ${String(round(measured.above.paintedBottom))}`
+                );
+                recorder.check(
+                    'and ≥ 1px from the plain row below it',
+                    clearBelow >= 1,
+                    `${String(round(clearBelow))}px between the ring at ${String(round(measured.active.paintedBottom))} and the row at ${String(round(measured.below.paintedTop))}`
+                );
+                recorder.check(
+                    'and the air is the Swift’s 3.25pt on both sides — 2pt + 2pt of outer padding, less the 0.75pt the centred 1.5pt stroke spends — to within the one device pixel Blink rounds the outline onto',
+                    Math.abs(clearAbove - 3.25) <= devicePixel + 0.01 &&
+                        Math.abs(clearBelow - 3.25) <= devicePixel + 0.01,
+                    `${String(round(clearAbove))}px / ${String(round(clearBelow))}px vs 3.25px, tolerance ${String(round(devicePixel))}px`
+                );
+
+                /*
+                 * …and WHY it is 3.25, so a regression names its own cause instead of just moving
+                 * the number: the margins are uncollapsed (a flex column, not a block one) and the
+                 * ring is centred on the box rather than tucked inside it.
+                 */
+                recorder.check(
+                    'the list is a flex COLUMN, so two adjacent 2px margins cannot collapse into one',
+                    measured.display === 'flex' && measured.direction === 'column',
+                    `${String(measured.display)} / ${String(measured.direction)}`
+                );
+                recorder.check(
+                    'every neighbour carries the Swift’s 2px outer padding on both edges (`WorkspaceRowView.swift:97`, `GroupHeaderRow.swift:110`)',
+                    [measured.above, measured.active, measured.below].every(
+                        (box) => box.marginTop === '2px' && box.marginBottom === '2px'
+                    ),
+                    [measured.above, measured.active, measured.below]
+                        .map((box) => `${String(box.testid)} ${String(box.marginTop)}/${String(box.marginBottom)}`)
+                        .join(' · ')
+                );
+                /*
+                 * The ring, in two claims, because they are answerable by two different things.
+                 *
+                 * The FIRST is this component's and is asserted to the digit: a 1.5px stroke
+                 * asked to sit CENTRED on the row box, i.e. `outline-offset: -0.75px`
+                 * (`WorkspaceRowView.swift:168` — SwiftUI's `.stroke` is centred on the path,
+                 * unlike the `.strokeBorder` the same file gives the avatar and
+                 * `GroupHeaderRow.swift:98` gives the band, which is why a band paints to its
+                 * border box and a row's ring does not).
+                 *
+                 * The SECOND is Blink's: it rounds that onto the device grid. Asserting the
+                 * specified number back out of `getComputedStyle` would be asserting the
+                 * renderer, and it fails on every 2× display — which is exactly what the first
+                 * run of this step found. What the contract needs from the engine is only that
+                 * the rounding stays sub-pixel and errs no further than one device pixel.
+                 */
+                recorder.check(
+                    'the ring is SPECIFIED as the Swift’s centred 1.5px stroke — `outline-offset: -0.75px`, half in and half out (`WorkspaceRowView.swift:168`)',
+                    measured.active.specifiedOffset === '-0.75px' &&
+                        /(^|\s)1\.5px(\s|$)/.test(String(measured.active.specifiedOutline)),
+                    `${String(measured.active.specifiedOutline)} @ ${String(measured.active.specifiedOffset)}`
+                );
+                recorder.check(
+                    'and the engine paints it centred to within one device pixel — the rounding Blink applies to every outline, measured by this document’s own probe',
+                    measured.active.outlineWidth === '1.5px' &&
+                        measured.probedOffset === measured.active.outlineOffset &&
+                        Math.abs(parseFloat(String(measured.active.outlineOffset)) + 0.75) <= devicePixel + 0.01 &&
+                        measured.active.bleed <= 0.75 + devicePixel + 0.01,
+                    `${String(measured.active.outlineWidth)} @ ${String(measured.active.outlineOffset)} (probe ${String(measured.probedOffset)}, dpr ${String(measured.dpr)}) → ${String(measured.active.bleed)}px bleed`
+                );
+                recorder.check(
+                    'the row is rounded to the Swift’s 7pt and the band to its 8pt (`WorkspaceRowView.swift:160`, `GroupHeaderRow.swift:98`)',
+                    measured.active.radius === '7px' && measured.above.radius === '8px',
+                    `row ${String(measured.active.radius)} · band ${String(measured.above.radius)}`
+                );
+
+                /**
+                 * A picture a person can actually adjudicate.
+                 *
+                 * 3.25 CSS px is ~6 device px in the full-window PNG — real, and easy to argue
+                 * about. So the sidebar is photographed a second time under a paint-only
+                 * `transform: scale()` anchored on the active row: no reflow, no re-measurement
+                 * (every assertion above has already run), just the same pixels magnified. The
+                 * transform is removed in a `finally` — a scaled app root left behind would
+                 * corrupt every flow after this one.
+                 */
+                try {
+                    await page.eval(
+                        `(() => {
+                            const app = document.querySelector('[data-testid="nex-app"]');
+                            const row = document.querySelector('[data-testid="workspace-row"][data-active="true"]');
+                            if (app === null || row === null) return 'skip';
+                            const r = row.getBoundingClientRect();
+                            app.style.transformOrigin = String(r.left + r.width / 2) + 'px ' + String(r.top) + 'px';
+                            app.style.transform = 'scale(7)';
+                            return 'ok';
+                        })()`
+                    );
+                    await sleep(400);
+                    await recorder.shot(page, 'magnified');
+                } finally {
+                    await page.eval(
+                        `(() => {
+                            const app = document.querySelector('[data-testid="nex-app"]');
+                            if (app !== null) { app.style.transform = ''; app.style.transformOrigin = ''; }
+                            return 'ok';
+                        })()`
+                    );
+                    await sleep(300);
+                }
+                recorder.eyes(
+                    'in the magnified shot: is there visible background between the active row’s accent ring and the group band above it, and between the ring and the row below it?'
+                );
+            }
+        },
+        {
             id: 'sidebar-drag-nest-preview',
             expect:
                 'Dragging a top-level workspace over a collapsed group’s header previews the nesting before the drop: the header tints, the dragged row’s slot becomes an EMPTY GAP at the nested indent with the cursor clone as the only picture of the item, and releasing commits the move at once — no scripted "falls into the group" fall on top of the drop settle, and no landing node anywhere in the output (§WS-088/§WS-089/§WS-092).',

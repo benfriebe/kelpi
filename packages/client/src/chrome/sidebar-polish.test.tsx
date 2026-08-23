@@ -14,6 +14,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_KEYBINDINGS } from './keys';
 import { CURATED_EMOJI, Sidebar, normalizeEmojiInput } from './index';
+// §WS-027's clearance constants come straight off the component, not through the barrel: the
+// point of the block that uses them is that the test and the ring read the SAME numbers.
+import {
+    GROUP_BAND_CORNER_RADIUS_PX,
+    ROW_ACTIVE_RING_PX,
+    ROW_CORNER_RADIUS_PX,
+    ROW_OUTER_GAP_PX,
+    ROW_SELECTION_RING_PX,
+    ringBleedPx,
+    ringOffsetPx
+} from './Sidebar';
 import type { ChromePane, ChromeSidebarEntry, ChromeWorkspace } from './types';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001'; // alpha (top level)
@@ -549,9 +560,11 @@ describe('drag polish', () => {
     /**
      * Defect N4b, in a box model that has margins — the thing jsdom's all-zero rects hid.
      *
-     * Sidebar rows carry a 2px `my-0.5` margin that `getBoundingClientRect().height` does not
+     * Sidebar rows carry an outer margin that `getBoundingClientRect().height` does not
      * report, so walking the list by `y += height` puts every row a little higher than it
-     * really is and the error compounds. This stubs a REAL layout (40px rows, a 2px gap, a
+     * really is and the error compounds. The stubbed gap below stays 2px because the compounding
+     * is the subject, not the constant — the live gap is 4px since §WS-027's clearance fix
+     * uncollapsed those margins. This stubs a REAL layout (40px rows, a 2px gap, a
      * seven-row list) and drops three quarters of the way down the last row's group header —
      * the exact gesture `run-I` step 80 drives. Under the old accumulate-heights model that
      * point lands past the end of the computed content and resolves to "append at top level";
@@ -1623,6 +1636,146 @@ describe('row background states stack (§WS-027)', () => {
         );
         expect(rowFor(W1).style.outline).toBe('1px solid rgba(82, 118, 184, 0.7)');
         expect(rowFor(W1).style.boxShadow).toBe('');
+    });
+});
+
+// ── §WS-027: the air around the ring ────────────────────────────────────────────────
+
+/**
+ * "The highlight touches the group" (2026-08-23).
+ *
+ * §WS-027 measured the ring's stroke widths and opacities and never measured its CLEARANCE, so
+ * the port shipped an active row whose accent ran into the group band above it. The numbers here
+ * are all the Swift's, and the derivation is the point — a test that hard-codes `3.25` proves
+ * nothing about the geometry that produces it:
+ *
+ *   - `WorkspaceRowView.swift:97` — every row carries `.padding(.vertical, 2)` OUTSIDE its
+ *     background and ring, `GroupHeaderRow.swift:110` gives a band the same, and the list is
+ *     `VStack(spacing: 0)` (`WorkspaceListView.swift:291`). SwiftUI padding does not collapse,
+ *     so two adjacent items sit `2 * ROW_OUTER_GAP_PX` apart;
+ *   - `WorkspaceRowView.swift:168` — the accent is `.stroke(lineWidth: 1.5)`, CENTRED on the
+ *     background rect, so it paints `ringBleedPx(1.5)` = 0.75pt outside it.
+ *
+ * jsdom has no box model, so what is asserted here is the two inputs (the margins the DOM really
+ * carries, and the outline offset/width the ring really has) plus the arithmetic they force. The
+ * pixels themselves are settled by `docs/audit/sidebar-ring-clearance`, which measures painted
+ * edges in a real engine with the active row directly under a group band.
+ *
+ * One number differs between the two layers, and it is the engine's rather than this component's:
+ * Blink rounds a painted outline onto the device pixel grid, so the −0.75px specified here is
+ * painted at −0.5px on a 2× display — 1px of bleed instead of 0.75px, 3px of air instead of 3.25px,
+ * still three times the 1px floor. What is SPECIFIED is exact and asserted exactly; the audit step
+ * probes the rounding in the live document rather than assuming it.
+ */
+describe('the ring keeps clear air from its neighbours (§WS-027)', () => {
+    /** What a CSS outline paints beyond the border box: it starts at the offset, extends outward. */
+    const paintedBleed = (width: number, offset: number): number => Math.max(0, width + offset);
+    /**
+     * jsdom's `cssstyle` stores the `outline` shorthand verbatim and never expands it, so
+     * `style.outlineWidth` is the empty string here where a browser answers `1.5px`. The width is
+     * the shorthand's leading length; `outline-offset` is a real longhand and reads back directly.
+     */
+    const ringWidthOf = (element: HTMLElement): number => Number.parseFloat(element.style.outline);
+    const ringOffsetOf = (element: HTMLElement): number => Number.parseFloat(element.style.outlineOffset);
+
+    it('derives the ring offset from the stroke width, the way a centred SwiftUI stroke does', () => {
+        expect(ringOffsetPx(ROW_ACTIVE_RING_PX)).toBe(-0.75);
+        expect(ringOffsetPx(ROW_SELECTION_RING_PX)).toBe(-0.5);
+        expect(ringBleedPx(ROW_ACTIVE_RING_PX)).toBe(0.75);
+        expect(ringBleedPx(ROW_SELECTION_RING_PX)).toBe(0.5);
+    });
+
+    it('gives every row and every group band the Swift’s 2px of outer margin, on BOTH edges', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />);
+        for (const element of [...screen.getAllByTestId('workspace-row'), screen.getByTestId('group-header')]) {
+            expect(element.style.marginTop).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+            expect(element.style.marginBottom).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+        }
+    });
+
+    /**
+     * The margins above are only worth 4px if nothing collapses them, and a block container
+     * collapses them to 2px — which is the defect, expressed in one CSS keyword.
+     */
+    it('lays the rows out as a FLEX column, so the two margins cannot collapse into one', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />);
+        const list = screen.getByTestId('sidebar-list');
+        expect(list.className).toContain('flex');
+        expect(list.className).toContain('flex-col');
+    });
+
+    it('centres the active accent on the row box, and the selection stroke likewise', () => {
+        const { rerender } = render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />);
+        expect(ringWidthOf(rowFor(W1))).toBe(ROW_ACTIVE_RING_PX);
+        expect(rowFor(W1).style.outlineOffset).toBe('-0.75px');
+
+        rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                activeWorkspaceID={W2}
+                selectedWorkspaceIDs={new Set([W1])}
+            />
+        );
+        expect(ringWidthOf(rowFor(W1))).toBe(ROW_SELECTION_RING_PX);
+        expect(rowFor(W1).style.outlineOffset).toBe('-0.5px');
+    });
+
+    it('rounds the row to the Swift’s 7pt and the group band to its 8pt', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />);
+        expect(rowFor(W1).style.borderRadius).toBe(`${String(ROW_CORNER_RADIUS_PX)}px`);
+        expect(screen.getByTestId('group-header').style.borderRadius).toBe(
+            `${String(GROUP_BAND_CORNER_RADIUS_PX)}px`
+        );
+    });
+
+    /**
+     * The contract itself, computed from the values the tests above just read off the DOM: the
+     * ring's painted outer edge keeps at least 1px of air from a neighbour's painted edge,
+     * whether that neighbour is a group band or a plain row.
+     */
+    it('leaves the Swift’s 3.25px of air on both sides — never less than 1px', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />);
+        const row = rowFor(W1);
+        const boxGap = Number.parseFloat(row.style.marginBottom) + Number.parseFloat(row.style.marginTop);
+        const bleed = paintedBleed(ringWidthOf(row), ringOffsetOf(row));
+        expect(boxGap).toBe(2 * ROW_OUTER_GAP_PX);
+        expect(bleed).toBe(ringBleedPx(ROW_ACTIVE_RING_PX));
+        expect(boxGap - bleed).toBe(3.25);
+        expect(boxGap - bleed).toBeGreaterThanOrEqual(1);
+    });
+
+    /**
+     * A neighbour that ALSO paints past its box is the worst case, and there is exactly one:
+     * a selected row beside the active one. Both bleeds come out of the same 4px.
+     */
+    it('still clears a selected neighbour, whose own stroke eats into the same gap', () => {
+        render(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                activeWorkspaceID={W1}
+                selectedWorkspaceIDs={new Set([W4])}
+            />
+        );
+        const bleedOf = (element: HTMLElement): number =>
+            paintedBleed(ringWidthOf(element), ringOffsetOf(element));
+        const clear = 2 * ROW_OUTER_GAP_PX - bleedOf(rowFor(W1)) - bleedOf(rowFor(W4));
+        expect(clear).toBe(2.75);
+        expect(clear).toBeGreaterThanOrEqual(1);
+    });
+
+    /**
+     * A nested row indents by 24px and the ring indents with it (§WS-028) — the vertical air is
+     * untouched by that, which is what stops a group's members from being a special case.
+     */
+    it('is the same air for a row inside a group as for one at top level', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W2} />);
+        const member = rowFor(W2);
+        expect(member.style.marginLeft).toBe('24px');
+        expect(member.style.marginTop).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+        expect(member.style.marginBottom).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+        expect(member.style.outlineOffset).toBe('-0.75px');
     });
 });
 

@@ -187,6 +187,66 @@ export const SPRING_LOAD_MS = 650;
  * the resolved drop target is inside a group and takes back when it leaves one.
  */
 export const NEST_INDENT_PX = 24;
+
+/**
+ * §WS-027's RING GEOMETRY AND THE AIR AROUND IT, taken off the Swift (2026-08-23).
+ *
+ * The user's words: "the highlight touches the group" — the active row's accent ring running
+ * into the group band above it. The Swift says, in a comment written for exactly this failure
+ * (`Nex/Features/Workspace/WorkspaceRowView.swift:93-97`):
+ *
+ *     // Outer gap (outside the selection ring) matching the group bands'
+ *     // 2pt, so the spacing between a row and an adjacent group/row is the
+ *     // same everywhere — incl. the gap between a selected row's ring and
+ *     // the group header above/below it.
+ *     .padding(.vertical, 2)
+ *
+ * so the original SPACES THE ROWS rather than insetting the ring, and it spends the space twice:
+ *
+ *   - the list itself is `VStack(spacing: 0)` (`WorkspaceListView.swift:291`), so ALL vertical
+ *     separation is the items' own outer padding — and SwiftUI padding does not collapse, so two
+ *     adjacent items are `ROW_OUTER_GAP_PX + ROW_OUTER_GAP_PX` = 4pt apart. Group headers carry
+ *     the same 2pt (`GroupHeaderRow.swift:110`), which is what makes the gap uniform;
+ *   - the ring is `RoundedRectangle(cornerRadius: 7).stroke(…, lineWidth: 1.5)`
+ *     (`WorkspaceRowView.swift:168`), and SwiftUI's `.stroke` is CENTRED on the path, so the
+ *     accent paints half its width — 0.75pt — OUTSIDE the row's background box. The selection
+ *     stroke (`:161`, `lineWidth: 1`) bleeds 0.5pt the same way.
+ *
+ * Net: 4 − 0.75 = 3.25pt of clear air between the active ring's painted outer edge and the group
+ * band's painted edge. The port had 1.5px, from two divergences that compounded — the rows were
+ * block siblings, so their `my-0.5` margins COLLAPSED to one 2px gap instead of two, and the
+ * outline was `outline-offset: -1px` (drawn entirely inside the box) rather than centred. The
+ * list is a flex column now, which is what stops the collapse; the offset below is what centres
+ * the stroke.
+ *
+ * `ringOffsetPx` is the whole of the second half: a centred stroke of width `w` starts at `-w/2`
+ * from the border edge, which is precisely what `outline-offset: -w/2` draws, since an outline
+ * paints OUTWARD from its offset edge.
+ *
+ * ONE SUB-PIXEL DIVERGENCE, named because it is the engine's and not this file's: Blink rounds a
+ * painted outline onto the device pixel grid, so the −0.75px specified here is painted at −0.5px
+ * on a 2× display — 1px of bleed and 3.0px of air rather than 0.75 and 3.25, where CoreGraphics
+ * antialiases the half-pixel instead. It errs in the direction that matters (less air) and still
+ * leaves three times the 1px the contract demands. `docs/audit/sidebar-ring-clearance` probes that
+ * rounding in the live document rather than assuming it, and asserts these SPECIFIED numbers
+ * exactly — an assertion that demanded −0.75px back out of `getComputedStyle` would be asserting
+ * Blink, and fails on every Retina display.
+ */
+export const ROW_CORNER_RADIUS_PX = 7;
+export const GROUP_BAND_CORNER_RADIUS_PX = 8;
+export const ROW_ACTIVE_RING_PX = 1.5;
+export const ROW_SELECTION_RING_PX = 1;
+/** Each item's own outer vertical padding; two adjacent items are twice this apart. */
+export const ROW_OUTER_GAP_PX = 2;
+/** A SwiftUI `.stroke` is centred on the path — half in, half out. */
+export function ringOffsetPx(width: number): number {
+    return -width / 2;
+}
+/** How far a ring of this width paints beyond the row's border box. */
+export function ringBleedPx(width: number): number {
+    return width + ringOffsetPx(width);
+}
+
 export const AUTO_SCROLL_EDGE_PX = 40;
 export const AUTO_SCROLL_STEP_PX = 3;
 export const AUTO_SCROLL_INTERVAL_MS = 15;
@@ -588,14 +648,24 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
     const background = props.selected ? tokens.selectionFill : props.active ? activeFill : 'transparent';
     const backgroundImage =
         props.active && props.selected ? `linear-gradient(${activeFill}, ${activeFill})` : undefined;
-    const outline = props.active
-        ? `1.5px solid ${tokens.selectionStroke}`
-        : props.selected
-          ? `1px solid ${withAlpha('#5276B8', 0.7)}`
-          : 'none';
+    /*
+     * The ring's WIDTH picks its OFFSET, because the Swift's stroke is centred on the row's
+     * background rect rather than tucked inside it — see `ringOffsetPx`. A ring drawn entirely
+     * inside the box (the port's old flat `-1px`) is a different, smaller ring, and the number
+     * that decides whether it clears its neighbours is `ringBleedPx`, not the width.
+     */
+    const ringWidth = props.active ? ROW_ACTIVE_RING_PX : props.selected ? ROW_SELECTION_RING_PX : null;
+    // One expression for the width, so the painted stroke and the offset derived from it below
+    // cannot drift apart — only the colour still asks which state this is.
+    const outline =
+        ringWidth === null
+            ? 'none'
+            : `${String(ringWidth)}px solid ${props.active ? tokens.selectionStroke : withAlpha('#5276B8', 0.7)}`;
     /** The selection ring, kept when the accent outline takes the outer edge. */
     const selectionRing =
-        props.active && props.selected ? `inset 0 0 0 1px ${withAlpha('#5276B8', 0.7)}` : null;
+        props.active && props.selected
+            ? `inset 0 0 0 ${String(ROW_SELECTION_RING_PX)}px ${withAlpha('#5276B8', 0.7)}`
+            : null;
 
     const hidden = props.dragHidden === true;
     const nested = props.depth === 1 || props.nestPreview === true;
@@ -604,7 +674,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
         background,
         ...(backgroundImage === undefined ? {} : { backgroundImage }),
         outline,
-        outlineOffset: '-1px',
+        outlineOffset: `${String(ringWidth === null ? 0 : ringOffsetPx(ringWidth))}px`,
         ...(selectionRing === null ? {} : { boxShadow: selectionRing }),
         /*
          * §WS-089: the indent previews the container the row is being dropped INTO while the
@@ -620,6 +690,19 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
          * next measurement read this animation's own frame as a layout change).
          */
         marginLeft: nested ? NEST_INDENT_PX : 0,
+        /*
+         * The Swift's OUTER vertical padding (`WorkspaceRowView.swift:97`), which lives outside
+         * the ring and is the whole reason a ring never touches its neighbour. It is inline
+         * rather than a `my-0.5` class so the number is the same constant the ring geometry
+         * derives from — and so a test in a box-model-free jsdom can still read it.
+         *
+         * Two adjacent items are therefore `2 * ROW_OUTER_GAP_PX` apart, which is only true
+         * because the list is a FLEX column: block siblings collapse their margins and this
+         * would silently be one 2px gap, half the Swift's — the defect this pass fixed.
+         */
+        borderRadius: ROW_CORNER_RADIUS_PX,
+        marginTop: ROW_OUTER_GAP_PX,
+        marginBottom: ROW_OUTER_GAP_PX,
         transition: props.dragging === true
             ? // The lift is instant: a 350 ms transform transition would make grabbing a row
               // feel like it lagged the cursor.
@@ -699,7 +782,10 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             {...(props.groupID === undefined || props.groupID === null ? {} : { 'data-group-id': props.groupID })}
             data-depth={props.depth}
             data-active={props.active ? 'true' : 'false'}
-            className="my-0.5 flex cursor-default items-center gap-2 rounded-[7px] px-2 py-1.5"
+            /* The radius and the 2px outer margins are inline (see `style`), on the Swift's own
+               constants — `rounded-[7px] my-0.5` said the same thing in a vocabulary no jsdom
+               test and no derivation could read. */
+            className="flex cursor-default items-center gap-2 px-2 py-1.5"
             style={style}
             onMouseDown={(event) => {
                 props.onDragStart(workspace.id, event);
@@ -715,9 +801,16 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
              * §WS-007: children of an expanded group are joined by a CONTINUOUS 1.5px rule at
              * an 18px leading inset, tinted with the group's colour (or the theme divider when
              * it has none). The rows are a flat list, so each child draws its own segment and
-             * bridges the 2px margin above and below it — which is what makes the run read as
-             * one line rather than one dash per row. `left: -6` is the 18px inset measured from
-             * the row's own left edge, which sits at the 24px nesting indent.
+             * bridges its OWN outer margin above and below it — which is what makes the run read
+             * as one line rather than one dash per row. `left: -6` is the 18px inset measured
+             * from the row's own left edge, which sits at the 24px nesting indent.
+             *
+             * The extension is `ROW_OUTER_GAP_PX` because that is exactly what each row owns of
+             * the space between two boxes: neighbours each bridge their own half and the two
+             * segments MEET. Before §WS-027's clearance fix those margins collapsed, so the two
+             * halves bridged a gap that was only 2px wide and overlapped by 2px (the audit read
+             * `[-2]`); they now abut at `[0]`, which is the seam the Swift's spacing-0 `VStack`
+             * of per-row overlays produces.
              */}
             {props.guideColor === undefined ? null : (
                 <span
@@ -726,8 +819,8 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                     style={{
                         position: 'absolute',
                         left: -6,
-                        top: props.guideExtendUp === true ? -2 : 0,
-                        bottom: props.guideExtendDown === true ? -2 : 0,
+                        top: props.guideExtendUp === true ? -ROW_OUTER_GAP_PX : 0,
+                        bottom: props.guideExtendDown === true ? -ROW_OUTER_GAP_PX : 0,
                         width: 1.5,
                         borderRadius: 1,
                         background: props.guideColor,
@@ -856,8 +949,17 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
             data-drop-preview={props.dropPreview ? 'true' : 'false'}
             data-entering={props.entering === true ? 'true' : undefined}
             data-reorder="spring"
-            className="my-0.5 flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5"
+            className="flex cursor-default items-center gap-2 px-2 py-1.5"
             style={{
+                /*
+                 * `GroupHeaderRow.swift:98` — an 8pt band, one point rounder than a row's 7pt
+                 * ring — and `:110`'s outer 2pt, the same padding a workspace row carries so the
+                 * spacing either side of a band is uniform. Inline for the same reason the row's
+                 * are: these are the numbers §WS-027's clearance is derived from.
+                 */
+                borderRadius: GROUP_BAND_CORNER_RADIUS_PX,
+                marginTop: ROW_OUTER_GAP_PX,
+                marginBottom: ROW_OUTER_GAP_PX,
                 background: props.dropPreview
                     ? withAlpha('#6F9BD8', 0.18)
                     : group.color === null
@@ -1721,7 +1823,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
     /**
      * Where each row actually STARTS, in the same content space `contentY` resolves a cursor
      * into. Defect N4b: the drag model used to walk the list adding border-box heights, which
-     * silently dropped every row's `my-0.5` margin — a 2px error per row that accumulates, so
+     * silently dropped every row's outer margin — `ROW_OUTER_GAP_PX` on each edge, and since
+     * §WS-027's clearance fix those no longer collapse, so the dropped error is 4px per row
+     * rather than the 2px a block container used to leave — an error that accumulates, so
      * a crowded sidebar resolved the cursor against bands ~10px above the rows the user can
      * see and a drop three quarters of the way down a group header hit no band at all. The
      * measurement is one pass over the already-registered row elements, taken per resolve so
@@ -1931,7 +2035,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             // The row itself is usually transparent (its fill comes from the list behind it), so
             // an unpainted clone over the pane grid would be a floating column of text.
             ghost.style.background = tokens.sidebarBackground;
-            ghost.style.borderRadius = '7px';
+            ghost.style.borderRadius = `${String(ROW_CORNER_RADIUS_PX)}px`;
+            // The clone's own hairline, and deliberately NOT the row's accent ring: this thing
+            // floats over the pane grid with no neighbour to clear, so its 1px border is tucked
+            // fully INSIDE the box (offset −1px) where a row's is centred on it (§WS-027).
             ghost.style.outline = `1px solid ${tokens.selectionStroke}`;
             ghost.style.outlineOffset = '-1px';
             ghost.style.boxShadow = '0 12px 32px rgba(0,0,0,0.55)';
@@ -3385,7 +3492,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
     const body =
         needle.length > 0 ? (
-            <div data-testid="sidebar-filtered">
+            /* Flex for the same reason the main list is: the filtered list draws the same rows
+               with the same ring, so it needs the same uncollapsed 2 + 2 between them. */
+            <div data-testid="sidebar-filtered" className="flex flex-col">
                 {filtered.length === 0 ? (
                     <div className="px-3 py-6 text-center text-[12px]" style={{ color: tokens.textTertiary }}>
                         <div style={{ color: tokens.textSecondary }}>No matches</div>
@@ -3431,7 +3540,24 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 )}
             </div>
         ) : (
-            <div data-testid="sidebar-list">
+            /*
+             * A FLEX COLUMN, and that is the whole of §WS-027's clearance fix.
+             *
+             * Adjacent BLOCK siblings collapse their vertical margins, so every row's 2px top
+             * margin and its neighbour's 2px bottom margin used to become one 2px gap — half the
+             * Swift's, which spends 2pt on each item and never collapses because SwiftUI padding
+             * cannot (`VStack(spacing: 0)` + `.padding(.vertical, 2)` per item,
+             * `WorkspaceListView.swift:291`, `WorkspaceRowView.swift:97`,
+             * `GroupHeaderRow.swift:110`). With 1.5px of accent ring bleeding 0.75px past the
+             * border box, 2px of gap left 1.25px of air and the highlight read as touching the
+             * band above it. Flex items keep both margins: 4px apart, 3.25px of air, the Swift's
+             * number.
+             *
+             * Nothing else about the box changes — no height, no width, no padding — so every
+             * measurement §WS-093's gate and §WS-008's FLIP take answers what it always did,
+             * one row pitch larger.
+             */
+            <div data-testid="sidebar-list" className="flex flex-col">
                 {rows.map((row, index) => {
                     if (row.kind === 'group-header') {
                         const entry = effectiveEntries.find(

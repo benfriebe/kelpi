@@ -163,8 +163,11 @@ describe('drop resolution', () => {
     /**
      * Defect N4b, as arithmetic.
      *
-     * Every sidebar row carries a 2px `my-0.5` margin that `getBoundingClientRect().height`
-     * does not report, so the accumulate-heights walk drifts 2px further off with every row.
+     * Every sidebar row carries an outer margin that `getBoundingClientRect().height` does not
+     * report, so the accumulate-heights walk drifts a whole gap further off with every row. The
+     * fixture keeps the 2px gap the failing run had — the arithmetic is what is under test, not
+     * the constant, and §WS-027's clearance fix has since uncollapsed those margins to 4px,
+     * which only makes the drift this describes worse.
      * The fixture below is the one the failing full run produced: a 7-row sidebar with the
      * drop target sixth. The cursor sits three quarters of the way down the group header —
      * the point that selects `ontoGroupHeader` — and the old model answers `null`, which the

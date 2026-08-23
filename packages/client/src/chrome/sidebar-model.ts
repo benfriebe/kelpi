@@ -326,8 +326,9 @@ export interface DropZoneOptions {
      * Measured content-space TOP of each row, keyed by row key — the same space `contentY`
      * resolves a cursor into (`clientY - scrollerTop + scrollTop`).
      *
-     * Why this exists (defect N4b): heights are border-box and every sidebar row carries a
-     * `my-0.5` margin, so walking the list by `y += height` loses ~2px per row. The error is
+     * Why this exists (defect N4b): heights are border-box and every sidebar row carries a 2px
+     * outer margin on each edge, so walking the list by `y += height` loses a per-row gap —
+     * 4px since §WS-027's clearance fix stopped those margins collapsing, 2px before it. The error is
      * cumulative, so in a three-row sidebar the model is right to within a pixel and in a
      * seven-row one the sixth row's band is ~10px above where the row actually is — enough for
      * a cursor sitting three quarters of the way down a group header to resolve to *no zone at

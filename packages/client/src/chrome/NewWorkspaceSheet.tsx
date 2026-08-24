@@ -327,6 +327,24 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         setChosenRepoIDs(next);
     };
 
+    /*
+     * L1 / L2: the two sheets draw the SAME control at two different sizes, and the port drew
+     * one size for both.
+     *
+     *   - the workspace sheet (`NewWorkspaceSheet.swift:86-97`) is a bare `HStack(spacing: 8)`
+     *     of 24pt circles, selection marked by `Circle().strokeBorder(Color.primary, lineWidth:
+     *     2)` — `strokeBorder`, so the ring is drawn INSIDE the circle's own bounds and the
+     *     swatch never grows;
+     *   - the group sheet (`NewGroupSheet.swift:28-60`) is an `HStack(spacing: 6)` that opens
+     *     with a "Color" caption and a `Spacer()`, then a no-colour outline swatch and 16pt
+     *     circles, selection marked by an 8pt bold CHECKMARK inside the swatch rather than by a
+     *     ring at all.
+     *
+     * The port had 20px swatches at a 6px gap in both, with a 2px `outline` sitting OUTSIDE the
+     * circle (so the selected swatch read a touch larger than its neighbours) and no caption on
+     * the group sheet.
+     */
+    const swatchDiameter = isWorkspace ? 24 : 16;
     const swatchRow = (
         <div
             ref={(element) => {
@@ -336,7 +354,17 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             aria-label={isWorkspace ? 'Workspace color' : 'Group color'}
             tabIndex={0}
             data-testid={`new-${props.kind}-colors`}
-            className="flex items-center gap-1.5 rounded outline-none"
+            /*
+             * No `outline-none` here, deliberately: this row is a TAB STOP with its own
+             * arrow-key handling, and `NewWorkspaceSheet.swift:98-99` makes the Swift's
+             * `.focusable().focused($focusedField, equals: .color)` — a focusable container
+             * AppKit rings when the keyboard lands on it. Before §L96 the class said
+             * `outline-none` and the unlayered global rule overrode it anyway; layering the rule
+             * would have made the class win and left a keyboard user with no way to see they
+             * were on the colour row. `:focus-visible` does not match a pointer click on a
+             * `tabIndex` div, so this rings on Tab only.
+             */
+            className={`flex items-center rounded ${isWorkspace ? 'gap-2' : 'ml-auto gap-1.5'}`}
             onKeyDown={(event) => {
                 if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
                 event.preventDefault();
@@ -358,10 +386,15 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     aria-label="No color"
                     tabIndex={-1}
                     data-testid="new-group-color-none"
-                    className="h-5 w-5 shrink-0 rounded-full text-[9px] leading-none"
+                    className="flex shrink-0 items-center justify-center rounded-full text-[8px] font-bold leading-none"
                     style={{
+                        width: swatchDiameter,
+                        height: swatchDiameter,
+                        // `Circle().strokeBorder(Color.secondary.opacity(0.6), lineWidth: 1)`.
                         border: `1px solid ${tokens.textTertiary}`,
-                        color: tokens.textSecondary
+                        // The Swift's checkmark here carries no `.foregroundStyle`, so it is the
+                        // primary label colour — only the ones over a filled swatch are white.
+                        color: tokens.textPrimary
                     }}
                     onClick={() => {
                         setColor(null);
@@ -380,16 +413,25 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     tabIndex={-1}
                     data-testid={`new-${props.kind}-color-${candidate}`}
                     data-selected={color === candidate ? 'true' : 'false'}
-                    className="h-5 w-5 shrink-0 rounded-full"
+                    className="flex shrink-0 items-center justify-center rounded-full text-[8px] font-bold leading-none"
                     style={{
+                        width: swatchDiameter,
+                        height: swatchDiameter,
                         background: workspaceColorHex(candidate, props.bucket ?? 'dark'),
-                        outline: color === candidate ? `2px solid ${tokens.textPrimary}` : 'none',
-                        outlineOffset: '1px'
+                        color: '#fff',
+                        // `strokeBorder` is an INWARD stroke: the ring eats into the swatch
+                        // instead of hanging off it, so a selected circle is the same 24px box
+                        // as its neighbours. `outline` + `outlineOffset: 1` was neither.
+                        ...(isWorkspace && color === candidate
+                            ? { boxShadow: `inset 0 0 0 2px ${tokens.textPrimary}` }
+                            : {})
                     }}
                     onClick={() => {
                         setColor(candidate);
                     }}
-                />
+                >
+                    {!isWorkspace && color === candidate ? '✓' : ''}
+                </button>
             ))}
         </div>
     );
@@ -443,7 +485,11 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
 
                 <form
                     data-testid={`new-${props.kind}-form`}
-                    className="flex flex-col gap-3"
+                    /* L16: `VStack(spacing: 16)` for the workspace sheet
+                       (`NewWorkspaceSheet.swift:76`) and `VStack(alignment: .leading, spacing:
+                       14)` for the group one (`NewGroupSheet.swift:16`) — one 12px gap stood in
+                       for both, which cost the taller sheet a quarter of its breathing room. */
+                    className={`flex flex-col ${isWorkspace ? 'gap-4' : 'gap-[14px]'}`}
                     onKeyDown={onFormKeyDown}
                     onSubmit={(event) => {
                         event.preventDefault();
@@ -480,7 +526,19 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         }}
                     />
 
-                    {swatchRow}
+                    {/* L1: the group sheet's swatches are a LABELLED row — `Text("Color")` at
+                        11pt secondary, then a `Spacer()`, then the swatches
+                        (`NewGroupSheet.swift:28-32`). The workspace sheet has no caption. */}
+                    {isWorkspace ? (
+                        swatchRow
+                    ) : (
+                        <div className="flex items-center gap-1.5">
+                            <span className="shrink-0 text-[11px]" style={{ color: tokens.textSecondary }}>
+                                Color
+                            </span>
+                            {swatchRow}
+                        </div>
+                    )}
 
                     {isWorkspace && groups.length > 0 ? (
                         <label className="flex items-center gap-2">
@@ -493,7 +551,13 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                 }}
                                 aria-label="Group"
                                 data-testid="new-workspace-group"
-                                className="min-w-0 flex-1 rounded border bg-transparent px-1 py-[3px] text-[11px]"
+                                /* L21: `HStack { Text; Spacer(); Picker.labelsHidden()
+                                   .pickerStyle(.menu) }` (`NewWorkspaceSheet.swift:104-122`) —
+                                   the picker is CONTENT-sized and pushed to the trailing edge by
+                                   the `Spacer()`, not stretched across the row. `ml-auto` is that
+                                   spacer; dropping `flex-1` restores `flex-basis: auto`, and
+                                   `min-w-0` keeps it able to shrink on a long profile name. */
+                                className="ml-auto min-w-0 rounded border bg-transparent px-1 py-[3px] text-[11px]"
                                 style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                                 value={groupID ?? ''}
                                 onChange={(event) => {
@@ -523,7 +587,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                                 }}
                                 aria-label="Profile"
                                 data-testid="new-workspace-profile"
-                                className="min-w-0 flex-1 rounded border bg-transparent px-1 py-[3px] text-[11px]"
+                                /* L21: content-sized, trailing — see the Group picker above. */
+                                className="ml-auto min-w-0 rounded border bg-transparent px-1 py-[3px] text-[11px]"
                                 style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                                 value={profile}
                                 onChange={(event) => {
@@ -642,45 +707,62 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
 
                     {worktreeOn && repo !== null ? (
                         <div className="flex flex-col gap-1.5 pl-4" data-testid="new-workspace-worktree">
-                            <input
-                                ref={(element) => {
-                                    registerStop('worktree-name', element);
-                                }}
-                                aria-label="Worktree name"
-                                data-testid="new-workspace-worktree-name"
-                                placeholder="Worktree name"
-                                className="w-full rounded border bg-transparent px-2 py-1 text-[11px] outline-none"
-                                style={{
-                                    borderColor: tokens.divider,
-                                    color: tokens.textPrimary,
-                                    ...SELECTABLE_TEXT_STYLE
-                                }}
-                                value={worktreeName}
-                                onChange={(event) => {
-                                    const next = event.target.value;
-                                    setWorktreeName(next);
-                                    if (!branchEdited) setBranch(next);
-                                }}
-                            />
-                            <input
-                                ref={(element) => {
-                                    registerStop('worktree-branch', element);
-                                }}
-                                aria-label="Branch name"
-                                data-testid="new-workspace-worktree-branch"
-                                placeholder="Branch name"
-                                className="w-full rounded border bg-transparent px-2 py-1 text-[11px] outline-none"
-                                style={{
-                                    borderColor: tokens.divider,
-                                    color: tokens.textPrimary,
-                                    ...SELECTABLE_TEXT_STYLE
-                                }}
-                                value={branch}
-                                onChange={(event) => {
-                                    setBranch(event.target.value);
-                                    setBranchEdited(event.target.value !== worktreeName);
-                                }}
-                            />
+                            {/*
+                              * L17: each field is `VStack(alignment: .leading, spacing: 4) {
+                              * Text("Worktree name").font(.caption).foregroundStyle(.secondary);
+                              * TextField("", …) }` (`NewWorkspaceSheet.swift:293-319`) — a caption
+                              * ABOVE the field and an EMPTY placeholder inside it. The port put
+                              * the two names in the placeholders, so the moment the user typed
+                              * (or the branch mirrored the name) the sheet stopped saying which
+                              * field was which. `.caption` is 10pt.
+                              */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-[10px]" style={{ color: tokens.textSecondary }}>
+                                    Worktree name
+                                </span>
+                                <input
+                                    ref={(element) => {
+                                        registerStop('worktree-name', element);
+                                    }}
+                                    aria-label="Worktree name"
+                                    data-testid="new-workspace-worktree-name"
+                                    className="w-full rounded border bg-transparent px-2 py-1 text-[11px] outline-none"
+                                    style={{
+                                        borderColor: tokens.divider,
+                                        color: tokens.textPrimary,
+                                        ...SELECTABLE_TEXT_STYLE
+                                    }}
+                                    value={worktreeName}
+                                    onChange={(event) => {
+                                        const next = event.target.value;
+                                        setWorktreeName(next);
+                                        if (!branchEdited) setBranch(next);
+                                    }}
+                                />
+                            </label>
+                            <label className="flex flex-col gap-1">
+                                <span className="text-[10px]" style={{ color: tokens.textSecondary }}>
+                                    Branch name
+                                </span>
+                                <input
+                                    ref={(element) => {
+                                        registerStop('worktree-branch', element);
+                                    }}
+                                    aria-label="Branch name"
+                                    data-testid="new-workspace-worktree-branch"
+                                    className="w-full rounded border bg-transparent px-2 py-1 text-[11px] outline-none"
+                                    style={{
+                                        borderColor: tokens.divider,
+                                        color: tokens.textPrimary,
+                                        ...SELECTABLE_TEXT_STYLE
+                                    }}
+                                    value={branch}
+                                    onChange={(event) => {
+                                        setBranch(event.target.value);
+                                        setBranchEdited(event.target.value !== worktreeName);
+                                    }}
+                                />
+                            </label>
                             <label
                                 className="flex cursor-pointer items-center gap-1.5 text-[11px]"
                                 style={{ color: tokens.textSecondary }}

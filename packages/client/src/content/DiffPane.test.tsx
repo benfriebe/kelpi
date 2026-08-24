@@ -42,7 +42,12 @@ describe('diff pane', () => {
     it('subscribes and renders the daemon’s diff document', () => {
         const api = createFakeContentApi();
         render(<DiffPane paneID={PANE} content={api} />);
-        expect(screen.getByTestId(`content-status-${PANE}`).textContent).toContain('git diff');
+        // §L45: the pre-snapshot body is the pane's fill and nothing else — the Swift mounts an
+        // empty web view, and a local `git diff` returns fast enough that "Running git diff…"
+        // only ever flashed.
+        const status = screen.getByTestId(`content-status-${PANE}`);
+        expect(status.textContent).toBe('');
+        expect(status.dataset['tone']).toBe('quiet');
 
         push(api, diffState());
 

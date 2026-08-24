@@ -59,11 +59,19 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M1.8 6h8.4M6 1.8c1.6 1.8 1.6 6.6 0 8.4-1.6-1.8-1.6-6.6 0-8.4z" />
         </>
     ),
+    /**
+     * L34 — `tag.fill` is FILLED. `PaneHeaderView.swift:82` asks for the filled variant, and the
+     * port drew the outline one, which at 8 px reads as a wireframe next to the solid status dot
+     * beside it. One `evenodd` path: the tag body, then the eyelet as a second subpath so it
+     * punches a hole rather than needing a background colour to paint over.
+     */
     tag: (
-        <>
-            <path d="M1.8 5.6 5.6 1.8h4.6v4.6L6.4 10.2z" />
-            <circle cx="8" cy="4" r="0.7" />
-        </>
+        <path
+            fill="currentColor"
+            fillRule="evenodd"
+            stroke="none"
+            d="M1.8 5.6 5.6 1.8h4.6v4.6L6.4 10.2zM8.75 4a.75.75 0 1 0-1.5 0 .75.75 0 1 0 1.5 0"
+        />
     ),
     branch: (
         <>
@@ -73,9 +81,16 @@ const PATHS: Record<IconName, ReactElement> = {
             <path d="M3.5 4.1v3.8M8.5 4.1v1.2c0 1.2-1 1.8-2.2 2-1 .2-2.8.6-2.8 2" />
         </>
     ),
+    /**
+     * L34 — `arrow.up.left.and.arrow.down.right` (`PaneHeaderView.swift:103`): TWO diagonal
+     * arrows on one axis, not four corner brackets. The bracket form is the crop/frame glyph and
+     * reads as "fit to frame"; the arrow pair is the one macOS uses for zoom, and it is what the
+     * shipped ZOOM badge shows.
+     */
     zoom: (
         <>
-            <path d="M2 4.5V2h2.5M7.5 2H10v2.5M10 7.5V10H7.5M4.5 10H2V7.5" />
+            <path d="M2.2 2.2 5.2 5.2M2.2 5.4V2.2h3.2" />
+            <path d="M9.8 9.8 6.8 6.8M9.8 6.6v3.2H6.6" />
         </>
     ),
     broadcast: (
@@ -174,16 +189,37 @@ const PATHS: Record<IconName, ReactElement> = {
     'chevron-down': <path d="m3 4.6 3 3 3-3" />
 };
 
+/**
+ * L25/L37 — the SF Symbol weight ramp, as stroke widths in the 12-unit viewBox.
+ *
+ * `PaneHeaderView.swift` and `PaneSearchOverlay.swift` do not draw every glyph at one weight:
+ * the split icons are plain `.font(.system(size: 10))`, the search chevrons are `.medium`
+ * (`PaneSearchOverlay.swift:50,60`) and both ✕ glyphs are `.semibold` at 9 pt
+ * (`PaneHeaderView.swift:265`, `PaneSearchOverlay.swift:70`) — deliberately smaller AND bolder
+ * than their neighbours. A stroke in viewBox units scales with `size`, so rendering the ✕ at 9
+ * without a weight bump made it thinner than the 10 px icons beside it, which is the opposite of
+ * what the Swift asks for.
+ *
+ * SF Symbols publishes no stroke numbers, so the two bumps are the ramp's usual proportions
+ * (~15% for medium, ~40% for semibold) applied to the regular 1.1 — an approximation, and stated
+ * as one.
+ */
+export const ICON_STROKE = { regular: 1.1, medium: 1.3, semibold: 1.5 } as const;
+
+export type IconWeight = keyof typeof ICON_STROKE;
+
 export interface IconProps {
     readonly name: IconName;
     readonly size?: number | undefined;
+    readonly weight?: IconWeight | undefined;
     readonly className?: string | undefined;
 }
 
-export function Icon({ name, size = 12, className }: IconProps): ReactElement {
+export function Icon({ name, size = 12, weight = 'regular', className }: IconProps): ReactElement {
     return (
         <svg
             data-icon={name}
+            data-weight={weight}
             aria-hidden="true"
             focusable="false"
             width={size}
@@ -191,7 +227,7 @@ export function Icon({ name, size = 12, className }: IconProps): ReactElement {
             viewBox="0 0 12 12"
             fill="none"
             stroke="currentColor"
-            strokeWidth={1.1}
+            strokeWidth={ICON_STROKE[weight]}
             strokeLinecap="round"
             strokeLinejoin="round"
             {...(className === undefined ? {} : { className })}

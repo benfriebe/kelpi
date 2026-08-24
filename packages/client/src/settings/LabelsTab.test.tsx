@@ -145,12 +145,13 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         setup();
         const add = cells('label-add-row');
         const row = cells('label-preset-ship');
-        expect(add[0]?.getAttribute('aria-label')).toBe('new preset color');
-        expect(row[0]?.getAttribute('aria-label')).toBe('ship color');
+        // L93: the group announces the field AND the value in it, so the name is a prefix.
+        expect(add[0]?.getAttribute('aria-label')).toBe('new preset color: Gray');
+        expect(row[0]?.getAttribute('aria-label')).toBe('ship color: Gray');
         expect(add[1]?.getAttribute('data-testid')).toBe('label-new-name');
         expect(row[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
-        expect(add[2]?.getAttribute('aria-label')).toBe('new preset text color');
-        expect(row[2]?.getAttribute('aria-label')).toBe('ship text color');
+        expect(add[2]?.getAttribute('aria-label')).toBe('new preset text color: Auto');
+        expect(row[2]?.getAttribute('aria-label')).toBe('ship text color: Auto');
         expect(add[3]?.querySelector('[data-testid="label-new-preview"]')).not.toBeNull();
         expect(row[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
     });

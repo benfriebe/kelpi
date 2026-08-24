@@ -83,6 +83,27 @@ describe('the no-workspace empty state (§APP-067 / §WS-156)', () => {
         expect(screen.getByTestId('no-workspace-create').textContent).toContain('Create Workspace');
     });
 
+    /**
+     * L30 — `ContentView.swift:238-247`, to the number: `VStack(spacing: 8)`, a `.quaternary`
+     * glyph (the label colour at 10%, the same transcription the empty GRID uses), and a plain
+     * `Button` with no `.keyboardShortcut`. The port had 12 px of stack, a `textTertiary` glyph
+     * one whole tier brighter, and an `autoFocus` that made Return raise a sheet — Return is
+     * bound on the grid's "New Pane" (`PaneGridView.swift:504`) and nowhere else.
+     */
+    it('is the Swift’s metrics: 8 px stack, a quaternary glyph, no autofocus', () => {
+        setup(emptySnapshot());
+
+        const empty = screen.getByTestId('no-workspace-empty');
+        expect(empty.className).toContain('gap-2');
+        expect(empty.className).not.toContain('gap-3');
+        expect(screen.getByTestId('no-workspace-glyph').style.color).toBe(
+            'color-mix(in srgb, var(--nex-fg, #E6E6EA) 10%, transparent)'
+        );
+        const button = screen.getByTestId('no-workspace-create');
+        expect(button.hasAttribute('autofocus')).toBe(false);
+        expect(document.activeElement).not.toBe(button);
+    });
+
     it('REPLACES the grid rather than sitting on top of it', () => {
         setup(emptySnapshot());
 

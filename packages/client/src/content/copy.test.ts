@@ -8,7 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { stripFrontMatter, writeRichText } from './copy';
+import { FRONT_MATTER_BYTE_LIMIT, stripFrontMatter, writeRichText } from './copy';
 
 describe('stripFrontMatter', () => {
     it('drops a fenced YAML block and keeps the body', () => {
@@ -34,6 +34,38 @@ describe('stripFrontMatter', () => {
     it('only treats a fence on the FIRST line as front matter', () => {
         const source = 'intro\n---\ntitle: not front matter\n---\n';
         expect(stripFrontMatter(source)).toBe(source);
+    });
+
+    /**
+     * §L42 — the preview and the copy cannot disagree.
+     *
+     * The daemon stops scanning at `FRONT_MATTER_BYTE_LIMIT` and renders an over-cap block as
+     * ordinary body (`markdown.test.ts` "bails past the 64 KiB scan guard"). The Swift shares one
+     * `FrontMatterExtractor` between its renderer and its copy, so the two ALWAYS agree; the port
+     * has two implementations and therefore has to be told the same limit. These are the daemon's
+     * own cap fixtures, run through the client's copy.
+     */
+    describe('the 64 KiB cap (§L42)', () => {
+        it('leaves an over-cap block in the copied text, exactly as the preview renders it', () => {
+            const filler = `${'x'.repeat(1023)}\n`.repeat(Math.ceil(FRONT_MATTER_BYTE_LIMIT / 1024) + 1);
+            const source = `---\n${filler}---\nbody`;
+            expect(stripFrontMatter(source)).toBe(source);
+        });
+
+        it('counts UTF-8 BYTES, not characters, toward the guard', () => {
+            // ~60 KiB in bytes but only ~30k characters: under the cap, so still stripped.
+            const line = `${'é'.repeat(500)}\n`;
+            expect(stripFrontMatter(`---\n${line.repeat(60)}---\nbody`)).toBe('body');
+            // Same character count, twice the bytes per char: over the cap, so left alone.
+            const wide = `${'😀'.repeat(250)}\n`; // 250 × 4 bytes + newline
+            const over = `---\n${wide.repeat(70)}---\nbody`;
+            expect(stripFrontMatter(over)).toBe(over);
+        });
+
+        it('still strips a block that sits just under the cap', () => {
+            const filler = `${'x'.repeat(1023)}\n`.repeat(60); // ~60 KiB
+            expect(stripFrontMatter(`---\n${filler}---\nbody`)).toBe('body');
+        });
     });
 });
 

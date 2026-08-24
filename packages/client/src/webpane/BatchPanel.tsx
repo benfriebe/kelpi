@@ -159,6 +159,16 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                 </span>
             </div>
 
+            {/*
+             * L72 — the panel is a THREE-BAND stack, not one open column.
+             * `WebBatchInspectPanel.swift:53-66` is `VStack(spacing: 0) { header; Divider();
+             * items-or-hint; Divider(); footer }` under a top-edge `Divider` overlay, so the
+             * header and the footer are each fenced off from the list between them. The port
+             * drew only the top edge, which left the count row and the Cancel/Send row floating
+             * against the items with nothing separating them.
+             */}
+            <div data-testid={`web-batch-header-rule-${paneID}`} style={{ borderTop: `1px solid ${tokens.divider}` }} />
+
             {session.items.length === 0 ? (
                 <p
                     data-testid={`web-batch-empty-${paneID}`}
@@ -187,15 +197,34 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                 // Two lines, top-aligned, exactly as the Swift row is
                                 // (`HStack(alignment: .top) { chip; VStack { selector; comment }; ✕ }`).
                                 className="flex items-start gap-1.5 rounded px-1.5 py-1"
+                                /*
+                                 * L72 — the row's resting state and its transition,
+                                 * `WebBatchInspectPanel.swift:210-221`: an unfocused row is
+                                 * `Color.secondary.opacity(0.06)` under a `Color.clear`
+                                 * strokeBorder (a faint plate, no outline), a focused one is
+                                 * `accent.opacity(0.18)` under `accent.opacity(0.5)`, and the
+                                 * change between them is `.animation(.easeOut(duration: 0.18))`.
+                                 * The port drew unfocused rows transparent-with-a-divider-rule
+                                 * and snapped between the two states with no transition at all.
+                                 */
                                 style={{
-                                    background: focused ? withAlpha(tokens.accent, 0.16) : 'transparent',
-                                    border: `1px solid ${focused ? tokens.accent : tokens.divider}`
+                                    background: focused
+                                        ? withAlpha(tokens.accent, 0.18)
+                                        : withAlpha(tokens.textSecondary, 0.06),
+                                    border: `1px solid ${focused ? withAlpha(tokens.accent, 0.5) : 'transparent'}`,
+                                    transition: 'background-color 180ms ease-out, border-color 180ms ease-out'
                                 }}
                                 onClick={() => focusItem(item.id)}
                             >
+                                {/*
+                                 * L71 — the chip is 18×18 at 10 px semibold monospace
+                                 * (`:158-162`), not a 16×16 pill at 9 px: it has to read as the
+                                 * twin of the numbered badge drawn over the element in the page,
+                                 * and the two were different sizes.
+                                 */}
                                 <span
                                     data-testid={`web-batch-chip-${item.id}`}
-                                    className="flex h-[16px] min-w-[16px] shrink-0 items-center justify-center rounded-full px-1 text-[9px] font-semibold"
+                                    className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-semibold"
                                     style={{ background: tokens.accent, color: '#fff' }}
                                 >
                                     {index + 1}
@@ -212,9 +241,21 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                         data-testid={`web-batch-head-${item.id}`}
                                         className="flex min-w-0 items-center gap-1"
                                     >
+                                        {/*
+                                         * L71 — `Text(item.result.tag.uppercased())` in
+                                         * `.semibold` monospace, **accent-coloured**, with the
+                                         * selector beside it in `.primary`
+                                         * (`WebBatchInspectPanel.swift:157-172`). The port had
+                                         * the raw lowercase tag in `textSecondary` and the
+                                         * selector one tier quieter again in `textTertiary`,
+                                         * which inverted the row's emphasis: the tag is the
+                                         * label that lets you tell two picks apart at a glance,
+                                         * and the selector is what you read to confirm one.
+                                         */}
                                         <span
-                                            className="shrink-0 font-mono text-[10px]"
-                                            style={{ color: tokens.textSecondary }}
+                                            data-testid={`web-batch-tag-${item.id}`}
+                                            className="shrink-0 font-mono text-[10px] font-semibold uppercase"
+                                            style={{ color: tokens.accent }}
                                         >
                                             {item.tag}
                                         </span>
@@ -222,7 +263,7 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                             data-testid={`web-batch-selector-${item.id}`}
                                             title={item.selector}
                                             className="min-w-0 flex-1 truncate font-mono text-[10px]"
-                                            style={{ color: tokens.textTertiary }}
+                                            style={{ color: tokens.textPrimary }}
                                         >
                                             {truncateMiddle(item.selector, 42)}
                                         </span>
@@ -262,6 +303,10 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                 <button
                                     type="button"
                                     aria-label={`Remove element ${String(index + 1)}`}
+                                    // L73: `.help("Remove this item")` (`:206`). The accessible
+                                    // name keeps the index so a screen reader can tell the rows
+                                    // apart; the pointer tooltip is the Swift's own wording.
+                                    title="Remove this item"
                                     data-testid={`web-batch-remove-${item.id}`}
                                     className="shrink-0 px-1 text-[11px]"
                                     style={{ color: tokens.textTertiary }}
@@ -285,7 +330,11 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
              * and Send are pushed to the trailing edge by the spacer rather than the picker
              * stretching across the row — the Swift picker is `.fixedSize()` with
              * `minWidth: 140`.
+             *
+             * L72: and the footer sits under its own `Divider()`, the second of the two the
+             * `VStack(spacing: 0)` interleaves.
              */}
+            <div data-testid={`web-batch-footer-rule-${paneID}`} style={{ borderTop: `1px solid ${tokens.divider}` }} />
             <div className="flex items-center gap-2">
                 <button
                     type="button"

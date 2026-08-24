@@ -19,6 +19,7 @@ import { useEffect, useRef, type ReactElement } from 'react';
 import type { ContentApi } from './client';
 import { ContentFrame, ContentStatus } from './ContentFrame';
 import type { ClipboardWriter, FindPalette, LinkOpener } from './bridge';
+import { contentPaneLabel } from './labels';
 import type { ScrollStore } from './scroll';
 import { useContent } from './useContent';
 
@@ -57,8 +58,13 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
     }, [focused, content, paneID]);
 
     if (state === null) {
+        /*
+         * §L45 — nothing, not "Running git diff…". `PaneGridView.swift:289-299` mounts the diff's
+         * web view empty and lets the first render paint it; the port's centred placeholder
+         * flashed on every local `git diff`, which returns in milliseconds.
+         */
         return error === null ? (
-            <ContentStatus paneID={paneID} text="Running git diff…" />
+            <ContentStatus paneID={paneID} text="" />
         ) : (
             <ContentStatus paneID={paneID} text={error} tone="error" />
         );
@@ -67,7 +73,8 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
     return (
         <ContentFrame
             paneID={paneID}
-            title={`diff ${paneID}`}
+            // §L46: the scoped path's name and a short id, never the raw pane UUID.
+            title={contentPaneLabel('diff', paneID, state.filePath)}
             html={state.html ?? ''}
             visible={props.visible}
             background={props.background}

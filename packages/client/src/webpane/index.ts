@@ -9,7 +9,7 @@
  *   `BatchPanel.tsx`    the batch "element pickup" session's panel (§12)
  *   `StoragePanel.tsx`  cookies, clear-all and the private-mode toggle (§13)
  *   `glyphs.tsx`        the chrome's own SVG marks, shared with the pickup panel's header
- *   `FavouritesMenu.tsx` the URL-bar star and the bookmarks menu (§14)
+ *   `FavouritesMenu.tsx` the URL-bar star, and the toolbar's separate bookmarks button (§14)
  *   `priority.ts`       the ⌘L/⌘R/⌘←/⌘→/⌘T/⌘W/⌘⇧[]/⌘=-0 layer that runs before the keymap
  *   `state.ts`          read models for favourites + batch sessions, and their matching rules
  *   `hooks.ts`          the two broadcast subscriptions those read models need
@@ -33,7 +33,12 @@ export {
 
 export { BatchPanel, BATCH_EMPTY_HINT, type BatchPanelProps } from './BatchPanel';
 
-export { FavouritesMenu, type FavouritesMenuProps } from './FavouritesMenu';
+export {
+    BookmarksMenu,
+    FavouriteStar,
+    type BookmarksMenuProps,
+    type FavouriteStarProps
+} from './FavouritesMenu';
 
 export {
     StoragePanel,
@@ -98,8 +103,6 @@ export {
     type LoadProgressTimings,
     type LoadProgressView
 } from './progress';
-
-export { orderChanged, reorderedTabs, tabUnderPointer, type PillBox } from './reorder';
 
 export {
     DEFAULT_GEOMETRY_THROTTLE_MS,

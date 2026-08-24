@@ -100,7 +100,12 @@ export function WebTab(props: WebTabProps): ReactElement {
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-web">
+            {/*
+             * L79's `plain`: `SettingsView.swift:707-741` is a `VStack { List }` — the favourites
+             * tab has no `Form` and no grouped card, and each row already carries its own fill.
+             */}
             <SettingsSection
+                plain
                 title="Favourites"
                 hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
                 testID="settings-favourites"
@@ -135,12 +140,19 @@ export function WebTab(props: WebTabProps): ReactElement {
                                     ★
                                 </span>
                                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                    {/*
+                                     * L85: `.textFieldStyle(.roundedBorder)` at `.system(size: 12,
+                                     * weight: .medium)` (`SettingsView.swift:772-776`). The port
+                                     * drew a transparent border at normal weight, so the one
+                                     * EDITABLE thing in the row looked like a caption until you
+                                     * clicked it — the opposite of what a bordered field is for.
+                                     */}
                                     <input
                                         aria-label={`Title for ${favourite.url}`}
                                         data-testid={`settings-favourite-title-${favourite.id}`}
                                         placeholder={favourite.label}
-                                        className="w-full rounded bg-transparent px-1 py-[2px] text-[12px] outline-none"
-                                        style={{ border: `1px solid transparent`, color: tokens.textPrimary }}
+                                        className="w-full rounded bg-transparent px-1 py-[2px] text-[12px] font-medium outline-none"
+                                        style={{ border: `1px solid ${tokens.divider}`, color: tokens.textPrimary }}
                                         value={draft?.id === favourite.id ? draft.value : favourite.title}
                                         onFocus={() => setDraft({ id: favourite.id, value: favourite.title })}
                                         onChange={(event) =>
@@ -171,8 +183,12 @@ export function WebTab(props: WebTabProps): ReactElement {
                                     <span
                                         title={favourite.url}
                                         data-testid={`settings-favourite-url-${favourite.id}`}
+                                        // L85: `.foregroundStyle(.secondary)`
+                                        // (`SettingsView.swift:779-783`), one tone up from the
+                                        // tertiary the port had it in — a URL is the row's
+                                        // identity, not a footnote about it.
                                         className="truncate px-1 font-mono text-[10px]"
-                                        style={{ color: tokens.textTertiary }}
+                                        style={{ color: tokens.textSecondary }}
                                     >
                                         {truncateMiddle(favourite.url, FAVOURITE_URL_MAX_CHARS)}
                                     </span>
@@ -193,9 +209,11 @@ export function WebTab(props: WebTabProps): ReactElement {
                                 >
                                     ↓
                                 </SettingsButton>
+                                {/* L80: `.help("Remove favourite")` (`SettingsView.swift:792`). */}
                                 <SettingsButton
                                     testID={`settings-favourite-remove-${favourite.id}`}
                                     ariaLabel={`Remove ${favourite.label}`}
+                                    title="Remove favourite"
                                     tone="danger"
                                     onClick={() => actions.removeFavourite(favourite.id)}
                                 >

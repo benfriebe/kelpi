@@ -89,8 +89,13 @@ function StepButton({ testID, label, icon, disabled, onClick }: StepButtonProps)
             // Swift dims the pair to 0.3 while the field is empty and 0.7 otherwise; the same
             // two states, expressed as opacity so the control never leaves the row (a control
             // that vanishes reflows the bar under the cursor).
+            //
+            // L24: TWO states, not three. `PaneSearchOverlay.swift:54-56,64-66` sets the opacity
+            // from `localNeedle.isEmpty` alone — there is no `.onHover`, so the shipped chevrons
+            // do not brighten under the cursor. The port's `hover:opacity-100` was invented
+            // chrome, and it is gone.
             className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded ${
-                disabled ? 'opacity-30' : 'opacity-70 hover:opacity-100'
+                disabled ? 'opacity-30' : 'opacity-70'
             }`}
             style={{ color: tokens.textPrimary, cursor: disabled ? 'default' : 'pointer' }}
             onMouseDown={(event) => {
@@ -100,7 +105,10 @@ function StepButton({ testID, label, icon, disabled, onClick }: StepButtonProps)
             }}
             onClick={onClick}
         >
-            <Icon name={icon} size={11} />
+            {/* L37: `chevron.up` / `chevron.down` at `.font(.system(size: 10, weight: .medium))`
+                (`PaneSearchOverlay.swift:50,60`) — 10, not 11, and medium rather than the
+                default stroke, so shrinking it does not also thin it. */}
+            <Icon name={icon} size={10} weight="medium" />
         </button>
     );
 }
@@ -122,8 +130,18 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
 
     useEffect(() => {
         if (props.autoFocus === false) return;
-        inputRef.current?.focus();
-        inputRef.current?.select();
+        // L29: focus and NOTHING else. `PaneSearchOverlay.swift:82-85` sets `localNeedle` and
+        // flips `isFieldFocused` — SwiftUI leaves the caret at the end of the seeded text, so a
+        // re-opened bar is something you keep typing into. The port also `select()`ed, which
+        // made the first keystroke silently replace the needle you had just come back to.
+        const field = inputRef.current;
+        if (field === null) return;
+        field.focus();
+        // "Caret at the end" is stated rather than left to the browser: a programmatic `focus()`
+        // puts it at offset 0 in Chromium and selects the whole value in Gecko, and neither is
+        // what SwiftUI does.
+        const end = field.value.length;
+        field.setSelectionRange(end, end);
         // Mount-only: re-focusing on every needle change would fight a user who tabbed away.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -171,8 +189,13 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
             className="pointer-events-auto absolute right-2 top-2 z-30 flex items-center gap-1 rounded-lg px-1.5 py-1"
             style={{
                 background: tokens.headerBackground,
-                border: `1px solid ${tokens.divider}`,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.35)'
+                // L23: no border. `PaneSearchOverlay.swift:79-81` is background → `clipShape` →
+                // `shadow`, and nothing strokes the edge; the port's 1 px divider outline drew a
+                // rectangle around a bar the shipped app floats. The shadow is the Swift's
+                // `.shadow(color: .black.opacity(0.2), radius: 4, y: 2)` on the same conversion
+                // `ResizeBadge` uses (a SwiftUI shadow radius is ~half a CSS blur radius), not
+                // the heavier 0.35/12 px drop that was here.
+                boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
             }}
             // A click in the bar is not a click in the terminal: without this the grid's
             // focus-on-press would pull the caret straight back out of the field.
@@ -185,9 +208,21 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                     aria-label="Search"
                     placeholder="Search"
                     value={draft}
-                    className="w-[160px] rounded px-2 py-1 font-mono text-[12px] leading-none outline-none"
+                    className="w-[160px] px-2 font-mono text-[12px] leading-none outline-none"
                     style={{
-                        background: tokens.surfaceBackground,
+                        // L22/L40: `Color.primary.opacity(0.08)` (`PaneSearchOverlay.swift:27`) —
+                        // an inset well tinted with the LABEL colour, so it is lighter than the
+                        // header bar on dark and darker than it on light. `surfaceBackground`
+                        // (#101013) is darker than the #13131A bar in both, which inverted the
+                        // contrast: the field read as a hole punched in the bar rather than a
+                        // well set into it. Same transcription the empty grid uses for
+                        // `.quaternary` — the primary text token at a percentage.
+                        background: `color-mix(in srgb, ${tokens.textPrimary} 8%, transparent)`,
+                        // L22: `.cornerRadius(5)` (`:28`), not Tailwind's 4 px `rounded`.
+                        borderRadius: 5,
+                        // L22/L37: `.padding(.vertical, 5)` (`:26`), not `py-1`'s 4 px.
+                        paddingTop: 5,
+                        paddingBottom: 5,
                         color: tokens.textPrimary,
                         // The face and size are set INLINE, not left to `font-mono text-[12px]`:
                         // `styles.css`'s `input { font: inherit }` is unlayered, and unlayered
@@ -241,12 +276,17 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                 data-testid={`${prefix}-close-${paneID}`}
                 aria-label="Close search (Escape)"
                 title="Close search (Escape)"
-                className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded opacity-70 hover:opacity-100"
+                // L24: `PaneSearchOverlay.swift:74-75` is a flat `.opacity(0.7)` with no hover
+                // branch, so the ✕ does not brighten under the cursor either.
+                className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded opacity-70"
                 style={{ color: tokens.textPrimary }}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={props.onClose}
             >
-                <Icon name="close" size={10} />
+                {/* L37: `.font(.system(size: 9, weight: .semibold))` (`:70`) — the bar's ✕ is a
+                    point smaller than the chevrons and bolder than both, the same pairing the
+                    pane header's close button uses. */}
+                <Icon name="close" size={9} weight="semibold" />
             </button>
         </div>
     );

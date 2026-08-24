@@ -66,14 +66,22 @@ describe('reflow policy — columns', () => {
 
     it('still joins a line that really did soft-wrap, at whatever width it is read', async () => {
         // Reflow-off means the rows keep their old width rather than being re-split; the
-        // `isWrapped` flags are untouched, so a logical line is still read as one.
+        // `isWrapped` flags are untouched, so a logical line is still read as one — ONE line
+        // here, never two.
+        //
+        // What each row contributes is the grid, `min(cols, line.length)` (READ-1,
+        // `read-bounds.test.ts`): a shrink leaves the rows allocated at 20 cells while the grid
+        // is 10, and those 10 stranded cells per row are unreachable by any program and drawn
+        // by no renderer. Reading them back put pre-shrink cells inside live output. The trade
+        // is stated where the bound is: a row printed before the shrink reads at the width the
+        // pane has NOW, so this capture is 2 × 10 X rather than the 35 that were typed.
         const service = makeService();
         service.attach('w', 20, 6);
         await write(service, 'w', `${'X'.repeat(35)}\r\nplain`);
 
         service.resize('w', 10, 6);
 
-        expect(service.capture('w', { scrollback: true })).toBe(`${'X'.repeat(35)}\nplain`);
+        expect(service.capture('w', { scrollback: true })).toBe(`${'X'.repeat(20)}\nplain`);
     });
 });
 
@@ -108,8 +116,10 @@ describe('reflow policy — rows', () => {
         expect(service.gridSize('b')).toEqual({ cols: 30, rows: 6 });
         // rows: history came back…
         expect(service.capture('b', { scrollback: false }).split('\n')[0]).toBe('line-4');
-        // …columns: and the full-width line was not split in two.
-        expect(service.capture('b', { scrollback: true }).split('\n').at(-1)).toBe('A'.repeat(40));
+        // …columns: and the full-width line was not split in two. It reads at the grid the pane
+        // has now (READ-1's bound — 30 of its 40 allocated cells), on ONE line, which is the
+        // claim: a rewrap would have made it two.
+        expect(service.capture('b', { scrollback: true }).split('\n').at(-1)).toBe('A'.repeat(30));
     });
 
     it('restores the no-reflow policy after the row half of a resize', async () => {
@@ -166,6 +176,8 @@ describe('reflow policy — no fabricated wraps (why not `windowsMode`)', () => 
 
         service.resize('q', 12, 6);
 
-        expect(service.capture('q', { scrollback: true })).toBe(`${'A'.repeat(20)}\nshort`);
+        // The claim is the NEWLINE: `short` is its own line, never glued onto the A's the way
+        // `windowsMode`'s fabricated wrap would. The A's themselves read at the grid (READ-1).
+        expect(service.capture('q', { scrollback: true })).toBe(`${'A'.repeat(12)}\nshort`);
     });
 });

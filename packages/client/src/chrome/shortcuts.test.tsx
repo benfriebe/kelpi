@@ -78,21 +78,28 @@ describe('palette rows', () => {
 });
 
 describe('context-menu rows', () => {
-    it('right-aligns a shortcut on the items that have one', () => {
+    /*
+     * UI-FIDELITY L12 inverted this assertion, and the inversion is the point: a context menu
+     * shows NO key equivalents, because none of the shipped app's `.contextMenu` buttons carry
+     * `.keyboardShortcut` (`WorkspaceListView.swift:897`, `:1183`, `:344-350`,
+     * `PaneHeaderView.swift:360-361`, `WindowTitleBar.swift:243-251`). The palette above still
+     * shows its hints — `CommandPalette.swift` does too — so `shortcutForAction` keeps its one
+     * remaining consumer.
+     */
+    it('shows no key-equivalent column, whatever the row says', () => {
         render(
             <ContextMenu
                 x={0}
                 y={0}
                 onClose={vi.fn()}
                 items={[
-                    { id: 'a', label: 'New Workspace', shortcut: '⌘N' },
+                    { id: 'a', label: 'New Workspace' },
                     { id: 'b', label: 'Delete' }
                 ]}
             />
         );
 
-        const hints = screen.getAllByTestId('menu-shortcut');
-        expect(hints).toHaveLength(1);
-        expect(hints[0]?.textContent).toBe('⌘N');
+        expect(screen.queryByTestId('menu-shortcut')).toBeNull();
+        expect(screen.getByTestId('context-menu').textContent).toBe('New WorkspaceDelete');
     });
 });

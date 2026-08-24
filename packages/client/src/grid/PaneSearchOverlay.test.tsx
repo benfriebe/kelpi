@@ -174,7 +174,11 @@ describe('PaneSearchOverlay', () => {
         setup();
         const bar = screen.getByTestId(`pane-search-${PANE}`);
         expect(bar.className).toContain('rounded-lg');
-        expect(bar.style.boxShadow).toBe('0 4px 12px rgba(0,0,0,0.35)');
+        // L23: `.shadow(color: .black.opacity(0.2), radius: 4, y: 2)` (`PaneSearchOverlay.swift:81`),
+        // on the same SwiftUI→CSS conversion `ResizeBadge` uses; and NO border — `:79-81` is
+        // background → clip → shadow, nothing strokes the edge.
+        expect(bar.style.boxShadow).toBe('0 2px 8px rgba(0,0,0,0.2)');
+        expect(bar.style.border).toBe('');
         expect(bar.getAttribute('role')).toBe('search');
     });
 

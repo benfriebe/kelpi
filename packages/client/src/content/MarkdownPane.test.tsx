@@ -36,11 +36,18 @@ afterEach(() => {
 });
 
 describe('markdown view mode', () => {
-    it('shows a quiet status until the first snapshot lands', () => {
+    /**
+     * §L45 — the pre-snapshot body is EMPTY, not a "Loading…" placeholder.
+     * `MarkdownPaneView.swift:64-77` mounts a transparent web view and lets the first load paint
+     * it; on a local file the port's centred text was a flash, never information.
+     */
+    it('shows the pane fill and NO placeholder text until the first snapshot lands (§L45)', () => {
         const api = createFakeContentApi();
         render(<MarkdownPane paneID={PANE} content={api} />);
 
-        expect(screen.getByTestId(`content-status-${PANE}`).textContent).toContain('Loading');
+        const status = screen.getByTestId(`content-status-${PANE}`);
+        expect(status.textContent).toBe('');
+        expect(status.dataset['tone']).toBe('quiet');
         expect(api.subscribes).toEqual([PANE]);
     });
 

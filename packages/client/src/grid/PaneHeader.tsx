@@ -23,7 +23,7 @@ import {
 } from 'react';
 
 import { chromeElapsedLabel, useSecondsTicker } from './elapsed';
-import { Icon, type IconName } from './icons';
+import { Icon, type IconName, type IconWeight } from './icons';
 import { pill, tokens } from './tokens';
 import type { PaneActions, PaneModel } from './types';
 
@@ -106,8 +106,14 @@ export function paneDisplayTitle(pane: PaneModel, homeDirectory = ''): string {
             return 'Scratchpad';
         case 'markdown':
             return basename(pane.filePath ?? pane.workingDirectory);
-        case 'diff':
-            return `diff: ${basename(pane.filePath ?? pane.workingDirectory)}`;
+        case 'diff': {
+            // §L48: empty-as-unscoped, the Swift's own test (`PaneHeaderView.swift:496-502` reads
+            // `target.isEmpty`, not `target == nil`). `??` alone keeps an empty STRING, and a diff
+            // pane whose scope the daemon stored as `''` titled itself `diff: ` — the repo's
+            // directory name is what the shipped app falls back to.
+            const target = pane.filePath ?? '';
+            return `diff: ${basename(target === '' ? pane.workingDirectory : target)}`;
+        }
         case 'shell':
         case 'web':
             return homeAbbreviated(pane.title ?? pane.workingDirectory, homeDirectory);
@@ -190,6 +196,12 @@ interface BadgeProps {
      */
     readonly small?: boolean | undefined;
     readonly icon?: IconName | undefined;
+    /**
+     * L28 — the glyph's point size. `PaneHeaderView.swift` draws the label chip's `tag.fill`,
+     * ZOOM's arrows and both SYNC glyphs at **8** (`:83`, `:104`, `:129`, `:145`) and only the
+     * branch's `arrow.triangle.branch` at 9 (`:166`). The port had flattened all five to 9.
+     */
+    readonly iconSize?: number | undefined;
     readonly text: string;
     readonly title?: string | undefined;
     /**
@@ -214,6 +226,7 @@ function Badge({
     strong,
     small,
     icon,
+    iconSize = 8,
     text,
     title,
     shrinkable,
@@ -221,7 +234,7 @@ function Badge({
 }: BadgeProps): ReactElement {
     const content = (
         <>
-            {icon === undefined ? null : <Icon name={icon} size={9} />}
+            {icon === undefined ? null : <Icon name={icon} size={iconSize} />}
             <span className={shrinkable === true ? 'min-w-0 truncate' : undefined}>{text}</span>
         </>
     );
@@ -236,7 +249,10 @@ function Badge({
     // assembled from an interpolated number would never be generated.
     const sizeClass = small === true ? 'text-[9px]' : 'text-[10px]';
     const weightClass = strong === true ? ' font-medium' : '';
-    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-1 px-1 py-px font-mono ${sizeClass}${weightClass} leading-none`;
+    // L28: `HStack(spacing: 2)` inside every badge (`PaneHeaderView.swift:81`, `:102`, `:127`,
+    // `:143`, `:164`) — `gap-1` was 4 px, double the gap, which pushed each glyph off its text
+    // far enough that the pill read as two things rather than one chip.
+    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-[2px] px-1 py-px font-mono ${sizeClass}${weightClass} leading-none`;
     if (onClick === undefined) {
         return (
             <span data-testid={testID} className={className} style={style} {...(title === undefined ? {} : { title })}>
@@ -251,6 +267,9 @@ function Badge({
             className={className}
             style={style}
             {...(title === undefined ? {} : { title })}
+            // L33: the ZOOM badge is a `Button` in the Swift too (`PaneHeaderView.swift:101`), so
+            // it consumes its own press — clicking it neither moves focus nor starts a pane drag.
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
                 event.stopPropagation();
                 onClick();
@@ -269,12 +288,29 @@ interface HeaderButtonProps {
     readonly testID: string;
     readonly label: string;
     readonly icon: IconName;
+    /**
+     * L25 — the glyph's point size. Every button in `PaneHeaderView.swift:177-273` is
+     * `.font(.system(size: 10))` **except** close, which is deliberately
+     * `.font(.system(size: 9, weight: .semibold))` (`:265`): smaller and bolder than the split
+     * icons it sits beside, which is how a row of five same-sized glyphs still ends in a ✕ that
+     * reads as the one destructive control.
+     */
+    readonly iconSize?: number | undefined;
+    readonly iconWeight?: IconWeight | undefined;
     /** Dimmed and inert, but still in the row: a control that vanishes reflows the header. */
     readonly disabled?: boolean | undefined;
     readonly onClick?: ((event: MouseEvent<HTMLButtonElement>) => void) | undefined;
 }
 
-function HeaderButton({ testID, label, icon, disabled, onClick }: HeaderButtonProps): ReactElement {
+function HeaderButton({
+    testID,
+    label,
+    icon,
+    iconSize = 10,
+    iconWeight = 'regular',
+    disabled,
+    onClick
+}: HeaderButtonProps): ReactElement {
     const off = disabled === true;
     return (
         <button
@@ -283,8 +319,12 @@ function HeaderButton({ testID, label, icon, disabled, onClick }: HeaderButtonPr
             aria-label={label}
             title={label}
             disabled={off}
+            // L24: `.opacity(0.6)` and nothing else (`PaneHeaderView.swift:192`, `:205`, `:218`,
+            // `:230`, `:241`, `:259`, `:271`) — the shipped header buttons carry no `.onHover`,
+            // so they never brighten under the cursor. The port's `hover:opacity-100` was
+            // invented chrome, and it is gone.
             className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
-                off ? 'opacity-25' : 'opacity-60 hover:opacity-100'
+                off ? 'opacity-25' : 'opacity-60'
             }`}
             style={{ color: tokens.textSecondary, cursor: off ? 'default' : 'pointer' }}
             onPointerDown={(event) => {
@@ -302,7 +342,7 @@ function HeaderButton({ testID, label, icon, disabled, onClick }: HeaderButtonPr
             // bubbling to the header's `onDoubleClick`, which is two splits *and* a zoom toggle.
             onDoubleClick={(event) => event.stopPropagation()}
         >
-            <Icon name={icon} size={10} />
+            <Icon name={icon} size={iconSize} weight={iconWeight} />
         </button>
     );
 }
@@ -497,8 +537,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     // the whole squeeze first, and the badges only give when it has nothing left.
                     // The spacer below carries `flex-basis: 0`, so it contributes nothing to that
                     // share-out and cannot steal the squeeze from the title.
+                    // L32: no `title=`. `PaneHeaderView.swift:94-98` is a bare `Text(displayPath)`
+                    // with `.truncationMode(.middle)` and no `.help()`, so hovering a truncated
+                    // path in the shipped app shows nothing at all. The native tooltip was a port
+                    // invention — and a misleading one, since it was the ONLY header element that
+                    // answered a hover, which implied the truncation was recoverable here and
+                    // nowhere else. The full path is still in the status footer and the
+                    // inspector, which is where the shipped app puts it.
                     style={{ color: focused ? tokens.textPrimary : tokens.textSecondary, flexShrink: TITLE_SHRINK }}
-                    title={title}
                 >
                     <span className="min-w-0 truncate">{titleParts.head}</span>
                     {titleParts.tail === '' ? null : <span className="shrink-0">{titleParts.tail}</span>}
@@ -509,7 +555,10 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {zoomed && zoomAvailable ? (
                 <Badge
                     testID={`pane-zoom-badge-${pane.id}`}
-                    color="#D08237"
+                    // L27: `.orange` (`PaneHeaderView.swift:109,112`), as a token — the hex that
+                    // was here was the only colour in the grid outside `--nex-*`, so it ignored
+                    // the light/dark swap.
+                    color={tokens.orange}
                     fill={12}
                     strong
                     icon="zoom"
@@ -523,7 +572,10 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {syncActive && !syncExcluded ? (
                 <Badge
                     testID={`pane-sync-badge-${pane.id}`}
-                    color={tokens.activeAgent}
+                    // L27: `.orange` too (`PaneHeaderView.swift:134,137`) — the SAME orange as
+                    // ZOOM. Painted with `--nex-agent` it was the agent amber, so a synced pane
+                    // read as a pane with an agent running in it.
+                    color={tokens.orange}
                     fill={12}
                     strong
                     icon="broadcast"
@@ -576,6 +628,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     color={tokens.textSecondary}
                     fill={10}
                     icon="branch"
+                    // L28: the one badge glyph the Swift draws at 9 (`PaneHeaderView.swift:166`);
+                    // the other four are 8.
+                    iconSize={9}
                     text={pane.gitBranch}
                     shrinkable
                 />
@@ -598,7 +653,12 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined ? (
                 <HeaderButton
                     testID={`pane-copy-${pane.id}`}
-                    label="Copy document (Markdown or Rich Text)"
+                    // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim. It
+                    // was the one header tooltip the port had reworded — every other string in
+                    // this row is already the Swift's — and the rewrite also became the button's
+                    // accessible name, so a screen reader read a label the shipped app does not
+                    // have. Which two formats the menu then offers is the MENU's business.
+                    label="Copy whole file"
                     icon="copy"
                     onClick={() => onCopyDocument(pane.id)}
                 />
@@ -653,10 +713,13 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 icon="globe"
                 onClick={(event) => onNewWebPane?.(pane.id, event.shiftKey ? 'vertical' : 'horizontal')}
             />
+            {/* L25: the one button in the row that is not 10 pt regular — 9 pt semibold. */}
             <HeaderButton
                 testID={`pane-close-${pane.id}`}
                 label="Close pane (⌘W)"
                 icon="close"
+                iconSize={9}
+                iconWeight="semibold"
                 onClick={() => onClosePane?.(pane.id)}
             />
         </div>

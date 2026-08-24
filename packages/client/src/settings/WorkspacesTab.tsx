@@ -34,7 +34,7 @@ import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
 import type { SettingsActions, SettingsPaths } from './types';
-import { KeyChip, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import { SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
 export interface WorkspacesTabProps {
     readonly settings: WsSettingsSnapshot;
@@ -148,7 +148,21 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                                 props.actions.setGeneralSetting('focus-follows-mouse-delay', event.target.value);
                             }}
                         />
-                        <KeyChip>{`${String(general.focusFollowsMouseDelay)} ms`}</KeyChip>
+                        {/*
+                         * L82: `Text("\(delay) ms").monospacedDigit().frame(width: 55, alignment:
+                         * .trailing)` (`SettingsView.swift:218-220`) — a plain right-aligned
+                         * readout in the UI face with tabular figures, the same object the
+                         * Appearance sliders put beside their tracks. `KeyChip` is the KEY
+                         * face — a grey monospace capsule — and wearing it here said "chord"
+                         * about a number of milliseconds.
+                         */}
+                        <span
+                            data-testid="focus-delay-value"
+                            className="w-[55px] shrink-0 text-right text-[12px] tabular-nums"
+                            style={{ color: tokens.textSecondary }}
+                        >
+                            {`${String(general.focusFollowsMouseDelay)} ms`}
+                        </span>
                     </SettingsRow>
                 ) : null}
 

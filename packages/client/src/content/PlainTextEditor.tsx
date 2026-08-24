@@ -18,11 +18,31 @@
  *     going into edit mode and not coming back out.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactElement
+} from 'react';
 
 import { cachedLineStarts, visibleLineWindow, type LineWindow } from './gutter';
 import { contentScrollStore, type ScrollStore } from './scroll';
 import { editorTextColor } from './types';
+import {
+    CHAR_PROBE,
+    contentBoxWidth,
+    createWrapCache,
+    measureCharWidth,
+    measureRows,
+    splitLines,
+    syncMirrorStyle,
+    wrapMetrics,
+    wrappedLineWindow,
+    type WrapMetrics
+} from './wrap';
 
 /** §4.2: the editor is fixed 13 px monospace; the preview's font-size bindings do not apply. */
 export const EDITOR_FONT_SIZE = 13;
@@ -176,6 +196,14 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
 
     const showGutter = props.showGutter === true;
     /**
+     * §M60 — a wrapping editor needs MEASURED per-line heights; a `wrap="off"` one does not.
+     *
+     * The scratchpad keeps the cheap fixed-pitch path exactly as it was (`CONT-070`'s ledgered
+     * `wrap="off"`): no mirror node, no measurement, no cache. Only the markdown editor, which
+     * M29 turned into a soft-wrapping one, pays for the mirror.
+     */
+    const wrapping = showGutter && props.wrap === 'soft';
+    /**
      * §4.2 / §CONT-078: the cached line-start array. A re-render that did not change the buffer
      * reuses it (the port of the ruler's `lineStarts` cache), and its LENGTH is the line count.
      */
@@ -183,21 +211,112 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     const lines = showGutter ? starts.length : 1;
 
     /**
+     * §M60 — the mirror node, the measurement cache, and the metrics they produce.
+     *
+     * `metrics` is state because the gutter renders from it; the cache and the last answer are
+     * refs because they are the measuring apparatus, not the picture. `wrapMetrics` returns the
+     * PREVIOUS object by identity when nothing moved, which is what keeps the layout effect below
+     * from looping.
+     */
+    const mirrorRef = useRef<HTMLDivElement | null>(null);
+    const probeRef = useRef<HTMLSpanElement | null>(null);
+    const cacheRef = useRef(createWrapCache());
+    const metricsRef = useRef<WrapMetrics | null>(null);
+    const [metrics, setMetrics] = useState<WrapMetrics | null>(null);
+
+    const remeasure = useCallback((): void => {
+        if (!wrapping) {
+            if (metricsRef.current !== null) {
+                metricsRef.current = null;
+                setMetrics(null);
+            }
+            return;
+        }
+        const area = areaRef.current;
+        const mirror = mirrorRef.current;
+        if (area === null || mirror === null) return;
+
+        const width = contentBoxWidth(area);
+        // An unmeasured box (a hidden pane, the frame before first layout) has no answer, and
+        // bailing HERE keeps that case down to two cheap reads — the retry effect below runs on
+        // every render while it lasts, so it must not cost a pass over the buffer.
+        if (!(width > 0)) {
+            if (metricsRef.current !== null) {
+                metricsRef.current = null;
+                setMetrics(null);
+            }
+            return;
+        }
+        syncMirrorStyle(mirror, area, width);
+        const probe = probeRef.current;
+        // No width for the probe: it reports its own, and a content-box width would clamp it.
+        if (probe !== null) syncMirrorStyle(probe, area);
+        const charWidth = probe === null ? 0 : measureCharWidth(probe);
+
+        const next = wrapMetrics(cacheRef.current, {
+            lines: splitLines(value),
+            width,
+            charWidth,
+            measure: (text) => measureRows(mirror, text, EDITOR_LINE_PX),
+            previous: metricsRef.current
+        });
+        if (next === metricsRef.current) return;
+        metricsRef.current = next;
+        setMetrics(next);
+    }, [value, wrapping]);
+
+    // Before paint, so the numbers never show at the fixed pitch first and jump afterwards.
+    useLayoutEffect(() => {
+        remeasure();
+    }, [remeasure]);
+
+    /*
+     * The retry: deliberately dependency-free, and deliberately guarded on there being NO metrics
+     * yet. A pane that mounted while hidden — or before the frame had laid out — has an
+     * unmeasurable box, and the effect above only re-runs when the buffer changes, so without this
+     * the gutter would stay on the fixed pitch until the next keystroke. The guard is what keeps
+     * it cheap: once the heights exist this returns immediately, and while they do not, the bail
+     * inside `remeasure` costs two reads rather than a pass over the document.
+     */
+    useLayoutEffect(() => {
+        if (wrapping && metricsRef.current === null) remeasure();
+    });
+
+    /**
      * Only the numbers over the visible rows are in the DOM — the ruler draws for the visible
      * rect, and a 200k-line document must not become 200k nodes. `null` until the textarea has
      * been measured, which renders the whole document (short buffers, and the first paint).
      */
     const [lineWindow, setWindow] = useState<LineWindow | null>(null);
+    /**
+     * §M60: with measured heights the window resolves rows → line through the prefix sums; with
+     * `wrap="off"` (the scratchpad) it stays the fixed-pitch arithmetic it has always been. The
+     * length check guards the one frame where a keystroke has changed the buffer but the layout
+     * effect has not re-measured it yet.
+     */
+    const wrapRows = metrics !== null && metrics.rows.length === lines ? metrics.rows : null;
+    const wrapOffsets = wrapRows === null || metrics === null ? null : metrics.offsets;
     const measureWindow = useCallback((): void => {
         const area = areaRef.current;
         if (area === null) return;
-        const next = visibleLineWindow({
-            starts,
-            scrollTop: area.scrollTop,
-            viewportHeight: area.clientHeight,
-            lineHeight: EDITOR_LINE_PX,
-            paddingTop: EDITOR_PADDING
-        });
+        const measured = metricsRef.current;
+        const offsets = measured !== null && measured.rows.length === starts.length ? measured.offsets : null;
+        const next =
+            offsets === null
+                ? visibleLineWindow({
+                      starts,
+                      scrollTop: area.scrollTop,
+                      viewportHeight: area.clientHeight,
+                      lineHeight: EDITOR_LINE_PX,
+                      paddingTop: EDITOR_PADDING
+                  })
+                : wrappedLineWindow({
+                      offsets,
+                      scrollTop: area.scrollTop,
+                      viewportHeight: area.clientHeight,
+                      lineHeight: EDITOR_LINE_PX,
+                      paddingTop: EDITOR_PADDING
+                  });
         setWindow((current) =>
             current !== null && current.first === next.first && current.last === next.last
                 ? current
@@ -205,11 +324,30 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
         );
     }, [starts]);
 
-    // Re-clamp when the buffer changes (typing at the end grows the document under the window).
+    // Re-clamp when the buffer changes (typing at the end grows the document under the window)
+    // and when the measured heights land — the window is computed FROM them.
     useEffect(() => {
         if (!showGutter) return;
         measureWindow();
-    }, [measureWindow, showGutter]);
+    }, [measureWindow, metrics, showGutter]);
+
+    /**
+     * §M60 — a resize is what invalidates every measured height at once, so the gutter has to be
+     * told about one. `ResizeObserver` is absent in jsdom, where nothing has a size anyway.
+     */
+    useEffect(() => {
+        if (!wrapping) return undefined;
+        const area = areaRef.current;
+        if (area === null || typeof ResizeObserver === 'undefined') return undefined;
+        const observer = new ResizeObserver(() => {
+            remeasure();
+            measureWindow();
+        });
+        observer.observe(area);
+        return () => {
+            observer.disconnect();
+        };
+    }, [measureWindow, remeasure, wrapping]);
 
     const onScroll = useCallback((): void => {
         const area = areaRef.current;
@@ -224,6 +362,13 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     const firstLine = lineWindow === null ? 1 : Math.min(lineWindow.first, lines);
     const lastLine = lineWindow === null ? lines : Math.min(lineWindow.last, lines);
     const gutterPx = showGutter ? gutterWidth(lines) : 0;
+    /**
+     * §M60: the document's height in VISUAL rows — the same number the textarea's own
+     * `scrollHeight` implies, which is what lets a live check confirm the measured heights against
+     * the browser's real layout instead of against the measurement that produced them. Equal to
+     * the line count whenever nothing wraps.
+     */
+    const totalRows = wrapOffsets === null ? lines : (wrapOffsets[lines] ?? lines);
 
     return (
         <div
@@ -244,14 +389,25 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                     // The window actually drawn, so a test can tell "all of it" from "the rows
                     // over the viewport" without measuring the DOM.
                     data-window={`${String(firstLine)}-${String(lastLine)}`}
+                    // §M60: visual rows across the whole document (== `data-lines` when nothing
+                    // wraps), so a check can hold the measured heights against the textarea's own
+                    // `scrollHeight`.
+                    data-rows-total={totalRows}
                     className="h-full shrink-0 select-none overflow-hidden"
                     style={{
                         width: gutterPx,
                         // §4.2: the gutter wears the pane-header chrome color, the numbers the
                         // tertiary chrome text color — chrome tokens, unlike the editor's own
                         // luminance-picked text, because the gutter is chrome.
-                        background: 'var(--nex-header-bg, #17171B)',
-                        borderRight: '1px solid var(--nex-divider, #2A2A31)'
+                        // L38: fill only, no rule. `LineNumberRulerView.swift:88-133` fills
+                        // `bounds` with the gutter colour and then draws the numbers — it strokes
+                        // nothing, so the shipped gutter meets the text on a pure tone change.
+                        // The port's 1 px divider drew a hard seam down the middle of the editor
+                        // (`run-N/72-scratchpad-create.png`), which reads as a second pane edge
+                        // inside one pane. (Register U6 asks whether `NSRulerView`'s own
+                        // `draw(_:)` contributes a hairline of its own; nothing in the subclass
+                        // does, so parity is the default here and U6 stays the verifier's.)
+                        background: 'var(--nex-header-bg, #17171B)'
                     }}
                 >
                     <div
@@ -260,8 +416,15 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         style={{
                             // The window's own top edge: the rows above it are not drawn, so
                             // the padding stands in for their height and row N stays on the
-                            // same baseline as the text it numbers.
-                            paddingTop: EDITOR_PADDING + (firstLine - 1) * EDITOR_LINE_PX,
+                            // same baseline as the text it numbers. §M60: with measured heights
+                            // that is the TRUE first visual row of `firstLine` (the prefix sum),
+                            // not `firstLine - 1` fixed-pitch rows — a wrapped line above the
+                            // window takes two rows and the padding has to carry both.
+                            paddingTop:
+                                EDITOR_PADDING +
+                                (wrapOffsets === null
+                                    ? (firstLine - 1) * EDITOR_LINE_PX
+                                    : (wrapOffsets[firstLine - 1] ?? firstLine - 1) * EDITOR_LINE_PX),
                             paddingRight: GUTTER_TEXT_PADDING,
                             color: 'var(--nex-fg-tertiary, #6A6A72)',
                             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -271,10 +434,83 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                             lineHeight: `${String(EDITOR_LINE_PX)}px`
                         }}
                     >
-                        {Array.from({ length: Math.max(0, lastLine - firstLine + 1) }, (_unused, index) => (
-                            <div key={firstLine + index}>{firstLine + index}</div>
-                        ))}
+                        {Array.from({ length: Math.max(0, lastLine - firstLine + 1) }, (_unused, index) => {
+                            const line = firstLine + index;
+                            // §M60: a wrapped line's number sits beside its FIRST visual row —
+                            // `LineNumberRulerView.swift:88-133` draws at the first
+                            // `lineFragmentRect` — so the node is as tall as the whole line and
+                            // its single 16 px text row lands at the top of that box.
+                            const rows = wrapRows === null ? 1 : (wrapRows[line - 1] ?? 1);
+                            return (
+                                <div
+                                    key={line}
+                                    data-rows={wrapRows === null ? undefined : rows}
+                                    style={rows > 1 ? { height: rows * EDITOR_LINE_PX } : undefined}
+                                >
+                                    {line}
+                                </div>
+                            );
+                        })}
                     </div>
+                </div>
+            ) : null}
+            {wrapping ? (
+                /*
+                 * §M60 — the measuring mirror.
+                 *
+                 * Out of flow, invisible, inert, and styled to the textarea's CONTENT box, so a
+                 * line that wraps in the field wraps here at the same character. `pre-wrap` +
+                 * `break-word` is the pair a `<textarea>`'s UA stylesheet applies; the probe is a
+                 * fixed 64-character run whose width gives one monospace advance, which is what
+                 * lets a short ASCII line be answered without touching the DOM at all.
+                 */
+                <div
+                    aria-hidden
+                    data-testid={`content-gutter-mirror-${paneID}`}
+                    style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        visibility: 'hidden',
+                        pointerEvents: 'none',
+                        zIndex: -1,
+                        height: 'auto',
+                        margin: 0,
+                        padding: 0,
+                        border: 0,
+                        boxSizing: 'content-box',
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'break-word',
+                        wordBreak: 'normal',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontSize: `${EDITOR_FONT_SIZE}px`,
+                        lineHeight: `${String(EDITOR_LINE_PX)}px`,
+                        tabSize: 4
+                    }}
+                >
+                    <span
+                        ref={probeRef}
+                        data-testid={`content-gutter-probe-${paneID}`}
+                        style={{ position: 'absolute', whiteSpace: 'pre', visibility: 'hidden' }}
+                    >
+                        {CHAR_PROBE}
+                    </span>
+                    <div
+                        ref={mirrorRef}
+                        style={{
+                            margin: 0,
+                            padding: 0,
+                            border: 0,
+                            boxSizing: 'content-box',
+                            whiteSpace: 'pre-wrap',
+                            overflowWrap: 'break-word',
+                            wordBreak: 'normal',
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontSize: `${EDITOR_FONT_SIZE}px`,
+                            lineHeight: `${String(EDITOR_LINE_PX)}px`,
+                            tabSize: 4
+                        }}
+                    />
                 </div>
             ) : null}
             <textarea

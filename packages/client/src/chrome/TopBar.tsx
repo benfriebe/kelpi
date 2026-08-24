@@ -228,7 +228,9 @@ export function TopBar(props: TopBarProps): ReactElement {
 
             <div
                 data-testid="top-bar-identity"
-                className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-1.5 text-[12px]"
+                /* UI-FIDELITY L55: `identityCluster` is `HStack(spacing: 7)` — 7 pt between every
+                   member, the `·` included, because the separator is its own `Text`. */
+                className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-[7px] text-[12px]"
             >
                 <span
                     data-testid="identity-dot"
@@ -238,9 +240,17 @@ export function TopBar(props: TopBarProps): ReactElement {
                 />
                 <span className="max-w-[280px] truncate font-semibold">{props.workspaceName ?? 'Nex'}</span>
                 {hasWorkspace ? (
-                    <span style={{ color: tokens.textTertiary }}>
-                        · {paneCount} {paneCount === 1 ? 'pane' : 'panes'}
-                    </span>
+                    <>
+                        {/* L55: the separator is a member of the stack, so it gets the full 7 px
+                            on BOTH sides. As one span the port had 6 px before it and a literal
+                            space (~3-4 px) after, which pulled the count in toward the dot. */}
+                        <span aria-hidden style={{ color: tokens.textTertiary }}>
+                            ·
+                        </span>
+                        <span style={{ color: tokens.textTertiary }}>
+                            {paneCount} {paneCount === 1 ? 'pane' : 'panes'}
+                        </span>
+                    </>
                 ) : null}
             </div>
 

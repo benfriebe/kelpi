@@ -33,7 +33,7 @@ import type { ReactElement } from 'react';
 import { tokens } from '../chrome';
 import { SelectField, TextField } from './controls';
 import type { SettingsActions, SettingsPaths } from './types';
-import { KeyChip, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import { SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
 export interface GeneralTabProps {
     readonly settings: WsSettingsSnapshot;
@@ -121,6 +121,10 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                 <TextField
                     label="Base path"
                     testID="worktree-base-path"
+                    // L83: `.textFieldStyle(.plain)`, no frame — the field takes the rest of the
+                    // row, so a long `<repo>`-substituted path is readable rather than clipped at
+                    // 180 px.
+                    plain
                     value={general.worktreeBasePath}
                     placeholder="~/nex/worktrees/<repo>"
                     onCommit={(next) => {

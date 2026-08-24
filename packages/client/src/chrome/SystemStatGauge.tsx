@@ -207,7 +207,16 @@ export function SystemStatGauge(props: SystemStatGaugeProps): ReactElement | nul
                     role="dialog"
                     aria-label={meta.displayName}
                     data-testid={`stat-popover-${meta.kind}`}
-                    className="absolute bottom-6 right-0 z-40 flex w-[220px] flex-col gap-2 rounded-lg p-3 text-[11px]"
+                    /*
+                     * UI-FIDELITY L49 — `StatDetailPopover`'s own metrics.
+                     *
+                     * `SystemStatGauge.swift:129-162` is `.padding(12).frame(width: 220)`, so its
+                     * CONTENT box is 196 pt wide — exactly the width of the graph below. The 220
+                     * is measured inside the `NSPopover`'s own chrome; here that chrome is this
+                     * card's 1 px border, which `border-box` counts INSIDE the width, so the
+                     * declared width carries it: 222 = 220 of Swift + the edge.
+                     */
+                    className="absolute bottom-6 right-0 z-40 flex w-[222px] flex-col gap-2 rounded-lg p-3 text-[11px]"
                     style={{
                         background: tokens.surfaceBackground,
                         border: `1px solid ${tokens.divider}`,
@@ -217,17 +226,24 @@ export function SystemStatGauge(props: SystemStatGaugeProps): ReactElement | nul
                 >
                     <div className="flex items-center gap-1.5" style={{ color: tokens.textPrimary }}>
                         <ChromeIcon name={meta.icon} size={11} />
-                        <span className="text-[12px] font-semibold">{meta.displayName}</span>
+                        {/* L49: 13 pt semibold (`.font(.system(size: 13, weight: .semibold))`). */}
+                        <span className="text-[13px] font-semibold">{meta.displayName}</span>
                     </div>
-                    <div data-testid={`stat-detail-${meta.kind}`} className="font-mono tabular-nums">
+                    {/* L49: the breakdown is 12 pt SYSTEM with `.monospacedDigit()` — tabular
+                        figures in the UI face, not a monospace face at 11 px. */}
+                    <div data-testid={`stat-detail-${meta.kind}`} className="text-[12px] tabular-nums">
                         {detailStatLabel(meta.kind, props.stats)}
                     </div>
+                    {/* L49: `.frame(width: 196, height: 52)` with the 6 pt rounded fill/stroke
+                        drawn AS that frame — no inset, so the trace fills its box. The stroke is
+                        an INSET shadow, not a border: `.strokeBorder` paints inside the frame,
+                        where a CSS border would eat 2 px of the 196 the graph needs. */}
                     <div
-                        className="rounded"
+                        className="rounded-md"
                         style={{
                             background: withAlpha(tokens.textPrimary, 0.04),
-                            border: `1px solid ${tokens.divider}`,
-                            padding: 2
+                            boxShadow: `inset 0 0 0 1px ${tokens.divider}`,
+                            lineHeight: 0
                         }}
                     >
                         <Sparkline
@@ -237,8 +253,8 @@ export function SystemStatGauge(props: SystemStatGaugeProps): ReactElement | nul
                             color={props.graphColor}
                             style={props.graphStyle}
                             filled
-                            width={192}
-                            height={48}
+                            width={196}
+                            height={52}
                         />
                     </div>
                     <div className="flex gap-3.5">

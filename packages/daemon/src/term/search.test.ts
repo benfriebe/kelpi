@@ -33,7 +33,7 @@ describe('collectLogicalLines', () => {
 });
 
 describe('findMatches', () => {
-    const line = { text: 'alpha beta alpha', startLine: 4, cols: 80 };
+    const line = { text: 'alpha beta alpha', startLine: 4, cols: 80, rows: [{ line: 4, offset: 0 }] };
 
     it('finds every occurrence, case-insensitively by default', () => {
         const matches = findMatches([line], 'ALPHA', { bufferLength: 10 });
@@ -48,19 +48,38 @@ describe('findMatches', () => {
     });
 
     it('counts overlapping occurrences separately', () => {
-        const matches = findMatches([{ text: 'aaa', startLine: 0, cols: 80 }], 'aa', { bufferLength: 1 });
+        const matches = findMatches([{ text: 'aaa', startLine: 0, cols: 80, rows: [{ line: 0, offset: 0 }] }], 'aa', {
+            bufferLength: 1
+        });
         expect(matches).toHaveLength(2);
     });
 
     it('maps an offset past the wrap point back onto the following buffer row', () => {
-        // cols=10, so offset 12 lives on the second row of the logical line.
-        const wrapped = { text: '0123456789xxNEEDLE', startLine: 3, cols: 10 };
+        // Row 3 contributed the first 10 characters; row 4 starts at offset 10, so offset 12
+        // is column 2 of row 4 — read off the row map, not off `cols`.
+        const wrapped = {
+            text: '0123456789xxNEEDLE',
+            startLine: 3,
+            cols: 10,
+            rows: [
+                { line: 3, offset: 0 },
+                { line: 4, offset: 10 }
+            ]
+        };
         const matches = findMatches([wrapped], 'NEEDLE', { bufferLength: 20 });
         expect(matches[0]).toMatchObject({ line: 4, col: 2, linesFromBottom: 16 });
     });
 
+    it('falls back to the line start when it has no row map', () => {
+        // Defensive only: a hand-built line with no rows resolves against its own start.
+        const matches = findMatches([{ text: 'xxNEEDLE', startLine: 7, cols: 10, rows: [] }], 'NEEDLE', {
+            bufferLength: 20
+        });
+        expect(matches[0]).toMatchObject({ line: 7, col: 2, linesFromBottom: 13 });
+    });
+
     it('stops at the limit', () => {
-        const matches = findMatches([{ text: 'aaaaaa', startLine: 0, cols: 80 }], 'a', {
+        const matches = findMatches([{ text: 'aaaaaa', startLine: 0, cols: 80, rows: [{ line: 0, offset: 0 }] }], 'a', {
             bufferLength: 1,
             limit: 3
         });

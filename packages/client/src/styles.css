@@ -72,6 +72,9 @@
   --nex-status-inactive: #8a8a92;
   --nex-active-agent: #d3a329;
   --nex-agent: #d3a329; /* grid/tokens.ts spelling */
+  /* L27 — the pane header's ZOOM and SYNC badges (`PaneHeaderView.swift:109,134`, both
+     `.orange`). One name for both, so they cannot drift into two ambers again. */
+  --nex-orange: #d08237;
   --nex-group-band-opacity: 0.22;
 
   /* terminal — terminal/renderer.ts DEFAULT_TERMINAL_THEME.
@@ -131,6 +134,9 @@
     --nex-status-inactive: #9a9a96;
     --nex-active-agent: #a97c17;
     --nex-agent: #a97c17;
+    /* L27 — the light column of the header orange, derived from #d08237 by the same
+       per-channel ratio that takes --nex-agent from #d3a329 to #a97c17. */
+    --nex-orange: #a8631f;
     --nex-group-band-opacity: 0.3;
 
     --nex-term-bg: #ffffff;
@@ -180,6 +186,8 @@
   --nex-status-inactive: #9a9a96;
   --nex-active-agent: #a97c17;
   --nex-agent: #a97c17;
+  /* L27 — see the media-query block above. */
+  --nex-orange: #a8631f;
   --nex-group-band-opacity: 0.3;
 
   --nex-term-bg: #ffffff;
@@ -248,9 +256,27 @@ input {
   background: var(--nex-selection-fill);
 }
 
-:focus-visible {
-  outline: 1px solid var(--nex-accent);
-  outline-offset: 1px;
+/*
+ * UI-FIDELITY L96 — the keyboard ring is a BASE rule, so a control can decline it.
+ *
+ * Chromium treats a focused text input as `:focus-visible` however focus arrived, so this rule
+ * put a 1 px accent rectangle around every field in the app — including the command palette's,
+ * which `CommandPaletteView.swift:27-30` draws with `.textFieldStyle(.plain)` and no ring at all
+ * (the orange box in `docs/audit/run-O/104`). The field already said `outline-none`, and every
+ * other field in the client says it too: the reason none of them were obeyed is that this rule
+ * was UNLAYERED, and unlayered CSS outranks every layered utility Tailwind emits.
+ *
+ * In `@layer base` it keeps its job — a `Tab`-focused button, menu row or link still gets the
+ * ring, because those declare no outline of their own — while `outline-none` on a control that
+ * has designed its own focus treatment finally wins. The `button` / `input` resets above are
+ * deliberately left unlayered: they are load-bearing elsewhere (§M21 and §H29 both record
+ * components that work around them), and re-layering them is a change of a different size.
+ */
+@layer base {
+  :focus-visible {
+    outline: 1px solid var(--nex-accent);
+    outline-offset: 1px;
+  }
 }
 
 /* Thin, theme-aware scrollbars. */
@@ -271,6 +297,47 @@ input {
 
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/*
+ * L68 — the web pane's tab strip scrolls with NO indicator.
+ *
+ * `WebPaneChrome.swift:282` is `ScrollView(.horizontal, showsIndicators: false)`, and the strip
+ * is ~24 px tall: the global 9 px bar above ate a third of it and drew a rule under the pills the
+ * shipped app never has. Scoped to this one element rather than relaxing the global rule, which
+ * every other scroller in the app still wants.
+ */
+[data-nex-web-tabstrip] {
+  scrollbar-width: none;
+}
+
+[data-nex-web-tabstrip]::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * L59 — the storage panel's in-flight indicator: the `ProgressView().controlSize(.small)
+ * .scaleEffect(0.6)` in the 12×12 frame at `StoragePanel.swift:135-140`, beside the cookie count.
+ */
+.nex-storage-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid;
+  border-radius: 50%;
+  animation: nex-storage-spin 800ms linear infinite;
+}
+
+@keyframes nex-storage-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-storage-spinner {
+    animation-duration: 2400ms;
+  }
 }
 
 /* The terminal host fills its pane; both engines size their canvas to it. */
@@ -328,8 +395,18 @@ input {
   to { opacity: 0.35; }
 }
 
+/*
+ * L18: the ring is CENTRED on the dot's edge, not hung off the outside of it.
+ *
+ * `PulsingStatusDot` is `Circle().frame(9).overlay(Circle().stroke(borderColor, lineWidth: 1.5))`
+ * (`WorkspaceRowView.swift:12-15`), and SwiftUI's `.stroke` — unlike `.strokeBorder` — straddles
+ * the path: 0.75pt outside the 9pt circle and 0.75pt inside it, for a 10.5pt outer edge. A
+ * single `0 0 0 1.5px` spread put the whole ring outside instead, which made the dot read 12px
+ * across (a third too big beside a 22px avatar) and left the fill untouched where the Swift's
+ * stroke eats into it. Two shadows, outer and inset, are that centred stroke exactly.
+ */
 .nex-agent-dot-pulse {
-  box-shadow: 0 0 0 1.5px var(--nex-dot-ring);
+  box-shadow: 0 0 0 0.75px var(--nex-dot-ring), inset 0 0 0 0.75px var(--nex-dot-ring);
   animation: nex-agent-dot-pulse 1s ease-in-out infinite alternate;
 }
 

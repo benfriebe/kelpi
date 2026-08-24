@@ -175,4 +175,57 @@ describe('__nexFind', () => {
         expect(marks().map((mark) => mark.textContent)).toEqual(['beta']);
         expect(document.querySelector('#content p')?.textContent).toBe('alpha beta Alpha');
     });
+
+    /**
+     * §L43 — the walker skips OUR OWN highlights, not every `<mark>`.
+     *
+     * `MarkdownFindScript.swift:69-79` skips `SCRIPT` / `STYLE` / `NOSCRIPT` and any ancestor
+     * carrying `.nex-find-match`. The port skipped the `MARK` tag itself, so a note containing a
+     * raw `<mark>` had that text permanently unsearchable.
+     */
+    it('searches inside a note’s own <mark>, and still skips its own highlights (§L43)', async () => {
+        document.body.innerHTML =
+            '<div id="content"><p>plain alpha and <mark>marked alpha</mark></p></div>';
+        api().search('alpha');
+        await settle();
+
+        expect(results.at(-1)).toEqual({ total: 2, current: 0 });
+        // The second match is nested INSIDE the author's own mark, which survives.
+        expect(document.querySelectorAll('mark:not(.nex-find-match)')).toHaveLength(1);
+        expect(document.querySelector('mark:not(.nex-find-match)')?.textContent).toBe('marked alpha');
+
+        // A re-search must not re-enter the marks the previous one left: `clearMarks` unwraps
+        // first, so the count is stable rather than growing.
+        api().search('alpha');
+        await settle();
+        expect(results.at(-1)).toEqual({ total: 2, current: 0 });
+        api().clear();
+        await settle();
+        expect(document.querySelector('#content p')?.textContent).toBe('plain alpha and marked alpha');
+    });
+
+    /**
+     * §L44 — `{ block: 'center', inline: 'nearest' }`, the Swift's own options
+     * (`MarkdownFindScript.swift:65`). Without `inline`, stepping between matches in a
+     * horizontally scrolled preview (a wide code block, a wide table) can jog the document
+     * sideways; the Swift pins that axis.
+     */
+    it('centres a match vertically and pins the horizontal axis (§L44)', () => {
+        const calls: unknown[] = [];
+        const prototype = Element.prototype as unknown as Record<string, unknown>;
+        const had = Object.prototype.hasOwnProperty.call(prototype, 'scrollIntoView');
+        const original = prototype['scrollIntoView'];
+        prototype['scrollIntoView'] = function scrollIntoView(options?: unknown): void {
+            calls.push(options);
+        };
+        try {
+            api().search('alpha');
+            api().next();
+        } finally {
+            if (had) prototype['scrollIntoView'] = original;
+            else delete prototype['scrollIntoView'];
+        }
+        expect(calls.length).toBeGreaterThan(0);
+        for (const options of calls) expect(options).toEqual({ block: 'center', inline: 'nearest' });
+    });
 });

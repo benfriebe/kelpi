@@ -31,6 +31,7 @@ import { createPortal } from 'react-dom';
 
 import { useDismissable } from './dismissable';
 import { useModalPresence } from './modal-presence';
+import { autoTextColor } from './theme';
 import { tokens } from './tokens';
 
 /** How close to the window edge a submenu may sit before it flips to the other side. */
@@ -82,8 +83,6 @@ export interface MenuItemSpec {
     /** A real-color dot (label presets, workspace colors) drawn before the label. */
     readonly swatch?: string | undefined;
     readonly danger?: boolean | undefined;
-    /** A `keyTriggerDisplayString` hint (`⌘N`), right-aligned the way a native menu shows it. */
-    readonly shortcut?: string | undefined;
     readonly submenu?: readonly MenuItemSpec[] | undefined;
     readonly onSelect?: (() => void) | undefined;
 }
@@ -123,14 +122,45 @@ function Checkmark({ state }: { readonly state: boolean | 'mixed' }): ReactEleme
     );
 }
 
-function Swatch({ color }: { readonly color: string }): ReactElement {
+/**
+ * L11: a swatch that also carries a check STATE draws it INSIDE the dot — one glyph per row.
+ *
+ * `LabelPreset.menuSwatch(diameter:checked:mixed:)` (`LabelPreset.swift:183-215`) is a single
+ * 11pt non-template image: a 9pt disc (the 11pt box inset by 1) hairlined at 0.5 in
+ * `NSColor(white: 0.5, alpha: 0.4)`, with the checkmark — or the indeterminate dash — stroked
+ * ON the disc at 1.5 with round caps. Every label menu in the shipped app (`WorkspaceListView`
+ * `:1050`, `:1107`) hands that ONE image to `Label`'s `icon:`, so an applied preset is a
+ * ticked dot and never a tick in a column beside a dot, which is what this port drew.
+ *
+ * The path coordinates are the Swift's own fractions of the box, flipped into SVG's y-down
+ * space: (0.28, 0.50) → (0.43, 0.34) → (0.72, 0.68) for the check, (0.30, 0.50) → (0.70, 0.50)
+ * for the dash. The mark's colour is `autoTextColor` — the same `> 0.6 → black, else white`
+ * luminance verdict `menuSwatch` computes from the fill's own components.
+ */
+function Swatch({ color, state }: { readonly color: string; readonly state?: boolean | 'mixed' | undefined }): ReactElement {
+    const mark = state === true ? 'check' : state === 'mixed' ? 'dash' : null;
     return (
-        <span
+        <svg
             aria-hidden
-            className="h-[9px] w-[9px] shrink-0 rounded-full"
-            style={{ background: color }}
             data-testid="menu-swatch"
-        />
+            data-mark={mark ?? undefined}
+            className="shrink-0"
+            width={11}
+            height={11}
+            viewBox="0 0 11 11"
+        >
+            <circle cx="5.5" cy="5.5" r="4.5" fill={color} stroke="rgba(128,128,128,0.4)" strokeWidth={0.5} />
+            {mark === null ? null : (
+                <path
+                    d={mark === 'check' ? 'M3.08 5.5 4.73 7.26 7.92 3.52' : 'M3.3 5.5H7.7'}
+                    fill="none"
+                    stroke={autoTextColor(color)}
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            )}
+        </svg>
     );
 }
 
@@ -240,18 +270,22 @@ function MenuRow(props: RowProps): ReactElement {
                 props.onActivate();
             }}
         >
-            {item.checked === undefined ? null : <Checkmark state={item.checked} />}
-            {item.swatch === undefined ? null : <Swatch color={item.swatch} />}
-            <span className="flex-1 truncate">{item.label}</span>
-            {item.shortcut === undefined ? null : (
-                <span
-                    data-testid="menu-shortcut"
-                    className="shrink-0 font-mono text-[10px]"
-                    style={{ color: tokens.textTertiary }}
-                >
-                    {item.shortcut}
-                </span>
+            {/* L11: the check column exists only for a row with NO swatch to carry it. */}
+            {item.checked === undefined || item.swatch !== undefined ? null : <Checkmark state={item.checked} />}
+            {item.swatch === undefined ? null : (
+                <Swatch color={item.swatch} {...(item.checked === undefined ? {} : { state: item.checked })} />
             )}
+            <span className="flex-1 truncate">{item.label}</span>
+            {/*
+             * L12: there is NO shortcut hint here, and there is no `shortcut` on `MenuItemSpec`
+             * to feed one. Every `.contextMenu` in the shipped app — the sidebar row's
+             * (`WorkspaceListView.swift:897`), the group header's (`:1183`), the list
+             * background's (`:344-350`), the pane header's (`PaneHeaderView.swift:360-361`) and
+             * the title bar's ••• (`WindowTitleBar.swift:243-251`) — is a bare `Button` with no
+             * `.keyboardShortcut`, so an `NSMenu` raised from any of them draws no key equivalent
+             * column at all. The port advertised ⇧⌘R, ⌘N, ⌘⇧G, ⌘D/⌘⇧D, ⌘, and ⌘? in menus the
+             * original leaves plain. The shortcuts still WORK; they are simply not restated here.
+             */}
             {item.submenu === undefined ? null : (
                 <span aria-hidden className="text-[10px]" style={{ color: tokens.textTertiary }}>
                     ▸

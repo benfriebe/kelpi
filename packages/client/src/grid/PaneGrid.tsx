@@ -594,20 +594,33 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             visibility: visible ? 'visible' : 'hidden',
                             pointerEvents: visible ? 'auto' : 'none',
                             opacity: draggingPaneID === pane.id ? 0.5 : 1,
-                            zIndex: visible ? (focused ? 2 : 1) : 0,
+                            // L31: one plane for every visible pane. `PaneGridView.swift:104-111`
+                            // paints the panes with a plain `ForEach` inside a `ZStack` and never
+                            // reorders on focus, so where a 2 px focus ring meets a neighbour's
+                            // edge the shipped app lets paint order decide — it does not lift the
+                            // focused pane above its siblings. (The port's DOM order is by pane
+                            // id rather than the `panes` array, which is a deliberate, separate
+                            // choice: it keeps React from moving a terminal's node when the tree
+                            // is rearranged.)
+                            zIndex: visible ? 1 : 0,
                             background: tokens.windowBackground
                         }}
-                        // Capture phase, on the WRAPPER: a press anywhere in the pane — header,
-                        // body, a header button — focuses it (shell-ui.md §4.1). The header is
-                        // deliberately not given `onFocusPane` as well, or every click would
-                        // report focus twice.
-                        onPointerDownCapture={() => onFocusPane?.(pane.id)}
+                        // L33: no focus-on-press here. The wrapper used to claim the press in the
+                        // CAPTURE phase, so clicking Split Down or ✕ on a background pane focused
+                        // it on the way to the button; in the Swift a SwiftUI `Button` consumes
+                        // its own tap and the header's `.onTapGesture` never fires, so focus does
+                        // not move (`PaneHeaderView.swift:263-272,279`). Focus is now raised where
+                        // the Swift raises it: the header's own tap handler (below), and each pane
+                        // body's `onFocusRequest` (`TerminalPane`, the content frames, `WebPane`).
                         onPointerEnter={() => onPaneEnter(pane.id)}
                         onPointerLeave={cancelHover}
                     >
                         <PaneHeader
                             pane={pane}
                             focused={focused}
+                            // `PaneHeaderView.swift:279` — `.onTapGesture { onFocus() }` on the
+                            // header itself, which every control inside it shadows.
+                            {...(onFocusPane === undefined ? {} : { onFocusPane })}
                             zoomed={zoomed === pane.id}
                             zoomAvailable={zoomAvailable}
                             syncActive={syncActive}
@@ -684,10 +697,36 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                         // M13: `PaneGridView.swift:451-452` fills and borders with
                         // `Color.accentColor` — the macOS system accent, not the chrome theme's
                         // `accent`. See `tokens.ts` for the seam and the standing divergence.
-                        background: `color-mix(in srgb, ${tokens.systemAccent} 20%, transparent)`,
-                        border: `2px solid color-mix(in srgb, ${tokens.systemAccent} 50%, transparent)`
+                        background: `color-mix(in srgb, ${tokens.systemAccent} 20%, transparent)`
                     }}
-                />
+                >
+                    {/*
+                      * L36 — the outline is SQUARE over a rounded fill.
+                      *
+                      * `PaneGridView.swift:450-453` is `RoundedRectangle(cornerRadius: 4)
+                      * .fill(…).border(…, width: 2)`, and SwiftUI's `.border` always strokes the
+                      * view's rectangular frame — it knows nothing about the shape it was applied
+                      * to. So the shipped drop zone really does draw a hard-cornered 2 px frame
+                      * over a 4 pt-rounded fill, with the fill's corners peeking inside the
+                      * outline's. It reads as a quirk because it IS one, and it is what the app
+                      * on disk looks like; a border that followed the radius was the port's
+                      * tidier invention.
+                      *
+                      * A second element because one box cannot have a rounded background and a
+                      * square border — and it is a CHILD so the outline paints above the fill,
+                      * the order `.border`-after-`.fill` gives.
+                      */}
+                    <div
+                        data-testid="drop-zone-outline"
+                        aria-hidden="true"
+                        style={{
+                            position: 'absolute',
+                            inset: 0,
+                            boxSizing: 'border-box',
+                            border: `2px solid color-mix(in srgb, ${tokens.systemAccent} 50%, transparent)`
+                        }}
+                    />
+                </div>
             )}
         </div>
     );
@@ -728,12 +767,22 @@ function Divider({ info, dragging, onPointerDown }: DividerProps): ReactElement 
                     top: `${DIVIDER_HIT_INSET}px`,
                     width: `${info.rect.width}px`,
                     height: `${info.rect.height}px`,
-                    // M13: `SplitDividerView.swift:20` tints the dragged divider with
-                    // `Color.accentColor.opacity(0.5)` — the macOS system accent, not the chrome
-                    // theme's `accent`. See `tokens.ts` for the seam and the standing divergence.
+                    // `SplitDividerView.swift:18-20` is TWO layers, not one: `Rectangle()`
+                    // filled with `chromeTheme.divider`, and then an unconditional `.overlay(…)`
+                    // — `Color.accentColor.opacity(0.5)` while dragging, `Color.secondary
+                    // .opacity(0.2)` at rest. Both are alpha-composited over the divider fill,
+                    // which is exactly `color-mix(… over divider)`.
+                    //
+                    // M13: the dragged tint is the macOS system accent, not the chrome theme's
+                    // `accent`. See `tokens.ts` for the seam and the standing divergence.
+                    //
+                    // L35: the RESTING layer had been dropped, so every divider in the port sat a
+                    // step darker and flatter than the shipped app's. `.secondary` transcribes as
+                    // the secondary text token, the same way the empty grid transcribes
+                    // `.quaternary` as a percentage of the primary one.
                     background: dragging
                         ? `color-mix(in srgb, ${tokens.systemAccent} 50%, ${tokens.divider})`
-                        : tokens.divider
+                        : `color-mix(in srgb, ${tokens.textSecondary} 20%, ${tokens.divider})`
                 }}
             />
         </div>

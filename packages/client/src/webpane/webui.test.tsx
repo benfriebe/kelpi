@@ -12,8 +12,17 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { CommandReply } from '../connection';
 import { BatchPanel, BATCH_EMPTY_HINT } from './BatchPanel';
-import { FavouritesMenu } from './FavouritesMenu';
-import { StoragePanel, canonicalDomain, defaultExpiryInput, groupCookies, privateModeWarning } from './StoragePanel';
+import { BookmarksMenu } from './FavouritesMenu';
+import {
+    StoragePanel,
+    canonicalDomain,
+    defaultExpiryInput,
+    groupCookies,
+    privateModeAction,
+    privateModeQuestion,
+    privateModeWarning,
+    truncateCookieValue
+} from './StoragePanel';
 import { WebFindBar } from './WebFindBar';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
@@ -347,12 +356,9 @@ describe('the URL-bar star', () => {
         let managed = 0;
         const opened: string[] = [];
         render(
-            <FavouritesMenu
+            <BookmarksMenu
                 paneID={PANE}
-                url="https://other.test/"
-                title=""
                 favourites={SAVED}
-                onToggle={() => {}}
                 onOpen={(url) => opened.push(url)}
                 onManage={() => (managed += 1)}
             />
@@ -366,20 +372,48 @@ describe('the URL-bar star', () => {
         expect(managed).toBe(1);
     });
 
+    /**
+     * §L64 — the hint is `WebPaneChrome.swift:96-99`, word for word: "No favourites yet" over
+     * "Click the star to save the current page". The port had reworded both.
+     */
     it('shows the two-line hint when there are none', () => {
-        render(
-            <FavouritesMenu
-                paneID={PANE}
-                url=""
-                title=""
-                favourites={[]}
-                onToggle={() => {}}
-                onOpen={() => {}}
-                onManage={() => {}}
-            />
-        );
+        render(<BookmarksMenu paneID={PANE} favourites={[]} onOpen={() => {}} onManage={() => {}} />);
         fireEvent.click(screen.getByTestId(`web-favourites-menu-${PANE}`));
-        expect(screen.getByTestId(`web-favourites-empty-${PANE}`).textContent).toContain('No favourites yet');
+        const hint = screen.getByTestId(`web-favourites-empty-${PANE}`);
+        expect(hint.textContent).toContain('No favourites yet');
+        expect(hint.textContent).toContain('Click the star to save the current page');
+        expect(hint.textContent).not.toContain('URL bar');
+    });
+
+    /**
+     * §L65 — the menu has no selected state. `WebPaneChrome.swift:101-106` is a plain `Button`
+     * per row; the port lit the row matching the current page with an accent pill.
+     */
+    it('never highlights the row matching the current page', () => {
+        render(<BookmarksMenu paneID={PANE} favourites={SAVED} onOpen={() => {}} onManage={() => {}} />);
+        fireEvent.click(screen.getByTestId(`web-favourites-menu-${PANE}`));
+        // Rendered from a pane sitting on exactly this favourite's URL — and still plain.
+        expect(screen.getByTestId('web-favourite-f1').style.background).toBe('');
+    });
+
+    /**
+     * §L63 — bookmarks is a 22×22 toolbar button called "Bookmarks", OUTSIDE the URL field.
+     * It was a 16×20 `▾` caret inside the field beside the star, which both renamed the control
+     * and ate ~36 px of the address the field exists to show.
+     */
+    it('draws bookmarks as a toolbar button beside the URL field, not inside it', () => {
+        const fake = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} />);
+        const button = screen.getByTestId(`web-favourites-menu-${PANE}`);
+        expect(button.getAttribute('title')).toBe('Bookmarks');
+        expect(button.getAttribute('aria-label')).toBe('Bookmarks');
+        expect(button.className).toContain('h-[22px]');
+        expect(button.className).toContain('w-[22px]');
+        expect(button.querySelector('[data-icon="book"]')).not.toBeNull();
+        // The star is still inside the field; the menu no longer is.
+        const field = screen.getByTestId(`web-url-${PANE}`).parentElement;
+        expect(field?.contains(screen.getByTestId(`web-favourite-star-${PANE}`))).toBe(true);
+        expect(field?.contains(button)).toBe(false);
     });
 });
 
@@ -835,7 +869,7 @@ describe('the storage panel', () => {
         open(fake);
         await waitFor(() => expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull());
         fireEvent.click(screen.getByTestId('web-cookie-group-example.com'));
-        fireEvent.click(screen.getByText('a=1'));
+        fireEvent.click(screen.getByTestId('web-cookie-toggle-a'));
         const domain = screen.getByTestId(`web-cookie-form-domain-${PANE}`) as HTMLInputElement;
         expect(domain.readOnly).toBe(true);
         expect(domain.value).toBe('example.com');
@@ -851,7 +885,7 @@ describe('the storage panel', () => {
         open(fake);
         await waitFor(() => expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull());
         fireEvent.click(screen.getByTestId('web-cookie-group-example.com'));
-        fireEvent.click(screen.getByText('a=1'));
+        fireEvent.click(screen.getByTestId('web-cookie-toggle-a'));
         fireEvent.change(screen.getByTestId(`web-cookie-form-name-${PANE}`), { target: { value: 'renamed' } });
         fireEvent.click(screen.getByTestId(`web-cookie-form-save-${PANE}`));
         const call = fake.sent.at(-1);
@@ -885,17 +919,161 @@ describe('the storage panel', () => {
     });
 
     it('gates the private toggle, with a message that differs per direction (WEB-049)', async () => {
-        expect(privateModeWarning(true)).toContain('discards');
-        expect(privateModeWarning(false)).toContain('reappear');
+        expect(privateModeWarning(true)).toContain('discarded on quit');
+        expect(privateModeWarning(false)).toContain('become visible again');
 
         const fake = fakeCommands();
         open(fake, false);
         await waitFor(() => expect(screen.getByTestId(`web-private-toggle-${PANE}`)).not.toBeNull());
         fireEvent.click(screen.getByTestId(`web-private-toggle-${PANE}`));
-        expect(screen.getByTestId(`web-storage-confirm-${PANE}`).textContent).toContain('discards');
+        expect(screen.getByTestId(`web-storage-confirm-${PANE}`).textContent).toContain('discarded on quit');
         expect(fake.sent.some((call) => call.verb === 'setPrivate')).toBe(false);
         fireEvent.click(screen.getByTestId(`web-storage-confirm-ok-${PANE}`));
         expect(fake.sent.at(-1)).toEqual({ verb: 'setPrivate', args: [PANE, true] });
+    });
+
+    /**
+     * §L74 — a confirmation is a titled QUESTION whose destructive button NAMES the action
+     * (`StoragePanel.swift:57-82`). Both of the port's read as one untitled card ending in
+     * "Continue", so the two very different questions were told apart by body text alone.
+     */
+    it('titles each confirmation and names its destructive action (L74)', async () => {
+        expect(privateModeQuestion(true)).toBe('Enable private mode for this pane?');
+        expect(privateModeQuestion(false)).toBe('Disable private mode for this pane?');
+        expect(privateModeAction(true)).toBe('Enable private mode');
+        expect(privateModeAction(false)).toBe('Disable private mode');
+
+        const fake = fakeCommands();
+        open(fake, false);
+        await waitFor(() => expect(screen.getByTestId(`web-clear-site-data-${PANE}`)).not.toBeNull());
+
+        fireEvent.click(screen.getByTestId(`web-clear-site-data-${PANE}`));
+        expect(screen.getByTestId(`web-storage-confirm-title-${PANE}`).textContent).toBe(
+            'Clear all site data for this pane?'
+        );
+        expect(screen.getByTestId(`web-storage-confirm-ok-${PANE}`).textContent).toBe('Clear all site data');
+        expect(screen.getByTestId(`web-storage-confirm-${PANE}`).textContent).toContain('IndexedDB');
+        expect(screen.getByTestId(`web-storage-confirm-${PANE}`).textContent).not.toContain('Continue');
+        fireEvent.click(screen.getByTestId(`web-storage-confirm-cancel-${PANE}`));
+
+        fireEvent.click(screen.getByTestId(`web-private-toggle-${PANE}`));
+        expect(screen.getByTestId(`web-storage-confirm-title-${PANE}`).textContent).toBe(
+            'Enable private mode for this pane?'
+        );
+        expect(screen.getByTestId(`web-storage-confirm-ok-${PANE}`).textContent).toBe('Enable private mode');
+    });
+
+    /**
+     * §L58 — the edit form's own Delete (`StoragePanel.swift:592-599`). Present only when there
+     * is an original to delete, so the add form still shows Cancel/Save alone.
+     */
+    it('deletes from inside the edit form, and offers no Delete on the add form (L58)', async () => {
+        const fake = fakeCommands();
+        open(fake);
+        await waitFor(() => expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull());
+
+        fireEvent.click(screen.getByTestId(`web-cookie-add-${PANE}`));
+        expect(screen.queryByTestId(`web-cookie-form-delete-${PANE}`)).toBeNull();
+        fireEvent.click(screen.getByTestId(`web-cookie-form-cancel-${PANE}`));
+
+        fireEvent.click(screen.getByTestId('web-cookie-group-example.com'));
+        fireEvent.click(screen.getByTestId('web-cookie-toggle-a'));
+        fireEvent.click(screen.getByTestId(`web-cookie-form-delete-${PANE}`));
+        expect(fake.sent.at(-1)).toEqual({ verb: 'cookieDelete', args: [PANE, 'a', 'example.com'] });
+        // …and the form closes behind it, the way `onDelete` sets `editingKey = nil`.
+        expect(screen.queryByTestId(`web-cookie-form-${PANE}`)).toBeNull();
+    });
+
+    /**
+     * §L60 — a cookie row is a two-line disclosure: an expander glyph, the name over its
+     * 60-char-clamped value. It had been one `name=value` link with no expander and no clamp.
+     */
+    it('draws cookie rows as two-line disclosures with a clamped value (L60)', async () => {
+        expect(truncateCookieValue('short')).toBe('short');
+        expect(truncateCookieValue('x'.repeat(200))).toBe(`${'x'.repeat(59)}…`);
+        expect(truncateCookieValue('x'.repeat(60))).toBe('x'.repeat(60));
+
+        const fake = fakeCommands();
+        open(fake);
+        await waitFor(() => expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull());
+        fireEvent.click(screen.getByTestId('web-cookie-group-example.com'));
+
+        const row = screen.getByTestId('web-cookie-example.com-a');
+        expect(row.getAttribute('data-open')).toBe('false');
+        expect(row.textContent).not.toContain('a=1');
+        expect(row.textContent).toContain('▸');
+        expect(screen.getByTestId('web-cookie-value-a').textContent).toBe('1');
+
+        fireEvent.click(screen.getByTestId('web-cookie-toggle-a'));
+        expect(screen.getByTestId('web-cookie-example.com-a').getAttribute('data-open')).toBe('true');
+        expect(screen.getByTestId('web-cookie-example.com-a').textContent).toContain('▾');
+        // The same click again collapses it, the way `toggleEditing(key)` does.
+        fireEvent.click(screen.getByTestId('web-cookie-toggle-a'));
+        expect(screen.queryByTestId(`web-cookie-form-${PANE}`)).toBeNull();
+    });
+
+    /**
+     * §L61 — the empty line has a private-mode variant (`StoragePanel.swift:186-192`); the port
+     * said "No cookies for this pane." in both modes.
+     */
+    it('names private mode in the empty-cookie line (L61)', async () => {
+        const fake = fakeCommands();
+        fake.answer('cookiesList', { ok: true, cookies: [] } as unknown as CommandReply);
+        const view = render(
+            <StoragePanel paneID={PANE} isPrivate={false} commands={fake.commands} onClose={() => {}} />
+        );
+        await waitFor(() => expect(screen.getByTestId(`web-cookie-empty-${PANE}`)).not.toBeNull());
+        expect(screen.getByTestId(`web-cookie-empty-${PANE}`).textContent).toBe(
+            'No cookies for this data store yet.'
+        );
+
+        view.rerender(
+            <StoragePanel paneID={PANE} isPrivate={true} commands={fake.commands} onClose={() => {}} />
+        );
+        expect(screen.getByTestId(`web-cookie-empty-${PANE}`).textContent).toBe(
+            'No cookies (private mode — fresh on every launch).'
+        );
+    });
+
+    /**
+     * §L59 — the Swift shows a `ProgressView` beside the "Cookies" heading for as long as
+     * `getAllCookies` is in flight; the port's `refresh()` set no pending state at all.
+     */
+    it('shows a progress indicator while the cookie list is in flight (L59)', async () => {
+        let settle: ((reply: CommandReply) => void) | undefined;
+        const commands = {
+            cookiesList: () =>
+                new Promise<CommandReply>((resolve) => {
+                    settle = resolve;
+                })
+        } as unknown as WebPaneCommands;
+        render(<StoragePanel paneID={PANE} isPrivate={false} commands={commands} onClose={() => {}} />);
+        // The read is open: the indicator stands in for the answer that has not arrived.
+        expect(screen.getByTestId(`web-storage-loading-${PANE}`)).not.toBeNull();
+        settle?.({ ok: true, cookies: COOKIES } as unknown as CommandReply);
+        await waitFor(() => expect(screen.queryByTestId(`web-storage-loading-${PANE}`)).toBeNull());
+        expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull();
+    });
+
+    /**
+     * §L73 — every control outside the toolbar carries the Swift's `.help(…)` as a `title`, not
+     * an `aria-label` alone: a pointer user gets no accessible name.
+     */
+    it('gives each storage control its Swift tooltip (L73)', async () => {
+        const fake = fakeCommands();
+        open(fake);
+        await waitFor(() => expect(screen.getByTestId('web-cookie-group-example.com')).not.toBeNull());
+        fireEvent.click(screen.getByTestId('web-cookie-group-example.com'));
+        const title = (testID: string): string | null => screen.getByTestId(testID).getAttribute('title');
+        expect(title(`web-storage-refresh-${PANE}`)).toBe('Refresh cookie list');
+        expect(title(`web-storage-close-${PANE}`)).toBe('Close storage panel');
+        expect(title(`web-cookie-add-${PANE}`)).toBe('Add a cookie');
+        expect(title(`web-clear-site-data-${PANE}`)).toBe(
+            'Clear all site data (cookies, caches, local storage)'
+        );
+        expect(title('web-cookie-add-example.com')).toBe('Add cookie for example.com');
+        expect(title('web-cookie-clear-example.com')).toBe('Delete all cookies for example.com');
+        expect(title('web-cookie-delete-a')).toBe('Delete cookie a');
     });
 
     it('cancels a confirmation without doing anything', async () => {

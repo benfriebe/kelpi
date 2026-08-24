@@ -159,13 +159,17 @@ function ThemePresetCell(props: {
             title={`Apply the ${props.preset.name} theme (${
                 props.preset.appearance === 'dark' ? 'Dark' : 'Light'
             })`}
-            className="flex flex-col gap-1 rounded p-1 text-left transition-colors duration-100"
-            style={{ background: hoverBackground(hovered, 'transparent'), cursor: 'pointer' }}
+            // L84: `VStack(spacing: 5)` and the name in `.primary` (`SettingsView.swift:559-566`).
+            // The port had a 4 px gap and `textSecondary`, which — with the cell also being inert
+            // before H11 — is what made the gallery read as seven captioned images rather than as
+            // seven buttons. No `cursor` either (L89): macOS shows the arrow over a control.
+            className="flex flex-col gap-[5px] rounded p-1 text-left transition-colors duration-100"
+            style={{ background: hoverBackground(hovered, 'transparent') }}
             {...hoverProps}
             onClick={props.onApply}
         >
             <ThemeSwatch preset={props.preset} />
-            <span className="truncate text-[11px]" style={{ color: tokens.textSecondary }}>
+            <span className="truncate text-[11px]" style={{ color: tokens.textPrimary }}>
                 {props.preset.name}
             </span>
         </button>
@@ -454,17 +458,23 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                     <SettingsButton testID="theme-paste-code" onClick={pasteCode}>
                         Paste Code
                     </SettingsButton>
+                    {/*
+                     * Inside the button row, not a sibling of it: L79 gives every DIRECT child of
+                     * a section its own padded band and a hairline, and a `hidden` input is still
+                     * a child — as a sibling it drew an empty 12 px strip with a rule above it,
+                     * between the buttons and their caption.
+                     */}
+                    <input
+                        ref={importRef}
+                        type="file"
+                        accept=".nextheme,.json,application/json"
+                        className="hidden"
+                        data-testid="theme-import-input"
+                        aria-hidden
+                        tabIndex={-1}
+                        onChange={importTheme}
+                    />
                 </div>
-                <input
-                    ref={importRef}
-                    type="file"
-                    accept=".nextheme,.json,application/json"
-                    className="hidden"
-                    data-testid="theme-import-input"
-                    aria-hidden
-                    tabIndex={-1}
-                    onChange={importTheme}
-                />
                 <p className="text-[11px]" style={{ color: tokens.textTertiary }} data-testid="theme-status">
                     {status ??
                         'Save your custom chrome colours and sidebar styling as a shareable .nextheme file or a copyable code. Importing restyles the chrome without changing your light/dark mode or terminal background.'}
@@ -540,15 +550,21 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                 ))}
             </SettingsSection>
 
+            {/*
+             * L81: TWO sections, as `SettingsView.swift:384-409` has them — "Sidebar" over the one
+             * slider that says how VIVID everything is, and "Sidebar fill & stroke" over the four
+             * that say WHICH element. Each carries its own closing caption. The port had merged
+             * them into one section under a single hint, which put five sliders in a row with
+             * nothing marking the change of subject.
+             */}
             <SettingsSection
                 title="Sidebar"
-                hint="Fill = colour wash, border = outline. The intensity multiplies both."
+                hint="Scales how vivid the group bands and workspace avatars are."
                 testID="appearance-sidebar"
             >
                 <SliderField
                     label="Colour intensity"
                     testID="sidebar-intensity"
-                    detail="Scales how vivid the group bands and workspace avatars are."
                     value={chrome.sidebarColorIntensity}
                     min={0}
                     max={2}
@@ -557,6 +573,13 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                         actions.setGeneralSetting('sidebar-color-intensity', next.toFixed(2));
                     }}
                 />
+            </SettingsSection>
+
+            <SettingsSection
+                title="Sidebar fill & stroke"
+                hint="Fill = colour wash, border = outline. The intensity above multiplies these."
+                testID="appearance-sidebar-style"
+            >
                 <SliderField
                     label="Avatar fill"
                     testID="sidebar-avatar-fill"
@@ -851,7 +874,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                         </div>
 
                         <details className="rounded" data-testid="stats-graphs">
-                            <summary className="cursor-pointer px-2 py-1 text-[12px]" style={{ color: tokens.textPrimary }}>
+                            <summary className="px-2 py-1 text-[12px]" style={{ color: tokens.textPrimary }}>
                                 Mini graphs
                             </summary>
                             <div className="mt-1.5 flex flex-col gap-1.5">
@@ -896,6 +919,11 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                                 <SliderField
                                     label="Graph width"
                                     testID="sparkline-width"
+                                    // L82: this row is not a `sliderRow` in the Swift — it writes
+                                    // its own `HStack` and gives the readout `.frame(width: 32)`
+                                    // (`SettingsView.swift:472-474`), because a bare 16…80 does
+                                    // not need a percentage's column.
+                                    readoutWidth={32}
                                     value={chrome.sparklineWidth}
                                     min={16}
                                     max={80}

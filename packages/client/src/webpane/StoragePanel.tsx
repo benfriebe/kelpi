@@ -78,11 +78,48 @@ export function groupCookies(cookies: readonly WebCookie[]): readonly CookieGrou
         }));
 }
 
+/*
+ * L74 — a confirmation is a QUESTION, a consequence and a NAMED action.
+ *
+ * `StoragePanel.swift:57-82` puts both of these through `.confirmationDialog(title,
+ * titleVisibility: .visible)` with a `role: .destructive` button that says what it is about to
+ * do — "Clear all site data", "Enable private mode" — under a title that asks. The port had one
+ * untitled card whose only button read "Continue", so the two very different confirmations were
+ * distinguishable by their body text alone and neither button named its own consequence. The
+ * card stays (a web pane cannot open a sheet over a native page view — the same constraint that
+ * makes this panel a row), but the title, the wording and the button labels are the Swift's.
+ */
+
+/** The question in the title position, per direction (WEB-049). */
+export function privateModeQuestion(enabling: boolean): string {
+    return enabling ? 'Enable private mode for this pane?' : 'Disable private mode for this pane?';
+}
+
 /** WEB-049's two messages — the direction is the whole point of the confirmation. */
 export function privateModeWarning(enabling: boolean): string {
     return enabling
-        ? 'Switching to a private session discards this pane’s cookies when Nex quits, and reloads its tabs against an empty store.'
-        : 'Switching back to the persistent session reloads this pane’s tabs, and any cookies saved before it went private will reappear.';
+        ? 'Tabs will reload in a non-persistent session. Live JS state will be lost; cookies created in private mode are discarded on quit.'
+        : 'Tabs will reload against the persistent store. Live JS state will be lost; previously-saved cookies become visible again.';
+}
+
+/** The destructive button's label — it names the action, never "Continue". */
+export function privateModeAction(enabling: boolean): string {
+    return enabling ? 'Enable private mode' : 'Disable private mode';
+}
+
+export const CLEAR_ALL_QUESTION = 'Clear all site data for this pane?';
+export const CLEAR_ALL_WARNING =
+    'Removes cookies, local storage, IndexedDB, and caches. Logged-in sessions on this data store will be signed out.';
+export const CLEAR_ALL_ACTION = 'Clear all site data';
+
+/**
+ * L60 — `StoragePanel.truncatedValue` (`StoragePanel.swift:458-461`): a cookie's value is
+ * clamped to 60 characters in the collapsed row, so one fat session token cannot push the
+ * whole list into a scroll. The port printed the value whole, inside a `name=value` link.
+ */
+export function truncateCookieValue(value: string, max = 60): string {
+    if (value.length <= max) return value;
+    return `${value.slice(0, max - 1)}…`;
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -153,15 +190,34 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
     const [cookies, setCookies] = useState<readonly WebCookie[]>([]);
     const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
     const [form, setForm] = useState<CookieForm | null>(null);
-    const [confirm, setConfirm] = useState<{ kind: 'clear-all' | 'private'; message: string } | null>(null);
+    const [confirm, setConfirm] = useState<{
+        readonly kind: 'clear-all' | 'private';
+        readonly question: string;
+        readonly message: string;
+        readonly action: string;
+    } | null>(null);
+    /**
+     * L59 — the read is not instant, and the panel has to say so.
+     *
+     * `StoragePanel.swift:135-140` puts a small `ProgressView` beside the "Cookies" heading for
+     * exactly as long as `getAllCookies` is in flight. The port's `refresh()` set no pending
+     * state at all, so a slow list (or one the host never answers) was indistinguishable from a
+     * store with no cookies in it — including on the very first open, where the empty-state line
+     * is what you see while the answer is still coming.
+     */
+    const [loading, setLoading] = useState(false);
 
     const refresh = useCallback((): void => {
-        void commands.cookiesList(paneID).then((reply) => {
-            if (typeof reply !== 'object' || reply === null) return;
-            const record = reply as Record<string, unknown>;
-            if (record['ok'] !== true || !Array.isArray(record['cookies'])) return;
-            setCookies(record['cookies'] as readonly WebCookie[]);
-        });
+        setLoading(true);
+        void commands
+            .cookiesList(paneID)
+            .then((reply) => {
+                if (typeof reply !== 'object' || reply === null) return;
+                const record = reply as Record<string, unknown>;
+                if (record['ok'] !== true || !Array.isArray(record['cookies'])) return;
+                setCookies(record['cookies'] as readonly WebCookie[]);
+            })
+            .finally(() => setLoading(false));
     }, [commands, paneID]);
 
     useEffect(refresh, [refresh]);
@@ -216,10 +272,22 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                 <span style={{ color: tokens.textTertiary }}>
                     {cookies.length === 1 ? '1 cookie' : `${String(cookies.length)} cookies`}
                 </span>
+                {/* L59: the Swift's `ProgressView().controlSize(.small)` in its 12×12 frame. */}
+                {loading ? (
+                    <span
+                        data-testid={`web-storage-loading-${paneID}`}
+                        role="progressbar"
+                        aria-label="Reading cookies"
+                        className="nex-storage-spinner"
+                        style={{ borderColor: tokens.divider, borderTopColor: tokens.textSecondary }}
+                    />
+                ) : null}
                 <button
                     type="button"
                     data-testid={`web-storage-refresh-${paneID}`}
-                    aria-label="Refresh cookies"
+                    // L73: `.help("Refresh cookie list")` (`StoragePanel.swift:158`).
+                    aria-label="Refresh cookie list"
+                    title="Refresh cookie list"
                     className="ml-auto rounded border px-1.5 py-[1px] text-[10px]"
                     style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                     onClick={refresh}
@@ -229,7 +297,9 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                 <button
                     type="button"
                     data-testid={`web-storage-close-${paneID}`}
+                    // L73: `.help("Close storage panel")` (`StoragePanel.swift:101`).
                     aria-label="Close storage panel"
+                    title="Close storage panel"
                     style={{ color: tokens.textTertiary }}
                     onClick={props.onClose}
                 >
@@ -263,7 +333,13 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     testID={`web-private-toggle-${paneID}`}
                     checked={props.isPrivate}
                     onChange={() => {
-                        setConfirm({ kind: 'private', message: privateModeWarning(!props.isPrivate) });
+                        const enabling = !props.isPrivate;
+                        setConfirm({
+                            kind: 'private',
+                            question: privateModeQuestion(enabling),
+                            message: privateModeWarning(enabling),
+                            action: privateModeAction(enabling)
+                        });
                     }}
                 />
             </div>
@@ -274,7 +350,18 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                 style={{ maxHeight: 220 }}
             >
                 {groups.length === 0 ? (
-                    <p style={{ color: tokens.textTertiary }}>No cookies for this pane.</p>
+                    /*
+                     * L61 — the empty line has TWO forms (`StoragePanel.swift:186-192`), and the
+                     * private one is the useful one: an empty list in a private pane is not a
+                     * store you have not visited yet, it is a store that is emptied every launch.
+                     * The port said "No cookies for this pane." in both, which reads as a fault
+                     * in exactly the mode where it is the design.
+                     */
+                    <p data-testid={`web-cookie-empty-${paneID}`} style={{ color: tokens.textTertiary }}>
+                        {props.isPrivate
+                            ? 'No cookies (private mode — fresh on every launch).'
+                            : 'No cookies for this data store yet.'}
+                    </p>
                 ) : (
                     groups.map((group) => {
                         const open = expanded.has(group.domain);
@@ -300,7 +387,9 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                     </button>
                                     <button
                                         type="button"
+                                        // L73: `.help("Add cookie for \(domain)")` (`:237`).
                                         aria-label={`Add cookie for ${group.domain}`}
+                                        title={`Add cookie for ${group.domain}`}
                                         data-testid={`web-cookie-add-${group.domain}`}
                                         style={{ color: tokens.textSecondary }}
                                         onClick={() => setForm(blankForm(group.domain, now()))}
@@ -309,7 +398,9 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                     </button>
                                     <button
                                         type="button"
+                                        // L73: `.help("Delete all cookies for \(domain)")` (`:247`).
                                         aria-label={`Delete all cookies for ${group.domain}`}
+                                        title={`Delete all cookies for ${group.domain}`}
                                         data-testid={`web-cookie-clear-${group.domain}`}
                                         style={{ color: '#E0685F' }}
                                         onClick={() => {
@@ -323,36 +414,86 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                 </div>
                                 {!open
                                     ? null
-                                    : group.cookies.map((cookie) => (
-                                          <div
-                                              key={`${cookie.name}:${cookie.path}`}
-                                              data-testid={`web-cookie-${group.domain}-${cookie.name}`}
-                                              className="flex items-center gap-1 px-1.5 py-[3px]"
-                                              style={{ borderTop: `1px solid ${tokens.divider}` }}
-                                          >
-                                              <button
-                                                  type="button"
-                                                  className="min-w-0 flex-1 truncate text-left font-mono text-[10px]"
-                                                  style={{ color: tokens.textSecondary }}
-                                                  onClick={() => setForm(formFor(cookie, now()))}
+                                    : group.cookies.map((cookie) => {
+                                          /*
+                                           * L60 — a cookie row is a two-line DISCLOSURE
+                                           * (`StoragePanel.swift:270-321`): a `chevron.right` /
+                                           * `chevron.down` expander, the name in 10 pt medium
+                                           * monospace over its 60-char-clamped value in
+                                           * secondary, and an `xmark.circle` delete on the
+                                           * trailing edge. The port had flattened all of that
+                                           * into one `name=value` link — no expander, so nothing
+                                           * said the row opens; no split, so the name a person is
+                                           * scanning for had no more weight than the blob beside
+                                           * it; and no clamp, so a session token ran the row's
+                                           * whole width and truncated the name out of sight.
+                                           *
+                                           * The expander's state is "is THIS cookie's edit form
+                                           * open", which is the same state the Swift chevron
+                                           * tracks (`editingKey == key`).
+                                           */
+                                          const editing =
+                                              form?.original?.name === cookie.name &&
+                                              form.original.domain === cookie.domain &&
+                                              form.original.path === cookie.path;
+                                          return (
+                                              <div
+                                                  key={`${cookie.name}:${cookie.path}`}
+                                                  data-testid={`web-cookie-${group.domain}-${cookie.name}`}
+                                                  data-open={editing ? 'true' : 'false'}
+                                                  className="flex items-center gap-1.5 px-1.5 py-[3px]"
+                                                  style={{ borderTop: `1px solid ${tokens.divider}` }}
                                               >
-                                                  {cookie.name}={cookie.value}
-                                              </button>
-                                              <button
-                                                  type="button"
-                                                  aria-label={`Delete cookie ${cookie.name}`}
-                                                  data-testid={`web-cookie-delete-${cookie.name}`}
-                                                  style={{ color: tokens.textTertiary }}
-                                                  onClick={() => {
-                                                      void commands
-                                                          .cookieDelete(paneID, cookie.name, cookie.domain)
-                                                          .then(refresh);
-                                                  }}
-                                              >
-                                                  ✕
-                                              </button>
-                                          </div>
-                                      ))}
+                                                  <button
+                                                      type="button"
+                                                      data-testid={`web-cookie-toggle-${cookie.name}`}
+                                                      className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                                                      onClick={() =>
+                                                          setForm(editing ? null : formFor(cookie, now()))
+                                                      }
+                                                  >
+                                                      <span
+                                                          aria-hidden="true"
+                                                          className="w-[10px] shrink-0 text-[8px] font-semibold"
+                                                          style={{ color: tokens.textTertiary }}
+                                                      >
+                                                          {editing ? '▾' : '▸'}
+                                                      </span>
+                                                      <span className="flex min-w-0 flex-1 flex-col">
+                                                          <span
+                                                              className="truncate font-mono text-[10px] font-medium"
+                                                              style={{ color: tokens.textPrimary }}
+                                                          >
+                                                              {cookie.name}
+                                                          </span>
+                                                          <span
+                                                              data-testid={`web-cookie-value-${cookie.name}`}
+                                                              className="truncate font-mono text-[10px]"
+                                                              style={{ color: tokens.textSecondary }}
+                                                          >
+                                                              {truncateCookieValue(cookie.value)}
+                                                          </span>
+                                                      </span>
+                                                  </button>
+                                                  <button
+                                                      type="button"
+                                                      // L73: `.help("Delete cookie \(name)")` (`:303`).
+                                                      aria-label={`Delete cookie ${cookie.name}`}
+                                                      title={`Delete cookie ${cookie.name}`}
+                                                      data-testid={`web-cookie-delete-${cookie.name}`}
+                                                      className="shrink-0 self-start"
+                                                      style={{ color: tokens.textSecondary }}
+                                                      onClick={() => {
+                                                          void commands
+                                                              .cookieDelete(paneID, cookie.name, cookie.domain)
+                                                              .then(refresh);
+                                                      }}
+                                                  >
+                                                      ⊗
+                                                  </button>
+                                              </div>
+                                          );
+                                      })}
                             </div>
                         );
                     })
@@ -364,6 +505,8 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     <button
                         type="button"
                         data-testid={`web-cookie-add-${paneID}`}
+                        // L73: `.help("Add a cookie")` (`StoragePanel.swift:149`).
+                        title="Add a cookie"
                         className="rounded border px-2 py-[3px]"
                         style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                         onClick={() => setForm(blankForm('', now()))}
@@ -373,13 +516,16 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     <button
                         type="button"
                         data-testid={`web-clear-site-data-${paneID}`}
+                        // L73: `.help("Clear all site data (cookies, caches, local storage)")` (`:168`).
+                        title="Clear all site data (cookies, caches, local storage)"
                         className="ml-auto rounded border px-2 py-[3px]"
                         style={{ borderColor: '#E0685F', color: '#E0685F' }}
                         onClick={() =>
                             setConfirm({
                                 kind: 'clear-all',
-                                message:
-                                    'Remove every cookie, local storage entry, IndexedDB database and cache for this pane’s store? This cannot be undone.'
+                                question: CLEAR_ALL_QUESTION,
+                                message: CLEAR_ALL_WARNING,
+                                action: CLEAR_ALL_ACTION
                             })
                         }
                     >
@@ -472,7 +618,43 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             onChange={(event) => setForm({ ...form, expires: event.target.value })}
                         />
                     </div>
+                    {/*
+                     * L58 — the edit form's footer is `Delete … Cancel Save`
+                     * (`StoragePanel.swift:592-599`): a `role: .destructive` Delete pinned to the
+                     * leading edge by a `Spacer()`, then Cancel and the default-action Save. The
+                     * port shipped Save and Cancel only, so a cookie you had opened to inspect
+                     * could not be removed from the form you were looking at — you had to close
+                     * it and find the row's own ✕ again. Delete is present only when there IS an
+                     * original to delete: `onDelete` is nil on the add form, exactly as here.
+                     */}
                     <div className="flex gap-1.5">
+                        {form.original === null ? null : (
+                            <button
+                                type="button"
+                                data-testid={`web-cookie-form-delete-${paneID}`}
+                                className="rounded border px-2 py-[3px]"
+                                style={{ borderColor: '#E0685F', color: '#E0685F' }}
+                                onClick={() => {
+                                    const original = form.original;
+                                    if (original === null) return;
+                                    setForm(null);
+                                    void commands
+                                        .cookieDelete(paneID, original.name, original.domain)
+                                        .then(refresh);
+                                }}
+                            >
+                                Delete
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            data-testid={`web-cookie-form-cancel-${paneID}`}
+                            className="ml-auto rounded border px-2 py-[3px]"
+                            style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
+                            onClick={() => setForm(null)}
+                        >
+                            Cancel
+                        </button>
                         <button
                             type="button"
                             data-testid={`web-cookie-form-save-${paneID}`}
@@ -482,15 +664,6 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             onClick={save}
                         >
                             Save
-                        </button>
-                        <button
-                            type="button"
-                            data-testid={`web-cookie-form-cancel-${paneID}`}
-                            className="rounded border px-2 py-[3px]"
-                            style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                            onClick={() => setForm(null)}
-                        >
-                            Cancel
                         </button>
                     </div>
                 </div>
@@ -502,6 +675,14 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     className="flex flex-col gap-1.5 rounded p-2"
                     style={{ border: `1px solid ${tokens.divider}`, background: tokens.windowBackground }}
                 >
+                    {/* L74: the question a `confirmationDialog` puts in its visible title. */}
+                    <p
+                        data-testid={`web-storage-confirm-title-${paneID}`}
+                        className="font-medium"
+                        style={{ color: tokens.textPrimary }}
+                    >
+                        {confirm.question}
+                    </p>
                     <p style={{ color: tokens.textSecondary }}>{confirm.message}</p>
                     <div className="flex gap-1.5">
                         <button
@@ -519,7 +700,8 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                 void commands.setPrivate(paneID, !props.isPrivate);
                             }}
                         >
-                            Continue
+                            {/* L74: the destructive button NAMES the action, never "Continue". */}
+                            {confirm.action}
                         </button>
                         <button
                             type="button"

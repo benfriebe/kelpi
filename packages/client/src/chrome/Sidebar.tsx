@@ -24,7 +24,6 @@
  */
 
 import { firstGrapheme } from '@nex/core/codec';
-import type { KeyBindingMap, NexAction } from '@nex/core/config';
 import type { IconRef, WorkspaceColor } from '@nex/daemon/store';
 import {
     memo,
@@ -50,7 +49,6 @@ import {
     iconIsTintable,
     normalizeEmojiInput
 } from './icons';
-import { shortcutForAction } from './keys';
 import {
     applyGroupDrop,
     applyWorkspaceDrop,
@@ -329,6 +327,31 @@ export const SPRING_EASING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
 export const REORDER_MS = 350;
 
 /**
+ * L15: a SPRING-LOADED group opens on a fast ease, not on the entry spring.
+ *
+ * `WorkspaceListView.swift:1989-1991` wraps the reveal in
+ * `withAnimation(.easeInOut(duration: 0.1)) { springLoadedGroupID = target }` — an explicit,
+ * deliberately quick curve, because the cursor is already holding a dragged row over the header
+ * and the user is waiting on the children to appear underneath it. The port let the newly
+ * rendered rows play the ordinary 350ms `nex-sidebar-row-enter`, so a spring-load took three and
+ * a half times as long to finish as the shipped app's and the drop zones under the cursor kept
+ * moving for most of it.
+ *
+ * Only the spring-load path is fast. A group opened by CLICKING its chevron still animates on
+ * the entry keyframes, which is the Swift's own split: that route mutates through the list's
+ * `.animation(.spring(response: 0.35, dampingFraction: 0.8), value: entries)` (`:360-368`).
+ */
+export const SPRING_LOAD_ENTER_MS = 100;
+export const SPRING_LOAD_ENTER_EASING = 'ease-in-out';
+
+/** The `animation` shorthand a row that has just appeared plays. */
+export function rowEnterAnimation(fast: boolean): string {
+    return fast
+        ? `${ROW_ENTER_ANIMATION} ${String(SPRING_LOAD_ENTER_MS)}ms ${SPRING_LOAD_ENTER_EASING} both`
+        : `${ROW_ENTER_ANIMATION} ${String(REORDER_MS)}ms ${SPRING_EASING} both`;
+}
+
+/**
  * The channel the spring writes, and the reason it is `translate` rather than `transform`.
  *
  * `translate` is an independent transform property: it composes with whatever `transform` the
@@ -428,7 +451,19 @@ function statusDotColor(counts: AgentCounts): string | null {
     return null;
 }
 
-function StatusDot({ counts }: { readonly counts: AgentCounts }): ReactElement | null {
+function StatusDot({
+    counts,
+    top
+}: {
+    readonly counts: AgentCounts;
+    /**
+     * L18: the two hosts offset the dot by DIFFERENT amounts. `.offset(x: 3, y: -3)` on a
+     * workspace avatar (`WorkspaceRowView.swift:129`) and `.offset(x: 3, y: -2)` on a group
+     * glyph (`GroupHeaderRow.swift:139`) — the group's icon has no filled box under it, so its
+     * dot sits a point lower. The port drew one `-top-[3px]` for both.
+     */
+    readonly top: 2 | 3;
+}): ReactElement | null {
     const color = statusDotColor(counts);
     if (color === null) return null;
     return (
@@ -448,9 +483,10 @@ function StatusDot({ counts }: { readonly counts: AgentCounts }): ReactElement |
              * so the animated `opacity` carries the fill and the ring together, as one view's
              * opacity does in SwiftUI.
              */
-            className="nex-agent-dot-pulse absolute -right-[3px] -top-[3px] h-[9px] w-[9px] rounded-full"
+            className="nex-agent-dot-pulse absolute -right-[3px] h-[9px] w-[9px] rounded-full"
             style={
                 {
+                    top: -top,
                     background: color,
                     '--nex-dot-ring': tokens.sidebarBackground
                 } as CSSProperties
@@ -502,7 +538,7 @@ function Avatar(props: AvatarProps): ReactElement {
             >
                 {glyph ?? avatarLetter(props.name)}
             </span>
-            <StatusDot counts={props.counts} />
+            <StatusDot counts={props.counts} top={3} />
         </span>
     );
 }
@@ -513,20 +549,36 @@ interface LabelChipsProps {
     readonly bucket: ChromeBucket;
 }
 
-/** §5.3: up to 3 chips + a `+N` overflow indicator. */
+/**
+ * §5.3: up to 3 chips + a `+N` overflow indicator.
+ *
+ * L4 — three metrics off the Swift, all in `WorkspaceRowView.swift:54, 65-76`:
+ *
+ *   - the gap under the name is the row's `VStack(alignment: .leading, spacing: 3)`, so THREE
+ *     px, not `mt-0.5`'s two;
+ *   - the chip row is an `HStack`, which never wraps. A wrapping row is a row whose HEIGHT
+ *     depends on its labels, and the sidebar's whole density argument (§H5) is that a row is
+ *     one fixed height;
+ *   - each chip is `.lineLimit(1)` (`WorkspaceLabelViews.swift:47`), so a long label CLIPS
+ *     rather than pushing its neighbours out of the row. `truncate` needs a shrinkable box, so
+ *     the chips carry `min-w-0` and the row is `min-w-0` inside the name column.
+ *
+ * The `+N` indicator is `.font(.system(size: 9, weight: .medium))` at `:72` — the weight was
+ * the one thing the port's copy of it dropped.
+ */
 function LabelChips(props: LabelChipsProps): ReactElement | null {
     if (props.labels.length === 0) return null;
     const shown = props.labels.slice(0, 3);
     const overflow = props.labels.length - shown.length;
     return (
-        <span className="mt-0.5 flex flex-wrap items-center gap-1">
+        <span className="mt-[3px] flex min-w-0 flex-nowrap items-center gap-1">
             {shown.map((label) => {
                 const style = resolveLabelStyle(label, props.presets, props.bucket);
                 return (
                     <span
                         key={label}
                         data-testid="label-chip"
-                        className="rounded-full px-[5px] py-px text-[9px] font-medium"
+                        className="min-w-0 truncate rounded-full px-[5px] py-px text-[9px] font-medium"
                         style={{ background: style.background, color: style.text }}
                     >
                         {label}
@@ -534,7 +586,7 @@ function LabelChips(props: LabelChipsProps): ReactElement | null {
                 );
             })}
             {overflow > 0 ? (
-                <span className="text-[9px]" style={{ color: tokens.textTertiary }}>
+                <span className="shrink-0 text-[9px] font-medium" style={{ color: tokens.textTertiary }}>
                     +{overflow}
                 </span>
             ) : null}
@@ -653,6 +705,8 @@ interface WorkspaceRowProps {
      */
     /** §WS-008: the row is newly inserted, so it plays the entry animation once. */
     readonly entering?: boolean | undefined;
+    /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
+    readonly enterFast?: boolean | undefined;
     readonly groupCaption: string | null;
     readonly onActivate: (workspaceID: string, event: React.MouseEvent) => void;
     readonly onContextMenu: (workspaceID: string, event: React.MouseEvent) => void;
@@ -850,10 +904,10 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
         position: 'relative',
         // §WS-008: a row that has just appeared plays its entry once — a ONE-SHOT, never
         // retargeted, so it stays on the keyframes while the reorder half went to real physics.
-        ...(props.entering === true ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` } : {})
+        ...(props.entering === true ? { animation: rowEnterAnimation(props.enterFast === true) } : {})
     };
 
-    return (
+    const row = (
         <div
             ref={(element) => {
                 props.registerRow(`ws:${workspace.id}`, element);
@@ -882,7 +936,9 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
             /* The radius and the 2px outer margins are inline (see `style`), on the Swift's own
                constants — `rounded-[7px] my-0.5` said the same thing in a vocabulary no jsdom
                test and no derivation could read. */
-            className="flex cursor-default items-center gap-2 px-2 py-1.5"
+            /* L3: `HStack(spacing: 9)` (`WorkspaceRowView.swift:51`) — avatar → name is NINE
+               points, not Tailwind's nearest 8. */
+            className="flex cursor-default items-center gap-[9px] px-2 py-1.5"
             style={style}
             onMouseDown={(event) => {
                 props.onDragStart(workspace.id, event);
@@ -964,17 +1020,26 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                  * The branch and the pane count live in the inspector and the footer, as they do
                  * in the shipped app.
                  */}
-                {props.groupCaption === null ? null : (
-                    <span className="text-[10px]" style={{ color: tokens.textTertiary }}>
-                        in {props.groupCaption}
-                    </span>
-                )}
+                {/* L6: the "in <group>" caption is NOT part of the name column — see below. */}
             </span>
+            {/*
+             * L7: the multi-drag counter is a trailing OVERLAY, not a flex item.
+             *
+             * `WorkspaceListView.swift:1348-1358` hangs it on `.overlay(alignment: .trailing)`
+             * over the already-padded row, in a `.monospaced` 10pt semibold on an accent
+             * `Capsule`, inset `.padding(.trailing, 12)`. The port made it a sibling in the
+             * row's `HStack`, so it PUSHED the name column narrower as the drag started and
+             * sat to the LEFT of the ⌘N badge instead of covering it.
+             *
+             * The 12pt inset is measured from the outer padded frame, and this port keeps that
+             * frame's trailing 8 as the row's own `marginRight` (M7) — so 12 from there is
+             * `right: 4` from the row's border box. Same pixel, different origin.
+             */}
             {props.dragExtra !== undefined && props.dragExtra > 0 ? (
                 <span
                     data-testid="drag-count"
-                    className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold"
-                    style={{ background: tokens.accent, color: '#fff' }}
+                    className="pointer-events-none absolute top-1/2 -translate-y-1/2 rounded-full px-1.5 py-[2px] font-mono text-[10px] font-semibold"
+                    style={{ right: 4, background: tokens.accent, color: '#fff' }}
                 >
                     +{props.dragExtra}
                 </span>
@@ -988,6 +1053,31 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                     ⌘{props.badgeIndex + 1}
                 </span>
             ) : null}
+        </div>
+    );
+
+    if (props.groupCaption === null) return row;
+    /*
+     * L6: the filtered list's "in <group>" caption sits BELOW the whole row, not inside the
+     * name column.
+     *
+     * `WorkspaceListView.swift:772-796` is a `VStack(alignment: .leading, spacing: 0)` holding
+     * the row and then the caption — 9pt tertiary, `.padding(.leading, 20)`, `.padding(.bottom,
+     * 2)`. The port put it in the row's own `VStack` at 10px, which lengthened the row (and, on
+     * a row that also carries labels, gave the filtered list a taller row than the main list's).
+     * The 20pt leading is measured from the row's own leading edge, which is where this padding
+     * is measured from too.
+     */
+    return (
+        <div className="flex flex-col">
+            {row}
+            <span
+                data-testid="row-group-caption"
+                className="text-[9px]"
+                style={{ color: tokens.textTertiary, paddingLeft: 20, paddingBottom: 2 }}
+            >
+                in {props.groupCaption}
+            </span>
         </div>
     );
 });
@@ -1009,6 +1099,8 @@ interface GroupHeaderRowProps {
     readonly registerRow: (key: string, element: HTMLElement | null) => void;
     /** §WS-008: the entry animation, as for a workspace row. The reorder is the FLIP spring. */
     readonly entering?: boolean | undefined;
+    /** L15: this insertion is a SPRING-LOAD reveal, so the entry runs on the 100ms ease. */
+    readonly enterFast?: boolean | undefined;
 }
 
 const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps): ReactElement {
@@ -1035,7 +1127,8 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
             data-drop-preview={props.dropPreview ? 'true' : 'false'}
             data-entering={props.entering === true ? 'true' : undefined}
             data-reorder="spring"
-            className="flex cursor-default items-center gap-2 px-2 py-1.5"
+            /* L3: `HStack(spacing: 9)` (`GroupHeaderRow.swift:38`), the workspace row's own. */
+            className="flex cursor-default items-center gap-[9px] px-2 py-1.5"
             style={{
                 /*
                  * `GroupHeaderRow.swift:98` — an 8pt band, one point rounder than a row's 7pt
@@ -1061,22 +1154,36 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                  *     `--nex-group-band-opacity: 0.3` instead of a frozen 0.16 of the dark
                  *     preset's `#8A8A92`.
                  */
-                background: props.dropPreview
-                    ? withAlpha(tokens.accent, 0.18)
-                    : // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
-                      // appearance preset's band opacity before it reaches the variable, so the
-                      // default here is the preset value the band has always used.
-                      tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
-                border: props.dropPreview
-                    ? `1px solid ${tokens.accent}`
-                    : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`,
+                // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
+                // appearance preset's band opacity before it reaches the variable, so the
+                // default here is the preset value the band has always used.
+                background: tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
+                /*
+                 * L10: the `ontoGroupHeader` preview is an accent rectangle drawn ON TOP of the
+                 * band, not a replacement for it.
+                 *
+                 * `WorkspaceListView.swift:1891-1898` overlays `Color.accentColor.opacity(0.18)`
+                 * across the header's y-range in the drop-indicator layer — the band underneath
+                 * keeps painting, so the group's own colour still reads through the tint and the
+                 * user can see WHICH group is about to take the drop. The port swapped the fill
+                 * out (so a red group and a blue one previewed identically) and added a 1px
+                 * accent border the Swift never draws. `background-image` layers the wash over
+                 * the fill without a second node, exactly as the row's selected+active pair does.
+                 */
+                ...(props.dropPreview
+                    ? {
+                          backgroundImage: `linear-gradient(${withAlpha(tokens.accent, 0.18)}, ${withAlpha(
+                              tokens.accent,
+                              0.18
+                          )})`
+                      }
+                    : {}),
+                border: `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`,
                 // §WS-008: a header reorders (a whole group block moving) exactly like a row —
                 // on the same FLIP spring, written to `translate`. What is left on `transform`
                 // is the lift, as on a workspace row.
                 transition: `transform ${String(REORDER_MS)}ms ${SPRING_EASING}`,
-                ...(props.entering === true
-                    ? { animation: `${ROW_ENTER_ANIMATION} 350ms ${SPRING_EASING} both` }
-                    : {})
+                ...(props.entering === true ? { animation: rowEnterAnimation(props.enterFast === true) } : {})
             }}
             onMouseDown={(event) => {
                 props.onDragStart(group.id, event);
@@ -1110,7 +1217,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                         <ChromeIcon name="folder" size={14} filled={folderIcon === 'filled'} />
                     </span>
                 )}
-                <StatusDot counts={props.counts} />
+                <StatusDot counts={props.counts} top={2} />
             </span>
             {/*
               * §H23: `flex` on the WRAPPER, not just `min-w-0 flex-1`.
@@ -1157,7 +1264,11 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                     aria-label={props.collapsed ? `Expand ${group.name}` : `Collapse ${group.name}`}
                     data-testid="group-chevron"
                     className="shrink-0"
-                    style={{ color: tokens.textSecondary }}
+                    /* L8: `.font(.system(size: 11, weight: .semibold))` +
+                       `.foregroundStyle(theme.textTertiary)` (`GroupHeaderRow.swift:85-89`) —
+                       the port drew it a point large, in the secondary colour, at the regular
+                       stroke. Both apps SWAP the glyph rather than rotate it. */
+                    style={{ color: tokens.textTertiary }}
                     onClick={(event) => {
                         event.stopPropagation();
                         props.onToggle(group.id);
@@ -1166,7 +1277,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                         event.stopPropagation();
                     }}
                 >
-                    <ChromeIcon name={props.collapsed ? 'chevron-right' : 'chevron-down'} />
+                    <ChromeIcon name={props.collapsed ? 'chevron-right' : 'chevron-down'} size={11} strokeWidth={1.6} />
                 </button>
             )}
         </div>
@@ -1224,8 +1335,6 @@ export interface SidebarProps extends SidebarCallbacks {
      * it while mounted and nulls it on unmount, so a torn-down sidebar can never be driven.
      */
     readonly selectionCommandsRef?: { current: SidebarSelectionCommands | null } | undefined;
-    /** Shortcut hints on the menu rows that have one; absent = no hints. */
-    readonly keyBindings?: KeyBindingMap | undefined;
     /**
      * §15's one-shot "scroll the new entry into view". Assembly sets it when THIS client's own
      * create lands, and the sidebar clears it through `onScrollHandled` — a delta caused by
@@ -1571,6 +1680,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
     );
 
     const listRef = useRef<HTMLDivElement | null>(null);
+    /** L13: the filter field, so its clear button can drop first responder the way Escape does. */
+    const filterInputRef = useRef<HTMLInputElement | null>(null);
     /**
      * §WS-004's footer chevron. The menu is a portal, so opening it needs the button's VIEWPORT
      * rect (the same reason `TopBar`'s ••• menu keeps a ref), and closing it needs the button
@@ -1586,6 +1697,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const shadowRef = useRef<SidebarOrderModel | null>(null);
     /** Read by `onUp`, which runs from a window listener and cannot close over the render. */
     const springLoadedRef = useRef<string | null>(null);
+    /**
+     * L15: armed by the spring-load timer immediately before it flips the group open, read (and
+     * cleared) by the layout pass that spots the rows that flip revealed. A ref rather than
+     * state because the two live one commit apart and the flag must not itself cause a render.
+     */
+    const springLoadEnterRef = useRef(false);
     const entriesRef = useRef(props.entries);
     const collapseRef = useRef(collapse);
     const rowsRef = useRef(rows);
@@ -2300,6 +2417,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             drag.springTimer = setTimeout(() => {
                 drag.springTimer = null;
                 if (dragRef.current !== drag || drag.springCandidate !== groupID) return;
+                // L15: the reveal this flip is about to cause runs on the Swift's 100ms ease
+                // (`WorkspaceListView.swift:1989-1991`), not the ordinary entry spring. The
+                // layout effect that spots the new rows reads and clears the flag.
+                springLoadEnterRef.current = true;
                 setSpringLoadedGroupID(groupID);
             }, springLoadMs);
         };
@@ -2697,6 +2818,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
         lefts: ReadonlyMap<string, number>;
     } | null>(null);
     const [entering, setEntering] = useState<ReadonlySet<string>>(EMPTY_SELECTION);
+    /** L15: the current entry batch came from a spring-load, so it plays the 100ms ease. */
+    const [enteringFast, setEnteringFast] = useState(false);
     const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useLayoutEffect(() => {
@@ -2756,14 +2879,25 @@ export function Sidebar(props: SidebarProps): ReactElement {
         // nothing can see, and the offset would be re-applied if the key ever came back.
         for (const key of gone) forgetRowSprings(key);
 
+        /*
+         * L15: read-and-clear, unconditionally, so a spring-load that revealed nothing (a group
+         * whose children were already rendered) cannot leave the flag armed for the next
+         * insertion — an ordinary create would then flash past at 100ms.
+         */
+        const fast = springLoadEnterRef.current;
+        springLoadEnterRef.current = false;
         const fresh = rows.map((row) => row.key).filter((key) => !previous.keys.has(key));
         if (fresh.length > 0) {
             setEntering(new Set(fresh));
+            setEnteringFast(fast);
             if (enterTimerRef.current !== null) clearTimeout(enterTimerRef.current);
-            enterTimerRef.current = setTimeout(() => {
-                enterTimerRef.current = null;
-                setEntering(EMPTY_SELECTION);
-            }, REORDER_MS + 60);
+            enterTimerRef.current = setTimeout(
+                () => {
+                    enterTimerRef.current = null;
+                    setEntering(EMPTY_SELECTION);
+                },
+                (fast ? SPRING_LOAD_ENTER_MS : REORDER_MS) + 60
+            );
         }
 
         /*
@@ -2985,11 +3119,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
         setMenu(null);
     }, []);
 
-    const shortcut = useCallback(
-        (action: NexAction): string | undefined =>
-            props.keyBindings === undefined ? undefined : shortcutForAction(props.keyBindings, action),
-        [props.keyBindings]
-    );
+    /*
+     * L12: no `shortcut` helper, because no menu row carries a hint any more. Every sidebar
+     * menu in the shipped app is a plain `Button` inside a `.contextMenu`
+     * (`WorkspaceListView.swift:897`, `:1183`, `:344-350`) with no `.keyboardShortcut`, so
+     * `NSMenu` draws no key-equivalent column. `keyBindings` went with the helper — it reached
+     * the sidebar for this and nothing else.
+     */
 
     /**
      * §5.6's "Change Icon ▸" submenu, shared by the workspace and group menus (they differ only
@@ -3267,9 +3403,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 {
                     id: 'rename',
                     label: 'Rename…',
-                    ...(shortcut('rename_workspace') === undefined
-                        ? {}
-                        : { shortcut: shortcut('rename_workspace') }),
                     onSelect: () => {
                         setRename({ kind: 'workspace', id: workspaceID });
                     }
@@ -3466,7 +3599,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
             props,
             selection,
             setSelection,
-            shortcut,
             workspaceByID
         ]
     );
@@ -3480,7 +3612,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 {
                     id: 'new-workspace',
                     label: 'New Workspace',
-                    ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
                     onSelect: () => {
                         setNewForm({ kind: 'workspace', groupID });
                     }
@@ -3560,7 +3691,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             ];
         },
-        [bucket, collapseOverrides, groups, iconSubmenu, props, shortcut, toggleCollapse]
+        [bucket, collapseOverrides, groups, iconSubmenu, props, toggleCollapse]
     );
 
     /**
@@ -3582,7 +3713,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-workspace',
                 label: 'New Workspace',
-                ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
                 onSelect: () => {
                     setNewForm({ kind: 'workspace', groupID: null });
                 }
@@ -3590,7 +3720,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-group',
                 label: 'New Group',
-                ...(shortcut('new_group') === undefined ? {} : { shortcut: shortcut('new_group') }),
                 onSelect: () => {
                     // Assembly supplies the one-shot; without it the row falls back to the sheet
                     // rather than doing nothing.
@@ -3602,7 +3731,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             }
         ],
-        [onNewGroupWithRename, shortcut]
+        [onNewGroupWithRename]
     );
 
     /**
@@ -3619,7 +3748,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-workspace',
                 label: 'New Workspace',
-                ...(shortcut('new_workspace') === undefined ? {} : { shortcut: shortcut('new_workspace') }),
                 onSelect: () => {
                     setNewForm({ kind: 'workspace', groupID: null });
                 }
@@ -3627,7 +3755,6 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {
                 id: 'new-group',
                 label: 'New Group',
-                ...(shortcut('new_group') === undefined ? {} : { shortcut: shortcut('new_group') }),
                 onSelect: () => {
                     if (onNewGroupWithRename !== undefined) {
                         onNewGroupWithRename();
@@ -3637,7 +3764,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 }
             }
         ],
-        [onNewGroupWithRename, shortcut]
+        [onNewGroupWithRename]
     );
 
     const menuItems = useMemo((): readonly MenuItemSpec[] => {
@@ -3772,9 +3899,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
                with the same ring, so it needs the same uncollapsed 2 + 2 between them. */
             <div data-testid="sidebar-filtered" className="flex flex-col">
                 {filtered.length === 0 ? (
-                    <div className="px-3 py-6 text-center text-[12px]" style={{ color: tokens.textTertiary }}>
-                        <div style={{ color: tokens.textSecondary }}>No matches</div>
-                        <div>Try a different filter or clear the field.</div>
+                    /*
+                     * L5: `VStack(spacing: 4) { Text("No matches").font(.system(size: 12, weight:
+                     * .medium)).foregroundStyle(.secondary); Text("Try a different filter…")
+                     * .font(.system(size: 10)).foregroundStyle(.tertiary) }.padding(.vertical, 24)`
+                     * (`WorkspaceListView.swift:730-741`). The port had no line spacing, no
+                     * medium weight on the headline, and drew the sub-line at the headline's own
+                     * 12px — three notes of emphasis flattened into one.
+                     */
+                    <div
+                        data-testid="sidebar-filter-empty"
+                        className="flex flex-col items-center gap-1 px-3 py-6 text-center"
+                        style={{ color: tokens.textTertiary }}
+                    >
+                        <div className="text-[12px] font-medium" style={{ color: tokens.textSecondary }}>
+                            No matches
+                        </div>
+                        <div className="text-[10px]">Try a different filter or clear the field.</div>
                     </div>
                 ) : (
                     filtered.map((row) => (
@@ -3856,6 +3997,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 onCancelRename={cancelRename}
                                 registerRow={registerRow}
                                 entering={entering.has(row.key)}
+                                enterFast={enteringFast}
                             />
                         );
                     }
@@ -3879,7 +4021,23 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 data-testid="group-empty"
                                 data-reorder="spring"
                                 data-guide={emptyGuideColor === undefined ? undefined : 'true'}
-                                className="relative ml-6 py-1.5 pl-2 text-[12px]"
+                                /*
+                                 * L9: `GroupEmptyRow` (`GroupHeaderRow.swift:174-194`) is
+                                 * `HStack(spacing: 8) { Spacer().frame(width: 16); Color.clear
+                                 * .frame(width: 4); Text }` inside `.padding(.horizontal, 16)`,
+                                 * so "No workspaces" starts 16 + 16 + 8 + 4 + 8 = 52pt from the
+                                 * list's leading edge — an `HStack` spends its spacing on EVERY
+                                 * adjacent pair, the fixed-width `Spacer` included.
+                                 *
+                                 * Stated divergence from the register's L9, which reads that
+                                 * chain as 44pt: the arithmetic above is where the 52 comes from,
+                                 * and the port lands on it — the scroller's own `px-2` (8) plus
+                                 * `ml-6` (24) plus `pl-5` (20). The finding's substance is
+                                 * unchanged either way: the placeholder used to start at 40 and
+                                 * carried no trailing padding at all, where the Swift's structure
+                                 * is 16pt on both sides.
+                                 */
+                                className="relative ml-6 py-1.5 pl-5 pr-4 text-[12px]"
                                 style={{ color: tokens.textTertiary }}
                                 onContextMenu={(event) => {
                                     onGroupContextMenu(row.groupID, event);
@@ -3949,6 +4107,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             // around, and an `ontoGroupHeader` target's is the header band's own
                             // tint. Both are the Swift's — see the note above `WorkspaceRow`.
                             entering={entering.has(row.key)}
+                            enterFast={enteringFast}
                             onActivate={onActivate}
                             onContextMenu={onWorkspaceContextMenu}
                             onDragStart={dragStartWorkspace}
@@ -3999,6 +4158,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         <ChromeIcon name="search" size={13} />
                     </span>
                     <input
+                        ref={filterInputRef}
                         aria-label="Filter workspaces or labels"
                         placeholder="Filter workspaces or labels"
                         data-testid="sidebar-filter"
@@ -4034,8 +4194,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             aria-label="Clear filter"
                             className="shrink-0"
                             style={{ color: tokens.textTertiary }}
-                            onClick={() => {
+                            onClick={(event) => {
+                                /*
+                                 * L13: the clear button drops FIRST RESPONDER as well as the
+                                 * text. `WorkspaceListView.swift:657-668` is `filterText = "";
+                                 * isFilterFieldFocused = false` — the same pair the field's own
+                                 * Escape handler runs (`:649-655`), and the port implemented it
+                                 * on Escape only. Without the blur the next keystroke goes back
+                                 * into the field the user has just emptied instead of to the
+                                 * focused pane.
+                                 */
                                 props.onFilterChange('');
+                                filterInputRef.current?.blur();
+                                event.currentTarget.blur();
                             }}
                         >
                             {/* `WorkspaceListView.swift:663` — the `xmark.circle.fill` is 13pt,
@@ -4098,7 +4269,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
                    every row's `offsetTop` is measured against (§WS-008's FLIP and §WS-102's
                    reveal both read that number), and it is the containing block the removal
                    ghosts are pinned inside. */
-                className="relative min-h-0 flex-1 overflow-y-auto px-2 pr-3"
+                /*
+                 * L19: the trailing inset is 8, not 12 — and the row's own `marginRight` (M7)
+                 * is the OTHER 8. `WorkspaceListView.swift:358` pads the list `.trailing, 8` to
+                 * clear the overlay scroller and `:1339` pads each row `.horizontal, 8`, so a
+                 * row's background stops 16pt short of the sidebar's right edge and 8pt short of
+                 * its left. `pr-3` made that 20 on the right the moment M7 landed the row half.
+                 *
+                 * `flex flex-col` is L14's other half: the trailing right-click target below is
+                 * a FLEXIBLE spacer in the Swift, and only a flex column can grow it.
+                 */
+                className="relative flex min-h-0 flex-1 flex-col overflow-y-auto px-2"
                 style={{ paddingTop: CONTENT_TOP_PADDING }}
                 onContextMenu={onBackgroundContextMenu}
                 role="listbox"
@@ -4116,8 +4297,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     aria-hidden
                     className="pointer-events-none absolute left-0 top-0 z-10 h-0 w-full"
                 />
-                {body}
-                <div className="h-8" data-testid="sidebar-spacer" />
+                {/* The list itself never shrinks; the spacer below takes the slack. */}
+                <div className="shrink-0">{body}</div>
+                {/*
+                 * L14: `Color.clear.frame(minHeight: 40, maxHeight: .infinity)`
+                 * (`WorkspaceListView.swift:335-336`) — the right-click target under the last row
+                 * is at LEAST 40pt and then fills whatever viewport is left, which is why "New
+                 * Workspace / New Group" is reachable by right-clicking anywhere in the empty
+                 * half of a short list. The port's fixed `h-8` was both a third too short and
+                 * inert past its 32px, so most of an empty sidebar answered no right-click.
+                 */}
+                <div className="min-h-10 flex-1 shrink-0" data-testid="sidebar-spacer" />
             </div>
 
             <div
@@ -4154,13 +4344,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         data-testid="sidebar-new-workspace"
                         aria-label="New Workspace"
                         title="New Workspace (⌘N)"
-                        className="flex items-center text-[12px]"
+                        /*
+                         * L20: the Swift's Button label sets no font at all
+                         * (`WorkspaceListView.swift:400-436`), so it inherits the footer's — the
+                         * system BODY face, 13pt — and `Image(systemName: "plus")` inherits it
+                         * too, drawing the glyph at body size rather than at the 12px this
+                         * port's chrome SVG defaults to. Both go up a point; the glyph stays
+                         * this file's hand-rolled SVG (there are no SF Symbols in a browser),
+                         * now sized to the text beside it.
+                         */
+                        className="flex items-center text-[13px]"
                         style={{ color: tokens.textSecondary, gap: FOOTER_GAP_PX }}
                         onClick={() => {
                             setNewForm({ kind: 'workspace', groupID: null });
                         }}
                     >
-                        <ChromeIcon name="plus" /> New Workspace
+                        <ChromeIcon name="plus" size={13} /> New Workspace
                     </button>
                     {/*
                       * `Menu { … } label: Image("chevron.down").font(.system(size: 9,

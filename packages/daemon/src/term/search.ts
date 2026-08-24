@@ -17,9 +17,17 @@
  *
  *  - **Soft wraps are re-joined before matching.** A needle straddling the wrap point of a
  *    long command line is a real match and `capture()` already joins wrapped rows for the same
- *    reason (`service.ts` `readRegion`). Rows are joined at FULL width (`translateToString(false)`)
- *    for every row but the last of a logical line, so an offset inside the joined string maps
- *    back to a buffer row by integer division: `row = start + floor(offset / cols)`.
+ *    reason (`service.ts` `readRegion`). Every row is read bounded to the GRID
+ *    (`min(cols, line.length)`) and joined as the text it actually produced; each row's start
+ *    offset in the join is recorded as it goes (`LogicalLine.rows`), and a match offset maps
+ *    back to a buffer row through that map. Not by `floor(offset / cols)`: under `NO_REFLOW`
+ *    (`service.ts`) a column shrink leaves rows WIDER than the grid and a widen leaves them
+ *    narrower, so "every row contributed exactly `cols` characters" is false in both
+ *    directions — the division walked a match onto a row its own logical line never touched,
+ *    and the `% cols` pad that propped it up injected spaces that were never on the screen (a
+ *    needle spanning a stale wrap could then not match at all). The bound matters just as
+ *    much: cells a shrink stranded past the grid are unreachable by any program and drawn by
+ *    no renderer, so a match inside one is a counter that reveals nothing.
  *  - **Match positions are reported from the BOTTOM of the buffer**, not the top. The client's
  *    renderer has its own scrollback (ghostty-web's is bounded in BYTES, xterm.js's in lines,
  *    and a fresh client replays a possibly-capped snapshot), so absolute line indices do not
@@ -44,11 +52,25 @@ export interface TerminalMatch {
     readonly linesFromBottom: number;
 }
 
-/** A logical (wrap-joined) line plus where it started and how wide its rows are. */
+/** One buffer row's contribution to a logical line: which row, and where its text begins. */
+export interface LogicalRow {
+    /** Buffer row index, counted from the top of the scrollback. */
+    readonly line: number;
+    /** Offset in the logical line's `text` at which this row's characters start. */
+    readonly offset: number;
+}
+
+/** A logical (wrap-joined) line plus where it started and which rows built it. */
 export interface LogicalLine {
     readonly text: string;
     readonly startLine: number;
+    /**
+     * Grid width the rows were bounded to when they were read. Informational: match positions
+     * come from `rows`, never from arithmetic over this (see the header).
+     */
     readonly cols: number;
+    /** Every row that contributed, in buffer order — the map a match offset resolves through. */
+    readonly rows: readonly LogicalRow[];
 }
 
 /**
@@ -64,6 +86,10 @@ export const MAX_TERMINAL_MATCHES = 5000;
  *
  * `includeScrollback: false` reads only the viewport, which is what a search over an
  * alternate-screen app (vim, less) should see — that buffer has no history anyway.
+ *
+ * Each row is read bounded to the grid and appended as-is; the offset it landed at is recorded
+ * in `rows`, so nothing downstream has to assume a row is `cols` characters wide (see the
+ * header for why that assumption is false in both resize directions).
  */
 export function collectLogicalLines(
     term: Pick<HeadlessTerminal, 'buffer' | 'rows' | 'cols'>,
@@ -79,24 +105,52 @@ export function collectLogicalLines(
     const lines: LogicalLine[] = [];
     let text: string | null = null;
     let startLine = start;
+    let rows: LogicalRow[] = [];
     for (let y = start; y < end; y++) {
         const line = buffer.getLine(y);
-        const wrapped = line?.isWrapped === true;
-        if (text !== null && wrapped) {
-            // A continued row: the PREVIOUS row was full width, so pad the accumulated text
-            // back out to a multiple of `cols` before appending. (`translateToString(true)`
-            // trimmed it; re-reading untrimmed is not possible once appended.)
-            const short = text.length % cols;
-            if (short !== 0) text += ' '.repeat(cols - short);
-            text += line === undefined ? '' : line.translateToString(true);
+        // The GRID, never the row's allocation: a column shrink leaves rows wider than the
+        // grid under `NO_REFLOW`, and those cells are unreachable and undrawn.
+        const rowText = line === undefined ? '' : line.translateToString(true, 0, Math.min(cols, line.length));
+        if (text !== null && line?.isWrapped === true) {
+            // A continued row: it starts exactly where the text built so far ends. No pad —
+            // the join is the characters the rows actually produced.
+            rows.push({ line: y, offset: text.length });
+            text += rowText;
             continue;
         }
-        if (text !== null) lines.push({ text, startLine, cols });
+        if (text !== null) lines.push({ text, startLine, cols, rows });
         startLine = y;
-        text = line === undefined ? '' : line.translateToString(true);
+        rows = [{ line: y, offset: 0 }];
+        text = rowText;
     }
-    if (text !== null) lines.push({ text, startLine, cols });
+    if (text !== null) lines.push({ text, startLine, cols, rows });
     return lines;
+}
+
+/**
+ * Which buffer row an offset into a logical line lands on, and the column inside that row.
+ *
+ * A binary search over the row map `collectLogicalLines` built from the text it actually
+ * produced. An empty map (a hand-built line) degrades to the line's own start.
+ */
+function locate(line: LogicalLine, offset: number): { line: number; col: number } {
+    const rows = line.rows;
+    let lo = 0;
+    let hi = rows.length - 1;
+    let found: LogicalRow | undefined;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const row = rows[mid];
+        if (row === undefined) break;
+        if (row.offset <= offset) {
+            found = row;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if (found === undefined) return { line: line.startLine, col: offset };
+    return { line: found.line, col: offset - found.offset };
 }
 
 /**
@@ -124,12 +178,12 @@ export function findMatches(
         for (;;) {
             const at = haystack.indexOf(target, from);
             if (at < 0) break;
-            const row = line.startLine + Math.floor(at / line.cols);
+            const where = locate(line, at);
             matches.push({
-                line: row,
-                col: at % line.cols,
+                line: where.line,
+                col: where.col,
                 length: needle.length,
-                linesFromBottom: options.bufferLength - row
+                linesFromBottom: options.bufferLength - where.line
             });
             if (matches.length >= limit) return matches;
             // Overlapping occurrences count separately ("aa" in "aaa" is two matches), which is

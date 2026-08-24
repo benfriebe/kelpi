@@ -161,20 +161,28 @@ export const CATALOGUED_ACTIONS: readonly NexAction[] = NEX_ACTIONS;
  * below are now that sequence verbatim, and the port-only **Workspaces** tab is APPENDED
  * rather than inserted — an addition at the bottom of the rail cannot displace any of the
  * seven, where slotting it beside General (the tab that points at it) would have.
+ *
+ * **Each entry names its glyph** (L88). Every `.tabItem` in `SettingsView.swift:20-59` is a
+ * `Label(name, systemImage:)`, and the port's rail had the names alone. The `icon` key is the SF
+ * Symbol's name, which `SettingsOverlay` maps to the hand-rolled drawing in `./glyphs.tsx` — the
+ * symbol name rather than a component so this table stays a plain data module (it is imported by
+ * the daemon-side tests) and so the Swift line it comes from is legible at the call site.
  */
 export const SETTINGS_TABS = [
-    { id: 'general', label: 'General' },
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'repositories', label: 'Repositories' },
-    { id: 'labels', label: 'Labels' },
-    { id: 'profiles', label: 'Profiles' },
-    { id: 'keybindings', label: 'Keybindings' },
-    { id: 'web', label: 'Web' },
-    // Port-only, and last for that reason. See the note above.
-    { id: 'workspaces', label: 'Workspaces' }
+    { id: 'general', label: 'General', icon: 'gear' },
+    { id: 'appearance', label: 'Appearance', icon: 'paintbrush' },
+    { id: 'repositories', label: 'Repositories', icon: 'externaldrive' },
+    { id: 'labels', label: 'Labels', icon: 'tag' },
+    { id: 'profiles', label: 'Profiles', icon: 'person.badge.key' },
+    { id: 'keybindings', label: 'Keybindings', icon: 'command' },
+    { id: 'web', label: 'Web', icon: 'globe' },
+    // Port-only, and last for that reason. See the note above. Its glyph is chosen, not ported —
+    // there is no Swift tab to copy one from.
+    { id: 'workspaces', label: 'Workspaces', icon: 'square.grid.2x2' }
 ] as const;
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]['id'];
+export type SettingsTabIcon = (typeof SETTINGS_TABS)[number]['icon'];
 
 /**
  * The tab Settings opens on when nothing deep-links a specific one.

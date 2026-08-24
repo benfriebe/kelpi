@@ -22,7 +22,13 @@ import { GlobalHotkeySection } from './GlobalHotkeySection';
 import { hasCustomBindings, keybindingSections } from './model';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
-import { SettingsButton, SettingsIconButton, TriggerChip, XmarkCircleFillGlyph } from './ui';
+import {
+    SETTINGS_SECTION_HEADING,
+    SettingsButton,
+    SettingsIconButton,
+    TriggerChip,
+    XmarkCircleFillGlyph
+} from './ui';
 
 export interface KeybindingsTabProps {
     readonly bindings: KeyBindingMap;
@@ -72,6 +78,18 @@ export const CAPTURED_FEEDBACK_MS = 700;
  * bordered group, so a continuous count would put an unexplained stripe at some section heads.
  */
 export const ROW_STRIPE = { base: 'transparent', alternate: withAlpha('#808080', 0.06) } as const;
+
+/**
+ * L90's two reservations, in pixels, measured against the 11 px button face this table uses.
+ *
+ * `RECORD_BUTTON_WIDTH` is a floor for the widest thing the Record button ever says — "Press a
+ * key…" — so the shorter "Record" and a captured chord sit in the same box. `CANCEL_SLOT_WIDTH`
+ * is the width of the Cancel button plus its gap, held open at rest so arming a row inserts
+ * nothing. Both are a shade generous: over-reserving costs a few pixels of a flexible label
+ * column, under-reserving costs the reflow the row is about.
+ */
+export const RECORD_BUTTON_WIDTH = 92;
+export const CANCEL_SLOT_WIDTH = 56;
 
 export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     const [recording, setRecording] = useState<RecordingState | null>(null);
@@ -165,10 +183,13 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
 
                 {sections.map((section) => (
                 <div key={section.category} className="flex flex-col gap-1">
-                    <h3
-                        className="text-[11px] font-semibold uppercase tracking-wide"
-                        style={{ color: tokens.textTertiary }}
-                    >
+                    {/*
+                     * L79's header recipe, shared rather than restated: this tab builds its own
+                     * table, so it does not go through `SettingsSection` — but `Section("Global")`
+                     * right above it does, and two heading shapes inside one tab is what the
+                     * uppercase micro-label looked like once the Global section stopped using it.
+                     */}
+                    <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
                         {section.category}
                     </h3>
                     <div
@@ -296,10 +317,29 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                         )}
                                     </span>
 
+                                    {/*
+                                     * L90: the trailing cluster's FOOTPRINT never changes.
+                                     *
+                                     * `KeybindingsSettingsView.swift:184-197` is always
+                                     * `[Record] [Reset]`, because arming a row there opens a
+                                     * SHEET — the recorder is somewhere else entirely, so the row
+                                     * cannot move. This port inlines the recorder (there is no
+                                     * sheet), which had two consequences the shipped table has
+                                     * neither of: Record's label grew from "Record" to "Press a
+                                     * key…", and SET-094's Cancel was INSERTED between the two
+                                     * buttons — so pressing Record slid Reset left and re-flowed
+                                     * the whole row under the pointer that had just clicked it.
+                                     *
+                                     * Both are reserved rather than removed. Record carries a
+                                     * floor wide enough for its longest state, and Cancel lives
+                                     * in a fixed slot that is present (and empty) at rest, so the
+                                     * cluster is the same width armed and idle.
+                                     */}
                                     <span role="cell" className="flex items-center gap-2">
                                         <SettingsButton
                                             testID={`keybinding-record-${row.action}`}
                                             tone={isRecording ? 'accent' : 'default'}
+                                            minWidth={RECORD_BUTTON_WIDTH}
                                             onClick={() => {
                                                 setRecording(
                                                     isRecording ? null : { action: row.action, message: null }
@@ -315,16 +355,22 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                          * `.cancelAction` — so Escape and a click do the same
                                          * thing. Escape already did; this is the click.
                                          */}
-                                        {isRecording && recording.captured === undefined ? (
-                                            <SettingsButton
-                                                testID={`keybinding-cancel-${row.action}`}
-                                                onClick={() => {
-                                                    setRecording(null);
-                                                }}
-                                            >
-                                                Cancel
-                                            </SettingsButton>
-                                        ) : null}
+                                        <span
+                                            data-testid={`keybinding-cancel-slot-${row.action}`}
+                                            className="flex shrink-0 justify-start"
+                                            style={{ width: `${String(CANCEL_SLOT_WIDTH)}px` }}
+                                        >
+                                            {isRecording && recording.captured === undefined ? (
+                                                <SettingsButton
+                                                    testID={`keybinding-cancel-${row.action}`}
+                                                    onClick={() => {
+                                                        setRecording(null);
+                                                    }}
+                                                >
+                                                    Cancel
+                                                </SettingsButton>
+                                            ) : null}
+                                        </span>
                                         <SettingsButton
                                             testID={`keybinding-reset-${row.action}`}
                                             disabled={row.isDefault}

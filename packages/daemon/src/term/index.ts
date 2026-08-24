@@ -65,6 +65,7 @@ export {
     findMatches,
     searchTerminal,
     type LogicalLine,
+    type LogicalRow,
     type SearchOptions,
     type TerminalMatch
 } from './search.js';

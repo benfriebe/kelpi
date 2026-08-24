@@ -623,9 +623,12 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
       else mark.classList.remove('nex-find-current');
     }
     var active = findState.marks[findState.current];
-    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'center' });
+    // §L44: 'nearest' pins the HORIZONTAL axis, as \`MarkdownFindScript.swift:65\` does. Without
+    // it, stepping through matches inside a wide code block or table also scrolls the document
+    // sideways under the reader.
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'center', inline: 'nearest' });
   };
-  var SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, MARK: 1 };
+  var SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1 };
   var textNodes = function () {
     var found = [];
     if (!document.body || !document.createTreeWalker) return found;
@@ -636,6 +639,10 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
       var skip = false;
       while (parent && parent !== document.body) {
         if (SKIP[parent.nodeName]) { skip = true; break; }
+        // §L43: OUR OWN highlights, not every <mark>. \`MarkdownFindScript.swift:69-79\` skips a
+        // subtree carrying \`.nex-find-match\`; skipping the MARK tag outright made the text of a
+        // note's own \`<mark>\` permanently unsearchable.
+        if (parent.classList && parent.classList.contains('nex-find-match')) { skip = true; break; }
         parent = parent.parentNode;
       }
       if (!skip && node.nodeValue) found.push(node);

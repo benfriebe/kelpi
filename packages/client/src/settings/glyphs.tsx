@@ -91,3 +91,114 @@ export function StarGlyph(props: GlyphProps): ReactElement {
         </Glyph>
     );
 }
+
+// ── the tab rail (L88) ──────────────────────────────────────────────────────────────
+//
+// `SettingsView.swift:20-59` labels every one of the seven tabs `Label(name, systemImage:)` —
+// `gear`, `paintbrush`, `externaldrive`, `tag`, `person.badge.key`, `command`, `globe`. The port's
+// rail carried the seven NAMES and nothing else, which is the one place in the window where the
+// shipped app leans on the glyph: a tab rail is scanned, not read. Three of the seven already
+// existed above (the empty states use them); the four below complete the set, drawn on the same
+// 12 × 12 grid with the same stroke convention so a rail glyph and an empty-state glyph are one
+// family.
+
+/** `gear` — the toothed ring with its hub. */
+export function GearGlyph(props: GlyphProps): ReactElement {
+    // Eight teeth on a 12 × 12 grid, generated rather than hand-listed so they stay even.
+    const teeth = [0, 45, 90, 135, 180, 225, 270, 315].map((degrees) => {
+        const radians = (degrees * Math.PI) / 180;
+        const cos = Math.cos(radians);
+        const sin = Math.sin(radians);
+        const from = { x: 6 + cos * 3.5, y: 6 + sin * 3.5 };
+        const to = { x: 6 + cos * 4.9, y: 6 + sin * 4.9 };
+        return `M${from.x.toFixed(2)} ${from.y.toFixed(2)}L${to.x.toFixed(2)} ${to.y.toFixed(2)}`;
+    });
+    return (
+        <Glyph size={props.size}>
+            <>
+                <circle cx="6" cy="6" r="3.5" />
+                <circle cx="6" cy="6" r="1.35" />
+                <path d={teeth.join('')} />
+            </>
+        </Glyph>
+    );
+}
+
+/** `paintbrush` — a bristle head on an angled handle. */
+export function PaintbrushGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <path d="M10.4 1.6 6.1 5.9" />
+                <path d="M5.0 4.6 7.4 7.0 5.1 9.3 2.7 6.9z" />
+                <path d="M2.9 9.1 1.3 10.7" />
+            </>
+        </Glyph>
+    );
+}
+
+/** `command` — the looped ⌘ cloverleaf. */
+export function CommandGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <path d="M4.6 4.6h2.8v2.8H4.6zM4.6 4.6H3.2a1.4 1.4 0 1 1 1.4-1.4zM7.4 4.6h1.4a1.4 1.4 0 1 0-1.4-1.4zM4.6 7.4H3.2a1.4 1.4 0 1 0 1.4 1.4zM7.4 7.4h1.4a1.4 1.4 0 1 1-1.4 1.4z" />
+        </Glyph>
+    );
+}
+
+/** `globe` — the meridian-and-parallel world. */
+export function GlobeGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <circle cx="6" cy="6" r="4.8" />
+                <path d="M1.2 6h9.6" />
+                <path d="M6 1.2c1.5 1.4 2.3 3 2.3 4.8S7.5 9.4 6 10.8C4.5 9.4 3.7 7.8 3.7 6s.8-3.4 2.3-4.8z" />
+            </>
+        </Glyph>
+    );
+}
+
+/**
+ * `square.grid.2x2` — the port-only **Workspaces** tab.
+ *
+ * There is no Swift symbol to copy because there is no Swift tab: `catalog.ts` appends this one
+ * after the seven (SET-002). A rail where seven entries carry a glyph and the eighth carries a
+ * gap would read as a broken row, so it gets the neutral grid symbol AppKit uses for "several of
+ * a thing" — chosen here, not ported.
+ */
+export function GridGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <rect x="1.4" y="1.4" width="3.8" height="3.8" rx="0.9" />
+                <rect x="6.8" y="1.4" width="3.8" height="3.8" rx="0.9" />
+                <rect x="1.4" y="6.8" width="3.8" height="3.8" rx="0.9" />
+                <rect x="6.8" y="6.8" width="3.8" height="3.8" rx="0.9" />
+            </>
+        </Glyph>
+    );
+}
+
+/** `folder.badge.gearshape` — the Repositories toolbar's Scan button (L86). */
+export function FolderBadgeGearGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <>
+                <path d="M1.1 9.2V2.9h3.1l1 1.2h3.9v2" />
+                <path d="M1.1 9.2h4.4" />
+                <circle cx="8.6" cy="8.4" r="1.9" />
+                <path d="M8.6 5.9v.7M8.6 10.2v.7M6.6 8.4h.7M9.9 8.4h.7" />
+            </>
+        </Glyph>
+    );
+}
+
+/** `plus` — the Repositories toolbar's Add button (L86). */
+export function PlusGlyph(props: GlyphProps): ReactElement {
+    return (
+        <Glyph size={props.size}>
+            <path d="M6 1.9v8.2M1.9 6h8.2" />
+        </Glyph>
+    );
+}

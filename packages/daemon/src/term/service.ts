@@ -768,17 +768,31 @@ function readModes(entry: PaneTerminal): VtModes {
  *   screen captures the alternate screen (which has no scrollback).
  * - Per-row text comes from xterm's `translateToString(true)`: interior blank columns are
  *   preserved (null cells render as spaces), the trailing run of blanks is dropped.
+ * - **Every row is read against the GRID**, `min(term.cols, line.length)` — the same bound
+ *   `cellText` takes, and for the same reason. `NO_REFLOW` (above) leaves xterm's post-shrink
+ *   per-line trim un-run (it lives inside `if (this._isReflowEnabled)` in `Buffer.resize`), so
+ *   a column shrink leaves every existing `BufferLine` at the width it was allocated at while
+ *   `term.cols` becomes the new one. An unbounded read then hands back the whole allocation:
+ *   cells the shrink stranded past the grid, which no program can reach again (a repaint only
+ *   writes `cols` columns) and no renderer draws. Unbounded, they append to live output
+ *   (`/tmp/dir/notes.md------STRANDED`) and splice into the middle of a re-joined wrap.
+ *   Bounding truncates a *pre-shrink* row to the grid — content the user can no longer see
+ *   either — which is the deliberate trade: a capture describes the pane as it stands, never a
+ *   mix of live cells and cells from a geometry that is gone.
  * - Soft-wrapped rows are re-joined into one logical line — a region read in ghostty is
  *   non-rectangular, so a wrapped command line must not come back with a spurious newline.
  *   (this emulator is configured NOT to reflow — see `NO_REFLOW` — so a widened pane leaves
  *   its wrapped rows split where they were and a narrowed one leaves rows wider than the
  *   grid; the per-row trim above and this join are what keep the read a logical line either
  *   way. Stock `@xterm/headless` 6.0.0 *does* reflow, so this sentence is a statement about
- *   the configuration, not about the library.)
+ *   the configuration, not about the library.) The trim is per row rather than a pad to
+ *   `cols`, which is what keeps the widen half clean: a stale wrap whose first row is now
+ *   null-padded out to the new width joins with no invented run of spaces.
  * - Trailing blank lines are trimmed. An empty region yields `''`.
  */
 function readRegion(term: HeadlessTerminal, includeScrollback: boolean): string {
     const buffer = term.buffer.active;
+    const cols = term.cols;
     const start = includeScrollback ? 0 : Math.max(0, buffer.baseY);
     const end = includeScrollback ? buffer.length : Math.min(buffer.length, buffer.baseY + term.rows);
 
@@ -786,7 +800,7 @@ function readRegion(term: HeadlessTerminal, includeScrollback: boolean): string 
     let current: string | null = null;
     for (let y = start; y < end; y++) {
         const line = buffer.getLine(y);
-        const text = line ? line.translateToString(true) : '';
+        const text = line ? line.translateToString(true, 0, Math.min(cols, line.length)) : '';
         if (current !== null && line?.isWrapped) {
             current += text;
             continue;

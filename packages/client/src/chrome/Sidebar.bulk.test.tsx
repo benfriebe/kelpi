@@ -118,11 +118,24 @@ describe('bulk context menu', () => {
         openBulkMenu({ onSetBulkLabel });
         fireEvent.mouseEnter(screen.getByText('Label 2 Workspaces'));
         const submenu = screen.getByTestId('context-submenu');
-        const rows = within(submenu)
-            .getAllByRole('menuitem')
-            .map((row) => (row.textContent ?? '').trim());
-        // infra: on both → checkmark. release: on neither → plain. ops: on beta only → dash.
-        expect(rows).toEqual(['✓infra', 'release', '–ops']);
+        const rows = within(submenu).getAllByRole('menuitem');
+        // infra: on both → checked. release: on neither → plain. ops: on beta only → mixed.
+        expect(rows.map((row) => row.dataset['checked'])).toEqual(['true', 'false', 'mixed']);
+        /*
+         * L11: a PRESET row is one glyph — the mark is drawn inside its swatch
+         * (`LabelPreset.menuSwatch(checked:mixed:)`, handed to `Label`'s `icon:` at
+         * `WorkspaceListView.swift:1050`), so it is a `data-mark` on the swatch and NOT a `✓` in
+         * the row's text. A FREE-FORM row has no preset colour to draw in, so it keeps the
+         * checkmark column exactly as the Swift keeps `Label(label, systemImage: all ?
+         * "checkmark" : "minus")` (`:1064`) — one glyph either way, never two.
+         */
+        expect(rows.map((row) => (row.textContent ?? '').trim())).toEqual(['infra', 'release', '–ops']);
+        expect(
+            rows.map((row) => {
+                const swatch = within(row).queryByTestId('menu-swatch');
+                return swatch === null ? 'no-swatch' : (swatch.getAttribute('data-mark') ?? 'none');
+            })
+        ).toEqual(['check', 'none', 'no-swatch']);
 
         // Applied to ALL → clicking removes it from all.
         fireEvent.click(within(submenu).getByText('infra'));

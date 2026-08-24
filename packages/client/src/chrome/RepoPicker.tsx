@@ -239,7 +239,17 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
                 return next;
             });
         }
-        rowRefs.current.get(nextID)?.scrollIntoView?.({ block: 'nearest' });
+        /*
+         * L87: `withAnimation(.linear(duration: 0.1)) { proxy.scrollTo(newID, anchor: .center) }`
+         * (`RepoPickerView.swift:323-326`) — the anchored row is kept in the MIDDLE of the list
+         * while you walk it, and the list glides rather than jumping. `block: 'nearest'` scrolled
+         * the minimum instead, so the cursor rode the bottom edge with nothing ahead of it.
+         *
+         * `behavior: 'smooth'` is the same stand-in `CommandPalette.tsx` uses for the same Swift
+         * shape (M59): CSS owns the duration, so the 100 ms itself is not reproducible — what is
+         * reproducible is that the movement is animated rather than instant.
+         */
+        rowRefs.current.get(nextID)?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
     };
 
     const toggleAnchor = (): void => {

@@ -1,5 +1,12 @@
 /**
- * The URL bar's star and the bookmarks menu beside it (web-pane.md §14; WEB-037, WEB-038).
+ * The URL bar's star, and the bookmarks button beside the field (web-pane.md §14; WEB-037,
+ * WEB-038).
+ *
+ * Two controls, and the shipped app keeps them apart — which is why this module exports two
+ * components rather than one. `WebPaneChrome.swift:426-443` embeds the **star** inside
+ * `WebURLBar`'s rounded border, and `:193` puts the **bookmarks menu** in the toolbar between the
+ * URL bar and "New tab" as a standalone 22×22 `book` (§L63). The port had merged them into one
+ * cluster inside the field, which renamed the menu and shrank the address.
  *
  * The star's state is a *match*, not a flag: it fills when the tab's current URL matches a saved
  * favourite under WEB-044's rule (scheme + host case-folded, trailing slash stripped, path and
@@ -15,25 +22,61 @@
 
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { tokens, pill } from '../grid/tokens';
+import { tokens } from '../grid/tokens';
+import { Glyph } from './glyphs';
 import { favouriteMatching, truncateMiddle, type WebFavourite } from './state';
 
-export interface FavouritesMenuProps {
+export interface FavouriteStarProps {
     readonly paneID: string;
     /** The active tab's URL: what the star toggles, and what it matches against. */
     readonly url: string;
     readonly title: string;
     readonly favourites: readonly WebFavourite[];
     readonly onToggle: (url: string, title: string) => void;
+}
+
+/** `WebURLBar`'s trailing star (`WebPaneChrome.swift:404-419`) — inside the field's border. */
+export function FavouriteStar(props: FavouriteStarProps): ReactElement {
+    const saved = favouriteMatching(props.favourites, props.url);
+    const disabled = props.url.trim() === '';
+    return (
+        <button
+            type="button"
+            data-testid={`web-favourite-star-${props.paneID}`}
+            data-saved={saved === null ? 'false' : 'true'}
+            aria-label={saved === null ? 'Add favourite' : 'Remove favourite'}
+            aria-pressed={saved !== null}
+            title={saved === null ? 'Add favourite' : 'Remove favourite'}
+            disabled={disabled}
+            className="flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded text-[12px]"
+            style={{
+                color: saved === null ? tokens.textTertiary : '#F2C230',
+                opacity: disabled ? 0.3 : 1,
+                cursor: disabled ? 'default' : 'pointer'
+            }}
+            onClick={() => props.onToggle(props.url, props.title)}
+        >
+            {saved === null ? '☆' : '★'}
+        </button>
+    );
+}
+
+export interface BookmarksMenuProps {
+    readonly paneID: string;
+    readonly favourites: readonly WebFavourite[];
     readonly onOpen: (url: string) => void;
     readonly onManage: () => void;
 }
 
-export function FavouritesMenu(props: FavouritesMenuProps): ReactElement {
+/**
+ * The toolbar's `book` button and the menu it drops (`WebPaneChrome.swift:94-128`).
+ *
+ * It is a sibling of Back / Forward / New tab, at their 22×22 footprint and under their label —
+ * "Bookmarks", which is the word `.help("Bookmarks")` puts on it.
+ */
+export function BookmarksMenu(props: BookmarksMenuProps): ReactElement {
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement | null>(null);
-    const saved = favouriteMatching(props.favourites, props.url);
-    const disabled = props.url.trim() === '';
 
     // A menu that does not close on an outside click is a menu that covers the page.
     useEffect(() => {
@@ -51,40 +94,26 @@ export function FavouritesMenu(props: FavouritesMenuProps): ReactElement {
         <div ref={rootRef} className="relative flex shrink-0 items-center">
             <button
                 type="button"
-                data-testid={`web-favourite-star-${props.paneID}`}
-                data-saved={saved === null ? 'false' : 'true'}
-                aria-label={saved === null ? 'Add favourite' : 'Remove favourite'}
-                aria-pressed={saved !== null}
-                title={saved === null ? 'Add favourite' : 'Remove favourite'}
-                disabled={disabled}
-                className="flex h-[20px] w-[20px] items-center justify-center rounded text-[12px]"
-                style={{
-                    color: saved === null ? tokens.textTertiary : '#F2C230',
-                    opacity: disabled ? 0.3 : 1,
-                    cursor: disabled ? 'default' : 'pointer'
-                }}
-                onClick={() => props.onToggle(props.url, props.title)}
-            >
-                {saved === null ? '☆' : '★'}
-            </button>
-            <button
-                type="button"
                 data-testid={`web-favourites-menu-${props.paneID}`}
-                aria-label="Favourites"
+                aria-label="Bookmarks"
                 aria-expanded={open}
-                title="Favourites"
-                className="flex h-[20px] w-[16px] items-center justify-center rounded text-[9px]"
-                style={{ color: tokens.textSecondary }}
+                title="Bookmarks"
+                // No lit state: `bookmarksMenuButton` is a plain `Menu` at a flat `.opacity(0.8)`
+                // (`WebPaneChrome.swift:117-127`) — unlike the scope and storage buttons beside
+                // it, it does not take an accent fill while its menu is down. `aria-expanded`
+                // carries the open state for anything that needs to read it.
+                className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded"
+                style={{ color: tokens.textSecondary, cursor: 'pointer' }}
                 onClick={() => setOpen((current) => !current)}
             >
-                ▾
+                <Glyph name="book" />
             </button>
 
             {!open ? null : (
                 <div
                     data-testid={`web-favourites-list-${props.paneID}`}
                     role="menu"
-                    className="absolute right-0 top-[22px] z-20 flex w-[280px] flex-col gap-0.5 rounded-md p-1 text-[11px]"
+                    className="absolute right-0 top-[24px] z-20 flex w-[280px] flex-col gap-0.5 rounded-md p-1 text-[11px]"
                     style={{
                         background: tokens.surfaceBackground,
                         border: `1px solid ${tokens.divider}`,
@@ -98,9 +127,15 @@ export function FavouritesMenu(props: FavouritesMenuProps): ReactElement {
                             className="px-1.5 py-1 leading-relaxed"
                             style={{ color: tokens.textTertiary }}
                         >
-                            No favourites yet.
+                            {/*
+                             * L64 — `WebPaneChrome.swift:96-99` verbatim: two disabled `Text`
+                             * rows, the second at `.caption`. The port had reworded both
+                             * ("No favourites yet." / "Use the star in the URL bar to save this
+                             * page."), which is the same information in words the app never says.
+                             */}
+                            No favourites yet
                             <br />
-                            Use the star in the URL bar to save this page.
+                            Click the star to save the current page
                         </p>
                     ) : (
                         props.favourites.map((favourite) => (
@@ -111,11 +146,14 @@ export function FavouritesMenu(props: FavouritesMenuProps): ReactElement {
                                 data-testid={`web-favourite-${favourite.id}`}
                                 title={favourite.url}
                                 className="truncate rounded px-1.5 py-1 text-left"
-                                style={{
-                                    color: tokens.textPrimary,
-                                    background:
-                                        saved?.id === favourite.id ? pill(tokens.accent, 18) : 'transparent'
-                                }}
+                                /*
+                                 * L65 — no selected state. `WebPaneChrome.swift:101-106` is a
+                                 * plain `Button(label) { onOpenFavourite(fav.url) }` per row; the
+                                 * port had lit the row matching the current page with an accent
+                                 * pill, which is a highlight the shipped menu does not have (and
+                                 * which the star beside the field already says).
+                                 */
+                                style={{ color: tokens.textPrimary }}
                                 onClick={() => {
                                     setOpen(false);
                                     props.onOpen(favourite.url);

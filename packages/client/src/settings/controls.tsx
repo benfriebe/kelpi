@@ -20,6 +20,16 @@ import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { normalizeHexColor, tokens, withAlpha } from '../chrome';
 import { SettingsDetail, hoverBackground, useHover } from './ui';
 
+/**
+ * L79: a control is a ROW INSIDE its section's card, so it draws no card of its own.
+ *
+ * Every one of the five below used to open with `rounded px-2 py-1.5` over a 6 % gray — the
+ * grouped-form fill, applied one level too low, which turned a `Section` into a stack of pills.
+ * `SettingsSection` now owns the fill, the row padding and the hairline between rows; what is
+ * left here is the row's own vertical layout (the control line, then M46's caption under it).
+ */
+const ROW = 'flex flex-col gap-1';
+
 export const SETTINGS_WRITE_DEBOUNCE_MS = 250;
 
 /**
@@ -81,8 +91,7 @@ export function ColorField(props: ColorFieldProps): ReactElement {
     const [shown, setShown] = useDebouncedValue(normalized, props.onChange);
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-1.5"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className={ROW}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             <div className="flex items-center justify-between gap-3">
@@ -115,7 +124,7 @@ export function ColorField(props: ColorFieldProps): ReactElement {
                         aria-label={props.label}
                         value={shown.toLowerCase()}
                         {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-input` })}
-                        className="absolute inset-0 h-full w-full cursor-pointer border-0 bg-transparent p-0 opacity-0"
+                        className="absolute inset-0 h-full w-full border-0 bg-transparent p-0 opacity-0"
                         onChange={(event) => {
                             setShown(event.target.value);
                         }}
@@ -141,23 +150,41 @@ export interface SliderFieldProps {
     readonly format?: ((value: number) => string) | undefined;
     readonly detail?: string | undefined;
     readonly testID?: string | undefined;
+    /**
+     * L82: `sliderRow`'s readout is `.frame(width: 44)`, but the one ad-hoc slider in the Swift
+     * Appearance tab — Graph width (`SettingsView.swift:466-474`) — writes its own row and gives
+     * the readout **32**, because an integer 16…80 needs half the room a percentage does.
+     */
+    readonly readoutWidth?: number | undefined;
 }
+
+/** `sliderRow`'s two fixed frames (`SettingsView.swift:506-515`): the label, then the readout. */
+export const SLIDER_LABEL_WIDTH = 140;
+export const SLIDER_READOUT_WIDTH = 44;
 
 /**
  * `sliderRow` — a fixed-width label, the slider, and a fixed-width readout, so every slider on
  * the tab is the same length and the numbers line up in a column.
+ *
+ * The three metrics are `SettingsView.swift:506-515` verbatim (L82): `HStack(spacing: 10)`, a
+ * `.frame(width: 140, alignment: .leading)` label and a `.frame(width: 44, alignment: .trailing)`
+ * readout. The port had 12 / 150 / 52, which is a wider label column and a readout with a
+ * percentage's worth of slack in it — visible as a slider track ~18 px shorter than the shipped
+ * one on every row of the Appearance tab.
  */
 export function SliderField(props: SliderFieldProps): ReactElement {
     const [shown, setShown] = useDebouncedValue(props.value, props.onChange);
     const format = props.format ?? ((value: number) => `${String(Math.round(value * 100))}%`);
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-1.5"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className={ROW}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
-            <div className="flex items-center gap-3">
-            <div className="flex w-[150px] shrink-0 flex-col">
+            <div className="flex items-center gap-2.5">
+            <div
+                className="flex shrink-0 flex-col"
+                style={{ width: `${String(SLIDER_LABEL_WIDTH)}px` }}
+            >
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
@@ -179,9 +206,17 @@ export function SliderField(props: SliderFieldProps): ReactElement {
                     setShown(Number.parseFloat(event.target.value));
                 }}
             />
+            {/*
+              * `.monospacedDigit()` is the UI face with TABULAR FIGURES, not a monospaced
+              * family — the readout has to hold still as the number changes, which `tabular-nums`
+              * does, without changing typeface mid-row.
+              */}
             <span
-                className="w-[52px] shrink-0 text-right font-mono text-[11px] tabular-nums"
-                style={{ color: tokens.textSecondary }}
+                className="shrink-0 text-right text-[12px] tabular-nums"
+                style={{
+                    width: `${String(props.readoutWidth ?? SLIDER_READOUT_WIDTH)}px`,
+                    color: tokens.textSecondary
+                }}
                 {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-value` })}
             >
                 {format(shown)}
@@ -218,7 +253,6 @@ function SegmentButton(props: SegmentButtonProps): ReactElement {
                     ? withAlpha(tokens.accent, 0.22)
                     : hoverBackground(hovered, 'transparent'),
                 color: props.selected || hovered ? tokens.textPrimary : tokens.textSecondary,
-                cursor: 'pointer',
                 // A divider between segments, not around them. Without it the labels run
                 // together and read as one word — the audit caught "SystemLightDark" and
                 // "LineStacked dots" rendering as prose rather than as a choice between three
@@ -248,8 +282,7 @@ export interface SegmentedFieldProps<T extends string> {
 export function SegmentedField<T extends string>(props: SegmentedFieldProps<T>): ReactElement {
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-1.5"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className={ROW}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             <div className="flex items-center justify-between gap-3">
@@ -301,8 +334,7 @@ export interface SelectFieldProps {
 export function SelectField(props: SelectFieldProps): ReactElement {
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-1.5"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className={ROW}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             <div className="flex items-center justify-between gap-3">
@@ -353,6 +385,13 @@ export interface TextFieldProps {
     readonly apply?: boolean | undefined;
     /** A narrower, right-aligned input (the Swift port field is 80 pt, right-aligned). */
     readonly narrow?: boolean | undefined;
+    /**
+     * L83: `.textFieldStyle(.plain)` inside a bare `HStack` — no border, no fixed width, the
+     * field simply takes the rest of the row (`SettingsView.swift:130-134`, the Worktrees base
+     * path). The port's default is the bordered fixed `w-[180px]`, which clipped a long custom
+     * path where the shipped field lets it run.
+     */
+    readonly plain?: boolean | undefined;
 }
 
 /**
@@ -371,26 +410,31 @@ export function TextField(props: TextFieldProps): ReactElement {
     };
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-1.5"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className={ROW}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 flex-col">
+            <div className="flex shrink-0 flex-col">
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
             </div>
-            <span className="flex shrink-0 items-center gap-2">
+            <span className={`flex items-center gap-2 ${props.plain === true ? 'min-w-0 flex-1' : 'shrink-0'}`}>
             <input
                 type="text"
                 aria-label={props.label}
                 value={shown}
                 placeholder={props.placeholder}
                 {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-input` })}
-                className={`${props.narrow === true ? 'w-[80px] text-right' : 'w-[180px]'} shrink-0 rounded border px-1.5 py-1 font-mono text-[11px]`}
+                className={
+                    props.plain === true
+                        ? // L83: no border and no width — `.textFieldStyle(.plain)` in an `HStack`
+                          // is a field that ends where the row ends.
+                          'min-w-0 flex-1 border-0 bg-transparent px-0 py-1 font-mono text-[11px] outline-none'
+                        : `${props.narrow === true ? 'w-[80px] text-right' : 'w-[180px]'} shrink-0 rounded border px-1.5 py-1 font-mono text-[11px]`
+                }
                 style={{
-                    borderColor: tokens.divider,
+                    ...(props.plain === true ? {} : { borderColor: tokens.divider }),
                     background: 'transparent',
                     color: tokens.textPrimary
                 }}

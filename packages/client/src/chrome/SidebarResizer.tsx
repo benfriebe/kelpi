@@ -120,10 +120,15 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
                 window.addEventListener('pointerup', end);
                 document.body.style.setProperty('cursor', 'col-resize');
             }}
-            onDoubleClick={() => {
-                props.onResize(SIDEBAR_DEFAULT_WIDTH);
-                props.onCommit?.(SIDEBAR_DEFAULT_WIDTH);
-            }}
+            /*
+             * UI-FIDELITY L105 — there is no double-click reset.
+             *
+             * `ContentView.swift:630-646` hangs exactly two things off this handle: `.onHover`
+             * (the cursor) and a `DragGesture`. The port added a double-click that snapped the
+             * sidebar back to 220, an affordance the shipped app never advertises and never
+             * performs — and one a user can trigger by accident mid-drag. Removed rather than
+             * kept: everything else about the handle already matched.
+             */
         >
             <div className="pointer-events-none h-full w-px" style={{ background: tokens.divider, marginLeft: 3 }} />
         </div>

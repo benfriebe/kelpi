@@ -156,7 +156,12 @@ function renderFrontMatterValue(node: unknown): string {
     }
     if (isSeq(node)) {
         const items = node.items;
-        if (items.length > 0 && items.every((item) => isSingleLineScalar(item))) {
+        // §L41: `every` over an EMPTY sequence is vacuously true, and that IS the Swift's answer.
+        // `MarkdownFrontMatter.swift:123-133` uses `allSatisfy`, so `tags: []` comma-joins to the
+        // empty string and shows as a blank cell. The `length > 0` guard that used to stand here
+        // routed it to `nestedPre` instead, drawing a `<pre>[]</pre>` block the shipped app never
+        // shows for an empty list.
+        if (items.every((item) => isSingleLineScalar(item))) {
             return items.map((item) => escapeHtml(scalarText(item))).join(', ');
         }
         return nestedPre(node);

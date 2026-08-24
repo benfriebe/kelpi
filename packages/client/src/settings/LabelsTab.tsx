@@ -184,6 +184,30 @@ function previewStyle(
     return resolveLabelStyle('preview', [{ name: 'preview', color, textColor }], bucket);
 }
 
+/**
+ * What the colour controls ANNOUNCE (L93).
+ *
+ * `LabelPresetsSettingsView.swift:330` and `:395` label their menus `"Colour: \(name)"` and
+ * `"Text colour: \(currentLabel)"` — the field's name AND the value in it, so a screen reader
+ * says which colour is set without the user walking ten swatch buttons to find the pressed one.
+ * The port's groups carried the field name alone. Capitalised the way `WorkspaceColor.displayName`
+ * capitalises (`WorkspaceColor.swift:36`), and "Custom" / "Auto" for the two unnamed cases —
+ * `currentLabel` at `:402-409` verbatim.
+ */
+export function colorAnnouncement(color: LabelColorValue): string {
+    if (color.kind === 'custom') return 'Custom';
+    return color.color.charAt(0).toUpperCase() + color.color.slice(1);
+}
+
+/** The same, for a text colour — where `null` is the luminance rule rather than a colour. */
+export function textColorAnnouncement(color: LabelTextColorValue): string {
+    const mode = textMode(color);
+    if (mode === 'auto') return 'Auto';
+    if (mode === 'black') return 'Black';
+    if (mode === 'white') return 'White';
+    return 'Custom';
+}
+
 /** Which of the Auto / Black / White triple a text colour is (anything else is Custom). */
 function textMode(color: LabelTextColorValue): 'auto' | 'black' | 'white' | 'custom' {
     if (color === null) return 'auto';
@@ -229,8 +253,7 @@ function ColorSwatch(props: SwatchProps): ReactElement {
             style={{
                 background: props.color,
                 outline: ring === null ? 'none' : `2px solid ${ring}`,
-                outlineOffset: '1px',
-                cursor: 'pointer'
+                outlineOffset: '1px'
             }}
             {...hoverProps}
             onClick={props.onClick}
@@ -253,7 +276,8 @@ function LabelColorField(props: ColorFieldProps): ReactElement {
             className="flex flex-wrap items-center gap-1"
             style={{ width: `${String(LABEL_COL.bgColor)}px` }}
             role="group"
-            aria-label={props.label}
+            // L93: the field's name AND its value — `"Colour: Blue"`, not `"work color"`.
+            aria-label={`${props.label}: ${colorAnnouncement(props.value)}`}
         >
             {WORKSPACE_COLORS.map((color) => {
                 const selected = props.value.kind === 'named' && props.value.color === color;
@@ -291,12 +315,18 @@ function LabelColorField(props: ColorFieldProps): ReactElement {
                     className="relative inline-block h-3.5 w-5 overflow-hidden rounded"
                     style={{ background: hex, border: `1px solid ${tokens.divider}` }}
                 >
+                    {/*
+                     * L80: `.help("Pick a custom colour")` (`LabelPresetsSettingsView.swift:290`).
+                     * The port had the accessible name and no hover tooltip, so the well was the
+                     * one control in the row that said nothing to a pointer.
+                     */}
                     <input
                         type="color"
                         aria-label={`Custom colour for ${props.label}`}
+                        title="Pick a custom colour"
                         data-testid={`${props.idPrefix}-custom`}
                         value={hex.toLowerCase()}
-                        className="absolute inset-0 h-full w-full cursor-pointer border-0 bg-transparent p-0 opacity-0"
+                        className="absolute inset-0 h-full w-full border-0 bg-transparent p-0 opacity-0"
                         onChange={(event) => {
                             const next = normalizeHexColor(event.target.value);
                             if (next === null) return;
@@ -342,8 +372,7 @@ function TextChoice(props: TextChoiceProps): ReactElement {
                 color: props.selected || hovered ? tokens.textPrimary : tokens.textTertiary,
                 border: `1px solid ${
                     props.selected ? tokens.accent : hovered ? tokens.selectionStroke : tokens.divider
-                }`,
-                cursor: 'pointer'
+                }`
             }}
             {...hoverProps}
             onClick={props.onClick}
@@ -385,7 +414,8 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
             className="flex flex-wrap items-center gap-1"
             style={{ width: `${String(LABEL_COL.textColor)}px` }}
             role="group"
-            aria-label={props.label}
+            // L93: `"…text color: Auto"` — the mode the "Aa" sample is drawn in, said out loud.
+            aria-label={`${props.label}: ${textColorAnnouncement(props.value)}`}
         >
             <span
                 data-testid={`${props.idPrefix}-sample`}
@@ -405,12 +435,14 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
                     border: `1px solid ${mode === 'custom' ? tokens.accent : tokens.divider}`
                 }}
             >
+                {/* L80: `.help("Pick a text colour")` (`LabelPresetsSettingsView.swift:362`). */}
                 <input
                     type="color"
                     aria-label={`Custom text colour for ${props.label}`}
+                    title="Pick a text colour"
                     data-testid={`${props.idPrefix}-custom`}
                     value={(normalizeHexColor(resolved) ?? BLACK).toLowerCase()}
-                    className="absolute inset-0 h-full w-full cursor-pointer border-0 bg-transparent p-0 opacity-0"
+                    className="absolute inset-0 h-full w-full border-0 bg-transparent p-0 opacity-0"
                     onChange={(event) => {
                         const next = normalizeHexColor(event.target.value);
                         if (next === null) return;
@@ -496,7 +528,14 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-labels">
+            {/*
+             * L79's `plain`: `LabelPresetsSettingsView.swift:27-45` is a `VStack { addRow;
+             * Divider(); List }`, not a `Form` — there is no grouped card anywhere on this tab,
+             * and the rows below carry their own chrome (the add row's accent tint, the list's
+             * `alternatesRowBackgrounds` stripe, an explicit `Divider()`).
+             */}
             <SettingsSection
+                plain
                 title="Presets"
                 hint="A label wears a preset's colors when its text matches the preset name exactly."
                 testID="label-presets"
@@ -621,6 +660,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
 
             {orphans.length === 0 ? null : (
                 <SettingsSection
+                    plain
                     title="Labels without a preset"
                     hint="Applied to a workspace but not managed here — they render neutral until you give them one."
                     testID="label-orphans"

@@ -20,7 +20,7 @@
 
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { iconGlyph } from './icons';
+import { ChromeIcon, iconGlyph } from './icons';
 import { clampSelection, matchPaletteQuery, paletteNavigationOrder, type PaletteItem } from './palette';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -170,6 +170,18 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
     if (!props.open && !exiting) return null;
     const phase = props.open ? 'entering' : 'exiting';
 
+    /*
+     * UI-FIDELITY L101 — what sits under the search row, and whether there is a line at all.
+     *
+     * `CommandPaletteView.swift:41-82`: `if !items.isEmpty` → `Divider()` + the list; `else if
+     * !query.isEmpty` → `Divider()` + "No results"; otherwise NEITHER — an empty query with
+     * nothing to show is a bare field. The port drew the divider unconditionally and always
+     * rendered the "No results" row, so an empty universe read as a failed search.
+     */
+    const showResults = order.length > 0;
+    const showNoResults = order.length === 0 && props.query.length > 0;
+    const showDivider = showResults || showNoResults;
+
     const confirm = (item: PaletteItem | undefined): void => {
         if (item === undefined) {
             // §10.3: an out-of-range selection (zero matches) still closes AND hands off, so
@@ -254,10 +266,18 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                 role="dialog"
                 aria-label="Command palette"
                 className="nex-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
+                /*
+                 * UI-FIDELITY L94 / L95 — the shipped card is a fill, a clip and one soft shadow.
+                 *
+                 * `CommandPaletteView.swift:85-87` is `.background(surfaceBackground)
+                 * .clipShape(RoundedRectangle(cornerRadius: 10)).shadow(black@0.25, radius 12,
+                 * y 4)`. There is no stroke on it at all, and the shadow is a lift off the pane
+                 * behind it — the port's `0 20px 60px rgba(0,0,0,0.45)` was 5× the offset, 5× the
+                 * blur and nearly twice the alpha, a dark halo plainly visible in run-O/104.
+                 */
                 style={{
                     background: tokens.surfaceBackground,
-                    border: `1px solid ${tokens.divider}`,
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.45)',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
                     color: tokens.textPrimary
                 }}
                 onKeyDownCapture={handleKey}
@@ -278,11 +298,28 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                 }}
             >
                 <div
-                    className="flex items-center gap-2 border-b px-3 py-2"
+                    /*
+                     * UI-FIDELITY L97 / L101 — the search row's own metrics, and its divider.
+                     *
+                     * `CommandPaletteView.swift:22-39`: `HStack(spacing: 8)` with a 14 pt
+                     * `magnifyingglass` in `.secondary`, `.padding(.vertical, 10)`. And the
+                     * `Divider()` at `:42` / `:77` is drawn only when something follows it — an
+                     * empty query with nothing to list is a bare field, not a field with a line
+                     * under it.
+                     */
+                    className={`flex items-center gap-2 px-3 py-[10px] ${showDivider ? 'border-b' : ''}`}
                     style={{ borderColor: tokens.divider }}
                 >
-                    <span aria-hidden style={{ color: tokens.textTertiary }}>
-                        ⌕
+                    {/* L97: the app's own magnifier at the shipped 14 pt, in `.secondary` — the
+                        `⌕` text glyph it replaced sat small inside its em box whatever size it
+                        was given, which is the "reads noticeably smaller" half of the finding.
+                        Same glyph the sidebar's filter field draws. */}
+                    <span
+                        data-testid="palette-search-glyph"
+                        className="flex shrink-0 items-center"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        <ChromeIcon name="search" size={14} />
                     </span>
                     <input
                         ref={inputRef}
@@ -298,16 +335,27 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                     />
                 </div>
 
-                <div ref={listRef} className="max-h-[300px] overflow-y-auto p-1">
-                    {order.length === 0 ? (
-                        <div
-                            data-testid="palette-no-results"
-                            className="px-3 py-4 text-center text-[12px]"
-                            style={{ color: tokens.textTertiary }}
-                        >
-                            No results
-                        </div>
-                    ) : (
+                {/*
+                  * L101: 13 pt `.secondary`, `.padding(.vertical, 16)` and NOT inside the list —
+                  * `CommandPaletteView.swift:76-82` is a sibling branch of the `ScrollView`, so it
+                  * carries none of the list's own 4 pt inset.
+                  */}
+                {showNoResults ? (
+                    <div
+                        data-testid="palette-no-results"
+                        className="px-3 py-4 text-center text-[13px]"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        No results
+                    </div>
+                ) : null}
+
+                {/* L98: `.padding(.vertical, 4)` on the list and nothing horizontal — the row's
+                    own 12 pt inset is what indents the content, so a selected row's fill is a
+                    full-bleed band across the card rather than an inset pill. */}
+                {showResults ? (
+                    <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1">
+                        {(
                         /*
                          * M54 — one flat list, in the universe's own order: a workspace, then
                          * ITS panes, then the next workspace. `CommandPaletteView.swift:47`
@@ -330,7 +378,10 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                     data-item-id={item.id}
                                     data-item-kind={item.kind}
                                     data-selected={isSelected ? 'true' : 'false'}
-                                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left"
+                                    /* L98 / L99: `CommandPaletteRow`'s `HStack(spacing: 10)` with
+                                       `.padding(.horizontal, 12).padding(.vertical, 6)`, and a
+                                       selection background with NO radius — a band, not a pill. */
+                                    className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left"
                                     style={{
                                         background: isSelected ? withAlpha('#6F9BD8', 0.2) : 'transparent'
                                     }}
@@ -350,14 +401,16 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                             }}
                                         />
                                     )}
+                                    {/* L99: `.frame(width: 16)` around a 12 pt glyph. */}
                                     <span
                                         aria-hidden
-                                        className="w-3 shrink-0 text-center text-[11px]"
+                                        className="w-4 shrink-0 text-center text-[12px]"
                                         style={{ color: tokens.textSecondary }}
                                     >
                                         {iconGlyph({ kind: 'system', name: item.icon })}
                                     </span>
-                                    <span className="flex min-w-0 flex-1 flex-col">
+                                    {/* L99: `VStack(alignment: .leading, spacing: 1)`. */}
+                                    <span className="flex min-w-0 flex-1 flex-col gap-px">
                                         <span className="truncate text-[13px]">{item.title}</span>
                                         {item.subtitle.length === 0 ? null : (
                                             <span
@@ -377,20 +430,24 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                             {item.shortcut}
                                         </span>
                                     )}
+                                    {/* L100: the neutral pill is `.tertiary`, and the workspace
+                                        pill's name is white at 90 %, not flat white
+                                        (`CommandPaletteRow.swift:139-155`). */}
                                     {item.kind === 'workspace' ? (
                                         <span
                                             className="shrink-0 rounded px-1.5 py-px text-[10px]"
                                             style={{
                                                 background: withAlpha('#E6E6EA', 0.08),
-                                                color: tokens.textSecondary
+                                                color: tokens.textTertiary
                                             }}
                                         >
                                             workspace
                                         </span>
                                     ) : item.kind === 'pane' && item.workspaceColor !== null ? (
                                         <span
-                                            className="shrink-0 rounded px-1.5 py-px text-[10px] text-white"
+                                            className="shrink-0 rounded px-1.5 py-px text-[10px]"
                                             style={{
+                                                color: 'rgba(255,255,255,0.9)',
                                                 background: withAlpha(
                                                     workspaceColorHex(item.workspaceColor, bucket),
                                                     0.7
@@ -403,8 +460,9 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                 </button>
                             );
                         })
-                    )}
-                </div>
+                        )}
+                    </div>
+                ) : null}
             </div>
         </div>
     );

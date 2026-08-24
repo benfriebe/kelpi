@@ -405,11 +405,37 @@ describe('PaneGrid resize badge', () => {
 });
 
 describe('PaneGrid focus', () => {
-    it('focuses a pane on any pointer press inside it', () => {
+    /**
+     * L36's sibling — L33. Focus used to be claimed by the WRAPPER in the capture phase, so a
+     * press anywhere inside a pane focused it, header buttons included. The Swift raises focus
+     * from the header's own `.onTapGesture` (`PaneHeaderView.swift:279`) and from each body view
+     * as it takes first responder; a SwiftUI `Button` swallows its tap before either sees it.
+     * The body half of that lives in `TerminalPane` / `ContentFrame` / `WebPane`'s
+     * `onFocusRequest` (the stub body this suite renders has none, deliberately).
+     */
+    it('focuses a pane from a press on its header', () => {
         const onFocusPane = vi.fn();
         renderGrid({ onFocusPane });
-        act(() => firePointer(screen.getByTestId('body-b'), 'pointerdown', { clientX: 600, clientY: 300 }));
+        act(() => firePointer(screen.getByTestId('pane-header-b'), 'pointerdown', { clientX: 600, clientY: 10 }));
         expect(onFocusPane).toHaveBeenCalledWith('b');
+    });
+
+    it('leaves focus alone when the press lands on a header BUTTON', () => {
+        const onFocusPane = vi.fn();
+        const onClosePane = vi.fn();
+        renderGrid({ onFocusPane, onClosePane, focusedPaneID: 'a' });
+        const close = screen.getByTestId('pane-close-b');
+        act(() => firePointer(close, 'pointerdown', { clientX: 780, clientY: 10 }));
+        act(() => close.click());
+        expect(onClosePane).toHaveBeenCalledWith('b');
+        expect(onFocusPane).not.toHaveBeenCalled();
+    });
+
+    it('does not raise the focused pane above its siblings', () => {
+        renderGrid({ focusedPaneID: 'b' });
+        // `PaneGridView.swift:104-111` — a plain `ForEach` in a `ZStack`, no focus reordering.
+        expect(screen.getByTestId('pane-a').style.zIndex).toBe('1');
+        expect(screen.getByTestId('pane-b').style.zIndex).toBe('1');
     });
 
     it('fires the dwell clear once for a non-idle focused pane', () => {
@@ -539,7 +565,25 @@ describe('PaneGrid system-accent surfaces (M13)', () => {
         // is the ledgered divergence — a renderer cannot read the OS accent, so today the two
         // resolve to the same colour and the SEAM is the thing that exists.
         expect(overlay.style.background).toMatch(/var\(--nex-system-accent,/);
-        expect(overlay.style.border).toMatch(/var\(--nex-system-accent,/);
+        // L36 split the fill from the outline (see below); both still read the one token.
+        const outline = screen.getByTestId('drop-zone-outline');
+        expect(outline.style.border).toMatch(/var\(--nex-system-accent,/);
+    });
+
+    /**
+     * L36 — `RoundedRectangle(cornerRadius: 4).fill(…).border(…, width: 2)`
+     * (`PaneGridView.swift:450-453`). SwiftUI's `.border` strokes the view's rectangular FRAME
+     * regardless of the shape under it, so the shipped drop zone is a hard-cornered 2 px outline
+     * over a 4 pt-rounded fill. A border that followed the radius was the port's own tidying-up.
+     */
+    it('draws a square outline over the rounded drop-zone fill', () => {
+        renderGrid({ onMovePane: vi.fn() });
+        act(() => firePointer(screen.getByTestId('pane-header-a'), 'pointerdown', { clientX: 40, clientY: 10 }));
+        act(() => firePointer(window, 'pointermove', { clientX: 750, clientY: 300 }));
+        expect(screen.getByTestId('drop-zone-overlay').style.borderRadius).toBe('4px');
+        const outline = screen.getByTestId('drop-zone-outline');
+        expect(outline.style.borderRadius).toBe('');
+        expect(outline.style.border).toMatch(/^2px solid /);
     });
 
     it('tints only the DRAGGED divider, and from the same token', () => {
@@ -551,6 +595,21 @@ describe('PaneGrid system-accent surfaces (M13)', () => {
         act(() => firePointer(window, 'pointermove', { clientX: 560, clientY: 300 }));
         const dragged = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
         expect(dragged.style.background).toContain('--nex-system-accent');
+    });
+
+    /**
+     * L35 — the resting divider is TWO layers. `SplitDividerView.swift:18-20` fills with
+     * `chromeTheme.divider` and then overlays `Color.secondary.opacity(0.2)` unconditionally
+     * (the accent tint only REPLACES that overlay while dragging). The port had dropped the
+     * resting overlay, so every divider in the window sat a step darker and flatter than the
+     * shipped app's.
+     */
+    it('lifts the resting divider with the secondary overlay the Swift paints over it', () => {
+        renderGrid();
+        const bar = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
+        expect(bar.style.background).toBe(
+            'color-mix(in srgb, var(--nex-fg-secondary, #9A9AA0) 20%, var(--nex-border, #24242B))'
+        );
     });
 });
 

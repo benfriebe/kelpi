@@ -94,6 +94,28 @@ describe('PlainTextEditor gutter', () => {
         expect(numbers()).toEqual(['1', '2', '3', '4']);
     });
 
+    /**
+     * L38 — `LineNumberRulerView.swift:88-133` fills `bounds` with the gutter colour and draws
+     * the numbers. It strokes NOTHING, so in the shipped editor the gutter meets the text on a
+     * pure tone change; the port's 1 px divider drew a hard seam down the middle of one pane
+     * (`run-N/72-scratchpad-create.png`), which reads as a second pane edge.
+     */
+    it('meets the text on a tone change, with no rule between them', () => {
+        render(
+            <PlainTextEditor
+                paneID={PANE}
+                ariaLabel="scratchpad"
+                value={'a\nb\nc'}
+                onChange={() => {}}
+                showGutter
+            />
+        );
+        const gutter = screen.getByTestId(`content-gutter-${PANE}`);
+        expect(gutter.style.background).toContain('--nex-header-bg');
+        expect(gutter.style.borderRight).toBe('');
+        expect(gutter.getAttribute('style')).not.toContain('border');
+    });
+
     it('is hidden from assistive tech and sized by the line count', () => {
         render(
             <PlainTextEditor

@@ -15,6 +15,7 @@ import { type ReactElement } from 'react';
 
 import type { ContentApi } from './client';
 import { ContentStatus } from './ContentFrame';
+import { contentPaneLabel } from './labels';
 import { PlainTextEditor } from './PlainTextEditor';
 import type { ScrollStore } from './scroll';
 import { useContent } from './useContent';
@@ -41,7 +42,9 @@ export function ScratchpadPane(props: ScratchpadPaneProps): ReactElement {
     return (
         <PlainTextEditor
             paneID={paneID}
-            ariaLabel={`scratchpad ${paneID}`}
+            // §L46: a scratchpad has no file behind it, so this is the kind plus a
+            // four-character id — never the raw UUID a screen reader would spell out in full.
+            ariaLabel={contentPaneLabel('scratchpad', paneID)}
             value={state?.text ?? ''}
             isDark={state?.isDark ?? true}
             focused={props.focused}

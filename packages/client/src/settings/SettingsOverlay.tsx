@@ -31,7 +31,17 @@ import { KeybindingsTab } from './KeybindingsTab';
 import { LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
 import { RepositoriesTab, type RepositoryEntry } from './RepositoriesTab';
-import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, type SettingsTabID } from './catalog';
+import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, type SettingsTabIcon, type SettingsTabID } from './catalog';
+import {
+    CommandGlyph,
+    ExternalDriveGlyph,
+    GearGlyph,
+    GlobeGlyph,
+    GridGlyph,
+    PaintbrushGlyph,
+    PersonBadgeKeyGlyph,
+    TagGlyph
+} from './glyphs';
 import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
 import {
@@ -247,6 +257,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                             key={entry.id}
                             id={entry.id}
                             label={entry.label}
+                            icon={entry.icon}
                             selected={entry.id === tab}
                             registerRef={(node) => {
                                 if (node === null) tabRefs.current.delete(entry.id);
@@ -334,10 +345,34 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
 interface RailTabProps {
     readonly id: SettingsTabID;
     readonly label: string;
+    readonly icon: SettingsTabIcon;
     readonly selected: boolean;
     readonly registerRef: (node: HTMLButtonElement | null) => void;
     readonly onSelect: () => void;
 }
+
+/**
+ * The rail's glyph, by SF Symbol name (L88).
+ *
+ * `SettingsView.swift:20-59`'s seven `.tabItem { Label(name, systemImage:) }`s, plus one for the
+ * port-only Workspaces tab. **The size is a stated divergence:** an AppKit preferences `TabView`
+ * draws its tab icons large, ABOVE the title, and this port's rail is a vertical list (the
+ * structural divergence SET-002 already ledgers), so the glyph sits inline at the rail's own
+ * 12 px text — one point up at 13 px so it does not read smaller than the word beside it.
+ */
+const RAIL_GLYPH: Readonly<Record<SettingsTabIcon, (props: { readonly size: number }) => ReactElement>> = {
+    gear: GearGlyph,
+    paintbrush: PaintbrushGlyph,
+    externaldrive: ExternalDriveGlyph,
+    tag: TagGlyph,
+    'person.badge.key': PersonBadgeKeyGlyph,
+    command: CommandGlyph,
+    globe: GlobeGlyph,
+    'square.grid.2x2': GridGlyph
+};
+
+/** The size the note above argues for. */
+const RAIL_GLYPH_SIZE = 13;
 
 /**
  * One entry in the tab rail.
@@ -349,6 +384,7 @@ interface RailTabProps {
  */
 function RailTab(props: RailTabProps): ReactElement {
     const { hovered, hoverProps } = useHover(!props.selected);
+    const Glyph = RAIL_GLYPH[props.icon];
     return (
         <button
             ref={props.registerRef}
@@ -359,7 +395,8 @@ function RailTab(props: RailTabProps): ReactElement {
             aria-controls={`settings-panel-${props.id}`}
             tabIndex={props.selected ? 0 : -1}
             data-testid={`settings-tab-button-${props.id}`}
-            className="rounded px-2 py-1.5 text-left text-[12px] transition-colors duration-100"
+            data-icon={props.icon}
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] transition-colors duration-100"
             style={{
                 background: props.selected
                     ? withAlpha(tokens.accent, 0.18)
@@ -369,6 +406,9 @@ function RailTab(props: RailTabProps): ReactElement {
             {...hoverProps}
             onClick={props.onSelect}
         >
+            <span className="flex shrink-0 items-center">
+                <Glyph size={RAIL_GLYPH_SIZE} />
+            </span>
             {props.label}
         </button>
     );

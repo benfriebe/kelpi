@@ -221,7 +221,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
             </SettingsRow>
 
             {message === null ? null : (
-                <span data-testid="global-hotkey-message" className="px-2 text-[11px]" style={{ color: '#E0685F' }}>
+                <span data-testid="global-hotkey-message" className="text-[11px]" style={{ color: '#E0685F' }}>
                     {message}
                 </span>
             )}

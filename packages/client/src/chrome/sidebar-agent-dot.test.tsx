@@ -15,7 +15,7 @@
  * `styles.css`, because the numbers the fade interpolates live there and nowhere else.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,7 +115,27 @@ describe('the sidebar agent dot pulses', () => {
         // PAINTED by the class, so the animated opacity carries the fill and the ring together
         // exactly as one SwiftUI view's `.opacity` does.
         expect(dot.style.getPropertyValue('--nex-dot-ring')).not.toBe('');
-        expect(ruleBody('.nex-agent-dot-pulse')).toContain('0 0 0 1.5px var(--nex-dot-ring)');
+        /*
+         * L18: and the 1.5px is CENTRED on the dot's edge. `Circle().stroke(borderColor,
+         * lineWidth: 1.5)` (`WorkspaceRowView.swift:15`) straddles the path — 0.75 out, 0.75 in
+         * — where a single `0 0 0 1.5px` spread hung the whole ring outside and made the marker
+         * 12px across instead of 10.5.
+         */
+        expect(ruleBody('.nex-agent-dot-pulse')).toContain(
+            '0 0 0 0.75px var(--nex-dot-ring), inset 0 0 0 0.75px var(--nex-dot-ring)'
+        );
+    });
+
+    it('L18: a group band’s dot sits a point lower than a workspace row’s', () => {
+        renderSidebar('running');
+        // `.offset(x: 3, y: -3)` on an avatar (`WorkspaceRowView.swift:129`) vs `.offset(x: 3,
+        // y: -2)` on a group glyph (`GroupHeaderRow.swift:139`) — the port drew -3 for both.
+        const row = within(screen.getAllByTestId('workspace-row')[0] as HTMLElement).getByTestId('status-dot');
+        expect((row as HTMLElement).style.top).toBe('-3px');
+        const header = screen.queryByTestId('group-header');
+        if (header !== null) {
+            expect((within(header).getByTestId('status-dot') as HTMLElement).style.top).toBe('-2px');
+        }
     });
 
     it('§H24: fades opacity 1 → 0.35 and back, and grows no halo', () => {

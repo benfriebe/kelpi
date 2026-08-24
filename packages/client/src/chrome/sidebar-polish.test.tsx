@@ -765,20 +765,27 @@ describe('change icon', () => {
     });
 });
 
-// ── shortcut hints (config-keybindings.md §3.3) ─────────────────────────────────────
+// ── L12: no shortcut hints in any sidebar menu ──────────────────────────────────────
 
 describe('menu shortcut hints', () => {
-    it('shows the display string for the actions the map covers', () => {
-        render(<Sidebar {...baseProps()} entries={entries()} keyBindings={DEFAULT_KEYBINDINGS} />);
-        fireEvent.contextMenu(rowFor(W1));
-
-        const rename = screen.getByTestId('context-menu').querySelector('[data-menu-item="rename"]');
-        expect(within(rename as HTMLElement).getByTestId('menu-shortcut').textContent).toBe('⇧⌘R');
-    });
-
-    it('shows nothing when assembly passes no binding map', () => {
+    /*
+     * The register's L12 is a whole-app class: every sidebar menu is a `.contextMenu` of plain
+     * `Button`s (`WorkspaceListView.swift:897`, `:1183`, `:344-350`), none of which carries
+     * `.keyboardShortcut`, so `NSMenu` draws no key-equivalent column at all. The port
+     * advertised ⇧⌘R on Rename…, ⌘N on New Workspace and ⌘⇧G on New Group. The keys still fire;
+     * the menus no longer restate them, and `keyBindings` stopped being a `SidebarProps` field
+     * because the hints were the only thing it fed.
+     */
+    it('draws no hint on a row menu or a group menu', () => {
         render(<Sidebar {...baseProps()} entries={entries()} />);
+
         fireEvent.contextMenu(rowFor(W1));
+        expect(screen.getByTestId('context-menu').querySelector('[data-menu-item="rename"]')).not.toBeNull();
+        expect(screen.queryByTestId('menu-shortcut')).toBeNull();
+        fireEvent.keyDown(globalThis.document, { key: 'Escape' });
+
+        fireEvent.contextMenu(screen.getByTestId('group-header'));
+        expect(screen.getByTestId('context-menu').querySelector('[data-menu-item="new-workspace"]')).not.toBeNull();
         expect(screen.queryByTestId('menu-shortcut')).toBeNull();
     });
 });

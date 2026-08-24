@@ -49,6 +49,26 @@ describe('paneDisplayTitle', () => {
         }
     });
 
+    /**
+     * §L48 — `PaneHeaderView.swift:496-502` scopes a diff on `target.isEmpty`, not on nil, so an
+     * empty STRING falls back to the repo's directory name. `pane.filePath ?? workingDirectory`
+     * keeps `''` and titled such a pane `diff: `.
+     */
+    it('treats an EMPTY diff scope as unscoped, like the Swift (§L48)', () => {
+        const empty = testPane('a', { type: 'diff', filePath: '', workingDirectory: '/repo/src' });
+        expect(paneDisplayTitle(empty, '/Users/ben')).toBe('diff: src');
+        // A real scope, and the null case, are untouched.
+        expect(paneDisplayTitle(testPane('a', { type: 'diff', filePath: '/repo/src/main.ts' }), '')).toBe(
+            'diff: main.ts'
+        );
+        expect(
+            paneDisplayTitle(
+                testPane('a', { type: 'diff', filePath: null, workingDirectory: '/repo/src' }),
+                ''
+            )
+        ).toBe('diff: src');
+    });
+
     it('abbreviates the home directory only at a path boundary', () => {
         expect(homeAbbreviated('/Users/ben', '/Users/ben')).toBe('~');
         expect(homeAbbreviated('/Users/ben/x', '/Users/ben/')).toBe('~/x');
@@ -245,7 +265,10 @@ describe('PaneHeader rendering', () => {
         const onCopyDocument = vi.fn();
         renderHeader(testPane('a', { type: 'markdown', isEditing: false }), { onCopyDocument });
         const button = screen.getByTestId('pane-copy-a');
-        expect(button.getAttribute('aria-label')).toBe('Copy document (Markdown or Rich Text)');
+        // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim — tooltip and
+        // accessible name alike.
+        expect(button.getAttribute('aria-label')).toBe('Copy whole file');
+        expect(button.getAttribute('title')).toBe('Copy whole file');
         act(() => button.click());
         expect(onCopyDocument).toHaveBeenCalledExactlyOnceWith('a');
         cleanup();

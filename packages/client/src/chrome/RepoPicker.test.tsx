@@ -312,4 +312,28 @@ describe('the shipped picker’s presentation', () => {
         // Still selected — only its tone moved.
         expect(row('r1').dataset['selected']).toBe('true');
     });
+
+    /**
+     * L87: `withAnimation(.linear(duration: 0.1)) { proxy.scrollTo(newID, anchor: .center) }`
+     * (`RepoPickerView.swift:323-326`). The port scrolled `{ block: 'nearest' }` — the minimum
+     * amount, unanimated — so walking the list with ↓ pinned the cursor to the bottom edge with
+     * nothing visible ahead of it. jsdom has no `scrollIntoView`, so the call itself is the
+     * assertion; `behavior: 'smooth'` is the ledgered stand-in for the 100 ms linear (M59's, in
+     * `CommandPalette.tsx`), since CSS owns the duration.
+     */
+    it('L87 — centres the anchored row on an arrow move, animated', () => {
+        view({ mode: 'multiple' });
+        const list = screen.getByTestId('repo-picker-list');
+        const calls: unknown[] = [];
+        for (const id of ['r1', 'r2', 'r3']) {
+            (row(id) as unknown as { scrollIntoView: (options?: unknown) => void }).scrollIntoView = (
+                options
+            ) => {
+                calls.push(options);
+            };
+        }
+        fireEvent.focus(list);
+        fireEvent.keyDown(list, { key: 'ArrowDown' });
+        expect(calls).toEqual([{ block: 'center', behavior: 'smooth' }]);
+    });
 });

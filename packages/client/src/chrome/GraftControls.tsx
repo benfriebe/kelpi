@@ -35,9 +35,18 @@ export const GRAFT_DOT_COLORS: Readonly<Record<GraftSessionView['status'], strin
     error: '#E0655C'
 };
 
+/*
+ * UI-FIDELITY L103 — the pulse is OPACITY, and only opacity.
+ *
+ * `GraftInspectorButton.swift:45` is `.symbolEffect(.pulse, options: .repeating)`, which fades a
+ * symbol in and out at a constant size. The port also scaled the dot to 82 % on every beat, so a
+ * 5 px status marker visibly shrank and grew — read as a glitch rather than as "busy mirroring",
+ * and the same rule §H24 already settled for the sidebar's agent dot ("it BREATHES, it does not
+ * ping"; a status marker never changes SIZE).
+ */
 const PULSE_KEYFRAMES = `@keyframes nex-graft-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.35; transform: scale(0.82); }
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
 }`;
 
 /** One `<style>` for the pulse, mounted once however many rows are on screen. */
@@ -102,8 +111,17 @@ export function GraftToggleButton(props: GraftToggleButtonProps): ReactElement {
                 data-testid={`graft-toggle-${props.associationID}`}
                 data-graft-status={session?.status ?? 'none'}
                 className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-[3px]"
+                /*
+                 * UI-FIDELITY L104 — HOVER is what brightens the icon, not the session.
+                 *
+                 * This is an `InspectorIconButton` (`WorkspaceInspectorView.swift:577-608`), whose
+                 * whole rule is `.foregroundStyle(isHovered ? .primary : .secondary)`. Painting it
+                 * primary whenever a session exists gave the row a second, permanent "active"
+                 * signal on top of the filled glyph and the status dot — and made the hover
+                 * feedback disappear on exactly the rows a user is most likely to click.
+                 */
                 style={{
-                    color: hover || session !== undefined ? tokens.textPrimary : tokens.textSecondary,
+                    color: hover ? tokens.textPrimary : tokens.textSecondary,
                     background: hover ? tokens.selectionFill : 'transparent'
                 }}
                 onMouseEnter={() => {
@@ -181,18 +199,23 @@ export function GraftOrphanBanner(props: GraftOrphanBannerProps): ReactElement {
                 <span className="truncate text-[10px]" style={{ color: tokens.textSecondary }}>
                     {lastPathComponent(props.orphan.parentRepoRoot)}
                 </span>
-                <div className="flex gap-2 pt-0.5">
-                    {/* Restore is the recommended answer, so it is the one that reads as a
-                        button rather than a link. */}
+                {/*
+                  * UI-FIDELITY L102 — the two answers are the SAME button.
+                  *
+                  * `GraftInspectorButton.swift:105-114` is `HStack(spacing: 6)` holding two plain
+                  * `Button`s, both `.controlSize(.small)` and neither styled: AppKit draws an
+                  * identical pair and lets the words carry the choice. The port promoted Restore
+                  * to an amber-tinted, medium-weight filled button and left Dismiss an outline,
+                  * inventing a hierarchy — and an emphasis on the destructive-adjacent answer at
+                  * that (Restore replays a stop sequence over the parent checkout). Same recipe
+                  * for both now, and the shipped 6 px gap.
+                  */}
+                <div className="flex gap-1.5 pt-0.5">
                     <button
                         type="button"
                         data-testid={`graft-orphan-restore-${props.orphan.associationID}`}
-                        className="cursor-pointer rounded border px-1.5 py-[1px] text-[11px] font-medium"
-                        style={{
-                            borderColor: 'rgba(211, 163, 41, 0.55)',
-                            background: 'rgba(211, 163, 41, 0.18)',
-                            color: tokens.textPrimary
-                        }}
+                        className="cursor-pointer rounded border px-1.5 py-[1px] text-[11px]"
+                        style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                         onClick={props.onRestore}
                     >
                         Restore

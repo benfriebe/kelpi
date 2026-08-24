@@ -170,6 +170,39 @@ describe('injection', () => {
         expect(source).toContain('data-nex-overlay');
         expect(source).toContain('data-nex-batch-popover');
     });
+
+    /**
+     * §L62 — `WebPaneInspectorScript.swift:36-50` sets `box-sizing:border-box` and
+     * `border-radius:2px` on the hover outline, and neither survived the port.
+     *
+     * The box-sizing is the one that is actually wrong rather than merely different: the overlay
+     * is positioned and sized from `getBoundingClientRect()`, so under the default `content-box`
+     * its 2 px border is drawn OUTSIDE that box and the highlight reads 4 px wider and taller
+     * than the element it is highlighting — enough, on a small target, to look like the neighbour
+     * is selected. The batch focus ring in the same picker already sets `border-box`, so the two
+     * overlays disagreed with each other about their own geometry.
+     */
+    it('sizes the hover outline border-box, with the Swift’s 2 px radius (L62)', () => {
+        const source = inspectorScript();
+        const overlay = source.slice(source.indexOf('data-nex-overlay'));
+        const block = overlay.slice(0, overlay.indexOf('function drawOverlay'));
+        expect(block).toContain('box-sizing:border-box');
+        expect(block).toContain('border-radius:2px');
+    });
+
+    /**
+     * §L76 — `if (isOurOverlay(el)) { hideOverlay(); return; }`
+     * (`WebPaneInspectorScript.swift:203-226`). The port returned early *without* hiding, so
+     * moving the pointer onto one of Nex's own overlay surfaces (a numbered badge, the comment
+     * popover, the focus ring) left the previous outline drawn underneath it — the picker still
+     * pointing at an element the pointer had left.
+     */
+    it('hides the outline when the pointer lands on one of Nex’s own overlays (L76)', () => {
+        const source = inspectorScript();
+        const onMove = source.slice(source.indexOf('function onMove'));
+        const body = onMove.slice(0, onMove.indexOf('function onClick'));
+        expect(body).toMatch(/isOverlay\(target\)\s*\)\s*\{\s*hideOverlay\(\);/);
+    });
 });
 
 describe('buildActuatorCall', () => {

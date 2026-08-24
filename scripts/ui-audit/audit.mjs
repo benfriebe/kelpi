@@ -1347,15 +1347,34 @@ function buildFlows(ctx) {
         fs.writeFileSync(path.join(repo, 'README.md'), '# Audit repo\n\nEdited line.\nA brand new line.\n');
     }
 
+    /**
+     * The inspector, open and SETTLED.
+     *
+     * Waiting on `[data-testid="inspector"]` alone is not enough and never was: §APP-066's phase
+     * machine mounts the panel at `opening`, where the slot is still growing from 0 and the panel
+     * itself is `pointer-events: none` (`chrome/sidebar-reveal.ts` ▸ `sidebarSlideStyle`). A click
+     * dispatched in that window is delivered at coordinates the panel does not yet own, so the
+     * press silently lands on the grid behind it — which is how `graft-toggle` and its two
+     * neighbours reached `no element matches [data-menu-item="add-repo"]` with the "+" button
+     * plainly in the DOM. Wait for the phase the panel actually takes a pointer in.
+     */
     async function ensureInspector() {
-        const open = await page.eval(`document.querySelector('[data-testid="inspector"]') !== null`);
-        if (open === true) return;
+        const settled = `(() => {
+            const slot = document.querySelector('[data-testid="inspector-slot"]');
+            const panel = document.querySelector('[data-testid="inspector-panel"]');
+            if (slot === null || panel === null) return false;
+            return slot.getAttribute('data-inspector-phase') === 'open' &&
+                getComputedStyle(panel).pointerEvents !== 'none' &&
+                slot.getBoundingClientRect().width > 0;
+        })()`;
+        if ((await page.eval(settled)) === true) return;
         await page.click('[data-testid="toggle-inspector"]');
         await page.waitFor(`document.querySelector('[data-testid="inspector"]') !== null`, {
             timeoutMs: 10_000,
             label: 'the inspector'
         });
-        await sleep(600);
+        await page.waitFor(settled, { timeoutMs: 10_000, label: 'the inspector to settle open' });
+        await sleep(300);
     }
 
     /** Every association row on screen, with whether it carries a graft toggle. */
@@ -1391,8 +1410,46 @@ function buildFlows(ctx) {
         const matches = (row) => row.worktree === 'true' && row.path.endsWith(`/${name}`);
         const existing = (await inspectorRows()).find(matches);
         if (existing !== undefined) return existing.id;
-        await page.click('[data-testid="inspector-add-repo"]');
-        await sleep(300);
+        // Diagnostic, kept: when the press below misses, this is the line that says WHY —
+        // whether the panel had settled (`phase`), whether it had any width, and where the
+        // harness was about to click.
+        recorder.note(
+            `inspector before add: ${String(
+                await page.eval(
+                    `(() => {
+                        const slot = document.querySelector('[data-testid="inspector-slot"]');
+                        const panel = document.querySelector('[data-testid="inspector-panel"]');
+                        const plus = document.querySelector('[data-testid="inspector-add-repo"]');
+                        const box = plus === null ? null : plus.getBoundingClientRect();
+                        return JSON.stringify({
+                            phase: slot?.getAttribute('data-inspector-phase') ?? null,
+                            slotWidth: slot === null ? null : Math.round(slot.getBoundingClientRect().width),
+                            panelPointer: panel === null ? null : getComputedStyle(panel).pointerEvents,
+                            plus: box === null ? null : { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width) }
+                        });
+                    })()`
+                )
+            )}`
+        );
+        /*
+         * WAIT for the menu rather than sleeping at it. The inspector SLIDES in, so when this
+         * helper is the thing that opened the panel the "+" button's box is still moving when
+         * `page.click` measures it — a 300 ms sleep is a coin toss, and losing it fails the
+         * step with "no element matches [data-menu-item=add-repo]" (the button was found, the
+         * press just missed). One retry, then let the click throw as it did before.
+         */
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            await page.click('[data-testid="inspector-add-repo"]');
+            try {
+                await page.waitFor(`document.querySelector('[data-menu-item="add-repo"]') !== null`, {
+                    timeoutMs: 2000,
+                    label: 'the inspector add-repository menu'
+                });
+                break;
+            } catch {
+                await sleep(500);
+            }
+        }
         await page.click('[data-menu-item="add-repo"]');
         await sleep(300);
         await page.click('[data-testid="add-repo-path"]');
@@ -2225,7 +2282,16 @@ function buildFlows(ctx) {
                         const box = el.getBoundingClientRect();
                         return {
                             pane: el.getAttribute('data-testid').slice('pane-title-'.length),
-                            full: (el.getAttribute('title') ?? '').trim(),
+                            /*
+                             * §L32: there is no \`title\` attribute any more — a bare
+                             * \`Text(displayPath)\` in the Swift carries no \`.help()\`, so
+                             * hovering a truncated path shows nothing. The check below therefore
+                             * reconstructs the displayed path from the two spans and holds it
+                             * against the path this step CREATED, which is a stronger source of
+                             * truth than the tooltip ever was (the tooltip came from the same
+                             * title string the spans are cut from).
+                             */
+                            hasTooltip: el.getAttribute('title') !== null,
                             headText: (head?.textContent ?? '').trim(),
                             tailText: (tail?.textContent ?? '').trim(),
                             ellipsized: head === null ? false : head.scrollWidth > head.clientWidth + 1,
@@ -2240,18 +2306,36 @@ function buildFlows(ctx) {
                     truncated.length >= 1,
                     `${String(truncated.length)} of ${String((titles ?? []).length)} titles are ellipsized`
                 );
+                // The path this step made, as the header renders it: `~`-abbreviated (§H4) and
+                // cut in the middle (§M19) into a head span and a tail span. Reconstructing
+                // head + tail and requiring it to END the real directory is what proves the
+                // informative segment survived — the half a tail ellipsis throws away.
+                const deepTail = `${path.sep}a-really-long-directory-name-for-truncation${path.sep}nested${path.sep}deeper-still`;
                 recorder.check(
                     'a truncated pane-header path keeps its last segment (middle truncation, §4.2 item 3)',
                     truncated.every(
                         (title) =>
                             title.tailText.length > 0 &&
                             title.tailInside &&
-                            title.full.endsWith(title.tailText) &&
-                            title.tailText.startsWith('/')
+                            title.tailText.startsWith('/') &&
+                            `${title.headText}${title.tailText}`.endsWith(
+                                title.pane === String(deepPane?.pane_id) ? deepTail : title.tailText
+                            )
                     ),
                     JSON.stringify(
-                        truncated.map((title) => ({ tail: title.tailText, inside: title.tailInside }))
+                        truncated.map((title) => ({
+                            tail: title.tailText,
+                            inside: title.tailInside,
+                            rebuilt: `${title.headText}${title.tailText}`.endsWith(deepTail)
+                        }))
                     )
+                );
+                // §L32: and the path answers no hover, on any pane — the Swift's `Text` has no
+                // `.help()`, so there is nothing to show and nothing to imply.
+                recorder.check(
+                    'and the truncated path carries no native tooltip (§L32)',
+                    (titles ?? []).every((title) => title.hasTooltip === false),
+                    JSON.stringify((titles ?? []).map((title) => title.hasTooltip))
                 );
                 // …and hand the grid back as it was found (§N9), so `split-cli` still starts
                 // from the two panes its own expectation sentence describes.
@@ -3299,25 +3383,50 @@ function buildFlows(ctx) {
              * have to hold on screen: the node count stays bounded, AND the numbers are still
              * the right ones — a window that drifts is worse than no window.
              *
-             * §M29's interaction, stated because this step cannot see it: the gutter draws one
-             * number per LOGICAL line at a fixed row pitch, so it is exact only while no line
-             * wraps. The markdown editor now soft-wraps (`MarkdownEditorView.swift:38-40`), and a
-             * wrapped line takes two visual rows the numbers do not account for. This fixture's
-             * lines are short and never wrap, so the claims below stand as written; the general
-             * case is recorded against CONT-070/CONT-078 rather than papered over here. An exact
-             * AND windowed gutter needs per-line wrapped heights, which a `<textarea>` does not
-             * expose — the Swift gets both from `NSLayoutManager`.
+             * §M60 — and the numbers now survive WRAPPING, which is the half this step used to
+             * disclaim. M29 gave the markdown editor `wrap="soft"`, and a gutter drawing one node
+             * per logical line at a fixed pitch drifted by a row per wrap
+             * (`run-R/21-markdown-edit-toggle-edit.png`: `12` beside line 11). The port now
+             * measures each line's wrapped height in a hidden mirror of the textarea's content
+             * box and stacks the numbers on the prefix sums, so a number sits beside its line's
+             * FIRST visual row — `LineNumberRulerView.swift:88-133` gets the same thing from
+             * `NSLayoutManager.lineFragmentRect(forGlyphAt:)`. The fixture below keeps 4,000 SHORT
+             * lines (so the window claims above are unchanged) and appends a wrapping tail, which
+             * the second half of this step scrolls to. The scratchpad, still `wrap="off"`, keeps
+             * the cheap fixed-pitch path (CONT-070).
              */
             id: 'content-gutter-window',
             expect:
-                'A 4,000-line file opened in the editor draws only the gutter numbers over the viewport, and after scrolling those numbers are the lines actually on screen.',
+                'A 4,000-line file opened in the editor draws only the gutter numbers over the viewport, after scrolling those numbers are the lines actually on screen, and a wrapped line’s number stays beside its own first row.',
             needsEyes: true,
             async run(recorder) {
                 const LINES = 4000;
+                /**
+                 * §M60: ten more lines after the short ones, every second a paragraph long enough
+                 * to wrap many times over. They sit at the END so the window claims over the first
+                 * 4,000 lines — which are checked at one visual row per logical line — are
+                 * untouched, and the second half of this step scrolls down to them.
+                 *
+                 * The short lines are deliberately SHORT (`line 4000`, nine characters). The
+                 * markdown editor soft-wraps since M29 and this step's pane is one of three in the
+                 * grid, ~22 monospace characters wide: the old `line N of the gutter fixture` text
+                 * wrapped to two rows in that pane, which made "the first drawn number follows the
+                 * scroll" a claim about ROWS dressed up as a claim about lines (it passed at 1992
+                 * while the numbers on screen belonged to line ~996). Nine characters cannot wrap
+                 * at any pane width this audit produces, so row and line coincide there, and the
+                 * wrapping case gets its own assertions below instead of contaminating these.
+                 */
+                const WRAPPED = 10;
+                const PARAGRAPH = `${'wrapped prose that has to run over several visual rows. '.repeat(12)}end.`;
                 const file = path.join(work, 'LONG.md');
                 fs.writeFileSync(
                     file,
-                    `${Array.from({ length: LINES }, (_unused, index) => `line ${String(index + 1)} of the gutter fixture`).join('\n')}\n`
+                    `${[
+                        ...Array.from({ length: LINES }, (_unused, index) => `line ${String(index + 1)}`),
+                        ...Array.from({ length: WRAPPED }, (_unused, index) =>
+                            index % 2 === 1 ? PARAGRAPH : `tail ${String(index + 1)}`
+                        )
+                    ].join('\n')}\n`
                 );
                 const opened = await cli.ok(['md', file]);
                 recorder.note(`cli: ${opened.trim()}`);
@@ -3358,10 +3467,11 @@ function buildFlows(ctx) {
                     recorder.check('the editor and its gutter are on screen', false, 'no gutter element');
                     return;
                 }
+                const totalLines = LINES + WRAPPED + 1; // + the trailing newline's own line
                 recorder.check(
                     'the gutter knows the whole document',
-                    top.lines === String(LINES + 1),
-                    `data-lines=${String(top.lines)} for a ${String(LINES)}-line file with a trailing newline`
+                    top.lines === String(totalLines),
+                    `data-lines=${String(top.lines)} for a ${String(LINES + WRAPPED)}-line file with a trailing newline`
                 );
                 recorder.check(
                     'it draws a viewport-sized window, not one node per line',
@@ -3406,6 +3516,11 @@ function buildFlows(ctx) {
                  * Alignment is the half a node count cannot show: number N has to sit on the row
                  * it numbers. The gutter block is translated by the textarea's own scrollTop, so
                  * what is checked is that the first drawn row lands where its line's text is.
+                 *
+                 * `(n - 1) * lineHeight` is the arithmetic of a document with one visual row per
+                 * line, which is exactly what the fixture's short lines are — the general,
+                 * wrapping case is the §M60 block below, where the offsets come from measured
+                 * per-line heights and are held against the textarea's own `scrollHeight`.
                  */
                 const aligned = await page.eval(
                     `(() => {
@@ -3434,9 +3549,93 @@ function buildFlows(ctx) {
                     aligned !== null && Math.abs(aligned.delta) <= 1.5,
                     `off by ${String(aligned?.delta)} px (row height ${String(aligned?.lineHeight)})`
                 );
+                /**
+                 * §M60 — the wrapping tail, which is the case a fixed pitch cannot survive.
+                 *
+                 * Scroll to the end, where every second line is a paragraph that takes several
+                 * visual rows, and check the two halves that together mean "number N is beside
+                 * line N's FIRST row":
+                 *
+                 *   1. the measured heights are RIGHT — their sum in rows, times the row box, is
+                 *      the textarea's own `scrollHeight` minus its two insets. That is the
+                 *      browser's layout of the real field, which the mirror never touches, so a
+                 *      mirror that measured a paragraph at two rows where the field lays it out at
+                 *      three fails here;
+                 *   2. the numbers are STACKED on those heights — each drawn number sits exactly
+                 *      its line's height below the one before it, so a wrapped line pushes the
+                 *      column by its own rows rather than by one.
+                 */
+                await page.eval(
+                    `(() => { const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
+                              area.scrollTop = area.scrollHeight;
+                              area.dispatchEvent(new Event('scroll', { bubbles: true }));
+                              return area.scrollTop; })()`
+                );
+                await sleep(700);
+                await recorder.shot(page, 'wrapped-tail');
+                const wrapped = await page.eval(
+                    `(() => {
+                        const gutter = document.querySelector('[data-testid="content-gutter-${pane.id}"]');
+                        const inner = gutter?.firstElementChild ?? null;
+                        const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
+                        if (inner === null || area === null) return null;
+                        const style = getComputedStyle(area);
+                        const lineHeight = Number.parseFloat(style.lineHeight);
+                        const inset = Number.parseFloat(style.paddingTop);
+                        const drawn = Array.from(inner.children).map(el => ({
+                            number: Number(el.textContent.trim()),
+                            rows: Number(el.getAttribute('data-rows') ?? '1'),
+                            top: el.getBoundingClientRect().top
+                        }));
+                        const drift = [];
+                        for (let i = 1; i < drawn.length; i += 1) {
+                            const gap = drawn[i].top - drawn[i - 1].top;
+                            const owed = drawn[i - 1].rows * lineHeight;
+                            if (Math.abs(gap - owed) > 1.5) {
+                                drift.push({ after: drawn[i - 1].number, rows: drawn[i - 1].rows,
+                                             gap: Math.round(gap * 100) / 100, owed });
+                            }
+                        }
+                        return { lineHeight, inset,
+                                 lines: Number(gutter.getAttribute('data-lines')),
+                                 rowsTotal: Number(gutter.getAttribute('data-rows-total')),
+                                 // The FIELD's own height, in px, with its two insets removed.
+                                 contentHeight: area.scrollHeight - 2 * inset,
+                                 nodes: drawn.length,
+                                 maxRows: drawn.reduce((most, row) => Math.max(most, row.rows), 0),
+                                 lastNumber: drawn[drawn.length - 1]?.number ?? 0,
+                                 drift };
+                    })()`
+                );
+                recorder.note(`wrapped tail: ${JSON.stringify(wrapped)}`);
+                recorder.check(
+                    'the tail actually wraps, so the case is under test',
+                    (wrapped?.maxRows ?? 0) > 1 && (wrapped?.rowsTotal ?? 0) > (wrapped?.lines ?? 0),
+                    `tallest drawn line ${String(wrapped?.maxRows)} rows; ${String(wrapped?.rowsTotal)} visual rows for ${String(wrapped?.lines)} lines`
+                );
+                recorder.check(
+                    'the measured heights match the textarea’s own layout (§M60)',
+                    wrapped !== null &&
+                        Math.abs(wrapped.rowsTotal * wrapped.lineHeight - wrapped.contentHeight) <= 2,
+                    `${String(wrapped?.rowsTotal)} rows × ${String(wrapped?.lineHeight)} px = ${String((wrapped?.rowsTotal ?? 0) * (wrapped?.lineHeight ?? 0))} vs scrollHeight−insets ${String(wrapped?.contentHeight)}`
+                );
+                recorder.check(
+                    'every number sits beside its own line’s FIRST row, wrap included (§M60)',
+                    wrapped !== null && wrapped.drift.length === 0,
+                    wrapped === null
+                        ? 'no gutter'
+                        : `${String(wrapped.drift.length)} misplaced of ${String(wrapped.nodes)} drawn${wrapped.drift.length === 0 ? '' : `: ${JSON.stringify(wrapped.drift.slice(0, 3))}`}`
+                );
+                recorder.check(
+                    'the window is still bounded at the wrapped end',
+                    (wrapped?.nodes ?? 0) > 0 && (wrapped?.nodes ?? 0) < 200,
+                    `${String(wrapped?.nodes)} nodes, last number ${String(wrapped?.lastNumber)}`
+                );
                 recorder.eyes(
                     'the gutter should read as a continuous column of four-digit line numbers beside the ' +
-                        'text they belong to — no gaps, no numbers restarting at 1, nothing clipped.'
+                        'text they belong to — no gaps, no numbers restarting at 1, nothing clipped. In ' +
+                        'the wrapped-tail shot each paragraph’s number must sit beside its FIRST row, ' +
+                        'with the following number level with the next line’s first row (§M60).'
                 );
 
                 // Leave the grid as it was found: this pane is this step's fixture, not a later
@@ -3491,8 +3690,16 @@ function buildFlows(ctx) {
                 const info = JSON.parse(String(present));
                 recorder.note(`header copy button: ${JSON.stringify(info)}`);
                 recorder.check(
-                    'the markdown header has a copy button, with a spoken label',
-                    info.label === 'Copy document (Markdown or Rich Text)',
+                    /*
+                     * §L26 — the Swift's own string, verbatim: `.help("Copy whole file")`
+                     * (`PaneHeaderView.swift:193`). This assertion used to pin the port's
+                     * reworded "Copy document (Markdown or Rich Text)", which was also the
+                     * button's ACCESSIBLE NAME, so a screen reader spoke a label the shipped app
+                     * does not have. Which two formats the menu then offers is the menu's own
+                     * business, and is asserted separately a few lines below.
+                     */
+                    'the markdown header has a copy button, with the Swift’s spoken label (§L26)',
+                    info.label === 'Copy whole file',
                     String(info.label)
                 );
                 recorder.check(
@@ -4755,7 +4962,7 @@ function buildFlows(ctx) {
         {
             id: 'web-tab-strip',
             expect:
-                'A second tab makes the strip appear: the ✕ shows on the active pill and on hover only, dragging a pill reorders the strip (and the daemon agrees), the pills carry the accent fill/border on the active one, clicking an idle pill switches tabs and re-syncs the pane header — and a pane back down to ONE tab has no strip at all, so ⌘W closes the pane, which ⇧⌘T then restores as a web pane carrying its tab.',
+                'A second tab makes the strip appear: the ✕ shows on the active pill and on hover only, the pills carry the accent fill/border on the active one and no outline at all on the idle ones, dragging a pill reorders NOTHING (§L77 — the shipped app has no such gesture), clicking an idle pill switches tabs and re-syncs the pane header — and a pane back down to ONE tab has no strip at all, so ⌘W closes the pane, which ⇧⌘T then restores as a web pane carrying its tab.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -4878,26 +5085,40 @@ function buildFlows(ctx) {
                     );
                 }
 
-                // ── WEB-016: the drag ────────────────────────────────────────────────
+                /*
+                 * ── §L77: the strip is NOT draggable ──────────────────────────────────
+                 *
+                 * `WebPaneChrome.swift:311-377` gives a pill exactly one gesture,
+                 * `.onTapGesture(perform: onSelect)`, and `WorkspaceFeature.swift:1050-1062`'s
+                 * `webPaneTabReorder` action has no call site anywhere in the shipped app. The
+                 * port's pointer-drag was therefore an invented affordance and has been removed;
+                 * WEB-016's rule survives where it always lived, in the daemon's
+                 * `web-tab-reorder` handler and its not-a-permutation guard
+                 * (`daemon/src/store/reducers/web.ts`, `daemon/src/webpane/ws.test.ts`).
+                 *
+                 * So the same real drag is still driven here — and the assertion is inverted:
+                 * nothing may move, in the daemon or in the strip.
+                 */
                 const first = strip?.[0]?.id ?? null;
                 const last = strip?.[(strip?.length ?? 1) - 1]?.id ?? null;
                 if (first !== null && last !== null) {
                     const from = await page.box(`[data-testid="web-tab-${first}"]`);
                     const to = await page.box(`[data-testid="web-tab-${last}"]`);
                     if (from !== null && to !== null) {
+                        const beforeOrder = before.map((tab) => String(tab.id));
                         await page.drag(from.cx, from.cy, to.cx, to.cy, { steps: 10 });
                         await sleep(1200);
-                        await recorder.shot(page, 'reordered');
+                        await recorder.shot(page, 'after-drag');
                         const after = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
                         const order = after.map((tab) => String(tab.id));
                         recorder.note(`daemon order after the drag: ${order.map((id) => id.slice(0, 8)).join(', ')}`);
                         recorder.check(
-                            'the dragged tab moved to the end, daemon-side (WEB-016)',
-                            order[order.length - 1] === first,
-                            `last is ${String(order[order.length - 1]).slice(0, 8)}, dragged ${String(first).slice(0, 8)}`
+                            'dragging a pill reorders NOTHING — the strip has no such gesture (L77)',
+                            JSON.stringify(order) === JSON.stringify(beforeOrder),
+                            `${JSON.stringify(beforeOrder.map((id) => id.slice(0, 8)))} → ${JSON.stringify(order.map((id) => id.slice(0, 8)))}`
                         );
                         recorder.check(
-                            'and no tab was lost or duplicated by the reorder',
+                            'and no tab was lost or duplicated by the attempt',
                             order.length === 3 && new Set(order).size === 3,
                             `${String(order.length)} tabs`
                         );
@@ -4911,6 +5132,23 @@ function buildFlows(ctx) {
                             'the strip shows the same order the daemon holds',
                             JSON.stringify(domOrder) === JSON.stringify(order),
                             `${JSON.stringify((domOrder ?? []).map((id) => String(id).slice(0, 8)))}`
+                        );
+                        const ghosted = await page.eval(
+                            `(() => {
+                                const pill = document.querySelector('[data-testid="web-tab-${first}"]');
+                                if (pill === null) return null;
+                                return { dragging: pill.getAttribute('data-dragging'),
+                                         opacity: getComputedStyle(pill).opacity,
+                                         cursor: getComputedStyle(pill).cursor };
+                            })()`
+                        );
+                        recorder.note(`dragged pill after release: ${JSON.stringify(ghosted)}`);
+                        recorder.check(
+                            'and no pill ever reports a drag state, a ghost opacity or a grabbing cursor',
+                            ghosted?.dragging === null &&
+                                String(ghosted?.opacity) === '1' &&
+                                String(ghosted?.cursor) !== 'grabbing',
+                            JSON.stringify(ghosted)
                         );
                     }
                 }
@@ -8953,15 +9191,35 @@ function buildFlows(ctx) {
                 await clickRow(first.id, { button: 'right' });
                 await sleep(400);
                 await hoverMenuItem('bulk-labels');
+                /*
+                 * §L11: the indeterminate mark is drawn INSIDE the row's colour swatch now, not
+                 * in a separate glyph column — `LabelPreset.menuSwatch(checked:mixed:)` is one
+                 * 11 pt image per row and the shipped menu never draws two glyphs on one row.
+                 * So the state is read from the attributes the port carries for exactly this
+                 * (`data-checked` on the row, `data-mark` on the swatch) rather than by
+                 * string-matching an en-dash out of the label, which is what this probe used to
+                 * do and what the fix necessarily broke.
+                 */
                 const triState = await page.eval(
                     `JSON.stringify(Array.from(document.querySelectorAll('[data-testid="context-submenu"] [role="menuitem"]'))
-                        .map(el => (el.textContent ?? '').trim()))`
+                        .map(el => ({
+                            label: (el.textContent ?? '').trim(),
+                            checked: el.getAttribute('data-checked'),
+                            mark: el.querySelector('[data-testid="menu-swatch"]')?.getAttribute('data-mark') ?? null,
+                            glyphs: el.querySelectorAll('svg').length
+                        })))`
                 );
                 recorder.note(`label submenu: ${String(triState)}`);
+                const labelRow = JSON.parse(String(triState)).find((row) => row.label === 'audit-label') ?? null;
                 recorder.check(
-                    'the label applied to only one of the two shows the mixed dash',
-                    String(triState).includes('–audit-label'),
-                    String(triState)
+                    'the label applied to only one of the two shows the mixed dash, inside its swatch (§L11)',
+                    labelRow !== null && labelRow.checked === 'mixed' && labelRow.mark === 'dash',
+                    JSON.stringify(labelRow)
+                );
+                recorder.check(
+                    'and the row draws ONE glyph, not a tick column beside a dot (§L11)',
+                    labelRow !== null && labelRow.glyphs === 1,
+                    `${String(labelRow?.glyphs)} svg(s) in the row`
                 );
                 await recorder.shot(page, 'labels');
                 await clickSubmenuItem('audit-label');
@@ -10947,7 +11205,7 @@ function buildFlows(ctx) {
                           : paneCwd;
                 const headerTitleNow = String(
                     await page.eval(
-                        `document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? ''`
+                        `(document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim()`
                     )
                 );
                 recorder.note(`pane header title: ${JSON.stringify(headerTitleNow)}`);
@@ -11412,7 +11670,7 @@ function buildFlows(ctx) {
                 await sleep(900);
                 await recorder.shot(page, 'background-reports-visible');
                 const headerTitle = await page.eval(
-                    `document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? ''`
+                    `(document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim()`
                 );
                 recorder.note(`pane header after switching back: ${JSON.stringify(headerTitle)}`);
                 recorder.check(
@@ -11823,7 +12081,7 @@ function buildFlows(ctx) {
                 }
                 const titleOf = async () =>
                     await page.eval(
-                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') ?? null)()`
+                        `(() => { const el = document.querySelector('[data-testid="pane-title-${paneID}"]'); return el === null ? null : (el.textContent ?? '').trim(); })()`
                     );
                 const activityOf = async () => {
                     const rows = await cli.json(['workspace', 'list', '--json']);
@@ -11844,7 +12102,7 @@ function buildFlows(ctx) {
                 let shown = null;
                 try {
                     shown = await page.waitFor(
-                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') === ${JSON.stringify(probe)})()`,
+                        `(() => ((document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim() === ${JSON.stringify(probe)}))()`,
                         { timeoutMs: 6000, label: 'pane header shows the OSC 2 title' }
                     );
                 } catch {
@@ -11876,7 +12134,7 @@ function buildFlows(ctx) {
                 let osc0 = null;
                 try {
                     osc0 = await page.waitFor(
-                        `(() => document.querySelector('[data-testid="pane-title-${paneID}"]')?.getAttribute('title') === ${JSON.stringify(second)})()`,
+                        `(() => ((document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim() === ${JSON.stringify(second)}))()`,
                         { timeoutMs: 6000, label: 'pane header shows the OSC 0 title' }
                     );
                 } catch {

@@ -86,8 +86,7 @@ function ProfileRow(props: {
                 background: props.selected
                     ? withAlpha(tokens.accent, 0.18)
                     : hoverBackground(hovered, 'transparent'),
-                color: tokens.textPrimary,
-                cursor: 'pointer'
+                color: tokens.textPrimary
             }}
             {...hoverProps}
             onClick={props.onSelect}
@@ -140,7 +139,12 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-profiles">
+            {/*
+             * L79's `plain`: `ProfilesSettingsView.swift` is a master–detail split, not a `Form`
+             * — its one child here is that whole split, which a grouped card would box twice.
+             */}
             <SettingsSection
+                plain
                 title="Profiles"
                 hint="Named environment sets, injected when a pane's shell starts. One workspace per Claude account is the flagship use."
                 testID="profiles-list-section"
@@ -182,8 +186,10 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                 }}
                             />
                         ))}
+                        {/* L80: `.help("Add profile")` (`ProfilesSettingsView.swift:101`). */}
                         <SettingsButton
                             testID="profile-add"
+                            title="Add profile"
                             onClick={() => {
                                 const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
                                 setSelected(next.length - 1);
@@ -215,6 +221,11 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                             <SettingsEmptyState
                                 testID="profile-detail-placeholder"
                                 glyph={<PersonBadgeKeyGlyph size={34} />}
+                                // L92: `.font(.headline)` (`ProfilesSettingsView.swift:128`) — the
+                                // one empty state of the four whose title is a HEADING (body size,
+                                // semibold, primary) rather than a `.secondary` line. The
+                                // explanation's `.frame(maxWidth: 360)` is the shared recipe's.
+                                headline
                                 title="No profile selected"
                                 detail="A profile is a named set of environment variables injected into every pane that starts in a workspace assigned to it."
                             >
@@ -437,9 +448,12 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                             if (event.key === 'Enter') event.currentTarget.blur();
                                         }}
                                     />
+                                    {/* L80: `.help("Remove variable")`
+                                        (`ProfilesSettingsView.swift:262`). */}
                                     <SettingsButton
                                         testID={`profile-var-remove-${String(position)}`}
                                         ariaLabel={`Remove variable ${entry.key}`}
+                                        title="Remove variable"
                                         onClick={() => {
                                             commit(
                                                 patch(index, {

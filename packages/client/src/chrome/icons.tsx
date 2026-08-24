@@ -202,6 +202,12 @@ export interface ChromeIconProps {
      * Symbols `.fill` variants the Swift group header switches to once a group has a colour.
      */
     readonly filled?: boolean | undefined;
+    /**
+     * L8: an SF Symbol carries a WEIGHT, and the stroke is this glyph set's stand-in for it.
+     * 1.2 is the regular face; a caller asking for `.semibold` (`GroupHeaderRow.swift:87`'s
+     * collapse chevron) passes a heavier one.
+     */
+    readonly strokeWidth?: number | undefined;
 }
 
 /** A 12×12-viewBox stroke glyph inheriting `currentColor`. */
@@ -215,7 +221,7 @@ export function ChromeIcon(props: ChromeIconProps): ReactElement {
             height={size}
             fill={filled ? 'currentColor' : 'none'}
             stroke="currentColor"
-            strokeWidth={1.2}
+            strokeWidth={props.strokeWidth ?? 1.2}
             strokeLinecap="round"
             strokeLinejoin="round"
             className={props.className}

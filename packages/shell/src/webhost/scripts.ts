@@ -834,12 +834,26 @@ function inspectorMain(): void {
         if (overlay !== null && overlay.isConnected) return overlay;
         const node = doc.createElement('div');
         node.setAttribute('data-nex-overlay', '1');
+        /*
+         * L62 — `box-sizing:border-box` and `border-radius:2px`, both of which
+         * `WebPaneInspectorScript.swift:36-50` sets and neither of which the port did.
+         *
+         * The box-sizing is the one that is actually wrong rather than merely different: the
+         * overlay is positioned and sized from `getBoundingClientRect()`, so under the default
+         * `content-box` the 2 px border is drawn OUTSIDE that rect and the highlight reads 4 px
+         * wider and taller than the element it is highlighting — on a tight target (a small
+         * button, a table cell) that is enough to make it look like the neighbour is selected.
+         * The batch focus ring a few hundred lines below already sets `border-box`, so the two
+         * overlays in the same picker disagreed with each other about their own geometry.
+         */
         node.style.cssText = [
             'position:fixed',
             'pointer-events:none',
             'z-index:2147483647',
             'border:2px solid #007AFF',
             'background:rgba(0,122,255,0.18)',
+            'border-radius:2px',
+            'box-sizing:border-box',
             'transition:all 60ms ease-out',
             'display:none'
         ].join(';');
@@ -965,7 +979,19 @@ function inspectorMain(): void {
             return;
         }
         const target = event.target as Element | null;
-        if (target === null || isOverlay(target)) return;
+        if (target === null) return;
+        /*
+         * L76 — moving onto one of Nex's own overlay surfaces HIDES the outline, it does not
+         * merely skip the frame. `WebPaneInspectorScript.swift:203-226` is
+         * `if (isOurOverlay(el)) { hideOverlay(); return; }`: a badge, the comment popover and
+         * the focus ring are not pick targets, so the picker stops pointing at anything while
+         * the pointer is over one. The port's bare `return` left the LAST outline drawn, so
+         * hovering a numbered badge looked like the element underneath it was still armed.
+         */
+        if (isOverlay(target)) {
+            hideOverlay();
+            return;
+        }
         drawOverlay(target);
     }
 

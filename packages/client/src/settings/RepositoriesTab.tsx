@@ -30,7 +30,7 @@
 import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../chrome';
-import { ExternalDriveGlyph } from './glyphs';
+import { ExternalDriveGlyph, FolderBadgeGearGlyph, PlusGlyph } from './glyphs';
 import type { SettingsActions, SettingsPaths } from './types';
 import {
     SettingsButton,
@@ -47,6 +47,11 @@ import {
  * One registry row. H11: `RepoRegistryView.swift:18-24` renders a `List`, whose rows AppKit
  * lights under the pointer; these were flat tinted strips that never moved, so a row with two
  * buttons on it read as a static line of text.
+ *
+ * L86: **at rest it paints nothing.** `.listStyle(.inset)` (`:51`) draws no fill per row — the
+ * port's `rgba(128,128,128,0.06)` card was the same misplaced grouped-form tone L79 took off the
+ * form rows, and it also swallowed the hover response, since a lit row and a tinted row are hard
+ * to tell apart. Transparent at rest, `selectionFill` under the pointer.
  */
 function RepoRow(props: {
     readonly id: string;
@@ -59,7 +64,7 @@ function RepoRow(props: {
             data-testid={`repo-row-${props.id}`}
             data-origin={props.auto ? 'auto' : 'manual'}
             className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors duration-100"
-            style={{ background: hoverBackground(hovered, 'rgba(128,128,128,0.06)') }}
+            style={{ background: hoverBackground(hovered, 'transparent') }}
             {...hoverProps}
         >
             {props.children}
@@ -138,7 +143,14 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
 
     return (
         <div className="flex flex-col gap-4" data-testid="settings-tab-repositories">
+            {/*
+             * L79's `plain`: `RepoRegistryView.swift:12-55` is `VStack { HStack(toolbar); Divider;
+             * List }` — a toolbar over a list, with no `Form` and no card. The Auto-detect section
+             * below IS a grouped-form row (it is General ▸ Repositories in the shipped app), so it
+             * keeps the card.
+             */}
             <SettingsSection
+                plain
                 title="Registry"
                 hint="Registered repositories are what the inspector's New Worktree picker and nex workspace create --worktree choose from."
                 testID="registry-section"
@@ -193,12 +205,21 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                             Choose…
                         </SettingsButton>
                     )}
+                    {/*
+                     * L86: both toolbar buttons are `Label(_, systemImage:)` in the shipped app
+                     * (`RepoRegistryView.swift:18-24`) — `folder.badge.gearshape` on Scan,
+                     * `plus` on Add — and the port had dropped the glyphs and kept the words.
+                     * Hand-rolled on `glyphs.tsx`'s 12 × 12 grid, sized to the 11 px button text.
+                     */}
                     <SettingsButton
                         testID="repo-scan"
                         disabled={path.trim() === '' || actions.scanRepos === undefined}
                         onClick={submitScan}
                     >
-                        Scan Directory
+                        <span className="flex items-center gap-1.5">
+                            <FolderBadgeGearGlyph size={11} />
+                            Scan Directory
+                        </span>
                     </SettingsButton>
                     <SettingsButton
                         testID="repo-add"
@@ -206,7 +227,10 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                         disabled={path.trim() === '' || actions.addRepo === undefined}
                         onClick={submitAdd}
                     >
-                        Add Repo
+                        <span className="flex items-center gap-1.5">
+                            <PlusGlyph size={11} />
+                            Add Repo
+                        </span>
                     </SettingsButton>
                 </div>
 

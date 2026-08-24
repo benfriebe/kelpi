@@ -6,7 +6,7 @@
  * with the same `--nex-*` tokens, so a chrome theme change moves this window too.
  */
 
-import { useState, type CSSProperties, type ReactElement, type ReactNode, type Ref } from 'react';
+import { Children, useState, type CSSProperties, type ReactElement, type ReactNode, type Ref } from 'react';
 
 import { tokens, withAlpha } from '../chrome';
 
@@ -80,25 +80,103 @@ export interface SettingsSectionProps {
     readonly hint?: string | undefined;
     readonly children: ReactNode;
     readonly testID?: string | undefined;
+    /**
+     * **This section is a heading over a LIST, not a grouped-form section** — so it draws no card
+     * and bands nothing.
+     *
+     * Four of the eight tabs are not `Form`s in the shipped app: `RepoRegistryView.swift:12-55`,
+     * `LabelPresetsSettingsView.swift:27-45`, `ProfilesSettingsView.swift` and
+     * `SettingsView.swift:707-741` are each a `VStack` around a toolbar and a `List`, with no
+     * `Section` and therefore no card anywhere on the tab. Their children here already carry
+     * their own row chrome (`.listStyle(.inset)`'s stripes, the Labels add row's accent tint,
+     * an explicit `Divider()`), so banding them would draw a second, contradictory grouping over
+     * the first — which is L79's own defect pointing the other way.
+     */
+    readonly plain?: boolean | undefined;
 }
+
+/**
+ * The **card** a `.formStyle(.grouped)` section draws, and the padding of the rows inside it.
+ *
+ * `SETTINGS_CARD_FILL` is the tone the port had been painting on every ROW; L79 is that it belongs
+ * to the SECTION. `SETTINGS_ROW_PADDING` is a measurement the Swift source cannot give — AppKit
+ * owns a grouped row's insets — so it is the shipped look read off the dialog at 10 × 6, and named
+ * here rather than repeated as a class per control.
+ */
+export const SETTINGS_CARD_FILL = withAlpha('#808080', 0.06);
+const SETTINGS_ROW_PADDING = '6px 10px';
+
+/**
+ * A section's title: **sentence case at the body size** (L79).
+ *
+ * `Section("Worktrees")` in a grouped `Form`, and `Section("Global")` in the Keybindings `List`,
+ * are both drawn by AppKit in the standard control font — the port's `11px uppercase
+ * tracking-wide` tertiary micro-label is a shape the shipped window has nowhere. Exported so the
+ * Keybindings tab's own category headings (`KeybindingsTab.tsx`, which builds its table rather
+ * than using `SettingsSection`) cannot drift from it: two heading recipes inside one tab is what
+ * the uppercase label already looked like against the Global section above it.
+ */
+export const SETTINGS_SECTION_HEADING = 'text-[13px] font-semibold';
 
 /**
  * A `Section("…") { … }` from `SettingsView.swift`'s grouped `Form`.
  *
+ * **One card per SECTION, with hairline separators between its rows** (L79). `SettingsView.swift:128`
+ * and `:278` are `Form { Section("Worktrees") { … } … }.formStyle(.grouped)`, and macOS draws that
+ * as a single rounded card per section: rows stacked flush, a hairline between each pair, and the
+ * section's name in sentence case at the body size ABOVE the card. The port had inverted it — the
+ * 6 % fill was on every individual row, so a section read as a stack of pills rather than as one
+ * group, and the header was an 11 px uppercase tertiary label of a kind the shipped window has
+ * nowhere. The fill, the separators and the row padding now live here, which is what makes every
+ * tab inherit the same grouping instead of restating it.
+ *
+ * The children are wrapped one per row rather than being asked to pad themselves: a section's
+ * children are rows by definition, and a padding class repeated across `controls.tsx`, six tabs
+ * and the odd `<p>` is a rule that drifts. `Children.toArray` drops the `null`s a conditional row
+ * renders, so a hidden row leaves no empty band and no stray hairline behind it.
+ *
  * **The caption is LAST** (M46). Every Swift section that carries explanatory copy carries it as
  * the section's closing `Text(…).font(.caption).foregroundStyle(.secondary)` — read the
  * Worktrees section at `SettingsView.swift:129-137`: the `HStack { Text("Base path"); TextField }`
- * comes first and the paragraph explaining `<repo>` substitution comes after it. The port
- * rendered `hint` between the heading and the children, which turns a footnote into a preamble
- * and pushes the control the section is *about* below a paragraph.
+ * comes first and the paragraph explaining `<repo>` substitution comes after it. It sits OUTSIDE
+ * the card, where the grouped form puts it.
  */
 export function SettingsSection(props: SettingsSectionProps): ReactElement {
+    const rows = Children.toArray(props.children);
     return (
-        <section className="flex flex-col gap-2" {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: tokens.textTertiary }}>
+        <section
+            className="flex flex-col gap-1.5"
+            {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
+        >
+            <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
                 {props.title}
             </h3>
-            {props.children}
+            {props.plain === true ? (
+                <div className="flex flex-col gap-2">{props.children}</div>
+            ) : (
+                <div
+                    data-settings-card="true"
+                    {...(props.testID === undefined ? {} : { 'data-testid': `${props.testID}-card` })}
+                    className="flex flex-col overflow-hidden rounded-md"
+                    style={{ background: SETTINGS_CARD_FILL }}
+                >
+                    {rows.map((row, index) => (
+                        // eslint-disable-next-line react/no-array-index-key -- a section's rows are
+                        // a fixed list in source order; there is nothing else to key them by.
+                        <div
+                            key={index}
+                            data-settings-row="true"
+                            className="flex flex-col"
+                            style={{
+                                padding: SETTINGS_ROW_PADDING,
+                                ...(index === 0 ? {} : { borderTop: `1px solid ${tokens.divider}` })
+                            }}
+                        >
+                            {row}
+                        </div>
+                    ))}
+                </div>
+            )}
             {props.hint === undefined ? null : (
                 <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                     {props.hint}
@@ -134,12 +212,14 @@ export interface SettingsRowProps {
  * Deliberately NOT hover-lit: this is a `.formStyle(.grouped)` row, and a grouped form row in
  * AppKit does not highlight either — only the CONTROL inside it responds. The hover recipe
  * belongs to the things you can click (H11's list: buttons, swatches, rail tabs, list rows).
+ *
+ * It carries no fill and no padding of its own (L79): a grouped row is a band INSIDE its
+ * section's card, and `SettingsSection` is what pads it and rules a hairline above it.
  */
 export function SettingsRow(props: SettingsRowProps): ReactElement {
     return (
         <div
-            className="flex flex-col gap-1 rounded px-2 py-2"
-            style={{ background: withAlpha('#808080', 0.06) }}
+            className="flex flex-col gap-1"
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
             <div className="flex items-center justify-between gap-4">
@@ -190,6 +270,12 @@ export interface SettingsButtonProps {
      * (`GlobalHotkeySection`'s ✕, which unmounts along with the chip it clears).
      */
     readonly buttonRef?: Ref<HTMLButtonElement> | undefined;
+    /**
+     * A floor under the button's width, for a label that CHANGES (L90's Record → "Press a key…" →
+     * the captured chord). Without it the control resizes under the pointer and every sibling
+     * after it slides.
+     */
+    readonly minWidth?: number | undefined;
 }
 
 const TONE_COLOR: Readonly<Record<SettingsButtonTone, string>> = {
@@ -205,6 +291,12 @@ export function SettingsButton(props: SettingsButtonProps): ReactElement {
     // free; this one has to draw it. Fill on hover, and lift the border to the selection stroke
     // so the outline moves with it — the text colour is untouched so a `danger` button keeps
     // the red that is the only thing marking it destructive.
+    //
+    // **No `cursor`** (L89). macOS never swaps the arrow for a hand over a control — the pointer
+    // is a link affordance on the web and nothing else — and `styles.css`'s `button { cursor:
+    // default }` already says so for the whole app. An inline `cursor: pointer` here beat that
+    // rule and made the bordered buttons the one hand in a window of arrows; the hover FILL is
+    // the "this is clickable" signal, which is the signal the shipped app gives.
     const { hovered, hoverProps } = useHover(!disabled);
     // `whitespace-nowrap`: a button label is a name, not prose. "Reset All to Defaults" wrapped
     // onto two lines in the Keybindings header (run-B's nit list), which reads as a paragraph
@@ -218,12 +310,12 @@ export function SettingsButton(props: SettingsButtonProps): ReactElement {
             aria-label={props.ariaLabel ?? undefined}
             {...hoverProps}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
-            className="whitespace-nowrap rounded border px-2 py-1 text-[11px] transition-colors duration-100 disabled:opacity-40"
+            className="whitespace-nowrap rounded border px-2 py-1 text-center text-[11px] transition-colors duration-100 disabled:opacity-40"
             style={{
                 borderColor: hovered ? tokens.selectionStroke : tokens.divider,
                 color: TONE_COLOR[tone],
                 background: hoverBackground(hovered, 'transparent'),
-                cursor: disabled ? 'default' : 'pointer'
+                ...(props.minWidth === undefined ? {} : { minWidth: `${String(props.minWidth)}px` })
             }}
             onClick={props.onClick}
         >
@@ -266,8 +358,7 @@ export function SettingsIconButton(props: IconButtonProps): ReactElement {
             className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[11px] leading-none transition-colors duration-100 disabled:opacity-40"
             style={{
                 color: hovered ? tokens.textPrimary : TONE_COLOR[props.tone ?? 'default'],
-                background: hoverBackground(hovered, 'transparent'),
-                cursor: disabled ? 'default' : 'pointer'
+                background: hoverBackground(hovered, 'transparent')
             }}
             onClick={props.onClick}
         >
@@ -338,7 +429,8 @@ export function SettingsToggle(props: ToggleProps): ReactElement {
                     background: track,
                     border: `1px solid ${props.checked ? tokens.accent : withAlpha('#808080', 0.55)}`,
                     transition: 'background-color 160ms ease, border-color 160ms ease',
-                    cursor: disabled ? 'default' : 'pointer'
+                    // L89: the arrow, like every other control in the window.
+                    cursor: 'default'
                 }}
                 {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
                 onChange={(event) => {
@@ -458,6 +550,13 @@ export interface SettingsEmptyStateProps {
     readonly testID?: string | undefined;
     /** `.quaternary` for the repo registry, `.tertiary` for the other three. */
     readonly glyphTone?: 'tertiary' | 'quaternary' | undefined;
+    /**
+     * L92: the Profiles placeholder — and only that one — sets its title `.font(.headline)`
+     * (`ProfilesSettingsView.swift:128`), which is the body size SEMIBOLD in the primary label
+     * colour. The other three (`RepoRegistryView.swift:36`, `LabelPresetsSettingsView.swift:86`,
+     * `SettingsView.swift:713`) are a plain `Text` in `.secondary`, which is the default here.
+     */
+    readonly headline?: boolean | undefined;
 }
 
 /**
@@ -493,7 +592,11 @@ export function SettingsEmptyState(props: SettingsEmptyStateProps): ReactElement
             >
                 {props.glyph}
             </span>
-            <span className="text-[13px]" style={{ color: tokens.textSecondary }}>
+            <span
+                data-testid={props.testID === undefined ? undefined : `${props.testID}-title`}
+                className={`text-[13px]${props.headline === true ? ' font-semibold' : ''}`}
+                style={{ color: props.headline === true ? tokens.textPrimary : tokens.textSecondary }}
+            >
                 {props.title}
             </span>
             {props.detail === undefined ? null : (

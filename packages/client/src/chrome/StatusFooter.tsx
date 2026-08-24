@@ -144,8 +144,32 @@ export function footerGitStats(
     return { changedFiles, additions, deletions };
 }
 
+/**
+ * UI-FIDELITY L52 — the diff counts follow the appearance.
+ *
+ * `StatusBarView.swift:143-148` paints them with the SYSTEM `.green` / `.red`, which are dynamic
+ * colours: they resolve differently in light and dark. The port had two literal hexes, so the
+ * light chrome got the dark tones. This is the same pair resolved per bucket — the dark column is
+ * unchanged (it is also the inspector's, and the audit's `footer-git-stats` reads those exact
+ * values), and the light column is the chrome palette's own light green / red
+ * (`WORKSPACE_COLOR_HEX`, light bucket). The one thing that does NOT survive the port is the
+ * accessibility half: a renderer cannot see macOS's "Increase contrast", so these shift with
+ * appearance only.
+ */
+export const FOOTER_DIFF_TONES: Readonly<Record<ChromeBucket, { readonly add: string; readonly del: string }>> = {
+    dark: { add: '#5FBE89', del: '#E0655C' },
+    light: { add: '#3F9457', del: '#D0453C' }
+};
+
 /** The Swift's `gitStatsLabel`: `doc N`, then `+A` in green and `-B` in red, 10 pt monospaced. */
-function GitStats({ stats }: { readonly stats: FooterGitStats }): ReactElement {
+function GitStats({
+    stats,
+    bucket
+}: {
+    readonly stats: FooterGitStats;
+    readonly bucket: ChromeBucket;
+}): ReactElement {
+    const tone = FOOTER_DIFF_TONES[bucket];
     const label =
         `${String(stats.changedFiles)} file${stats.changedFiles === 1 ? '' : 's'} changed, ` +
         `${String(stats.additions)} added, ${String(stats.deletions)} removed`;
@@ -160,8 +184,8 @@ function GitStats({ stats }: { readonly stats: FooterGitStats }): ReactElement {
                 <ChromeIcon name="document" size={9} />
                 {stats.changedFiles}
             </span>
-            {stats.additions > 0 ? <span style={{ color: '#5FBE89' }}>+{stats.additions}</span> : null}
-            {stats.deletions > 0 ? <span style={{ color: '#E0655C' }}>-{stats.deletions}</span> : null}
+            {stats.additions > 0 ? <span style={{ color: tone.add }}>+{stats.additions}</span> : null}
+            {stats.deletions > 0 ? <span style={{ color: tone.del }}>-{stats.deletions}</span> : null}
         </span>
     );
 }
@@ -373,9 +397,18 @@ export function bucketPopoverPlacement(
 
 /** Layout constants the fit calculation and the row's own CSS have to agree on. */
 const FOOTER_ROW_PADDING_PX = 24; // `px-3`, both sides
-const FOOTER_CLUSTER_GAP_PX = 12; // `gap-3`
+/**
+ * UI-FIDELITY L50 — the two clusters are ≥28 px apart, and the right half is one 14 px stack.
+ *
+ * `StatusBarView.swift:56` is `HStack(spacing: 10)` with `Spacer(minLength: 8)` between the two
+ * sections, and SwiftUI applies the stack's spacing on BOTH sides of a `Spacer` — so the floor is
+ * 10 + 8 + 10 = 28. `rightSection` (`:181-208`) is then a single `HStack(spacing: 14)` over the
+ * gauges, the three counts and the clock, so every gap in that half is 14. The port had 12 px
+ * everywhere except between gauges, which read as one undifferentiated right-hand run.
+ */
+const FOOTER_CLUSTER_GAP_PX = 28; // `gap-2.5` + the 8 px spacer + `gap-2.5`
 const FOOTER_LEFT_GAP_PX = 8; // `gap-2` between the left cluster's segments
-const GAUGE_GAP_PX = 14; // `gap-3.5` between gauges
+const GAUGE_GAP_PX = 14; // `gap-3.5` between gauges — and between every segment of the right half
 const GAUGE_GRAPH_GAP_PX = 3; // `gap-[3px]` between a gauge's value slot and its sparkline
 /**
  * What the left cluster keeps before a gauge may claim the space: enough for a middle-truncated
@@ -476,7 +509,9 @@ function useFooterGaugeBudget(
             }
             const reserve = Math.min(FOOTER_LEFT_RESERVE_PX, wanted);
             const next = Math.round(
-                width - FOOTER_ROW_PADDING_PX - keep - 2 * FOOTER_CLUSTER_GAP_PX - reserve
+                // L50: the gap between the clusters (28) plus the one INSIDE the right half,
+                // between the gauge row and the counts (14).
+                width - FOOTER_ROW_PADDING_PX - keep - FOOTER_CLUSTER_GAP_PX - GAUGE_GAP_PX - reserve
             );
             setBudget((current) => (current === next ? current : next));
         };
@@ -615,7 +650,8 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
         <div
             ref={rowRef}
             data-testid="status-footer"
-            className="relative flex h-6 shrink-0 items-center gap-3 border-t px-3 text-[11px]"
+            // L50: `HStack(spacing: 10)`, with the `Spacer(minLength: 8)` below.
+            className="relative flex h-6 shrink-0 items-center gap-2.5 border-t px-3 text-[11px]"
             style={{
                 background: tokens.footerBackground,
                 borderColor: tokens.divider,
@@ -669,24 +705,45 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             // is what gives way when the footer runs out of room. It is also the
                             // only segment that survives being shortened — hence the tooltip,
                             // which is where the whole path goes once the row is crowded.
-                            style={{ flexShrink: 100 }}
+                            //
+                            // UI-FIDELITY L53 — and it gives way from the HEAD.
+                            //
+                            // `StatusBarView.swift:93-95` is `.truncationMode(.middle)`: the path
+                            // loses its middle at the rendered width and keeps both ends. The port
+                            // middle-truncated the STRING at 48 chars and then handed the result to
+                            // a CSS tail ellipsis, so at the widths where the path actually gives
+                            // way it kept `~/Users/be…` and threw away the leaf — the half that
+                            // says which worktree the pane is in. CSS has no middle ellipsis, so
+                            // the box truncates from its start instead (`direction: rtl` puts the
+                            // ellipsis at the line's visual start; the `<bdi>` keeps the path
+                            // itself laid out left-to-right, or a leading `~` would migrate to the
+                            // far end). STATED DIVERGENCE: the ellipsis is at the head rather than
+                            // in the middle — the 48-char cap still middle-truncates a pathological
+                            // path — but the meaningful tail is what survives a squeeze, which is
+                            // the property the shipped truncation is there for.
+                            style={{
+                                flexShrink: 100,
+                                direction: 'rtl',
+                                textAlign: 'left'
+                            }}
                             title={homeAbbreviated(pane.workingDirectory, home)}
                         >
-                            {middleTruncate(homeAbbreviated(pane.workingDirectory, home), 48)}
+                            <bdi>{middleTruncate(homeAbbreviated(pane.workingDirectory, home), 48)}</bdi>
                         </span>
                         {pane.gitBranch === null ? null : (
                             <span
                                 data-testid="footer-branch"
-                                className="flex min-w-0 items-center gap-1"
+                                // L51: `HStack(spacing: 3)` around a 9 pt `arrow.triangle.branch`.
+                                className="flex min-w-0 items-center gap-[3px]"
                                 style={{ color: tokens.textTertiary, flexShrink: 1 }}
                             >
                                 <span className="flex shrink-0 items-center">
-                                    <ChromeIcon name="branch" size={10} />
+                                    <ChromeIcon name="branch" size={9} />
                                 </span>
                                 <span className="truncate">{pane.gitBranch}</span>
                             </span>
                         )}
-                        {treeStats === null ? null : <GitStats stats={treeStats} />}
+                        {treeStats === null ? null : <GitStats stats={treeStats} bucket={bucket} />}
                         {pane.agentSessionID === null ? null : paneRunning ? (
                             <span
                                 data-testid="footer-agent"
@@ -695,9 +752,14 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             >
                                 {/* §AGNT-063 / §APP-072: the Swift's literal default is "claude". */}
                                 {pane.agentKind ?? 'claude'}
-                                {pane.agentStartedAt === null || pane.agentStartedAt === undefined
-                                    ? ''
-                                    : ` ${chromeElapsedLabel(pane.agentStartedAt, nowMs)}`}
+                                {/* L54: the elapsed is `.monospacedDigit()` — tabular figures, so
+                                    a label that reticks every second does not jitter as `1` and
+                                    `4` swap widths. Its own span: only the DIGITS are tabular. */}
+                                {pane.agentStartedAt === null || pane.agentStartedAt === undefined ? (
+                                    ''
+                                ) : (
+                                    <span className="tabular-nums">{` ${chromeElapsedLabel(pane.agentStartedAt, nowMs)}`}</span>
+                                )}
                                 {pane.backgroundTaskCount > 0 ? ` · ${pane.backgroundTaskCount} running` : ''}
                             </span>
                         ) : pane.status === 'waitingForInput' ? (
@@ -712,6 +774,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                     </>
                 )}
             </div>
+
+            {/* L50: `Spacer(minLength: 8)`. `shrink-0` and no grow — the left cluster is the half
+                that takes the slack here (its content is leading-aligned, so the picture is the
+                same), and this only guarantees the floor the shipped row has: 10 + 8 + 10. */}
+            <span aria-hidden data-testid="footer-cluster-gap" className="w-2 shrink-0" />
 
             {/* The right half of the row: gauges, counts, clock. Named so the audit can measure
               * the left cluster against it and prove §N6's overlap cannot come back.
@@ -739,7 +806,8 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
               */}
             <div
                 data-testid="footer-right"
-                className="flex items-center gap-3"
+                // L50: one 14 px stack, gauges through clock (`rightSection`'s `HStack(spacing: 14)`).
+                className="flex items-center gap-3.5"
                 style={{ flexShrink: 1000 }}
             >
                 {gauges.length > 0 ? (
@@ -771,7 +839,8 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                 <div
                     ref={keepRef}
                     data-testid="footer-keep"
-                    className="flex shrink-0 items-center gap-3"
+                    // L50: the counts and the clock are part of the same 14 px stack.
+                    className="flex shrink-0 items-center gap-3.5"
                 >
                     <CountItem
                         bucket="running"
@@ -916,16 +985,43 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                                         {item.workspaceName}
                                     </span>
                                     <span style={{ color: tokens.textTertiary }}>·</span>
+                                    {/*
+                                      * UI-FIDELITY L56 — the title gives way to the WIDTH, not to
+                                      * a character count.
+                                      *
+                                      * `rowContent` (`StatusBarView.swift:390-394`) is
+                                      * `.lineLimit(1).truncationMode(.middle)`: the title is
+                                      * shortened only when the 252 pt panel actually runs out of
+                                      * room. The port cut every title at 24 characters first, so a
+                                      * pane called `claude · refactor the parser` was ellipsised
+                                      * with 60 px of panel to spare. Truncation is CSS's now, and
+                                      * it starts at the head so the distinguishing tail survives —
+                                      * L53's rule, and the same stated divergence (a head ellipsis
+                                      * where SwiftUI puts a middle one).
+                                      */}
                                     <span
-                                        className="min-w-0 flex-1 truncate"
-                                        style={{ color: tokens.textPrimary }}
+                                        data-testid="bucket-row-title"
+                                        className="min-w-0 shrink truncate"
+                                        style={{
+                                            color: tokens.textPrimary,
+                                            direction: 'rtl',
+                                            textAlign: 'left'
+                                        }}
                                     >
-                                        {middleTruncate(item.paneTitle, 24)}
+                                        <bdi>{item.paneTitle}</bdi>
                                     </span>
+                                    {/* L56: `Spacer(minLength: 10)` — the row's flexible gap, with
+                                        a floor, so the title can never abut the elapsed. */}
+                                    <span aria-hidden className="min-w-[10px] flex-1" />
                                     {openBucket === 'running' &&
                                     item.agentStartedAt !== null &&
                                     item.agentStartedAt !== undefined ? (
-                                        <span className="shrink-0" style={{ color: tokens.activeAgent }}>
+                                        // L54: `.monospacedDigit()` here too — this label reticks
+                                        // every second while the popover is open.
+                                        <span
+                                            className="shrink-0 tabular-nums"
+                                            style={{ color: tokens.activeAgent }}
+                                        >
                                             {chromeElapsedLabel(item.agentStartedAt, nowMs)}
                                         </span>
                                     ) : null}

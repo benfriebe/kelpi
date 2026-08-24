@@ -37,7 +37,24 @@ export const GRID_TOKEN_FALLBACKS = {
     '--nex-status-running': '#5FBE89', // statusRunning
     '--nex-status-waiting': '#6F9BD8', // statusWaiting
     '--nex-status-inactive': '#8A8A92', // statusInactive
-    '--nex-agent': '#D3A329' // activeAgent (amber agent badge / elapsed timer)
+    '--nex-agent': '#D3A329', // activeAgent (amber agent badge / elapsed timer)
+    /**
+     * L27 — the header's **one** orange.
+     *
+     * `PaneHeaderView.swift:109,112` (ZOOM) and `:134,137` (SYNC) are both `.orange`, the system
+     * colour, and neither is part of `chromeTheme` — so in the shipped app the two badges are
+     * always the same hue and always distinct from the agent amber. The port had drifted to two
+     * different ambers: ZOOM on a hard-coded `#D08237` (the only colour in the grid that was not
+     * a `--nex-*` name, so it survived the light/dark swap unchanged) and SYNC repainted with
+     * `--nex-agent`, which made a synced pane read as a pane with a running agent.
+     *
+     * One name, both badges, and a light column so it actually swaps. The dark value is the
+     * port's existing ZOOM orange; the light one is derived from it by the same per-channel
+     * ratio that takes `--nex-agent` from `#d3a329` to `#a97c17`. Not repainted to SwiftUI's
+     * literal `Color.orange` (`#FF9F0A` dark / `#FF9500` light) — that is a palette decision the
+     * preset table owns, and this row is about the token, not the hue.
+     */
+    '--nex-orange': '#D08237'
 } as const;
 
 export type GridTokenName = keyof typeof GRID_TOKEN_FALLBACKS;
@@ -62,7 +79,9 @@ export const tokens = {
     statusRunning: token('--nex-status-running'),
     statusWaiting: token('--nex-status-waiting'),
     statusInactive: token('--nex-status-inactive'),
-    activeAgent: token('--nex-agent')
+    activeAgent: token('--nex-agent'),
+    /** L27 — `.orange`: the ZOOM and SYNC badges, and nothing else. */
+    orange: token('--nex-orange')
 } as const;
 
 /**

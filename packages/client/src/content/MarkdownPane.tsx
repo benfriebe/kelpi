@@ -22,6 +22,7 @@ import type { ContentApi } from './client';
 import { ContentFrame, ContentStatus } from './ContentFrame';
 import type { ClipboardWriter, FindPalette, LinkOpener } from './bridge';
 import type { RichClipboardWriter } from './copy';
+import { contentPaneLabel } from './labels';
 import { PlainTextEditor } from './PlainTextEditor';
 import type { ScrollStore } from './scroll';
 import { useContent } from './useContent';
@@ -66,8 +67,16 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
     const { state, error } = useContent(content, paneID);
 
     if (state === null) {
+        /*
+         * §L45 — nothing, not "Loading…".
+         *
+         * `MarkdownPaneView.swift:64-77` mounts an empty transparent `WKWebView` and lets the
+         * first load paint it; on a local file that is a frame or two, so the port's centred
+         * placeholder read as a flash rather than as information. The node stays (it carries the
+         * pane's fill, and a failed command still renders through it) — only the word is gone.
+         */
         return error === null ? (
-            <ContentStatus paneID={paneID} text="Loading…" />
+            <ContentStatus paneID={paneID} text="" />
         ) : (
             <ContentStatus paneID={paneID} text={error} tone="error" />
         );
@@ -77,7 +86,8 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
         return (
             <PlainTextEditor
                 paneID={paneID}
-                ariaLabel={`markdown editor ${paneID}`}
+                // §L46: the file's name and a four-character id, never the raw UUID.
+                ariaLabel={contentPaneLabel('markdown editor', paneID, state.filePath)}
                 value={state.text ?? ''}
                 isDark={state.isDark}
                 focused={props.focused}
@@ -103,7 +113,8 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
     const frame = (
         <ContentFrame
             paneID={paneID}
-            title={`markdown preview ${paneID}`}
+            // §L46: the frame's accessible name — the document, then a short id for uniqueness.
+            title={contentPaneLabel('markdown preview', paneID, state.filePath)}
             html={state.html ?? ''}
             assetBase={state.assetBase}
             visible={props.visible}

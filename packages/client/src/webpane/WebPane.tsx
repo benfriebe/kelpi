@@ -28,20 +28,18 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
-    type PointerEvent as ReactPointerEvent,
     type ReactElement
 } from 'react';
 
 import { Icon } from '../grid/icons';
-import { tokens } from '../grid/tokens';
+import { pill, tokens } from '../grid/tokens';
 import { BatchPanel } from './BatchPanel';
 import type { WebPaneCommands } from './commands';
-import { FavouritesMenu } from './FavouritesMenu';
+import { BookmarksMenu, FavouriteStar } from './FavouritesMenu';
 import type { GeometryRect, GeometryReport } from './geometry';
-import { Glyph, type GlyphName } from './glyphs';
+import { Glyph, GLYPH_STROKE_MEDIUM, GLYPH_STROKE_SEMIBOLD, type GlyphName } from './glyphs';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import { useLoadProgress, type LoadProgressTimings } from './progress';
-import { orderChanged, reorderedTabs, tabUnderPointer, type PillBox } from './reorder';
 import type { BatchDestination, WebBatchSession, WebFavourite } from './state';
 import { StoragePanel } from './StoragePanel';
 import { WebFindBar } from './WebFindBar';
@@ -111,12 +109,32 @@ export function resolveActiveTab(
     return tabs.find((tab) => tab.id === activeTabID) ?? tabs[0] ?? null;
 }
 
-/** §5's `displayLabel`: the title if there is one, else the URL, else a placeholder. */
+/**
+ * §5's `displayLabel`: title → **host** → url → "New Tab" (`WebPaneState.swift:18-23`).
+ *
+ * L70 — the host step was missing, so a tab that had not reported a title yet showed its whole
+ * URL in a 180 px pill (`https://example.com/some/deep/path?q=1` truncated to nothing useful)
+ * where the shipped app shows `example.com`. The daemon's `tabDisplayLabel`
+ * (`daemon/src/store/reducers/web.ts`) has always had the host step — it is what the *pane
+ * header* reads — so the pill and the header disagreed on the same tab. Same rule, same
+ * capitalisation of the placeholder ("New Tab"), on both.
+ */
 export function tabLabel(tab: WebPaneTab): string {
     const title = tab.title ?? '';
     if (title.trim().length > 0) return title;
+    const host = hostOf(tab.url);
+    if (host !== '') return host;
     if (tab.url.length > 0) return tab.url;
-    return 'New tab';
+    return 'New Tab';
+}
+
+function hostOf(url: string): string {
+    if (url === '') return '';
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return '';
+    }
 }
 
 const EMPTY_FAVOURITES: readonly WebFavourite[] = [];
@@ -174,7 +192,15 @@ function ChromeButton(props: ChromeButtonProps): ReactElement {
             }}
             onClick={props.onClick}
         >
-            <Glyph name={props.glyph} />
+            {/*
+             * L78 — an armed / open control is a HEAVIER glyph, not only an accent-coloured one.
+             * `WebPaneChrome.swift:226,246` swap `.medium` for `.semibold` on the scope and the
+             * padlock while they are lit; every port glyph was pinned at the medium stroke.
+             */}
+            <Glyph
+                name={props.glyph}
+                strokeWidth={props.active === true ? GLYPH_STROKE_SEMIBOLD : GLYPH_STROKE_MEDIUM}
+            />
             {badge > 0 ? (
                 <span
                     data-testid={`${props.testID}-badge`}
@@ -204,11 +230,8 @@ const TAB_LABEL_MASK = 'linear-gradient(to right, #000 0%, #000 82%, transparent
 interface TabPillProps {
     readonly tab: WebPaneTab;
     readonly active: boolean;
-    /** This pill is the one being dragged (WEB-016). */
-    readonly dragging: boolean;
     readonly onSelect: () => void;
     readonly onClose: () => void;
-    readonly onDragStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }
 
 function TabPill(props: TabPillProps): ReactElement {
@@ -220,19 +243,23 @@ function TabPill(props: TabPillProps): ReactElement {
         <div
             data-testid={`web-tab-${tab.id}`}
             data-active={active ? 'true' : 'false'}
-            data-dragging={props.dragging ? 'true' : 'false'}
             data-close-visible={showsClose ? 'true' : 'false'}
             className="relative flex max-w-[180px] shrink-0 items-center rounded"
+            /*
+             * L67 — the pill's two states, `WebPaneChrome.swift:331-341` exactly.
+             *
+             * An INACTIVE pill is `Color.secondary.opacity(0.08)` under a `Color.clear`
+             * strokeBorder: a faint tint with no outline at all. The port gave it the opaque
+             * `surfaceBackground` and a full `divider` rule, which drew every idle tab as a
+             * bordered box and made the strip read as a row of buttons rather than one active
+             * tab among quiet ones. The ACTIVE pill's border is `accent.opacity(0.4)`, not the
+             * flat accent — the 18 % fill is what carries the state, and the outline only
+             * outlines it.
+             */
             style={{
-                background: active
-                    ? `color-mix(in srgb, ${tokens.accent} 18%, transparent)`
-                    : tokens.surfaceBackground,
-                border: `1px solid ${active ? tokens.accent : tokens.divider}`,
-                // A dragged pill is ghosted so the gap it leaves reads as the drop target.
-                opacity: props.dragging ? 0.45 : 1,
-                cursor: props.dragging ? 'grabbing' : 'default'
+                background: active ? pill(tokens.accent, 18) : pill(tokens.textSecondary, 8),
+                border: `1px solid ${active ? pill(tokens.accent, 40) : 'transparent'}`
             }}
-            onPointerDown={props.onDragStart}
             onPointerEnter={() => setHovered(true)}
             onPointerLeave={() => setHovered(false)}
         >
@@ -261,7 +288,6 @@ function TabPill(props: TabPillProps): ReactElement {
                     title="Close tab (⌘W)"
                     className="absolute right-[3px] top-1/2 flex h-[14px] w-[14px] shrink-0 -translate-y-1/2 items-center justify-center rounded-full"
                     style={{ color: tokens.textPrimary, background: tokens.headerBackground }}
-                    onPointerDown={(event) => event.stopPropagation()}
                     onClick={props.onClose}
                 >
                     <Glyph name="close" size={9} />
@@ -449,92 +475,22 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         [onHidden, paneID]
     );
 
-    // ── WEB-016: tab drag reorder ───────────────────────────────────────────────────
-
-    /**
-     * The live order while a drag is in flight.
-     *
-     * Local, and cleared the moment the daemon's own order arrives: the strip previews the
-     * move under the pointer (that is what makes it a drag rather than a swap on release), but
-     * the daemon remains the owner — its `web-tab-reorder` reply, or the next state sync,
-     * replaces the preview with the truth. A drag the daemon refuses (WEB-016's
-     * not-a-permutation guard) therefore snaps back rather than lying.
-     */
-    const [dragOrder, setDragOrder] = useState<readonly string[] | null>(null);
-    const [draggingTab, setDraggingTab] = useState<string | null>(null);
-    const stripRef = useRef<HTMLDivElement | null>(null);
-    const tabIDs = useMemo(() => tabs.map((tab) => tab.id), [tabs]);
-
-    // The daemon's order is authoritative the instant it changes.
-    const daemonOrderKey = tabIDs.join(',');
-    useEffect(() => {
-        setDragOrder(null);
-    }, [daemonOrderKey]);
-
-    const pillBoxes = useCallback((): readonly PillBox[] => {
-        const strip = stripRef.current;
-        if (strip === null) return [];
-        const boxes: PillBox[] = [];
-        for (const id of tabIDs) {
-            const element = strip.querySelector(`[data-testid="web-tab-${id}"]`);
-            if (element === null) continue;
-            const rect = (element as HTMLElement).getBoundingClientRect();
-            boxes.push({ id, left: rect.left, right: rect.right });
-        }
-        return boxes;
-    }, [tabIDs]);
-
-    const startTabDrag = useCallback(
-        (tabID: string, event: ReactPointerEvent<HTMLDivElement>): void => {
-            // Left button only, and never from the ✕ (which stops propagation itself).
-            if (event.button !== 0) return;
-            const startX = event.clientX;
-            let order: readonly string[] = tabIDs;
-            let moved = false;
-            const onMove = (move: PointerEvent): void => {
-                // A 4 px threshold: a click that wobbles must stay a click (tab select).
-                if (!moved && Math.abs(move.clientX - startX) < 4) return;
-                if (!moved) {
-                    moved = true;
-                    setDraggingTab(tabID);
-                }
-                const over = tabUnderPointer(pillBoxes(), move.clientX);
-                if (over === null) return;
-                const next = reorderedTabs(order, tabID, over);
-                if (!orderChanged(order, next)) return;
-                order = next;
-                setDragOrder(next);
-            };
-            const onUp = (): void => {
-                window.removeEventListener('pointermove', onMove);
-                window.removeEventListener('pointerup', onUp);
-                setDraggingTab(null);
-                if (!moved) return;
-                if (!orderChanged(tabIDs, order)) {
-                    setDragOrder(null);
-                    return;
-                }
-                void commands.reorderTabs(paneID, order);
-            };
-            window.addEventListener('pointermove', onMove);
-            window.addEventListener('pointerup', onUp);
-        },
-        [commands, paneID, pillBoxes, tabIDs]
-    );
-
     // ── render ──────────────────────────────────────────────────────────────────────
 
+    /*
+     * L77 — there is no drag-to-reorder gesture, because the shipped app has none.
+     *
+     * `WebPaneChrome.swift:311-377` gives a pill exactly one gesture, `.onTapGesture(perform:
+     * onSelect)`, and `WorkspaceFeature.swift:1050-1062`'s `webPaneTabReorder` action has **no
+     * call site anywhere in the app** — no view, no menu, no socket command reaches it. So the
+     * port's pointer-drag (a 4 px threshold, a live preview order, a pill ghosted to 0.45 under
+     * a `grabbing` cursor) was an affordance invented here, and it is gone.
+     *
+     * What stays is the wire: `web-tab-reorder` is still a daemon command with its
+     * not-a-permutation guard, and `commands.reorderTabs` still binds it, so a client that wants
+     * to move tabs can — the strip simply is not one.
+     */
     const showTabs = tabs.length > 1;
-    const orderedTabs = useMemo(() => {
-        if (dragOrder === null) return tabs;
-        const byID = new Map(tabs.map((tab) => [tab.id, tab]));
-        const out: WebPaneTab[] = [];
-        for (const id of dragOrder) {
-            const tab = byID.get(id);
-            if (tab !== undefined) out.push(tab);
-        }
-        return out.length === tabs.length ? out : tabs;
-    }, [tabs, dragOrder]);
 
     return (
         <div
@@ -595,7 +551,13 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     </div>
                 ) : null}
                 <div
-                    className="flex shrink-0 items-center gap-1 px-1.5 py-1"
+                    /*
+                     * L69 — `navAndURLBar` is `HStack(spacing: 6) { … }.padding(.horizontal, 8)
+                     * .padding(.vertical, 4)` (`WebPaneChrome.swift:149, 219-220`). The port had
+                     * it at 4 px / 6 px, which pulled the whole toolbar 2 px tighter than the
+                     * shipped app on every gap and 2 px in at each end.
+                     */
+                    className="flex shrink-0 items-center gap-1.5 px-2 py-1"
                     // No border here — M31: the block's own bottom rule is the only one.
                     style={{ background: tokens.headerBackground }}
                 >
@@ -620,7 +582,10 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         // WEB-032: mid-load the button IS the stop button, and says so.
                         label={loading ? 'Stop loading (⌘R reloads)' : 'Reload (⌘R, ⌥-click bypasses the cache)'}
                         glyph={loading ? 'close' : 'reload'}
-                        disabled={active === null}
+                        // L75: reload is NEVER disabled. `WebPaneChrome.swift:172-180` gives it a
+                        // flat `.opacity(0.8)` and no `.disabled(…)` at all, where back/forward
+                        // each carry one — so a tab-less pane dimmed a control the shipped app
+                        // leaves live.
                         // M34: the tooltip has always promised the ⌥-click, and the verb has
                         // always taken `hard` — the handler simply never read the modifier, so
                         // the advertised gesture did nothing. It reads it now.
@@ -639,11 +604,19 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     >
                         <div
                             className="flex w-full items-center gap-1 rounded pr-1"
-                            // The star sits INSIDE the field's border (§16.1), so the border is on
-                            // this row rather than on the input itself.
+                            /*
+                             * The star sits INSIDE the field's border (§16.1), so the border is on
+                             * this row rather than on the input itself.
+                             *
+                             * L66 — and it is ONE border in every mode. `WebPaneChrome.swift:
+                             * 426-433` strokes the field with `Color.secondary.opacity(0.35)`
+                             * unconditionally; a private pane is signalled by the padlock glyph
+                             * alone. The port repainted it `#9B6BD6`, a hard-coded purple outside
+                             * the token set that no theme or appearance swap could reach.
+                             */
                             style={{
                                 background: tokens.surfaceBackground,
-                                border: `1px solid ${props.isPrivate === true ? '#9B6BD6' : tokens.divider}`
+                                border: `1px solid ${tokens.divider}`
                             }}
                         >
                             <input
@@ -666,17 +639,30 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                                 onFocus={() => setEditing(true)}
                                 onBlur={onBlur}
                             />
-                            <FavouritesMenu
+                            <FavouriteStar
                                 paneID={paneID}
                                 url={liveURL}
                                 title={active?.title ?? ''}
                                 favourites={favourites}
                                 onToggle={(url, title) => void commands.favouriteToggle(url, title)}
-                                onOpen={(url) => void commands.navigate(paneID, url)}
-                                onManage={() => props.onManageFavourites?.()}
                             />
                         </div>
                     </form>
+                    {/*
+                     * L63 — bookmarks is a TOOLBAR BUTTON, outside the address field.
+                     *
+                     * `WebPaneChrome.swift:193` puts `bookmarksMenuButton` between the URL bar and
+                     * "New tab" as a 22×22 `book` labelled "Bookmarks" — the same footprint as
+                     * every other control in the row. The port had folded it into the field as a
+                     * 16×20 `▾` caret beside the star, which both renamed it ("Favourites") and
+                     * ate ~36 px of the address the field exists to show.
+                     */}
+                    <BookmarksMenu
+                        paneID={paneID}
+                        favourites={favourites}
+                        onOpen={(url) => void commands.navigate(paneID, url)}
+                        onManage={() => props.onManageFavourites?.()}
+                    />
                     <ChromeButton
                         testID={`web-new-tab-${paneID}`}
                         label="New tab (⌘T)"
@@ -734,21 +720,30 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
 
                 {showTabs ? (
                     <div
-                        ref={stripRef}
                         data-testid={`web-tabs-${paneID}`}
-                        className="flex shrink-0 items-center gap-1 overflow-x-auto px-1.5 py-1"
+                        /*
+                         * L68 — `ScrollView(.horizontal, showsIndicators: false)` over an
+                         * `HStack(spacing: 4).padding(.horizontal, 8).padding(.bottom, 4)`
+                         * (`WebPaneChrome.swift:282-297`). Two things came across wrong: the
+                         * global `*::-webkit-scrollbar` rule painted a 9 px bar under a strip the
+                         * shipped app scrolls invisibly, and the padding was 6 px on the sides
+                         * with 4 px on BOTH edges where the Swift has 8 px on the sides and 4 px
+                         * on the bottom only (the nav row's own 4 pt supplies the gap above).
+                         * `data-nex-web-tabstrip` hides the bar for this one element in
+                         * `styles.css`; the global rule is untouched.
+                         */
+                        data-nex-web-tabstrip=""
+                        className="flex shrink-0 items-center gap-1 overflow-x-auto px-2 pb-1"
                         // Same fill as the nav row, no rule between them (M31).
                         style={{ background: tokens.headerBackground }}
                     >
-                        {orderedTabs.map((tab) => (
+                        {tabs.map((tab) => (
                             <TabPill
                                 key={tab.id}
                                 tab={tab}
                                 active={tab.id === active?.id}
-                                dragging={draggingTab === tab.id}
                                 onSelect={() => void commands.selectTab(paneID, tab.id)}
                                 onClose={() => void commands.closeTab(paneID, tab.id)}
-                                onDragStart={(event) => startTabDrag(tab.id, event)}
                             />
                         ))}
                     </div>

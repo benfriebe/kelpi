@@ -216,8 +216,9 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
      *
      * `PaneSearchOverlay` claims the caret on mount (as the Swift bar does on `.onAppear`), so
      * re-keying is how a second ⌘F *while the bar is already open* pulls focus back into the
-     * field and selects what is in it — the behaviour the hand-rolled bar got from an explicit
-     * `inputRef.focus()`.
+     * field — the behaviour the hand-rolled bar got from an explicit `inputRef.focus()`. It
+     * focuses and leaves the caret at the end of the needle (L29), so coming back to the bar
+     * does not put the existing needle one keystroke from being erased.
      */
     const [findSeq, setFindSeq] = useState(0);
     /** What the document is currently marked for, replayed after every reload. */
@@ -575,10 +576,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                     key={findSeq}
                     paneID={paneID}
                     testIDPrefix="content-find"
-                    // `title` carries the pane id so two mounted iframes have distinct
-                    // accessible names; a landmark called "Find in markdown preview
-                    // C6392974-…" helps nobody, so the id comes back off for this one.
-                    label={`Find in ${title.replace(paneID, '').trim()}`}
+                    // §L46: the frame's own accessible name, which no longer carries a raw pane
+                    // UUID — "Find in markdown preview NOTES.md 0002", not the 36-character hex
+                    // string this expression used to have to strip back out.
+                    label={`Find in ${title}`}
                     needle={needle}
                     total={matches.total}
                     // The same guard the daemon applies to a terminal's counts (§TERM-118): a

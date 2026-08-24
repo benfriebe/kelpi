@@ -89,16 +89,23 @@ describe('M46 — where the explanatory copy goes', () => {
         const section = screen.getByTestId('probe-section');
         const order = [...section.children].map((node) => node.tagName.toLowerCase());
         expect(order[0]).toBe('h3');
-        expect(section.children[1]).toBe(screen.getByTestId('probe-child'));
+        // L79 put the rows inside the section's CARD; the caption is still the last child of the
+        // section, and still outside the card.
+        const card = screen.getByTestId('probe-section-card');
+        expect(section.children[1]).toBe(card);
+        expect(card.contains(screen.getByTestId('probe-child'))).toBe(true);
         expect([...section.children].at(-1)?.textContent).toContain('Worktrees are created at');
+        expect(card.contains([...section.children].at(-1) as Node)).toBe(false);
     });
 
     it('carries the same shape through the writing controls', () => {
         render(<AppearanceTab paths={DEFAULT_SETTINGS_PATHS} settings={snapshot()} actions={actions()} bucket="dark" />);
-        // `SliderField` — the one whose label column is a FIXED 150 px, so a detail folded into
-        // it was the most cramped of the five.
-        const row = screen.getByTestId('sidebar-intensity');
-        expect([...row.children].at(-1)?.textContent).toContain('Scales how vivid');
+        // `SliderField` — the one whose label column is a fixed 140 px, so a detail folded into
+        // it was the most cramped of the five. (Colour intensity's caption became its SECTION's
+        // caption in L81, which is where the Swift has it; Background opacity is the slider that
+        // still carries one of its own.)
+        const row = screen.getByTestId('terminal-opacity');
+        expect([...row.children].at(-1)?.textContent).toContain('Blended into every pane fill');
         expect([...row.children].at(-1)?.querySelector('input')).toBeNull();
     });
 });

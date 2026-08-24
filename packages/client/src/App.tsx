@@ -3110,13 +3110,11 @@ function Shell(props: AppProps): ReactElement {
             {
                 id: 'split-right',
                 label: 'Split Right',
-                ...(hint('split_right') === undefined ? {} : { shortcut: hint('split_right') }),
                 onSelect: () => act.splitPane(paneID, 'horizontal')
             },
             {
                 id: 'split-down',
                 label: 'Split Down',
-                ...(hint('split_down') === undefined ? {} : { shortcut: hint('split_down') }),
                 onSelect: () => act.splitPane(paneID, 'vertical')
             },
             { id: 'new-web', label: 'New Web Pane', onSelect: () => act.newWebPane(paneID) }
@@ -3190,7 +3188,7 @@ function Shell(props: AppProps): ReactElement {
             onSelect: () => act.copyWorkingDirectory(paneID)
         });
         return items;
-    }, [act, daemon.state.workspaces, hint, paneByID, paneMenu, shellWindowID, startPaneRename, workspace]);
+    }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, workspace]);
 
     /**
      * The ••• title-bar menu (APP-052/APP-053/APP-054).
@@ -3203,14 +3201,13 @@ function Shell(props: AppProps): ReactElement {
      */
     const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
         const items: MenuItemSpec[] = [
-            { id: 'settings', label: 'Settings…', shortcut: '⌘,', onSelect: () => openSettings() },
+            { id: 'settings', label: 'Settings…', onSelect: () => openSettings() },
             {
                 id: 'inspector',
                 label: inspectorVisible ? 'Hide Inspector' : 'Show Inspector',
-                shortcut: hint('toggle_inspector'),
                 onSelect: () => act.toggleInspector()
             },
-            { id: 'help', label: 'Nex Help', shortcut: '⌘?', onSelect: () => setHelpOpen(true) }
+            { id: 'help', label: 'Nex Help', onSelect: () => setHelpOpen(true) }
         ];
         if (shellWindowID !== null) {
             items.push(
@@ -3232,7 +3229,7 @@ function Shell(props: AppProps): ReactElement {
             }
         );
         return items;
-    }, [act, hint, inspectorVisible, openSettings, shellWindowID]);
+    }, [act, inspectorVisible, openSettings, shellWindowID]);
 
     /**
      * The search overlay, drawn over the pane the DAEMON says is being searched.
@@ -3748,7 +3745,6 @@ function Shell(props: AppProps): ReactElement {
                     // group. Both are assembly's to resolve — the sidebar renders them.
                     profiles={settings.profiles.map((profile) => profile.name)}
                     inheritGroupID={inheritGroupID}
-                    keyBindings={bindings}
                     scrollToWorkspaceID={scrollToWorkspaceID}
                     scrollToGroupID={scrollToGroupID}
                     onScrollHandled={() => {
@@ -4314,24 +4310,38 @@ const SPLASH_HINT: Readonly<Record<string, string>> = {
  * what the window lands on — a window with no workspaces and no way back would otherwise be a
  * dead end, which is exactly why the Swift put a button in it.
  *
- * `autoFocus` for the same reason the grid's "New Pane" has it: when it is the only control on
- * screen, Return should press it.
+ * L30 — three metrics that had drifted from those ten Swift lines, all pulling the same way:
+ * this placeholder was louder than the shipped one.
+ *
+ *  - **Spacing 8, not 12.** `VStack(spacing: 8)` (`ContentView.swift:238`). The one at 12 is the
+ *    GRID's "No panes" placeholder (`PaneGridView.swift:493`); the two are deliberately different
+ *    sizes and the port had run them together.
+ *  - **The glyph is `.quaternary`** (`:241`) — AppKit's quaternaryLabelColor, the label colour at
+ *    10%, transcribed here the way the empty grid already transcribes it. `textTertiary` is a
+ *    whole tier brighter, which made a ghost read as a solid icon.
+ *  - **No `autoFocus`.** `ContentView.swift:244` is a plain `Button` with no `.keyboardShortcut`;
+ *    it is the grid's "New Pane" that binds Return (`PaneGridView.swift:504`). Autofocusing here
+ *    also meant the first Return after ⌘W-ing the last workspace away raised a sheet.
  */
 function NoWorkspaceSelected({ onCreate }: { readonly onCreate: () => void }): ReactElement {
     return (
         <div
             data-testid="no-workspace-empty"
-            className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2"
             style={{ background: chromeTokens.windowBackground, color: chromeTokens.textTertiary }}
         >
-            <ChromeIcon name="terminal" size={48} />
+            <span
+                data-testid="no-workspace-glyph"
+                style={{ color: `color-mix(in srgb, ${chromeTokens.textPrimary} 10%, transparent)` }}
+            >
+                <ChromeIcon name="terminal" size={48} />
+            </span>
             <span className="text-sm" style={{ color: chromeTokens.textSecondary }}>
                 No workspace selected
             </span>
             <button
                 type="button"
                 data-testid="no-workspace-create"
-                autoFocus
                 className="rounded px-3 py-1 text-sm"
                 style={{
                     background: chromeTokens.surfaceBackground,

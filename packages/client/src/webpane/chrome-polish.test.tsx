@@ -1,8 +1,9 @@
 /**
- * The chrome polish the first burn-down left open: WEB-016 drag reorder, WEB-018's hover-reveal
- * close + gradient mask, WEB-032's dimmed nav buttons and stop glyph, WEB-033/WEB-034's loading
- * strip, WEB-039's pending-count badge, WEB-040's private-mode glyph, WEB-043's focus handoff
- * and WEB-002's blank-URL focus rule.
+ * The chrome polish the first burn-down left open: WEB-018's hover-reveal close + gradient mask,
+ * WEB-032's dimmed nav buttons and stop glyph, WEB-033/WEB-034's loading strip, WEB-039's
+ * pending-count badge, WEB-040's private-mode glyph, WEB-043's focus handoff and WEB-002's
+ * blank-URL focus rule — plus §L77, which is the *absence* of a gesture and therefore needs its
+ * own guard.
  *
  * All of it is client-side and therefore assertable here — the *page* half of a web pane needs a
  * real browser (the audit drives it), but every rule below is DOM the client owns.
@@ -16,7 +17,6 @@ import type { CommandReply } from '../connection';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
 import { navStateKey, useBlankWebPaneURLFocus, type BlankURLTarget } from './hooks';
-import { orderChanged, reorderedTabs, tabUnderPointer } from './reorder';
 import { parseNavStateMessage, type WebBatchSession } from './state';
 
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
@@ -100,68 +100,52 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-// ── WEB-016 ─────────────────────────────────────────────────────────────────────────
+// ── L77 ─────────────────────────────────────────────────────────────────────────────
 
-describe('tab drag reorder (WEB-016)', () => {
-    it('moves the dragged tab to where it was dropped and sends the whole new order', () => {
+/**
+ * §L77 — the strip has NO drag gesture, because the shipped app's has none.
+ *
+ * `WebPaneChrome.swift:311-377` gives a pill one gesture, `.onTapGesture(perform: onSelect)`, and
+ * `WorkspaceFeature.swift:1050-1062`'s `webPaneTabReorder` action has no call site anywhere in
+ * the app — no view, no menu, no socket command reaches it (`grep -rn webPaneTabReorder Nex/`
+ * returns the case and its declaration, nothing else). So the port's pointer-drag was invented
+ * here, and it is gone along with `reorder.ts`, the ghosted pill and the `grabbing` cursor.
+ *
+ * The daemon's `web-tab-reorder` command and its not-a-permutation guard are untouched: a client
+ * can still move tabs on the wire, the strip simply is not one of the ways.
+ */
+describe('the tab strip has no drag gesture (L77)', () => {
+    it('a pointer drag across the strip sends nothing and moves nothing', () => {
         const { commands, sent } = fakeCommands();
         render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
         layOutStrip();
 
-        // Drag the FIRST pill (x≈50) onto the third (x≈250).
         pointerDragTab(TAB1, 50, 250);
 
-        expect(sent).toEqual([{ verb: 'reorderTabs', args: [PANE, [TAB2, TAB3, TAB1]] }]);
-    });
-
-    it('previews the move in the strip before the daemon answers', () => {
-        const { commands } = fakeCommands();
-        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
-        layOutStrip();
-
-        pressAt(screen.getByTestId(`web-tab-${TAB1}`), 50);
-        act(() => {
-            window.dispatchEvent(new MouseEvent('pointermove', { clientX: 150 }));
-        });
+        expect(sent).toEqual([]);
         const order = Array.from(
             screen.getByTestId(`web-tabs-${PANE}`).querySelectorAll('[data-testid^="web-tab-"]')
         )
             .map((element) => element.getAttribute('data-testid'))
             .filter((id): id is string => id !== null && !id.includes('select') && !id.includes('close'));
-        expect(order).toEqual([`web-tab-${TAB2}`, `web-tab-${TAB1}`, `web-tab-${TAB3}`]);
-        // …and the dragged pill says so, which is what the ghosting is keyed on.
-        expect(screen.getByTestId(`web-tab-${TAB1}`).getAttribute('data-dragging')).toBe('true');
-        act(() => {
-            window.dispatchEvent(new MouseEvent('pointerup', { clientX: 150 }));
-        });
+        expect(order).toEqual([`web-tab-${TAB1}`, `web-tab-${TAB2}`, `web-tab-${TAB3}`]);
     });
 
-    it('a press that never moves stays a click: no reorder is sent', () => {
-        const { commands, sent } = fakeCommands();
+    it('and no pill ever reports a drag state, a ghost opacity or a grabbing cursor', () => {
+        const { commands } = fakeCommands();
         render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
         layOutStrip();
-        pointerDragTab(TAB2, 150, 152); // inside the 4 px threshold
-        expect(sent).toEqual([]);
-    });
-
-    it('the pure rule: only an exact move, and only when the order really changed', () => {
-        expect(reorderedTabs([TAB1, TAB2, TAB3], TAB3, TAB1)).toEqual([TAB3, TAB1, TAB2]);
-        expect(reorderedTabs([TAB1, TAB2], TAB1, TAB1)).toEqual([TAB1, TAB2]);
-        // An id the strip does not hold cannot move anything.
-        expect(reorderedTabs([TAB1, TAB2], 'ghost', TAB1)).toEqual([TAB1, TAB2]);
-        expect(orderChanged([TAB1, TAB2], [TAB1, TAB2])).toBe(false);
-        expect(orderChanged([TAB1, TAB2], [TAB2, TAB1])).toBe(true);
-    });
-
-    it('a drag past either end clamps to the nearest pill rather than dropping the gesture', () => {
-        const boxes = [
-            { id: TAB1, left: 0, right: 100 },
-            { id: TAB2, left: 100, right: 200 }
-        ];
-        expect(tabUnderPointer(boxes, 150)).toBe(TAB2);
-        expect(tabUnderPointer(boxes, -80)).toBe(TAB1);
-        expect(tabUnderPointer(boxes, 9000)).toBe(TAB2);
-        expect(tabUnderPointer([], 10)).toBeNull();
+        pressAt(screen.getByTestId(`web-tab-${TAB1}`), 50);
+        act(() => {
+            window.dispatchEvent(new MouseEvent('pointermove', { clientX: 250 }));
+        });
+        const pill = screen.getByTestId(`web-tab-${TAB1}`);
+        expect(pill.getAttribute('data-dragging')).toBeNull();
+        expect(pill.style.opacity).toBe('');
+        expect(pill.style.cursor).toBe('');
+        act(() => {
+            window.dispatchEvent(new MouseEvent('pointerup', { clientX: 250 }));
+        });
     });
 });
 

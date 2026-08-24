@@ -416,3 +416,63 @@ describe('every enabled row highlights — hover, focus, or an open submenu', ()
         expect(fill('status')).toBe('transparent');
     });
 });
+
+/**
+ * L11 — a row carries ONE icon.
+ *
+ * `LabelPreset.menuSwatch(diameter:checked:mixed:)` (`LabelPreset.swift:183-215`) draws the
+ * checkmark, or the indeterminate dash, INSIDE the 11pt disc, and every label menu in the
+ * shipped app hands that one image to `Label`'s `icon:`. The port drew a checkmark COLUMN and
+ * then a swatch beside it, so an applied preset was two glyphs wide and the rows of a label
+ * menu did not line up with each other.
+ */
+describe('L11 — a swatch carries its own check state', () => {
+    function swatchOf(row: HTMLElement): SVGElement {
+        const swatch = row.querySelector('[data-testid="menu-swatch"]');
+        if (swatch === null) throw new Error('no swatch');
+        return swatch as unknown as SVGElement;
+    }
+
+    function open(): HTMLElement {
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                onClose={() => undefined}
+                items={[
+                    { id: 'on', label: 'infra', swatch: '#1F6FEB', checked: true },
+                    { id: 'off', label: 'release', swatch: '#F5D90A', checked: false },
+                    { id: 'some', label: 'ops', swatch: '#1F6FEB', checked: 'mixed' },
+                    { id: 'free', label: 'adhoc', checked: true }
+                ]}
+            />
+        );
+        return screen.getByTestId('context-menu');
+    }
+
+    it('draws the mark inside the disc and never beside it', () => {
+        const menu = open();
+        const row = (id: string): HTMLElement => menu.querySelector(`[data-menu-item="${id}"]`) as HTMLElement;
+
+        expect(swatchOf(row('on')).getAttribute('data-mark')).toBe('check');
+        expect(swatchOf(row('some')).getAttribute('data-mark')).toBe('dash');
+        expect(swatchOf(row('off')).getAttribute('data-mark')).toBeNull();
+        // No `✓`/`–` text anywhere on a swatched row — the glyph is the swatch's own path.
+        expect((row('on').textContent ?? '').trim()).toBe('infra');
+        expect((row('some').textContent ?? '').trim()).toBe('ops');
+        // …while a row with NO swatch keeps the checkmark column, which is the Swift's
+        // `Label(label, systemImage: "checkmark")` for a free-form label.
+        expect(row('free').querySelector('[data-testid="menu-swatch"]')).toBeNull();
+        expect((row('free').textContent ?? '').trim()).toBe('✓adhoc');
+    });
+
+    it('picks the mark colour by the fill’s luminance, as `menuSwatch` does', () => {
+        const menu = open();
+        const path = (id: string): SVGElement =>
+            menu.querySelector(`[data-menu-item="${id}"] path`) as unknown as SVGElement;
+        // `> 0.6 → black, else white` (`LabelPreset.swift:188, 205`): a dark blue takes white,
+        // the yellow-lit dash row takes black.
+        expect(path('on').getAttribute('stroke')).toBe('#FFFFFF');
+        expect(path('some').getAttribute('stroke')).toBe('#FFFFFF');
+    });
+});

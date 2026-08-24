@@ -114,6 +114,21 @@ describe('renderFrontMatter', () => {
         expect(renderFrontMatter('tags:\n  - a\n  - b')).toContain('<td>a, b</td>');
     });
 
+    // §L41: `MarkdownFrontMatter.swift:123-133` runs `allSatisfy`, which is vacuously true for an
+    // empty sequence, so the Swift comma-joins nothing and leaves the cell blank. `tags: []` must
+    // NOT fall through to the nested-pre branch and draw a `[]` block the shipped app never shows.
+    it('leaves an EMPTY sequence as a blank cell, not a nested pre (§L41)', () => {
+        const inline = renderFrontMatter('tags: []');
+        expect(inline).toContain('<tr><th scope="row">tags</th><td></td></tr>');
+        expect(inline).not.toContain('frontmatter-nested');
+
+        const alongside = renderFrontMatter('tags: []\ntitle: Hello');
+        expect(alongside).toContain('<tr><th scope="row">tags</th><td></td></tr>');
+        expect(alongside).toContain('<tr><th scope="row">title</th><td>Hello</td></tr>');
+        // A non-empty list is untouched by the same branch.
+        expect(renderFrontMatter('tags:\n  - a')).toContain('<td>a</td>');
+    });
+
     it('nests a mapping value in a frontmatter-nested pre', () => {
         const html = renderFrontMatter('nested:\n  x: 1\n  y: 2');
         expect(html).toContain('<td><pre class="frontmatter-nested">x: 1\ny: 2</pre></td>');

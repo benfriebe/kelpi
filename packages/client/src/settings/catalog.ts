@@ -152,21 +152,39 @@ export const CATALOGUED_ACTIONS: readonly NexAction[] = NEX_ACTIONS;
  * ▸ Workspaces and General ▸ Panes that already had a daemon key before General existed, and
  * the General tab points at it rather than duplicating the controls — two switches for one
  * value is how they drift apart.
+ *
+ * **The order is the shipped app's, not a rearrangement of it** (H13). `SettingsTab`
+ * (`SettingsView.swift:8`) declares `general, appearance, repos, labels, profiles,
+ * keybindings, web` and `SettingsView.swift:18-59` renders the `TabView` in exactly that
+ * sequence; the port had previously hoisted Repositories and Keybindings above Appearance,
+ * which is a different rail from the one a user of the shipped app has learned. The seven
+ * below are now that sequence verbatim, and the port-only **Workspaces** tab is APPENDED
+ * rather than inserted — an addition at the bottom of the rail cannot displace any of the
+ * seven, where slotting it beside General (the tab that points at it) would have.
  */
 export const SETTINGS_TABS = [
     { id: 'general', label: 'General' },
-    // §13's tab order puts Repositories straight after General, which is also where its
-    // auto-detect toggle lives in the shipped app (graft-git.md §GIT-065/§GIT-074).
-    { id: 'repositories', label: 'Repositories' },
-    { id: 'keybindings', label: 'Keybindings' },
     { id: 'appearance', label: 'Appearance' },
+    { id: 'repositories', label: 'Repositories' },
     { id: 'labels', label: 'Labels' },
     { id: 'profiles', label: 'Profiles' },
-    { id: 'workspaces', label: 'Workspaces' },
-    { id: 'web', label: 'Web' }
+    { id: 'keybindings', label: 'Keybindings' },
+    { id: 'web', label: 'Web' },
+    // Port-only, and last for that reason. See the note above.
+    { id: 'workspaces', label: 'Workspaces' }
 ] as const;
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]['id'];
+
+/**
+ * The tab Settings opens on when nothing deep-links a specific one.
+ *
+ * `SettingsView.swift:13` — `@State private var selectedTab: SettingsTab = .general`. The port
+ * opened on Keybindings from ⌘,, the ••• menu, the palette and the overlay's own default, so
+ * the first thing a user saw was a 51-row table of chords rather than the app's General pane.
+ * Typed as `SettingsTabID` so the default cannot name a tab the rail does not have.
+ */
+export const DEFAULT_SETTINGS_TAB: SettingsTabID = 'general';
 
 export function isSettingsTabID(value: string): value is SettingsTabID {
     return SETTINGS_TABS.some((tab) => tab.id === value);

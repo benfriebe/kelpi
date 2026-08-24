@@ -44,7 +44,7 @@ import { actionForTrigger, tokens, withAlpha } from '../chrome';
 import { actionLabel } from './catalog';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
-import { KeyChip, SettingsButton, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import { KeyChip, SettingsButton, SettingsIconButton, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
 /** The advisory colour the Swift view uses for its warnings (SET-084's shadow notice). */
 export const WARNING_COLOR = '#D08A28';
@@ -163,12 +163,10 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                         <KeyChip>
                             <span data-testid="global-hotkey-chip">{display}</span>
                         </KeyChip>
-                        <button
-                            type="button"
-                            data-testid="global-hotkey-clear"
-                            aria-label="Clear the global hotkey"
-                            className="px-0.5 text-[11px]"
-                            style={{ color: tokens.textTertiary }}
+                        {/* H11 / M43: the shared 16 px glyph target, hover-lit like the rest. */}
+                        <SettingsIconButton
+                            testID="global-hotkey-clear"
+                            ariaLabel="Clear the global hotkey"
                             onClick={() => {
                                 // `none` rather than an empty value: the parser accepts both,
                                 // and the explicit word survives a human reading the file.
@@ -184,7 +182,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                             }}
                         >
                             ×
-                        </button>
+                        </SettingsIconButton>
                     </span>
                 )}
                 <SettingsButton

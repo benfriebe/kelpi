@@ -306,29 +306,37 @@ input {
 }
 
 /*
- * §AGNT-103 / §AGNT-104's pulsing agent dot.
+ * §AGNT-103 / §AGNT-104's pulsing agent dot — §H24: it BREATHES, it does not ping.
  *
- * The Swift overlays a dot on the workspace avatar (and on a group header, aggregated) and
- * PULSES it: `.easeInOut(duration: 1).repeatForever(autoreverses: true)` on a halo behind the
- * dot. A halo is a second layer here too — `box-shadow` spread, which grows outward without
- * moving the dot or disturbing the 1.5 px ring that separates it from the sidebar behind it.
+ * `PulsingStatusDot` (`WorkspaceRowView.swift:5-23`) is four lines and there is no halo in any
+ * of them: a filled `Circle` with a 1.5 pt `borderColor` ring, `.opacity(isPulsing ? 0.35 :
+ * 1.0)`, and `.easeInOut(duration: 1.0).repeatForever(autoreverses: true)` driving it from
+ * `.onAppear`. So the whole dot — fill AND ring together, which is what animating the element's
+ * own `opacity` gives — fades to 35 % and back on a 1 s ease-in-out, forever.
  *
- * The dot itself never changes size: a status marker that breathes is read as "working", one
- * that jumps is read as a glitch. Reduced motion keeps the dot and drops the pulse — the colour
- * is the state, and the animation only draws the eye to it.
+ * The port used to emit an expanding `0 0 0 4px` box-shadow halo on a fully opaque dot, which
+ * made every running workspace radar-ping and left it the most animated thing in the sidebar.
+ * `--nex-dot-halo` went with the ring it drew; `--nex-dot-ring` stays, because the 1.5 px ring
+ * is the Swift's `borderColor` stroke and is painted (not animated) for the whole cycle.
+ *
+ * The dot never changes SIZE: a status marker that breathes is read as "working", one that jumps
+ * is read as a glitch. Reduced motion keeps the dot, at full opacity, and drops the fade — the
+ * colour is the state, and the animation only draws the eye to it.
  */
 @keyframes nex-agent-dot-pulse {
-  0% { box-shadow: 0 0 0 1.5px var(--nex-dot-ring), 0 0 0 0 var(--nex-dot-halo); }
-  100% { box-shadow: 0 0 0 1.5px var(--nex-dot-ring), 0 0 0 4px transparent; }
+  from { opacity: 1; }
+  to { opacity: 0.35; }
 }
 
 .nex-agent-dot-pulse {
+  box-shadow: 0 0 0 1.5px var(--nex-dot-ring);
   animation: nex-agent-dot-pulse 1s ease-in-out infinite alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .nex-agent-dot-pulse {
     animation: none;
+    opacity: 1;
   }
 }
 
@@ -383,4 +391,65 @@ input {
 [data-titlebar-drag='true'] [role='menu'],
 [data-titlebar-drag='true'] [role='menuitem'] {
   -webkit-app-region: no-drag;
+}
+
+/*
+ * UI-FIDELITY H19 — the command palette arrives and leaves.
+ *
+ * `ContentView.swift:283, 286`: `.transition(.move(edge: .top).combined(with: .opacity))` under
+ * `.animation(.easeOut(duration: 0.15), …)` — the overlay slides down from the top edge while
+ * fading, over 150 ms, and leaves the same way. The port hard-mounted and hard-unmounted it, so
+ * the most-used overlay in the app popped into existence and vanished.
+ *
+ * Two pairs, because two things move: the PANEL slides and fades (`.move(edge: .top)` is a slide
+ * of the panel's own box, approximated at 8 px — the distance reads as "from above" without the
+ * 440 px panel visibly travelling the height of the window), and the SCRIM only fades (an
+ * `inset-0` wash that also translated would leave an unwashed strip along one edge mid-flight).
+ * `both` holds the first frame before the animation starts and the last one after it ends, so
+ * the panel never flashes at full opacity for a frame on either edge.
+ *
+ * The exit is driven by `CommandPalette`'s own `PALETTE_TRANSITION_MS` mount-delay: an unmounted
+ * component cannot animate, so the phase attribute is what tells CSS which direction to play.
+ */
+@keyframes nex-palette-enter {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nex-palette-exit {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-8px); }
+}
+
+@keyframes nex-palette-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes nex-palette-scrim-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+[data-palette-phase='entering'] .nex-palette-panel {
+  animation: nex-palette-enter 150ms ease-out both;
+}
+
+[data-palette-phase='exiting'] .nex-palette-panel {
+  animation: nex-palette-exit 150ms ease-out both;
+}
+
+.nex-palette-scrim[data-palette-phase='entering'] {
+  animation: nex-palette-scrim-in 150ms ease-out both;
+}
+
+.nex-palette-scrim[data-palette-phase='exiting'] {
+  animation: nex-palette-scrim-out 150ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-palette-phase] .nex-palette-panel,
+  .nex-palette-scrim[data-palette-phase] {
+    animation: none !important;
+  }
 }

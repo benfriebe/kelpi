@@ -190,6 +190,26 @@ export interface BatchDestination {
     readonly label: string;
 }
 
+/**
+ * The picker's explicit "keep it here" entry, and the reason it needs a name.
+ *
+ * The Swift picker has **no** local-queue row at all: its `TargetSelection` is `.unselected` or
+ * `.pane(id)`, and Send is disabled until the user picks a pane
+ * (`WebBatchInspectPanel.swift:224-247`). The port keeps the CLI's `nex web inspect-result`
+ * queue reachable — the daemon's `batchSend(paneID, null)` branch is a real capability — but it
+ * may never be what an *unselected* picker means, which is what it was: a batch the user had
+ * not addressed went silently into a queue they had to know about to drain.
+ *
+ * So "no destination" and "the local queue" are two different values now. This sentinel is the
+ * second one, and it cannot collide with a pane id (those are UUIDs).
+ */
+export const BATCH_LOCAL_DESTINATION = '@local';
+
+/** Whether a picker value names a live pane, i.e. is neither unselected nor the local queue. */
+export function isPaneDestination(destination: string | null): destination is string {
+    return destination !== null && destination !== BATCH_LOCAL_DESTINATION;
+}
+
 /** One candidate pane, as the grid knows it. */
 export interface DestinationCandidate {
     readonly id: string;

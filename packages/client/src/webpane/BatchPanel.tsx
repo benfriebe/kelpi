@@ -15,10 +15,11 @@
  *     item with *panel* origin, which scrolls the page to the element and pulses its badge;
  *     clicking a page badge focuses with *page* origin, which does NOT scroll — and the panel
  *     answers by scrolling that row into view and moving the caret into its comment field;
- *   - the list is **3 rows tall then scrolls**, and an empty batch shows the hint (WEB-131);
+ *   - each row is **two lines** — tag + selector over a full-width comment field — and the list
+ *     is **3 rows tall then scrolls**, with an empty batch showing the hint (WEB-129/WEB-131);
  *   - the destination picker is seeded from the session's remembered target, Send is disabled
- *     until a destination exists and the batch is non-empty, and a target that disappeared
- *     resets the picker (WEB-132/WEB-133);
+ *     until a destination has been **deliberately picked** and the batch is non-empty, and a
+ *     target that disappeared resets the picker (WEB-132/WEB-133);
  *   - hovering the panel forces the arrow cursor back, because the page sets `cursor:crosshair`
  *     on its own document while the picker is armed (WEB-145 — the same defect, one layer up).
  *
@@ -37,6 +38,8 @@ import { tokens } from '../grid/tokens';
 import type { WebPaneCommands } from './commands';
 import { WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import {
+    BATCH_LOCAL_DESTINATION,
+    isPaneDestination,
     seededDestination,
     truncateMiddle,
     type BatchDestination,
@@ -58,8 +61,15 @@ export interface BatchPanelProps {
 /** WEB-131: the empty-state hint, verbatim. */
 export const BATCH_EMPTY_HINT = 'Click elements in the page to add them. Esc cancels.';
 
-/** Three rows at 44 px plus their gaps: the list grows to this and then scrolls. */
-const LIST_MAX_HEIGHT = 148;
+/**
+ * Three rows plus the list's own padding: the list grows to this and then scrolls.
+ *
+ * `WebBatchInspectPanel.swift:44-47` sizes it as `visibleRowCap * rowHeight + listVerticalPadding`
+ * = 3 × 64 + 12. A row is 64 pt there because it is **two lines** (chip + selector over a
+ * full-width comment field), which is the shape this panel draws too — a 148 px cap was three
+ * rows of the one-line row that squeezed the comment into 128 px.
+ */
+const LIST_MAX_HEIGHT = 3 * 64 + 12;
 
 export function BatchPanel(props: BatchPanelProps): ReactElement {
     const { paneID, session, commands, destinations, destination } = props;
@@ -76,7 +86,8 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
             onDestinationChange(seeded);
             return;
         }
-        if (destination !== null && !destinations.some((entry) => entry.paneID === destination)) {
+        // The local queue is not a pane, so it can never go stale — only a pane pick is checked.
+        if (isPaneDestination(destination) && !destinations.some((entry) => entry.paneID === destination)) {
             onDestinationChange(null);
         }
     }, [session, destinations, destination, onDestinationChange]);
@@ -108,7 +119,12 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
         [commands, paneID, session.focused_id]
     );
 
-    const canSend = session.items.length > 0;
+    /**
+     * WEB-132 verbatim: `.disabled(items.isEmpty || selection == .unselected)`. A batch with no
+     * destination is not sendable — it used to dispatch into the CLI-only queue on a click the
+     * Swift refuses outright.
+     */
+    const canSend = session.items.length > 0 && destination !== null;
 
     return (
         <div
@@ -163,7 +179,9 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                 }}
                                 data-testid={`web-batch-item-${item.id}`}
                                 data-focused={focused ? 'true' : 'false'}
-                                className="flex items-center gap-1.5 rounded px-1.5 py-1"
+                                // Two lines, top-aligned, exactly as the Swift row is
+                                // (`HStack(alignment: .top) { chip; VStack { selector; comment }; ✕ }`).
+                                className="flex items-start gap-1.5 rounded px-1.5 py-1"
                                 style={{
                                     background: focused ? withAlpha(tokens.accent, 0.16) : 'transparent',
                                     border: `1px solid ${focused ? tokens.accent : tokens.divider}`
@@ -177,49 +195,65 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                                 >
                                     {index + 1}
                                 </span>
-                                <span
-                                    className="shrink-0 font-mono text-[10px]"
-                                    style={{ color: tokens.textSecondary }}
-                                >
-                                    {item.tag}
-                                </span>
-                                <span
-                                    data-testid={`web-batch-selector-${item.id}`}
-                                    title={item.selector}
-                                    className="min-w-0 flex-1 truncate font-mono text-[10px]"
-                                    style={{ color: tokens.textTertiary }}
-                                >
-                                    {truncateMiddle(item.selector, 42)}
-                                </span>
-                                <input
-                                    ref={(node) => {
-                                        if (node === null) commentRefs.current.delete(item.id);
-                                        else commentRefs.current.set(item.id, node);
-                                    }}
-                                    aria-label={`Comment for element ${String(index + 1)}`}
-                                    placeholder="Comment…"
-                                    data-testid={`web-batch-comment-${item.id}`}
-                                    {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                                    className="w-32 shrink-0 rounded px-1.5 py-[2px] text-[11px] outline-none"
-                                    style={{
-                                        background: tokens.windowBackground,
-                                        border: `1px solid ${tokens.divider}`,
-                                        color: tokens.textPrimary
-                                    }}
-                                    value={item.comment}
-                                    onFocus={() => focusItem(item.id)}
-                                    onChange={(event) => {
-                                        // Streams on every keystroke; the daemon pushes it into
-                                        // the page popover, which refuses to overwrite a focused
-                                        // textarea (WEB-141).
-                                        void commands.batchComment(
-                                            paneID,
-                                            item.id,
-                                            event.target.value,
-                                            props.activeTabID
-                                        );
-                                    }}
-                                />
+                                {/*
+                                 * H28 — the comment gets its OWN full-width line, under the
+                                 * tag+selector line, because annotating is the panel's whole
+                                 * purpose. It used to be a `w-32` input squeezed between the
+                                 * selector and the ✕: a third of the width for the one field
+                                 * the user is here to type into.
+                                 */}
+                                <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                                    <div
+                                        data-testid={`web-batch-head-${item.id}`}
+                                        className="flex min-w-0 items-center gap-1"
+                                    >
+                                        <span
+                                            className="shrink-0 font-mono text-[10px]"
+                                            style={{ color: tokens.textSecondary }}
+                                        >
+                                            {item.tag}
+                                        </span>
+                                        <span
+                                            data-testid={`web-batch-selector-${item.id}`}
+                                            title={item.selector}
+                                            className="min-w-0 flex-1 truncate font-mono text-[10px]"
+                                            style={{ color: tokens.textTertiary }}
+                                        >
+                                            {truncateMiddle(item.selector, 42)}
+                                        </span>
+                                    </div>
+                                    <input
+                                        ref={(node) => {
+                                            if (node === null) commentRefs.current.delete(item.id);
+                                            else commentRefs.current.set(item.id, node);
+                                        }}
+                                        aria-label={`Comment for element ${String(index + 1)}`}
+                                        // The Swift placeholder, verbatim
+                                        // (`TextField("Comment (optional)")`).
+                                        placeholder="Comment (optional)"
+                                        data-testid={`web-batch-comment-${item.id}`}
+                                        {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
+                                        className="w-full min-w-0 rounded px-1.5 py-[2px] text-[11px] outline-none"
+                                        style={{
+                                            background: tokens.windowBackground,
+                                            border: `1px solid ${tokens.divider}`,
+                                            color: tokens.textPrimary
+                                        }}
+                                        value={item.comment}
+                                        onFocus={() => focusItem(item.id)}
+                                        onChange={(event) => {
+                                            // Streams on every keystroke; the daemon pushes it
+                                            // into the page popover, which refuses to overwrite
+                                            // a focused textarea (WEB-141).
+                                            void commands.batchComment(
+                                                paneID,
+                                                item.id,
+                                                event.target.value,
+                                                props.activeTabID
+                                            );
+                                        }}
+                                    />
+                                </div>
                                 <button
                                     type="button"
                                     aria-label={`Remove element ${String(index + 1)}`}
@@ -246,24 +280,41 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                     className="min-w-0 flex-1 rounded px-1.5 py-[3px] text-[11px] outline-none"
                     style={{
                         background: tokens.windowBackground,
-                        border: `1px solid ${tokens.divider}`,
-                        color: tokens.textPrimary
+                        // Unselected demands a pick, the way the Swift picker's accent
+                        // `strokeBorder` does (`WebBatchInspectPanel.swift:290-298`).
+                        border: `1px solid ${destination === null ? withAlpha(tokens.accent, 0.6) : tokens.divider}`,
+                        color: destination === null ? tokens.textSecondary : tokens.textPrimary
                     }}
                     value={destination ?? ''}
                     onChange={(event) => {
                         props.onDestinationChange(event.target.value === '' ? null : event.target.value);
                     }}
                 >
-                    <option value="">
-                        {destinations.length === 0
-                            ? 'No other panes open in this workspace'
-                            : 'Queue locally (nex web inspect-result)'}
-                    </option>
-                    {destinations.map((entry) => (
-                        <option key={entry.paneID} value={entry.paneID}>
-                            {entry.label}
+                    {/*
+                     * H16 — the empty value is "not picked yet", and it says so
+                     * (`currentTargetLabel` → "Select destination…"). It used to read "Queue
+                     * locally", which made the *default* a CLI-only queue the user had to know
+                     * about to drain — a silent dispatch on a click the Swift refuses.
+                     */}
+                    <option value="">Select destination…</option>
+                    {destinations.length === 0 ? (
+                        <option value="" disabled>
+                            No other panes open in this workspace
                         </option>
-                    ))}
+                    ) : (
+                        destinations.map((entry) => (
+                            <option key={entry.paneID} value={entry.paneID}>
+                                {entry.label}
+                            </option>
+                        ))
+                    )}
+                    {/*
+                     * The local queue survives as an EXPLICIT choice below the panes (the Swift
+                     * picker has no such row — its `onSend(nil)` is reserved for exactly this —
+                     * but `nex web inspect-result` is a real port capability, so it keeps a
+                     * gesture; it simply stops being what "unselected" means).
+                     */}
+                    <option value={BATCH_LOCAL_DESTINATION}>Queue locally (nex web inspect-result)</option>
                 </select>
                 <button
                     type="button"
@@ -275,7 +326,12 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                         color: tokens.accent,
                         cursor: canSend ? 'pointer' : 'default'
                     }}
-                    onClick={() => void commands.batchSend(paneID, destination)}
+                    // The wire's `sendTo` is still `null` for the local queue — that branch is
+                    // the daemon's `inspect-result` queue — but now only an explicit pick of
+                    // the local row can produce it.
+                    onClick={() =>
+                        void commands.batchSend(paneID, isPaneDestination(destination) ? destination : null)
+                    }
                 >
                     Send
                 </button>

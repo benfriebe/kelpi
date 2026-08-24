@@ -54,7 +54,40 @@ import {
     type ProfileDraft
 } from './model';
 import type { SettingsActions, SettingsPaths } from './types';
-import { SettingsButton, SettingsFooterNote, SettingsSection } from './ui';
+import { SettingsButton, SettingsFooterNote, SettingsSection, hoverBackground, useHover } from './ui';
+
+/**
+ * One row in the profile rail. H11: a `List` row in AppKit lights under the pointer and this
+ * one did not, so the rail read as a column of labels rather than a list you can pick from.
+ * The selected fill wins, exactly as it does in the Settings tab rail.
+ */
+function ProfileRow(props: {
+    readonly name: string;
+    readonly selected: boolean;
+    readonly onSelect: () => void;
+}): ReactElement {
+    const { hovered, hoverProps } = useHover(!props.selected);
+    return (
+        <button
+            type="button"
+            role="option"
+            aria-selected={props.selected}
+            data-testid={`profile-row-${props.name}`}
+            className="truncate rounded px-2 py-1 text-left text-[12px] transition-colors duration-100"
+            style={{
+                background: props.selected
+                    ? withAlpha(tokens.accent, 0.18)
+                    : hoverBackground(hovered, 'transparent'),
+                color: tokens.textPrimary,
+                cursor: 'pointer'
+            }}
+            {...hoverProps}
+            onClick={props.onSelect}
+        >
+            {props.name === '' ? '(unnamed)' : props.name}
+        </button>
+    );
+}
 
 export interface ProfilesTabProps {
     readonly profiles: readonly WsProfile[];
@@ -126,23 +159,14 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                         }}
                     >
                         {drafts.map((draft, position) => (
-                            <button
+                            <ProfileRow
                                 key={`${draft.name}-${String(position)}`}
-                                type="button"
-                                role="option"
-                                aria-selected={position === index}
-                                data-testid={`profile-row-${draft.name}`}
-                                className="truncate rounded px-2 py-1 text-left text-[12px]"
-                                style={{
-                                    background: position === index ? withAlpha(tokens.accent, 0.18) : 'transparent',
-                                    color: tokens.textPrimary
-                                }}
-                                onClick={() => {
+                                name={draft.name}
+                                selected={position === index}
+                                onSelect={() => {
                                     setSelected(position);
                                 }}
-                            >
-                                {draft.name === '' ? '(unnamed)' : draft.name}
-                            </button>
+                            />
                         ))}
                         <SettingsButton
                             testID="profile-add"

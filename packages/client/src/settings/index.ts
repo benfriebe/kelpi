@@ -60,6 +60,7 @@ export { WorkspacesTab, FOCUS_DELAY_MAX, FOCUS_DELAY_STEP, type WorkspacesTabPro
 export {
     ACTION_CATALOG,
     CATALOGUED_ACTIONS,
+    DEFAULT_SETTINGS_TAB,
     SETTINGS_CATEGORIES,
     SETTINGS_TABS,
     VISIBLE_CATEGORIES,
@@ -108,3 +109,12 @@ export {
     type SettingsDomainState,
     type SettingsPaths
 } from './types';
+
+export {
+    SETTINGS_HOVER_FILL,
+    SettingsButton,
+    SettingsIconButton,
+    SettingsToggle,
+    hoverBackground,
+    useHover
+} from './ui';

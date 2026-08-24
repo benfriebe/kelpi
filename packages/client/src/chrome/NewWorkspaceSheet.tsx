@@ -62,7 +62,7 @@ import { createPortal } from 'react-dom';
 
 import { ChromeIcon } from './icons';
 import { RepoPicker } from './RepoPicker';
-import { workspaceColorHex } from './theme';
+import { workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
     DEFAULT_PROFILE_NAME,
@@ -88,6 +88,13 @@ export interface NewEntryDraft {
 
 export interface NewEntrySheetProps {
     readonly kind: 'workspace' | 'group';
+    /**
+     * §H22: the light/dark bucket the colour swatches resolve against. It used to be pinned to
+     * `'dark'` at the swatch, so a light-theme sheet offered the dark palette's hues and then
+     * created a row painted in the light ones. Optional (defaulting to `'dark'`) only so a
+     * fixture mounted without one keeps rendering, the same contract `tokens.ts` follows.
+     */
+    readonly bucket?: ChromeBucket | undefined;
     /** The registry: the Repositories section and the worktree section both read it. */
     readonly repos?: readonly ChromeRepo[] | undefined;
     /** Groups for the picker; empty hides it, exactly as the shipped sheet does. */
@@ -339,7 +346,7 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                     data-selected={color === candidate ? 'true' : 'false'}
                     className="h-5 w-5 shrink-0 rounded-full"
                     style={{
-                        background: workspaceColorHex(candidate, 'dark'),
+                        background: workspaceColorHex(candidate, props.bucket ?? 'dark'),
                         outline: color === candidate ? `2px solid ${tokens.textPrimary}` : 'none',
                         outlineOffset: '1px'
                     }}

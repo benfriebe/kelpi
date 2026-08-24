@@ -55,14 +55,17 @@ export {
 export { RepoPicker, type RepoPickerEntry, type RepoPickerProps } from './RepoPicker';
 export { sanitizeGitName, worktreePreview, worktreePreviewPath, type WorktreePreview } from './worktree';
 export {
+    BUCKET_POPOVER_WIDTH_PX,
     StatusFooter,
     SystemSparkline,
+    bucketPopoverPlacement,
     fitStatGauges,
     footerGitStats,
     statGaugeWidth,
     type AgentBucket,
     type AgentCountSummary,
     type FooterAssociation,
+    type BucketPopoverPlacement,
     type FooterGitStats,
     type StatusBarItem,
     type StatusFooterProps,
@@ -322,6 +325,15 @@ export {
     type QuitGateSpec,
     type QuitGateVerdict
 } from './QuitConfirmDialog';
+
+/**
+ * The two contracts every modal/transient surface in the chrome owes (UI-FIDELITY H1 / H15):
+ * "park the web pane while I am painted", and "close me on an outside click or Escape".
+ */
+export { modalPresenceCount, registerModal, useAnyModalOpen, useModalPresence } from './modal-presence';
+export { useDismissable } from './dismissable';
+/** …and the hover recipe those same surfaces owe a pointer (H11). */
+export { hoverFill, hoverText, useHoverKey, type HoverBinding } from './hover';
 
 export {
     DEFAULT_FAVICON_COLORS,

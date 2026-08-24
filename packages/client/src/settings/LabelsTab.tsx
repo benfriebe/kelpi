@@ -37,6 +37,20 @@
  *     background's luminance, which is the rule `LabelPreset.resolvedStyle` states.
  *
  * Reordering (SET-065) is ↑/↓ buttons rather than drag, matching the Web tab's favourites list.
+ *
+ * **The shape of the tab is the Swift sheet's** (H25/H26/H27), and it is not decoration:
+ * `LabelPresetsSettingsView.swift:4-12` opens by saying the fixed column widths exist so "the
+ * colour controls, text-colour control, and preview line up vertically across the add row and
+ * every preset row". So:
+ *
+ *   - the ADD ROW is first, above a divider, then the list (`:27-31`) — not below a list that
+ *     can be longer than the window;
+ *   - every row (add row included) is ONE grid line on `LabelCol`'s widths — background 150,
+ *     text colour 124, preview 80, action 40, with the name field flexing between them
+ *     (`:7-12`, `:106-132`, `:204-245`) — not a two-line stacked card;
+ *   - the NAME is a live `TextField` in every row (`:214-222`), committed on Return or focus
+ *     loss. There is no "Rename" button in the shipped app and there is none here: click into
+ *     any name and type.
  */
 
 import { useEffect, useRef, useState, type ReactElement } from 'react';
@@ -54,7 +68,56 @@ import {
 } from '../chrome';
 import { labelUsage, orphanLabels, type LabelledWorkspace } from './model';
 import type { SettingsActions } from './types';
-import { SettingsButton, SettingsSection } from './ui';
+import { SettingsButton, SettingsIconButton, SettingsSection, hoverBackground, useHover } from './ui';
+
+/**
+ * `LabelCol` (`LabelPresetsSettingsView.swift:7-12`), to the point.
+ *
+ * The four fixed widths are the whole reason that file has an opening comment: they are what
+ * makes the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND
+ * with the add row. The name is the one thing that flexes, exactly as `.frame(maxWidth:
+ * .infinity)` makes it in the Swift row.
+ *
+ * One column is this port's own and is named as such: `reorder`, holding the ↑/↓ pair that
+ * stands in for the Swift `List`'s drag (SET-065's stated divergence). It sits between the
+ * preview and the action column so the Swift four keep both their widths and their order.
+ */
+const LABEL_COL = { bgColor: 150, textColor: 124, preview: 80, reorder: 44, action: 40 } as const;
+
+const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(0,1fr) ${String(
+    LABEL_COL.textColor
+)}px ${String(LABEL_COL.preview)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
+
+/** `HStack(spacing: 10)` — the gap between those columns. */
+const LABEL_GRID_GAP = '10px';
+
+/**
+ * `Image(systemName: "trash")` at this file's own scale.
+ *
+ * Hand-rolled rather than imported: no icon dependency may be added to the client, and the
+ * action column is 40 px wide because the shipped app puts a trash GLYPH there — a bordered
+ * "Delete" would not fit the column the alignment depends on.
+ */
+function TrashGlyph(): ReactElement {
+    return (
+        <svg
+            aria-hidden
+            viewBox="0 0 12 12"
+            width="11"
+            height="11"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M2 3.2h8" />
+            <path d="M4.6 3.2V2.1h2.8v1.1" />
+            <path d="M3.1 3.2 3.6 10h4.8l.5-6.8" />
+            <path d="M5 5.1v3.2M7 5.1v3.2" />
+        </svg>
+    );
+}
 
 export interface LabelsTabProps {
     readonly presets: readonly ChromeLabelPreset[];
@@ -125,27 +188,68 @@ interface ColorFieldProps {
     readonly onChange: (next: LabelColorValue) => void;
 }
 
+interface SwatchProps {
+    readonly color: string;
+    readonly testID: string;
+    readonly ariaLabel: string;
+    readonly selected: boolean;
+    readonly onClick: () => void;
+}
+
+/**
+ * One palette swatch. H11: the Swift menu's rows light under the pointer and these did not, so
+ * a hovered swatch takes the same selection ring the selected one wears, one shade quieter —
+ * "this is the one that is set" and "this is the one you are about to set" have to be
+ * distinguishable, so the hover ring is the selection STROKE and the selected ring is accent.
+ */
+function ColorSwatch(props: SwatchProps): ReactElement {
+    const { hovered, hoverProps } = useHover();
+    const ring = props.selected ? tokens.accent : hovered ? tokens.selectionStroke : null;
+    return (
+        <button
+            type="button"
+            data-testid={props.testID}
+            aria-label={props.ariaLabel}
+            aria-pressed={props.selected}
+            className="h-4 w-4 shrink-0 rounded-full"
+            style={{
+                background: props.color,
+                outline: ring === null ? 'none' : `2px solid ${ring}`,
+                outlineOffset: '1px',
+                cursor: 'pointer'
+            }}
+            {...hoverProps}
+            onClick={props.onClick}
+        />
+    );
+}
+
 /** SET-061: the named palette, plus a Custom… well that writes a `#rrggbb`. */
 function LabelColorField(props: ColorFieldProps): ReactElement {
     const custom = props.value.kind === 'custom';
     const hex = hexOf(props.value, props.bucket);
     return (
-        <div className="flex flex-wrap items-center gap-1" role="group" aria-label={props.label}>
+        /*
+         * H26: the fixed `LabelCol.bgColor` column. The palette WRAPS inside it rather than
+         * being allowed to set the row's width — every row holds the same ten swatches and the
+         * same well, so every row wraps at the same point and the columns after it still line
+         * up, which is the property the Swift widths exist to guarantee.
+         */
+        <div
+            className="flex flex-wrap items-center gap-1"
+            style={{ width: `${String(LABEL_COL.bgColor)}px` }}
+            role="group"
+            aria-label={props.label}
+        >
             {WORKSPACE_COLORS.map((color) => {
                 const selected = props.value.kind === 'named' && props.value.color === color;
                 return (
-                    <button
+                    <ColorSwatch
                         key={color}
-                        type="button"
-                        data-testid={`${props.idPrefix}-${color}`}
-                        aria-label={`${color} for ${props.label}`}
-                        aria-pressed={selected}
-                        className="h-4 w-4 rounded-full"
-                        style={{
-                            background: workspaceColorHex(color, props.bucket),
-                            outline: selected ? `2px solid ${tokens.accent}` : 'none',
-                            outlineOffset: '1px'
-                        }}
+                        testID={`${props.idPrefix}-${color}`}
+                        ariaLabel={`${color} for ${props.label}`}
+                        color={workspaceColorHex(color, props.bucket)}
+                        selected={selected}
                         onClick={() => {
                             if (selected) return;
                             props.onChange({ kind: 'named', color });
@@ -201,6 +305,40 @@ interface TextColorFieldProps {
     readonly onChange: (next: LabelTextColorValue) => void;
 }
 
+interface TextChoiceProps {
+    readonly testID: string;
+    readonly label: string;
+    readonly selected: boolean;
+    readonly onClick: () => void;
+}
+
+/** One of the Auto / Black / White triple — hover-lit like every other Settings control (H11). */
+function TextChoice(props: TextChoiceProps): ReactElement {
+    const { hovered, hoverProps } = useHover();
+    return (
+        <button
+            type="button"
+            data-testid={props.testID}
+            aria-pressed={props.selected}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors duration-100"
+            style={{
+                background: props.selected
+                    ? withAlpha(tokens.accent, 0.2)
+                    : hoverBackground(hovered, 'transparent'),
+                color: props.selected || hovered ? tokens.textPrimary : tokens.textTertiary,
+                border: `1px solid ${
+                    props.selected ? tokens.accent : hovered ? tokens.selectionStroke : tokens.divider
+                }`,
+                cursor: 'pointer'
+            }}
+            {...hoverProps}
+            onClick={props.onClick}
+        >
+            {props.label}
+        </button>
+    );
+}
+
 /** SET-062: Auto (luminance) / Black / White, a custom well, and the "Aa" preview. */
 function LabelTextColorField(props: TextColorFieldProps): ReactElement {
     const mode = textMode(props.value);
@@ -215,31 +353,30 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
     ): ReactElement => {
         const selected = mode === key;
         return (
-            <button
+            <TextChoice
                 key={key}
-                type="button"
-                data-testid={`${props.idPrefix}-${key}`}
-                aria-pressed={selected}
-                className="rounded px-1.5 py-0.5 text-[10px]"
-                style={{
-                    background: selected ? withAlpha(tokens.accent, 0.2) : 'transparent',
-                    color: selected ? tokens.textPrimary : tokens.textTertiary,
-                    border: `1px solid ${selected ? tokens.accent : tokens.divider}`
-                }}
+                testID={`${props.idPrefix}-${key}`}
+                label={label}
+                selected={selected}
                 onClick={() => {
                     props.onChange(next);
                 }}
-            >
-                {label}
-            </button>
+            />
         );
     };
     return (
-        <div className="flex items-center gap-1" role="group" aria-label={props.label}>
+        // H26: the fixed `LabelCol.textColor` column, wrapping inside it for the same reason
+        // the palette does — identical content in every row means an identical wrap.
+        <div
+            className="flex flex-wrap items-center gap-1"
+            style={{ width: `${String(LABEL_COL.textColor)}px` }}
+            role="group"
+            aria-label={props.label}
+        >
             <span
                 data-testid={`${props.idPrefix}-sample`}
                 data-color={normalizeHexColor(resolved)}
-                className="rounded px-1 text-[10px] font-semibold"
+                className="shrink-0 rounded px-1 text-[10px] font-semibold"
                 style={{ background: props.background, color: resolved }}
             >
                 Aa
@@ -248,7 +385,7 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
             {choice('black', 'Black', { kind: 'custom', hex: BLACK })}
             {choice('white', 'White', { kind: 'custom', hex: WHITE })}
             <span
-                className="relative inline-block h-3.5 w-5 overflow-hidden rounded"
+                className="relative inline-block h-3.5 w-5 shrink-0 overflow-hidden rounded"
                 style={{
                     background: resolved,
                     border: `1px solid ${mode === 'custom' ? tokens.accent : tokens.divider}`
@@ -286,7 +423,10 @@ function ChipPreview(props: ChipPreviewProps): ReactElement {
             data-testid={props.testID}
             {...(props.colorToken === undefined ? {} : { 'data-color': props.colorToken })}
             data-placeholder={props.placeholder === true ? 'true' : 'false'}
-            className="rounded px-1.5 py-0.5 text-[11px]"
+            // `truncate`: the chip lives in the fixed 80 px preview column (`LabelCol.preview`),
+            // leading-aligned like the Swift `.frame(width:alignment:.leading)`, so a long name
+            // ellipsises inside its column instead of pushing the trash button out of line.
+            className="block max-w-full truncate rounded px-1.5 py-0.5 text-[11px]"
             style={{
                 background: props.style.background,
                 color: props.style.text,
@@ -305,7 +445,8 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     // adoption below both create with, so every route into this list starts from one default.
     const [draftColor, setDraftColor] = useState<LabelColorValue>({ kind: 'named', color: 'gray' });
     const [draftTextColor, setDraftTextColor] = useState<LabelTextColorValue>(null);
-    const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+    // H27: there is no `renaming` row any more. Every row's name field is live, so the only
+    // cross-row state left is the message a REFUSED rename leaves behind.
     const [renameError, setRenameError] = useState<{ id: string; message: string } | null>(null);
     const [confirming, setConfirming] = useState<string | null>(null);
     const usage = labelUsage(props.workspaces);
@@ -346,204 +487,59 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                     </p>
                 ) : null}
 
-                {props.presets.map((preset, index) => {
-                    const style = resolveLabelStyle(preset.name, props.presets, bucket);
-                    const inUse = usage.get(preset.name) ?? 0;
-                    const isRenaming = renaming?.id === preset.name;
-                    const textColor = preset.textColor ?? null;
-                    return (
-                        <div
-                            key={preset.name}
-                            data-testid={`label-preset-${preset.name}`}
-                            className="flex flex-col gap-2 rounded px-2 py-2"
-                            style={{ background: withAlpha('#808080', 0.06) }}
-                        >
-                            <div className="flex items-center gap-2">
-                                <ChipPreview
-                                    testID={`label-chip-${preset.name}`}
-                                    colorToken={colorToken(preset)}
-                                    text={isRenaming && renaming.value.trim() !== '' ? renaming.value.trim() : preset.name}
-                                    style={
-                                        isRenaming
-                                            ? previewStyle(preset.color, textColor, bucket)
-                                            : style
-                                    }
-                                />
-                                <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                                    {inUse === 0 ? 'unused' : `${String(inUse)} workspace${inUse === 1 ? '' : 's'}`}
-                                </span>
-                                <span className="ml-auto flex items-center gap-2">
-                                    {props.actions.moveLabelPreset === undefined ? null : (
-                                        <>
-                                            <SettingsButton
-                                                testID={`label-move-up-${preset.name}`}
-                                                disabled={index === 0}
-                                                onClick={() => {
-                                                    props.actions.moveLabelPreset?.({
-                                                        id: preset.name,
-                                                        index: index - 1
-                                                    });
-                                                }}
-                                            >
-                                                ↑
-                                            </SettingsButton>
-                                            <SettingsButton
-                                                testID={`label-move-down-${preset.name}`}
-                                                disabled={index === props.presets.length - 1}
-                                                onClick={() => {
-                                                    props.actions.moveLabelPreset?.({
-                                                        id: preset.name,
-                                                        index: index + 1
-                                                    });
-                                                }}
-                                            >
-                                                ↓
-                                            </SettingsButton>
-                                        </>
-                                    )}
-                                    <SettingsButton
-                                        testID={`label-rename-${preset.name}`}
-                                        onClick={() => {
-                                            setRenameError(null);
-                                            setRenaming(isRenaming ? null : { id: preset.name, value: preset.name });
-                                        }}
-                                    >
-                                        Rename
-                                    </SettingsButton>
-                                    <SettingsButton
-                                        tone="danger"
-                                        testID={`label-delete-${preset.name}`}
-                                        onClick={() => {
-                                            if (inUse === 0) {
-                                                props.actions.removeLabelPreset(preset.name);
-                                                return;
-                                            }
-                                            setConfirming(confirming === preset.name ? null : preset.name);
-                                        }}
-                                    >
-                                        Delete
-                                    </SettingsButton>
-                                </span>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-3">
-                                <LabelColorField
-                                    idPrefix={`label-color-${preset.name}`}
-                                    label={`${preset.name} color`}
-                                    value={preset.color}
-                                    bucket={bucket}
-                                    onChange={(next) => {
-                                        props.actions.updateLabelPreset({
-                                            id: preset.name,
-                                            color: tokenOf(next)
-                                        });
-                                    }}
-                                />
-                                <LabelTextColorField
-                                    idPrefix={`label-text-${preset.name}`}
-                                    label={`${preset.name} text color`}
-                                    value={textColor}
-                                    background={hexOf(preset.color, bucket)}
-                                    bucket={bucket}
-                                    onChange={(next) => {
-                                        props.actions.updateLabelPreset({
-                                            id: preset.name,
-                                            textColor: textToken(next)
-                                        });
-                                    }}
-                                />
-                            </div>
-
-                            {isRenaming ? (
-                                <RenameField
-                                    preset={preset}
-                                    value={renaming.value}
-                                    inUse={inUse}
-                                    onChange={(value) => {
-                                        setRenaming({ id: preset.name, value });
-                                    }}
-                                    onCancel={() => {
-                                        setRenaming(null);
-                                        setRenameError(null);
-                                    }}
-                                    onCommit={(value) => {
-                                        const next = value.trim();
-                                        // SET-063: empty, unchanged, or a name another preset
-                                        // already holds — the reducer would refuse it, so the
-                                        // field SNAPS BACK to the stored name and says why
-                                        // rather than leaving rejected text on screen.
-                                        if (next === '' || next === preset.name) {
-                                            setRenaming(null);
-                                            setRenameError(null);
-                                            return;
-                                        }
-                                        if (props.presets.some((candidate) => candidate.name === next)) {
-                                            setRenaming(null);
-                                            setRenameError({
-                                                id: preset.name,
-                                                message: `“${next}” is already a preset — the name is unchanged.`
-                                            });
-                                            return;
-                                        }
-                                        setRenaming(null);
-                                        setRenameError(null);
-                                        props.actions.updateLabelPreset({ id: preset.name, name: next });
-                                    }}
-                                />
-                            ) : null}
-
-                            {renameError?.id === preset.name ? (
-                                <span
-                                    data-testid={`label-rename-error-${preset.name}`}
-                                    className="text-[11px]"
-                                    style={{ color: '#E0685F' }}
-                                >
-                                    {renameError.message}
-                                </span>
-                            ) : null}
-
-                            {confirming === preset.name ? (
-                                <div
-                                    data-testid={`label-delete-confirm-${preset.name}`}
-                                    className="flex items-center gap-2 text-[11px]"
-                                    style={{ color: tokens.textSecondary }}
-                                >
-                                    <span>
-                                        {`Delete the preset? The label stays on ${String(inUse)} workspace${
-                                            inUse === 1 ? '' : 's'
-                                        } and renders neutral.`}
-                                    </span>
-                                    <SettingsButton
-                                        tone="danger"
-                                        testID={`label-delete-confirm-yes-${preset.name}`}
-                                        onClick={() => {
-                                            setConfirming(null);
-                                            props.actions.removeLabelPreset(preset.name);
-                                        }}
-                                    >
-                                        Delete anyway
-                                    </SettingsButton>
-                                    <SettingsButton
-                                        testID={`label-delete-cancel-${preset.name}`}
-                                        onClick={() => {
-                                            setConfirming(null);
-                                        }}
-                                    >
-                                        Cancel
-                                    </SettingsButton>
-                                </div>
-                            ) : null}
-                        </div>
-                    );
-                })}
-
-                {/* SET-058's always-visible add row: colour, name, text colour, live preview, Add. */}
+                {/*
+                 * H25: the add row is FIRST, above a divider, then the list —
+                 * `LabelPresetsSettingsView.swift:27-31`'s `VStack(spacing: 0) { addRow;
+                 * Divider(); List }`. It had drifted to the bottom of the presets, which on a
+                 * tab with more than a screen of them puts the only way to add one below the
+                 * fold.
+                 */}
                 <div
                     data-testid="label-add-row"
-                    className="flex flex-col gap-2 rounded px-2 py-2"
-                    style={{ background: withAlpha(tokens.accent, 0.07) }}
+                    className="grid items-center rounded px-2 py-2"
+                    style={{
+                        display: 'grid',
+                        gridTemplateColumns: LABEL_GRID,
+                        columnGap: LABEL_GRID_GAP,
+                        rowGap: '6px',
+                        background: withAlpha(tokens.accent, 0.07)
+                    }}
                 >
-                    <div className="flex items-center gap-2">
+                    <LabelColorField
+                        idPrefix="label-new-color"
+                        label="new preset color"
+                        value={draftColor}
+                        bucket={bucket}
+                        onChange={setDraftColor}
+                    />
+                    <input
+                        aria-label="New preset name"
+                        placeholder="New label name"
+                        data-testid="label-new-name"
+                        className="min-w-0 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
+                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                        value={draftName}
+                        onChange={(event) => {
+                            setDraftName(event.target.value);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                                event.stopPropagation();
+                                setDraftName('');
+                                return;
+                            }
+                            if (event.key === 'Enter') create();
+                        }}
+                    />
+                    <LabelTextColorField
+                        idPrefix="label-new-text"
+                        label="new preset text color"
+                        value={draftTextColor}
+                        background={hexOf(draftColor, bucket)}
+                        bucket={bucket}
+                        onChange={setDraftTextColor}
+                    />
+                    <span className="flex min-w-0 justify-start">
                         <ChipPreview
                             testID="label-new-preview"
                             colorToken={tokenOf(draftColor)}
@@ -551,47 +547,47 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                             placeholder={trimmedDraft === ''}
                             style={draftStyle}
                         />
-                        <input
-                            aria-label="New preset name"
-                            placeholder="New preset…"
-                            data-testid="label-new-name"
-                            className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                            value={draftName}
-                            onChange={(event) => {
-                                setDraftName(event.target.value);
-                            }}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Escape') {
-                                    event.stopPropagation();
-                                    setDraftName('');
-                                    return;
-                                }
-                                if (event.key === 'Enter') create();
-                            }}
-                        />
+                    </span>
+                    {/*
+                     * The Swift add row lets "Add" size to its own text and only pins the column
+                     * to `LabelCol.action` as a MINIMUM, because a bordered text button clipped
+                     * to 40 px reads as "A…" (`:122-128`). Here it spans the reorder and action
+                     * columns for the same reason, right-aligned so its trailing edge still
+                     * lands on the trash buttons below it.
+                     */}
+                    <span className="flex justify-end" style={{ gridColumn: 'span 2' }}>
                         <SettingsButton testID="label-add" disabled={trimmedDraft === ''} onClick={create}>
-                            Add Preset
+                            Add
                         </SettingsButton>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-3">
-                        <LabelColorField
-                            idPrefix="label-new-color"
-                            label="new preset color"
-                            value={draftColor}
-                            bucket={bucket}
-                            onChange={setDraftColor}
-                        />
-                        <LabelTextColorField
-                            idPrefix="label-new-text"
-                            label="new preset text color"
-                            value={draftTextColor}
-                            background={hexOf(draftColor, bucket)}
-                            bucket={bucket}
-                            onChange={setDraftTextColor}
-                        />
-                    </div>
+                    </span>
                 </div>
+
+                {/* `Divider()` — the add row is a header for the list, not the last row of it. */}
+                <div
+                    data-testid="label-add-divider"
+                    className="h-px"
+                    style={{ background: tokens.divider }}
+                />
+
+                {props.presets.map((preset, index) => (
+                    <PresetRow
+                        key={preset.name}
+                        preset={preset}
+                        presets={props.presets}
+                        index={index}
+                        bucket={bucket}
+                        inUse={usage.get(preset.name) ?? 0}
+                        actions={props.actions}
+                        error={renameError?.id === preset.name ? renameError.message : null}
+                        confirming={confirming === preset.name}
+                        onConfirmChange={(open) => {
+                            setConfirming(open ? preset.name : null);
+                        }}
+                        onRenameRefused={(message) => {
+                            setRenameError(message === null ? null : { id: preset.name, message });
+                        }}
+                    />
+                ))}
             </SettingsSection>
 
             {orphans.length === 0 ? null : (
@@ -619,63 +615,268 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     );
 }
 
-interface RenameFieldProps {
+interface PresetRowProps {
     readonly preset: ChromeLabelPreset;
-    readonly value: string;
+    readonly presets: readonly ChromeLabelPreset[];
+    readonly index: number;
+    readonly bucket: ChromeBucket;
     readonly inUse: number;
-    readonly onChange: (value: string) => void;
-    readonly onCommit: (value: string) => void;
-    readonly onCancel: () => void;
+    readonly actions: SettingsActions;
+    /** A refused rename's message, owned by the tab so it survives this row re-rendering. */
+    readonly error: string | null;
+    readonly confirming: boolean;
+    readonly onConfirmChange: (open: boolean) => void;
+    readonly onRenameRefused: (message: string | null) => void;
 }
 
 /**
- * SET-063's inline rename: commits on Return **or focus loss**, cancels on Escape.
+ * One preset, as ONE grid line on `LABEL_COL`'s widths (H26).
  *
- * The blur commit is why this is its own component — the handler has to be able to tell a blur
- * caused by Escape/Return (already handled, and the field is about to unmount) from a blur
- * caused by the user clicking elsewhere, and a ref is the honest way to hold that bit.
+ * `LabelPresetsSettingsView.swift:204-245` is a single `HStack(spacing: 10)`: colour well,
+ * name field, text-colour well, chip, trash — every one of them in a fixed column so the tab
+ * reads as a table rather than a stack of cards. That is what this is. The two port-only
+ * affordances that have no Swift column (the in-use count and the ↑/↓ pair) do not get to
+ * break the grid: the count rides in the flexible NAME cell, and the reorder pair has its own
+ * fixed column of the same width in every row.
+ *
+ * The name is live (H27). `LabelPresetsSettingsView.swift:214-222` binds a `TextField` in every
+ * row, focus-committed and Return-committed — there is no Rename button in the shipped app, so
+ * there is none here. SET-063's three refusals are unchanged: an empty, unchanged, or colliding
+ * name snaps the field back to the stored name, and a collision says why.
  */
-function RenameField(props: RenameFieldProps): ReactElement {
-    const settled = useRef(false);
-    const inputRef = useRef<HTMLInputElement | null>(null);
+function PresetRow(props: PresetRowProps): ReactElement {
+    const { preset, presets, bucket } = props;
+    const [draft, setDraft] = useState(preset.name);
+    const [focused, setFocused] = useState(false);
+    const { hovered, hoverProps } = useHover();
+    const textColor = preset.textColor ?? null;
+
+    /*
+     * `LabelPresetRow`'s `.onChange(of: preset.name)` guard (`:249-251`): the store rewriting
+     * this row moves the field, EXCEPT while the user is typing in it.
+     *
+     * A preset's identity IS its name (SET-066), in both apps — so a committed rename replaces
+     * the row rather than moving it, and the branch that matters in practice is the guard: a
+     * `label-presets-changed` delta from this row's OWN colour controls must not yank a
+     * half-typed name away mid-edit.
+     */
     useEffect(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-    }, []);
+        if (!focused) setDraft(preset.name);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- `focused` is the GUARD, not an
+        // input: re-running when focus changes is exactly what must not happen (it would
+        // overwrite the draft on blur, before the commit has been read).
+    }, [preset.name]);
+
+    /** Swift `previewText`: the chip follows what is typed, falling back to the stored name. */
+    const previewText = draft.trim() === '' ? preset.name : draft.trim();
+    const live = draft.trim() !== '' && draft.trim() !== preset.name;
+
+    const commit = (): void => {
+        const next = draft.trim();
+        // SET-063: empty, unchanged, or a name another preset already holds — the reducer would
+        // refuse it, so the field SNAPS BACK to the stored name rather than leaving rejected
+        // text on screen, and a collision says why.
+        if (next === '' || next === preset.name) {
+            setDraft(preset.name);
+            props.onRenameRefused(null);
+            return;
+        }
+        if (presets.some((candidate) => candidate.name === next)) {
+            setDraft(preset.name);
+            props.onRenameRefused(`“${next}” is already a preset — the name is unchanged.`);
+            return;
+        }
+        props.onRenameRefused(null);
+        props.actions.updateLabelPreset({ id: preset.name, name: next });
+    };
+
     return (
-        <div className="flex items-center gap-2">
-            <input
-                ref={inputRef}
-                aria-label={`New name for ${props.preset.name}`}
-                data-testid={`label-rename-field-${props.preset.name}`}
-                className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                value={props.value}
-                onChange={(event) => {
-                    props.onChange(event.target.value);
-                }}
-                onBlur={() => {
-                    if (settled.current) return;
-                    settled.current = true;
-                    props.onCommit(props.value);
-                }}
-                onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                        event.stopPropagation();
-                        settled.current = true;
-                        props.onCancel();
-                        return;
-                    }
-                    if (event.key !== 'Enter') return;
-                    settled.current = true;
-                    props.onCommit(props.value);
+        <div
+            data-testid={`label-preset-${preset.name}`}
+            className="grid items-center rounded px-2 py-1.5 transition-colors duration-100"
+            style={{
+                display: 'grid',
+                gridTemplateColumns: LABEL_GRID,
+                columnGap: LABEL_GRID_GAP,
+                rowGap: '6px',
+                background: hoverBackground(hovered, withAlpha('#808080', 0.06))
+            }}
+            {...hoverProps}
+        >
+            <LabelColorField
+                idPrefix={`label-color-${preset.name}`}
+                label={`${preset.name} color`}
+                value={preset.color}
+                bucket={bucket}
+                onChange={(next) => {
+                    props.actions.updateLabelPreset({ id: preset.name, color: tokenOf(next) });
                 }}
             />
-            <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                {props.inUse === 0
-                    ? 'Press Enter to rename'
-                    : 'Renaming unstyles the chips already using this name'}
+
+            <span className="flex min-w-0 items-center gap-2">
+                <input
+                    aria-label={`New name for ${preset.name}`}
+                    data-testid={`label-rename-field-${preset.name}`}
+                    className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] font-medium outline-none"
+                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                    value={draft}
+                    onChange={(event) => {
+                        setDraft(event.target.value);
+                    }}
+                    onFocus={() => {
+                        setFocused(true);
+                    }}
+                    onBlur={() => {
+                        setFocused(false);
+                        commit();
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                            // The overlay's Escape closes the window; a field mid-edit means
+                            // "cancel this edit" first, so the event stops here.
+                            event.stopPropagation();
+                            setDraft(preset.name);
+                            props.onRenameRefused(null);
+                            return;
+                        }
+                        if (event.key !== 'Enter') return;
+                        commit();
+                    }}
+                />
+                {/*
+                 * §6.4's consequence, made concrete: the count of workspaces wearing this label,
+                 * and — while the field holds a name that WOULD be committed — what renaming
+                 * does to them. Port-only, so it rides in the flexible column rather than
+                 * claiming one of the Swift widths.
+                 */}
+                <span
+                    data-testid={`label-usage-${preset.name}`}
+                    className="shrink-0 whitespace-nowrap text-[11px]"
+                    style={{ color: tokens.textTertiary }}
+                >
+                    {live && props.inUse > 0
+                        ? 'Renaming unstyles the chips already using this name'
+                        : props.inUse === 0
+                          ? 'unused'
+                          : `${String(props.inUse)} workspace${props.inUse === 1 ? '' : 's'}`}
+                </span>
             </span>
+
+            <LabelTextColorField
+                idPrefix={`label-text-${preset.name}`}
+                label={`${preset.name} text color`}
+                value={textColor}
+                background={hexOf(preset.color, bucket)}
+                bucket={bucket}
+                onChange={(next) => {
+                    props.actions.updateLabelPreset({ id: preset.name, textColor: textToken(next) });
+                }}
+            />
+
+            <span className="flex min-w-0 justify-start">
+                <ChipPreview
+                    testID={`label-chip-${preset.name}`}
+                    colorToken={colorToken(preset)}
+                    text={previewText}
+                    style={
+                        live
+                            ? previewStyle(preset.color, textColor, bucket)
+                            : resolveLabelStyle(preset.name, presets, bucket)
+                    }
+                />
+            </span>
+
+            <span className="flex items-center justify-end gap-1">
+                {props.actions.moveLabelPreset === undefined ? null : (
+                    <>
+                        <SettingsIconButton
+                            testID={`label-move-up-${preset.name}`}
+                            ariaLabel={`Move ${preset.name} up`}
+                            disabled={props.index === 0}
+                            onClick={() => {
+                                props.actions.moveLabelPreset?.({ id: preset.name, index: props.index - 1 });
+                            }}
+                        >
+                            ↑
+                        </SettingsIconButton>
+                        <SettingsIconButton
+                            testID={`label-move-down-${preset.name}`}
+                            ariaLabel={`Move ${preset.name} down`}
+                            disabled={props.index === presets.length - 1}
+                            onClick={() => {
+                                props.actions.moveLabelPreset?.({ id: preset.name, index: props.index + 1 });
+                            }}
+                        >
+                            ↓
+                        </SettingsIconButton>
+                    </>
+                )}
+            </span>
+
+            {/* `Button { Image(systemName: "trash") }.frame(width: LabelCol.action, .trailing)`. */}
+            <span className="flex justify-end">
+                {/*
+                 * `.foregroundStyle(.secondary)` — the Swift trash is a QUIET glyph, not a red
+                 * one; the destructive colour would make it the loudest thing in a row whose
+                 * job is to show colours. It brightens on hover like every other glyph button.
+                 */}
+                <SettingsIconButton
+                    testID={`label-delete-${preset.name}`}
+                    ariaLabel={`Remove the ${preset.name} preset`}
+                    title="Remove preset"
+                    onClick={() => {
+                        if (props.inUse === 0) {
+                            props.actions.removeLabelPreset(preset.name);
+                            return;
+                        }
+                        props.onConfirmChange(!props.confirming);
+                    }}
+                >
+                    <TrashGlyph />
+                </SettingsIconButton>
+            </span>
+
+            {props.error === null ? null : (
+                <span
+                    data-testid={`label-rename-error-${preset.name}`}
+                    className="text-[11px]"
+                    style={{ gridColumn: '1 / -1', color: '#E0685F' }}
+                >
+                    {props.error}
+                </span>
+            )}
+
+            {props.confirming ? (
+                <div
+                    data-testid={`label-delete-confirm-${preset.name}`}
+                    className="flex flex-wrap items-center gap-2 text-[11px]"
+                    style={{ gridColumn: '1 / -1', color: tokens.textSecondary }}
+                >
+                    <span>
+                        {`Delete the preset? The label stays on ${String(props.inUse)} workspace${
+                            props.inUse === 1 ? '' : 's'
+                        } and renders neutral.`}
+                    </span>
+                    <SettingsButton
+                        tone="danger"
+                        testID={`label-delete-confirm-yes-${preset.name}`}
+                        onClick={() => {
+                            props.onConfirmChange(false);
+                            props.actions.removeLabelPreset(preset.name);
+                        }}
+                    >
+                        Delete anyway
+                    </SettingsButton>
+                    <SettingsButton
+                        testID={`label-delete-cancel-${preset.name}`}
+                        onClick={() => {
+                            props.onConfirmChange(false);
+                        }}
+                    >
+                        Cancel
+                    </SettingsButton>
+                </div>
+            ) : null}
         </div>
     );
 }

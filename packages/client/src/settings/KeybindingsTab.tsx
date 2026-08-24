@@ -22,7 +22,7 @@ import { GlobalHotkeySection } from './GlobalHotkeySection';
 import { hasCustomBindings, keybindingSections } from './model';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
-import { KeyChip, SettingsButton, SettingsFooterNote } from './ui';
+import { KeyChip, SettingsButton, SettingsFooterNote, SettingsIconButton } from './ui';
 
 export interface KeybindingsTabProps {
     readonly bindings: KeyBindingMap;
@@ -248,18 +248,23 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                             row.triggers.map((chip) => (
                                                 <span key={chip.config} className="flex items-center gap-0.5">
                                                     <KeyChip>{chip.display}</KeyChip>
-                                                    <button
-                                                        type="button"
-                                                        data-testid={`keybinding-remove-${row.action}-${chip.config}`}
-                                                        aria-label={`Remove ${chip.display} from ${row.label}`}
-                                                        className="px-0.5 text-[11px]"
-                                                        style={{ color: tokens.textTertiary }}
+                                                    {/*
+                                                     * H11 / M43: the Swift `xmark.circle.fill`
+                                                     * is a `.plain` glyph AppKit lights on
+                                                     * hover. `px-0.5` gave this one a ~10 px
+                                                     * target and nothing at all under the
+                                                     * pointer; `SettingsIconButton` is the
+                                                     * shared 16 px square with the one fill.
+                                                     */}
+                                                    <SettingsIconButton
+                                                        testID={`keybinding-remove-${row.action}-${chip.config}`}
+                                                        ariaLabel={`Remove ${chip.display} from ${row.label}`}
                                                         onClick={() => {
                                                             removeTrigger(props, row.action, chip.config);
                                                         }}
                                                     >
                                                         ×
-                                                    </button>
+                                                    </SettingsIconButton>
                                                 </span>
                                             ))
                                         )}

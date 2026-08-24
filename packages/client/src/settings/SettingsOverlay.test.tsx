@@ -47,12 +47,33 @@ describe('the Settings window', () => {
         expect(screen.queryByTestId('settings-window')).toBeNull();
     });
 
-    it('is a modal dialog opening on the keybindings tab', () => {
+    // H13: `SettingsView.swift:13` — `selectedTab: SettingsTab = .general`.
+    it('is a modal dialog opening on the General tab', () => {
         setup();
         const dialog = screen.getByRole('dialog', { name: 'Settings' });
         expect(dialog.getAttribute('aria-modal')).toBe('true');
-        expect(screen.getByTestId('settings-tab-keybindings')).toBeDefined();
-        expect(screen.getByTestId('settings-tab-button-keybindings').getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('settings-tab-general')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-button-general').getAttribute('aria-selected')).toBe('true');
+        expect(screen.queryByTestId('settings-tab-keybindings')).toBeNull();
+    });
+
+    // H13: the rail's order is `SettingsTab`'s, read off the rendered buttons rather than the
+    // table they come from — a rail that renders in some other order would still pass a check
+    // against the table.
+    it('renders the rail in the shipped app’s order', () => {
+        setup();
+        const labels = Array.from(
+            screen.getByTestId('settings-tabs').querySelectorAll<HTMLElement>('[role="tab"]')
+        ).map((node) => (node.textContent ?? '').trim());
+        expect(labels.slice(0, 7)).toEqual([
+            'General',
+            'Appearance',
+            'Repositories',
+            'Labels',
+            'Profiles',
+            'Keybindings',
+            'Web'
+        ]);
     });
 
     it('honours a deep link to a specific tab', () => {
@@ -64,34 +85,71 @@ describe('the Settings window', () => {
         setup();
         fireEvent.click(screen.getByTestId('settings-tab-button-profiles'));
         expect(screen.getByTestId('settings-tab-profiles')).toBeDefined();
-        expect(screen.queryByTestId('settings-tab-keybindings')).toBeNull();
+        expect(screen.queryByTestId('settings-tab-general')).toBeNull();
     });
 
     it('moves between tabs with the arrow keys, wrapping, and jumps with Home/End', () => {
         setup();
         const rail = screen.getByTestId('settings-tabs');
+        // General is first, so ArrowDown from it lands on Appearance — the Swift order.
         fireEvent.keyDown(rail, { key: 'ArrowDown' });
         expect(screen.getByTestId('settings-tab-appearance')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
-        expect(screen.getByTestId('settings-tab-keybindings')).toBeDefined();
-        // Keybindings is no longer first: General and Repositories precede it, so ArrowUp from
-        // it lands on Repositories rather than wrapping.
+        expect(screen.getByTestId('settings-tab-general')).toBeDefined();
+        // …and ArrowUp from the FIRST tab wraps to the last, which is the port-only Workspaces.
         fireEvent.keyDown(rail, { key: 'ArrowUp' });
-        expect(screen.getByTestId('settings-tab-repositories')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-workspaces')).toBeDefined();
         fireEvent.keyDown(rail, { key: 'Home' });
         expect(screen.getByTestId('settings-tab-general')).toBeDefined();
-        // End is the LAST tab, which is Web since favourites gained a daemon home.
         fireEvent.keyDown(rail, { key: 'End' });
-        expect(screen.getByTestId('settings-tab-web')).toBeDefined();
+        expect(screen.getByTestId('settings-tab-workspaces')).toBeDefined();
     });
 
     it('keeps a roving tabindex so Tab lands on the selected tab only', () => {
         setup();
-        const selected = screen.getByTestId('settings-tab-button-keybindings');
+        const selected = screen.getByTestId('settings-tab-button-general');
         const other = screen.getByTestId('settings-tab-button-labels');
         expect(selected.getAttribute('tabindex')).toBe('0');
         expect(other.getAttribute('tabindex')).toBe('-1');
         expect(document.activeElement).toBe(selected);
+    });
+
+    /*
+     * H11. The rail was inert: `grep -c hover packages/client/src/settings/*.tsx` returned 0 for
+     * all 24 files, so nothing on any tab answered the pointer. The state is asserted through
+     * `data-hovered` (the attribute `chrome/ContextMenu.tsx` puts on a highlighted menu row)
+     * plus the painted fill, so this cannot pass on the attribute alone.
+     */
+    it('lights an unselected rail tab under the pointer, and leaves the selected one alone', () => {
+        setup();
+        const unselected = screen.getByTestId('settings-tab-button-labels');
+        expect(unselected.dataset['hovered']).toBe('false');
+        expect(unselected.style.background).toBe('transparent');
+
+        fireEvent.mouseEnter(unselected);
+        expect(unselected.dataset['hovered']).toBe('true');
+        expect(unselected.style.background).toContain('--nex-selection-fill');
+
+        fireEvent.mouseLeave(unselected);
+        expect(unselected.dataset['hovered']).toBe('false');
+        expect(unselected.style.background).toBe('transparent');
+
+        // The selected tab keeps its own fill: the rail never shows two lit rows at once.
+        const selected = screen.getByTestId('settings-tab-button-general');
+        const before = selected.style.background;
+        fireEvent.mouseEnter(selected);
+        expect(selected.dataset['hovered']).toBe('false');
+        expect(selected.style.background).toBe(before);
+    });
+
+    it('lights the buttons too — the recipe is one, not per-tab', () => {
+        setup();
+        const close = screen.getByTestId('settings-close');
+        expect(close.style.background).toBe('transparent');
+        fireEvent.mouseEnter(close);
+        expect(close.dataset['hovered']).toBe('true');
+        expect(close.style.background).toContain('--nex-selection-fill');
+        expect(close.style.borderColor).toContain('--nex-selection-stroke');
     });
 
     // SET-004: the dialog has a toolbar strip of its own (the Swift window's toolbar), and it
@@ -100,7 +158,7 @@ describe('the Settings window', () => {
         setup();
         const toolbar = screen.getByTestId('settings-toolbar');
         expect(toolbar.textContent).toContain('Settings');
-        expect(toolbar.textContent).toContain('Keybindings');
+        expect(toolbar.textContent).toContain('General');
         fireEvent.click(screen.getByTestId('settings-tab-button-labels'));
         expect(screen.getByTestId('settings-toolbar').textContent).toContain('Labels');
     });
@@ -131,6 +189,8 @@ describe('the Settings window', () => {
     // dialog: Escape means "the innermost open thing", not "close everything".
     it('leaves the window open when Escape cancels a recording', () => {
         const { onClose } = setup();
+        // The window opens on General now (H13), so the recorder needs reaching first.
+        fireEvent.click(screen.getByTestId('settings-tab-button-keybindings'));
         fireEvent.click(screen.getByTestId('keybinding-record-open_diff'));
         fireEvent.keyDown(window, { code: 'Escape', key: 'Escape' });
         expect(onClose).not.toHaveBeenCalled();

@@ -27,11 +27,43 @@
  *      reducer-only), so this is its first surface.
  */
 
-import { useMemo, useState, type ReactElement } from 'react';
+import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../chrome';
 import type { SettingsActions, SettingsPaths } from './types';
-import { SettingsButton, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import {
+    SettingsButton,
+    SettingsFooterNote,
+    SettingsRow,
+    SettingsSection,
+    SettingsToggle,
+    hoverBackground,
+    useHover
+} from './ui';
+
+/**
+ * One registry row. H11: `RepoRegistryView.swift:18-24` renders a `List`, whose rows AppKit
+ * lights under the pointer; these were flat tinted strips that never moved, so a row with two
+ * buttons on it read as a static line of text.
+ */
+function RepoRow(props: {
+    readonly id: string;
+    readonly auto: boolean;
+    readonly children: ReactNode;
+}): ReactElement {
+    const { hovered, hoverProps } = useHover();
+    return (
+        <li
+            data-testid={`repo-row-${props.id}`}
+            data-origin={props.auto ? 'auto' : 'manual'}
+            className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors duration-100"
+            style={{ background: hoverBackground(hovered, 'rgba(128,128,128,0.06)') }}
+            {...hoverProps}
+        >
+            {props.children}
+        </li>
+    );
+}
 
 /** A registry row as the client mirror carries it (`daemon.state.repos`). */
 export interface RepositoryEntry {
@@ -200,12 +232,10 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                 ) : (
                     <ul className="flex flex-col gap-1" data-testid="repo-list">
                         {rows.map((repo) => (
-                            <li
+                            <RepoRow
                                 key={repo.id}
-                                data-testid={`repo-row-${repo.id}`}
-                                data-origin={repo.isAutoDiscovered === true ? 'auto' : 'manual'}
-                                className="flex items-center gap-2 rounded px-2 py-1.5"
-                                style={{ background: 'rgba(128,128,128,0.06)' }}
+                                id={repo.id}
+                                auto={repo.isAutoDiscovered === true}
                             >
                                 <div className="flex min-w-0 flex-1 flex-col">
                                     {renaming !== null && renaming.id === repo.id ? (
@@ -299,7 +329,7 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                                 >
                                     Remove
                                 </SettingsButton>
-                            </li>
+                            </RepoRow>
                         ))}
                     </ul>
                 )}

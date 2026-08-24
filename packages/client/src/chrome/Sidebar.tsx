@@ -408,17 +408,24 @@ function StatusDot({ counts }: { readonly counts: AgentCounts }): ReactElement |
         <span
             data-testid="status-dot"
             data-status={counts.waiting > 0 ? 'waiting' : 'running'}
-            // §AGNT-103 / §AGNT-104: the dot PULSES (the Swift's repeating halo). The animation
-            // lives in styles.css — it needs `@keyframes`, and it drops out under
-            // `prefers-reduced-motion`; the two custom properties are what it interpolates, so
-            // the halo is the status colour and the ring stays the sidebar's own background.
+            /*
+             * §AGNT-103 / §AGNT-104 / §H24: the dot BREATHES — its own opacity fades 1 → 0.35
+             * and back on a 1 s ease-in-out, which is `PulsingStatusDot`
+             * (`WorkspaceRowView.swift:16-20`) exactly. There is no halo in the Swift and there
+             * is none here any more; `--nex-dot-halo` went with the ring it drew.
+             *
+             * The animation lives in styles.css because it needs `@keyframes` and because it
+             * drops out under `prefers-reduced-motion`. `--nex-dot-ring` — the Swift's
+             * `borderColor` stroke, the sidebar's own background so the dot separates from the
+             * avatar under it — is published here and PAINTED by the class rather than inline,
+             * so the animated `opacity` carries the fill and the ring together, as one view's
+             * opacity does in SwiftUI.
+             */
             className="nex-agent-dot-pulse absolute -right-[3px] -top-[3px] h-[9px] w-[9px] rounded-full"
             style={
                 {
                     background: color,
-                    boxShadow: `0 0 0 1.5px ${tokens.sidebarBackground}`,
-                    '--nex-dot-ring': tokens.sidebarBackground,
-                    '--nex-dot-halo': withAlpha(color, 0.55)
+                    '--nex-dot-ring': tokens.sidebarBackground
                 } as CSSProperties
             }
         />
@@ -653,9 +660,9 @@ interface WorkspaceRowProps {
  */
 const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
+    // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
+    // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
     const counts = agentCounts([workspace]);
-    const branch = workspace.panes.find((pane) => pane.gitBranch !== null)?.gitBranch ?? null;
-    const paneCount = workspace.panes.length;
 
     /**
      * §WS-027: the two row states are a ZStack in the Swift, not a switch — a selected row that
@@ -665,7 +672,21 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
      * 1.5px accent as the `outline`, and the selection's 1px stroke at 0.7 opacity as an inset
      * ring — the same order the Swift paints them in, where the thicker accent lands last.
      */
-    const activeFill = withAlpha(workspaceColorHex(workspace.color, props.bucket), 0.16);
+    /*
+     * §H6: the active fill is the NEUTRAL theme fill, not the workspace's own colour.
+     * `WorkspaceRowView.swift:164` is `.fill(theme.selectionFill.opacity(0.7))` — the same
+     * `selectionFill` a selected row uses at full strength one line above it (`:160`), just
+     * dimmed. The port used to tint it with `workspaceColorHex(workspace.color, …)` at 16%, so
+     * the active-row highlight changed hue on every workspace switch, which the shipped app
+     * never does. `withAlpha` on a `var()` token mixes in CSS rather than resolving here, so the
+     * 0.7 rides whatever `--nex-selection-fill` the live theme publishes.
+     */
+    const activeFill = withAlpha(tokens.selectionFill, 0.7);
+    // `backgroundColor`, not the `background` shorthand — the paragraph above already says this
+    // value IS the background colour, and the shorthand hides it from any measurement once the
+    // layered `background-image` is present (jsdom's own shorthand parser drops the whole
+    // declaration when a `color-mix()` rides inside the gradient, which is exactly the pair the
+    // selected+active row paints). One-for-one: the shorthand only ever carried a colour here.
     const background = props.selected ? tokens.selectionFill : props.active ? activeFill : 'transparent';
     const backgroundImage =
         props.active && props.selected ? `linear-gradient(${activeFill}, ${activeFill})` : undefined;
@@ -676,23 +697,31 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
      * that decides whether it clears its neighbours is `ringBleedPx`, not the width.
      */
     const ringWidth = props.active ? ROW_ACTIVE_RING_PX : props.selected ? ROW_SELECTION_RING_PX : null;
+    /*
+     * §H22: the SELECTION stroke is `theme.selectionStroke.opacity(0.7)`
+     * (`WorkspaceRowView.swift:161`), so it reads the live token exactly as the active stroke on
+     * the line below already did. It used to be the literal `#5276B8` — the DARK preset's
+     * `--nex-selection-stroke` frozen into the source, which put a dark-theme periwinkle on a
+     * light sidebar whose own stroke is `#5e8ac4`.
+     */
+    const selectionStroke = withAlpha(tokens.selectionStroke, 0.7);
     // One expression for the width, so the painted stroke and the offset derived from it below
     // cannot drift apart — only the colour still asks which state this is.
     const outline =
         ringWidth === null
             ? 'none'
-            : `${String(ringWidth)}px solid ${props.active ? tokens.selectionStroke : withAlpha('#5276B8', 0.7)}`;
+            : `${String(ringWidth)}px solid ${props.active ? tokens.selectionStroke : selectionStroke}`;
     /** The selection ring, kept when the accent outline takes the outer edge. */
     const selectionRing =
         props.active && props.selected
-            ? `inset 0 0 0 ${String(ROW_SELECTION_RING_PX)}px ${withAlpha('#5276B8', 0.7)}`
+            ? `inset 0 0 0 ${String(ROW_SELECTION_RING_PX)}px ${selectionStroke}`
             : null;
 
     const hidden = props.dragHidden === true;
     const nested = props.depth === 1 || props.nestPreview === true;
     const gap = props.gap === true;
     const style: CSSProperties = {
-        background,
+        backgroundColor: background,
         ...(backgroundImage === undefined ? {} : { backgroundImage }),
         outline,
         outlineOffset: `${String(ringWidth === null ? 0 : ringOffsetPx(ringWidth))}px`,
@@ -875,30 +904,19 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                     </span>
                 )}
                 <LabelChips labels={workspace.labels} presets={props.presets} bucket={props.bucket} />
-                <span
-                    className="mt-0.5 flex items-center gap-1.5 text-[10px]"
-                    style={{ color: tokens.textTertiary }}
-                >
-                    {branch === null ? null : (
-                        <span className="flex min-w-0 items-center gap-0.5" data-testid="row-branch">
-                            <ChromeIcon name="branch" size={9} />
-                            <span className="truncate">{branch}</span>
-                        </span>
-                    )}
-                    <span data-testid="row-pane-count">
-                        {paneCount} {paneCount === 1 ? 'pane' : 'panes'}
-                    </span>
-                    {counts.running > 0 ? (
-                        <span data-testid="row-running" style={{ color: tokens.statusRunning }}>
-                            ● {counts.running}
-                        </span>
-                    ) : null}
-                    {counts.waiting > 0 ? (
-                        <span data-testid="row-waiting" style={{ color: tokens.statusWaiting }}>
-                            ● {counts.waiting}
-                        </span>
-                    ) : null}
-                </span>
+                {/*
+                 * §H5: THERE IS NO THIRD LINE. `WorkspaceRowView.swift:54-77` is exactly
+                 * `VStack(alignment: .leading, spacing: 3) { name; labels }` — no branch chip, no
+                 * pane count, no running/waiting counters. The port used to carry all four in a
+                 * `text-[10px]` metadata span, which added a whole text line to every row and cost
+                 * the sidebar the shipped app's density.
+                 *
+                 * The agent state a row DOES report is the one the Swift reports: the pulsing dot
+                 * on the avatar (`Avatar` ▸ `StatusDot`, §AGNT-103), which is unchanged — the
+                 * `counts` this row computes still feed it, and waiting still beats running there.
+                 * The branch and the pane count live in the inspector and the footer, as they do
+                 * in the shipped app.
+                 */}
                 {props.groupCaption === null ? null : (
                     <span className="text-[10px]" style={{ color: tokens.textTertiary }}>
                         in {props.groupCaption}
@@ -981,14 +999,27 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                 borderRadius: GROUP_BAND_CORNER_RADIUS_PX,
                 marginTop: ROW_OUTER_GAP_PX,
                 marginBottom: ROW_OUTER_GAP_PX,
+                /*
+                 * §H22: both non-coloured cases read the THEME rather than a dark-preset hex.
+                 *
+                 *   - the drop preview is `Color.accentColor.opacity(0.18)`
+                 *     (`WorkspaceListView.swift:1894`) → `tokens.accent`, not the literal
+                 *     `#6F9BD8` the dark palette happens to publish for it;
+                 *   - a COLOURLESS group is `(color?.color ?? theme.textTertiary)` at the very
+                 *     same band opacity a coloured one gets (`GroupHeaderRow.swift:27-30` — one
+                 *     `headerTint` expression, the `??` is the only branch). `hex` already IS
+                 *     that `??`, so the colourless case simply stops being a branch here and
+                 *     goes through `tintedColor` like every other band: SET-037/038's intensity
+                 *     and band-fill knobs reach it, and light mode gets
+                 *     `--nex-group-band-opacity: 0.3` instead of a frozen 0.16 of the dark
+                 *     preset's `#8A8A92`.
+                 */
                 background: props.dropPreview
-                    ? withAlpha('#6F9BD8', 0.18)
-                    : group.color === null
-                      ? withAlpha('#8A8A92', 0.16)
-                      // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
+                    ? withAlpha(tokens.accent, 0.18)
+                    : // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
                       // appearance preset's band opacity before it reaches the variable, so the
                       // default here is the preset value the band has always used.
-                      : tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
+                      tintedColor(hex, SIDEBAR_TINT_VARS.groupFill, 0.22),
                 border: props.dropPreview
                     ? `1px solid ${tokens.accent}`
                     : `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.groupStroke, 0)}`,
@@ -1027,7 +1058,21 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                 )}
                 <StatusDot counts={props.counts} />
             </span>
-            <span className="min-w-0 flex-1">
+            {/*
+              * §H23: `flex` on the WRAPPER, not just `min-w-0 flex-1`.
+              *
+              * `GroupHeaderRow.swift:76-81` is `.lineLimit(1).truncationMode(.tail)`, so a long
+              * group name ellipsizes. The port's inner span already carried `truncate`, and it
+              * did nothing: the wrapper was a flex ITEM (so blockified) but not a flex
+              * CONTAINER, which leaves the inner span an inline box — and `overflow: hidden` /
+              * `text-overflow: ellipsis` have no effect on an inline box, so the name ran out
+              * past the chevron. Making the wrapper a flex container gives the inner span a
+              * block-level box to clip inside. It is the workspace row's exact wrapper
+              * (`flex min-w-0 flex-1 flex-col`, §H23's "Contrast") rather than a bare `flex`,
+              * because COLUMN also keeps the rename `<input className="w-full">` stretched to
+              * the wrapper instead of being sized against its intrinsic `size` in a row axis.
+              */}
+            <span className="flex min-w-0 flex-1 flex-col">
                 {props.renaming ? (
                     <InlineEditor
                         label={`Rename ${group.name}`}
@@ -1038,7 +1083,11 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                         onCancel={props.onCancelRename}
                     />
                 ) : (
-                    <span className="truncate text-[13px] font-bold" style={{ color: tokens.textPrimary }}>
+                    <span
+                        data-testid="group-name"
+                        className="truncate text-[13px] font-bold"
+                        style={{ color: tokens.textPrimary }}
+                    >
                         {group.name}
                     </span>
                 )}
@@ -3830,22 +3879,36 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 ...UNSELECTABLE_TEXT_STYLE
             }}
         >
-            <div className="p-2">
+            {/*
+              * §H21 + §H22 — the filter pill, at the shipped app's metrics and on the theme.
+              *
+              * `WorkspaceListView.swift:627-684`: `HStack(spacing: 8)` with a 13pt glyph and a
+              * 13pt field, `.padding(.horizontal, 12).padding(.vertical, 10)` for the pill and
+              * `.padding(.horizontal, 10).padding(.vertical, 8)` for the margin around it. The
+              * port shipped 8×4 inner / 8 outer / 12px text / 6px gap — roughly HALF the
+              * height, on the first control in the sidebar.
+              *
+              * The fill and border are `chromeTheme.textPrimary.opacity(0.05 / 0.08)` (`:676`,
+              * `:679`), NOT a hex: the port's frozen `#E6E6EA` is the dark preset's `--nex-fg`,
+              * which at 5% over the LIGHT sidebar's `#efeee9` is very nearly the sidebar
+              * itself, so the pill and its border effectively vanished in light mode.
+              */}
+            <div className="px-2.5 py-2">
                 <div
-                    className="flex items-center gap-1.5 rounded-[10px] px-2 py-1"
+                    className="flex items-center gap-2 rounded-[10px] px-3 py-2.5"
                     style={{
-                        background: withAlpha('#E6E6EA', 0.05),
-                        border: `1px solid ${withAlpha('#E6E6EA', 0.08)}`
+                        background: withAlpha(tokens.textPrimary, 0.05),
+                        border: `1px solid ${withAlpha(tokens.textPrimary, 0.08)}`
                     }}
                 >
                     <span style={{ color: tokens.textTertiary }}>
-                        <ChromeIcon name="search" />
+                        <ChromeIcon name="search" size={13} />
                     </span>
                     <input
                         aria-label="Filter workspaces or labels"
                         placeholder="Filter workspaces or labels"
                         data-testid="sidebar-filter"
-                        className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
+                        className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
                         style={{ color: tokens.textPrimary, ...SELECTABLE_TEXT_STYLE }}
                         value={props.filter}
                         onChange={(event) => {
@@ -3875,12 +3938,15 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         <button
                             type="button"
                             aria-label="Clear filter"
+                            className="shrink-0"
                             style={{ color: tokens.textTertiary }}
                             onClick={() => {
                                 props.onFilterChange('');
                             }}
                         >
-                            <ChromeIcon name="clear" />
+                            {/* `WorkspaceListView.swift:663` — the `xmark.circle.fill` is 13pt,
+                                the same size as the magnifier that opens the pill. */}
+                            <ChromeIcon name="clear" size={13} />
                         </button>
                     ) : null}
                 </div>
@@ -3890,7 +3956,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 <div
                     data-testid="selection-header"
                     className="flex items-center gap-2 px-3 py-1 text-[11px]"
-                    style={{ background: withAlpha('#6F9BD8', 0.12), color: tokens.textSecondary }}
+                    /* §H22: `Color.accentColor.opacity(0.12)` (`WorkspaceListView.swift:850`) —
+                       the live accent, not the dark preset's `#6F9BD8` frozen into the source. */
+                    style={{ background: withAlpha(tokens.accent, 0.12), color: tokens.textSecondary }}
                 >
                     <span className="flex-1">{selection.size} selected</span>
                     {/* §WS-043: "Select All" disappears once everything already IS selected —
@@ -4027,6 +4095,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {newForm === null ? null : (
                 <NewEntrySheet
                     kind={newForm.kind}
+                    // §H22: the swatch row used to resolve every workspace colour against a
+                    // pinned `'dark'` bucket, so the sheet showed the dark palette's hues on a
+                    // light theme — and then the row it created rendered a different colour.
+                    bucket={bucket}
                     repos={props.repos ?? EMPTY_REPOS}
                     groups={groups}
                     profiles={props.profiles ?? EMPTY_PROFILES}

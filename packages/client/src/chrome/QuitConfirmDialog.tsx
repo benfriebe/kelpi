@@ -34,6 +34,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useModalPresence } from './modal-presence';
 import { tokens } from './tokens';
 
 /** The page-side global's name. Must match `shell/src/quit-prompt.ts`. */
@@ -211,6 +212,14 @@ export function QuitConfirmDialog(props: QuitConfirmDialogProps): ReactElement |
     const [suppress, setSuppress] = useState(spec.checkboxChecked);
     const defaultRef = useRef<HTMLButtonElement | null>(null);
     const answered = useRef(false);
+
+    /*
+     * H1: park a live web pane while this is up. The audit frame that proves the gap is this
+     * dialog's own — `docs/audit/run-O/53-agent-lifecycle-quit-dialog.png`, sliced at the page's
+     * left edge with Cancel entirely off-screen — because the assembly's `modalOpen` predicate
+     * had no way to see a dialog the SHELL opens.
+     */
+    useModalPresence();
 
     const answer = useCallback(
         (response: number): void => {

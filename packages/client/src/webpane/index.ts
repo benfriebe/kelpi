@@ -60,8 +60,10 @@ export {
 } from './priority';
 
 export {
+    BATCH_LOCAL_DESTINATION,
     batchDestinations,
     favouriteMatching,
+    isPaneDestination,
     normalizeFavouriteURL,
     parseBatchMessage,
     parseBatchSession,

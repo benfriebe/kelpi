@@ -78,15 +78,115 @@ describe('the label preset list', () => {
 
     it('renames on Enter, and ignores an unchanged or empty name', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-rename-ship'));
-        const field = screen.getByTestId('label-rename-field-ship');
+        const field = screen.getByTestId('label-rename-field-ship') as HTMLInputElement;
         fireEvent.change(field, { target: { value: 'shipped' } });
         fireEvent.keyDown(field, { key: 'Enter' });
         expect(bound.log.updated).toEqual([{ id: 'ship', name: 'shipped' }]);
 
-        fireEvent.click(screen.getByTestId('label-rename-ship'));
-        fireEvent.keyDown(screen.getByTestId('label-rename-field-ship'), { key: 'Enter' });
+        // Unchanged: Enter on the stored name writes nothing (`commitRename`'s first guard).
+        fireEvent.change(field, { target: { value: 'ship' } });
+        fireEvent.keyDown(field, { key: 'Enter' });
         expect(bound.log.updated).toHaveLength(1);
+
+        // Empty: the field snaps back to the stored name and still writes nothing.
+        fireEvent.change(field, { target: { value: '   ' } });
+        fireEvent.keyDown(field, { key: 'Enter' });
+        expect(bound.log.updated).toHaveLength(1);
+        expect(field.value).toBe('ship');
+    });
+});
+
+/*
+ * H25 / H26 / H27 — the tab's SHAPE, which `LabelPresetsSettingsView.swift:4-12` says out loud
+ * is the point: fixed columns so the wells, the "Aa" sample, the chip and the trash line up
+ * down the tab and with the add row.
+ */
+describe('the tab’s shape (H25/H26/H27)', () => {
+    /** Every direct child of a row, in DOM order — the row's grid cells. */
+    function cells(testID: string): HTMLElement[] {
+        return Array.from(screen.getByTestId(testID).children) as HTMLElement[];
+    }
+
+    // H25: `VStack(spacing: 0) { addRow; Divider(); List }` — the add row is the FIRST thing on
+    // the tab, not the last row under a list that can be longer than the window.
+    it('puts the add row above the preset list, with a divider between them', () => {
+        setup();
+        const section = screen.getByTestId('label-presets');
+        const order = Array.from(section.querySelectorAll<HTMLElement>('[data-testid]'))
+            .map((node) => node.dataset['testid'] ?? '')
+            .filter(
+                (id) =>
+                    id === 'label-add-row' || id === 'label-add-divider' || id.startsWith('label-preset-')
+            );
+        expect(order).toEqual([
+            'label-add-row',
+            'label-add-divider',
+            'label-preset-ship',
+            'label-preset-wip'
+        ]);
+    });
+
+    // H26: one grid line per row, on LabelCol's widths — not a two-line stacked card.
+    it('lays every row out on LabelCol’s fixed columns', () => {
+        setup();
+        for (const row of ['label-add-row', 'label-preset-ship', 'label-preset-wip']) {
+            const node = screen.getByTestId(row);
+            expect(node.style.display).toBe('grid');
+            // bgColor 150 / name flexes / textColor 124 / preview 80 / (port-only reorder) /
+            // action 40 — `LabelPresetsSettingsView.swift:7-12`.
+            expect(node.style.gridTemplateColumns).toBe('150px minmax(0,1fr) 124px 80px 44px 40px');
+            expect(node.style.columnGap).toBe('10px');
+        }
+    });
+
+    // …and the columns are in the SAME ORDER in the add row as in a preset row, which is what
+    // makes them line up: colour, name, text colour, preview, then the trailing controls.
+    it('orders the add row’s cells the same way a preset row orders its own', () => {
+        setup();
+        const add = cells('label-add-row');
+        const row = cells('label-preset-ship');
+        expect(add[0]?.getAttribute('aria-label')).toBe('new preset color');
+        expect(row[0]?.getAttribute('aria-label')).toBe('ship color');
+        expect(add[1]?.getAttribute('data-testid')).toBe('label-new-name');
+        expect(row[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
+        expect(add[2]?.getAttribute('aria-label')).toBe('new preset text color');
+        expect(row[2]?.getAttribute('aria-label')).toBe('ship text color');
+        expect(add[3]?.querySelector('[data-testid="label-new-preview"]')).not.toBeNull();
+        expect(row[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
+    });
+
+    // H27: no Rename button anywhere — the name is a live field in every row.
+    it('has no Rename button; the name field is live in every row', () => {
+        setup();
+        expect(screen.queryByTestId('label-rename-ship')).toBeNull();
+        expect(screen.queryByTestId('label-rename-wip')).toBeNull();
+        expect(screen.queryAllByText('Rename')).toHaveLength(0);
+        for (const preset of ['ship', 'wip']) {
+            const field = screen.getByTestId(`label-rename-field-${preset}`) as HTMLInputElement;
+            expect(field.value).toBe(preset);
+        }
+    });
+
+    // …and typing into it previews live, exactly as the Swift row's `previewText` does.
+    it('follows the typed name in the row’s chip while it is being edited', () => {
+        setup();
+        fireEvent.change(screen.getByTestId('label-rename-field-ship'), { target: { value: 'shipped' } });
+        expect(screen.getByTestId('label-chip-ship').textContent).toBe('shipped');
+    });
+
+    // H11: the same hover recipe as the rail and the buttons, on the row and on a swatch.
+    it('lights a preset row and a colour swatch under the pointer', () => {
+        setup();
+        const row = screen.getByTestId('label-preset-ship');
+        expect(row.dataset['hovered']).toBe('false');
+        fireEvent.mouseEnter(row);
+        expect(row.dataset['hovered']).toBe('true');
+        expect(row.style.background).toContain('--nex-selection-fill');
+
+        const swatch = screen.getByTestId('label-color-ship-purple');
+        expect(swatch.style.outline).toBe('none');
+        fireEvent.mouseEnter(swatch);
+        expect(swatch.style.outline).toContain('--nex-selection-stroke');
     });
 });
 
@@ -150,7 +250,6 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
 describe('renaming a preset (SET-063)', () => {
     it('commits on focus loss, not only on Return', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-rename-ship'));
         const field = screen.getByTestId('label-rename-field-ship');
         fireEvent.change(field, { target: { value: 'shipped' } });
         fireEvent.blur(field);
@@ -159,24 +258,55 @@ describe('renaming a preset (SET-063)', () => {
 
     it('snaps back and says why when the name collides with another preset', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-rename-ship'));
-        const field = screen.getByTestId('label-rename-field-ship');
+        const field = screen.getByTestId('label-rename-field-ship') as HTMLInputElement;
         fireEvent.change(field, { target: { value: 'wip' } });
         fireEvent.keyDown(field, { key: 'Enter' });
         expect(bound.log.updated).toEqual([]);
         expect(screen.getByTestId('label-rename-error-ship').textContent).toContain('already a preset');
         // The row still shows the STORED name — nothing was left half-renamed on screen.
+        expect(field.value).toBe('ship');
         expect(screen.getByTestId('label-chip-ship').textContent).toBe('ship');
     });
 
     it('cancels on Escape without writing', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-rename-ship'));
-        const field = screen.getByTestId('label-rename-field-ship');
+        const field = screen.getByTestId('label-rename-field-ship') as HTMLInputElement;
         fireEvent.change(field, { target: { value: 'shipped' } });
         fireEvent.keyDown(field, { key: 'Escape' });
+        expect(field.value).toBe('ship');
         fireEvent.blur(field);
         expect(bound.log.updated).toEqual([]);
+    });
+
+    /*
+     * The live field's other half (H27): it has to survive the deltas the row's OWN controls
+     * produce. Recolouring through the swatch round-trips `label-presets-changed` back into
+     * this list, and a half-typed name must still be there when it lands — the failure mode a
+     * "Rename" button never had, because the field only existed for the duration of the rename.
+     */
+    it('keeps a half-typed name across a store rewrite of the same preset', () => {
+        const bound = actions();
+        const view = render(
+            <LabelsTab presets={PRESETS} workspaces={[]} actions={bound} bucket="dark" />
+        );
+        const field = screen.getByTestId('label-rename-field-ship') as HTMLInputElement;
+        fireEvent.focus(field);
+        fireEvent.change(field, { target: { value: 'half-typed' } });
+
+        view.rerender(
+            <LabelsTab
+                presets={[
+                    { name: 'ship', color: { kind: 'named', color: 'purple' }, textColor: null },
+                    ...PRESETS.slice(1)
+                ]}
+                workspaces={[]}
+                actions={bound}
+                bucket="dark"
+            />
+        );
+        expect((screen.getByTestId('label-rename-field-ship') as HTMLInputElement).value).toBe('half-typed');
+        // …and the daemon's colour did land: the draft did not freeze the whole row.
+        expect(screen.getByTestId('label-chip-ship').dataset['color']).toBe('purple');
     });
 });
 

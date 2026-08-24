@@ -333,6 +333,34 @@ describe('the colour row is a radio group, not ten tab stops (§WS-077, #64)', (
         expect(row.getAttribute('tabindex')).toBe('0');
         expect(row.getAttribute('role')).toBe('radiogroup');
     });
+
+    /**
+     * §H22: the swatches resolve against the LIVE appearance bucket.
+     *
+     * They used to call `workspaceColorHex(candidate, 'dark')` with the bucket pinned in the
+     * source, so a light-theme sheet offered the dark palette's hues and then created a row
+     * painted in the light ones. `NewEntrySheet` now takes `bucket` and `Sidebar` passes its own.
+     */
+    it('§H22: paints the swatches in the sheet’s own bucket, not a pinned dark one', () => {
+        openSheet({ bucket: 'light' });
+        const light = within(screen.getByTestId('new-workspace-colors'))
+            .getAllByRole('radio')
+            .map((swatch) => swatch.style.background);
+        cleanup();
+
+        openSheet({ bucket: 'dark' });
+        const dark = within(screen.getByTestId('new-workspace-colors'))
+            .getAllByRole('radio')
+            .map((swatch) => swatch.style.background);
+
+        expect(light).toHaveLength(10);
+        expect(dark).toHaveLength(10);
+        // Every swatch is a real colour in both, and the two palettes differ — which is only
+        // possible if the bucket actually reached `workspaceColorHex`.
+        expect(light.every((value) => value !== '')).toBe(true);
+        expect(dark.every((value) => value !== '')).toBe(true);
+        expect(light).not.toEqual(dark);
+    });
 });
 
 describe('the group the sheet opens on (§WS-076, `pendingSheetGroupID`)', () => {

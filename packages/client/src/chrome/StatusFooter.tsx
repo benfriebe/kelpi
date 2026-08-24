@@ -18,9 +18,11 @@
  * non-zero count is a button that opens the bucket popover.
  */
 
-import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
 import { useSecondsTicker } from './clock';
+import { useDismissable } from './dismissable';
+import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
 import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
 import { systemStatMeta, visibleStatKinds } from './stats';
@@ -269,6 +271,11 @@ interface CountItemProps {
     readonly count: number;
     readonly open: boolean;
     readonly onToggle: () => void;
+    /** §M20: the popover is anchored to THIS chip, so the row has to be able to measure it. */
+    readonly anchorRef?: RefObject<HTMLButtonElement | null> | undefined;
+    /** §H11: hovered state and its handlers, from the footer's single hover slot. */
+    readonly hovered?: boolean | undefined;
+    readonly hoverBinding?: { readonly onMouseEnter: () => void; readonly onMouseLeave: () => void } | undefined;
 }
 
 function CountItem(props: CountItemProps): ReactElement {
@@ -295,18 +302,69 @@ function CountItem(props: CountItemProps): ReactElement {
     }
     return (
         <button
+            ref={props.anchorRef}
             type="button"
             data-testid={`count-${props.bucket}`}
             data-count={props.count}
             aria-label={`${props.count} ${BUCKET_LABEL[props.bucket]}`}
             aria-expanded={props.open}
             className="flex shrink-0 items-center gap-1 whitespace-nowrap"
-            style={{ color: tokens.textSecondary }}
+            /* §H11: the shipped chip is an AppKit button and answers the pointer; this one
+               brightened for nothing at all before. Open counts as hovered, so the chip whose
+               popover is up stays lit while the pointer is away in the panel. */
+            data-hovered={props.hovered === true || props.open ? 'true' : 'false'}
+            style={{ color: hoverText(props.hovered === true || props.open, tokens.textSecondary) }}
+            {...(props.hoverBinding ?? {})}
             onClick={props.onToggle}
         >
             {content}
         </button>
     );
+}
+
+/** The bucket popover's own box: `AgentStatusDetailPopover`'s `.frame(width: 252)`. */
+export const BUCKET_POPOVER_WIDTH_PX = 252;
+/** The little arrow that points back at the chip (`arrowEdge: .top`), as a rotated square. */
+const BUCKET_POPOVER_ARROW_PX = 8;
+/** How close the panel (and the arrow inside it) may come to an edge. */
+const BUCKET_POPOVER_MARGIN_PX = 8;
+
+export interface BucketPopoverPlacement {
+    /** Offset from the footer row's leading edge, in px. */
+    readonly left: number;
+    /** The arrow's offset inside the panel, in px. */
+    readonly arrowLeft: number;
+}
+
+/**
+ * Where the bucket popover sits: centred on the chip that opened it (§M20).
+ *
+ * `StatusBarView.swift:269-283` attaches the popover per `StatusCountItem` with
+ * `arrowEdge: .top`, so it rises out of the chip that was clicked. The port pinned one shared
+ * node at `bottom-7 right-3`, which put the panel over by the clock however far to the left the
+ * chip was — clicking "running" opened a panel nowhere near it.
+ *
+ * Pure, and separately tested, because the measurement it works from does not exist in jsdom: a
+ * row with no width returns `null` and the caller keeps the old trailing placement rather than
+ * clamping the panel to a nonsense left edge.
+ */
+export function bucketPopoverPlacement(
+    chip: { readonly left: number; readonly width: number },
+    row: { readonly left: number; readonly width: number },
+    options: { readonly width?: number | undefined; readonly margin?: number | undefined } = {}
+): BucketPopoverPlacement | null {
+    const width = options.width ?? BUCKET_POPOVER_WIDTH_PX;
+    const margin = options.margin ?? BUCKET_POPOVER_MARGIN_PX;
+    // No usable measurement (jsdom, a row that has not been laid out yet).
+    if (row.width < width + 2 * margin) return null;
+    const centre = chip.left + chip.width / 2 - row.left;
+    const maxLeft = row.width - width - margin;
+    const left = Math.round(Math.min(Math.max(centre - width / 2, margin), maxLeft));
+    const arrowInset = margin + BUCKET_POPOVER_ARROW_PX;
+    const arrowLeft = Math.round(
+        Math.min(Math.max(centre - left - BUCKET_POPOVER_ARROW_PX / 2, arrowInset), width - arrowInset)
+    );
+    return { left, arrowLeft };
 }
 
 /** Layout constants the fit calculation and the row's own CSS have to agree on. */
@@ -436,6 +494,57 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
     const rowRef = useRef<HTMLDivElement | null>(null);
     const leftRef = useRef<HTMLDivElement | null>(null);
     const keepRef = useRef<HTMLDivElement | null>(null);
+    const popoverRef = useRef<HTMLDivElement | null>(null);
+    /** One anchor per chip: what §M20 measures, and what an outside-click must not dismiss through. */
+    const runningRef = useRef<HTMLButtonElement | null>(null);
+    const waitingRef = useRef<HTMLButtonElement | null>(null);
+    const inactiveRef = useRef<HTMLButtonElement | null>(null);
+    const chipRefs: Readonly<Record<AgentBucket, RefObject<HTMLButtonElement | null>>> = {
+        running: runningRef,
+        waiting: waitingRef,
+        inactive: inactiveRef
+    };
+    /** §H11: one hover slot for the whole footer (see `hover.ts`). */
+    const [hovered, hover] = useHoverKey();
+
+    const closeBucket = useCallback(() => {
+        setOpenBucket(null);
+    }, []);
+    /*
+     * §H15 — an `NSPopover` closes on any outside click and on Escape. This panel closed only
+     * when the same chip was clicked again or a row was picked, so it sat over the pane grid
+     * while the user typed. The chips are in the keep-list because a `mousedown` on the open
+     * chip would otherwise dismiss the panel a moment before that chip's own click re-opened it.
+     */
+    useDismissable(openBucket !== null, closeBucket, [popoverRef, runningRef, waitingRef, inactiveRef]);
+
+    /*
+     * §M20 — and it is anchored to the chip that opened it, measured off the real boxes. Null
+     * (no measurement: jsdom, or a row narrower than the panel) keeps the trailing placement.
+     */
+    const [placement, setPlacement] = useState<BucketPopoverPlacement | null>(null);
+    useLayoutEffect(() => {
+        if (openBucket === null) {
+            setPlacement(null);
+            return;
+        }
+        const chip = chipRefs[openBucket].current;
+        const row = rowRef.current;
+        if (chip === null || row === null) {
+            setPlacement(null);
+            return;
+        }
+        const chipBox = chip.getBoundingClientRect();
+        const rowBox = row.getBoundingClientRect();
+        setPlacement(
+            bucketPopoverPlacement(
+                { left: chipBox.left, width: chipBox.width },
+                { left: rowBox.left, width: rowBox.width }
+            )
+        );
+        // The chip refs are stable boxes; the open bucket is the whole input.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openBucket]);
 
     const pane = props.focusedPane ?? null;
     const paneRunning = pane !== null && pane.status === 'running';
@@ -664,6 +773,9 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                         bucket="running"
                         count={props.summary.running}
                         open={openBucket === 'running'}
+                        anchorRef={runningRef}
+                        hovered={hovered === 'count:running'}
+                        hoverBinding={hover('count:running')}
                         onToggle={() => {
                             setOpenBucket(openBucket === 'running' ? null : 'running');
                         }}
@@ -672,6 +784,9 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                         bucket="waiting"
                         count={props.summary.waiting}
                         open={openBucket === 'waiting'}
+                        anchorRef={waitingRef}
+                        hovered={hovered === 'count:waiting'}
+                        hoverBinding={hover('count:waiting')}
                         onToggle={() => {
                             setOpenBucket(openBucket === 'waiting' ? null : 'waiting');
                         }}
@@ -680,6 +795,9 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                         bucket="inactive"
                         count={props.summary.inactive}
                         open={openBucket === 'inactive'}
+                        anchorRef={inactiveRef}
+                        hovered={hovered === 'count:inactive'}
+                        hoverBinding={hover('count:inactive')}
                         onToggle={() => {
                             setOpenBucket(openBucket === 'inactive' ? null : 'inactive');
                         }}
@@ -693,16 +811,38 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
 
             {openBucket === null ? null : (
                 <div
+                    ref={popoverRef}
                     data-testid="bucket-popover"
                     role="dialog"
                     aria-label={BUCKET_LABEL[openBucket]}
-                    className="absolute bottom-7 right-3 z-40 w-[252px] rounded-lg p-2"
+                    data-anchored={placement === null ? 'false' : 'true'}
+                    className={`absolute bottom-7 z-40 w-[252px] rounded-lg p-2 ${
+                        placement === null ? 'right-3' : ''
+                    }`}
                     style={{
                         background: tokens.surfaceBackground,
                         border: `1px solid ${tokens.divider}`,
-                        boxShadow: '0 12px 32px rgba(0,0,0,0.38)'
+                        boxShadow: '0 12px 32px rgba(0,0,0,0.38)',
+                        ...(placement === null ? {} : { left: placement.left })
                     }}
                 >
+                    {/* `arrowEdge: .top` — the panel rises out of the chip and points back at
+                        it. A rotated square with two borders is the DOM's version of the
+                        `NSPopover` beak; `aria-hidden` because it is pure decoration. */}
+                    {placement === null ? null : (
+                        <span
+                            aria-hidden
+                            data-testid="bucket-popover-arrow"
+                            className="absolute h-[8px] w-[8px] rotate-45"
+                            style={{
+                                left: placement.arrowLeft,
+                                bottom: -5,
+                                background: tokens.surfaceBackground,
+                                borderRight: `1px solid ${tokens.divider}`,
+                                borderBottom: `1px solid ${tokens.divider}`
+                            }}
+                        />
+                    )}
                     <div className="mb-1 flex items-center gap-1.5" style={{ color: tokens.textPrimary }}>
                         <span
                             aria-hidden
@@ -720,6 +860,11 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                                 type="button"
                                 data-testid="bucket-row"
                                 className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left"
+                                /* §H11: the row under the pointer is the row a click acts on,
+                                   so it is painted — `ContextMenu`'s rule, same fill. */
+                                data-hovered={hovered === `bucket:${item.paneID}` ? 'true' : 'false'}
+                                style={{ background: hoverFill(hovered === `bucket:${item.paneID}`) }}
+                                {...hover(`bucket:${item.paneID}`)}
                                 onClick={() => {
                                     setOpenBucket(null);
                                     props.onSelectPane?.(item.workspaceID, item.paneID);

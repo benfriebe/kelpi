@@ -2184,7 +2184,39 @@ function buildFlows(ctx) {
                  * So the check is geometric, not textual: of the titles that are too long for
                  * their header, every one must still paint its tail segment inside the title
                  * box. `title.right + 1` is the box; a tail pushed past it would be clipped.
+                 *
+                 * **The long path is now BUILT, not borrowed** (run-Q). This step used to rely on
+                 * the sandbox's own `/var/folders/5x/…` cwd being incidentally too long for half
+                 * a window — and UI-FIDELITY §H4 (the header path is home-abbreviated now, as
+                 * `PaneHeaderView.swift:503` always did it) collapsed that cwd to the single
+                 * character `~`, so there was nothing left to truncate and the PRECONDITION
+                 * failed while the rule it guards was never exercised. That is a stale premise,
+                 * not a regression: the fix is to give the measurement a path that is long
+                 * whether or not it is abbreviated, so the invariant is under test on purpose
+                 * rather than by luck. A third pane is split at that path, measured, and closed
+                 * again with §N9's roster postcondition.
                  */
+                const deep = path.join(
+                    work,
+                    'a-really-long-directory-name-for-truncation',
+                    'nested',
+                    'deeper-still'
+                );
+                fs.mkdirSync(deep, { recursive: true });
+                const roster = new Set(await domPaneIDs(page));
+                const deepPane = await cli.json([
+                    'pane',
+                    'split',
+                    '--target',
+                    String(newPane ?? state.firstPane),
+                    '--direction',
+                    'vertical',
+                    '--path',
+                    deep,
+                    '--json'
+                ]);
+                recorder.note(`deep-path pane: ${JSON.stringify(deepPane)}`);
+                await sleep(2200);
                 const titles = await page.eval(
                     `Array.from(document.querySelectorAll('[data-testid^="pane-title-"]')).map(el => {
                         const spans = Array.from(el.children);
@@ -2221,6 +2253,22 @@ function buildFlows(ctx) {
                         truncated.map((title) => ({ tail: title.tailText, inside: title.tailInside }))
                     )
                 );
+                // …and hand the grid back as it was found (§N9), so `split-cli` still starts
+                // from the two panes its own expectation sentence describes.
+                if (typeof deepPane?.pane_id === 'string') {
+                    await cli.run(['pane', 'close', '--target', String(deepPane.pane_id)]);
+                    await sleep(1200);
+                    const restored = await domPaneIDs(page);
+                    recorder.check(
+                        'the truncation probe’s pane was closed again — the grid is handed back as found (§N9)',
+                        restored.length === roster.size && restored.every((id) => roster.has(id)),
+                        `${String(roster.size)} → +1 → ${String(restored.length)}`
+                    );
+                    if (newPane !== null) {
+                        await clickPaneHeader(page, newPane);
+                        await sleep(500);
+                    }
+                }
                 recorder.eyes('divider thickness/contrast, focus ring on the NEW pane, both prompts legible');
             }
         },
@@ -3506,6 +3554,98 @@ function buildFlows(ctx) {
             }
         },
         {
+            /**
+             * §H9 — the app keymap with a CONTENT PANE focused.
+             *
+             * `keybinding-blast-radius` asks this question over a terminal; this asks it over a
+             * markdown preview, which is the state the port could not answer. The preview is a
+             * cross-origin sandboxed iframe, so its keydowns never reach the dispatcher installed
+             * on the host `window`, and the bridge forwarded exactly two chords (⌘E, ⌘F) — every
+             * other binding was dead the moment a preview took focus. The Swift has no boundary
+             * to cross: `NexCommands.swift:142-155` monitors `NSEvent` for whatever holds first
+             * responder, a `WKWebView` included.
+             *
+             * The chord has to be pressed with the FRAME focused, which is what makes this a live
+             * check rather than a unit one: a click into the preview body puts keyboard focus in
+             * the child frame, and CDP then delivers the keystroke there.
+             */
+            id: 'content-pane-keybindings',
+            expect:
+                'With a markdown PREVIEW focused (the keyboard inside its sandboxed frame), the app keymap still fires: ⌘D splits and ⇧⌘Space cycles the layout, exactly as they do over a terminal.',
+            async run(recorder) {
+                if (state.mdPane === null) {
+                    const opened = await cli.ok(['md', path.join(work, 'AUDIT.md')]);
+                    recorder.note(`cli: ${opened.trim()}`);
+                    await sleep(2200);
+                    const panes = await cli.json(['pane', 'list', '--json']);
+                    state.mdPane = panes.find((pane) => pane.type === 'markdown')?.id ?? null;
+                }
+                if (state.mdPane === null) {
+                    recorder.check('a markdown pane to focus', false, 'none could be opened');
+                    return;
+                }
+
+                await focusPaneBody(page, state.mdPane);
+                await sleep(400);
+                const focus = await page.eval(
+                    `(() => { const el = document.activeElement;
+                              return { tag: el?.tagName ?? null,
+                                       testid: el?.getAttribute?.('data-testid') ?? null }; })()`
+                );
+                recorder.note(`focused element: ${JSON.stringify(focus)}`);
+                recorder.check(
+                    'the click put the keyboard INSIDE the preview frame — the state the chords died in',
+                    String(focus?.tag) === 'IFRAME' &&
+                        String(focus?.testid ?? '').startsWith('content-iframe-'),
+                    `${String(focus?.tag)} ${String(focus?.testid)}`
+                );
+
+                const probes = [
+                    {
+                        name: '⌘D — split_right',
+                        observe: paneCountExpr,
+                        press: () => page.key('KeyD', { modifiers: MOD.meta }),
+                        cleanup: true
+                    },
+                    {
+                        name: '⇧⌘Space — cycle_layout',
+                        observe: `(document.querySelector('[data-testid="layout-cycle"]')?.innerText ?? '<<no layout control>>').trim()`,
+                        press: () => page.key('Space', { modifiers: MOD.meta | MOD.shift }),
+                        cleanup: false
+                    }
+                ];
+
+                for (const probe of probes) {
+                    // Re-focus the frame before each probe: a split moves focus to the new pane.
+                    await focusPaneBody(page, state.mdPane);
+                    await sleep(300);
+                    const before = await page.eval(probe.observe);
+                    const known = probe.cleanup ? new Set(await domPaneIDs(page)) : null;
+                    await probe.press();
+                    await sleep(1100);
+                    const after = await page.eval(probe.observe);
+                    recorder.check(
+                        `${probe.name} fires with the markdown PREVIEW focused`,
+                        String(after) !== String(before),
+                        `${String(before)} → ${String(after)}`
+                    );
+                    if (known !== null) {
+                        // §N9: close what appeared, by id, so the grid is handed back as found.
+                        const appeared = (await domPaneIDs(page)).filter((id) => !known.has(id));
+                        for (const extra of appeared) await cli.run(['pane', 'close', '--target', extra]);
+                        await sleep(1000);
+                        const restored = await domPaneIDs(page);
+                        recorder.check(
+                            'the split probe’s extra pane was closed again — the grid is handed back as found (§N9)',
+                            restored.length === known.size && restored.every((id) => known.has(id)),
+                            `${String(known.size)} → +${String(appeared.length)} → ${String(restored.length)}`
+                        );
+                    }
+                }
+                await recorder.shot(page);
+            }
+        },
+        {
             id: 'web-pane',
             expect:
                 '`nex web open <url>` opens a web pane and the page is EMBEDDED in the window at the pane\'s rect — the fixture\'s purple header and cards visible inside the Nex frame, not in a separate window.',
@@ -3879,6 +4019,34 @@ function buildFlows(ctx) {
                 recorder.note(`focus after ⌘L: ${JSON.stringify(focus)}`);
                 recorder.check('⌘L focused the URL bar', focus?.testid === `web-url-${paneID}`, String(focus?.testid));
                 recorder.check('the whole address is selected, ready to be typed over', focus?.selected === true);
+
+                /**
+                 * §H17 — and select-all belongs to that TOKEN, never to focus itself.
+                 * `WebPaneChrome.swift:469-503` runs `selectAll` only inside its
+                 * `lastSeenToken != focusRequestToken` guard, so a plain click places the caret
+                 * where it landed; the port selected on every `onFocus`, which meant clicking
+                 * mid-URL to fix one character wiped the whole address.
+                 */
+                const field = await page.box(`[data-testid="web-url-${paneID}"]`);
+                if (field !== null) {
+                    await page.clickAt(field.x + field.width / 2, field.y + field.height / 2);
+                    await sleep(350);
+                    const clicked = await page.eval(
+                        `(() => {
+                            const active = document.activeElement;
+                            return { testid: active?.getAttribute?.('data-testid') ?? '',
+                                     collapsed: active?.selectionStart === active?.selectionEnd,
+                                     start: active?.selectionStart ?? -1,
+                                     length: (active?.value ?? '').length };
+                        })()`
+                    );
+                    recorder.note(`caret after a plain click: ${JSON.stringify(clicked)}`);
+                    recorder.check(
+                        'a plain click puts a caret in the address instead of selecting all of it',
+                        clicked?.testid === `web-url-${paneID}` && clicked?.collapsed === true,
+                        `${String(clicked?.testid)} caret=${String(clicked?.start)}/${String(clicked?.length)}`
+                    );
+                }
                 // Leave the caret out of the bar so later steps' shortcuts are not deferred.
                 await page.key('Escape', { key: 'Escape' });
                 recorder.eyes('URL bar focus ring / selection highlight');
@@ -4031,6 +4199,35 @@ function buildFlows(ctx) {
                     'showing it again clears the badge and restores the rows',
                     reopened?.panel === true && reopened?.badge === null,
                     `panel=${String(reopened?.panel)} badge=${String(reopened?.badge)}`
+                );
+
+                /**
+                 * §H16 — a full batch with NO destination is not sendable.
+                 * `WebBatchInspectPanel.swift:224-247` is
+                 * `.disabled(items.isEmpty || selection == .unselected)`, and its picker has no
+                 * local-queue row at all: the port had Send live on a non-empty batch alone and
+                 * an empty option reading "Queue locally", so the default click dispatched the
+                 * batch into a CLI-only queue. Read BEFORE the destination is chosen below.
+                 */
+                const unaddressed = await page.eval(
+                    `(() => {
+                        const send = document.querySelector('[data-testid="web-batch-send-${paneID}"]');
+                        const picker = document.querySelector('[data-testid="web-batch-destination-${paneID}"]');
+                        return { disabled: send?.disabled ?? null,
+                                 value: picker?.value ?? null,
+                                 placeholder: (picker?.options?.[0]?.textContent ?? '').trim() };
+                    })()`
+                );
+                recorder.note(`pickup footer before a destination is picked: ${JSON.stringify(unaddressed)}`);
+                recorder.check(
+                    'Send is disabled until a destination is picked, however full the batch is',
+                    unaddressed?.disabled === true && unaddressed?.value === '',
+                    `disabled=${String(unaddressed?.disabled)} value=${JSON.stringify(unaddressed?.value)}`
+                );
+                recorder.check(
+                    'and the unselected picker asks for one instead of defaulting to the local queue',
+                    unaddressed?.placeholder === 'Select destination…',
+                    String(unaddressed?.placeholder)
                 );
 
                 // Annotate the first row, then send to the shell pane.
@@ -5554,7 +5751,7 @@ function buildFlows(ctx) {
         // ── settings ────────────────────────────────────────────────────────────────
         {
             id: 'settings-open',
-            expect: '⌘, opens a settings overlay whose tab rail carries General, Appearance, Workspaces, Keybindings, Labels, Profiles and Web, over a dimmed backdrop. (The sidebar footer’s gear is gone — the Swift footer has none, §WS-004 — so the chord, the ••• menu’s "Settings…" row and the palette are the routes.)',
+            expect: '⌘, opens a settings overlay ON THE GENERAL TAB (§H13 — `SettingsView.swift:13`), whose rail carries the shipped app’s seven in the shipped app’s order — General, Appearance, Repositories, Labels, Profiles, Keybindings, Web — with the port-only Workspaces tab appended, over a dimmed backdrop; and an unselected rail entry answers the pointer (§H11). (The sidebar footer’s gear is gone — the Swift footer has none, §WS-004 — so the chord, the ••• menu’s "Settings…" row and the palette are the routes.)',
             needsEyes: true,
             async run(recorder) {
                 await openSettingsRoot(page);
@@ -5565,6 +5762,8 @@ function buildFlows(ctx) {
                         panel: document.querySelector('${PAGE.settingsPanel}') !== null,
                         backdrop: document.querySelector('[data-testid="settings-backdrop"]') !== null,
                         tabs: Array.from(document.querySelectorAll('[data-testid^="settings-tab-button-"]')).map(el => (el.textContent ?? '').trim()),
+                        selected: (document.querySelector('[data-testid^="settings-tab-button-"][aria-selected="true"]')?.textContent ?? '').trim(),
+                        panelFor: document.querySelector('[data-testid="settings-tab-general"]') !== null,
                         close: document.querySelector('[data-testid="settings-close"]') !== null
                     }))()`
                 );
@@ -5575,6 +5774,100 @@ function buildFlows(ctx) {
                 for (const label of ['General', 'Keybindings', 'Appearance', 'Labels', 'Profiles', 'Workspaces', 'Web']) {
                     recorder.check(`the ${label} tab is present`, (shape.tabs ?? []).includes(label), (shape.tabs ?? []).join(', '));
                 }
+                /*
+                 * §H13. Two separate claims, both read off the live rail:
+                 *
+                 *   1. the window LANDS on General (`SettingsView.swift:13`), not on the 51-row
+                 *      chord table — asserted through `aria-selected` AND the rendered panel, so
+                 *      a rail that merely highlights the right entry does not pass;
+                 *   2. the ORDER of the shipped app's seven is `SettingsTab`'s
+                 *      (`SettingsView.swift:8`). The containment loop above cannot see order,
+                 *      which is exactly how the rearrangement survived a scored `[x]`.
+                 */
+                recorder.check(
+                    'it opens on General (§H13)',
+                    shape.selected === 'General' && shape.panelFor === true,
+                    `selected: ${String(shape.selected)}, general panel: ${String(shape.panelFor)}`
+                );
+                const swiftOrder = ['General', 'Appearance', 'Repositories', 'Labels', 'Profiles', 'Keybindings', 'Web'];
+                const railHead = (shape.tabs ?? []).slice(0, swiftOrder.length);
+                recorder.check(
+                    'the rail is SettingsTab’s order, the port-only tab appended (§H13)',
+                    railHead.join('|') === swiftOrder.join('|'),
+                    (shape.tabs ?? []).join(', ')
+                );
+                /*
+                 * §H11: `grep -c hover packages/client/src/settings/*.tsx` returned 0 for all 24
+                 * files. Measured as a real repaint — the fill before and after a pointer-over —
+                 * rather than as the presence of a handler.
+                 */
+                const railHover = await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="settings-tab-button-labels"]');
+                        if (el === null) return null;
+                        const before = getComputedStyle(el).backgroundColor;
+                        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                        return { before, hovered: el.getAttribute('data-hovered') };
+                    })()`
+                );
+                await sleep(200);
+                const railHoverAfter = await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="settings-tab-button-labels"]');
+                        return el === null ? null : { after: getComputedStyle(el).backgroundColor, hovered: el.getAttribute('data-hovered') };
+                    })()`
+                );
+                recorder.note(`rail hover: ${JSON.stringify(railHover)} → ${JSON.stringify(railHoverAfter)}`);
+                recorder.check(
+                    'an unselected rail entry repaints under the pointer (§H11)',
+                    railHoverAfter?.hovered === 'true' && railHover?.before !== railHoverAfter.after,
+                    `${String(railHover?.before)} → ${String(railHoverAfter?.after)}`
+                );
+                await page.eval(
+                    `document.querySelector('[data-testid="settings-tab-button-labels"]')?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }))`
+                );
+                /*
+                 * §H14. A `Toggle` in a `.formStyle(.grouped)` form is a macOS SWITCH; the port
+                 * shipped `<input type="checkbox" role="switch">` with only `accentColor` set,
+                 * so the USER AGENT drew a square tick box and `role="switch"` fixed the
+                 * accessible name and nothing else. Read as computed style — `appearance: none`
+                 * plus a track that is wider than it is tall plus a thumb parked at the checked
+                 * end — because "is it a switch?" is a question about what is painted.
+                 */
+                const toggleShape = await page.eval(
+                    `(() => {
+                        const input = document.querySelector('[data-testid="auto-detect-repos-toggle"]');
+                        const thumb = document.querySelector('[data-testid="auto-detect-repos-toggle-thumb"]');
+                        if (input === null) return null;
+                        const s = getComputedStyle(input);
+                        const box = input.getBoundingClientRect();
+                        return {
+                            appearance: s.appearance || s.webkitAppearance,
+                            width: Math.round(box.width),
+                            height: Math.round(box.height),
+                            radius: s.borderRadius,
+                            background: s.backgroundColor,
+                            checked: input.checked,
+                            thumbLeft: thumb === null ? null : getComputedStyle(thumb).left,
+                            thumbTransition: thumb === null ? null : getComputedStyle(thumb).transitionProperty
+                        };
+                    })()`
+                );
+                recorder.note(`toggle shape: ${JSON.stringify(toggleShape)}`);
+                recorder.check(
+                    'a Settings toggle is an appearance-reset SWITCH, not a UA checkbox (§H14)',
+                    toggleShape?.appearance === 'none' && (toggleShape?.width ?? 0) > (toggleShape?.height ?? 0),
+                    JSON.stringify(toggleShape)
+                );
+                recorder.check(
+                    'with a thumb that is parked at the ON end and transitions (§H14)',
+                    toggleShape?.checked === true &&
+                        toggleShape?.thumbLeft !== null &&
+                        toggleShape?.thumbLeft !== '2px' &&
+                        String(toggleShape?.thumbTransition).includes('left'),
+                    `${String(toggleShape?.thumbLeft)} / ${String(toggleShape?.thumbTransition)}`
+                );
                 recorder.check('a close affordance exists', shape.close === true);
                 /*
                  * §SET-004: the Swift Settings scene paints its BODY `surfaceBackground` and its
@@ -5641,7 +5934,9 @@ function buildFlows(ctx) {
                 recorder.eyes('overlay elevation, padding, tab affordance, whether the panel is centred and readable');
             }
         },
-        ...['general', 'appearance', 'workspaces', 'keybindings', 'labels', 'profiles', 'web'].map((tab) => ({
+        // Walked in the rail's own order (§H13), so the frames come out of the run in the order
+        // a user tabbing down the rail would see them.
+        ...['general', 'appearance', 'labels', 'profiles', 'keybindings', 'web', 'workspaces'].map((tab) => ({
             id: `settings-tab-${tab}`,
             expect: `The ${tab} tab renders its full contents with no empty regions, clipped text or unstyled controls.`,
             needsEyes: true,
@@ -7554,7 +7849,22 @@ function buildFlows(ctx) {
                     recorder.note('Browser domain unavailable; squeezing with viewport emulation');
                 }
                 const layouts = [wideLayout];
-                for (const width of [1060, 880]) {
+                /*
+                 * §H2 added the fourth width, and it is the only one that can settle the
+                 * "the PATH gives way first" clause.
+                 *
+                 * The three widths above were chosen against a footer nested INSIDE the centre
+                 * column, i.e. one that started ~500 px narrower than the window. Now that the
+                 * bar spans the window the way `ContentView.swift:609-610` puts it — a sibling
+                 * of the whole sidebar | grid | inspector row — the left cluster still has
+                 * ~395 px at 880, which is more than the middle-truncated path wants, so
+                 * NOTHING has to yield at any of them and the yield assertion reads 269.8 →
+                 * 269.8. That is the row being roomy, not the priority order being wrong.
+                 * 640 px (just above the window's own 600 px minimum, §APP-046) is the width at
+                 * which the cluster is genuinely over-subscribed, so the order is observable
+                 * again. Every existing invariant is now checked at one more width as well.
+                 */
+                for (const width of [1060, 880, 640]) {
                     const resized = await resizeWindow(page, width, 760);
                     recorder.note(
                         `squeezed to ${String(width)} px · ${resized.mechanism} · innerWidth ${String(resized.inner?.w)}`
@@ -7581,6 +7891,7 @@ function buildFlows(ctx) {
                     layouts.push(layout);
                     recorder.note(`footer layout at ${String(layout.innerWidth)} px: ${JSON.stringify(layout)}`);
                     if (width === 880) await recorder.shot(page, 'narrow');
+                    if (width === 640) await recorder.shot(page, 'narrowest');
                 }
 
                 // The block the overflow used to be painted over. It is absent only if the
@@ -8005,17 +8316,42 @@ function buildFlows(ctx) {
                 recorder.check('both rows are on screen', boxA !== null && boxB !== null, `${JSON.stringify(boxA)} ${JSON.stringify(boxB)}`);
                 if (boxA === null || boxB === null) return;
 
+                /**
+                 * RE-MEASURE BEFORE EVERY CLICK, because the FIRST ⌘-click moves the rows.
+                 *
+                 * Selecting a row mounts the `selection-header` strip at the top of the sidebar
+                 * (§WS-043), and that strip pushes every row below it DOWN by its own height.
+                 * This step used to measure both rows once and then dispatch two ⌘-clicks and a
+                 * right-click at those stale viewport points, so the second click landed where
+                 * row B *had been* — and once the strip had shifted row A down over that point,
+                 * the second ⌘-click toggled row A back OFF (`1 selected` → `0 selected` in the
+                 * shell log) and the right-click then opened the single-row menu, failing six
+                 * assertions that were each describing the product correctly.
+                 *
+                 * That was always the bug; it was surviving on about a pixel of clearance, and
+                 * §H5's removal of the invented third metadata line made the rows shorter, which
+                 * spent it. `docs/audit/README.md`'s rule applies exactly: a step that measures
+                 * and then acts across a layout-shifting gesture is a targeting bug, not a
+                 * product regression. Every assertion below is untouched — only where the
+                 * pointer goes has changed.
+                 */
+                const clickRow = async (id, options) => {
+                    const box = await rowBox(id);
+                    if (box === null) throw new Error(`row ${String(id)} left the screen`);
+                    await page.clickAt(box.cx, box.cy, options);
+                };
+
                 // ⌘-click toggles selection, the way the shipped sidebar does.
-                await page.clickAt(boxA.cx, boxA.cy, { modifiers: MOD.meta });
+                await clickRow(first.id, { modifiers: MOD.meta });
                 await sleep(200);
-                await page.clickAt(boxB.cx, boxB.cy, { modifiers: MOD.meta });
+                await clickRow(second.id, { modifiers: MOD.meta });
                 await sleep(300);
                 const header = await page.eval(
                     `(document.querySelector('[data-testid="selection-header"]')?.innerText ?? '').replace(/\\n/g, ' ')`
                 );
                 recorder.check('the selection header counts two', String(header).includes('2 selected'), String(header));
 
-                await page.clickAt(boxA.cx, boxA.cy, { button: 'right' });
+                await clickRow(first.id, { button: 'right' });
                 await sleep(400);
                 await recorder.shot(page, 'menu');
                 const items = await page.eval(
@@ -8065,8 +8401,10 @@ function buildFlows(ctx) {
                 );
                 recorder.check('both selected workspaces turned purple', colours.every((colour) => colour === 'purple'), JSON.stringify(colours));
 
-                // Label N: the tri-state row applies to every selected workspace.
-                await page.clickAt(boxA.cx, boxA.cy, { button: 'right' });
+                // Label N: the tri-state row applies to every selected workspace. Re-measured
+                // for the same reason the clicks above are: the selection strip is up, so the
+                // pre-selection boxes name the wrong rows.
+                await clickRow(first.id, { button: 'right' });
                 await sleep(400);
                 await hoverMenuItem('bulk-labels');
                 const triState = await page.eval(
@@ -8090,8 +8428,8 @@ function buildFlows(ctx) {
 
                 // Clear the selection and go back to the first workspace, so the steps that
                 // follow still find the pane they were photographing.
-                await page.clickAt(boxA.cx, boxA.cy, { modifiers: MOD.meta });
-                await page.clickAt(boxB.cx, boxB.cy, { modifiers: MOD.meta });
+                await clickRow(first.id, { modifiers: MOD.meta });
+                await clickRow(second.id, { modifiers: MOD.meta });
                 await sleep(200);
                 const home = await page.box(`[data-workspace-id="${String(first.id)}"]`);
                 if (home !== null) await page.clickAt(home.cx, home.cy);
@@ -11713,7 +12051,32 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.check('the click lands inside a terminal host', hit?.host === true, JSON.stringify(hit));
-                outer: for (const dy of [0, 22, 44, 66]) {
+                /*
+                 * The sweep is ROW-ALIGNED, off the pane's own published cell metrics
+                 * (`data-terminal-cell`), and walks a full screen of rows rather than four
+                 * arbitrary 22 px steps (run-Q).
+                 *
+                 * Why it matters here and nowhere else: at 260 px this pane is ~32 columns, so
+                 * the absolute path soft-wraps over three rows AND the echoed `for … done`
+                 * command above it wraps over four — and only the row a path STARTS on carries a
+                 * token the daemon will resolve. A 22 px step against a 15 px row drifts out of
+                 * phase after the first attempt, so which rows got probed was luck (run-P landed
+                 * on one first try; run-Q's four attempts × 5 columns hit the command echo and
+                 * two continuation rows and never touched a start row). Stepping by exactly one
+                 * cell and walking 14 of them makes "some row on this screen begins a path"
+                 * true by construction. Strictly more attempts than before, none removed.
+                 */
+                const cellMetrics = await page.eval(
+                    `(() => {
+                        const root = document.querySelector('[data-pane-id="${clickPane}"][data-terminal-cell]');
+                        const cell = (root?.getAttribute('data-terminal-cell') ?? '').split('x');
+                        return { w: Number(cell[0] ?? 0), h: Number(cell[1] ?? 0) };
+                    })()`
+                );
+                const rowHeight = cellMetrics?.h > 0 ? cellMetrics.h : 15;
+                recorder.note(`cell metrics: ${JSON.stringify(cellMetrics)} (row step ${String(rowHeight)}px)`);
+                const rowOffsets = Array.from({ length: 14 }, (_, index) => Math.round(index * rowHeight));
+                outer: for (const dy of rowOffsets) {
                     for (const dx of [20, 26, 32, 38, 44]) {
                         attempts += 1;
                         await page.clickAt(box.x + dx, clickY + dy, { modifiers: MOD.meta });
@@ -14472,7 +14835,13 @@ function buildFlows(ctx) {
                             .find(node => (node.innerText ?? '').includes('Dragged One'));
                         if (el === undefined) return null;
                         const r = el.getBoundingClientRect();
-                        return JSON.stringify({ id: el.getAttribute('data-workspace-id'), x: r.x + r.width / 2, y: r.y + r.height / 2 });
+                        // height is what §WS-084 is actually about: the slot the drag leaves
+                        // behind keeps THIS ROW's height. Measured before the grab, because
+                        // "a live row's height" read off an arbitrary sibling is only the same
+                        // number while every row happens to hold the same content — and by this
+                        // point in a full run two workspaces are wearing a label chip, which is
+                        // a whole extra line (run-Q).
+                        return JSON.stringify({ id: el.getAttribute('data-workspace-id'), x: r.x + r.width / 2, y: r.y + r.height / 2, height: Math.round(r.height * 10) / 10 });
                     })()`
                 );
                 if (row === null) {
@@ -14598,10 +14967,17 @@ function buildFlows(ctx) {
                  * THE GAP, and the invariant it exists to make true.
                  *
                  * The dragged row's in-flow element is the vacated slot: it keeps the row's box
-                 * — to the tenth of a pixel, measured against a live sibling, because §WS-093's
-                 * measure gate resolves the drop against exactly this geometry — and paints
-                 * nothing at all, so the cursor clone is the SINGLE visible representation of
-                 * the item for the whole gesture.
+                 * — to the tenth of a pixel, measured against THE ROW'S OWN pre-drag height,
+                 * because §WS-093's measure gate resolves the drop against exactly this
+                 * geometry — and paints nothing at all, so the cursor clone is the SINGLE
+                 * visible representation of the item for the whole gesture.
+                 *
+                 * The reference used to be "a live sibling", which is the same number only
+                 * while every row holds the same content. In a full run it does not: by this
+                 * point `bulk-workspace-ops` has put a label chip on two workspaces, and a chip
+                 * line is ~13 px, so the first sibling in the DOM was 46.8 px against this
+                 * label-less row's 34 px (run-Q). The row's own height before the grab is what
+                 * the claim says anyway, and it cannot be perturbed by another row's content.
                  */
                 recorder.check(
                     'the dragged row’s slot is an EMPTY GAP, keeping the row’s own height (§WS-084)',
@@ -14609,8 +14985,8 @@ function buildFlows(ctx) {
                         preview.visibility === 'hidden' &&
                         typeof preview.gapHeight === 'number' &&
                         preview.gapHeight > 0 &&
-                        Math.abs(preview.gapHeight - preview.siblingHeight) < 0.6,
-                    `${String(preview.gapHeight)}px vs a live row’s ${String(preview.siblingHeight)}px, visibility ${String(preview.visibility)}`
+                        Math.abs(preview.gapHeight - grabbed.height) < 0.6,
+                    `${String(preview.gapHeight)}px vs the row’s own ${String(grabbed.height)}px before the grab, visibility ${String(preview.visibility)}`
                 );
                 recorder.check(
                     'and there is exactly ONE picture of the item: one gap, one clone',
@@ -15121,7 +15497,13 @@ function buildFlows(ctx) {
                                 .filter(el => el.getAttribute('data-depth') === '0')
                                 .map(el => {
                                     const r = el.getBoundingClientRect();
-                                    return { id: el.getAttribute('data-workspace-id'), x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                                    // height: §WS-084's claim is that the vacated slot keeps
+                                    // THIS row's height, so the reference is the row's own
+                                    // pre-drag box rather than an arbitrary live sibling —
+                                    // which is only the same number while every row holds the
+                                    // same content, and by this point in a full run two
+                                    // workspaces wear a label chip (run-Q).
+                                    return { id: el.getAttribute('data-workspace-id'), x: r.x + r.width / 2, y: r.y + r.height / 2, height: Math.round(r.height * 10) / 10 };
                                 }))`
                         )
                     )
@@ -15287,8 +15669,8 @@ function buildFlows(ctx) {
                             ghostB.gapVisibility === 'hidden' &&
                             typeof ghostB.gapHeight === 'number' &&
                             ghostB.gapHeight > 0 &&
-                            Math.abs(ghostB.gapHeight - ghostB.siblingHeight) < 0.6,
-                        `${String(ghostB.gaps)} gap(s), ${String(ghostB.gapHeight)}px vs a live row’s ${String(ghostB.siblingHeight)}px, visibility ${String(ghostB.gapVisibility)}`
+                            Math.abs(ghostB.gapHeight - from.height) < 0.6,
+                        `${String(ghostB.gaps)} gap(s), ${String(ghostB.gapHeight)}px vs the row’s own ${String(from.height)}px before the grab, visibility ${String(ghostB.gapVisibility)}`
                     );
                     recorder.check(
                         'and nothing anywhere is playing a scripted landing (§WS-092, removed)',
@@ -17557,7 +17939,7 @@ function buildFlows(ctx) {
         {
             id: 'labels-design',
             expect:
-                'Settings \u25b8 Labels designs a preset before it exists: the add row carries a background swatch palette, an Auto/Black/White text-colour triple and a live chip preview, and the created preset comes back from the daemon with BOTH colours \u2014 then the row\u2019s own controls recolour it and an inline rename that collides snaps back.',
+                'Settings \u25b8 Labels designs a preset before it exists: the add row \u2014 FIRST on the tab, above a divider (\u00a7H25) \u2014 carries a background swatch palette, an Auto/Black/White text-colour triple and a live chip preview, and the created preset comes back from the daemon with BOTH colours; then the row\u2019s own controls recolour it, and a rename typed straight into the row\u2019s ALWAYS-LIVE name field (\u00a7H27 \u2014 there is no Rename button) that collides snaps back. Every row, the add row included, is one grid line on LabelCol\u2019s fixed widths (\u00a7H26).',
             needsEyes: true,
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
@@ -17567,6 +17949,73 @@ function buildFlows(ctx) {
                 }
                 await page.click('[data-testid="settings-tab-button-labels"]');
                 await sleep(700);
+
+                /*
+                 * §H25 / §H26 / §H27 — the SHAPE of the tab, read off the live DOM before
+                 * anything is typed into it. `LabelPresetsSettingsView.swift:4-12` says the
+                 * fixed widths exist so the wells, the "Aa" sample, the chip and the trash line
+                 * up across the add row and every preset row; that is a geometric claim, so it
+                 * is measured as geometry (`getBoundingClientRect().left` of each row's first
+                 * three cells) rather than as a class name.
+                 */
+                const readShape = () => page.eval(
+                    `(() => {
+                        const section = document.querySelector('[data-testid="label-presets"]');
+                        if (section === null) return null;
+                        const ids = Array.from(section.querySelectorAll('[data-testid]'))
+                            .map((el) => el.getAttribute('data-testid') ?? '')
+                            .filter((id) => id === 'label-add-row' || id === 'label-add-divider' || id.startsWith('label-preset-'));
+                        const add = document.querySelector('[data-testid="label-add-row"]');
+                        const cols = (el) => el === null ? null : getComputedStyle(el).gridTemplateColumns;
+                        const lefts = (el) => el === null ? null : Array.from(el.children).slice(0, 4).map((c) => Math.round(c.getBoundingClientRect().left));
+                        const firstPreset = document.querySelector('[data-testid^="label-preset-"]');
+                        return {
+                            order: ids.slice(0, 3),
+                            addCols: cols(add),
+                            rowCols: cols(firstPreset),
+                            addLefts: lefts(add),
+                            rowLefts: lefts(firstPreset),
+                            renameButtons: document.querySelectorAll('[data-testid^="label-rename-"]:not([data-testid*="-field-"]):not([data-testid*="-error-"])').length,
+                            liveFields: document.querySelectorAll('[data-testid^="label-rename-field-"]').length,
+                            presetRows: document.querySelectorAll('[data-testid^="label-preset-"]').length
+                        };
+                    })()`
+                );
+                const shape = await readShape();
+                recorder.note(`labels tab shape: ${JSON.stringify(shape)}`);
+                recorder.check(
+                    'the add row is FIRST on the tab, above a divider (§H25)',
+                    (shape?.order ?? [])[0] === 'label-add-row' && (shape?.order ?? [])[1] === 'label-add-divider',
+                    JSON.stringify(shape?.order)
+                );
+                /*
+                 * §H26 / §H27 need ROWS, and under `--only` the tab starts empty — so the
+                 * geometry is measured a second time at the end of the step, once this step's
+                 * own two presets exist. `checkRowGeometry` is called there.
+                 */
+                const checkRowGeometry = async (label) => {
+                    const rows = await readShape();
+                    recorder.note(`labels row geometry (${label}): ${JSON.stringify(rows)}`);
+                    if ((rows?.presetRows ?? 0) === 0) {
+                        recorder.check(`there are preset rows to measure (${label})`, false, 'none');
+                        return;
+                    }
+                    recorder.check(
+                        'the add row and the preset rows share ONE column template (§H26)',
+                        rows?.addCols !== null && rows?.addCols === rows?.rowCols,
+                        `${String(rows?.addCols)} vs ${String(rows?.rowCols)}`
+                    );
+                    recorder.check(
+                        'and their first four cells start at the same x — the alignment the widths exist for (§H26)',
+                        JSON.stringify(rows?.addLefts) === JSON.stringify(rows?.rowLefts),
+                        `${JSON.stringify(rows?.addLefts)} vs ${JSON.stringify(rows?.rowLefts)}`
+                    );
+                    recorder.check(
+                        'every preset row carries a LIVE name field and no Rename button (§H27)',
+                        rows?.renameButtons === 0 && rows?.liveFields === rows?.presetRows,
+                        `${String(rows?.renameButtons)} buttons, ${String(rows?.liveFields)} fields for ${String(rows?.presetRows)} rows`
+                    );
+                };
 
                 // SET-058: the add row is always visible, and the preview is a real chip.
                 const placeholder = await page.eval(
@@ -17674,9 +18123,13 @@ function buildFlows(ctx) {
                     timeoutMs: 15_000,
                     label: 'the second preset'
                 });
-                await page.click('[data-testid="label-rename-audit-design"]');
-                await sleep(300);
+                await sleep(400);
+                // Two real rows now exist, so §H26's geometry and §H27's live fields can be read.
+                await checkRowGeometry('two presets');
+                // §H27: no "Rename" button to arm — the row's name field is always live, so the
+                // rename starts by clicking straight into it.
                 await page.click('[data-testid="label-rename-field-audit-design"]');
+                await sleep(300);
                 await page.eval(
                     `(() => { const el = document.querySelector('[data-testid="label-rename-field-audit-design"]');
                               const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
@@ -17690,6 +18143,7 @@ function buildFlows(ctx) {
                 const collision = await page.eval(
                     `(() => ({ error: document.querySelector('[data-testid="label-rename-error-audit-design"]')?.innerText ?? '',
                                stillThere: document.querySelector('[data-testid="label-preset-audit-design"]') !== null,
+                               field: document.querySelector('[data-testid="label-rename-field-audit-design"]')?.value ?? '',
                                chip: document.querySelector('[data-testid="label-chip-audit-design"]')?.innerText ?? '' }))()`
                 );
                 recorder.note(`rename collision: ${JSON.stringify(collision)}`);
@@ -17703,7 +18157,15 @@ function buildFlows(ctx) {
                     collision?.stillThere === true && collision?.chip === 'audit-design',
                     JSON.stringify(collision)
                 );
-                recorder.eyes('the Labels tab as a DESIGN surface: swatch row, Auto/Black/White triple, the Aa sample, and whether the preview chip reads like the chip a workspace will wear');
+                // §H27: the live FIELD is what the user is looking at, and it is the thing that
+                // has to snap back — a chip that reverts while the field keeps rejected text is
+                // the failure this replaces.
+                recorder.check(
+                    'the live name field itself holds the stored name again (§H27)',
+                    collision?.field === 'audit-design',
+                    String(collision?.field)
+                );
+                recorder.eyes('the Labels tab as a TABLE and a design surface: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND with the add row above the divider (§H26) — swatch row, Auto/Black/White triple, and whether the preview chip reads like the chip a workspace will wear');
             }
         },
         {

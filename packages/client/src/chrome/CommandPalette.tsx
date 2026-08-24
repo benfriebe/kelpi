@@ -33,6 +33,20 @@ import { tokens } from './tokens';
 /** §10.4: "wait 200 ms, then imperatively focus the target pane's surface". */
 export const FOCUS_HANDOFF_MS = 200;
 
+/**
+ * UI-FIDELITY H19 — how long the palette takes to arrive and to leave.
+ *
+ * `ContentView.swift:283, 286`: `.transition(.move(edge: .top).combined(with: .opacity))` under
+ * `.animation(.easeOut(duration: 0.15), value: store.isCommandPaletteVisible)`. It slides down
+ * from the top edge while fading, over 150 ms, and leaves the same way — the port hard-mounted
+ * and hard-unmounted, so the app's most-used overlay POPPED instead of arriving.
+ *
+ * The enter half is a CSS keyframe (`nex-palette-enter` in `styles.css`). The exit half needs
+ * this constant too, because an unmounted component cannot animate: the panel is held on screen
+ * for exactly this long after `open` goes false, playing `nex-palette-exit`, and then dropped.
+ */
+export const PALETTE_TRANSITION_MS = 150;
+
 export interface CommandPaletteProps {
     readonly open: boolean;
     readonly query: string;
@@ -102,7 +116,46 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
         });
     }, [index, props.open]);
 
-    if (!props.open) return null;
+    /*
+     * §H19's exit. `open` going false starts a 150 ms window in which the overlay is still
+     * mounted and playing `nex-palette-exit`; when it closes, the component unmounts as before.
+     * Tracked off the OPEN EDGE rather than from a `useEffect` on every render so a re-render
+     * while closed cannot restart it, and re-opening inside the window cancels it outright
+     * (which is also what makes ⌘P-⌘P-⌘P behave).
+     */
+    const [exiting, setExiting] = useState(false);
+    const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const wasOpen = useRef(props.open);
+    useEffect(() => {
+        if (props.open === wasOpen.current) return;
+        wasOpen.current = props.open;
+        if (exitTimer.current !== null) {
+            clearTimeout(exitTimer.current);
+            exitTimer.current = null;
+        }
+        if (props.open) {
+            setExiting(false);
+            return;
+        }
+        // The field keeps DOM focus while the panel plays out, which would put a keystroke typed
+        // straight after Escape into a palette that is already leaving. The handoff (§10.4) is
+        // what decides where focus lands; this only makes sure it is not still here.
+        inputRef.current?.blur();
+        setExiting(true);
+        exitTimer.current = setTimeout(() => {
+            exitTimer.current = null;
+            setExiting(false);
+        }, PALETTE_TRANSITION_MS);
+    }, [props.open]);
+    useEffect(
+        () => () => {
+            if (exitTimer.current !== null) clearTimeout(exitTimer.current);
+        },
+        []
+    );
+
+    if (!props.open && !exiting) return null;
+    const phase = props.open ? 'entering' : 'exiting';
 
     const confirm = (item: PaletteItem | undefined): void => {
         if (item === undefined) {
@@ -127,8 +180,14 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
     return (
         <div
             data-testid="palette-backdrop"
-            className="absolute inset-0 z-40 flex justify-center"
-            style={{ background: 'rgba(0,0,0,0.08)' }}
+            data-palette-phase={phase}
+            className="nex-palette-scrim absolute inset-0 z-40 flex justify-center"
+            style={{
+                background: 'rgba(0,0,0,0.08)',
+                // On the way out it is a picture, not a control: a click during the 150 ms goes
+                // to whatever is behind, exactly as it would have with the old hard unmount.
+                ...(phase === 'exiting' ? { pointerEvents: 'none' as const } : {})
+            }}
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) dismiss();
             }}
@@ -137,7 +196,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                 data-testid="command-palette"
                 role="dialog"
                 aria-label="Command palette"
-                className="mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
+                className="nex-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
                 style={{
                     background: tokens.surfaceBackground,
                     border: `1px solid ${tokens.divider}`,

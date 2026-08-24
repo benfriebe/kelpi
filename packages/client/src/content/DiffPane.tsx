@@ -39,6 +39,8 @@ export interface DiffPaneProps {
     readonly findToken?: number | undefined;
     /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
     readonly findPalette?: Partial<FindPalette> | undefined;
+    /** H9: the chords the app claims, relayed back out of the sandboxed frame. */
+    readonly claimedChords?: readonly string[] | undefined;
 }
 
 export function DiffPane(props: DiffPaneProps): ReactElement {
@@ -77,6 +79,7 @@ export function DiffPane(props: DiffPaneProps): ReactElement {
             openLink={props.openLink}
             findToken={props.findToken}
             findPalette={props.findPalette}
+            claimedChords={props.claimedChords}
         />
     );
 }

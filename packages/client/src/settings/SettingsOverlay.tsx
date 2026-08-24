@@ -31,7 +31,7 @@ import { KeybindingsTab } from './KeybindingsTab';
 import { LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
 import { RepositoriesTab, type RepositoryEntry } from './RepositoriesTab';
-import { SETTINGS_TABS, type SettingsTabID } from './catalog';
+import { DEFAULT_SETTINGS_TAB, SETTINGS_TABS, type SettingsTabID } from './catalog';
 import { WebTab, type WebTabActions } from './WebTab';
 import { WorkspacesTab } from './WorkspacesTab';
 import {
@@ -40,6 +40,7 @@ import {
     type SettingsDomainState,
     type SettingsPaths
 } from './types';
+import { SettingsButton, hoverBackground, useHover } from './ui';
 
 export interface SettingsOverlayProps {
     readonly open: boolean;
@@ -90,7 +91,9 @@ const FOCUSABLE =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
 export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | null {
-    const initial = props.initialTab ?? 'keybindings';
+    // H13: `SettingsView.swift:13` opens on `.general`. Nothing here picks a "most useful" tab
+    // of its own — the shipped app's landing tab is the landing tab.
+    const initial = props.initialTab ?? DEFAULT_SETTINGS_TAB;
     const [tab, setTab] = useState<SettingsTabID>(initial);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const tabRefs = useRef(new Map<SettingsTabID, HTMLButtonElement>());
@@ -202,15 +205,11 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
                         {SETTINGS_TABS.find((entry) => entry.id === tab)?.label ?? ''}
                     </span>
-                    <button
-                        type="button"
-                        data-testid="settings-close"
-                        className="ml-auto rounded border px-2 py-1 text-[11px]"
-                        style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                        onClick={props.onClose}
-                    >
-                        Close
-                    </button>
+                    <span className="ml-auto">
+                        <SettingsButton testID="settings-close" onClick={props.onClose}>
+                            Close
+                        </SettingsButton>
+                    </span>
                 </div>
 
                 <div className="flex min-h-0 flex-1">
@@ -243,35 +242,21 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                         }
                     }}
                 >
-                    {SETTINGS_TABS.map((entry) => {
-                        const selected = entry.id === tab;
-                        return (
-                            <button
-                                key={entry.id}
-                                ref={(node) => {
-                                    if (node === null) tabRefs.current.delete(entry.id);
-                                    else tabRefs.current.set(entry.id, node);
-                                }}
-                                type="button"
-                                role="tab"
-                                id={`settings-tab-${entry.id}`}
-                                aria-selected={selected}
-                                aria-controls={`settings-panel-${entry.id}`}
-                                tabIndex={selected ? 0 : -1}
-                                data-testid={`settings-tab-button-${entry.id}`}
-                                className="rounded px-2 py-1.5 text-left text-[12px]"
-                                style={{
-                                    background: selected ? withAlpha(tokens.accent, 0.18) : 'transparent',
-                                    color: selected ? tokens.textPrimary : tokens.textSecondary
-                                }}
-                                onClick={() => {
-                                    setTab(entry.id);
-                                }}
-                            >
-                                {entry.label}
-                            </button>
-                        );
-                    })}
+                    {SETTINGS_TABS.map((entry) => (
+                        <RailTab
+                            key={entry.id}
+                            id={entry.id}
+                            label={entry.label}
+                            selected={entry.id === tab}
+                            registerRef={(node) => {
+                                if (node === null) tabRefs.current.delete(entry.id);
+                                else tabRefs.current.set(entry.id, node);
+                            }}
+                            onSelect={() => {
+                                setTab(entry.id);
+                            }}
+                        />
+                    ))}
                 </div>
 
                 <div
@@ -343,6 +328,49 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                 </div>
             </div>
         </div>
+    );
+}
+
+interface RailTabProps {
+    readonly id: SettingsTabID;
+    readonly label: string;
+    readonly selected: boolean;
+    readonly registerRef: (node: HTMLButtonElement | null) => void;
+    readonly onSelect: () => void;
+}
+
+/**
+ * One entry in the tab rail.
+ *
+ * Its own component purely so it can hold hover state (H11): a `TabView`'s tab items respond
+ * to the pointer in AppKit, and the port's rail was inert — the only thing that ever changed
+ * colour was the tab you had already selected. The selected fill wins over the hover fill, so
+ * the rail never shows two lit rows at once.
+ */
+function RailTab(props: RailTabProps): ReactElement {
+    const { hovered, hoverProps } = useHover(!props.selected);
+    return (
+        <button
+            ref={props.registerRef}
+            type="button"
+            role="tab"
+            id={`settings-tab-${props.id}`}
+            aria-selected={props.selected}
+            aria-controls={`settings-panel-${props.id}`}
+            tabIndex={props.selected ? 0 : -1}
+            data-testid={`settings-tab-button-${props.id}`}
+            className="rounded px-2 py-1.5 text-left text-[12px] transition-colors duration-100"
+            style={{
+                background: props.selected
+                    ? withAlpha(tokens.accent, 0.18)
+                    : hoverBackground(hovered, 'transparent'),
+                color: props.selected || hovered ? tokens.textPrimary : tokens.textSecondary
+            }}
+            {...hoverProps}
+            onClick={props.onSelect}
+        >
+            {props.label}
+        </button>
     );
 }
 

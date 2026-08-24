@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     ACTION_CATALOG,
+    DEFAULT_SETTINGS_TAB,
     SETTINGS_TABS,
     VISIBLE_CATEGORIES,
     actionLabel,
@@ -67,18 +68,36 @@ describe('the action catalog', () => {
 });
 
 describe('the tab list', () => {
-    it('names the tabs this port ships, keybindings first', () => {
+    /*
+     * H13. `SettingsTab` (`SettingsView.swift:8`) and the `TabView` body (`:18-59`) fix this
+     * order, and the port had rearranged it — Repositories and Keybindings above Appearance.
+     * The assertion is deliberately the WHOLE array rather than a containment check: order is
+     * the claim, and a containment check is what let the rearrangement stand.
+     */
+    it('is the shipped app’s tab order, with the port-only tab appended', () => {
         expect(SETTINGS_TABS.map((tab) => tab.id)).toEqual([
             'general',
-            'repositories',
-            'keybindings',
             'appearance',
+            'repositories',
             'labels',
             'profiles',
-            'workspaces',
+            'keybindings',
             // Joined once favourites grew a daemon home; the URL-bar star deep-links here.
-            'web'
+            'web',
+            // Port-only: appended so it cannot displace any of the Swift seven.
+            'workspaces'
         ]);
+    });
+
+    it('is exactly SettingsTab’s seven, in SettingsTab’s order, before the port’s own', () => {
+        const swift = ['general', 'appearance', 'repositories', 'labels', 'profiles', 'keybindings', 'web'];
+        expect(SETTINGS_TABS.slice(0, swift.length).map((tab) => tab.id)).toEqual(swift);
+    });
+
+    // The window opens on General (`SettingsView.swift:13`), not on the 51-row chord table.
+    it('opens on General', () => {
+        expect(DEFAULT_SETTINGS_TAB).toBe('general');
+        expect(SETTINGS_TABS[0]?.id).toBe(DEFAULT_SETTINGS_TAB);
     });
 
     it('guards a deep-link id', () => {

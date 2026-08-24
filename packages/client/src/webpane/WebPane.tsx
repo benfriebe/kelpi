@@ -367,7 +367,15 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         setFindOpen(true);
     }, [findToken]);
 
-    // ⌘L, and the bindable `web_focus_url_bar`: select the whole address, as a browser does.
+    /**
+     * ⌘L, and the bindable `web_focus_url_bar`: select the whole address, as a browser does.
+     *
+     * **Select-all belongs to the TOKEN, never to focus itself** (`WebPaneChrome.swift:469-503`):
+     * the Swift runs `makeFirstResponder` + `selectAll` only inside `if coord.lastSeenToken !=
+     * focusRequestToken`, so a ⌘L (or a blank tab's automatic focus) takes the whole address
+     * while a plain click just places the caret where it landed. Selecting on every focus meant
+     * clicking mid-URL to fix one character wiped the field.
+     */
     const focusURLToken = props.focusURLToken ?? 0;
     const lastFocusToken = useRef(focusURLToken);
     useEffect(() => {
@@ -375,6 +383,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         lastFocusToken.current = focusURLToken;
         const input = urlRef.current;
         if (input === null) return;
+        // `focus()` fires `onFocus` (which only marks the field as editing); the selection is
+        // applied here, after it, so the token is the one thing that can cause it.
         input.focus();
         input.select();
     }, [focusURLToken]);
@@ -661,10 +671,10 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                                 style={{ color: tokens.textPrimary }}
                                 value={draft}
                                 onChange={(event) => setDraft(event.target.value)}
-                                onFocus={(event) => {
-                                    setEditing(true);
-                                    event.target.select();
-                                }}
+                                // No `select()` here: a pointer-initiated focus leaves the caret
+                                // where the click landed (H17 / `WebPaneChrome.swift:469-503`).
+                                // The ⌘L / blank-tab token selects, in the effect above.
+                                onFocus={() => setEditing(true)}
                                 onBlur={onBlur}
                             />
                             <FavouritesMenu

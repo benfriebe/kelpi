@@ -35,6 +35,7 @@ import { createPortal } from 'react-dom';
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
 import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftControls';
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
+import { useModalPresence } from './modal-presence';
 import { RepoPicker, type RepoPickerEntry } from './RepoPicker';
 import { resolveLabelStyle, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -887,27 +888,57 @@ function PaneRow(props: {
 
 // ── sheets ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * The inspector's sheet shell — the three repo sheets' backdrop, and their modal contract
+ * (UI-FIDELITY H12).
+ *
+ * `RepoPickerView.swift:100-102` presents these through SwiftUI's `.sheet()`: system-dimmed,
+ * app-modal, click-through blocked. The port drew the panel and nothing else — no `inset-0`
+ * wrapper, no outside-click cancel — so the window behind stayed fully lit and fully
+ * interactive, and the two sheets that DO get it right (`SettingsOverlay`'s 0.62 scrim,
+ * `NewWorkspaceSheet`'s 0.45) made the inconsistency an internal one. This is
+ * `NewWorkspaceSheet`'s contract, in the one place all three sheets share:
+ *
+ *   · a 0.45 scrim over the whole window, so the panes behind read as unreachable;
+ *   · `onMouseDown` on the scrim ITSELF (`target === currentTarget`) cancels — a drag that
+ *     starts inside the panel and ends on the backdrop must not dismiss;
+ *   · `aria-modal`, which the bare panel never claimed;
+ *   · and `useModalPresence`, so a live web pane's native view is parked while it is up (H1).
+ */
 function Sheet(props: {
     readonly testID: string;
     readonly label: string;
+    readonly onDismiss: () => void;
     readonly children: ReactNode;
 }): ReactElement | null {
+    useModalPresence();
     const container = globalThis.document?.body;
     if (container === undefined || container === null) return null;
     return createPortal(
         <div
-            data-testid={props.testID}
-            role="dialog"
-            aria-label={props.label}
-            className="fixed left-1/2 top-1/4 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
-            style={{
-                background: tokens.surfaceBackground,
-                border: `1px solid ${tokens.divider}`,
-                color: tokens.textPrimary,
-                boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+            data-testid={`${props.testID}-backdrop`}
+            className="fixed inset-0 z-50"
+            style={{ background: 'rgba(0,0,0,0.45)' }}
+            onMouseDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                props.onDismiss();
             }}
         >
-            {props.children}
+            <div
+                data-testid={props.testID}
+                role="dialog"
+                aria-modal="true"
+                aria-label={props.label}
+                className="fixed left-1/2 top-1/4 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+                style={{
+                    background: tokens.surfaceBackground,
+                    border: `1px solid ${tokens.divider}`,
+                    color: tokens.textPrimary,
+                    boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+                }}
+            >
+                {props.children}
+            </div>
         </div>,
         container
     );
@@ -954,7 +985,7 @@ function AddRepositorySheet(props: {
         if (failure !== null) setError(failure);
     };
     return (
-        <Sheet testID="add-repo-sheet" label="Add repository">
+        <Sheet testID="add-repo-sheet" label="Add repository" onDismiss={props.onCancel}>
             <div className="mb-3 text-[13px] font-semibold">Add Repository</div>
             <div className="mb-1 text-[11px]" style={{ color: tokens.textSecondary }}>
                 Path to a repository or worktree
@@ -1046,7 +1077,7 @@ function RepoPickerSheet(props: {
     readonly onCancel: () => void;
 }): ReactElement | null {
     return (
-        <Sheet testID="repo-picker-sheet" label="Choose repository">
+        <Sheet testID="repo-picker-sheet" label="Choose repository" onDismiss={props.onCancel}>
             <div className="mb-3 text-[13px] font-semibold">Choose a Repository</div>
             <RepoPicker
                 repos={props.repos}
@@ -1099,7 +1130,7 @@ export function CreateWorktreeSheet(props: {
     };
 
     return (
-        <Sheet testID="worktree-sheet" label="New worktree">
+        <Sheet testID="worktree-sheet" label="New worktree" onDismiss={props.onCancel}>
             <div className="mb-2 text-[13px] font-semibold">New Worktree</div>
             <div className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: tokens.textSecondary }}>
                 <span className="truncate">

@@ -199,8 +199,12 @@ describe('PaneHeader rendering', () => {
         expect(screen.getByTestId('pane-refresh-a')).toBeTruthy();
         cleanup();
 
-        renderHeader(testPane('a', { agentSessionID: 's' }));
-        expect(screen.getByTestId('pane-restart-a')).toBeTruthy();
+        // §H3: a shell pane earns NO per-type button, not even with a live agent attached.
+        // `PaneHeaderView.swift:177-272` has no `.shell` branch and the shipped app has no
+        // restart control at all; a one-click restart of a running agent next to Close is a
+        // mis-click waiting to happen.
+        renderHeader(testPane('a', { agentSessionID: 's', status: 'running' }));
+        expect(screen.queryByTestId('pane-restart-a')).toBeNull();
     });
 
     /**
@@ -253,6 +257,50 @@ describe('PaneHeader rendering', () => {
 
         fireEvent.doubleClick(screen.getByTestId('pane-header-a'));
         expect(spies.onToggleZoom).toHaveBeenCalledExactlyOnceWith('a');
+    });
+
+    /**
+     * §H8 — the Swift hangs `.onTapGesture(count: 2) { onToggleZoom }` off the header HStack and
+     * fills that HStack with SwiftUI `Button`s, each of which consumes its own taps: a
+     * double-click on Split Right there is two splits and nothing else. `dblclick` is a separate
+     * native event from `click`, so stopping `click` alone left it bubbling to the header — two
+     * splits AND a zoom toggle, or on Close, a close plus a zoom of whatever was left.
+     */
+    it('never toggles zoom from a double-click on a header control', () => {
+        const onToggleZoom = vi.fn();
+        const onSplitPane = vi.fn();
+        renderHeader(testPane('a', { label: 'worker' }), {
+            onToggleZoom,
+            onSplitPane,
+            zoomed: true,
+            zoomAvailable: true
+        });
+
+        // A real double-click is click, click, dblclick — so the button's own action fires
+        // twice (that part is the user's own fault) and the dblclick must go nowhere.
+        const splitRight = screen.getByTestId('pane-split-right-a');
+        fireEvent.click(splitRight);
+        fireEvent.click(splitRight);
+        fireEvent.doubleClick(splitRight);
+        expect(onSplitPane).toHaveBeenCalledTimes(2);
+        expect(onToggleZoom).not.toHaveBeenCalled();
+
+        fireEvent.doubleClick(screen.getByTestId('pane-close-a'));
+        expect(onToggleZoom).not.toHaveBeenCalled();
+
+        // The ZOOM badge is a button too (Swift: `Button` at `PaneHeaderView.swift:101`), so a
+        // double-click on it is two badge presses, never two presses plus the header gesture.
+        const zoomBadge = screen.getByTestId('pane-zoom-badge-a');
+        fireEvent.click(zoomBadge);
+        fireEvent.click(zoomBadge);
+        fireEvent.doubleClick(zoomBadge);
+        expect(onToggleZoom).toHaveBeenCalledTimes(2);
+        expect(onToggleZoom.mock.calls.every((call) => call[0] === 'a')).toBe(true);
+
+        // …and the header still zooms when the double-click lands on the header itself.
+        onToggleZoom.mockClear();
+        fireEvent.doubleClick(screen.getByTestId('pane-header-a'));
+        expect(onToggleZoom).toHaveBeenCalledExactlyOnceWith('a');
     });
 
     it('renames inline: Enter commits the trimmed draft, Escape abandons it', () => {

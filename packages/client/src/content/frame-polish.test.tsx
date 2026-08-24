@@ -11,7 +11,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTENT_BRIDGE_SOURCE, CONTENT_HOST_SOURCE } from './bridge';
-import { ContentFrame, findCountLabel } from './ContentFrame';
+import { ContentFrame } from './ContentFrame';
 
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
 const DOCUMENT = '<!DOCTYPE html>\n<html>\n<body>\n<h1>Doc</h1>\n</body>\n</html>\n';
@@ -52,12 +52,80 @@ afterEach(() => {
     cleanup();
 });
 
-describe('findCountLabel', () => {
-    it('never shows a stale selection against zero matches (§3.13)', () => {
-        expect(findCountLabel(0, -1)).toBe('0/0');
-        expect(findCountLabel(0, 2)).toBe('0/0');
-        expect(findCountLabel(12, 2)).toBe('3/12');
-        expect(findCountLabel(12, -1)).toBe('0/12');
+/**
+ * §H29 — a content pane's find bar IS the terminal's (`grid/PaneSearchOverlay`), because
+ * `PaneGridView.swift:356-370` draws one bar over every pane type with no type test. These
+ * assertions are about the RECIPE rather than the plumbing: the same monospace field, the same
+ * dimmed-and-inert chevrons, the same counter rule. If a second bar is ever hand-rolled here,
+ * these are what fail.
+ */
+describe('the shared find-bar recipe', () => {
+    it('is the terminal bar: monospace 160 px field, inert chevrons, no counter until typed', async () => {
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} />);
+        fromFrame({ kind: 'find-open' });
+        const bar = await screen.findByTestId(`content-find-${PANE}`);
+
+        // `role="search"` with the pane's own name — the terminal bar's landmark, relabelled.
+        expect(bar.getAttribute('role')).toBe('search');
+        expect(bar.getAttribute('aria-label')).toBe('Find in markdown preview');
+
+        const input = screen.getByTestId(`content-find-input-${PANE}`);
+        expect(input.className).toContain('font-mono');
+        expect(input.className).toContain('w-[160px]');
+        expect(input.getAttribute('placeholder')).toBe('Search');
+
+        // Swift dims and disables the pair while the needle is empty (`.disabled(isEmpty)`).
+        const next = screen.getByTestId(`content-find-next-${PANE}`) as HTMLButtonElement;
+        const prev = screen.getByTestId(`content-find-prev-${PANE}`) as HTMLButtonElement;
+        expect(next.disabled).toBe(true);
+        expect(prev.disabled).toBe(true);
+
+        // …and there is NO counter at all before there is a needle (never a standing `0/0`).
+        expect(screen.queryByTestId(`content-find-count-${PANE}`)).toBeNull();
+
+        fireEvent.change(input, { target: { value: 'doc' } });
+        expect((screen.getByTestId(`content-find-next-${PANE}`) as HTMLButtonElement).disabled).toBe(false);
+        // Before the frame reports anything the counter reads `-/total`, as the Swift's does.
+        expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('-/0');
+    });
+
+    /** §H7: up is NEXT and down is PREVIOUS on every find surface, the Swift's wiring. */
+    it('steps up for the next match and down for the previous', async () => {
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} />);
+        const posted = captureToFrame();
+        fromFrame({ kind: 'find-open' });
+        await screen.findByTestId(`content-find-${PANE}`);
+        fireEvent.change(screen.getByTestId(`content-find-input-${PANE}`), { target: { value: 'doc' } });
+
+        const up = screen.getByTestId(`content-find-next-${PANE}`);
+        const down = screen.getByTestId(`content-find-prev-${PANE}`);
+        expect(up.getAttribute('aria-label')).toBe('Next match (Return)');
+        expect(down.getAttribute('aria-label')).toBe('Previous match (⇧Return)');
+
+        posted.length = 0;
+        fireEvent.click(up);
+        fireEvent.click(down);
+        expect(posted.filter((message) => message['kind'] === 'find').map((message) => message['op'])).toEqual([
+            'next',
+            'prev'
+        ]);
+    });
+
+    it('never shows a stale selection against zero matches (§3.13)', async () => {
+        render(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} />);
+        fromFrame({ kind: 'find-open' });
+        await screen.findByTestId(`content-find-${PANE}`);
+        fireEvent.change(screen.getByTestId(`content-find-input-${PANE}`), { target: { value: 'doc' } });
+
+        // A total of 0 drops the selection rather than rendering `3/0`.
+        fromFrame({ kind: 'find-result', total: 0, current: 2 });
+        expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('-/0');
+
+        fromFrame({ kind: 'find-result', total: 12, current: -1 });
+        expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('-/12');
+
+        fromFrame({ kind: 'find-result', total: 12, current: 2 });
+        expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('3/12');
     });
 });
 
@@ -91,6 +159,7 @@ describe('find bar', () => {
         fromFrame({ kind: 'find-open' });
         await screen.findByTestId(`content-find-${PANE}`);
 
+        fireEvent.change(screen.getByTestId(`content-find-input-${PANE}`), { target: { value: 'doc' } });
         fromFrame({ kind: 'find-result', total: 12, current: 2 });
         expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('3/12');
 

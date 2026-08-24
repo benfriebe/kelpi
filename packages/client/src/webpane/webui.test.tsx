@@ -17,7 +17,7 @@ import { StoragePanel, canonicalDomain, defaultExpiryInput, groupCookies, privat
 import { WebFindBar, findCountLabel } from './WebFindBar';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
-import type { WebBatchSession, WebFavourite } from './state';
+import { BATCH_LOCAL_DESTINATION, type WebBatchSession, type WebFavourite } from './state';
 
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
 const TAB1 = 'EEEEEEEE-0000-4000-8000-000000000001';
@@ -122,6 +122,39 @@ describe('the find bar', () => {
         expect(fake.sent[0]?.args[2]).toBe('search');
     });
 
+    /**
+     * §H7 — the shipped app draws ONE find bar for terminal, markdown and web panes, and it
+     * wires `chevron.up` to next and `chevron.down` to previous (`PaneSearchOverlay.swift:48-66`).
+     * The web bar spells its chevrons `↑ ↓`, so the glyph is what has to agree.
+     */
+    it('puts NEXT under ↑ and PREVIOUS under ↓, in that order', () => {
+        const fake = fakeCommands();
+        render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
+
+        const up = screen.getByTestId(`web-find-next-${PANE}`);
+        const down = screen.getByTestId(`web-find-prev-${PANE}`);
+        expect(up.textContent).toBe('↑');
+        expect(down.textContent).toBe('↓');
+        expect(up.getAttribute('aria-label')).toBe('Next match');
+        expect(down.getAttribute('aria-label')).toBe('Previous match');
+        // …and ↑ is the one that comes first in the row.
+        const order = [...screen.getByTestId(`web-find-${PANE}`).querySelectorAll('button')].map((button) =>
+            button.getAttribute('data-testid')
+        );
+        expect(order).toEqual([
+            `web-find-next-${PANE}`,
+            `web-find-prev-${PANE}`,
+            `web-find-close-${PANE}`
+        ]);
+
+        fireEvent.click(up);
+        fireEvent.click(down);
+        expect(fake.sent.filter((call) => call.verb === 'find').map((call) => call.args[2])).toEqual([
+            'next',
+            'prev'
+        ]);
+    });
+
     it('clears the page and closes on Escape and on the ✕ (WEB-065)', () => {
         const fake = fakeCommands();
         let closed = 0;
@@ -166,7 +199,7 @@ describe('the find bar', () => {
 // ── ⌘L (SET-188) ────────────────────────────────────────────────────────────────────
 
 describe('⌘L', () => {
-    it('moves the caret into the URL bar and selects it', () => {
+    it('moves the caret into the URL bar and selects the WHOLE address', () => {
         const fake = fakeCommands();
         const { rerender } = render(
             <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} focusURLToken={0} />
@@ -176,7 +209,42 @@ describe('⌘L', () => {
         );
         const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
         expect(document.activeElement).toBe(input);
+        expect(input.value).toBe('https://example.com/');
+        // The token's whole point: the address is selected, so typing replaces it.
         expect(input.selectionStart).toBe(0);
+        expect(input.selectionEnd).toBe(input.value.length);
+    });
+
+    /**
+     * H17 — select-all belongs to the TOKEN, never to focus itself
+     * (`WebPaneChrome.swift:469-503` runs `selectAll` only inside the token guard). Clicking
+     * mid-URL to fix one character used to wipe the whole field.
+     */
+    it('leaves the caret where a plain click put it — no select-all on focus', () => {
+        const fake = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} />);
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        input.focus();
+        // A pointer focus lands the caret at the click offset; jsdom does not run hit testing,
+        // so the caret is placed the way the browser would have, AFTER the focus handler ran.
+        input.setSelectionRange(8, 8);
+        fireEvent.focus(input);
+        expect(input.selectionStart).toBe(8);
+        expect(input.selectionEnd).toBe(8);
+    });
+
+    it('still selects on a LATER token bump, even once the field is focused', () => {
+        const fake = fakeCommands();
+        const { rerender } = render(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} focusURLToken={1} />
+        );
+        const input = screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement;
+        input.setSelectionRange(4, 4);
+        rerender(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={fake.commands} focusURLToken={2} />
+        );
+        expect(input.selectionStart).toBe(0);
+        expect(input.selectionEnd).toBe(input.value.length);
     });
 });
 
@@ -355,6 +423,59 @@ describe('the batch panel', () => {
         expect(fake.sent.at(-1)).toEqual({ verb: 'batchCancel', args: [PANE] });
     });
 
+    /**
+     * H28 — the comment field is a full-width line of its own, under the tag+selector line
+     * (`WebBatchInspectPanel.swift:153-222`: `VStack { HStack { tag; selector }; TextField }`).
+     */
+    it('stacks each row: tag + selector on one line, the comment full-width under it (H28)', () => {
+        const fake = fakeCommands();
+        render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({
+                    items: [{ id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' }]
+                })}
+                activeTabID={TAB1}
+                destinations={[]}
+                commands={fake.commands}
+                destination={null}
+                onDestinationChange={() => {}}
+            />
+        );
+        const comment = screen.getByTestId('web-batch-comment-i1');
+        const head = screen.getByTestId('web-batch-head-i1');
+        // The selector line and the comment are SIBLINGS in a column, not items in one row…
+        expect(head.contains(comment)).toBe(false);
+        expect(comment.parentElement).toBe(head.parentElement);
+        expect(head.parentElement?.className).toContain('flex-col');
+        // …and the field spans that column rather than the old fixed 128 px.
+        expect(comment.className).toContain('w-full');
+        expect(comment.className).not.toContain('w-32');
+        // The Swift placeholder, verbatim.
+        expect(comment.getAttribute('placeholder')).toBe('Comment (optional)');
+        // The selector's own line still truncates in the middle (WEB-129).
+        expect(screen.getByTestId('web-batch-selector-i1')).not.toBeNull();
+    });
+
+    it('grows to three two-line rows before it scrolls (WEB-131 / H28)', () => {
+        const fake = fakeCommands();
+        render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({
+                    items: [{ id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' }]
+                })}
+                activeTabID={TAB1}
+                destinations={[]}
+                commands={fake.commands}
+                destination={null}
+                onDestinationChange={() => {}}
+            />
+        );
+        // 3 × 64 + 12, the Swift cap for a two-line row — not the 148 px of a one-line one.
+        expect((screen.getByTestId(`web-batch-items-${PANE}`) as HTMLElement).style.maxHeight).toBe('204px');
+    });
+
     it('disables Send on an empty batch and sends the chosen destination (WEB-132)', () => {
         const fake = fakeCommands();
         const { rerender } = render(
@@ -403,6 +524,116 @@ describe('the batch panel', () => {
         expect(screen.getByTestId(`web-batch-destination-${PANE}`).textContent).toContain(
             'No other panes open in this workspace'
         );
+    });
+
+    /**
+     * H16 — the contradicted half of WEB-132. Send used to be enabled by a non-empty batch
+     * alone, and the picker's empty value read "Queue locally", so the default click dispatched
+     * the batch into a CLI-only queue. `WebBatchInspectPanel.swift:224-247` disables Send on
+     * `selection == .unselected`, and its picker has no local row at all.
+     */
+    it('keeps Send disabled until a destination is deliberately picked (H16 / WEB-132)', () => {
+        const fake = fakeCommands();
+        const items = [{ id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' }];
+        const { rerender } = render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({ items })}
+                activeTabID={TAB1}
+                destinations={[{ paneID: 'shell-1', label: 'worker' }]}
+                commands={fake.commands}
+                destination={null}
+                onDestinationChange={() => {}}
+            />
+        );
+        const send = (): HTMLButtonElement => screen.getByTestId(`web-batch-send-${PANE}`) as HTMLButtonElement;
+        // A full batch with no destination is NOT sendable.
+        expect(send().disabled).toBe(true);
+        fireEvent.click(send());
+        expect(fake.sent.some((call) => call.verb === 'batchSend')).toBe(false);
+
+        // The unselected picker says what it wants, and never "Queue locally".
+        const picker = screen.getByTestId(`web-batch-destination-${PANE}`) as HTMLSelectElement;
+        expect(picker.value).toBe('');
+        expect(picker.options[0]?.textContent).toBe('Select destination…');
+
+        rerender(
+            <BatchPanel
+                paneID={PANE}
+                session={session({ items })}
+                activeTabID={TAB1}
+                destinations={[{ paneID: 'shell-1', label: 'worker' }]}
+                commands={fake.commands}
+                destination="shell-1"
+                onDestinationChange={() => {}}
+            />
+        );
+        expect(send().disabled).toBe(false);
+    });
+
+    it('offers the local queue as an explicit row below the panes, and sends it as null (H16)', () => {
+        const fake = fakeCommands();
+        const items = [{ id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' }];
+        let chosen: string | null = null;
+        const { rerender } = render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({ items })}
+                activeTabID={TAB1}
+                destinations={[{ paneID: 'shell-1', label: 'worker' }]}
+                commands={fake.commands}
+                destination={null}
+                onDestinationChange={(value) => {
+                    chosen = value;
+                }}
+            />
+        );
+        const picker = screen.getByTestId(`web-batch-destination-${PANE}`) as HTMLSelectElement;
+        // Placeholder, the pane, then the local queue — in that order.
+        expect(Array.from(picker.options).map((option) => option.value)).toEqual([
+            '',
+            'shell-1',
+            BATCH_LOCAL_DESTINATION
+        ]);
+        fireEvent.change(picker, { target: { value: BATCH_LOCAL_DESTINATION } });
+        expect(chosen).toBe(BATCH_LOCAL_DESTINATION);
+
+        rerender(
+            <BatchPanel
+                paneID={PANE}
+                session={session({ items })}
+                activeTabID={TAB1}
+                destinations={[{ paneID: 'shell-1', label: 'worker' }]}
+                commands={fake.commands}
+                destination={BATCH_LOCAL_DESTINATION}
+                onDestinationChange={() => {}}
+            />
+        );
+        const send = screen.getByTestId(`web-batch-send-${PANE}`) as HTMLButtonElement;
+        expect(send.disabled).toBe(false);
+        fireEvent.click(send);
+        // The wire is unchanged: the local queue is still `sendTo: null`.
+        expect(fake.sent.at(-1)).toEqual({ verb: 'batchSend', args: [PANE, null] });
+    });
+
+    it('never resets an explicit local-queue pick, however the pane list moves (H16)', () => {
+        const fake = fakeCommands();
+        const resets: (string | null)[] = [];
+        render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({
+                    items: [{ id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' }]
+                })}
+                activeTabID={TAB1}
+                destinations={[]}
+                commands={fake.commands}
+                destination={BATCH_LOCAL_DESTINATION}
+                onDestinationChange={(value) => resets.push(value)}
+            />
+        );
+        // WEB-132's staleness check is about PANES; the local queue can never go stale.
+        expect(resets).toEqual([]);
     });
 
     it('is a three-way chrome button whose label says what it will do (WEB-126)', () => {

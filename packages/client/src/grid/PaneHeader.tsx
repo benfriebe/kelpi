@@ -204,6 +204,10 @@ function Badge({ testID, color, icon, text, title, shrinkable, onClick }: BadgeP
                 event.stopPropagation();
                 onClick();
             }}
+            // A SwiftUI `Button` consumes the whole tap, double taps included, so the header's
+            // `.onTapGesture(count: 2)` never sees one that landed on the ZOOM badge. `dblclick`
+            // is a separate native event from `click`, so stopping `click` is not enough here.
+            onDoubleClick={(event) => event.stopPropagation()}
         >
             {content}
         </button>
@@ -240,6 +244,12 @@ function HeaderButton({ testID, label, icon, disabled, onClick }: HeaderButtonPr
                 event.stopPropagation();
                 onClick?.(event);
             }}
+            // The Swift header hangs `.onTapGesture(count: 2) { onToggleZoom }` off the HStack,
+            // and every control inside it is a SwiftUI `Button`, which swallows its own taps —
+            // so a double-click on Split Right there is two splits and NOTHING else. In the DOM
+            // `dblclick` is a separate native event from `click`: stopping `click` leaves it
+            // bubbling to the header's `onDoubleClick`, which is two splits *and* a zoom toggle.
+            onDoubleClick={(event) => event.stopPropagation()}
         >
             <Icon name={icon} size={10} />
         </button>
@@ -296,7 +306,6 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         onRefreshDiff,
         onCopyDocument,
         onSetFontSize,
-        onRestartAgent,
         onNewWebPane,
         onPaneContextMenu
     } = props;
@@ -545,14 +554,13 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                     onClick={() => onRefreshDiff?.(pane.id)}
                 />
             ) : null}
-            {pane.type === 'shell' && pane.agentSessionID !== null ? (
-                <HeaderButton
-                    testID={`pane-restart-${pane.id}`}
-                    label="Restart agent"
-                    icon="restart"
-                    onClick={() => onRestartAgent?.(pane.id)}
-                />
-            ) : null}
+            {/* No `.shell` branch, deliberately. `PaneHeaderView.swift:177-272`'s per-type block
+                is markdown-copy / markdown-edit / diff-refresh and then the shared tail; the
+                shipped app has no restart control anywhere (`grep -rn restartAgent Nex/` is
+                empty), and a one-click restart of a live agent sitting between Split Down and
+                Close is a mis-click nobody asked for. The capability itself stays: the
+                `restart-pane-agent` verb, its daemon channel and `PaneActions.onRestartAgent`
+                are untouched, so any client — or a later context-menu item — can still reach it. */}
 
             {/* 10–13 — rename, splits, close */}
             <HeaderButton

@@ -130,6 +130,66 @@ describe('PaneSearchOverlay', () => {
         expect(handlers.onPrevious).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * §H7 — `PaneSearchOverlay.swift:48-66` wires `chevron.up` to `onNavigateNext` and
+     * `chevron.down` to `onNavigatePrevious`, in that DOM order. It reads backwards, and it is
+     * exactly what a user of the shipped app has in their fingers, so the glyph is asserted
+     * against the action rather than against the intuition.
+     */
+    it('puts NEXT under the up chevron and PREVIOUS under the down one, in that order', () => {
+        const handlers = setup();
+        fireEvent.change(screen.getByTestId(`pane-search-input-${PANE}`), { target: { value: 'x' } });
+
+        const buttons = [...screen.getByTestId(`pane-search-${PANE}`).querySelectorAll('button')];
+        const icons = buttons.map((button) => button.querySelector('svg')?.getAttribute('data-icon'));
+        expect(icons).toEqual(['chevron-up', 'chevron-down', 'close']);
+
+        fireEvent.click(buttons[0] as HTMLButtonElement);
+        expect(handlers.onNext).toHaveBeenCalledTimes(1);
+        expect(handlers.onPrevious).not.toHaveBeenCalled();
+
+        fireEvent.click(buttons[1] as HTMLButtonElement);
+        expect(handlers.onPrevious).toHaveBeenCalledTimes(1);
+        expect(handlers.onNext).toHaveBeenCalledTimes(1);
+
+        expect((buttons[0] as HTMLButtonElement).getAttribute('aria-label')).toBe('Next match (Return)');
+        expect((buttons[1] as HTMLButtonElement).getAttribute('aria-label')).toBe('Previous match (⇧Return)');
+    });
+
+    /**
+     * `PaneSearchOverlay.swift:22` is `.font(.system(size: 12, design: .monospaced))`, and the
+     * classes alone cannot deliver it: `styles.css`'s `input { font: inherit }` is UNLAYERED,
+     * and unlayered CSS outranks every Tailwind utility no matter its specificity — which is
+     * why the built app measured this field at 13 px UI sans with `font-mono text-[12px]`
+     * sitting right there on it. The face therefore has to be inline, and stay inline.
+     */
+    it('draws the field in 12 px monospace, past the global input reset', () => {
+        setup();
+        const input = screen.getByTestId(`pane-search-input-${PANE}`) as HTMLInputElement;
+        expect(input.style.fontFamily).toContain('--nex-font-mono');
+        expect(input.style.fontSize).toBe('12px');
+    });
+
+    it('renders the terminal bar’s own chrome — radius 8, header fill, drop shadow', () => {
+        setup();
+        const bar = screen.getByTestId(`pane-search-${PANE}`);
+        expect(bar.className).toContain('rounded-lg');
+        expect(bar.style.boxShadow).toBe('0 4px 12px rgba(0,0,0,0.35)');
+        expect(bar.getAttribute('role')).toBe('search');
+    });
+
+    /** The prefix is how the content panes mount this same bar without colliding (§H29). */
+    it('re-stems every test id and relabels the landmark for another surface', () => {
+        setup({ testIDPrefix: 'content-find', label: 'Find in markdown preview' });
+        expect(screen.queryByTestId(`pane-search-${PANE}`)).toBeNull();
+        expect(screen.getByTestId(`content-find-${PANE}`).getAttribute('aria-label')).toBe(
+            'Find in markdown preview'
+        );
+        for (const part of ['input', 'next', 'prev', 'close']) {
+            expect(screen.getByTestId(`content-find-${part}-${PANE}`)).toBeTruthy();
+        }
+    });
+
     it('names every control, so the bar is readable without eyes', () => {
         setup();
         expect(screen.getByLabelText('Search')).toBeTruthy();

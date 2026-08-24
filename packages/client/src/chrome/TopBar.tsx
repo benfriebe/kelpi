@@ -15,10 +15,12 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@nex/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@nex/daemon/store';
-import { useRef, useState, type ReactElement } from 'react';
+import { useCallback, useRef, useState, type ReactElement } from 'react';
 
 import type { ConnectionStatus } from '../connection';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
+import { useDismissable } from './dismissable';
+import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
@@ -106,6 +108,20 @@ export function TopBar(props: TopBarProps): ReactElement {
     const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
     const [overflowAt, setOverflowAt] = useState<{ x: number; y: number } | null>(null);
     const overflowRef = useRef<HTMLButtonElement | null>(null);
+    /** §H15: the dropdown panel and the chevron that opens it — the two boxes a click may land in. */
+    const layoutMenuRef = useRef<HTMLDivElement | null>(null);
+    const layoutToggleRef = useRef<HTMLButtonElement | null>(null);
+    /** §H11: one hover slot for the whole bar (see `hover.ts`). */
+    const [hovered, hover] = useHoverKey();
+    const closeLayoutMenu = useCallback(() => {
+        setLayoutMenuOpen(false);
+    }, []);
+    /*
+     * §H15 — an `NSMenu` closes on any outside click and on Escape; this dropdown was dismissed
+     * only by re-clicking its own chevron, so it stayed open over the pane grid while the user
+     * typed. Same hook the pane context menu uses.
+     */
+    useDismissable(layoutMenuOpen, closeLayoutMenu, [layoutMenuRef, layoutToggleRef]);
     const hasWorkspace = props.workspaceName !== null;
     const paneCount = props.panes.length;
     const syncable = (props.syncedPaneCount ?? 0) >= 2;
@@ -138,7 +154,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-label="Toggle sidebar"
                         aria-pressed={props.sidebarVisible ?? true}
                         title="Toggle sidebar"
-                        style={{ color: tokens.textSecondary }}
+                        data-hovered={hovered === 'sidebar' ? 'true' : 'false'}
+                        style={{ color: hoverText(hovered === 'sidebar', tokens.textSecondary) }}
+                        {...hover('sidebar')}
                         onClick={props.onToggleSidebar}
                     >
                         <ChromeIcon name="sidebar" size={13} />
@@ -151,10 +169,14 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-label="Toggle inspector"
                         aria-pressed={props.inspectorVisible ?? false}
                         title="Toggle inspector (⌘I)"
+                        data-hovered={hovered === 'inspector' ? 'true' : 'false'}
                         style={{
-                            color:
+                            color: hoverText(
+                                hovered === 'inspector',
                                 props.inspectorVisible === true ? tokens.textPrimary : tokens.textSecondary
+                            )
                         }}
+                        {...hover('inspector')}
                         onClick={props.onToggleInspector}
                     >
                         <ChromeIcon name="stack" size={13} />
@@ -169,7 +191,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-haspopup="menu"
                         aria-expanded={overflowAt !== null}
                         title="More actions"
-                        style={{ color: tokens.textSecondary }}
+                        data-hovered={hovered === 'overflow' ? 'true' : 'false'}
+                        style={{ color: hoverText(hovered === 'overflow', tokens.textSecondary) }}
+                        {...hover('overflow')}
                         onClick={() => {
                             if (overflowAt !== null) {
                                 setOverflowAt(null);
@@ -228,7 +252,12 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-label="Cycle layout"
                         title="Cycle layout (⇧⌘Space)"
                         className="flex items-center gap-1 rounded px-1.5 py-0.5"
-                        style={{ color: tokens.textSecondary, background: withAlpha('#E6E6EA', 0.05) }}
+                        data-hovered={hovered === 'layout-cycle' ? 'true' : 'false'}
+                        style={{
+                            color: hoverText(hovered === 'layout-cycle', tokens.textSecondary),
+                            background: hoverFill(hovered === 'layout-cycle', withAlpha('#E6E6EA', 0.05))
+                        }}
+                        {...hover('layout-cycle')}
                         onClick={props.onCycleLayout}
                     >
                         <ChromeIcon name="layout" size={11} />
@@ -239,12 +268,15 @@ export function TopBar(props: TopBarProps): ReactElement {
                         </span>
                     </button>
                     <button
+                        ref={layoutToggleRef}
                         type="button"
                         data-testid="layout-menu-toggle"
                         aria-label="Select layout"
                         aria-expanded={layoutMenuOpen}
                         className="px-1"
-                        style={{ color: tokens.textTertiary }}
+                        data-hovered={hovered === 'layout-menu' ? 'true' : 'false'}
+                        style={{ color: hoverText(hovered === 'layout-menu', tokens.textTertiary) }}
+                        {...hover('layout-menu')}
                         onClick={() => {
                             setLayoutMenuOpen(!layoutMenuOpen);
                         }}
@@ -253,6 +285,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                     </button>
                     {layoutMenuOpen ? (
                         <div
+                            ref={layoutMenuRef}
                             data-testid="layout-menu"
                             role="menu"
                             className="absolute right-0 top-7 z-40 min-w-[160px] rounded-lg p-1"
@@ -268,12 +301,17 @@ export function TopBar(props: TopBarProps): ReactElement {
                                     type="button"
                                     role="menuitem"
                                     className="block w-full rounded px-2 py-1 text-left text-[12px]"
+                                    data-hovered={hovered === `layout:${layout}` ? 'true' : 'false'}
                                     style={{
-                                        color:
+                                        color: hoverText(
+                                            hovered === `layout:${layout}`,
                                             layout === props.currentLayout
                                                 ? tokens.textPrimary
                                                 : tokens.textSecondary
+                                        ),
+                                        background: hoverFill(hovered === `layout:${layout}`)
                                     }}
+                                    {...hover(`layout:${layout}`)}
                                     onClick={() => {
                                         setLayoutMenuOpen(false);
                                         props.onSelectLayout?.(layout);
@@ -297,11 +335,20 @@ export function TopBar(props: TopBarProps): ReactElement {
                             : 'Needs two or more shell panes to mirror input'
                     }
                     className="flex items-center gap-1 rounded px-1.5 py-0.5"
+                    data-hovered={hovered === 'sync' ? 'true' : 'false'}
                     style={{
-                        color: props.syncInputActive === true ? tokens.accent : tokens.textTertiary,
+                        // Active keeps its accent tint under the pointer — the wash would only
+                        // muddy it — so hover moves the LABEL here and the box only when inert.
+                        color:
+                            props.syncInputActive === true
+                                ? tokens.accent
+                                : hoverText(hovered === 'sync', tokens.textTertiary),
                         background:
-                            props.syncInputActive === true ? withAlpha('#6F9BD8', 0.16) : 'transparent'
+                            props.syncInputActive === true
+                                ? withAlpha('#6F9BD8', 0.16)
+                                : hoverFill(hovered === 'sync')
                     }}
+                    {...hover('sync')}
                     onClick={props.onToggleSyncInput}
                 >
                     <ChromeIcon name="broadcast" size={11} />

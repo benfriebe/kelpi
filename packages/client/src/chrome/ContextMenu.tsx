@@ -27,6 +27,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useDismissable } from './dismissable';
+import { useModalPresence } from './modal-presence';
 import { tokens } from './tokens';
 
 /** How close to the window edge a submenu may sit before it flips to the other side. */
@@ -261,26 +263,19 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     const [openSubmenuID, setOpenSubmenuID] = useState<string | null>(null);
     const onClose = props.onClose;
 
-    useEffect(() => {
-        const onPointerDown = (event: Event): void => {
-            const root = rootRef.current;
-            if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
-            onClose();
-        };
-        const onKeyDown = (event: KeyboardEvent): void => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-        };
-        const doc = globalThis.document;
-        doc.addEventListener('mousedown', onPointerDown, true);
-        doc.addEventListener('keydown', onKeyDown, true);
-        return () => {
-            doc.removeEventListener('mousedown', onPointerDown, true);
-            doc.removeEventListener('keydown', onKeyDown, true);
-        };
-    }, [onClose]);
+    /*
+     * The outside-click + Escape contract, now shared (UI-FIDELITY H15). The behaviour is the
+     * one this component always had — the effect moved to `dismissable.ts` unchanged so the
+     * footer's bucket popover and the title bar's layout dropdown could have it too.
+     */
+    useDismissable(true, onClose, [rootRef]);
+
+    /*
+     * H1: a menu is an app-modal surface. Drawn while a web pane's page is live it would be
+     * sliced at the page's edge, so it counts itself into `modalPresenceCount` and the shell
+     * parks the view for as long as it is open.
+     */
+    useModalPresence();
 
     const autoFocus = props.autoFocus ?? false;
     useEffect(() => {

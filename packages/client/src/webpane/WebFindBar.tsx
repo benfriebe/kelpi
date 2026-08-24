@@ -142,21 +142,27 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
             <span data-testid={`web-find-count-${paneID}`} className="tabular-nums opacity-60">
                 {findCountLabel(matches.total, matches.current)}
             </span>
-            <button
-                type="button"
-                aria-label="Previous match"
-                data-testid={`web-find-prev-${paneID}`}
-                style={{ color: tokens.textSecondary }}
-                onClick={() => drive('prev')}
-            >
-                ↑
-            </button>
+            {/*
+              * Up is NEXT, down is PREVIOUS, matching `PaneSearchOverlay.swift:48-66` (the
+              * shipped app draws ONE find bar for terminal, markdown and web panes, and that is
+              * how its chevrons are wired). The port's terminal bar follows the same order, so
+              * the two find surfaces step the same way under the same glyph.
+              */}
             <button
                 type="button"
                 aria-label="Next match"
                 data-testid={`web-find-next-${paneID}`}
                 style={{ color: tokens.textSecondary }}
                 onClick={() => drive('next')}
+            >
+                ↑
+            </button>
+            <button
+                type="button"
+                aria-label="Previous match"
+                data-testid={`web-find-prev-${paneID}`}
+                style={{ color: tokens.textSecondary }}
+                onClick={() => drive('prev')}
             >
                 ↓
             </button>

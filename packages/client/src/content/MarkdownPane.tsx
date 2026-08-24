@@ -47,6 +47,8 @@ export interface MarkdownPaneProps {
     readonly copyToken?: number | undefined;
     /** SET-219's user-overridable find-highlight colours; absent = the Swift defaults. */
     readonly findPalette?: Partial<FindPalette> | undefined;
+    /** H9: the chords the app claims, relayed back out of the sandboxed preview. */
+    readonly claimedChords?: readonly string[] | undefined;
     /**
      * CONT-081 — "Open in $EDITOR". Present = the affordance is drawn over the preview.
      *
@@ -110,6 +112,7 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             findToken={props.findToken}
             copyToken={props.copyToken}
             findPalette={props.findPalette}
+            claimedChords={props.claimedChords}
             // §3.14: both copy commands bail on a failed load — you cannot copy the synthetic
             // "Failed to load file" blockquote, so the affordance is simply absent.
             copySource={state.loaded ? state.text : null}

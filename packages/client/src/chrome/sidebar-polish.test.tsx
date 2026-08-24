@@ -1611,10 +1611,17 @@ describe('row background states stack (§WS-027)', () => {
         const row = rowFor(W1);
         // The 1.5px accent takes the outer edge …
         expect(row.style.outline).toBe('1.5px solid var(--nex-selection-stroke, #5276B8)');
-        // … and the selection's 1px stroke at 0.7 opacity survives as the inner ring.
-        expect(row.style.boxShadow).toBe('inset 0 0 0 1px rgba(82, 118, 184, 0.7)');
-        // Both fills: the selection fill as the colour, the active tint layered over it.
-        expect(row.style.background).toContain('--nex-selection-fill');
+        // … and the selection's 1px stroke at 0.7 opacity survives as the inner ring. §H22: the
+        // 0.7 now rides the LIVE `--nex-selection-stroke` (`WorkspaceRowView.swift:161` is
+        // `theme.selectionStroke.opacity(0.7)`), where it used to be the dark preset's `#5276B8`
+        // frozen into the source — a dark periwinkle on a light sidebar whose stroke is `#5e8ac4`.
+        expect(row.style.boxShadow).toBe(
+            'inset 0 0 0 1px color-mix(in srgb, var(--nex-selection-stroke, #5276B8) 70%, transparent)'
+        );
+        // Both fills: the selection fill as the colour, the active tint layered over it. Read off
+        // `backgroundColor` rather than the `background` shorthand, which is what the row now
+        // writes — a shorthand goes unreadable the moment a layered `background-image` joins it.
+        expect(row.style.backgroundColor).toContain('--nex-selection-fill');
         expect(row.style.backgroundImage).toContain('linear-gradient');
     });
 
@@ -1634,8 +1641,41 @@ describe('row background states stack (§WS-027)', () => {
                 selectedWorkspaceIDs={new Set([W1])}
             />
         );
-        expect(rowFor(W1).style.outline).toBe('1px solid rgba(82, 118, 184, 0.7)');
+        expect(rowFor(W1).style.outline).toBe(
+            '1px solid color-mix(in srgb, var(--nex-selection-stroke, #5276B8) 70%, transparent)'
+        );
         expect(rowFor(W1).style.boxShadow).toBe('');
+    });
+
+    /**
+     * §H6: the ACTIVE fill is the neutral `selectionFill` at 0.7, not the workspace's colour.
+     *
+     * `WorkspaceRowView.swift:164` is `.fill(theme.selectionFill.opacity(0.7))` — the very fill a
+     * selected row uses at full strength four lines above it, dimmed. The port used to tint it
+     * with `workspaceColorHex(workspace.color, bucket)` at 16 %, so the active-workspace
+     * highlight changed HUE on every switch, which the shipped app never does. Two workspaces of
+     * different colours are made active in turn: same fill both times, and neither is the
+     * workspace's own hex.
+     */
+    it('§H6: the active fill is the neutral selection fill at 0.7, whatever colour the row is', () => {
+        const expected =
+            'color-mix(in srgb, var(--nex-selection-fill, rgba(82, 118, 184, 0.24)) 70%, transparent)';
+        // Two rows of DIFFERENT colours, so a fill that read the workspace could not match twice.
+        const coloured: ChromeSidebarEntry[] = [
+            { kind: 'workspace', workspace: workspace(W1, 'alpha', { color: 'blue' }) },
+            { kind: 'workspace', workspace: workspace(W4, 'delta', { color: 'orange' }) }
+        ];
+        const { rerender } = render(
+            <Sidebar {...baseProps()} entries={coloured} activeWorkspaceID={W1} />
+        );
+        expect(rowFor(W1).style.backgroundColor).toBe(expected);
+        // The colour is still doing its job on the AVATAR — this is about the row fill only.
+        expect(rowFor(W1).querySelector('span[aria-hidden]')?.getAttribute('style')).toContain('#');
+
+        rerender(<Sidebar {...baseProps()} entries={coloured} activeWorkspaceID={W4} />);
+        expect(rowFor(W4).style.backgroundColor).toBe(expected);
+        // No workspace hex anywhere in the fill, in either state.
+        expect(rowFor(W4).style.backgroundColor).not.toMatch(/#[0-9A-Fa-f]{6}\s/);
     });
 });
 
@@ -1944,5 +1984,95 @@ describe('the group delete prompt takes its shape from membership (§WS-068)', (
         };
         view.rerender(<Sidebar {...baseProps()} entries={emptied} onDeleteGroup={onDeleteGroup} />);
         expect(screen.getByTestId('confirm-delete-cascade').textContent).toBe('Delete Group and 2 Workspaces');
+    });
+});
+
+// ── §H21 / §H22 / §H23: the sidebar reads the THEME, at the Swift's metrics ──────────
+
+/**
+ * Six sidebar colours were hardcoded dark-theme hex, and the filter pill was about half the
+ * shipped height. Both are settled here against `WorkspaceListView.swift` / `GroupHeaderRow.swift`.
+ *
+ * The colour assertions look for the CSS VARIABLE rather than a resolved value on purpose: a
+ * `var(--nex-x, …)` read is the whole fix — it is what makes the colour follow the live theme
+ * instead of freezing one bucket's palette into the source — and it is the thing a hex literal
+ * cannot be mistaken for. The audit's own light/dark renders carry the resolved numbers.
+ */
+describe('the sidebar reads theme tokens, not frozen hex (§H21/§H22)', () => {
+    const pill = (): HTMLElement => {
+        const input = screen.getByTestId('sidebar-filter');
+        const element = input.parentElement;
+        if (element === null) throw new Error('the filter pill has no parent');
+        return element;
+    };
+
+    it('§H21: the filter pill is at the Swift’s paddings, font and gap', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        // `WorkspaceListView.swift:672-673` — 12pt horizontal, 10pt vertical on the pill…
+        expect(pill().className).toContain('px-3');
+        expect(pill().className).toContain('py-2.5');
+        // …`:628`'s `HStack(spacing: 8)`…
+        expect(pill().className).toContain('gap-2');
+        // …`:635`'s 13pt field…
+        expect(screen.getByTestId('sidebar-filter').className).toContain('text-[13px]');
+        // …and `:682-683`'s 10pt/8pt margin around it.
+        const wrap = pill().parentElement;
+        expect(wrap?.className).toContain('px-2.5');
+        expect(wrap?.className).toContain('py-2');
+    });
+
+    it('§H22: the pill’s fill and border are textPrimary, not a dark-preset hex', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        // `:676` / `:679` — `chromeTheme.textPrimary.opacity(0.05 / 0.08)`.
+        //
+        // A hex still appears in these strings, and that is correct: `tokens.ts` gives every
+        // read a `var(--nex-x, <dark preset>)` FALLBACK so a component mounted outside a
+        // provider still renders. So the assertion is about POSITION — the variable is what is
+        // read and the hex is only its fallback — which is exactly the difference between this
+        // and the frozen `withAlpha('#E6E6EA', …)` it replaced.
+        expect(pill().style.background).toMatch(/^color-mix\(in srgb, var\(--nex-fg,[^)]*\) 5%/);
+        expect(pill().style.border).toMatch(
+            /^1px solid color-mix\(in srgb, var\(--nex-fg,[^)]*\) 8%/
+        );
+    });
+
+    it('§H22: the selection strip is the live accent at 12%', () => {
+        render(
+            <Sidebar {...baseProps()} entries={entries()} selectedWorkspaceIDs={new Set([W1])} />
+        );
+        // `WorkspaceListView.swift:850` — `Color.accentColor.opacity(0.12)`.
+        const strip = screen.getByTestId('selection-header');
+        expect(strip.style.background).toMatch(/^color-mix\(in srgb, var\(--nex-accent,[^)]*\) 12%/);
+    });
+
+    it('§H22: a colourless group band is textTertiary at the band opacity, like a coloured one', () => {
+        const uncoloured: ChromeSidebarEntry[] = [
+            {
+                kind: 'group',
+                group: { id: G1, name: 'plain', color: null, icon: null, isCollapsed: false },
+                workspaces: [workspace(W2, 'beta')]
+            }
+        ];
+        render(<Sidebar {...baseProps()} entries={uncoloured} activeWorkspaceID={W2} />);
+        const band = screen.getByTestId('group-header');
+        // `GroupHeaderRow.swift:27-30` is ONE expression — `(color?.color ?? theme.textTertiary)`
+        // at the resolved band fill — so the colourless case is not a branch with its own
+        // opacity: it goes through the same `--nex-group-fill` × `--nex-sidebar-intensity` mix a
+        // coloured band does, which is what lets SET-037/038 and light mode's 0.3 reach it.
+        expect(band.style.background).toContain('--nex-fg-tertiary');
+        expect(band.style.background).toContain('--nex-group-fill');
+        expect(band.style.background).toContain('--nex-sidebar-intensity');
+        expect(band.style.background).not.toContain('#8A8A92');
+    });
+
+    it('§H23: the group name’s wrapper is a flex CONTAINER, so `truncate` can bite', () => {
+        render(<Sidebar {...baseProps()} entries={entries()} />);
+        const name = screen.getByTestId('group-name');
+        expect(name.className).toContain('truncate');
+        const wrapper = name.parentElement;
+        // `min-w-0 flex-1` alone made the wrapper a flex ITEM but not a flex CONTAINER, which
+        // left this span an inline box — and `overflow`/`text-overflow` do nothing to one.
+        expect(wrapper?.className).toContain('flex');
+        expect(wrapper?.className).toContain('min-w-0');
     });
 });

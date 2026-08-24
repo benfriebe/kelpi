@@ -97,7 +97,9 @@ import {
     shortcutForAction,
     triggerFromEvent,
     tokens as chromeTokens,
+    useAnyModalOpen,
     useChromeTheme,
+    useModalPresence,
     withAlpha,
     workspaceSwitchHandlers,
     type AgentBucket,
@@ -137,9 +139,17 @@ import {
     replyText,
     type CommandReply
 } from './connection';
-import { DiffPane, MarkdownPane, ScratchpadPane, createContentClient, type FontSizeStep } from './content';
+import {
+    DiffPane,
+    MarkdownPane,
+    ScratchpadPane,
+    chordKeysForBindings,
+    createContentClient,
+    type FontSizeStep
+} from './content';
 import { PaneGrid, PaneSearchOverlay, paneDisplayTitle, type PaneModel, type RenderPane } from './grid';
 import {
+    DEFAULT_SETTINGS_TAB,
     SettingsOverlay,
     globalHotkeyErrorFrom,
     type SettingsActions,
@@ -2501,7 +2511,9 @@ function Shell(props: AppProps): ReactElement {
         [commands, run]
     );
 
-    const openSettings = useCallback((tab: SettingsTabID = 'keybindings'): void => {
+    // H13: `SettingsView.swift:13` opens the window on `.general`. Every route that does not
+    // deep-link a tab (⌘,, the ••• menu, the palette, the sidebar's Settings…) lands there.
+    const openSettings = useCallback((tab: SettingsTabID = DEFAULT_SETTINGS_TAB): void => {
         setSettingsTab(tab);
     }, []);
 
@@ -2698,7 +2710,7 @@ function Shell(props: AppProps): ReactElement {
             // shell).
             event.preventDefault();
             event.stopPropagation();
-            setSettingsTab((current) => (current === null ? 'keybindings' : current));
+            setSettingsTab((current) => (current === null ? DEFAULT_SETTINGS_TAB : current));
         };
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
@@ -2742,7 +2754,7 @@ function Shell(props: AppProps): ReactElement {
             const command = message['command'];
             if (command === 'help') setHelpOpen(true);
             else if (command === 'open-file') actRef.current.openFile();
-            else if (command === 'settings') setSettingsTab((current) => current ?? 'keybindings');
+            else if (command === 'settings') setSettingsTab((current) => current ?? DEFAULT_SETTINGS_TAB);
             // §WS-001: View ▸ Show/Hide Sidebar. It lands on the SAME `act.toggleSidebar` the
             // ⌘⇧S binding and the top-bar button use, so the menu item and the chord are one
             // state, and the shell never has to know whether the sidebar is out.
@@ -2828,6 +2840,25 @@ function Shell(props: AppProps): ReactElement {
     const bindings = useMemo(() => clientKeyBindings(keybindLines), [keybindLines]);
     const hint = useCallback(
         (action: NexAction): string | undefined => shortcutForAction(bindings, action),
+        [bindings]
+    );
+
+    /**
+     * H9 — the chord set a content pane's sandboxed frame hands back.
+     *
+     * A markdown/diff preview is a cross-origin iframe, so its keydowns never reach the
+     * dispatcher installed on this window, and every pane binding died the moment a preview
+     * took focus. The Swift has no boundary to cross (`NexCommands.swift:142-155` monitors
+     * `NSEvent` for whatever holds first responder, `WKWebView` included), so the frame is
+     * given the same map the dispatcher resolves and relays exactly the chords it claims —
+     * nothing else, so a ⌘C inside the document still copies its selection.
+     *
+     * ⌘, and ⌘/ ⌘? ride along because they are dispatched by their own window listeners here
+     * (in the Swift they are OS menu-bar items, which fire from any responder). `8/…` is the
+     * `chordKey` bitmask for ⌘, `12/…` for ⇧⌘.
+     */
+    const contentPaneChords = useMemo(
+        () => [...new Set([...chordKeysForBindings(bindings), '8/Comma', '8/Slash', '12/Slash'])].sort(),
         [bindings]
     );
 
@@ -2920,7 +2951,7 @@ function Shell(props: AppProps): ReactElement {
                 'Settings…',
                 'keybindings, appearance, labels, profiles',
                 () => {
-                    openSettings('keybindings');
+                    openSettings();
                 },
                 '⌘,'
             )
@@ -3172,7 +3203,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const overflowMenuItems = useMemo<MenuItemSpec[]>(() => {
         const items: MenuItemSpec[] = [
-            { id: 'settings', label: 'Settings…', shortcut: '⌘,', onSelect: () => openSettings('keybindings') },
+            { id: 'settings', label: 'Settings…', shortcut: '⌘,', onSelect: () => openSettings() },
             {
                 id: 'inspector',
                 label: inspectorVisible ? 'Hide Inspector' : 'Show Inspector',
@@ -3246,8 +3277,25 @@ function Shell(props: AppProps): ReactElement {
      * or the command palette, so the pane reports itself hidden for as long as the modal is open
      * and the shell parks the view off-screen (`webpane/geometry.ts` → `shell/webhost/embed.ts`).
      * The page keeps running; only its placement is suspended.
+     *
+     * **UI-FIDELITY H1** — this used to be only the four modals THIS component owns state for,
+     * and every other app-modal surface was missing: the shell's quit dialog, the graft swap
+     * prompt, the agent-delete gate, every `ContextMenu`, the toast stack, the inspector's
+     * sheets. All of them were therefore painted UNDER a live page —
+     * `docs/audit/run-O/53-agent-lifecycle-quit-dialog.png` is "Quit Nex?" sliced at the page's
+     * left edge with **Cancel entirely off-screen**, and `run-O/83-graft-swap-prompt-prompt.png`
+     * is the swap prompt cut to "Kee".
+     *
+     * So the predicate is the assembly's own state PLUS `useAnyModalOpen()` — the registry each
+     * modal surface counts itself into for as long as it is painted
+     * (`chrome/modal-presence.ts`). The assembly's four stay written out because they ARE this
+     * component's state; everything it cannot see (a dialog the SHELL opens, a prompt rendered
+     * inside the inspector, a portal menu) registers instead, which is also why a surface added
+     * later cannot be forgotten here.
      */
-    const modalOpen = settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen;
+    const anyModalMounted = useAnyModalOpen();
+    const modalOpen =
+        settingsTab !== null || ui.palette.open || helpOpen || createSheetOpen || anyModalMounted;
 
     // ── drag-and-drop + ⌘-click (CONT-121/122, APP-103, TERM-040/041/052) ────────────
 
@@ -3425,6 +3473,8 @@ function Shell(props: AppProps): ReactElement {
                         // §TERM-103: the header's copy button opens the frame's Copy menu.
                         copyToken={copyRequest?.paneID === paneID ? copyRequest.seq : 0}
                         findPalette={findPalette}
+                        // H9: the preview is cross-origin, so it hands claimed chords back.
+                        claimedChords={contentPaneChords}
                         onOpenExternalEditor={act.openExternalEditor}
                     />
                 );
@@ -3441,6 +3491,8 @@ function Shell(props: AppProps): ReactElement {
                         onFocusRequest={onTerminalFocus}
                         findToken={findRequest?.paneID === paneID ? findRequest.seq : 0}
                         findPalette={findPalette}
+                        // H9: same relay as the preview — a focused diff must still answer ⌘D.
+                        claimedChords={contentPaneChords}
                     />
                 );
             }
@@ -3534,6 +3586,8 @@ function Shell(props: AppProps): ReactElement {
             // §TERM-103: without this the frame would be frozen at the token it had when the
             // callback was last built, and the header's copy button would open nothing.
             copyRequest,
+            // H9: a re-recorded keybinding has to reach a preview that is already open.
+            contentPaneChords,
             searchPaneTheme,
             searchReveal,
             paneByID,
@@ -3707,7 +3761,7 @@ function Shell(props: AppProps): ReactElement {
                     // …and the sheet's own open/closed edge, for `modalOpen` and the key gate.
                     onCreateSheetOpenChange={setCreateSheetOpen}
                     onOpenSettings={(section) => {
-                        openSettings(section === 'labels' ? 'labels' : 'keybindings');
+                        openSettings(section === 'labels' ? 'labels' : DEFAULT_SETTINGS_TAB);
                     }}
                     onSetWorkspaceColor={act.setWorkspaceColor}
                     onSetBulkColor={act.setBulkColor}
@@ -3769,6 +3823,11 @@ function Shell(props: AppProps): ReactElement {
                         zoomedPaneID={workspace?.zoomedPaneID ?? null}
                         syncActive={workspace?.isSyncInputActive ?? false}
                         syncExcludedPaneIDs={workspace?.syncInputExcluded ?? EMPTY_IDS}
+                        // §H4: the DAEMON's home, the same value the footer gets — without it
+                        // `PaneHeader` falls back to `homeDirectory = ''` and prints the raw
+                        // `/Users/…` path while the footer, describing the same pane, prints
+                        // `~/…` (`PaneHeaderView.swift:503` abbreviates unconditionally).
+                        homeDirectory={daemon.info?.home}
                         renderPane={renderPane}
                         renderPaneOverlay={renderPaneOverlay}
                         renameRequest={renameRequest}
@@ -3811,20 +3870,6 @@ function Shell(props: AppProps): ReactElement {
                     )}
                     {ready ? null : <ConnectionSplash runtime={runtime} state={nex} target={target} />}
                 </div>
-
-                <StatusFooter
-                    summary={agentSummary}
-                    focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
-                    // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
-                    // sits in. The same rows the inspector renders, matched by longest prefix.
-                    associations={inspectorData.associations}
-                    // §APP-069: the DAEMON's home, so a cwd under it renders as `~/…`.
-                    {...(daemon.info?.home === undefined ? {} : { homeDirectory: daemon.info.home })}
-                    bucket={bucket}
-                    bucketItems={bucketItems}
-                    onSelectPane={onSelectStatusPane}
-                    {...(statsView === null ? {} : { systemStats: statsView })}
-                />
             </div>
 
             {/*
@@ -3924,6 +3969,37 @@ function Shell(props: AppProps): ReactElement {
             ) : null}
             </div>
 
+            {/*
+              * §APP-070 / UI-FIDELITY H2 — the status bar spans the WINDOW.
+              *
+              * `ContentView.swift:14-16, 609-610`: `StatusBarView` is a sibling of the whole
+              * `sidebar | grid | inspector` HStack, so the 24 pt bar and its 1 px top divider run
+              * edge to edge UNDER both side panels. The port had it nested inside the centre
+              * column, which started it at the sidebar's trailing edge and stopped it at the
+              * inspector's leading one — the divider stopped with it, the sidebar's own
+              * "New Workspace / New Group" bar sat at the window's bottom instead of above the
+              * status bar, and the row lost ~500 px of the width §N7's fitting logic then had to
+              * fight over (`docs/audit/run-N/01-fresh-boot.png`).
+              *
+              * Hoisting it here is the whole fix: same component, same props, one level out. §N7
+              * still measures the row it is actually given (`useFooterGaugeBudget` observes the
+              * row, not the window), so a wider row simply affords more gauges before it starts
+              * dropping them from the tail.
+              */}
+            <StatusFooter
+                summary={agentSummary}
+                focusedPane={focusedPaneID === null ? null : (paneByID.get(focusedPaneID) ?? null)}
+                // §APP-071 / §GIT-092: `doc N +A -B` for the association the focused pane
+                // sits in. The same rows the inspector renders, matched by longest prefix.
+                associations={inspectorData.associations}
+                // §APP-069: the DAEMON's home, so a cwd under it renders as `~/…`.
+                {...(daemon.info?.home === undefined ? {} : { homeDirectory: daemon.info.home })}
+                bucket={bucket}
+                bucketItems={bucketItems}
+                onSelectPane={onSelectStatusPane}
+                {...(statsView === null ? {} : { systemStats: statsView })}
+            />
+
             {ready && ui.connection !== 'connected' ? (
                 <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} />
             ) : null}
@@ -3942,7 +4018,7 @@ function Shell(props: AppProps): ReactElement {
 
             <SettingsOverlay
                 open={settingsTab !== null}
-                initialTab={settingsTab ?? 'keybindings'}
+                initialTab={settingsTab ?? DEFAULT_SETTINGS_TAB}
                 settings={settings}
                 domain={{
                     labelPresets: daemon.state.labelPresets,
@@ -4004,24 +4080,24 @@ function Shell(props: AppProps): ReactElement {
                 />
             ) : null}
 
-            {dropActive ? (
-                <div
-                    data-testid="drop-overlay"
-                    aria-hidden
-                    className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center"
-                    style={{
-                        background: withAlpha('#6F9BD8', 0.12),
-                        border: `2px dashed ${chromeTokens.accent}`
-                    }}
-                >
-                    <span
-                        className="rounded px-3 py-1.5 text-[12px]"
-                        style={{ background: chromeTokens.surfaceBackground, color: chromeTokens.textPrimary }}
-                    >
-                        Drop a .md file to open it
-                    </span>
-                </div>
-            ) : null}
+            {/*
+              * UI-FIDELITY H20 — there is no drop overlay, deliberately.
+              *
+              * `ContentView.swift:598-607` takes the drop with `isTargeted: nil`: the binding
+              * that would tell SwiftUI to paint something is explicitly absent, and
+              * `SurfaceView.swift:660-666` returns an operation and paints nothing either. The
+              * OS drag image is the whole feedback the shipped app gives, and the refusal is
+              * communicated the way the OS communicates one — through `dropEffect` (`onDragOver`
+              * above), which is `none` for a drag this window will not take.
+              *
+              * What was here was an invented full-window `#6F9BD8` wash with a 2 px dashed accent
+              * border and a "Drop a .md file to open it" chip, fired on any drag carrying
+              * `Files` / `text/uri-list` / `text/plain` — so it fired on plain TEXT drags, and on
+              * file drags headed for a terminal pane, where its caption was simply wrong (a file
+              * dropped on a terminal types its escaped path, §TERM-040). No ledger item claimed
+              * it. `dropActive` survives as the classification itself, published on the root as
+              * `data-drop-active` for §TERM-041's accept/refuse assertions — it paints nothing.
+              */}
 
             {paneMenu === null || paneMenuItems.length === 0 ? null : (
                 <ContextMenu
@@ -4076,59 +4152,113 @@ interface AgentDeleteGateProps {
  * destructive** (red), the message names the count ("This workspace has N active agent(s)…"),
  * and **"Don't ask again" is honoured whichever button was clicked** — which is why the
  * suppression is applied on the Cancel path too.
+ *
+ * **UI-FIDELITY H18** — and it is a real modal now. `WorkspaceDeleteGate.swift:59-81` is
+ * `alert.runModal()`: app-modal, click-through blocked, Escape = Cancel. The port drew a bare
+ * `fixed left-1/2 top-1/3` panel with no scrim, no `aria-modal`, no key handling and two bare
+ * coloured words for buttons — so the most destructive confirmation in the app was
+ * click-through onto the live sidebar and panes, and Escape did nothing. This is
+ * `QuitConfirmDialog`'s contract (`chrome/QuitConfirmDialog.tsx:228-257`), which was already
+ * getting it right two components away: a 0.4 backdrop, capture-phase Escape → Cancel and
+ * Return → the default (Cancel, so a stray Return cannot kill a live session), the default
+ * button drawn as one, and `useModalPresence` so a live web pane's view is parked (H1).
  */
 function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
     const [suppress, setSuppress] = useState(false);
     const noun = props.activeAgents === 1 ? 'agent' : 'agents';
     const them = props.activeAgents === 1 ? 'it' : 'them';
+    useModalPresence();
+
+    const { onCancel, onSuppressOnly } = props;
+    const cancel = useCallback((): void => {
+        if (suppress) onSuppressOnly();
+        onCancel();
+    }, [onCancel, onSuppressOnly, suppress]);
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent): void => {
+            // Escape AND Return both take the safe answer: Cancel is the alert's default button,
+            // so the key one row from ⌘W cannot confirm a destructive delete by itself.
+            if (event.key !== 'Escape' && event.key !== 'Enter') return;
+            event.preventDefault();
+            event.stopPropagation();
+            cancel();
+        };
+        // Capture, so a pane's own key handling cannot swallow the way out of a modal.
+        globalThis.window.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            globalThis.window.removeEventListener('keydown', onKeyDown, true);
+        };
+    }, [cancel]);
+
     return (
         <div
-            data-testid="agent-delete-gate"
-            data-active-agents={String(props.activeAgents)}
-            role="dialog"
-            aria-label="Delete workspace with active agents"
-            className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
-            style={{
-                background: chromeTokens.surfaceBackground,
-                border: `1px solid ${chromeTokens.divider}`,
-                color: chromeTokens.textPrimary,
-                boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+            data-testid="agent-delete-backdrop"
+            className="fixed inset-0 z-50"
+            style={{ background: 'rgba(0,0,0,0.4)' }}
+            /* A destructive alert is not dismissed by a stray click on the dimming — `runModal`
+               beeps at one — so the backdrop blocks the window behind and nothing else. */
+            onMouseDown={(event) => {
+                event.stopPropagation();
             }}
         >
-            <div className="mb-1 font-semibold">{`Delete “${props.name}”?`}</div>
-            <div className="mb-3 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
-                {`This workspace has ${String(props.activeAgents)} active ${noun}. Deleting it will terminate ${them}.`}
-            </div>
-            <label className="mb-3 flex items-center gap-2 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
-                <input
-                    type="checkbox"
-                    data-testid="agent-delete-suppress"
-                    checked={suppress}
-                    onChange={(event) => setSuppress(event.target.checked)}
-                />
-                Don&apos;t ask again
-            </label>
-            <div className="flex justify-end gap-2">
-                <button
-                    type="button"
-                    data-testid="agent-delete-cancel"
-                    autoFocus
-                    style={{ color: chromeTokens.textPrimary }}
-                    onClick={() => {
-                        if (suppress) props.onSuppressOnly();
-                        props.onCancel();
-                    }}
+            <div
+                data-testid="agent-delete-gate"
+                data-active-agents={String(props.activeAgents)}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Delete workspace with active agents"
+                className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+                style={{
+                    background: chromeTokens.surfaceBackground,
+                    border: `1px solid ${chromeTokens.divider}`,
+                    color: chromeTokens.textPrimary,
+                    boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
+                }}
+            >
+                <div className="mb-1 font-semibold">{`Delete “${props.name}”?`}</div>
+                <div className="mb-3 text-[11px]" style={{ color: chromeTokens.textSecondary }}>
+                    {`This workspace has ${String(props.activeAgents)} active ${noun}. Deleting it will terminate ${them}.`}
+                </div>
+                <label
+                    className="mb-3 flex items-center gap-2 text-[11px]"
+                    style={{ color: chromeTokens.textSecondary }}
                 >
-                    Cancel
-                </button>
-                <button
-                    type="button"
-                    data-testid="agent-delete-confirm"
-                    style={{ color: '#E0655C' }}
-                    onClick={() => props.onConfirm(suppress)}
-                >
-                    Delete
-                </button>
+                    <input
+                        type="checkbox"
+                        data-testid="agent-delete-suppress"
+                        checked={suppress}
+                        onChange={(event) => setSuppress(event.target.checked)}
+                    />
+                    Don&apos;t ask again
+                </label>
+                <div className="flex justify-end gap-2">
+                    <button
+                        type="button"
+                        data-testid="agent-delete-cancel"
+                        data-default="true"
+                        autoFocus
+                        className="rounded px-2 py-1"
+                        style={{
+                            color: chromeTokens.textPrimary,
+                            border: `1px solid ${chromeTokens.accent}`,
+                            background: 'rgba(111,155,216,0.16)'
+                        }}
+                        onClick={cancel}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        data-testid="agent-delete-confirm"
+                        data-destructive="true"
+                        className="rounded px-2 py-1"
+                        style={{ color: '#E0655C', border: '1px solid transparent' }}
+                        onClick={() => props.onConfirm(suppress)}
+                    >
+                        Delete
+                    </button>
+                </div>
             </div>
         </div>
     );
@@ -4326,6 +4456,14 @@ interface ToastStackProps {
 
 /** The in-app fallback for a notification the browser would not (or could not) show. */
 function ToastStack({ toasts, onDismiss }: ToastStackProps): ReactElement | null {
+    /*
+     * H1 — a toast is DOM and a web pane's page is a native view drawn over it, so an unparked
+     * page simply eats the notification: the one message that says why a gesture did nothing
+     * would be painted underneath the thing the user is looking at. `active` rather than an
+     * unconditional call because this component is always mounted and paints only when it holds
+     * something; the page is handed back the moment the last toast is dismissed or expires.
+     */
+    useModalPresence(toasts.length > 0);
     if (toasts.length === 0) return null;
     return (
         <div data-testid="toast-stack" className="absolute bottom-8 right-3 z-40 flex flex-col gap-2">

@@ -25,7 +25,9 @@
  *   - **find-in-page** (§3.13). The marks and the match count live inside the document (the
  *     injected `__nexFind`); the needle, the bar and the count display live here, PER CLIENT —
  *     two browsers searching the same pane never see each other's highlights. The stored needle
- *     is re-applied on every `ready`, so a watcher reload does not silently drop the marks.
+ *     is re-applied on every `ready`, so a watcher reload does not silently drop the marks. The
+ *     bar itself is the grid's `PaneSearchOverlay` — the shipped app draws one find bar over
+ *     every pane type, so this pane must not invent a second one.
  *   - **the whole-document copy commands** (§3.14). "Copy as Markdown" needs only the source
  *     text the daemon already sent; "Copy as Rich Text" needs the rendered DOM, which only the
  *     frame can see — so the host asks for it and writes what comes back.
@@ -33,13 +35,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
+import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
 import {
     CONTENT_HOST_SOURCE,
     openExternalLink,
     parseBridgeMessage,
     prepareContentDocument,
+    replayFrameChord,
     writeClipboardText,
     type ClipboardWriter,
+    type ContentChordEvent,
     type FindOp,
     type FindPalette,
     type LinkOpener
@@ -125,13 +130,22 @@ export interface ContentFrameProps {
      * would put it — top-right of the document, directly under the header button that asked.
      */
     readonly copyToken?: number | undefined;
+    /**
+     * H9 — the chords the app's binding map claims (`bridge.ts`'s `chordKeysForBindings`).
+     *
+     * The frame is cross-origin, so its keydowns never reach the host `window` and the app's
+     * dispatcher never sees them: with a preview focused, ⌘W, ⌘D/⇧⌘D, ⌘[/⌘], ⇧⌘Space, the
+     * markdown font trio and zoom were all dead. The Swift has no such boundary — its
+     * `NSEvent` monitor fires for whatever holds first responder, `WKWebView` included — so
+     * the frame is told which chords to hand back, relays exactly those, and leaves every
+     * other key to the document (⌘C still copies a selection).
+     *
+     * Absent = relay nothing, which is the old behaviour and what a standalone frame wants.
+     */
+    readonly claimedChords?: readonly string[] | undefined;
+    /** Test seam: where a relayed chord is re-dispatched. Defaults to `window`. */
+    readonly replayTarget?: EventTarget | undefined;
     readonly testID?: string | undefined;
-}
-
-/** §3.13: the overlay's "current / total" readout; 0 matches shows `0/0`, never `3/0`. */
-export function findCountLabel(total: number, current: number): string {
-    if (total <= 0) return '0/0';
-    return `${String(current < 0 ? 0 : current + 1)}/${String(total)}`;
 }
 
 export interface ContentStatusProps {
@@ -197,9 +211,22 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     const [findOpen, setFindOpen] = useState(false);
     const [needle, setNeedle] = useState('');
     const [matches, setMatches] = useState<{ total: number; current: number }>(EMPTY_MATCHES);
-    const findInputRef = useRef<HTMLInputElement | null>(null);
+    /**
+     * Bumped on every request to open the bar, and used as the overlay's `key`.
+     *
+     * `PaneSearchOverlay` claims the caret on mount (as the Swift bar does on `.onAppear`), so
+     * re-keying is how a second ⌘F *while the bar is already open* pulls focus back into the
+     * field and selects what is in it — the behaviour the hand-rolled bar got from an explicit
+     * `inputRef.focus()`.
+     */
+    const [findSeq, setFindSeq] = useState(0);
     /** What the document is currently marked for, replayed after every reload. */
     const appliedNeedleRef = useRef('');
+
+    const openFind = useCallback((): void => {
+        setFindOpen(true);
+        setFindSeq((seq) => seq + 1);
+    }, []);
 
     const toFrame = useCallback((message: Record<string, unknown>): void => {
         frameRef.current?.contentWindow?.postMessage({ source: CONTENT_HOST_SOURCE, ...message }, '*');
@@ -226,10 +253,8 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
         if (findToken === lastFindToken.current) return;
         lastFindToken.current = findToken;
         if (props.findEnabled === false) return;
-        setFindOpen(true);
-        // The input mounts in the same commit, so the focus has to wait for it.
-        queueMicrotask(() => findInputRef.current?.focus());
-    }, [findToken, props.findEnabled]);
+        openFind();
+    }, [findToken, props.findEnabled, openFind]);
 
     // §3.13: no debounce — it is local JS, and a lagging highlight reads as a broken one.
     useEffect(() => {
@@ -239,6 +264,12 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
 
     // ── the copy commands (§3.14) ───────────────────────────────────────────────────
     const [menu, setMenu] = useState<CopyMenuPosition | null>(null);
+    /**
+     * H10: what was selected in the document when the menu was raised, so the menu can APPEND
+     * WebKit's Copy row rather than replacing the browser's menu with two items. Empty for the
+     * header-button route, which has no click and therefore no selection under it.
+     */
+    const [menuSelection, setMenuSelection] = useState('');
     /** Pending "Copy as Rich Text" requests: the frame answers asynchronously. */
     const richTokenRef = useRef<string | null>(null);
 
@@ -255,6 +286,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
         if (copyToken === lastCopyToken.current) return;
         lastCopyToken.current = copyToken;
         if (!copyable) return;
+        setMenuSelection('');
         setMenu({ anchor: 'top-right' });
     }, [copyToken, copyable]);
 
@@ -264,6 +296,16 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     useEffect(() => {
         toFrame({ kind: 'copy-menu', enabled: copyable });
     }, [copyable, toFrame, srcDoc]);
+
+    /**
+     * H9: the claimed chord set, on the same schedule as the copy-menu flag — a re-injected
+     * document has an empty set until it is told, and a re-recorded keybinding has to reach a
+     * frame that is already open.
+     */
+    const claimedChords = props.claimedChords ?? EMPTY_CHORDS;
+    useEffect(() => {
+        toFrame({ kind: 'chords', chords: claimedChords });
+    }, [claimedChords, toFrame, srcDoc]);
 
     const copyMarkdown = useCallback((): void => {
         setMenu(null);
@@ -279,6 +321,21 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
         richTokenRef.current = token;
         toFrame({ kind: 'collect-rich-text', token });
     }, [toFrame]);
+
+    /**
+     * H10: WebKit's own Copy row, appended under the two nex commands.
+     *
+     * The Swift menu *inserts* its commands into the WebKit menu, so Copy, Look Up, Speech and
+     * Services all survive a right-click in a preview. Of those four only Copy is something a
+     * DOM menu can honestly perform — and it is the one a reader reaches for — so it is carried
+     * here, with the selection the frame sent (a cross-origin host can read it no other way).
+     * The remaining three are `NSMenu` services and stay with the native menu the shell now
+     * builds for every frame that has no host menu (`shell/src/context-menu.ts`).
+     */
+    const copySelection = useCallback((): void => {
+        setMenu(null);
+        writeClipboardText(menuSelection, latest.current.writeClipboard);
+    }, [menuSelection]);
 
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
@@ -299,6 +356,16 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                             source: CONTENT_HOST_SOURCE,
                             kind: 'copy-menu',
                             enabled: typeof current.copySource === 'string'
+                        },
+                        '*'
+                    );
+                    // …and the same for the chord set (H9), for the same reason: a document
+                    // that has just been re-injected claims nothing until it is told.
+                    frame?.contentWindow?.postMessage(
+                        {
+                            source: CONTENT_HOST_SOURCE,
+                            kind: 'chords',
+                            chords: current.claimedChords ?? EMPTY_CHORDS
                         },
                         '*'
                     );
@@ -342,10 +409,27 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 case 'toggle-edit':
                     current.onToggleEdit?.(paneID);
                     return;
+                /**
+                 * H9: a chord the app claims, pressed inside the frame. Replaying it on the
+                 * host window is the whole fix — the app's capture-phase dispatcher then runs
+                 * it exactly as it would for a chord pressed over a terminal, so the focused
+                 * pane (this one, because the press focused it) is the one it acts on.
+                 */
+                case 'key': {
+                    const chord: ContentChordEvent = {
+                        code: message.code,
+                        key: message.key,
+                        ctrlKey: message.ctrlKey,
+                        altKey: message.altKey,
+                        shiftKey: message.shiftKey,
+                        metaKey: message.metaKey
+                    };
+                    replayFrameChord(chord, current.replayTarget);
+                    return;
+                }
                 case 'find-open':
                     if (current.findEnabled === false) return;
-                    setFindOpen(true);
-                    queueMicrotask(() => findInputRef.current?.focus());
+                    openFind();
                     return;
                 case 'find-result':
                     setMatches({ total: message.total, current: message.current });
@@ -353,6 +437,8 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 case 'context-menu':
                     if (typeof current.copySource !== 'string') return;
                     current.onFocusRequest?.(paneID);
+                    // H10: the selection under the click, so the menu can append Copy.
+                    setMenuSelection(message.selection);
                     setMenu({ x: message.x, y: message.y });
                     return;
                 case 'rich-text': {
@@ -368,7 +454,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
 
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, [paneID, store]);
+    }, [paneID, store, openFind]);
 
     const visible = props.visible !== false;
 
@@ -407,6 +493,9 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                         event.stopPropagation();
                         const box = event.currentTarget.getBoundingClientRect();
                         const host = event.currentTarget.parentElement?.getBoundingClientRect();
+                        // A button press is not a click INTO the document, so it carries no
+                        // selection and the appended Copy row stays away (H10).
+                        setMenuSelection('');
                         setMenu({
                             x: box.left - (host?.left ?? 0),
                             y: box.bottom - (host?.top ?? 0) + 2
@@ -455,74 +544,73 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                         >
                             Copy as Rich Text
                         </button>
+                        {/*
+                         * H10 — WebKit's own Copy, APPENDED rather than replaced away. The
+                         * Swift splices its two commands in at indices 0-2 of the WebKit menu
+                         * (`MarkdownPaneView.swift:457-494`), so Copy sits directly under them
+                         * behind a separator; the row is absent with nothing selected, the way
+                         * a disabled WebKit row reads.
+                         */}
+                        {menuSelection.trim() === '' ? null : (
+                            <>
+                                <div
+                                    role="separator"
+                                    data-testid={`content-copy-separator-${paneID}`}
+                                    className="my-1 h-px"
+                                    style={{ background: 'var(--nex-divider, #2A2A31)' }}
+                                />
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    data-testid={`content-copy-selection-${paneID}`}
+                                    className="block w-full rounded px-2 py-1 text-left"
+                                    onClick={copySelection}
+                                >
+                                    Copy
+                                </button>
+                            </>
+                        )}
                     </div>
                 </>
             )}
 
+            {/*
+              * §3.13's bar IS the terminal's bar. `PaneGridView.swift:356-370` mounts one
+              * `PaneSearchOverlay` over every pane type with no type test, so a preview's find
+              * is the same 160 pt monospace field, the same 22×22 chevrons dimmed and inert
+              * while the needle is empty, the same ✕ and the same counter rule (nothing at all
+              * until something is typed — never a standing `0/0`) as a terminal's. What differs
+              * is only what it drives: the daemon counts a terminal's scrollback, and here the
+              * sandboxed frame's own `__nexFind` counts, because nothing else can see inside it.
+              */}
             {findOpen ? (
-                <div
-                    data-testid={`content-find-${paneID}`}
-                    className="absolute flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px]"
-                    style={{ ...OVERLAY_STYLE, right: OVERLAY_INSET, top: 8 }}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Escape') {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            closeFind();
-                        }
-                    }}
-                >
-                    <input
-                        ref={findInputRef}
-                        aria-label={`Find in ${title}`}
-                        placeholder="Find"
-                        data-testid={`content-find-input-${paneID}`}
-                        className="w-32 bg-transparent outline-none"
-                        value={needle}
-                        onChange={(event) => setNeedle(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key !== 'Enter') return;
-                            event.preventDefault();
-                            sendFind(event.shiftKey ? 'prev' : 'next');
-                        }}
-                    />
-                    <span
-                        data-testid={`content-find-count-${paneID}`}
-                        className="tabular-nums opacity-60"
-                    >
-                        {findCountLabel(matches.total, matches.current)}
-                    </span>
-                    <button
-                        type="button"
-                        aria-label="Previous match"
-                        data-testid={`content-find-prev-${paneID}`}
-                        onClick={() => sendFind('prev')}
-                    >
-                        ↑
-                    </button>
-                    <button
-                        type="button"
-                        aria-label="Next match"
-                        data-testid={`content-find-next-${paneID}`}
-                        onClick={() => sendFind('next')}
-                    >
-                        ↓
-                    </button>
-                    <button
-                        type="button"
-                        aria-label="Close find"
-                        data-testid={`content-find-close-${paneID}`}
-                        onClick={closeFind}
-                    >
-                        ✕
-                    </button>
-                </div>
+                <PaneSearchOverlay
+                    key={findSeq}
+                    paneID={paneID}
+                    testIDPrefix="content-find"
+                    // `title` carries the pane id so two mounted iframes have distinct
+                    // accessible names; a landmark called "Find in markdown preview
+                    // C6392974-…" helps nobody, so the id comes back off for this one.
+                    label={`Find in ${title.replace(paneID, '').trim()}`}
+                    needle={needle}
+                    total={matches.total}
+                    // The same guard the daemon applies to a terminal's counts (§TERM-118): a
+                    // total of 0 drops any selection, so the bar can never read `3/0`.
+                    selected={matches.total > 0 && matches.current >= 0 ? matches.current : null}
+                    onNeedleChange={setNeedle}
+                    onNext={() => sendFind('next')}
+                    onPrevious={() => sendFind('prev')}
+                    onClose={closeFind}
+                />
             ) : null}
         </div>
     );
 }
 
 const EMPTY_MATCHES = { total: 0, current: -1 } as const;
+
+/** A stable identity, so the chord effect does not re-post on every render (H9). */
+const EMPTY_CHORDS: readonly string[] = [];
 
 /** The chrome the overlays sit in — deliberately opaque so text under them never shows through. */
 const OVERLAY_STYLE = {

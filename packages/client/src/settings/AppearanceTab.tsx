@@ -47,7 +47,16 @@ import {
 } from '../chrome';
 import { ColorField, SegmentedField, SelectField, SliderField, TextField } from './controls';
 import type { SettingsActions, SettingsPaths } from './types';
-import { KeyChip, SettingsButton, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import {
+    KeyChip,
+    SettingsButton,
+    SettingsFooterNote,
+    SettingsRow,
+    SettingsSection,
+    SettingsToggle,
+    hoverBackground,
+    useHover
+} from './ui';
 
 export interface AppearanceTabProps {
     readonly settings: WsSettingsSnapshot;
@@ -124,6 +133,41 @@ function ThemeSwatch(props: { readonly preset: BuiltInChromeTheme }): ReactEleme
                 </div>
             </div>
         </div>
+    );
+}
+
+/**
+ * One cell in the preset gallery: the swatch mock, the theme's name, and — H11 — a response to
+ * the pointer.
+ *
+ * `SettingsView.swift:556-569`'s cells are `Button`s, so AppKit lit them; these were seven
+ * static images in a grid with no hover, no cursor and no press, which is why the gallery read
+ * as decoration rather than as seven things you can click. The hover fill sits UNDER the swatch
+ * (a padded, rounded box) rather than on it, because the swatch's whole job is to show the
+ * preset's own colours untinted.
+ */
+function ThemePresetCell(props: {
+    readonly preset: BuiltInChromeTheme;
+    readonly onApply: () => void;
+}): ReactElement {
+    const { hovered, hoverProps } = useHover();
+    return (
+        <button
+            type="button"
+            data-testid={`theme-preset-${props.preset.name.toLowerCase().replace(/\s+/g, '-')}`}
+            title={`Apply the ${props.preset.name} theme (${
+                props.preset.appearance === 'dark' ? 'Dark' : 'Light'
+            })`}
+            className="flex flex-col gap-1 rounded p-1 text-left transition-colors duration-100"
+            style={{ background: hoverBackground(hovered, 'transparent'), cursor: 'pointer' }}
+            {...hoverProps}
+            onClick={props.onApply}
+        >
+            <ThemeSwatch preset={props.preset} />
+            <span className="truncate text-[11px]" style={{ color: tokens.textSecondary }}>
+                {props.preset.name}
+            </span>
+        </button>
     );
 }
 
@@ -378,21 +422,13 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
             >
                 <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))' }}>
                     {BUILT_IN_CHROME_THEMES.map((entry) => (
-                        <button
+                        <ThemePresetCell
                             key={entry.name}
-                            type="button"
-                            data-testid={`theme-preset-${entry.name.toLowerCase().replace(/\s+/g, '-')}`}
-                            title={`Apply the ${entry.name} theme (${entry.appearance === 'dark' ? 'Dark' : 'Light'})`}
-                            className="flex flex-col gap-1 text-left"
-                            onClick={() => {
+                            preset={entry}
+                            onApply={() => {
                                 applyPreset(entry);
                             }}
-                        >
-                            <ThemeSwatch preset={entry} />
-                            <span className="truncate text-[11px]" style={{ color: tokens.textSecondary }}>
-                                {entry.name}
-                            </span>
-                        </button>
+                        />
                     ))}
                 </div>
             </SettingsSection>

@@ -14,11 +14,42 @@
  *     ↑/↓ buttons, because a drag with no keyboard equivalent is unreachable for some users.
  */
 
-import { useState, type ReactElement } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../grid/tokens';
 import { truncateMiddle, type WebFavourite } from '../webpane';
-import { SettingsButton, SettingsFooterNote, SettingsSection } from './ui';
+import { SettingsButton, SettingsFooterNote, SettingsSection, hoverBackground, useHover } from './ui';
+
+/**
+ * One favourite row. H11: the Swift list's rows light under the pointer and these did not —
+ * and this one is also the drop target for the drag reorder, so "the pointer is here" is
+ * information the gesture needs, not only polish.
+ */
+function FavouriteRow(props: {
+    readonly id: string;
+    readonly onDragStart: () => void;
+    readonly onDrop: () => void;
+    readonly children: ReactNode;
+}): ReactElement {
+    const { hovered, hoverProps } = useHover();
+    return (
+        <div
+            data-testid={`settings-favourite-${props.id}`}
+            draggable
+            onDragStart={props.onDragStart}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+                event.preventDefault();
+                props.onDrop();
+            }}
+            className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors duration-100"
+            style={{ background: hoverBackground(hovered, 'rgba(128,128,128,0.06)') }}
+            {...hoverProps}
+        >
+            {props.children}
+        </div>
+    );
+}
 
 export interface WebTabActions {
     renameFavourite(id: string, title: string): void;
@@ -85,20 +116,15 @@ export function WebTab(props: WebTabProps): ReactElement {
                 ) : (
                     <div className="flex flex-col gap-1" data-testid="settings-favourites-list">
                         {favourites.map((favourite, index) => (
-                            <div
+                            <FavouriteRow
                                 key={favourite.id}
-                                data-testid={`settings-favourite-${favourite.id}`}
-                                draggable
+                                id={favourite.id}
                                 onDragStart={() => setDragging(index)}
-                                onDragOver={(event) => event.preventDefault()}
-                                onDrop={(event) => {
-                                    event.preventDefault();
+                                onDrop={() => {
                                     if (dragging === null || dragging === index) return;
                                     actions.moveFavourite(dragging, index);
                                     setDragging(null);
                                 }}
-                                className="flex items-center gap-2 rounded px-2 py-1.5"
-                                style={{ background: 'rgba(128,128,128,0.06)' }}
                             >
                                 <span className="shrink-0 text-[12px]" style={{ color: '#F2C230' }}>
                                     ★
@@ -170,7 +196,7 @@ export function WebTab(props: WebTabProps): ReactElement {
                                 >
                                     Remove
                                 </SettingsButton>
-                            </div>
+                            </FavouriteRow>
                         ))}
                     </div>
                 )}

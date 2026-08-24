@@ -44,7 +44,6 @@ export {
     CONTENT_PANE_BACKGROUND,
     ContentFrame,
     ContentStatus,
-    findCountLabel,
     type ContentFrameProps,
     type ContentStatusProps
 } from './ContentFrame';
@@ -74,7 +73,11 @@ export {
     FIND_CURRENT_TEXT_COLOR,
     FIND_MATCH_COLOR,
     FIND_MATCH_TEXT_COLOR,
+    chordKey,
+    chordKeysForBindings,
+    chordKeysForTrigger,
     contentBridgeScript,
+    replayFrameChord,
     resolveFindPalette,
     openExternalLink,
     parseBridgeMessage,
@@ -82,6 +85,7 @@ export {
     writeClipboardText,
     type ClipboardWriter,
     type ContentBridgeMessage,
+    type ContentChordEvent,
     type ContentHostMessage,
     type FindOp,
     type FindPalette,

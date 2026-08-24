@@ -141,17 +141,28 @@ describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
         });
     });
 
-    it('highlights only for a file-shaped drag (TERM-041)', () => {
+    it('classifies a file-shaped drag, and PAINTS nothing for it (TERM-041 / H20)', () => {
         setup();
         const app = screen.getByTestId('nex-app');
         fireEvent.dragEnter(app, { dataTransfer: { types: ['application/x-nex-pane'], files: { length: 0 } } });
         expect(app.dataset['dropActive']).toBe('false');
         fireEvent.dragEnter(app, { dataTransfer: { types: ['Files'], files: { length: 1 } } });
         expect(app.dataset['dropActive']).toBe('true');
-        expect(screen.getByTestId('drop-overlay')).toBeTruthy();
+        /*
+         * H20 — and there is no overlay, in either state. `ContentView.swift:598-607` takes the
+         * drop with `isTargeted: nil`, i.e. with the binding that would paint something
+         * explicitly absent, and `SurfaceView.swift:660-666` paints nothing either: the OS drag
+         * image is the whole feedback the shipped app gives. What the port drew instead was a
+         * full-window wash with a dashed accent border and a "Drop a .md file to open it" chip —
+         * on ANY file-shaped drag, including one headed for a terminal pane, where a dropped
+         * file types its escaped path (§TERM-040) and the caption was simply wrong.
+         */
+        expect(screen.queryByTestId('drop-overlay')).toBeNull();
+        expect(document.body.textContent).not.toContain('Drop a .md file');
         fireEvent.dragLeave(app);
         fireEvent.dragLeave(app);
         expect(app.dataset['dropActive']).toBe('false');
+        expect(screen.queryByTestId('drop-overlay')).toBeNull();
     });
 });
 

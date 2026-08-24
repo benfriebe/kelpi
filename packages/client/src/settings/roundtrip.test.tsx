@@ -227,6 +227,11 @@ describe('a recorded keybinding, end to end', () => {
             // ⌘, — the footer gear these three used to press is gone (§WS-004).
             fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
         });
+        // H13: ⌘, lands on General (`SettingsView.swift:13`), so reaching the table is now a
+        // deliberate click rather than where the window happens to open.
+        act(() => {
+            fireEvent.click(screen.getByTestId('settings-tab-button-keybindings'));
+        });
 
         // Before: `open_diff` ships unbound.
         expect(screen.getByTestId('keybinding-empty-open_diff').textContent).toBe('—');
@@ -265,6 +270,9 @@ describe('a recorded keybinding, end to end', () => {
         act(() => {
             // ⌘, — the footer gear these three used to press is gone (§WS-004).
             fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+        });
+        act(() => {
+            fireEvent.click(screen.getByTestId('settings-tab-button-keybindings'));
         });
         expect(screen.queryByTestId('global-hotkey-failure')).toBeNull();
 

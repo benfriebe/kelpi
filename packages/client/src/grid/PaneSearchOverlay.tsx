@@ -4,7 +4,14 @@
  * A floating bar at the pane's top-trailing corner: an auto-focused monospace field, a live
  * `selected+1/total` counter tucked inside its trailing edge, up/down chevrons that are dimmed
  * and inert while the needle is empty, and a ✕. Return jumps to the next match, ⇧Return to the
- * previous, Escape closes.
+ * previous, Escape closes. **Up is next and down is previous**, because that is how the Swift
+ * wires them (`:48-66`) and muscle memory is the whole point of a find bar.
+ *
+ * `PaneGridView.swift:356-370` draws this ONE bar over every pane type, with no type test, so
+ * this component is the port's single find-bar recipe too: the grid mounts it over the pane the
+ * daemon is searching, and `content/ContentFrame.tsx` mounts the same component over a markdown
+ * or diff preview, pointed at the sandboxed frame's own find instead of the daemon's counter
+ * (`testIDPrefix` / `label` are what keep the two addressable apart).
  *
  * Everything it renders is somebody else's state:
  *
@@ -38,6 +45,18 @@ export interface PaneSearchOverlayProps {
     readonly onClose: () => void;
     /** Skip the mount autofocus (tests that assert focus elsewhere). */
     readonly autoFocus?: boolean | undefined;
+    /**
+     * The landmark's accessible name. The default describes the terminal, which is where the
+     * daemon-counted bar lives; a content pane passes its own ("Find in markdown preview").
+     */
+    readonly label?: string | undefined;
+    /**
+     * The `data-testid` stem, so the two surfaces that mount this bar stay addressable apart
+     * (`pane-search-…` = the terminal's, driven by the daemon's counter; `content-find-…` = a
+     * markdown/diff pane's, driven by the sandboxed frame's own find). Same bar, same recipe,
+     * two backends — see `content/ContentFrame.tsx`.
+     */
+    readonly testIDPrefix?: string | undefined;
 }
 
 /** `selected+1/total`, `-/total`, or nothing at all (Swift `matchCountLabel`). */
@@ -88,6 +107,7 @@ function StepButton({ testID, label, icon, disabled, onClick }: StepButtonProps)
 
 export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
     const { paneID, needle, total, selected } = props;
+    const prefix = props.testIDPrefix ?? 'pane-search';
     const inputRef = useRef<HTMLInputElement | null>(null);
     const [draft, setDraft] = useState(needle);
 
@@ -143,11 +163,11 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
 
     return (
         <div
-            data-testid={`pane-search-${paneID}`}
+            data-testid={`${prefix}-${paneID}`}
             data-search-total={total === null ? '' : String(total)}
             data-search-selected={selected === null ? '' : String(selected)}
             role="search"
-            aria-label="Search terminal output"
+            aria-label={props.label ?? 'Search terminal output'}
             className="pointer-events-auto absolute right-2 top-2 z-30 flex items-center gap-1 rounded-lg px-1.5 py-1"
             style={{
                 background: tokens.headerBackground,
@@ -161,7 +181,7 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
             <div className="relative flex items-center">
                 <input
                     ref={inputRef}
-                    data-testid={`pane-search-input-${paneID}`}
+                    data-testid={`${prefix}-input-${paneID}`}
                     aria-label="Search"
                     placeholder="Search"
                     value={draft}
@@ -169,6 +189,13 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                     style={{
                         background: tokens.surfaceBackground,
                         color: tokens.textPrimary,
+                        // The face and size are set INLINE, not left to `font-mono text-[12px]`:
+                        // `styles.css`'s `input { font: inherit }` is unlayered, and unlayered
+                        // CSS beats every Tailwind utility regardless of specificity — so the
+                        // classes alone rendered this as the 13 px UI sans, where the Swift is
+                        // `.font(.system(size: 12, design: .monospaced))` (`:22`).
+                        fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                        fontSize: 12,
                         // Room for the counter, which floats over the field's trailing edge.
                         paddingRight: count === null ? undefined : `${String(count.length * 7 + 12)}px`
                     }}
@@ -180,7 +207,7 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                 />
                 {count === null ? null : (
                     <span
-                        data-testid={`pane-search-count-${paneID}`}
+                        data-testid={`${prefix}-count-${paneID}`}
                         className="pointer-events-none absolute right-1.5 font-mono text-[10px] tabular-nums"
                         style={{ color: tokens.textSecondary }}
                     >
@@ -188,23 +215,30 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                     </span>
                 )}
             </div>
+            {/*
+              * Up is NEXT and down is PREVIOUS — `PaneSearchOverlay.swift:48-66` wires
+              * `chevron.up` to `onNavigateNext` and `chevron.down` to `onNavigatePrevious`, in
+              * that order. It reads backwards written down, and it is what the shipped app's
+              * users have in their fingers, so the glyph order and the stepping order both
+              * follow the Swift rather than the intuition.
+              */}
             <StepButton
-                testID={`pane-search-prev-${paneID}`}
-                label="Previous match (⇧Return)"
-                icon="chevron-up"
-                disabled={empty}
-                onClick={props.onPrevious}
-            />
-            <StepButton
-                testID={`pane-search-next-${paneID}`}
+                testID={`${prefix}-next-${paneID}`}
                 label="Next match (Return)"
-                icon="chevron-down"
+                icon="chevron-up"
                 disabled={empty}
                 onClick={props.onNext}
             />
+            <StepButton
+                testID={`${prefix}-prev-${paneID}`}
+                label="Previous match (⇧Return)"
+                icon="chevron-down"
+                disabled={empty}
+                onClick={props.onPrevious}
+            />
             <button
                 type="button"
-                data-testid={`pane-search-close-${paneID}`}
+                data-testid={`${prefix}-close-${paneID}`}
                 aria-label="Close search (Escape)"
                 title="Close search (Escape)"
                 className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded opacity-70 hover:opacity-100"

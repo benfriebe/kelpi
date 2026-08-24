@@ -12,8 +12,20 @@
  *
  *   frame → host   `ready` (document parsed), `scroll` (position tracking), `copy` (a code
  *                  block's raw text), `link` (a click the host must open externally),
- *                  `focus` (a press inside the pane), `toggle-edit` (⌘E inside the preview)
- *   host  → frame  `scroll-to` (restore a saved position)
+ *                  `focus` (a press inside the pane), `toggle-edit` (⌘E inside the preview),
+ *                  `key` (any OTHER chord the app claims — see below)
+ *   host  → frame  `scroll-to` (restore a saved position), `chords` (which chords to relay)
+ *
+ * **The chord relay (H9)** is the general form of the ⌘E hop. `NexCommands.swift:142-155` is an
+ * `NSEvent.addLocalMonitorForEvents(matching: .keyDown)`, which fires for whatever holds first
+ * responder — inside a `WKWebView` included — so in the shipped app every binding works with a
+ * preview focused, and a chord the map does NOT claim falls straight through to the document
+ * (⌘C still copies the selection). A cross-origin iframe gives the host no such monitor: its
+ * keydowns never reach `window`, so forwarding two hard-coded chords left ⌘W, ⌘D, ⌘[, ⌘],
+ * ⇧⌘Space, the font-size trio and zoom dead in a markdown or diff pane. The host therefore
+ * tells the frame WHICH chords the app claims (`chords`), and the frame relays exactly those
+ * and preventDefaults exactly those — the two halves of what the Swift monitor does by
+ * returning `nil` or the event.
  *
  * The `copy` hop replaces the Swift app's `copyCodeBlock` webkit message handler; the host
  * writes the text with `navigator.clipboard.writeText`. The button's own 1.5 s `copied` window
@@ -24,6 +36,10 @@
  * ever added it has to keep inline script legal for these frames (a nonce cannot be shared with
  * an opaque origin), or the copy button and scroll tracking go quiet with no other symptom.
  */
+
+import type { KeyBindingMap, KeyTrigger } from '@nex/core/config';
+
+import { CODE_TO_KEY_CODE } from '../chrome/keys';
 
 /** Marks a message as coming from a pane document (host → frame uses the other marker). */
 export const CONTENT_BRIDGE_SOURCE = 'nex-content';
@@ -93,9 +109,21 @@ export interface FindResult {
     readonly current: number;
 }
 
+/** A chord as it left the frame, in the shape `replayFrameChord` needs to rebuild it (H9). */
+export interface ContentChordEvent {
+    readonly code: string;
+    readonly key: string;
+    readonly ctrlKey: boolean;
+    readonly altKey: boolean;
+    readonly shiftKey: boolean;
+    readonly metaKey: boolean;
+}
+
 export type ContentBridgeMessage =
     | { readonly kind: 'ready' }
     | { readonly kind: 'focus' }
+    /** H9: a chord the app claims, pressed inside the frame. The host replays it. */
+    | ({ readonly kind: 'key' } & ContentChordEvent)
     | { readonly kind: 'scroll'; readonly top: number; readonly fraction: number }
     | { readonly kind: 'copy'; readonly text: string }
     | { readonly kind: 'link'; readonly href: string }
@@ -103,8 +131,14 @@ export type ContentBridgeMessage =
     /** ⌘F inside the preview — the host's key interceptor cannot see through the iframe. */
     | { readonly kind: 'find-open' }
     | { readonly kind: 'find-result'; readonly total: number; readonly current: number }
-    /** Right-click inside the preview; the host opens the copy menu at these coordinates. */
-    | { readonly kind: 'context-menu'; readonly x: number; readonly y: number }
+    /**
+     * Right-click inside the preview; the host opens the copy menu at these coordinates.
+     *
+     * `selection` rides along so the host menu can *append* WebKit's Copy row under its own two
+     * commands (H10) — the frame is cross-origin, so the selection is not readable any other
+     * way, and `MarkdownPaneView.swift:457-494` inserts rather than replaces.
+     */
+    | { readonly kind: 'context-menu'; readonly x: number; readonly y: number; readonly selection: string }
     /** §3.14 "Copy as Rich Text": the cleaned `#content` HTML plus its flattened text. */
     | { readonly kind: 'rich-text'; readonly token: string; readonly html: string; readonly text: string };
 
@@ -132,6 +166,12 @@ export type ContentHostMessage =
           readonly source: typeof CONTENT_HOST_SOURCE;
           readonly kind: 'copy-menu';
           readonly enabled: boolean;
+      }
+    /** H9: the chords the app's binding map claims, as `chordKey` strings. */
+    | {
+          readonly source: typeof CONTENT_HOST_SOURCE;
+          readonly kind: 'chords';
+          readonly chords: readonly string[];
       };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,12 +208,33 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
             const href = data['href'];
             return typeof href === 'string' && href.length > 0 ? { kind: 'link', href } : null;
         }
+        case 'key': {
+            const code = data['code'];
+            if (typeof code !== 'string' || code.length === 0) return null;
+            const key = data['key'];
+            return {
+                kind: 'key',
+                code,
+                key: typeof key === 'string' ? key : '',
+                ctrlKey: data['ctrlKey'] === true,
+                altKey: data['altKey'] === true,
+                shiftKey: data['shiftKey'] === true,
+                metaKey: data['metaKey'] === true
+            };
+        }
         case 'find-open':
             return { kind: 'find-open' };
         case 'find-result':
             return { kind: 'find-result', total: finite(data['total']), current: finite(data['current']) };
-        case 'context-menu':
-            return { kind: 'context-menu', x: finite(data['x']), y: finite(data['y']) };
+        case 'context-menu': {
+            const selection = data['selection'];
+            return {
+                kind: 'context-menu',
+                x: finite(data['x']),
+                y: finite(data['y']),
+                selection: typeof selection === 'string' ? selection : ''
+            };
+        }
         case 'rich-text': {
             const token = data['token'];
             const html = data['html'];
@@ -184,6 +245,96 @@ export function parseBridgeMessage(data: unknown, paneID: string): ContentBridge
         default:
             return null;
     }
+}
+
+// ── the chord relay (H9) ────────────────────────────────────────────────────────────
+
+/**
+ * The identity of a chord, in a form BOTH sides can compute.
+ *
+ * The frame is plain ES5 in a string with no imports, so it cannot build a `KeyTrigger` (that
+ * needs the `code` → macOS key-code table). `event.code` plus a modifier bitmask is the same
+ * information and needs no table: the host converts its binding map into these once, the frame
+ * compares against them on every keydown. Bits are `MODIFIER_ORDER`'s: ctrl 1, alt 2, shift 4,
+ * super 8 — the same order `keyTriggerKey` packs, so the two stay legible side by side.
+ */
+export function chordKey(event: {
+    readonly code: string;
+    readonly ctrlKey?: boolean;
+    readonly altKey?: boolean;
+    readonly shiftKey?: boolean;
+    readonly metaKey?: boolean;
+}): string {
+    let bits = 0;
+    if (event.ctrlKey === true) bits |= 1;
+    if (event.altKey === true) bits |= 2;
+    if (event.shiftKey === true) bits |= 4;
+    if (event.metaKey === true) bits |= 8;
+    return `${String(bits)}/${event.code}`;
+}
+
+/** macOS key code → every `KeyboardEvent.code` that produces it (Enter has two: 36). */
+const KEY_CODE_TO_CODES: ReadonlyMap<number, readonly string[]> = (() => {
+    const map = new Map<number, string[]>();
+    for (const [code, keyCode] of CODE_TO_KEY_CODE) {
+        const existing = map.get(keyCode);
+        if (existing === undefined) map.set(keyCode, [code]);
+        else existing.push(code);
+    }
+    return map;
+})();
+
+/** Every `chordKey` a trigger can arrive as — two for `Enter`/`NumpadEnter`. */
+export function chordKeysForTrigger(trigger: KeyTrigger): string[] {
+    const codes = KEY_CODE_TO_CODES.get(trigger.keyCode);
+    if (codes === undefined) return [];
+    const present = new Set(trigger.modifiers);
+    let bits = 0;
+    if (present.has('ctrl')) bits |= 1;
+    if (present.has('alt')) bits |= 2;
+    if (present.has('shift')) bits |= 4;
+    if (present.has('super')) bits |= 8;
+    return codes.map((code) => `${String(bits)}/${code}`);
+}
+
+/**
+ * The whole claimed set for a binding map, deduped and sorted (so the message a frame gets is
+ * stable across renders and a test can read it).
+ */
+export function chordKeysForBindings(bindings: KeyBindingMap): string[] {
+    const keys = new Set<string>();
+    for (const binding of bindings.values()) {
+        for (const key of chordKeysForTrigger(binding.trigger)) keys.add(key);
+    }
+    return [...keys].sort();
+}
+
+/**
+ * Replay a relayed chord into the host document, where the app's own capture-phase dispatcher
+ * (`chrome/keys.ts` → `installKeyDispatcher`) is listening.
+ *
+ * Dispatched on the window rather than on any element, which is also what makes it safe: the
+ * dispatcher's `isEditableTarget(event.target)` test sees the window, not a text field, so a
+ * relayed ⌘D splits rather than being swallowed as "the user is typing".
+ */
+export function replayFrameChord(chord: ContentChordEvent, target?: EventTarget | undefined): boolean {
+    const view = target ?? (globalThis as { window?: EventTarget }).window;
+    if (view === undefined) return false;
+    const Ctor = (globalThis as { KeyboardEvent?: typeof KeyboardEvent }).KeyboardEvent;
+    if (Ctor === undefined) return false;
+    view.dispatchEvent(
+        new Ctor('keydown', {
+            code: chord.code,
+            key: chord.key,
+            ctrlKey: chord.ctrlKey,
+            altKey: chord.altKey,
+            shiftKey: chord.shiftKey,
+            metaKey: chord.metaKey,
+            bubbles: true,
+            cancelable: true
+        })
+    );
+    return true;
 }
 
 // ── document preparation ────────────────────────────────────────────────────────────
@@ -343,6 +494,20 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
 
   // ⌘E / ctrl+E inside the preview: the host's key interceptor cannot see it either.
   // ⌘F is the same problem for the find bar, and Escape closes it from inside the document.
+  //
+  // Everything else the app claims rides the generic relay below (H9): the host sends the
+  // chord set, and a claimed chord is preventDefaulted and posted for the host's dispatcher to
+  // replay — while an UNCLAIMED one is left entirely alone, so ⌘C still copies the selection,
+  // exactly as an unmatched event falls past the Swift's local monitor into the WKWebView.
+  var claimedChords = {};
+  var chordKey = function (event) {
+    var bits = 0;
+    if (event.ctrlKey) bits += 1;
+    if (event.altKey) bits += 2;
+    if (event.shiftKey) bits += 4;
+    if (event.metaKey) bits += 8;
+    return String(bits) + '/' + event.code;
+  };
   document.addEventListener('keydown', function (event) {
     if ((event.metaKey || event.ctrlKey) && (event.key === 'e' || event.key === 'E')) {
       event.preventDefault();
@@ -352,7 +517,20 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
     if ((event.metaKey || event.ctrlKey) && (event.key === 'f' || event.key === 'F')) {
       event.preventDefault();
       post({ kind: 'find-open' });
+      return;
     }
+    // Every key carries a '/', so no chord can collide with an Object.prototype member.
+    if (!claimedChords[chordKey(event)]) return;
+    event.preventDefault();
+    post({
+      kind: 'key',
+      code: event.code,
+      key: event.key,
+      ctrlKey: !!event.ctrlKey,
+      altKey: !!event.altKey,
+      shiftKey: !!event.shiftKey,
+      metaKey: !!event.metaKey
+    });
   });
 
   // §3.14 — the two copy commands are also reachable from the preview's context menu; the
@@ -362,13 +540,26 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
   // with a copy-menu message): a diff pane, or a markdown pane whose load failed, has no copy
   // commands, and taking the browser's own menu away there would leave a right-click doing
   // nothing at all.
+  //
+  // The SELECTION rides along (H10): the host menu appends WebKit's own Copy row under its two
+  // commands rather than replacing the menu, and a cross-origin host cannot read the selection
+  // any other way. When there is no host menu the browser's own is left alone — and the shell
+  // now answers that one with the WebKit set (shell/src/context-menu.ts), so a diff pane's
+  // right-click is a menu again instead of nothing at all.
   var copyMenuEnabled = false;
   document.addEventListener('contextmenu', function (event) {
     if (!copyMenuEnabled) return;
     event.preventDefault();
     var box = { left: 0, top: 0 };
     try { box = document.documentElement.getBoundingClientRect(); } catch (error) { /* detached */ }
-    post({ kind: 'context-menu', x: event.clientX - box.left, y: event.clientY - box.top });
+    var selected = '';
+    try { selected = String(window.getSelection() || ''); } catch (error) { /* no selection api */ }
+    post({
+      kind: 'context-menu',
+      x: event.clientX - box.left,
+      y: event.clientY - box.top,
+      selection: selected
+    });
   });
 
   // §3.14 "Copy as Rich Text": the RENDERED DOM, minus the front-matter table (it breaks the
@@ -532,6 +723,14 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
     }
     if (data.kind === 'copy-menu') {
       copyMenuEnabled = data.enabled === true;
+      return;
+    }
+    if (data.kind === 'chords') {
+      claimedChords = {};
+      var chords = data.chords;
+      if (chords && chords.length) {
+        for (var c = 0; c < chords.length; c += 1) claimedChords[chords[c]] = true;
+      }
       return;
     }
     if (data.kind !== 'scroll-to') return;

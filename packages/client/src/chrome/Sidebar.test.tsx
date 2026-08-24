@@ -103,7 +103,7 @@ describe('rendering', () => {
         expect(rows.map((row) => row.dataset['depth'])).toEqual(['0', '0', '1', '1']);
     });
 
-    it('shows at most three label chips plus an overflow count, branch and pane count', () => {
+    it('shows at most three label chips plus an overflow count', () => {
         render(<Sidebar {...noopProps()} entries={entries()} />);
         const alpha = screen.getAllByTestId('workspace-row')[0] as HTMLElement;
         expect(within(alpha).getAllByTestId('label-chip').map((chip) => chip.textContent)).toEqual([
@@ -112,10 +112,45 @@ describe('rendering', () => {
             'web'
         ]);
         expect(within(alpha).getByText('+1')).toBeDefined();
-        expect(within(alpha).getByTestId('row-branch').textContent).toContain('main');
-        expect(within(alpha).getByTestId('row-pane-count').textContent).toBe('1 pane');
     });
 
+    /**
+     * §H5: a row is NAME + LABELS and nothing else.
+     *
+     * `WorkspaceRowView.swift:54-77` is `VStack(alignment: .leading, spacing: 3) { name; labels }`
+     * — no branch chip, no pane count, no running/waiting counters. The port used to carry all
+     * four on a third `text-[10px]` line, which added a whole text line to every row and cost the
+     * sidebar the shipped app's density. This asserts what the Swift renders, so the line cannot
+     * come back by accident: the alpha fixture has a `main` branch and a pane, and neither
+     * reaches the row.
+     */
+    it('§H5: renders no third metadata line — no branch, no pane count, no counters', () => {
+        render(
+            <Sidebar
+                {...noopProps()}
+                entries={entries({
+                    alphaPanes: [
+                        pane('p-run', { status: 'running' }),
+                        pane('p-wait', { status: 'waitingForInput' })
+                    ]
+                })}
+            />
+        );
+        const alpha = screen.getAllByTestId('workspace-row')[0] as HTMLElement;
+        for (const testid of ['row-branch', 'row-pane-count', 'row-running', 'row-waiting'])
+            expect(within(alpha).queryByTestId(testid), testid).toBeNull();
+        // The whole row says the name and the labels, and not "2 panes" or "● 1".
+        expect(alpha.textContent).not.toMatch(/pane|●/);
+        // The two children of the name column are exactly the name and the label strip.
+        const column = alpha.querySelector('span.flex-col');
+        expect(column?.children.length).toBe(2);
+    });
+
+    /**
+     * …and the agent state a row DOES report is the one the Swift reports: the pulsing dot on
+     * the avatar (§AGNT-103), with waiting beating running. That contract is untouched by §H5 —
+     * the counters went, the dot stayed.
+     */
     it('shows the agent dot with waiting beating running', () => {
         render(
             <Sidebar
@@ -130,8 +165,6 @@ describe('rendering', () => {
         );
         const alpha = screen.getAllByTestId('workspace-row')[0] as HTMLElement;
         expect(within(alpha).getByTestId('status-dot').dataset['status']).toBe('waiting');
-        expect(within(alpha).getByTestId('row-running').textContent).toContain('1');
-        expect(within(alpha).getByTestId('row-waiting').textContent).toContain('1');
     });
 
     it('activates a workspace on click', () => {

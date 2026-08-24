@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { normalizeHexColor, tokens, withAlpha } from '../chrome';
+import { hoverBackground, useHover } from './ui';
 
 export const SETTINGS_WRITE_DEBOUNCE_MS = 250;
 
@@ -193,6 +194,49 @@ export function SliderField(props: SliderFieldProps): ReactElement {
     );
 }
 
+interface SegmentButtonProps {
+    readonly label: string;
+    readonly selected: boolean;
+    readonly first: boolean;
+    readonly testID: string | undefined;
+    readonly onSelect: () => void;
+}
+
+/**
+ * One segment of the picker. H11: a `.pickerStyle(.segmented)` control tracks the pointer in
+ * AppKit and this one did not, so the unselected halves read as labels rather than as choices.
+ */
+function SegmentButton(props: SegmentButtonProps): ReactElement {
+    const { hovered, hoverProps } = useHover(!props.selected);
+    return (
+        <button
+            type="button"
+            role="radio"
+            aria-checked={props.selected}
+            data-testid={props.testID}
+            className="px-2.5 py-1 text-[11px] transition-colors duration-100"
+            style={{
+                background: props.selected
+                    ? withAlpha(tokens.accent, 0.22)
+                    : hoverBackground(hovered, 'transparent'),
+                color: props.selected || hovered ? tokens.textPrimary : tokens.textSecondary,
+                cursor: 'pointer',
+                // A divider between segments, not around them. Without it the labels run
+                // together and read as one word — the audit caught "SystemLightDark" and
+                // "LineStacked dots" rendering as prose rather than as a choice between three
+                // things. Mixed from the TEXT colour rather than the divider token: the divider
+                // is tuned for a flat surface and disappears against a tinted row (the
+                // placement pickers on the General tab were the case).
+                borderLeft: props.first ? 'none' : `1px solid ${withAlpha(tokens.textPrimary, 0.18)}`
+            }}
+            {...hoverProps}
+            onClick={props.onSelect}
+        >
+            {props.label}
+        </button>
+    );
+}
+
 export interface SegmentedFieldProps<T extends string> {
     readonly label: string;
     readonly value: T;
@@ -229,34 +273,18 @@ export function SegmentedField<T extends string>(props: SegmentedFieldProps<T>):
                 {props.options.map((option, index) => {
                     const selected = option.value === props.value;
                     return (
-                        <button
+                        <SegmentButton
                             key={option.value}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            data-testid={
+                            label={option.label}
+                            selected={selected}
+                            first={index === 0}
+                            testID={
                                 props.testID === undefined ? undefined : `${props.testID}-${option.value}`
                             }
-                            className="px-2.5 py-1 text-[11px]"
-                            style={{
-                                background: selected ? withAlpha(tokens.accent, 0.22) : 'transparent',
-                                color: selected ? tokens.textPrimary : tokens.textSecondary,
-                                // A divider between segments, not around them. Without it the
-                                // labels run together and read as one word — the audit caught
-                                // "SystemLightDark" and "LineStacked dots" rendering as prose
-                                // rather than as a choice between three things. Mixed from the
-                                // TEXT colour rather than the divider token: the divider is
-                                // tuned for a flat surface and disappears against a tinted row
-                                // (the placement pickers on the General tab were the case).
-                                borderLeft:
-                                    index === 0 ? 'none' : `1px solid ${withAlpha(tokens.textPrimary, 0.18)}`
-                            }}
-                            onClick={() => {
+                            onSelect={() => {
                                 props.onChange(option.value);
                             }}
-                        >
-                            {option.label}
-                        </button>
+                        />
                     );
                 })}
             </div>

@@ -19,6 +19,7 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useModalPresence } from './modal-presence';
 import { tokens } from './tokens';
 import type { GraftOrphanView, GraftSessionView, GraftSwapPrompt } from '../state/graft';
 
@@ -228,6 +229,12 @@ export interface GraftSwapDialogProps {
 export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | null {
     const container = props.container ?? (typeof document === 'undefined' ? null : document.body);
     const onCancel = props.onCancel;
+    /*
+     * H1: park a live web pane while the prompt is up. `docs/audit/run-O/83-graft-swap-prompt-
+     * prompt.png` is this dialog cut to "Kee" with the swap button gone — it renders inside the
+     * inspector, which is why the assembly cannot see it from a prompt-shaped predicate.
+     */
+    useModalPresence();
     useEffect(() => {
         const onKey = (event: KeyboardEvent): void => {
             if (event.key !== 'Escape') return;

@@ -83,6 +83,7 @@ import {
     viewMenuTemplate,
     workspaceSelectionLogLine
 } from './menu.js';
+import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
 import { isForwardableOpenPath } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
@@ -451,6 +452,28 @@ function createWindow(): BrowserWindow {
     // re-measures and reports, so nothing is recomputed here — but a window that leaves the
     // screen entirely must not keep views parented to it.
     window.on('minimize', () => webHost?.releaseViews('window-minimized'));
+
+    /*
+     * H10 — a right-click inside a content pane's document frame.
+     *
+     * A markdown preview and a diff are `WKWebView`s in the shipped app, so they get WebKit's own
+     * menu (Copy, Look Up, Speech, Services) for nothing; an Electron renderer has no default
+     * menu at all, so a diff pane's right-click did nothing whatsoever. `./context-menu.ts`
+     * builds WebKit's set from the same `params`, and returns [] for anything that is not a
+     * subframe — the chrome's own DOM menus all `preventDefault()`, which suppresses this event
+     * entirely, so no surface that already has a menu can grow a second one.
+     */
+    window.webContents.on('context-menu', (_event, params) => {
+        const template = contentContextMenuTemplate(params, {
+            platform: process.platform,
+            isPackaged: app.isPackaged,
+            lookUp: () => window.webContents.showDefinitionForSelection(),
+            inspect: (x, y) => window.webContents.inspectElement(x, y)
+        });
+        if (template.length === 0) return;
+        log(contentContextMenuLogLine(template.length, params.selectionText.trim() !== ''));
+        Menu.buildFromTemplate(template).popup({ window });
+    });
 
     window.webContents.on('did-finish-load', () => {
         loadRetries = 0;

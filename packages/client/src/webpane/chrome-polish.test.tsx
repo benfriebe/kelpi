@@ -343,7 +343,7 @@ describe('the scope and storage buttons (WEB-039/WEB-040)', () => {
         }))
     });
 
-    it('badges the scope button with a hidden batch’s pending count, and names it', () => {
+    it('badges the scope button with the batch’s pending count, and names it', () => {
         const { commands } = fakeCommands();
         const view = render(
             <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} batch={session(false, 2)} />
@@ -353,9 +353,24 @@ describe('the scope and storage buttons (WEB-039/WEB-040)', () => {
             '2 items waiting'
         );
 
-        // A VISIBLE batch shows the panel instead: the badge would be redundant.
+        /*
+         * §M35 — a VISIBLE batch keeps its badge. `WebPaneView.swift:114` hands the chrome
+         * `pendingItemCount: batchInspect?.items.count ?? 0` with no reference to the panel, and
+         * `WebPaneChrome.swift:254-266` draws the capsule on `pendingItemCount > 0` alone, so
+         * picking gives running toolbar feedback rather than a number that only appears once you
+         * hide the rows. The tooltip still distinguishes the two states.
+         */
         view.rerender(
             <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} batch={session(true, 2)} />
+        );
+        expect(screen.getByTestId(`web-batch-toggle-${PANE}-badge`).textContent).toBe('2');
+        expect(screen.getByTestId(`web-batch-toggle-${PANE}`).getAttribute('aria-label')).toBe(
+            'Hide element pickup'
+        );
+
+        // An empty batch has nothing to count, so no capsule at all.
+        view.rerender(
+            <WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} batch={session(true, 0)} />
         );
         expect(screen.queryByTestId(`web-batch-toggle-${PANE}-badge`)).toBeNull();
     });

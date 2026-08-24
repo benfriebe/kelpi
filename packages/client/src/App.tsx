@@ -3671,8 +3671,12 @@ function Shell(props: AppProps): ReactElement {
               * under one full-width title bar. It is a row inside a column rather than the
               * whole window being a row, which is what puts the drawn strip above the sidebar
               * instead of beside it.
+              *
+              * `relative` because UI-FIDELITY M53 mounts the command palette's overlay on THIS
+              * row (see its block at the row's end) — the Swift hangs it off the content
+              * `HStack`, not off the window.
               */}
-            <div className="flex min-h-0 flex-1">
+            <div className="relative flex min-h-0 flex-1">
             {sidebarMounted ? (
                 /* §WS-001: the slot animates its WIDTH (that is what the pane grid is pushed
                    by); the panel inside keeps its full width and translates, so a 220px
@@ -3967,6 +3971,30 @@ function Shell(props: AppProps): ReactElement {
                     </div>
                 </div>
             ) : null}
+
+            {/*
+              * UI-FIDELITY M53 — the palette is an overlay on the CONTENT ROW.
+              *
+              * `ContentView.swift:262-285` hangs it off the `sidebar | grid | inspector` HStack
+              * with `.padding(.top, 40)`, so its card starts 40 pt below the row — 32 + 40 = 72
+              * from the window's top, which clears the 24 pt pane header underneath it — and the
+              * `Color.black.opacity(0.001)` hit target covers the row ALONE: the title bar and
+              * the status footer stay live behind it. Mounted as a sibling of `StatusFooter` the
+              * port's `absolute inset-0` measured from the window instead, which put the card at
+              * 40 px (flush with the pane header, `docs/audit/run-O/104`) and swallowed both
+              * strips. One level in is the whole fix; the panel's own `mt-10` is unchanged.
+              */}
+            <CommandPalette
+                open={ui.palette.open}
+                query={ui.palette.query}
+                onQueryChange={(query) => store.getState().setPaletteQuery(query)}
+                items={paletteItems}
+                onConfirm={onPaletteConfirm}
+                onDismiss={() => store.getState().setPaletteOpen(false)}
+                onFocusHandoff={onFocusHandoff}
+                fallbackPaneID={focusedPaneID}
+                bucket={bucket}
+            />
             </div>
 
             {/*
@@ -4003,18 +4031,6 @@ function Shell(props: AppProps): ReactElement {
             {ready && ui.connection !== 'connected' ? (
                 <ConnectionBanner status={ui.connection} error={ui.connectionError} runtime={runtime} />
             ) : null}
-
-            <CommandPalette
-                open={ui.palette.open}
-                query={ui.palette.query}
-                onQueryChange={(query) => store.getState().setPaletteQuery(query)}
-                items={paletteItems}
-                onConfirm={onPaletteConfirm}
-                onDismiss={() => store.getState().setPaletteOpen(false)}
-                onFocusHandoff={onFocusHandoff}
-                fallbackPaneID={focusedPaneID}
-                bucket={bucket}
-            />
 
             <SettingsOverlay
                 open={settingsTab !== null}

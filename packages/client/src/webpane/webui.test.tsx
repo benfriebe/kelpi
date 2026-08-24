@@ -14,7 +14,7 @@ import type { CommandReply } from '../connection';
 import { BatchPanel, BATCH_EMPTY_HINT } from './BatchPanel';
 import { FavouritesMenu } from './FavouritesMenu';
 import { StoragePanel, canonicalDomain, defaultExpiryInput, groupCookies, privateModeWarning } from './StoragePanel';
-import { WebFindBar, findCountLabel } from './WebFindBar';
+import { WebFindBar } from './WebFindBar';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
 import { BATCH_LOCAL_DESTINATION, type WebBatchSession, type WebFavourite } from './state';
@@ -72,11 +72,61 @@ afterEach(cleanup);
 // ── find (WEB-059…WEB-065) ──────────────────────────────────────────────────────────
 
 describe('the find bar', () => {
-    it('reads 0/0 with no matches and n/N with them', () => {
-        expect(findCountLabel(0, -1)).toBe('0/0');
-        expect(findCountLabel(3, 0)).toBe('1/3');
-        // Never `3/0`: a count with no selection still shows a floor of 0.
-        expect(findCountLabel(3, -1)).toBe('0/3');
+    /**
+     * §M38 — the readout is the app's ONE find-bar rule (`grid/PaneSearchOverlay.tsx`'s
+     * `matchCountLabel`, which is `PaneSearchOverlay.swift:99-116`): `selected+1/total` once
+     * something is selected, `-/total` before that, and **nothing at all** while the field is
+     * empty. The web bar used to own a second rule that read a permanent `0/0` before you typed
+     * — a counter for a search nobody had started.
+     */
+    it('shows no counter until there is a needle, then the Swift readout', () => {
+        const fake = fakeCommands();
+        fake.answer('find', { ok: true, total: 3, current: 0, tab_id: TAB1 } as unknown as CommandReply);
+        render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
+        expect(screen.queryByTestId(`web-find-count-${PANE}`)).toBeNull();
+    });
+
+    it('reads `-/total` before a match is selected', async () => {
+        const fake = fakeCommands();
+        fake.answer('find', { ok: true, total: 3, current: -1, tab_id: TAB1 } as unknown as CommandReply);
+        render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
+        fireEvent.change(screen.getByTestId(`web-find-input-${PANE}`), { target: { value: 'x' } });
+        await waitFor(() => {
+            expect(screen.getByTestId(`web-find-count-${PANE}`).textContent).toBe('-/3');
+        });
+    });
+
+    /**
+     * §M38 — the field, the count's home and the chevrons' disabled rule are the terminal bar's,
+     * i.e. `PaneSearchOverlay.swift:18-86`: a 160 px 12 px-monospace "Search" field with the
+     * counter tucked INSIDE its trailing edge, and a chevron pair that is dimmed AND inert while
+     * the needle is empty. The bar was a 192 px sans "Find in page" field with the count outside
+     * it and arrows that were never disabled.
+     */
+    it('wears the app’s one find-bar recipe: 160 px mono "Search", inert chevrons when empty', async () => {
+        const fake = fakeCommands();
+        fake.answer('find', { ok: true, total: 2, current: 0, tab_id: TAB1 } as unknown as CommandReply);
+        render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
+
+        const input = screen.getByTestId(`web-find-input-${PANE}`) as HTMLInputElement;
+        expect(input.getAttribute('placeholder')).toBe('Search');
+        expect(input.className).toContain('w-[160px]');
+        expect(input.style.fontSize).toBe('12px');
+        expect(input.style.fontFamily).toContain('mono');
+
+        const up = screen.getByTestId(`web-find-next-${PANE}`) as HTMLButtonElement;
+        const down = screen.getByTestId(`web-find-prev-${PANE}`) as HTMLButtonElement;
+        expect(up.disabled).toBe(true);
+        expect(down.disabled).toBe(true);
+        expect(up.className).toContain('opacity-30');
+
+        fireEvent.change(input, { target: { value: 'x' } });
+        expect((screen.getByTestId(`web-find-next-${PANE}`) as HTMLButtonElement).disabled).toBe(false);
+        // …and the counter lives INSIDE the field, not as a sibling of the buttons.
+        await waitFor(() => {
+            const count = screen.getByTestId(`web-find-count-${PANE}`);
+            expect(count.parentElement?.contains(screen.getByTestId(`web-find-input-${PANE}`))).toBe(true);
+        });
     });
 
     it('searches as you type and shows the count the page reported', async () => {
@@ -99,7 +149,9 @@ describe('the find bar', () => {
         await waitFor(() => {
             expect(fake.sent.some((call) => call.verb === 'find')).toBe(true);
         });
-        expect(screen.getByTestId(`web-find-count-${PANE}`).textContent).toBe('0/0');
+        // Nothing from TAB2 landed: with no count of our own there is no counter at all
+        // (§M38 — the readout is absent until the ACTIVE tab has answered).
+        expect(screen.queryByTestId(`web-find-count-${PANE}`)).toBeNull();
     });
 
     it('steps with Return / ⇧Return and the arrows', () => {
@@ -125,19 +177,21 @@ describe('the find bar', () => {
     /**
      * §H7 — the shipped app draws ONE find bar for terminal, markdown and web panes, and it
      * wires `chevron.up` to next and `chevron.down` to previous (`PaneSearchOverlay.swift:48-66`).
-     * The web bar spells its chevrons `↑ ↓`, so the glyph is what has to agree.
+     * The glyph is what has to agree, so the glyph is what is read.
      */
-    it('puts NEXT under ↑ and PREVIOUS under ↓, in that order', () => {
+    it('puts NEXT under the up chevron and PREVIOUS under the down one, in that order', () => {
         const fake = fakeCommands();
         render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
 
         const up = screen.getByTestId(`web-find-next-${PANE}`);
         const down = screen.getByTestId(`web-find-prev-${PANE}`);
-        expect(up.textContent).toBe('↑');
-        expect(down.textContent).toBe('↓');
+        // The glyph is the terminal bar's chevron now, not a `↑` literal (§M38) — so the shape
+        // is read off `data-icon`, which is what names the mark either way.
+        expect(up.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('chevron-up');
+        expect(down.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('chevron-down');
         expect(up.getAttribute('aria-label')).toBe('Next match');
         expect(down.getAttribute('aria-label')).toBe('Previous match');
-        // …and ↑ is the one that comes first in the row.
+        // …and the up chevron is the one that comes first in the row.
         const order = [...screen.getByTestId(`web-find-${PANE}`).querySelectorAll('button')].map((button) =>
             button.getAttribute('data-testid')
         );
@@ -147,9 +201,12 @@ describe('the find bar', () => {
             `web-find-close-${PANE}`
         ]);
 
+        // The pair is inert until there is a needle (§M38), so give it one before clicking.
+        fireEvent.change(screen.getByTestId(`web-find-input-${PANE}`), { target: { value: 'x' } });
         fireEvent.click(up);
         fireEvent.click(down);
         expect(fake.sent.filter((call) => call.verb === 'find').map((call) => call.args[2])).toEqual([
+            'search',
             'next',
             'prev'
         ]);
@@ -424,6 +481,55 @@ describe('the batch panel', () => {
     });
 
     /**
+     * §M37 — the panel's furniture. `WebBatchInspectPanel.swift:95-109` heads it with an accent
+     * `scope` crosshair (the same mark as the toolbar button that opened it) and closes the row
+     * with the item count; `:224-247` is `HStack { Cancel; Spacer(); picker; Send N }`, with
+     * Send `.borderedProminent`. The port had Cancel as a chip in the header's top-right, a bare
+     * "Send" with no count, no fill on it, and no crosshair anywhere.
+     */
+    it('heads the panel with the scope mark and foots it Cancel · picker · Send N (M37)', () => {
+        const fake = fakeCommands();
+        render(
+            <BatchPanel
+                paneID={PANE}
+                session={session({
+                    items: [
+                        { id: 'i1', selector: '#a', tag: 'button', text: '', url: '', comment: '' },
+                        { id: 'i2', selector: '#b', tag: 'a', text: '', url: '', comment: '' }
+                    ]
+                })}
+                activeTabID={TAB1}
+                destinations={[{ paneID: 'shell-1', label: 'worker' }]}
+                commands={fake.commands}
+                destination="shell-1"
+                onDestinationChange={() => {}}
+            />
+        );
+
+        const panel = screen.getByTestId(`web-batch-panel-${PANE}`);
+        // The header carries the crosshair, and Cancel is NOT in it.
+        const header = panel.firstElementChild as HTMLElement;
+        expect(header.querySelector('[data-icon="scope"]')).not.toBeNull();
+        expect(header.textContent).toContain('Element pickup');
+        expect(header.querySelector('[data-testid]')).toBeNull();
+
+        // The footer is Cancel, then the picker, then Send — in that DOM order.
+        const cancel = screen.getByTestId(`web-batch-cancel-${PANE}`);
+        const picker = screen.getByTestId(`web-batch-destination-${PANE}`);
+        const send = screen.getByTestId(`web-batch-send-${PANE}`);
+        const footer = cancel.parentElement as HTMLElement;
+        expect(footer).toBe(picker.parentElement);
+        expect(footer).toBe(send.parentElement);
+        expect([...footer.children].indexOf(cancel)).toBe(0);
+        expect([...footer.children].indexOf(picker)).toBeLessThan([...footer.children].indexOf(send));
+
+        // Send names the count it is about to dispatch, and is FILLED as the default action.
+        expect(send.textContent?.replace(/\s+/g, ' ').trim()).toBe('Send 2');
+        expect((send as HTMLButtonElement).style.background).not.toBe('');
+        expect((send as HTMLButtonElement).style.color).toBe('rgb(255, 255, 255)');
+    });
+
+    /**
      * H28 — the comment field is a full-width line of its own, under the tag+selector line
      * (`WebBatchInspectPanel.swift:153-222`: `VStack { HStack { tag; selector }; TextField }`).
      */
@@ -686,9 +792,9 @@ describe('cookie grouping (WEB-050)', () => {
 });
 
 describe('the storage panel', () => {
-    function open(fake: Fake, isPrivate = false): void {
+    function open(fake: Fake, isPrivate = false): ReturnType<typeof render> {
         fake.answer('cookiesList', { ok: true, cookies: COOKIES } as unknown as CommandReply);
-        render(
+        return render(
             <StoragePanel
                 paneID={PANE}
                 isPrivate={isPrivate}
@@ -802,16 +908,50 @@ describe('the storage panel', () => {
         expect(fake.sent.some((call) => call.verb === 'cookiesClear')).toBe(false);
     });
 
-    it('reads localStorage through `web exec`, not a new host verb', async () => {
+    /**
+     * §M39 — the panel is cookies, the private toggle and clear-all, and nothing else.
+     * `StoragePanel.swift` has no localStorage read-out; the port had grown a "Local storage"
+     * button that ran a `web-exec` and dumped the page's keys into the panel, which is an
+     * affordance the shipped app never shows. `nex web exec` is still the way to read it.
+     */
+    it('offers no localStorage read-out, and runs no `exec` for one', async () => {
         const fake = fakeCommands();
-        fake.answer('exec', { ok: true, result: [['token', 'abc']] } as unknown as CommandReply);
         open(fake);
-        await waitFor(() => expect(screen.getByTestId(`web-localstorage-${PANE}`)).not.toBeNull());
-        fireEvent.click(screen.getByTestId(`web-localstorage-${PANE}`));
-        await waitFor(() => {
-            expect(screen.getByTestId(`web-localstorage-rows-${PANE}`).textContent).toContain('token = abc');
-        });
-        expect(fake.sent.some((call) => call.verb === 'exec')).toBe(true);
+        await waitFor(() => expect(screen.getByTestId(`web-clear-site-data-${PANE}`)).not.toBeNull());
+        expect(screen.queryByTestId(`web-localstorage-${PANE}`)).toBeNull();
+        expect(screen.queryByTestId(`web-localstorage-rows-${PANE}`)).toBeNull();
+        expect(screen.queryByText('Local storage')).toBeNull();
+        expect(fake.sent.some((call) => call.verb === 'exec')).toBe(false);
+    });
+
+    /**
+     * §M36 — the private row is `StoragePanel.swift:105-125`: "Private mode" over a caption that
+     * says what the choice COSTS, with a real macOS switch on the trailing edge. It read
+     * "Private session · in-memory store" beside a square user-agent tick box.
+     */
+    it('names the private row the way the shipped app does, on a real switch', async () => {
+        const fake = fakeCommands();
+        const view = open(fake, false);
+        await waitFor(() => expect(screen.getByTestId(`web-private-toggle-${PANE}`)).not.toBeNull());
+
+        const panel = screen.getByTestId(`web-storage-${PANE}`);
+        expect(panel.textContent).toContain('Private mode');
+        expect(panel.textContent).toContain('Cookies + caches persist across restarts.');
+        expect(panel.textContent).not.toContain('in-memory store');
+
+        const toggle = screen.getByTestId(`web-private-toggle-${PANE}`) as HTMLInputElement;
+        expect(toggle.getAttribute('role')).toBe('switch');
+        // The switch primitive, not the user agent's box: the input IS the track, and a thumb
+        // rides over it.
+        expect(toggle.style.appearance).toBe('none');
+        expect(screen.getByTestId(`web-private-toggle-${PANE}-thumb`)).not.toBeNull();
+
+        view.rerender(
+            <StoragePanel paneID={PANE} isPrivate={true} commands={fake.commands} onClose={() => {}} />
+        );
+        expect(screen.getByTestId(`web-storage-${PANE}`).textContent).toContain(
+            'Cookies + caches discarded on quit; tabs blank on restart.'
+        );
     });
 
     it('is opened and closed from the chrome', () => {

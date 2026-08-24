@@ -122,12 +122,41 @@ describe('the profile list', () => {
         expect(screen.getByTestId('profile-detail').textContent).toContain('Built-in baseline');
     });
 
-    it('shows the derived NEX_PROFILE marker as a locked row, not an editable var', () => {
+    /**
+     * M47: `ProfilesSettingsView.swift:208-228` models the marker as a FAKE VAR ROW — two
+     * disabled `roundedBorder` fields with a `Text("=")` between them — so it lines up column for
+     * column with the editable rows beneath it. Asserted as structure (two disabled inputs
+     * carrying the two halves) rather than as one string, because the alignment is the point.
+     */
+    it('shows the derived NEX_PROFILE marker as a locked var row, not an editable var', () => {
         setup(WORK);
         fireEvent.click(screen.getByTestId('profile-row-work'));
-        expect(screen.getByTestId('profile-marker-row').textContent).toContain('NEX_PROFILE = work');
+        const key = screen.getByTestId('profile-marker-key') as HTMLInputElement;
+        const value = screen.getByTestId('profile-marker-value') as HTMLInputElement;
+        expect(key.value).toBe('NEX_PROFILE');
+        expect(value.value).toBe('work');
+        expect(key.disabled).toBe(true);
+        expect(value.disabled).toBe(true);
+        // The alignment claim: the marker's key field is the same width as a variable row's.
+        expect(key.className).toContain('w-40');
+        expect((screen.getByTestId('profile-var-key-0') as HTMLInputElement).className).toContain('w-40');
         expect((screen.getByTestId('profile-var-key-0') as HTMLInputElement).value).toBe('CLAUDE_CONFIG_DIR');
         expect(screen.queryByTestId('profile-var-key-1')).toBeNull();
+    });
+
+    /** M47: the vars have a heading naming them, as `ProfilesSettingsView.swift:178-180` does. */
+    it('names the variable list', () => {
+        setup(WORK);
+        fireEvent.click(screen.getByTestId('profile-row-work'));
+        expect(screen.getByTestId('profile-vars-heading').textContent).toBe('Environment Variables');
+    });
+
+    /** M47: `Label(name, systemImage: "person.badge.key")` — the rail rows carry the glyph. */
+    it('draws the profile glyph on every rail row', () => {
+        setup(WORK);
+        for (const row of screen.getAllByRole('option')) {
+            expect(row.querySelector('svg')).not.toBeNull();
+        }
     });
 
     it('keeps a `~` value verbatim so a round-trip cannot rewrite the user’s path', () => {

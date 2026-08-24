@@ -32,12 +32,29 @@ export const GUTTER_FONT_SIZE = 11;
 export const GUTTER_MIN_WIDTH = 36;
 export const GUTTER_PADDING = 8;
 export const GUTTER_TEXT_PADDING = 4;
-/** Shared by the textarea and the gutter so their first rows sit on the same baseline. */
-const EDITOR_PADDING = 12;
-const LINE_HEIGHT = 1.5;
-
-/** The rendered height of one row, shared by the textarea and the gutter. */
-export const EDITOR_LINE_PX = EDITOR_FONT_SIZE * LINE_HEIGHT;
+/**
+ * Shared by the textarea and the gutter so their first rows sit on the same baseline.
+ *
+ * §M27: 8, not 12 — `ScratchpadEditorView.swift:44-48` and `MarkdownEditorView.swift:36` both
+ * set `textContainerInset = NSSize(width: 8, height: 8)`, and the port had grown a `p-3`.
+ */
+export const EDITOR_PADDING = 8;
+/**
+ * §M27 — the rendered height of one row, shared by the textarea and the gutter.
+ *
+ * An `NSTextView` lays `monospacedSystemFont(ofSize: 13)` out at its ascender + descender,
+ * ~15.9 px, i.e. about 1.2 em. This was `1.5` (19.5 px), which gave away roughly a quarter of
+ * the visible rows in every editor in the app.
+ *
+ * **An exact integer of px, not the unitless `1.2` the register sketched**, and the difference
+ * is not cosmetic: `13 × 1.2` is 15.6, which Chromium snaps to the nearest 1/64 px (15.6015625)
+ * when it lays a row out, while the gutter's `padding-top` arithmetic below uses the unrounded
+ * value. Over a long document the two diverge — the audit's own alignment check measured the
+ * first drawn number **3.12 px** (a fifth of a row) off the line it numbers at line 1992, and it
+ * would keep growing. 16 px is within 0.4 px of the 1.2 em estimate, is nearer to what AppKit
+ * actually lays SF Mono 13 pt out at, and accumulates nothing.
+ */
+export const EDITOR_LINE_PX = 16;
 
 /**
  * §4.2: `\n` count + 1 — a trailing newline shows one extra number, an empty document "1".
@@ -79,6 +96,15 @@ export interface PlainTextEditorProps {
     readonly background?: string | undefined;
     /** §4.2's line-number gutter. Off by default so a bare editor stays a bare editor. */
     readonly showGutter?: boolean | undefined;
+    /**
+     * §M29 — soft wrap, or a horizontal scrollbar.
+     *
+     * `MarkdownEditorView.swift:38-40` leaves the text container tracking the view's width, so
+     * a markdown buffer wraps to the pane; the port ran every editor at `wrap="off"` and a
+     * paragraph of prose disappeared off the right edge. The default stays `'off'` because the
+     * SCRATCHPAD's is ledgered that way (`CONT-070` `[d]`) — the markdown editor opts in.
+     */
+    readonly wrap?: 'off' | 'soft' | undefined;
     readonly testID?: string | undefined;
 }
 
@@ -255,11 +281,12 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                 ref={areaRef}
                 data-testid={`content-textarea-${paneID}`}
                 aria-label={ariaLabel}
-                className="h-full min-w-0 flex-1 resize-none border-0 bg-transparent p-3 outline-none"
+                // §M27: `p-2` = the Swift's 8 pt `textContainerInset`.
+                className="h-full min-w-0 flex-1 resize-none border-0 bg-transparent p-2 outline-none"
                 spellCheck={false}
                 autoCorrect="off"
                 autoCapitalize="off"
-                wrap="off"
+                wrap={props.wrap ?? 'off'}
                 readOnly={props.readOnly === true}
                 value={value}
                 style={{
@@ -267,7 +294,10 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                     caretColor: editorTextColor(props.isDark !== false),
                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                     fontSize: `${EDITOR_FONT_SIZE}px`,
-                    lineHeight: 1.5,
+                    // The constant in PX, not a second literal and not a ratio: the gutter
+                    // positions its numbers off `EDITOR_LINE_PX`, and the two disagreeing — even
+                    // by the 1/64 px a fractional row height rounds to — is drift down the page.
+                    lineHeight: `${String(EDITOR_LINE_PX)}px`,
                     tabSize: 4
                 }}
                 onChange={(event) => {
@@ -280,7 +310,43 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         event.preventDefault();
                         event.stopPropagation();
                         latest.current.onToggleEdit?.(paneID);
+                        return;
                     }
+                    /*
+                     * §M26 — Tab types a tab.
+                     *
+                     * `ScratchpadEditorView.swift:23-33` is an `NSTextView`, where Tab is a text
+                     * insertion, not focus traversal. In a `textarea` it is traversal by default,
+                     * so the caret left the pane entirely — in an editor that sets `tabSize: 4`
+                     * and can therefore never receive the character it is sized for. ⇧Tab and any
+                     * modified Tab are deliberately left alone: those are still navigation, and
+                     * the Swift's own `insertTab` is the unmodified key.
+                     */
+                    if (event.key !== 'Tab' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+                        return;
+                    }
+                    if (props.readOnly === true) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const area = event.currentTarget;
+                    const start = area.selectionStart;
+                    const end = area.selectionEnd;
+                    /*
+                     * The insertion is made on the DOM node first, caret included, and only
+                     * then pushed into state. A controlled `textarea` re-rendered with a string
+                     * it already holds is left alone by React, so the caret survives — whereas
+                     * computing the next buffer and calling `setValue` alone would re-render the
+                     * field from the top and drop the caret at the end of the document.
+                     */
+                    if (typeof area.setRangeText === 'function') {
+                        area.setRangeText('\t', start, end, 'end');
+                    } else {
+                        area.value = `${area.value.slice(0, start)}\t${area.value.slice(end)}`;
+                        area.setSelectionRange(start + 1, start + 1);
+                    }
+                    const next = area.value;
+                    setValue(next);
+                    latest.current.onChange(next);
                 }}
                 onFocus={() => {
                     hasFocusRef.current = true;

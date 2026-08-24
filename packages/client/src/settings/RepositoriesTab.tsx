@@ -30,9 +30,11 @@
 import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../chrome';
+import { ExternalDriveGlyph } from './glyphs';
 import type { SettingsActions, SettingsPaths } from './types';
 import {
     SettingsButton,
+    SettingsEmptyState,
     SettingsFooterNote,
     SettingsRow,
     SettingsSection,
@@ -214,21 +216,23 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
                     </p>
                 )}
 
+                {/*
+                 * M45: `RepoRegistryView.swift:31-45` — an `externaldrive` at 36 pt in
+                 * `.quaternary` over a `.secondary` headline, centred in the space, with the
+                 * "Scan Directory"/"Add Repo" caption only when the REGISTRY is empty (a filter
+                 * that matched nothing does not need telling how to add one). The port drew no
+                 * glyph at all, inside a dashed card the `VStack` never had.
+                 */}
                 {rows.length === 0 ? (
-                    <div
-                        data-testid="repo-empty"
-                        className="flex flex-col items-center gap-1 rounded border border-dashed px-3 py-6 text-center"
-                        style={{ borderColor: tokens.divider }}
-                    >
-                        <span className="text-[12px]" style={{ color: tokens.textSecondary }}>
-                            {registryEmpty ? 'No repositories registered' : 'No matching repositories'}
-                        </span>
-                        {registryEmpty ? (
-                            <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                                Use “Scan Directory” to find repos or “Add Repo” to add one.
-                            </span>
-                        ) : null}
-                    </div>
+                    <SettingsEmptyState
+                        testID="repo-empty"
+                        glyph={<ExternalDriveGlyph size={36} />}
+                        glyphTone="quaternary"
+                        title={registryEmpty ? 'No repositories registered' : 'No matching repositories'}
+                        {...(registryEmpty
+                            ? { detail: 'Use “Scan Directory” to find repos or “Add Repo” to add one.' }
+                            : {})}
+                    />
                 ) : (
                     <ul className="flex flex-col gap-1" data-testid="repo-list">
                         {rows.map((repo) => (

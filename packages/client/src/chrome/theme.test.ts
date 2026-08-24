@@ -179,8 +179,26 @@ describe('chrome formatters', () => {
         expect(chromeElapsedLabel(start, start - 5_000)).toBe('0s');
     });
 
-    it('formats the footer clock and middle-truncates paths', () => {
-        expect(clockLabel(new Date(2026, 0, 2, 9, 5))).toBe('09:05');
+    /*
+     * §M23: this read `toBe('09:05')`, which is only the right answer in a 24-hour locale — it
+     * passed because the runner's locale happens to be one, and zero-padded 24 h is the very
+     * format the finding says the port must stop hard-coding. Swapped one-for-one for the same
+     * instant read through the two locales that disagree about it, plus a runtime-locale read
+     * that still pins the hour and the minute.
+     */
+    it('formats the footer clock in the viewer’s locale and middle-truncates paths', () => {
+        const at = new Date(2026, 0, 2, 9, 5);
+        // A 12-hour locale drops the leading zero and carries the period (ICU may separate it
+        // with a narrow no-break space, so the gap is matched rather than spelled).
+        expect(clockLabel(at, 'en-US')).toMatch(/^9:05\s?AM$/);
+        // A 24-hour one keeps the padding, because the locale's own hour pattern does — which is
+        // what the old hard-coded format assumed for everybody, and what a bare `hour: 'numeric'`
+        // would have thrown away (it renders `9:05` here).
+        expect(clockLabel(at, 'en-GB')).toBe('09:05');
+        // Neither carries seconds: this is the hour+minute skeleton, not a full time.
+        expect(clockLabel(new Date(2026, 0, 2, 9, 5, 47), 'en-GB')).toBe('09:05');
+        // And with no locale named it is whatever this machine says: hour and minute, no seconds.
+        expect(clockLabel(at)).toMatch(/\b0?9[:.]05\b/);
         expect(middleTruncate('/a/very/long/path/here', 11)).toHaveLength(11);
         expect(middleTruncate('short', 11)).toBe('short');
     });

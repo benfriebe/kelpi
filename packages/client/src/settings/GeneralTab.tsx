@@ -31,7 +31,7 @@ import type { WsSettingsSnapshot, WsTransportStatus } from '@nex/protocol';
 import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
-import { SegmentedField, TextField } from './controls';
+import { SelectField, TextField } from './controls';
 import type { SettingsActions, SettingsPaths } from './types';
 import { KeyChip, SettingsFooterNote, SettingsRow, SettingsSection, SettingsToggle } from './ui';
 
@@ -165,7 +165,15 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         }}
                     />
                 </SettingsRow>
-                <SegmentedField
+                {/*
+                 * M52: pop-up menus, not segmented controls. `SettingsView.swift:167-187` builds
+                 * both of these with a bare `Picker(_:selection:)`, which macOS renders as a
+                 * pop-up; the ONE `.pickerStyle(.segmented)` in the whole Settings scene is
+                 * Appearance ▸ Chrome (`:345`). A segmented control reads as a stronger, more
+                 * immediate control than a pop-up, so rendering these two that way made them the
+                 * loudest thing in the Workspaces section.
+                 */}
+                <SelectField
                     label="New workspace placement"
                     testID="new-workspace-placement"
                     detail="Where a newly created workspace is inserted. “Next to selection” places it immediately after the active workspace's slot; “End of list” always appends."
@@ -175,7 +183,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         actions.setGeneralSetting('new-workspace-placement', next);
                     }}
                 />
-                <SegmentedField
+                <SelectField
                     label="New group placement"
                     testID="new-group-placement"
                     detail="The same choice for a newly created group."

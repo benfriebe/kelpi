@@ -27,15 +27,18 @@ import {
     useMemo,
     useRef,
     useState,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
     type ReactElement
 } from 'react';
 
+import { Icon } from '../grid/icons';
 import { tokens } from '../grid/tokens';
 import { BatchPanel } from './BatchPanel';
 import type { WebPaneCommands } from './commands';
 import { FavouritesMenu } from './FavouritesMenu';
 import type { GeometryRect, GeometryReport } from './geometry';
+import { Glyph, type GlyphName } from './glyphs';
 import { chromeTextIsFocused, WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import { useLoadProgress, type LoadProgressTimings } from './progress';
 import { orderChanged, reorderedTabs, tabUnderPointer, type PillBox } from './reorder';
@@ -126,47 +129,8 @@ function measureElement(element: HTMLElement): GeometryRect {
 
 // ── chrome glyphs ───────────────────────────────────────────────────────────────────
 
-/**
- * Hand-rolled, like `grid/icons.tsx`: the client has no icon package and may not add one, and
- * these five shapes are specific to the browser chrome rather than to the pane header's set.
- */
-const GLYPHS = {
-    back: 'M7.5 2.5 4 6l3.5 3.5',
-    forward: 'M4.5 2.5 8 6l-3.5 3.5',
-    reload: 'M9.5 6a3.5 3.5 0 1 1-1.03-2.47M9.5 2v2.2H7.3',
-    plus: 'M6 2.5v7M2.5 6h7',
-    close: 'M3.5 3.5l5 5M8.5 3.5l-5 5',
-    code: 'M4.2 3.5 1.7 6l2.5 2.5M7.8 3.5 10.3 6 7.8 8.5',
-    /** §12's scope button: a crosshair, the cursor the armed picker puts on the page. */
-    scope: 'M6 1.6v2M6 8.4v2M1.6 6h2M8.4 6h2M6 3.9A2.1 2.1 0 1 0 6 8.1a2.1 2.1 0 0 0 0-4.2',
-    /** §13's storage panel: a cookie/database cylinder. */
-    storage: 'M2.4 3.2c0-.9 1.6-1.6 3.6-1.6s3.6.7 3.6 1.6-1.6 1.6-3.6 1.6-3.6-.7-3.6-1.6ZM2.4 3.2v5.6c0 .9 1.6 1.6 3.6 1.6s3.6-.7 3.6-1.6V3.2M2.4 6c0 .9 1.6 1.6 3.6 1.6S9.6 6.9 9.6 6',
-    /** WEB-040: `lock` — a private pane's storage button, shackle open on a persistent one. */
-    lock: 'M3.4 5.4h5.2v4.2H3.4zM4.4 5.4V3.9a1.6 1.6 0 0 1 3.2 0v1.5',
-    'lock-open': 'M3.4 5.4h5.2v4.2H3.4zM4.4 5.4V3.9a1.6 1.6 0 0 1 3.2 0'
-} as const;
-
-type GlyphName = keyof typeof GLYPHS;
-
-function Glyph({ name, size = 12 }: { readonly name: GlyphName; readonly size?: number }): ReactElement {
-    return (
-        <svg
-            data-icon={name}
-            aria-hidden="true"
-            focusable="false"
-            width={size}
-            height={size}
-            viewBox="0 0 12 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.1}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <path d={GLYPHS[name]} />
-        </svg>
-    );
-}
+// The set moved to `./glyphs` so the pickup panel can draw the same `scope` crosshair its
+// toolbar button does (§M37) without importing back through this module.
 
 interface ChromeButtonProps {
     readonly testID: string;
@@ -175,12 +139,16 @@ interface ChromeButtonProps {
     readonly disabled?: boolean | undefined;
     readonly active?: boolean | undefined;
     /**
-     * WEB-039: a small count pinned to the button's corner. The scope button uses it for a
-     * HIDDEN batch's pending items — the one state that would otherwise look identical to no
-     * batch at all.
+     * WEB-039: a small count pinned to the button's corner. The scope button uses it for the
+     * batch's pending items, panel open or shut (§M35) — the count is running feedback while
+     * you pick, and it is what keeps a hidden batch from looking like no batch at all.
      */
     readonly badge?: number | undefined;
-    readonly onClick: () => void;
+    /**
+     * The click event is handed on, not swallowed: §M34's reload reads `altKey` off it to send
+     * a cache-bypassing reload. Every other call site ignores the argument.
+     */
+    readonly onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }
 
 function ChromeButton(props: ChromeButtonProps): ReactElement {
@@ -582,7 +550,24 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
              * overlay on the *bottom edge of the whole block*, and a strip drawn at the bottom
              * of the URL row alone would sit between the row and the tabs, reading as a divider.
              */}
-            <div className="relative shrink-0">
+            <div
+                data-testid={`web-chrome-${paneID}`}
+                className="relative shrink-0"
+                /*
+                 * M31: exactly ONE divider, and it belongs to the whole block rather than to
+                 * either row inside it. `WebPaneChrome.swift:61-75` is
+                 * `VStack { navAndURLBar; tabStrip }.background(headerBackground)
+                 * .overlay(alignment: .bottom) { ZStack { Divider(); progressStrip } }` — one
+                 * unbroken header fill with a single rule under it. Drawing the rule on the nav
+                 * row instead put a seam between the URL bar and the tab strip that the shipped
+                 * app never has, and only on multi-tab panes.
+                 *
+                 * (The progress strip above sits just *above* this border rather than over it:
+                 * a CSS border is outside the absolutely-positioned box's containing block,
+                 * where the Swift's ZStack draws the 2 pt bar on top of the 1 pt divider.)
+                 */
+                style={{ borderBottom: `1px solid ${tokens.divider}` }}
+            >
                 {progress.visible ? (
                     /*
                      * Out of the flow on purpose: a 2 px bar that appeared and disappeared IN
@@ -611,7 +596,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 ) : null}
                 <div
                     className="flex shrink-0 items-center gap-1 px-1.5 py-1"
-                    style={{ background: tokens.headerBackground, borderBottom: `1px solid ${tokens.divider}` }}
+                    // No border here — M31: the block's own bottom rule is the only one.
+                    style={{ background: tokens.headerBackground }}
                 >
                     <ChromeButton
                         testID={`web-back-${paneID}`}
@@ -635,10 +621,13 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         label={loading ? 'Stop loading (⌘R reloads)' : 'Reload (⌘R, ⌥-click bypasses the cache)'}
                         glyph={loading ? 'close' : 'reload'}
                         disabled={active === null}
-                        onClick={() =>
+                        // M34: the tooltip has always promised the ⌥-click, and the verb has
+                        // always taken `hard` — the handler simply never read the modifier, so
+                        // the advertised gesture did nothing. It reads it now.
+                        onClick={(event) =>
                             void (loading
                                 ? commands.stop(paneID, active?.id ?? null)
-                                : commands.reload(paneID))
+                                : commands.reload(paneID, event.altKey))
                         }
                     />
                     <form
@@ -710,7 +699,13 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         }
                         glyph="scope"
                         active={batch !== null && batch.visible}
-                        badge={batch !== null && !batch.visible ? batch.items.length : 0}
+                        // M35: badge whenever items exist, open panel or not.
+                        // `WebPaneView.swift:114` passes `pendingItemCount: batchInspect?.items
+                        // .count ?? 0` unconditionally, and `WebPaneChrome.swift:254-266` draws
+                        // the capsule on `pendingItemCount > 0` alone — so picking gives running
+                        // toolbar feedback while you pick. Suppressing it while the panel was
+                        // visible meant the count only ever appeared after you hid the panel.
+                        badge={batch?.items.length ?? 0}
                         disabled={active === null}
                         onClick={() => void commands.batchToggle(paneID)}
                     />
@@ -742,7 +737,8 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         ref={stripRef}
                         data-testid={`web-tabs-${paneID}`}
                         className="flex shrink-0 items-center gap-1 overflow-x-auto px-1.5 py-1"
-                        style={{ background: tokens.headerBackground, borderBottom: `1px solid ${tokens.divider}` }}
+                        // Same fill as the nav row, no rule between them (M31).
+                        style={{ background: tokens.headerBackground }}
                     >
                         {orderedTabs.map((tab) => (
                             <TabPill
@@ -787,11 +783,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 style={{ background: tokens.windowBackground }}
             >
                 {tabs.length === 0 ? (
-                    <PageNote
-                        testID={`web-empty-${paneID}`}
-                        title="New web pane"
-                        detail="Type a URL above and press Return"
-                    />
+                    <EmptyPaneNote paneID={paneID} />
                 ) : embedded ? null : (
                     <PageNote
                         testID={`web-external-${paneID}`}
@@ -826,6 +818,43 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         </div>
     );
 });
+
+/**
+ * A pane with no tabs (M33 / WEB-042).
+ *
+ * `WebPaneView.swift:226-239` is a **bare centred stack** filling the pane —
+ * `VStack(spacing: 8) { Image("globe").font(.system(size: 32)).foregroundStyle(.tertiary);
+ * Text("New web pane").font(.callout).foregroundStyle(.secondary); Text("Type a URL above and
+ * press Return").font(.caption).foregroundStyle(.tertiary) }`. No card, no border, no fill: the
+ * port had it wearing `PageNote`'s bordered surface and had dropped the 32 pt globe entirely,
+ * which turned the quietest screen in the app into a floating panel.
+ *
+ * The two type sizes are macOS's: `.callout` = 12 pt, `.caption` = 10 pt.
+ *
+ * `PageNote` stays a card for the "open in the Nex app" note below, which has no Swift
+ * counterpart at all — it exists because a plain browser cannot draw the page, and a card is
+ * what says "this box is not the page".
+ */
+function EmptyPaneNote({ paneID }: { readonly paneID: string }): ReactElement {
+    return (
+        <div className="flex h-full w-full items-center justify-center p-4">
+            <div
+                data-testid={`web-empty-${paneID}`}
+                className="flex flex-col items-center gap-2 text-center"
+                // The glyph is `.tertiary` and inherits it; only the title steps up.
+                style={{ color: tokens.textTertiary }}
+            >
+                <Icon name="globe" size={32} />
+                <span className="text-[12px]" style={{ color: tokens.textSecondary }}>
+                    New web pane
+                </span>
+                <span className="text-[10px]" style={{ color: tokens.textTertiary }}>
+                    Type a URL above and press Return
+                </span>
+            </div>
+        </div>
+    );
+}
 
 function PageNote(props: {
     readonly testID: string;

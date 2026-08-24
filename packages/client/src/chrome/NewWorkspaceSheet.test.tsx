@@ -86,6 +86,20 @@ function openSheet(props: Record<string, unknown> = {}) {
     return onCreateWorkspace;
 }
 
+/**
+ * M4: pick a repo in the sheet's own Repositories section, through its own sub-sheet.
+ *
+ * The worktree section is revealed by `selectedRepos.count == 1`
+ * (`NewWorkspaceSheet.swift:179-183`), so every worktree assertion below has to get there the way
+ * a user does rather than by flipping a toggle that used to be offered unconditionally.
+ */
+function chooseRepo(id: string): void {
+    fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+    const picker = screen.getByTestId('new-workspace-repo-picker');
+    fireEvent.click(within(picker).getByTestId(`repo-choice-${id}`));
+    fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
+}
+
 describe('the sheet is a modal over the window (§WS-075, `ContentView.swift:289-294`)', () => {
     it('is portalled OUT of the sidebar, onto the document body', () => {
         openSheet();
@@ -400,8 +414,16 @@ describe('the worktree section (§WS-078)', () => {
         expect(screen.queryByTestId('new-workspace-worktree')).toBeNull();
     });
 
+    it('M4: is not offered with a registry behind it either, until ONE repo is chosen', () => {
+        openSheet({ repos: REPOS });
+        expect(screen.queryByTestId('new-workspace-worktree-toggle')).toBeNull();
+        chooseRepo('r1');
+        expect(screen.getByTestId('new-workspace-worktree-toggle')).toBeTruthy();
+    });
+
     it('reveals its fields only once the toggle is on', () => {
         openSheet({ repos: REPOS });
+        chooseRepo('r1');
         expect(screen.getByTestId('new-workspace-worktree-toggle')).toBeTruthy();
         expect(screen.queryByTestId('new-workspace-worktree')).toBeNull();
 
@@ -414,10 +436,7 @@ describe('the worktree section (§WS-078)', () => {
 
     it('cuts the worktree from the ONE repo the Repositories section named', () => {
         openSheet({ repos: REPOS });
-        fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
-        const picker = screen.getByTestId('new-workspace-repo-picker');
-        fireEvent.click(within(picker).getByTestId('repo-choice-r2'));
-        fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
+        chooseRepo('r2');
         fireEvent.click(screen.getByTestId('new-workspace-worktree-toggle'));
         fireEvent.change(screen.getByTestId('new-workspace-worktree-name'), { target: { value: 'wt' } });
 
@@ -429,6 +448,7 @@ describe('the worktree section (§WS-078)', () => {
 
     it('mirrors the name into the branch until the branch is hand-edited', () => {
         openSheet({ repos: REPOS });
+        chooseRepo('r1');
         fireEvent.click(screen.getByTestId('new-workspace-worktree-toggle'));
         const name = screen.getByTestId('new-workspace-worktree-name');
         const branch = screen.getByTestId('new-workspace-worktree-branch') as HTMLInputElement;
@@ -455,6 +475,7 @@ describe('the in-flight guard (§WS-079)', () => {
                 })
         );
         openSheet({ repos: REPOS, onCreateWorkspace });
+        chooseRepo('r1');
         fireEvent.change(screen.getByLabelText('New workspace name'), { target: { value: 'ws' } });
         fireEvent.click(screen.getByTestId('new-workspace-worktree-toggle'));
         fireEvent.change(screen.getByTestId('new-workspace-worktree-name'), { target: { value: 'wt' } });

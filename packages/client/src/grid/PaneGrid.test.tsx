@@ -479,3 +479,119 @@ describe('PaneGrid focus', () => {
         expect(onFocusPane).toHaveBeenCalledTimes(1);
     });
 });
+
+/**
+ * §M12 — the pane overlay (the terminal find bar) hangs off the PANE, not the pane body.
+ *
+ * `PaneGridView.swift:356-370` attaches it with `.overlay(alignment: .topTrailing)` on the whole
+ * pane view, so it floats over the 24 pt header and covers its trailing buttons. Mounted inside
+ * `pane-body` it was anchored below the header instead — a header's height too low, over the
+ * terminal rather than the chrome (`run-N/70-terminal-search-counted.png`). jsdom has no layout,
+ * so the assertable contract is the parentage and the paint order.
+ */
+describe('PaneGrid pane overlay placement (M12)', () => {
+    function renderWithOverlay() {
+        return renderGrid({
+            renderPaneOverlay: (paneID) =>
+                paneID === 'a' ? <div data-testid={`overlay-${paneID}`} /> : null
+        });
+    }
+
+    it('mounts the overlay on the pane wrapper, not inside the pane body', () => {
+        renderWithOverlay();
+        const overlay = screen.getByTestId('overlay-a');
+        expect(overlay.parentElement).toBe(screen.getByTestId('pane-a'));
+        expect(screen.getByTestId('pane-body-a').contains(overlay)).toBe(false);
+    });
+
+    it('paints after the header and the body, and before the focus ring', () => {
+        renderWithOverlay();
+        const ids = [...screen.getByTestId('pane-a').children].map((node) =>
+            node.getAttribute('data-testid')
+        );
+        expect(ids.indexOf('overlay-a')).toBeGreaterThan(ids.indexOf('pane-header-a'));
+        expect(ids.indexOf('overlay-a')).toBeGreaterThan(ids.indexOf('pane-body-a'));
+        // The wrapper is the containing block the bar's `absolute top-2 right-2` resolves against.
+        expect(screen.getByTestId('pane-a').style.position).toBe('absolute');
+    });
+
+    it('renders nothing extra for a pane the overlay declines', () => {
+        renderWithOverlay();
+        expect(screen.queryByTestId('overlay-b')).toBeNull();
+    });
+});
+
+/**
+ * §M13 — the drop-zone overlay and the divider's drag tint are `Color.accentColor`
+ * (`PaneGridView.swift:451-452`, `SplitDividerView.swift:20`), the macOS SYSTEM accent, and the
+ * shipped app ships no `AccentColor.colorset`. They read `--nex-system-accent` so a Settings ▸
+ * Appearance ▸ "Sidebar highlight" override cannot recolour the pane grid the way it recolours
+ * the sidebar. The token's value still falls back to `--nex-accent`; the standing divergence (no
+ * OS accent in a renderer) is recorded in `tokens.ts`.
+ */
+describe('PaneGrid system-accent surfaces (M13)', () => {
+    it('paints the drop-zone overlay from the system-accent token', () => {
+        renderGrid({ onMovePane: vi.fn() });
+        act(() => firePointer(screen.getByTestId('pane-header-a'), 'pointerdown', { clientX: 40, clientY: 10 }));
+        act(() => firePointer(window, 'pointermove', { clientX: 750, clientY: 300 }));
+        const overlay = screen.getByTestId('drop-zone-overlay');
+        // The OUTER name is the system accent; `--nex-accent` appears only as its fallback, which
+        // is the ledgered divergence — a renderer cannot read the OS accent, so today the two
+        // resolve to the same colour and the SEAM is the thing that exists.
+        expect(overlay.style.background).toMatch(/var\(--nex-system-accent,/);
+        expect(overlay.style.border).toMatch(/var\(--nex-system-accent,/);
+    });
+
+    it('tints only the DRAGGED divider, and from the same token', () => {
+        renderGrid({ ratioCommitIntervalMs: 0 });
+        const bar = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
+        expect(bar.style.background).not.toContain('--nex-system-accent');
+
+        act(() => firePointer(screen.getByTestId('divider-d'), 'pointerdown', { clientX: 500, clientY: 300 }));
+        act(() => firePointer(window, 'pointermove', { clientX: 560, clientY: 300 }));
+        const dragged = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
+        expect(dragged.style.background).toContain('--nex-system-accent');
+    });
+});
+
+/**
+ * §M16 — the "No panes" placeholder is two tones, not one. `PaneGridView.swift:492-500` paints
+ * the 36 pt terminal `.quaternary` (the label colour at 10%) and the label `.secondary` at
+ * `.title3`; the port had both at `textTertiary`/`text-sm`, so the ghost glyph read as a solid
+ * icon. macOS `.title3` is 15 pt — the macOS type ramp, not iOS's 20.
+ */
+describe('PaneGrid empty state tones (M16)', () => {
+    it('splits the glyph and the label into two tones and raises the label', () => {
+        renderGrid({ layout: empty(), panes: [], onCreatePane: vi.fn() });
+        const root = screen.getByTestId('pane-grid-empty');
+        expect(root.style.color).toContain('--nex-fg-secondary');
+
+        const glyph = screen.getByTestId('pane-grid-empty-glyph');
+        expect(glyph.style.color).toContain('--nex-fg,');
+        expect(glyph.style.color).toContain(' 10%');
+        expect(glyph.querySelector('svg')?.getAttribute('width')).toBe('36');
+
+        const label = screen.getByTestId('pane-grid-empty-label');
+        expect(label.textContent).toBe('No panes');
+        expect(label.className).toContain('text-[15px]');
+        expect(label.className).not.toContain('text-sm');
+    });
+});
+
+/**
+ * §M18 — `ResizeDimensionsOverlay.swift:11-20`: 12/6 pt padding, `cornerRadius: 6`, and
+ * `.shadow(color: .black.opacity(0.25), radius: 4, y: 2)`. The port drew the chip a third smaller
+ * with a heavier drop.
+ */
+describe('PaneGrid resize badge metrics (M18)', () => {
+    it('pads 12/6 and softens the shadow to the Swift’s 25%', () => {
+        vi.useFakeTimers();
+        const view = renderGrid();
+        view.update({ size: { width: 900, height: 600 } });
+        const badge = screen.getByTestId('pane-size-a');
+        expect(badge.className).toContain('px-3');
+        expect(badge.className).toContain('py-1.5');
+        expect(badge.className).toContain('rounded-md');
+        expect(badge.style.boxShadow).toBe('0 2px 8px rgba(0,0,0,0.25)');
+    });
+});

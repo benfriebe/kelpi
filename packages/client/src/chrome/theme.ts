@@ -534,11 +534,38 @@ export function chromeElapsedLabel(startMs: number, nowMs: number): string {
     return `${seconds}s`;
 }
 
-/** The footer's `HH:MM` clock (zero-padded, 24h — the app uses the OS format; this is stable). */
-export function clockLabel(date: Date): string {
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    return `${hours}:${minutes}`;
+/**
+ * The footer's hour+minute clock, in the VIEWER's locale (§M23).
+ *
+ * `StatusBarView.swift:201-204` is `Text(context.date, format: .dateTime.hour().minute())`, and
+ * a SwiftUI date format follows the OS 12-vs-24-hour setting: the shipped app reads `2:52 PM`
+ * on a US Mac and `14:52` on a UK one. This was hard-coded zero-padded 24 h, which is wrong for
+ * every 12-hour locale and right by accident for the rest — so the same machine disagreed with
+ * itself between the shipped app and the port.
+ *
+ * `locales` is a test seam only: production passes nothing, which is `undefined`, which is
+ * exactly the runtime default `toLocaleTimeString` resolves from the OS.
+ *
+ * **`timeStyle: 'short'`, not the register's `{ hour: 'numeric', minute: '2-digit' }`** — one
+ * deliberate step past the sketch, for parity rather than against it. A SwiftUI `.hour()` is a
+ * *skeleton*: it asks the locale for its preferred hour pattern, so `en_GB` renders `09:05` and
+ * `en_US` renders `9:05 AM`. `hour: 'numeric'` is a field width, and it forces `9:05` on every
+ * 24-hour locale — half the finding fixed and the other half newly broken. CLDR's short time
+ * style IS the hour+minute skeleton, in both locales, which is what the shipped app shows.
+ *
+ * An environment with no `Intl` time formatting at all (or one that throws on the options)
+ * falls back to the old zero-padded 24 h rather than to nothing.
+ */
+export function clockLabel(date: Date, locales?: string | readonly string[]): string {
+    try {
+        return date.toLocaleTimeString(locales as string | string[] | undefined, {
+            timeStyle: 'short'
+        });
+    } catch {
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${hours}:${minutes}`;
+    }
 }
 
 /** Middle-truncation used by the footer/popover paths (`/a/very/long/path` → `/a/ve…path`). */

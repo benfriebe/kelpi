@@ -1,11 +1,12 @@
 /**
  * §WEB-029 — the inline error card a failed navigation replaces the page with.
  *
- * `WebPaneCoordinator.swift:786-901` renders a self-contained dark card carrying the failed
- * URL, the localized error message and a **Retry** anchor, loaded with `baseURL` set to the
- * failed URL so the URL bar keeps showing where the user was going. Without it the user meets
- * Chromium's own error page — which names Chromium, offers a reload button that belongs to a
- * different browser, and does not match the pane's chrome at all.
+ * `WebPaneCoordinator.swift:786-901` renders a self-contained dark card carrying a red `!`
+ * badge, the heading "Couldn't load page", the failed URL, the localized error message and a
+ * filled **Retry** anchor, loaded with `baseURL` set to the failed URL so the URL bar keeps
+ * showing where the user was going. Without it the user meets Chromium's own error page — which
+ * names Chromium, offers a reload button that belongs to a different browser, and does not match
+ * the pane's chrome at all. `webErrorPageHTML` below is that document, rule for rule (§M32).
  *
  * Two port-specific decisions, both forced:
  *
@@ -75,34 +76,67 @@ export function webErrorMessage(description: string): string {
     }
 }
 
-/** The card itself: one document, no external anything, dark to match the pane chrome. */
+/**
+ * The card itself: one document, no external anything, dark to match the pane chrome.
+ *
+ * §M32 — this is `WebPaneCoordinator.swift:803-901` transcribed, not merely inspired by it. The
+ * port's own card had drifted on every axis at once: the heading read "Failed to open page"
+ * where the shipped one reads **"Couldn't load page"**, there was no red `!` badge, the URL sat
+ * grey *below* the message instead of blue *above* it, Retry was a muted outlined chip
+ * (`#24405e` on `#3b6ea5`) instead of the filled `#0A84FF` button, and the card had no shadow.
+ * Every rule below is the Swift's: the `#1c1c1e` / `#f2f2f7` ground, the `.wrap` centring at
+ * 32 px, the 480 px `.card` on `rgba(255,255,255,0.04)` with a 10 px radius and
+ * `0 10px 40px rgba(0,0,0,0.4)`, the 32 px `.icon` circle in `rgba(255,69,58,0.18)` / `#FF453A`,
+ * the `#5AC8FA` monospace URL, and the `a.btn:hover{filter:brightness(1.1)}`.
+ *
+ * Two things are the port's and stay:
+ *
+ *   - the `data-nex-web-error-page` marker on `<html>`, which is how `tab.ts` recognises its own
+ *     card in `did-navigate` (the Swift tracks `WKNavigation` identity instead — see §WEB-030);
+ *   - the small `(-105)` net-error code after the message. Chromium hands `did-fail-load` a code
+ *     the Swift's `NSError` path never had, and it is the one thing that tells a real
+ *     `ERR_CONNECTION_RESET` from a proxy swallowing the request. It rides *inside* the message
+ *     paragraph, so it displaces none of the five things the finding names.
+ *
+ * The Swift's `.btn.ghost` rule has no second button to style and is not carried over.
+ */
 export function webErrorPageHTML(input: WebErrorPageInput): string {
     const url = escapeHTML(input.url);
     const message = escapeHTML(webErrorMessage(input.description));
     const code = escapeHTML(String(input.code));
     return [
-        '<!doctype html>',
+        '<!DOCTYPE html>',
         `<html lang="en" data-${ERROR_PAGE_MARKER}="1">`,
-        '<head><meta charset="utf-8"><title>Failed to open page</title><style>',
-        'html,body{margin:0;height:100%;background:#141416;color:#e6e6ea;',
-        'font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}',
-        'main{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
-        'section{max-width:520px;width:100%;background:#1b1b1f;border:1px solid #2c2c32;',
-        'border-radius:10px;padding:20px 22px;}',
-        'h1{margin:0 0 6px;font-size:15px;font-weight:600;}',
-        'p{margin:0 0 10px;color:#a8a8b0;line-height:1.45;}',
-        '.url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#c8c8d0;',
+        '<head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        "<title>Couldn't load page</title><style>",
+        ':root{color-scheme:dark;}',
+        'html,body{height:100%;margin:0;background:#1c1c1e;color:#f2f2f7;',
+        'font:14px -apple-system,system-ui,sans-serif;}',
+        '.wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px;',
+        'box-sizing:border-box;}',
+        '.card{max-width:480px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);',
+        'border-radius:10px;padding:24px 28px;box-shadow:0 10px 40px rgba(0,0,0,0.4);}',
+        '.icon{width:32px;height:32px;border-radius:50%;background:rgba(255,69,58,0.18);color:#FF453A;',
+        'display:flex;align-items:center;justify-content:center;',
+        'font:700 16px/1 -apple-system,system-ui,sans-serif;margin-bottom:14px;}',
+        'h1{font-size:16px;font-weight:600;margin:0 0 6px;}',
+        '.url{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#5AC8FA;',
         'word-break:break-all;margin:0 0 14px;}',
-        '.code{color:#6f6f78;font-size:11px;}',
-        'a.retry{display:inline-block;padding:5px 12px;border-radius:6px;border:1px solid #3b6ea5;',
-        'background:#24405e;color:#dce8f6;text-decoration:none;font-size:12px;}',
-        'a.retry:hover{background:#2c4d71;}',
-        '</style></head><body><main><section>',
-        '<h1>Failed to open page</h1>',
-        `<p>${message} <span class="code">(${code})</span></p>`,
+        'p.message{margin:0 0 18px;color:rgba(242,242,247,0.75);line-height:1.45;}',
+        '.code{color:rgba(242,242,247,0.45);font-size:11px;}',
+        '.actions{display:flex;gap:8px;}',
+        'a.btn{display:inline-block;padding:6px 14px;border-radius:6px;background:#0A84FF;color:white;',
+        'text-decoration:none;font-weight:600;font-size:12px;}',
+        'a.btn:hover{filter:brightness(1.1);}',
+        '</style></head><body><div class="wrap"><div class="card">',
+        '<div class="icon">!</div>',
+        "<h1>Couldn't load page</h1>",
         `<p class="url">${url}</p>`,
-        `<a class="retry" href="${url}">Retry</a>`,
-        '</section></main></body></html>'
+        `<p class="message">${message} <span class="code">(${code})</span></p>`,
+        '<div class="actions">',
+        `<a class="btn" href="${url}">Retry</a>`,
+        '</div></div></div></body></html>'
     ].join('');
 }
 

@@ -22,7 +22,7 @@ import { GlobalHotkeySection } from './GlobalHotkeySection';
 import { hasCustomBindings, keybindingSections } from './model';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
-import { KeyChip, SettingsButton, SettingsFooterNote, SettingsIconButton } from './ui';
+import { SettingsButton, SettingsIconButton, TriggerChip, XmarkCircleFillGlyph } from './ui';
 
 export interface KeybindingsTabProps {
     readonly bindings: KeyBindingMap;
@@ -62,6 +62,16 @@ interface RecordingState {
 
 /** How long the captured chord is shown in the row before it disarms (SET-090). */
 export const CAPTURED_FEEDBACK_MS = 700;
+
+/**
+ * `alternatesRowBackgrounds`' two tones (M41).
+ *
+ * AppKit paints row 0 with the base and row 1 with the alternate, so the parity is
+ * even → clear, odd → a faint wash. The alternation restarts per section here, where the Swift's
+ * single `List` counts across the whole table — the port renders each category as its own
+ * bordered group, so a continuous count would put an unexplained stripe at some section heads.
+ */
+export const ROW_STRIPE = { base: 'transparent', alternate: withAlpha('#808080', 0.06) } as const;
 
 export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     const [recording, setRecording] = useState<RecordingState | null>(null);
@@ -124,34 +134,36 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     }, [recording]);
 
     return (
-        <div className="flex flex-col gap-4" data-testid="settings-tab-keybindings">
-            <div className="flex items-center justify-between gap-3">
+        /*
+         * M44: `VStack(spacing: 0) { List; Divider(); footer }` — the LIST scrolls and the bar
+         * does not. `h-full` makes the tab exactly the panel's height and the region below owns
+         * the scrolling, so the panel (shared by every tab) never scrolls this one and nothing
+         * can pass under the bar. A `sticky` footer inside the panel's own scroller looked right
+         * until a row was tall enough to sit between it and the panel edge, which the scoped
+         * audit's `05-global-hotkey-record-recorded.png` caught.
+         */
+        <div className="flex h-full flex-col" data-testid="settings-tab-keybindings">
+            <div
+                data-testid="keybindings-scroll"
+                className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+            >
                 <p className="text-[11px]" style={{ color: tokens.textTertiary }}>
                     One trigger belongs to one action; an action can have several. Recording a combo that
-                    is already taken is refused rather than stealing it.
+                    is already taken is refused rather than stealing it. Escape cancels a recording; a
+                    combo needs a modifier unless it is Escape or F1–F12.
                 </p>
-                <SettingsButton
-                    testID="reset-all-keybindings"
-                    disabled={!hasCustomBindings(props.bindings)}
-                    onClick={() => {
-                        props.actions.resetKeybindings(null);
-                    }}
-                >
-                    Reset All to Defaults
-                </SettingsButton>
-            </div>
 
-            {props.globalHotkey === undefined ? null : (
-                <GlobalHotkeySection
-                    hotkey={props.globalHotkey}
-                    hideOnRepress={props.globalHotkeyHideOnRepress ?? true}
-                    bindings={props.bindings}
-                    actions={props.actions}
-                    registrationError={props.globalHotkeyError}
-                />
-            )}
+                {props.globalHotkey === undefined ? null : (
+                    <GlobalHotkeySection
+                        hotkey={props.globalHotkey}
+                        hideOnRepress={props.globalHotkeyHideOnRepress ?? true}
+                        bindings={props.bindings}
+                        actions={props.actions}
+                        registrationError={props.globalHotkeyError}
+                    />
+                )}
 
-            {sections.map((section) => (
+                {sections.map((section) => (
                 <div key={section.category} className="flex flex-col gap-1">
                     <h3
                         className="text-[11px] font-semibold uppercase tracking-wide"
@@ -165,13 +177,14 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                         className="flex flex-col overflow-hidden rounded border"
                         style={{ borderColor: tokens.divider }}
                     >
-                        {section.rows.map((row) => {
+                        {section.rows.map((row, rowIndex) => {
                             const isRecording = recording?.action === row.action;
                             return (
                                 <div
                                     key={row.action}
                                     role="row"
                                     data-testid={`keybinding-row-${row.action}`}
+                                    data-stripe={rowIndex % 2 === 1 ? 'alternate' : 'base'}
                                     ref={(element) => {
                                         // The conflict message's click-through needs to scroll
                                         // the OWNING row into view, which means knowing where
@@ -182,7 +195,16 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                     className="flex items-center gap-2 border-b px-2 py-1.5 last:border-b-0"
                                     style={{
                                         borderColor: tokens.divider,
-                                        background: isRecording ? withAlpha(tokens.accent, 0.12) : 'transparent'
+                                        // M41: `.listStyle(.inset(alternatesRowBackgrounds: true))`
+                                        // (`KeybindingsSettingsView.swift:58`). Forty-plus rows of
+                                        // label → chips → two buttons need the stripe to carry the
+                                        // eye across; every row painted transparent is what the
+                                        // hairline alone could not do.
+                                        background: isRecording
+                                            ? withAlpha(tokens.accent, 0.12)
+                                            : rowIndex % 2 === 1
+                                              ? ROW_STRIPE.alternate
+                                              : ROW_STRIPE.base
                                     }}
                                 >
                                     <span role="cell" className="flex min-w-0 flex-1 flex-col">
@@ -247,14 +269,18 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                         ) : (
                                             row.triggers.map((chip) => (
                                                 <span key={chip.config} className="flex items-center gap-0.5">
-                                                    <KeyChip>{chip.display}</KeyChip>
+                                                    <TriggerChip>{chip.display}</TriggerChip>
                                                     {/*
                                                      * H11 / M43: the Swift `xmark.circle.fill`
                                                      * is a `.plain` glyph AppKit lights on
                                                      * hover. `px-0.5` gave this one a ~10 px
                                                      * target and nothing at all under the
                                                      * pointer; `SettingsIconButton` is the
-                                                     * shared 16 px square with the one fill.
+                                                     * shared 16 px square with the one fill,
+                                                     * and the glyph is the filled disc rather
+                                                     * than a bare `×` character — which is what
+                                                     * stops it reading as punctuation between
+                                                     * two chips.
                                                      */}
                                                     <SettingsIconButton
                                                         testID={`keybinding-remove-${row.action}-${chip.config}`}
@@ -263,7 +289,7 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                                             removeTrigger(props, row.action, chip.config);
                                                         }}
                                                     >
-                                                        ×
+                                                        <XmarkCircleFillGlyph />
                                                     </SettingsIconButton>
                                                 </span>
                                             ))
@@ -314,12 +340,48 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                         })}
                     </div>
                 </div>
-            ))}
+                ))}
+            </div>
 
-            <SettingsFooterNote>
-                Config: <span className="font-mono">{props.configPath}</span>. Escape cancels a recording;
-                a combo needs a modifier unless it is Escape or F1–F12.
-            </SettingsFooterNote>
+            {/*
+             * M44: the footer strip is back, and it is OUTSIDE the scroller.
+             *
+             * `KeybindingsSettingsView.swift:61-72` is `VStack(spacing: 0) { List; Divider();
+             * HStack { Text("Config: …"); Spacer(); Button("Reset All to Defaults") }.padding(12)
+             * }` — the bar lives outside the scroller, so the config path is always readable and
+             * the destructive Reset is at the END of the tab. The port had dismantled it: Reset
+             * had moved to a header row at the top-right, making it the first control on a
+             * 40-row tab, and the path had become a footnote that scrolled away.
+             *
+             * The negative margins undo `SettingsOverlay`'s shared `p-4` on the tab panel, so the
+             * divider spans it edge to edge and the bar sits flush on the bottom — which is what
+             * `Divider()` does across the `VStack`.
+             */}
+            <div
+                data-testid="keybindings-footer"
+                className="-mx-4 -mb-4 mt-4 flex shrink-0 items-center gap-3 px-3 py-3"
+                style={{
+                    background: tokens.surfaceBackground,
+                    borderTop: `1px solid ${tokens.divider}`
+                }}
+            >
+                <span
+                    data-testid="settings-footer-note"
+                    className="min-w-0 flex-1 text-[11px]"
+                    style={{ color: tokens.textTertiary }}
+                >
+                    Config: <span className="font-mono">{props.configPath}</span>
+                </span>
+                <SettingsButton
+                    testID="reset-all-keybindings"
+                    disabled={!hasCustomBindings(props.bindings)}
+                    onClick={() => {
+                        props.actions.resetKeybindings(null);
+                    }}
+                >
+                    Reset All to Defaults
+                </SettingsButton>
+            </div>
         </div>
     );
 }

@@ -66,9 +66,17 @@ import {
     type ChromeLabelPreset,
     type ResolvedLabelStyle
 } from '../chrome';
+import { TagGlyph } from './glyphs';
 import { labelUsage, orphanLabels, type LabelledWorkspace } from './model';
 import type { SettingsActions } from './types';
-import { SettingsButton, SettingsIconButton, SettingsSection, hoverBackground, useHover } from './ui';
+import {
+    SettingsButton,
+    SettingsEmptyState,
+    SettingsIconButton,
+    SettingsSection,
+    hoverBackground,
+    useHover
+} from './ui';
 
 /**
  * `LabelCol` (`LabelPresetsSettingsView.swift:7-12`), to the point.
@@ -90,6 +98,12 @@ const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(0,1fr) ${String(
 
 /** `HStack(spacing: 10)` — the gap between those columns. */
 const LABEL_GRID_GAP = '10px';
+
+/**
+ * `alternatesRowBackgrounds`' two tones (M41), even → clear and odd → a faint wash, which is the
+ * parity AppKit paints. The add row keeps its own accent tint: it is not a list row.
+ */
+const LABEL_ROW_STRIPE = { base: 'transparent', alternate: withAlpha('#808080', 0.06) } as const;
 
 /**
  * `Image(systemName: "trash")` at this file's own scale.
@@ -416,7 +430,16 @@ interface ChipPreviewProps {
     readonly colorToken?: string | undefined;
 }
 
-/** SET-058's live chip: the placeholder reads "label" at 50 % opacity while the name is empty. */
+/**
+ * SET-058's live chip: the placeholder reads "label" at 50 % opacity while the name is empty.
+ *
+ * **It is the chip it previews** (M40). `WorkspaceLabelViews.swift:7-31`'s `LabelChip` — the view
+ * this preview column exists to show — is a `Capsule` around `.font(.system(size: 10, weight:
+ * .medium))` with 6/2 padding, and its sibling `RowLabelChip` (the sidebar row's, `:37-56`) is
+ * the same capsule one point down. The port drew a THIRD thing here: a 4 px-radius rectangle at
+ * 11 px regular, so the one control whose job is "this is what the label will look like" showed a
+ * shape no label anywhere in the app has.
+ */
 function ChipPreview(props: ChipPreviewProps): ReactElement {
     return (
         <span
@@ -426,7 +449,8 @@ function ChipPreview(props: ChipPreviewProps): ReactElement {
             // `truncate`: the chip lives in the fixed 80 px preview column (`LabelCol.preview`),
             // leading-aligned like the Swift `.frame(width:alignment:.leading)`, so a long name
             // ellipsises inside its column instead of pushing the trash button out of line.
-            className="block max-w-full truncate rounded px-1.5 py-0.5 text-[11px]"
+            // (`.lineLimit(1)` is on the Swift chip too.)
+            className="block max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-medium"
             style={{
                 background: props.style.background,
                 color: props.style.text,
@@ -477,14 +501,19 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 hint="A label wears a preset's colors when its text matches the preset name exactly."
                 testID="label-presets"
             >
+                {/*
+                 * M45: `LabelPresetsSettingsView.swift:85-87`'s `Image(systemName: "tag")` at
+                 * 28 pt over a `.secondary` headline and a `.caption`/`.tertiary` explanation,
+                 * centred in the space. The port had an inline `🏷` at body size on one wrapped
+                 * paragraph.
+                 */}
                 {props.presets.length === 0 ? (
-                    <p data-testid="labels-empty" className="text-[12px]" style={{ color: tokens.textTertiary }}>
-                        <span aria-hidden className="mr-1">
-                            🏷
-                        </span>
-                        No label presets yet. Define one below, then assign it from a workspace&rsquo;s context
-                        menu — or apply a label from the CLI and adopt it here.
-                    </p>
+                    <SettingsEmptyState
+                        testID="labels-empty"
+                        glyph={<TagGlyph size={28} />}
+                        title="No label presets yet"
+                        detail="Define reusable labels with colours, then assign them from a workspace's right-click menu — or apply a label from the CLI and adopt it here."
+                    />
                 ) : null}
 
                 {/*
@@ -693,13 +722,21 @@ function PresetRow(props: PresetRowProps): ReactElement {
     return (
         <div
             data-testid={`label-preset-${preset.name}`}
+            data-stripe={props.index % 2 === 1 ? 'alternate' : 'base'}
             className="grid items-center rounded px-2 py-1.5 transition-colors duration-100"
             style={{
                 display: 'grid',
                 gridTemplateColumns: LABEL_GRID,
                 columnGap: LABEL_GRID_GAP,
                 rowGap: '6px',
-                background: hoverBackground(hovered, withAlpha('#808080', 0.06))
+                // M41: `.listStyle(.inset(alternatesRowBackgrounds: true))`
+                // (`LabelPresetsSettingsView.swift:74`) — the same stripe the Keybindings table
+                // takes, and for the same reason: rows of wells and swatches need something
+                // holding the eye across five columns. Hover still wins over the stripe.
+                background: hoverBackground(
+                    hovered,
+                    props.index % 2 === 1 ? LABEL_ROW_STRIPE.alternate : LABEL_ROW_STRIPE.base
+                )
             }}
             {...hoverProps}
         >

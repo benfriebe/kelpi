@@ -294,7 +294,11 @@ function CountItem(props: CountItemProps): ReactElement {
                 data-testid={`count-${props.bucket}`}
                 data-count={props.count}
                 className="flex shrink-0 items-center gap-1 whitespace-nowrap"
-                style={{ color: tokens.textTertiary }}
+                /* §M22: NOT dimmed. `StatusBarView.swift:284-301`'s `countLabel` carries one
+                   unconditional `.foregroundStyle(theme.textSecondary)` for both branches, and
+                   the source comment beside it spells the rule out — "0-count items stay plain
+                   (un-dimmed, non-clickable)". Inert is about the click target, not the tone. */
+                style={{ color: tokens.textSecondary }}
             >
                 {content}
             </span>
@@ -816,7 +820,16 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                     role="dialog"
                     aria-label={BUCKET_LABEL[openBucket]}
                     data-anchored={placement === null ? 'false' : 'true'}
-                    className={`absolute bottom-7 z-40 w-[252px] rounded-lg p-2 ${
+                    /*
+                     * §M21 — `AgentStatusDetailPopover`'s own metrics, not the footer's.
+                     *
+                     * `StatusBarView.swift:340-408` is `VStack(alignment: .leading, spacing: 6)`
+                     * inside `.padding(12)`, and its rows are 12 pt — a popover is a surface of
+                     * its own, so it does not inherit the 11 px the status row is drawn at. The
+                     * port padded 8 px and let everything inherit, which flattened the title
+                     * into the rows and the rows into the chips behind them.
+                     */
+                    className={`absolute bottom-7 z-40 flex w-[252px] flex-col gap-1.5 rounded-lg p-3 text-[12px] ${
                         placement === null ? 'right-3' : ''
                     }`}
                     style={{
@@ -843,10 +856,16 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                             }}
                         />
                     )}
-                    <div className="mb-1 flex items-center gap-1.5" style={{ color: tokens.textPrimary }}>
+                    {/* §M21: `HStack(spacing: 6)` — a 7 px dot beside a 13 pt semibold title,
+                        with the header's own `.padding(.bottom, 2)` on top of the stack's 6. */}
+                    <div
+                        data-testid="bucket-popover-title"
+                        className="flex items-center gap-1.5 pb-[2px] text-[13px] font-semibold"
+                        style={{ color: tokens.textPrimary }}
+                    >
                         <span
                             aria-hidden
-                            className="h-[6px] w-[6px] rounded-full"
+                            className="h-[7px] w-[7px] rounded-full"
                             style={{ background: bucketColor(openBucket) }}
                         />
                         {BUCKET_LABEL[openBucket]}
@@ -854,43 +873,65 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                     {items.length === 0 ? (
                         <div style={{ color: tokens.textTertiary }}>None.</div>
                     ) : (
-                        items.map((item) => (
-                            <button
-                                key={item.paneID}
-                                type="button"
-                                data-testid="bucket-row"
-                                className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left"
-                                /* §H11: the row under the pointer is the row a click acts on,
-                                   so it is painted — `ContextMenu`'s rule, same fill. */
-                                data-hovered={hovered === `bucket:${item.paneID}` ? 'true' : 'false'}
-                                style={{ background: hoverFill(hovered === `bucket:${item.paneID}`) }}
-                                {...hover(`bucket:${item.paneID}`)}
-                                onClick={() => {
-                                    setOpenBucket(null);
-                                    props.onSelectPane?.(item.workspaceID, item.paneID);
-                                }}
-                            >
-                                <span
-                                    aria-hidden
-                                    className="h-[6px] w-[6px] shrink-0 rounded-full"
-                                    style={{ background: workspaceColorHex(item.workspaceColor, bucket) }}
-                                />
-                                <span className="shrink-0" style={{ color: tokens.textSecondary }}>
-                                    {item.workspaceName}
-                                </span>
-                                <span style={{ color: tokens.textTertiary }}>·</span>
-                                <span className="min-w-0 flex-1 truncate" style={{ color: tokens.textPrimary }}>
-                                    {middleTruncate(item.paneTitle, 24)}
-                                </span>
-                                {openBucket === 'running' &&
-                                item.agentStartedAt !== null &&
-                                item.agentStartedAt !== undefined ? (
-                                    <span className="shrink-0" style={{ color: tokens.activeAgent }}>
-                                        {chromeElapsedLabel(item.agentStartedAt, nowMs)}
+                        // §M21: `VStack(alignment: .leading, spacing: 2)` — the rows are a stack
+                        // of their own, so they sit 2 px apart rather than flush against each
+                        // other the way bare siblings of the header did.
+                        <div data-testid="bucket-popover-rows" className="flex flex-col gap-[2px]">
+                            {items.map((item) => (
+                                <button
+                                    key={item.paneID}
+                                    type="button"
+                                    data-testid="bucket-row"
+                                    className="flex w-full items-center gap-1.5 rounded text-left"
+                                    /* §H11: the row under the pointer is the row a click acts on,
+                                       so it is painted — `ContextMenu`'s rule, same fill. */
+                                    data-hovered={hovered === `bucket:${item.paneID}` ? 'true' : 'false'}
+                                    style={{
+                                        background: hoverFill(hovered === `bucket:${item.paneID}`),
+                                        /*
+                                         * §M21: `rowContent`'s `.padding(.vertical, 3)
+                                         * .padding(.horizontal, 4)`.
+                                         *
+                                         * Inline, not `px-1 py-[3px]`: `styles.css`'s unlayered
+                                         * `button { padding: 0 }` outranks Tailwind's layered
+                                         * utilities, so the classes this row already carried had
+                                         * been drawing NOTHING — the audit measured `padding-top:
+                                         * 0px` through a `py-1`. Same trap H29 recorded for
+                                         * `input { font: inherit }` and the find field's face.
+                                         */
+                                        padding: '3px 4px'
+                                    }}
+                                    {...hover(`bucket:${item.paneID}`)}
+                                    onClick={() => {
+                                        setOpenBucket(null);
+                                        props.onSelectPane?.(item.workspaceID, item.paneID);
+                                    }}
+                                >
+                                    <span
+                                        aria-hidden
+                                        className="h-[7px] w-[7px] shrink-0 rounded-full"
+                                        style={{ background: workspaceColorHex(item.workspaceColor, bucket) }}
+                                    />
+                                    <span className="shrink-0" style={{ color: tokens.textSecondary }}>
+                                        {item.workspaceName}
                                     </span>
-                                ) : null}
-                            </button>
-                        ))
+                                    <span style={{ color: tokens.textTertiary }}>·</span>
+                                    <span
+                                        className="min-w-0 flex-1 truncate"
+                                        style={{ color: tokens.textPrimary }}
+                                    >
+                                        {middleTruncate(item.paneTitle, 24)}
+                                    </span>
+                                    {openBucket === 'running' &&
+                                    item.agentStartedAt !== null &&
+                                    item.agentStartedAt !== undefined ? (
+                                        <span className="shrink-0" style={{ color: tokens.activeAgent }}>
+                                            {chromeElapsedLabel(item.agentStartedAt, nowMs)}
+                                        </span>
+                                    ) : null}
+                                </button>
+                            ))}
+                        </div>
                     )}
                 </div>
             )}

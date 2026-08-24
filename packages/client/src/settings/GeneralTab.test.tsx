@@ -76,8 +76,12 @@ describe('Settings ▸ General', () => {
     // SET-013 / SET-014.
     it('writes both placement pickers', () => {
         const bound = renderTab();
-        fireEvent.click(screen.getByTestId('new-workspace-placement-near-selection'));
-        fireEvent.click(screen.getByTestId('new-group-placement-near-selection'));
+        fireEvent.change(screen.getByTestId('new-workspace-placement-select'), {
+            target: { value: 'near-selection' }
+        });
+        fireEvent.change(screen.getByTestId('new-group-placement-select'), {
+            target: { value: 'near-selection' }
+        });
         expect(bound.writes).toEqual([
             { key: 'new-workspace-placement', value: 'near-selection' },
             { key: 'new-group-placement', value: 'near-selection' }
@@ -86,12 +90,28 @@ describe('Settings ▸ General', () => {
 
     it('reflects the daemon’s placement value rather than a local echo', () => {
         renderTab({ newWorkspacePlacement: 'near-selection' });
-        expect(
-            screen.getByTestId('new-workspace-placement-near-selection').getAttribute('aria-checked')
-        ).toBe('true');
-        expect(screen.getByTestId('new-workspace-placement-end-of-list').getAttribute('aria-checked')).toBe(
-            'false'
+        expect((screen.getByTestId('new-workspace-placement-select') as HTMLSelectElement).value).toBe(
+            'near-selection'
         );
+    });
+
+    /**
+     * M52. `SettingsView.swift:167-187` builds both placement rows with a bare
+     * `Picker(_:selection:)` — a POP-UP menu. The one `.pickerStyle(.segmented)` in the whole
+     * Settings scene is Appearance ▸ Chrome (`:345`), so a segmented control here read as a
+     * stronger control than the shipped app's.
+     */
+    it('renders both placement rows as pop-up menus, not segmented controls', () => {
+        renderTab();
+        for (const id of ['new-workspace-placement', 'new-group-placement']) {
+            const row = screen.getByTestId(id);
+            expect(row.querySelector('select')).not.toBeNull();
+            expect(row.querySelector('[role="radiogroup"]')).toBeNull();
+            expect([...row.querySelectorAll('option')].map((node) => node.textContent)).toEqual([
+                'Next to selection',
+                'End of list'
+            ]);
+        }
     });
 
     // SET-019: enabling seeds the default port; disabling writes 0.

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
     EDITOR_LINE_PX,
+    EDITOR_PADDING,
     GUTTER_MIN_WIDTH,
     PlainTextEditor,
     gutterWidth,
@@ -256,7 +257,7 @@ describe('PlainTextEditor gutter windowing (CONT-078)', () => {
         expect(gutter.getAttribute('data-window')).toBe('1-5000');
 
         const area = screen.getByTestId(`content-textarea-${PANE}`);
-        measure(area, { height: 400, scrollTop: 12 + 2000 * EDITOR_LINE_PX });
+        measure(area, { height: 400, scrollTop: EDITOR_PADDING + 2000 * EDITOR_LINE_PX });
         act(() => {
             fireEvent.scroll(area);
         });
@@ -272,8 +273,12 @@ describe('PlainTextEditor gutter windowing (CONT-078)', () => {
         // baseline as the text it numbers.
         const inner = gutter.firstElementChild as HTMLElement;
         const firstDrawn = Number(drawn[0]);
-        expect(inner.style.paddingTop).toBe(`${String(12 + (firstDrawn - 1) * EDITOR_LINE_PX)}px`);
-        expect(inner.style.transform).toBe(`translateY(${String(-(12 + 2000 * EDITOR_LINE_PX))}px)`);
+        expect(inner.style.paddingTop).toBe(
+            `${String(EDITOR_PADDING + (firstDrawn - 1) * EDITOR_LINE_PX)}px`
+        );
+        expect(inner.style.transform).toBe(
+            `translateY(${String(-(EDITOR_PADDING + 2000 * EDITOR_LINE_PX))}px)`
+        );
     });
 
     it('re-clamps the window when the buffer shrinks under it', () => {
@@ -289,7 +294,7 @@ describe('PlainTextEditor gutter windowing (CONT-078)', () => {
             />
         );
         const area = screen.getByTestId(`content-textarea-${PANE}`);
-        measure(area, { height: 200, scrollTop: 12 + 300 * EDITOR_LINE_PX });
+        measure(area, { height: 200, scrollTop: EDITOR_PADDING + 300 * EDITOR_LINE_PX });
         act(() => {
             fireEvent.scroll(area);
         });

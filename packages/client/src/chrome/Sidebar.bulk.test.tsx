@@ -106,7 +106,9 @@ describe('bulk context menu', () => {
         const onSetBulkColor = vi.fn();
         openBulkMenu({ onSetBulkColor });
         fireEvent.mouseEnter(screen.getByText('Color 2 Workspaces'));
-        fireEvent.click(within(screen.getByTestId('context-submenu')).getByText('purple'));
+        // M3: the bulk list is the same `ForEach` over `WorkspaceColor.allCases`, so it reads
+        // `displayName` too.
+        fireEvent.click(within(screen.getByTestId('context-submenu')).getByText('Purple'));
         expect(onSetBulkColor).toHaveBeenCalledTimes(1);
         expect(onSetBulkColor).toHaveBeenCalledWith([W1, W2], 'purple');
     });
@@ -212,6 +214,12 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
         { id: 'r2', name: 'infra', path: '/src/infra', worktreeBase: '/Users/t/nex/worktrees/infra' }
     ];
 
+    /**
+     * M4: the section is revealed by ONE chosen repo, so the setup now chooses one — `app` (r1),
+     * which is the repo `repos[0]` used to be picked implicitly by. Every assertion below is
+     * unchanged apart from `repoPaths`, which now carries the repo the section is cutting from
+     * (it was `[]` when the toggle could be flipped with nothing selected).
+     */
     function openForm(onCreateWorkspace: (...args: never[]) => unknown): void {
         render(
             <Sidebar
@@ -222,6 +230,12 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
             />
         );
         fireEvent.click(screen.getByTestId('sidebar-new-workspace'));
+        // No repo chosen yet → no worktree section at all (`NewWorkspaceSheet.swift:179-183`).
+        expect(screen.queryByTestId('new-workspace-worktree-toggle')).toBeNull();
+        fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+        const picker = screen.getByTestId('new-workspace-repo-picker');
+        fireEvent.click(within(picker).getByTestId('repo-choice-r1'));
+        fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
         fireEvent.click(screen.getByTestId('new-workspace-worktree-toggle'));
     }
 
@@ -268,8 +282,13 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
                     updateMain: true
                 },
                 // §WS-075's extras ride along: the swatch (a random colour that avoids the
-                // neighbour's), the profile, and the repos chosen for association.
-                { color: expect.any(String) as unknown as string, profile: null, repoPaths: [] }
+                // neighbour's), the profile, and the repos chosen for association — which, since
+                // M4, is the very repo the worktree is cut from.
+                {
+                    color: expect.any(String) as unknown as string,
+                    profile: null,
+                    repoPaths: ['/src/app']
+                }
             );
         });
     });
@@ -310,6 +329,36 @@ describe('New Workspace form — create git worktree (§WS-078/§WS-079)', () =>
         render(<Sidebar {...base()} entries={entries()} onCreateWorkspace={vi.fn()} />);
         fireEvent.click(screen.getByTestId('sidebar-new-workspace'));
         expect(screen.queryByTestId('new-workspace-worktree-toggle')).toBeNull();
+    });
+
+    it('M4: and hides it with a registry behind it until exactly ONE repo is chosen', () => {
+        render(
+            <Sidebar {...base()} entries={entries()} repos={repos} onCreateWorkspace={vi.fn()} />
+        );
+        fireEvent.click(screen.getByTestId('sidebar-new-workspace'));
+        // A registry alone is not the gate — `selectedRepos.count == 1` is.
+        expect(screen.getByTestId('new-workspace-add-repo')).toBeTruthy();
+        expect(screen.queryByTestId('new-workspace-worktree-toggle')).toBeNull();
+
+        const choose = (id: string): void => {
+            fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+            const picker = screen.getByTestId('new-workspace-repo-picker');
+            fireEvent.click(within(picker).getByTestId(`repo-choice-${id}`));
+            fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
+        };
+
+        choose('r1');
+        expect(screen.getByTestId('new-workspace-worktree-toggle')).toBeTruthy();
+
+        // TWO is not one: the section goes away rather than asking which repo to branch from —
+        // the `<select>` the port used to put inside it is gone with M4.
+        choose('r2');
+        expect(screen.queryByTestId('new-workspace-worktree-toggle')).toBeNull();
+        expect(screen.queryByTestId('new-workspace-worktree-repo')).toBeNull();
+
+        // …and back down to one brings it back.
+        fireEvent.click(screen.getByTestId('new-workspace-repo-remove-r2'));
+        expect(screen.getByTestId('new-workspace-worktree-toggle')).toBeTruthy();
     });
 });
 

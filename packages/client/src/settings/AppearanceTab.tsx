@@ -26,6 +26,7 @@ import { useRef, useState, type ChangeEvent, type ReactElement } from 'react';
 
 import {
     BUILT_IN_CHROME_THEMES,
+    ChromeIcon,
     ChromeThemeError,
     INVALID_THEME_MESSAGE,
     OVERRIDABLE_CHROME_KEYS,
@@ -825,6 +826,16 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                                 <SettingsRow
                                     key={kind}
                                     label={SYSTEM_STAT_META[kind].displayName}
+                                    /*
+                                     * M51: `SettingsView.swift:444-447` labels each of these six
+                                     * rows `Label(kind.displayName, systemImage: kind.systemImage)`
+                                     * — the SAME glyph the status bar draws for that metric. The
+                                     * port already carried it (`SYSTEM_STAT_META[kind].icon`,
+                                     * which `StatusFooter` reads) and simply never put it in the
+                                     * row, so the list and the thing it configures stopped
+                                     * looking like each other.
+                                     */
+                                    icon={<ChromeIcon name={SYSTEM_STAT_META[kind].icon} size={12} />}
                                     testID={`stats-kind-${kind}`}
                                 >
                                     <SettingsToggle

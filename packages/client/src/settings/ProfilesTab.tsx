@@ -54,7 +54,15 @@ import {
     type ProfileDraft
 } from './model';
 import type { SettingsActions, SettingsPaths } from './types';
-import { SettingsButton, SettingsFooterNote, SettingsSection, hoverBackground, useHover } from './ui';
+import { PersonBadgeKeyGlyph } from './glyphs';
+import {
+    SettingsButton,
+    SettingsEmptyState,
+    SettingsFooterNote,
+    SettingsSection,
+    hoverBackground,
+    useHover
+} from './ui';
 
 /**
  * One row in the profile rail. H11: a `List` row in AppKit lights under the pointer and this
@@ -73,7 +81,7 @@ function ProfileRow(props: {
             role="option"
             aria-selected={props.selected}
             data-testid={`profile-row-${props.name}`}
-            className="truncate rounded px-2 py-1 text-left text-[12px] transition-colors duration-100"
+            className="flex items-center gap-1.5 truncate rounded px-2 py-1 text-left text-[12px] transition-colors duration-100"
             style={{
                 background: props.selected
                     ? withAlpha(tokens.accent, 0.18)
@@ -84,7 +92,13 @@ function ProfileRow(props: {
             {...hoverProps}
             onClick={props.onSelect}
         >
-            {props.name === '' ? '(unnamed)' : props.name}
+            {/* M47: `ProfilesSettingsView.swift:120-124` is `Label(name, systemImage:
+                "person.badge.key")` — the rail rows carry the glyph, which is what makes the
+                column read as a list of profiles rather than a list of words. */}
+            <span aria-hidden className="flex shrink-0 items-center" style={{ color: tokens.textSecondary }}>
+                <PersonBadgeKeyGlyph size={12} />
+            </span>
+            <span className="min-w-0 truncate">{props.name === '' ? '(unnamed)' : props.name}</span>
         </button>
     );
 }
@@ -194,28 +208,27 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                      * selection goes away under a concurrent write.
                      */}
                     {current === undefined ? (
-                        <div
-                            data-testid="profile-detail-placeholder"
-                            className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded p-4 text-center"
-                            style={{ background: withAlpha('#808080', 0.06) }}
-                        >
-                            <span className="text-[12px]" style={{ color: tokens.textSecondary }}>
-                                No profile selected
-                            </span>
-                            <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                                A profile is a named set of environment variables injected into every pane
-                                that starts in a workspace assigned to it.
-                            </span>
-                            <SettingsButton
-                                testID="profile-add-empty"
-                                onClick={() => {
-                                    const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
-                                    setSelected(next.length - 1);
-                                    commit(next);
-                                }}
+                        // M45: `ProfilesSettingsView.swift:125-141` opens this placeholder with
+                        // `Image(systemName: "person.badge.key").font(.system(size: 34))` in
+                        // `.tertiary`, centred in the whole detail column with no card behind it.
+                        <div className="flex min-w-0 flex-1 flex-col">
+                            <SettingsEmptyState
+                                testID="profile-detail-placeholder"
+                                glyph={<PersonBadgeKeyGlyph size={34} />}
+                                title="No profile selected"
+                                detail="A profile is a named set of environment variables injected into every pane that starts in a workspace assigned to it."
                             >
-                                + Add Profile
-                            </SettingsButton>
+                                <SettingsButton
+                                    testID="profile-add-empty"
+                                    onClick={() => {
+                                        const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
+                                        setSelected(next.length - 1);
+                                        commit(next);
+                                    }}
+                                >
+                                    + Add Profile
+                                </SettingsButton>
+                            </SettingsEmptyState>
                         </div>
                     ) : (
                         <div className="flex min-w-0 flex-1 flex-col gap-2" data-testid="profile-detail">
@@ -322,18 +335,65 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                 </div>
                             ) : null}
 
+                            {/*
+                             * M47: `ProfilesSettingsView.swift:178-180` —
+                             * `Text("Environment Variables").font(.subheadline.weight(.semibold))
+                             * .foregroundStyle(.secondary)`. Without it the variable rows start
+                             * straight after the name field with nothing naming what they are.
+                             */}
+                            <span
+                                data-testid="profile-vars-heading"
+                                className="pt-1 text-[12px] font-semibold"
+                                style={{ color: tokens.textSecondary }}
+                            >
+                                Environment Variables
+                            </span>
+
+                            {/*
+                             * M47: the locked marker is a FAKE VAR ROW, which is the whole reason
+                             * `ProfilesSettingsView.swift:208-228` models it as two disabled
+                             * `TextField`s with a `Text("=")` between them rather than as a label:
+                             * it lines up, column for column, with the editable rows under it. The
+                             * port had flattened it to one tinted mono strip, which lined up with
+                             * nothing.
+                             */}
                             <div
                                 data-testid="profile-marker-row"
-                                className="flex items-center gap-2 rounded px-2 py-1 text-[11px]"
-                                style={{ background: withAlpha('#808080', 0.1), color: tokens.textTertiary }}
+                                className="flex items-center gap-1.5"
                                 title="Injected automatically — always matches the profile name"
                             >
-                                <span aria-hidden>🔒</span>
-                                <span className="font-mono">{`${PROFILE_MARKER_VAR} = ${current.name}`}</span>
+                                <input
+                                    readOnly
+                                    disabled
+                                    aria-label="Marker variable key"
+                                    data-testid="profile-marker-key"
+                                    className="w-40 rounded border bg-transparent px-1.5 py-1 font-mono text-[12px] outline-none disabled:opacity-60"
+                                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                    value={PROFILE_MARKER_VAR}
+                                />
+                                <span aria-hidden className="text-[12px]" style={{ color: tokens.textTertiary }}>
+                                    =
+                                </span>
+                                <input
+                                    readOnly
+                                    disabled
+                                    aria-label="Marker variable value"
+                                    data-testid="profile-marker-value"
+                                    className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 font-mono text-[12px] outline-none disabled:opacity-60"
+                                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                                    value={current.name}
+                                />
+                                <span
+                                    aria-hidden
+                                    className="shrink-0 text-[11px]"
+                                    style={{ color: tokens.textTertiary }}
+                                >
+                                    🔒
+                                </span>
                             </div>
 
                             {current.vars.map((entry, position) => (
-                                <div key={String(position)} className="flex items-center gap-2">
+                                <div key={String(position)} className="flex items-center gap-1.5">
                                     <input
                                         aria-label={`Variable ${String(position + 1)} key`}
                                         data-testid={`profile-var-key-${String(position)}`}
@@ -352,6 +412,11 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                             commit(drafts);
                                         }}
                                     />
+                                    {/* `Text("=")` (`ProfilesSettingsView.swift:249-250`) — and
+                                        the reason the marker row above lines up with this one. */}
+                                    <span aria-hidden className="text-[12px]" style={{ color: tokens.textTertiary }}>
+                                        =
+                                    </span>
                                     <input
                                         aria-label={`Variable ${String(position + 1)} value`}
                                         data-testid={`profile-var-value-${String(position)}`}

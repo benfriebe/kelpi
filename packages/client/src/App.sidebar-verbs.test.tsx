@@ -133,7 +133,8 @@ afterEach(cleanup);
 describe('a row’s Color ▸ (§WS-048)', () => {
     it('reaches the daemon as one `set-bulk-color` naming just that workspace', () => {
         const h = setup();
-        fireEvent.click(within(submenuOn('alpha', 'Color')).getByText('purple'));
+        // M3: the row is `WorkspaceColor.displayName` — "Purple" — and the WIRE is unchanged.
+        fireEvent.click(within(submenuOn('alpha', 'Color')).getByText('Purple'));
         expect(h.lastCommand('set-bulk-color')).toMatchObject({
             command: 'set-bulk-color',
             workspace_ids: [W1],

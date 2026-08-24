@@ -499,7 +499,13 @@ describe('gestures and keys become wire commands', () => {
     it('renames a pane from the header editor', async () => {
         const h = setup();
 
-        fireEvent.click(screen.getByTestId(`pane-rename-${PANE_A}`));
+        // §M30: the header's rename pencil is gone — `PaneHeaderView.swift:222-272` has no such
+        // button and the shipped app's rename is the header context menu's "Rename…" (`:354-356`).
+        // One-for-one swap of the GESTURE only; every assertion below is unchanged.
+        fireEvent.contextMenu(screen.getByTestId(`pane-header-${PANE_A}`));
+        fireEvent.click(
+            screen.getByTestId('context-menu').querySelector('[data-menu-item="rename"]') as Element
+        );
         const input = screen.getByTestId(`pane-rename-input-${PANE_A}`);
         fireEvent.change(input, { target: { value: 'worker' } });
         fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });

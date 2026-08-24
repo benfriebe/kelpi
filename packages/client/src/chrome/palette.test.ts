@@ -6,7 +6,6 @@ import {
     clampSelection,
     matchPaletteQuery,
     paletteNavigationOrder,
-    paletteSections,
     parsePaletteQuery,
     type PaletteItem
 } from './index';
@@ -174,26 +173,44 @@ describe('matching (substring AND-of-terms — never fuzzy)', () => {
     });
 });
 
-describe('sections and selection', () => {
-    it('groups matches into workspaces → panes → commands, keeping within-kind order', () => {
-        const sections = paletteSections(items());
-        expect(sections.map((section) => section.kind)).toEqual(['workspace', 'pane']);
-        expect(sections[0]?.items.map((item) => item.id)).toEqual([`ws:${W1}`, `ws:${W2}`]);
-        expect(sections[1]?.items.map((item) => item.id)).toEqual([
+/**
+ * UI-FIDELITY M54 — the list is FLAT and interleaved, and the two tests that asserted the
+ * grouped order were rewritten rather than kept: they pinned the very divergence the finding is
+ * about (`paletteSections` regrouping a match into WORKSPACES / PANES, which put every workspace
+ * above every pane). `CommandPaletteView.swift:47` is one `ForEach(items)` over the universe
+ * `AppReducer.swift:192-240` builds — workspace, its panes, next workspace — so the navigation
+ * order is the match itself.
+ */
+describe('order and selection', () => {
+    it('the navigation order is the match, interleaved: each workspace then ITS panes', () => {
+        expect(paletteNavigationOrder(items()).map((item) => item.id)).toEqual([
+            `ws:${W1}`,
             `pane:${P1}`,
             `pane:${P2}`,
+            `ws:${W2}`,
             `pane:${P3}`
         ]);
     });
 
-    it('the navigation order is exactly the section concatenation', () => {
-        expect(paletteNavigationOrder(items()).map((item) => item.id)).toEqual([
+    it('and it never reorders a filtered match — commands stay at the tail they were built on', () => {
+        const command: PaletteItem = {
+            id: 'cmd:split',
+            kind: 'command',
+            icon: 'bolt',
+            title: 'Split Right',
+            subtitle: '',
+            workspaceID: null,
+            workspaceName: '',
+            paneID: null,
+            workspaceColor: null
+        };
+        const universe = [...items(), command];
+        expect(paletteNavigationOrder(matchPaletteQuery(universe, 'client')).map((item) => item.id)).toEqual([
             `ws:${W1}`,
-            `ws:${W2}`,
             `pane:${P1}`,
-            `pane:${P2}`,
-            `pane:${P3}`
+            `pane:${P2}`
         ]);
+        expect(paletteNavigationOrder(universe).at(-1)?.id).toBe('cmd:split');
     });
 
     it('clamps the selection without wrapping', () => {

@@ -85,7 +85,20 @@ describe('CONT-117: the scratchpad editor and the markdown editor', () => {
             );
         });
 
-        expect(editorProfile(SCRATCH)).toEqual(editorProfile(MD));
+        /*
+         * §M29 — `wrap` is the ONE field the two deliberately differ on, so it comes out of the
+         * equality and gets a stronger assertion of its own rather than a weaker shared one.
+         * `MarkdownEditorView.swift:38-40` keeps the text container tracking the view's width,
+         * so a markdown buffer wraps to the pane; the scratchpad's `wrap="off"` is a ledgered
+         * divergence (`CONT-070` `[d]`). Every other field is still compared one by one, which
+         * is what CONT-117 is about.
+         */
+        const { wrap: markdownWrap, ...markdown } = editorProfile(MD);
+        const { wrap: scratchpadWrap, ...scratchpad } = editorProfile(SCRATCH);
+        expect(scratchpad).toEqual(markdown);
+        expect(markdownWrap).toBe('soft');
+        expect(scratchpadWrap).toBe('off');
+
         // …and the shared profile is the one §4.2 actually specifies, not just "the same".
         expect(editorProfile(SCRATCH)).toMatchObject({
             tag: 'TEXTAREA',

@@ -202,6 +202,102 @@ describe('anchoring (§M20)', () => {
     });
 });
 
+/**
+ * §M21 — `AgentStatusDetailPopover` is a surface with its own type scale, and the port had
+ * flattened it into the 11 px status row: 8 px of padding, a title with no size or weight of
+ * its own, 6 px dots, and rows sitting flush against each other.
+ * `StatusBarView.swift:340-408` is `.padding(12)` around a `VStack(spacing: 6)` whose title is
+ * `.system(size: 13, weight: .semibold)`, whose dots are 7 pt, and whose rows are 12 pt in a
+ * `VStack(spacing: 2)` with `.padding(.vertical, 3).padding(.horizontal, 4)`.
+ */
+describe('popover typography (§M21)', () => {
+    it('pads 12 and stacks at 6, not 8 and 4', () => {
+        renderFooter();
+        fireEvent.click(screen.getByTestId('count-running'));
+        const popover = screen.getByTestId('bucket-popover');
+        expect(popover.className).toContain('p-3');
+        expect(popover.className).not.toContain('p-2');
+        // `VStack(alignment: .leading, spacing: 6)`.
+        expect(popover.className).toContain('flex-col');
+        expect(popover.className).toContain('gap-1.5');
+        // The rows are 12 pt, so the panel does not inherit the footer row's 11.
+        expect(popover.className).toContain('text-[12px]');
+    });
+
+    it('gives the title its own size and weight, over a 7 px dot', () => {
+        renderFooter();
+        fireEvent.click(screen.getByTestId('count-waiting'));
+        const title = screen.getByTestId('bucket-popover-title');
+        expect(title.textContent).toContain('Awaiting input');
+        expect(title.className).toContain('text-[13px]');
+        expect(title.className).toContain('font-semibold');
+        // `.padding(.bottom, 2)` on the header, on top of the stack's own 6.
+        expect(title.className).toContain('pb-[2px]');
+        const dot = title.querySelector('span[aria-hidden]');
+        expect(dot?.className).toContain('h-[7px]');
+        expect(dot?.className).toContain('w-[7px]');
+    });
+
+    it('separates the rows by 2 px and pads them 3 × 4', () => {
+        render(
+            <StatusFooter summary={SUMMARY} now={NOW} bucketItems={() => items(3)} onSelectPane={vi.fn()} />
+        );
+        fireEvent.click(screen.getByTestId('count-running'));
+        const rows = screen.getByTestId('bucket-popover-rows');
+        expect(rows.className).toContain('gap-[2px]');
+        expect(rows.children).toHaveLength(3);
+        const row = screen.getAllByTestId('bucket-row')[0];
+        /*
+         * Inline rather than `px-1 py-[3px]`: `styles.css`'s unlayered `button { padding: 0 }`
+         * beats Tailwind's layered utilities, so the classes the row used to carry painted
+         * nothing at all (the audit read `padding-top: 0px` through a `py-1`). Asserted on the
+         * style, which is the thing that actually reaches the screen.
+         */
+        expect(row?.style.padding).toBe('3px 4px');
+        const dot = row?.querySelector('span[aria-hidden]');
+        expect(dot?.className).toContain('h-[7px]');
+    });
+
+    it('the empty state is a row of the same 12 px, not the footer’s 11', () => {
+        render(<StatusFooter summary={SUMMARY} now={NOW} bucketItems={() => []} />);
+        fireEvent.click(screen.getByTestId('count-inactive'));
+        const popover = screen.getByTestId('bucket-popover');
+        expect(popover.textContent).toContain('None.');
+        // Inherited from the panel, which is where the Swift's `.font(.system(size: 12))` on
+        // "None." and on every row comes to the same thing.
+        expect(popover.className).toContain('text-[12px]');
+        expect(screen.queryByTestId('bucket-popover-rows')).toBeNull();
+    });
+});
+
+/**
+ * §M22 — a zero count is inert, not dimmed. `StatusBarView.swift:284-301` builds `countLabel`
+ * once, with one unconditional `.foregroundStyle(theme.textSecondary)`, and the comment beside
+ * the branch says so: "0-count items stay plain (un-dimmed, non-clickable)".
+ */
+describe('zero counts (§M22)', () => {
+    it('a zero count is not a button, and not dimmed either', () => {
+        render(<StatusFooter summary={{ running: 0, waiting: 2, inactive: 0 }} now={NOW} />);
+        const zero = screen.getByTestId('count-running');
+        const live = screen.getByTestId('count-waiting');
+        expect(zero.tagName).toBe('SPAN');
+        expect(live.tagName).toBe('BUTTON');
+        // Same tone on both — the only difference a 0 makes is that it cannot be clicked.
+        expect(zero.style.color).not.toBe('');
+        expect(zero.style.color).toBe(live.style.color);
+    });
+
+    it('all three zero counts read the same as a live one', () => {
+        render(<StatusFooter summary={{ running: 0, waiting: 0, inactive: 0 }} now={NOW} />);
+        const colors = ['running', 'waiting', 'inactive'].map(
+            (bucket) => screen.getByTestId(`count-${bucket}`).style.color
+        );
+        expect(new Set(colors).size).toBe(1);
+        // The footer row's own tone is `textSecondary`; the chips must not be a step below it.
+        expect(colors[0]).toBe(screen.getByTestId('status-footer').style.color);
+    });
+});
+
 describe('hover (§H11)', () => {
     it('a count chip answers the pointer', () => {
         renderFooter();

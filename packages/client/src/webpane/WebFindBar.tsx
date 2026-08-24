@@ -1,11 +1,16 @@
 /**
  * ⌘F for a web pane (web-pane.md §10; WEB-059…WEB-065).
  *
- * The bar looks and behaves like a markdown pane's (`content/ContentFrame.tsx` §3.13) — needle,
- * `n/N`, ↑ ↓, ✕, Escape closes — but where that one talks to an iframe it owns, this one drives
- * a page it cannot touch: every keystroke is a `web-find` verb, the daemon forwards it to the
- * host's `find` RPC, and the marks are made by the injected script (`#F2D027`, current match
- * `#FF7A00`). So the counter here is whatever the *page* reported.
+ * The bar is styled as the app's one find bar — `grid/PaneSearchOverlay.tsx`, which the terminal
+ * and (since §H29) the content panes both mount, and which is `PaneSearchOverlay.swift` — but it
+ * cannot BE that component, because that one floats over its pane and nothing in this document
+ * can float over a web page (§M38 has the whole argument). Needle, the count inside the field,
+ * the chevron pair, ✕, Escape closes.
+ *
+ * Where a content pane's bar talks to an iframe it owns, this one drives a page it cannot touch:
+ * every keystroke is a `web-find` verb, the daemon forwards it to the host's `find` RPC, and the
+ * marks are made by the injected script (`#F2D027`, current match `#FF7A00`). So the counter
+ * here is whatever the *page* reported.
  *
  * Two rules that only exist because the page is remote:
  *
@@ -21,6 +26,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { Icon } from '../grid/icons';
+import { matchCountLabel } from '../grid/PaneSearchOverlay';
 import { tokens } from '../grid/tokens';
 import type { WebPaneCommands } from './commands';
 import { WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
@@ -33,13 +40,11 @@ export interface WebFindBarProps {
     readonly onClose: () => void;
 }
 
-/** §3.13's readout, shared with the content panes: 0 matches reads `0/0`, never `3/0`. */
-export function findCountLabel(total: number, current: number): string {
-    if (total <= 0) return '0/0';
-    return `${String(current < 0 ? 0 : current + 1)}/${String(total)}`;
-}
-
-const EMPTY = { total: 0, current: -1 } as const;
+/**
+ * Nothing measured yet. `total: null` is the Swift's `total: Int?` before a pass has run, and it
+ * is what keeps the counter OFF the bar until the page has answered (M38).
+ */
+const EMPTY: { total: number | null; current: number } = { total: null, current: -1 };
 
 function countsOf(reply: unknown, tabID: string): { total: number; current: number } | null {
     if (typeof reply !== 'object' || reply === null) return null;
@@ -56,7 +61,7 @@ function countsOf(reply: unknown, tabID: string): { total: number; current: numb
 export function WebFindBar(props: WebFindBarProps): ReactElement {
     const { paneID, activeTabID, commands, onClose } = props;
     const [needle, setNeedle] = useState('');
-    const [matches, setMatches] = useState<{ total: number; current: number }>(EMPTY);
+    const [matches, setMatches] = useState<{ total: number | null; current: number }>(EMPTY);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
@@ -102,10 +107,15 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
         onClose();
     }, [activeTabID, commands, paneID, onClose]);
 
+    const count = matchCountLabel(needle, matches.total, matches.current < 0 ? null : matches.current);
+    const empty = needle.length === 0;
+
     return (
         <div
             data-testid={`web-find-${paneID}`}
-            className="flex shrink-0 items-center gap-1 px-1.5 py-1 text-[11px]"
+            role="search"
+            aria-label="Find in page"
+            className="flex shrink-0 items-center gap-1 px-1.5 py-1"
             style={{
                 background: tokens.headerBackground,
                 borderBottom: `1px solid ${tokens.divider}`,
@@ -118,64 +128,119 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
                 close();
             }}
         >
-            <input
-                ref={inputRef}
-                aria-label="Find in page"
-                placeholder="Find in page"
-                data-testid={`web-find-input-${paneID}`}
-                // The priority layer defers ⌘←/⌘→ and tab cycling while this has the caret.
-                {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                className="w-48 rounded px-2 py-[3px] outline-none"
-                style={{
-                    background: tokens.surfaceBackground,
-                    border: `1px solid ${tokens.divider}`,
-                    color: tokens.textPrimary
-                }}
-                value={needle}
-                onChange={(event) => setNeedle(event.target.value)}
-                onKeyDown={(event) => {
-                    if (event.key !== 'Enter') return;
-                    event.preventDefault();
-                    drive(event.shiftKey ? 'prev' : 'next');
-                }}
-            />
-            <span data-testid={`web-find-count-${paneID}`} className="tabular-nums opacity-60">
-                {findCountLabel(matches.total, matches.current)}
-            </span>
+            {/*
+             * M38 — the bar's TYPE, FILL and DISABLED rules are `grid/PaneSearchOverlay.tsx`'s,
+             * which are `PaneSearchOverlay.swift:18-86`'s: a 160 px 12 px-monospace "Search"
+             * field, the count tucked INSIDE its trailing edge and absent until the page has
+             * answered, 22×22 chevrons dimmed to 0.3 and inert while the needle is empty, and
+             * the ✕ immediately after them rather than shoved to the far edge.
+             *
+             * What is NOT copied is the placement: the Swift floats this as a radius-8 shadowed
+             * card over the pane's top-right corner, and nothing in this document can float over
+             * a web pane — the page is a native `WebContentsView` composited on top of it (the
+             * same constraint that makes the pickup and storage panels rows). So the bar stays an
+             * inline row that shrinks the page hole, and the styling is what comes across.
+             */}
+            <div className="relative flex items-center">
+                <input
+                    ref={inputRef}
+                    aria-label="Search"
+                    placeholder="Search"
+                    data-testid={`web-find-input-${paneID}`}
+                    // The priority layer defers ⌘←/⌘→ and tab cycling while this has the caret.
+                    {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
+                    className="w-[160px] rounded px-2 py-1 leading-none outline-none"
+                    style={{
+                        background: tokens.surfaceBackground,
+                        color: tokens.textPrimary,
+                        // Face and size INLINE, for the reason the terminal bar states: the
+                        // unlayered `input { font: inherit }` in `styles.css` outranks every
+                        // Tailwind utility, so the classes alone render this as 13 px UI sans.
+                        fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                        fontSize: 12,
+                        paddingRight: count === null ? undefined : `${String(count.length * 7 + 12)}px`
+                    }}
+                    value={needle}
+                    onChange={(event) => setNeedle(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key !== 'Enter') return;
+                        event.preventDefault();
+                        drive(event.shiftKey ? 'prev' : 'next');
+                    }}
+                />
+                {count === null ? null : (
+                    <span
+                        data-testid={`web-find-count-${paneID}`}
+                        className="pointer-events-none absolute right-1.5 font-mono text-[10px] tabular-nums"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        {count}
+                    </span>
+                )}
+            </div>
             {/*
               * Up is NEXT, down is PREVIOUS, matching `PaneSearchOverlay.swift:48-66` (the
               * shipped app draws ONE find bar for terminal, markdown and web panes, and that is
               * how its chevrons are wired). The port's terminal bar follows the same order, so
               * the two find surfaces step the same way under the same glyph.
               */}
-            <button
-                type="button"
-                aria-label="Next match"
-                data-testid={`web-find-next-${paneID}`}
-                style={{ color: tokens.textSecondary }}
+            <FindStepButton
+                testID={`web-find-next-${paneID}`}
+                label="Next match"
+                icon="chevron-up"
+                disabled={empty}
                 onClick={() => drive('next')}
-            >
-                ↑
-            </button>
-            <button
-                type="button"
-                aria-label="Previous match"
-                data-testid={`web-find-prev-${paneID}`}
-                style={{ color: tokens.textSecondary }}
+            />
+            <FindStepButton
+                testID={`web-find-prev-${paneID}`}
+                label="Previous match"
+                icon="chevron-down"
+                disabled={empty}
                 onClick={() => drive('prev')}
-            >
-                ↓
-            </button>
+            />
             <button
                 type="button"
                 aria-label="Close find"
+                title="Close find"
                 data-testid={`web-find-close-${paneID}`}
-                className="ml-auto"
-                style={{ color: tokens.textTertiary }}
+                className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded opacity-70 hover:opacity-100"
+                style={{ color: tokens.textPrimary }}
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={close}
             >
-                ✕
+                <Icon name="close" size={10} />
             </button>
         </div>
+    );
+}
+
+/**
+ * The Swift's chevron pair: `.opacity(needle.isEmpty ? 0.3 : 0.7)` **and** `.disabled(…)`, so an
+ * empty needle leaves them visibly inert instead of live-looking controls that step nothing. The
+ * mouse-down guard keeps the caret in the field, exactly as the terminal bar's does.
+ */
+function FindStepButton(props: {
+    readonly testID: string;
+    readonly label: string;
+    readonly icon: 'chevron-up' | 'chevron-down';
+    readonly disabled: boolean;
+    readonly onClick: () => void;
+}): ReactElement {
+    return (
+        <button
+            type="button"
+            data-testid={props.testID}
+            aria-label={props.label}
+            title={props.label}
+            disabled={props.disabled}
+            className={`flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded ${
+                props.disabled ? 'opacity-30' : 'opacity-70 hover:opacity-100'
+            }`}
+            style={{ color: tokens.textPrimary, cursor: props.disabled ? 'default' : 'pointer' }}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={props.onClick}
+        >
+            <Icon name={props.icon} size={11} />
+        </button>
     );
 }

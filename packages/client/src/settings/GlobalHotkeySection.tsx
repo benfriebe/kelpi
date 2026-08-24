@@ -44,7 +44,15 @@ import { actionForTrigger, tokens, withAlpha } from '../chrome';
 import { actionLabel } from './catalog';
 import { recordKeyEvent, type RecorderOutcome } from './recorder';
 import type { SettingsActions } from './types';
-import { KeyChip, SettingsButton, SettingsIconButton, SettingsRow, SettingsSection, SettingsToggle } from './ui';
+import {
+    SettingsButton,
+    SettingsIconButton,
+    SettingsRow,
+    SettingsSection,
+    SettingsToggle,
+    TriggerChip,
+    XmarkCircleFillGlyph
+} from './ui';
 
 /** The advisory colour the Swift view uses for its warnings (SET-084's shadow notice). */
 export const WARNING_COLOR = '#D08A28';
@@ -160,10 +168,11 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                     </span>
                 ) : (
                     <span className="flex items-center gap-0.5">
-                        <KeyChip>
+                        <TriggerChip>
                             <span data-testid="global-hotkey-chip">{display}</span>
-                        </KeyChip>
-                        {/* H11 / M43: the shared 16 px glyph target, hover-lit like the rest. */}
+                        </TriggerChip>
+                        {/* H11 / M43: the shared 16 px glyph target, hover-lit like the rest, with
+                            the Swift's filled `xmark.circle.fill` rather than a bare character. */}
                         <SettingsIconButton
                             testID="global-hotkey-clear"
                             ariaLabel="Clear the global hotkey"
@@ -181,7 +190,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                                 recordRef.current?.focus();
                             }}
                         >
-                            ×
+                            <XmarkCircleFillGlyph />
                         </SettingsIconButton>
                     </span>
                 )}

@@ -8,7 +8,8 @@
  * The two behaviors worth calling out, because they are contracts rather than styling:
  *
  *   - **Matching is `palette.ts`'s substring rule**, not a fuzzy match, and the `w:`/`p:`
- *     scope prefixes are honored. This component only renders it.
+ *     scope prefixes are honored. This component only renders it — as ONE FLAT LIST in the
+ *     universe's own order (UI-FIDELITY M54), so each workspace is followed by its own panes.
  *   - **The 200ms focus handoff** (§10.4). Closing the palette — confirm, Escape, backdrop —
  *     must hand keyboard focus back to a terminal, but only after the fade-out has released
  *     the text field: wait 200ms, then focus the destination pane. Exactly one handoff can be
@@ -20,13 +21,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { iconGlyph } from './icons';
-import {
-    clampSelection,
-    matchPaletteQuery,
-    paletteNavigationOrder,
-    paletteSections,
-    type PaletteItem
-} from './palette';
+import { clampSelection, matchPaletteQuery, paletteNavigationOrder, type PaletteItem } from './palette';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 
@@ -72,9 +67,19 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
     const listRef = useRef<HTMLDivElement | null>(null);
 
     const matched = matchPaletteQuery(props.items, props.query);
-    const sections = paletteSections(matched);
     const order = paletteNavigationOrder(matched);
     const index = clampSelection(selected, order.length);
+
+    /**
+     * UI-FIDELITY M59 — scroll-to-selection follows the KEYBOARD, not the pointer.
+     *
+     * `CommandPaletteView.swift:67-74` guards `proxy.scrollTo` on a `scrollToSelection` flag that
+     * only the two `.onKeyPress` arrow handlers raise, and consumes it on the next selection
+     * change. The port scrolled on every `[index, open]` change, so **hovering** a row scrolled
+     * the list under the pointer — a mouse-driven selection is already on screen by definition,
+     * and moving it is how you end up chasing a row with the cursor.
+     */
+    const scrollOnSelectRef = useRef(false);
 
     const cancelHandoff = (): void => {
         if (handoffRef.current === null) return;
@@ -97,6 +102,9 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
         if (!props.open) return;
         cancelHandoff();
         setSelected(0);
+        // M59: the Swift's flag is `@State` on a view that is created fresh on every open, so it
+        // is false on arrival. This component stays mounted, so the open edge clears it by hand.
+        scrollOnSelectRef.current = false;
         inputRef.current?.focus();
         // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge only, by design
     }, [props.open]);
@@ -110,9 +118,14 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
 
     useEffect(() => {
         if (!props.open) return;
+        // M59: a pointer-driven selection is already under the pointer; only ↑/↓ scroll, and
+        // `anchor: .center` / `withAnimation(.easeOut(0.1))` are what the shipped list does.
+        if (!scrollOnSelectRef.current) return;
+        scrollOnSelectRef.current = false;
         const row = listRef.current?.querySelector('[data-selected="true"]');
         (row as { scrollIntoView?: (options?: unknown) => void } | null)?.scrollIntoView?.({
-            block: 'nearest'
+            block: 'center',
+            behavior: 'smooth'
         });
     }, [index, props.open]);
 
@@ -175,7 +188,43 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
         scheduleHandoff(props.fallbackPaneID ?? null);
     };
 
-    let flatIndex = -1;
+    /**
+     * UI-FIDELITY M55 — the keys belong to the PANEL, not to the text field.
+     *
+     * `CommandPaletteView.swift:92-105` hangs `.onKeyPress(.upArrow/.downArrow/.escape)` on the
+     * view **body**, so they answer wherever focus sits inside the palette. The port bound them
+     * to the `<input>` alone, and the global dispatcher deliberately stands down while the
+     * palette is open (`keys.ts:230-232`) — so a mousedown that took focus off the field left the
+     * palette with no keyboard dismiss and no navigation at all, only a backdrop click.
+     *
+     * Hung as a CAPTURE-phase handler on the panel: it sees a key aimed at the field, at a row
+     * button, or at the card's own chrome, and it runs before the field would have. Everything it
+     * does not name (typing, ⌘A, the caret keys) falls through to the field untouched.
+     */
+    const handleKey = (event: { key: string; preventDefault: () => void; stopPropagation: () => void }): void => {
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            scrollOnSelectRef.current = true;
+            setSelected(clampSelection(index + 1, order.length));
+            return;
+        }
+        if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            scrollOnSelectRef.current = true;
+            setSelected(clampSelection(index - 1, order.length));
+            return;
+        }
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            confirm(order[index]);
+            return;
+        }
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            dismiss();
+        }
+    };
 
     return (
         <div
@@ -183,7 +232,15 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
             data-palette-phase={phase}
             className="nex-palette-scrim absolute inset-0 z-40 flex justify-center"
             style={{
-                background: 'rgba(0,0,0,0.08)',
+                /*
+                 * UI-FIDELITY M56 — the shipped backdrop is INVISIBLE.
+                 *
+                 * `ContentView.swift:264` is `Color.black.opacity(0.001)`: not a scrim, a hit
+                 * target, because a fully clear SwiftUI view takes no taps. A DOM element with a
+                 * transparent background still hit-tests, so the dismiss click needs no tint at
+                 * all — and the 8% wash the port had dimmed the whole content row every ⌘P.
+                 */
+                background: 'transparent',
                 // On the way out it is a picture, not a control: a click during the 150 ms goes
                 // to whatever is behind, exactly as it would have with the old hard unmount.
                 ...(phase === 'exiting' ? { pointerEvents: 'none' as const } : {})
@@ -202,6 +259,22 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                     border: `1px solid ${tokens.divider}`,
                     boxShadow: '0 20px 60px rgba(0,0,0,0.45)',
                     color: tokens.textPrimary
+                }}
+                onKeyDownCapture={handleKey}
+                /*
+                 * M55's other half: the card's own chrome must not be able to take focus OUT of
+                 * the palette. A mousedown on the list padding or the header row would blur the
+                 * field to `document.body`, where no handler in this component can see the next
+                 * keystroke. Default-prevented, so the caret stays where it was; and if focus has
+                 * already left, the field takes it back rather than the palette going deaf.
+                 */
+                onMouseDown={(event) => {
+                    const target = event.target as HTMLElement | null;
+                    if (target !== null && target.closest('input, button, [tabindex]') !== null) return;
+                    event.preventDefault();
+                    if (!event.currentTarget.contains(globalThis.document?.activeElement ?? null)) {
+                        inputRef.current?.focus();
+                    }
                 }}
             >
                 <div
@@ -222,28 +295,6 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                         onChange={(event) => {
                             props.onQueryChange(event.target.value);
                         }}
-                        onKeyDown={(event) => {
-                            if (event.key === 'ArrowDown') {
-                                event.preventDefault();
-                                setSelected(clampSelection(index + 1, order.length));
-                                return;
-                            }
-                            if (event.key === 'ArrowUp') {
-                                event.preventDefault();
-                                setSelected(clampSelection(index - 1, order.length));
-                                return;
-                            }
-                            if (event.key === 'Enter') {
-                                event.preventDefault();
-                                confirm(order[index]);
-                                return;
-                            }
-                            if (event.key === 'Escape') {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                dismiss();
-                            }
-                        }}
                     />
                 </div>
 
@@ -257,105 +308,101 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                             No results
                         </div>
                     ) : (
-                        sections.map((section) => (
-                            <div key={section.kind}>
-                                <div
-                                    className="px-2 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wide"
-                                    style={{ color: tokens.textTertiary }}
+                        /*
+                         * M54 — one flat list, in the universe's own order: a workspace, then
+                         * ITS panes, then the next workspace. `CommandPaletteView.swift:47`
+                         * is a single `ForEach(items)` over `AppReducer.swift:192-240`'s
+                         * `buildCommandPaletteItems`, which appends a workspace and walks that
+                         * workspace's layout before moving on. Grouping them into
+                         * WORKSPACES / PANES headers put every workspace above every pane,
+                         * which is an ORDERING change, not chrome: the pane you want stops
+                         * sitting under the workspace it belongs to. The kind is still legible
+                         * per row — the trailing chip is "workspace" or the owning workspace's
+                         * name, exactly as `CommandPaletteRow.swift:139-155` draws it.
+                         */
+                        order.map((item, rowIndex) => {
+                            const isSelected = rowIndex === index;
+                            return (
+                                <button
+                                    key={item.id}
+                                    type="button"
+                                    data-testid="palette-row"
+                                    data-item-id={item.id}
+                                    data-item-kind={item.kind}
+                                    data-selected={isSelected ? 'true' : 'false'}
+                                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left"
+                                    style={{
+                                        background: isSelected ? withAlpha('#6F9BD8', 0.2) : 'transparent'
+                                    }}
+                                    onMouseEnter={() => {
+                                        setSelected(rowIndex);
+                                    }}
+                                    onClick={() => {
+                                        confirm(item);
+                                    }}
                                 >
-                                    {section.title}
-                                </div>
-                                {section.items.map((item) => {
-                                    flatIndex += 1;
-                                    const isSelected = flatIndex === index;
-                                    const rowIndex = flatIndex;
-                                    return (
-                                        <button
-                                            key={item.id}
-                                            type="button"
-                                            data-testid="palette-row"
-                                            data-item-id={item.id}
-                                            data-selected={isSelected ? 'true' : 'false'}
-                                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left"
+                                    {item.workspaceColor === null ? null : (
+                                        <span
+                                            aria-hidden
+                                            className="h-[8px] w-[8px] shrink-0 rounded-full"
                                             style={{
-                                                background: isSelected
-                                                    ? withAlpha('#6F9BD8', 0.2)
-                                                    : 'transparent'
+                                                background: workspaceColorHex(item.workspaceColor, bucket)
                                             }}
-                                            onMouseEnter={() => {
-                                                setSelected(rowIndex);
-                                            }}
-                                            onClick={() => {
-                                                confirm(item);
-                                            }}
-                                        >
-                                            {item.workspaceColor === null ? null : (
-                                                <span
-                                                    aria-hidden
-                                                    className="h-[8px] w-[8px] shrink-0 rounded-full"
-                                                    style={{
-                                                        background: workspaceColorHex(
-                                                            item.workspaceColor,
-                                                            bucket
-                                                        )
-                                                    }}
-                                                />
-                                            )}
+                                        />
+                                    )}
+                                    <span
+                                        aria-hidden
+                                        className="w-3 shrink-0 text-center text-[11px]"
+                                        style={{ color: tokens.textSecondary }}
+                                    >
+                                        {iconGlyph({ kind: 'system', name: item.icon })}
+                                    </span>
+                                    <span className="flex min-w-0 flex-1 flex-col">
+                                        <span className="truncate text-[13px]">{item.title}</span>
+                                        {item.subtitle.length === 0 ? null : (
                                             <span
-                                                aria-hidden
-                                                className="w-3 shrink-0 text-center text-[11px]"
+                                                className="truncate text-[11px]"
                                                 style={{ color: tokens.textSecondary }}
                                             >
-                                                {iconGlyph({ kind: 'system', name: item.icon })}
+                                                {item.subtitle}
                                             </span>
-                                            <span className="flex min-w-0 flex-1 flex-col">
-                                                <span className="truncate text-[13px]">{item.title}</span>
-                                                {item.subtitle.length === 0 ? null : (
-                                                    <span
-                                                        className="truncate text-[11px]"
-                                                        style={{ color: tokens.textSecondary }}
-                                                    >
-                                                        {item.subtitle}
-                                                    </span>
-                                                )}
-                                            </span>
-                                            {item.shortcut === undefined ? null : (
-                                                <span
-                                                    data-testid="palette-shortcut"
-                                                    className="shrink-0 font-mono text-[10px]"
-                                                    style={{ color: tokens.textTertiary }}
-                                                >
-                                                    {item.shortcut}
-                                                </span>
-                                            )}
-                                            {item.kind === 'workspace' ? (
-                                                <span
-                                                    className="shrink-0 rounded px-1.5 py-px text-[10px]"
-                                                    style={{
-                                                        background: withAlpha('#E6E6EA', 0.08),
-                                                        color: tokens.textSecondary
-                                                    }}
-                                                >
-                                                    workspace
-                                                </span>
-                                            ) : item.kind === 'pane' && item.workspaceColor !== null ? (
-                                                <span
-                                                    className="shrink-0 rounded px-1.5 py-px text-[10px] text-white"
-                                                    style={{
-                                                        background: withAlpha(
-                                                            workspaceColorHex(item.workspaceColor, bucket),
-                                                            0.7
-                                                        )
-                                                    }}
-                                                >
-                                                    {item.workspaceName}
-                                                </span>
-                                            ) : null}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        ))
+                                        )}
+                                    </span>
+                                    {item.shortcut === undefined ? null : (
+                                        <span
+                                            data-testid="palette-shortcut"
+                                            className="shrink-0 font-mono text-[10px]"
+                                            style={{ color: tokens.textTertiary }}
+                                        >
+                                            {item.shortcut}
+                                        </span>
+                                    )}
+                                    {item.kind === 'workspace' ? (
+                                        <span
+                                            className="shrink-0 rounded px-1.5 py-px text-[10px]"
+                                            style={{
+                                                background: withAlpha('#E6E6EA', 0.08),
+                                                color: tokens.textSecondary
+                                            }}
+                                        >
+                                            workspace
+                                        </span>
+                                    ) : item.kind === 'pane' && item.workspaceColor !== null ? (
+                                        <span
+                                            className="shrink-0 rounded px-1.5 py-px text-[10px] text-white"
+                                            style={{
+                                                background: withAlpha(
+                                                    workspaceColorHex(item.workspaceColor, bucket),
+                                                    0.7
+                                                )
+                                            }}
+                                        >
+                                            {item.workspaceName}
+                                        </span>
+                                    ) : null}
+                                </button>
+                            );
+                        })
                     )}
                 </div>
             </div>

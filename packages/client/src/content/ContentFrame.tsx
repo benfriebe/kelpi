@@ -481,30 +481,17 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 style={{ background: 'transparent', display: 'block' }}
             />
 
-            {copyable && !findOpen ? (
-                <button
-                    type="button"
-                    data-testid={`content-copy-${paneID}`}
-                    aria-label="Copy document"
-                    title="Copy document"
-                    className="absolute rounded px-1.5 py-0.5 text-[10px] opacity-70 transition-opacity hover:opacity-100"
-                    style={{ ...OVERLAY_STYLE, right: OVERLAY_INSET, top: 8 }}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        const box = event.currentTarget.getBoundingClientRect();
-                        const host = event.currentTarget.parentElement?.getBoundingClientRect();
-                        // A button press is not a click INTO the document, so it carries no
-                        // selection and the appended Copy row stays away (H10).
-                        setMenuSelection('');
-                        setMenu({
-                            x: box.left - (host?.left ?? 0),
-                            y: box.bottom - (host?.top ?? 0) + 2
-                        });
-                    }}
-                >
-                    Copy
-                </button>
-            ) : null}
+            {/*
+              * §M28 — there is no floating in-document Copy chip.
+              *
+              * `PaneHeaderView.swift:177-194` gives a markdown pane exactly ONE copy
+              * affordance: a `doc.on.doc` button in the pane header. The port drew that one AND
+              * a "Copy" chip parked over the first line of the document, in the same top-right
+              * slot the find bar uses — two controls for one command, one of them sitting on the
+              * reader's text (`docs/audit/run-P/19-markdown-pane.png`). The chip is gone; the
+              * header button reaches this same menu through `copyToken` (the `{anchor:
+              * 'top-right'}` branch below), and a right-click still opens it in place.
+              */}
 
             {menu === null ? null : (
                 <>

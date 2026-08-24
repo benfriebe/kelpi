@@ -154,36 +154,20 @@ export function matchPaletteQuery(items: readonly PaletteItem[], query: string):
     });
 }
 
-export interface PaletteSection {
-    readonly kind: PaletteItemKind;
-    readonly title: string;
-    readonly items: readonly PaletteItem[];
-}
-
-const SECTION_TITLES: Readonly<Record<PaletteItemKind, string>> = {
-    workspace: 'Workspaces',
-    pane: 'Panes',
-    command: 'Commands'
-};
-
 /**
- * Sectioned view of a match. The Swift palette renders one flat interleaved list (workspace,
- * its panes, next workspace…); the web client groups by kind so the three scopes are visually
- * separable — the matching rule and the within-kind order are untouched, and the keyboard
- * navigation order is exactly this concatenation.
+ * The order the list renders in and the order arrow keys walk (§7 "↑/↓ move the selection
+ * (clamped)") — the SAME order, and it is the universe's own.
+ *
+ * UI-FIDELITY M54: this used to regroup a match into WORKSPACES / PANES / COMMANDS sections,
+ * which reordered it — every workspace above every pane. The shipped palette
+ * (`CommandPaletteView.swift:47`, over `AppReducer.swift:192-240`'s `buildCommandPaletteItems`)
+ * is one flat un-headered list in which each workspace is followed by **its own** panes, which
+ * is what `buildPaletteItems` above already emits. So the navigation order is the match itself:
+ * the identity is kept as a named function because it is the contract the component renders and
+ * navigates by, and `matchPaletteQuery`'s `filter` is what guarantees it is stable.
  */
-export function paletteSections(items: readonly PaletteItem[]): PaletteSection[] {
-    const sections: PaletteSection[] = [];
-    for (const kind of ['workspace', 'pane', 'command'] as const) {
-        const matching = items.filter((item) => item.kind === kind);
-        if (matching.length > 0) sections.push({ kind, title: SECTION_TITLES[kind], items: matching });
-    }
-    return sections;
-}
-
-/** The flat order arrow keys walk (§7 "↑/↓ move the selection (clamped)"). */
 export function paletteNavigationOrder(items: readonly PaletteItem[]): PaletteItem[] {
-    return paletteSections(items).flatMap((section) => [...section.items]);
+    return [...items];
 }
 
 /** §10.3 selection movement: clamped, never wrapping, no-op on an empty list. */

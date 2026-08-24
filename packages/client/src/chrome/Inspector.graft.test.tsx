@@ -220,4 +220,60 @@ describe('the swap dialog (§GIT-050 / §WS-144)', () => {
         render(<Inspector workspace={workspace} associations={[association()]} />);
         expect(screen.queryByTestId('graft-swap-dialog')).toBeNull();
     });
+
+    /**
+     * UI-FIDELITY M57 — `WorkspaceListView.swift:246-262` is a `.confirmationDialog` with two
+     * real `Button`s (`role: .destructive` / `role: .cancel`), which AppKit draws with padding, a
+     * border, a radius, a focused default and a Return binding. The port's were bare coloured
+     * text with nothing focused, while `QuitConfirmDialog.tsx:299-330` — the app's own other
+     * dialog — already did it properly; this is that pattern, including its rule about which
+     * button is the default (the SAFE one, so a stray Return cannot stop a running graft).
+     */
+    describe('its answers are buttons, and Return takes the safe one (M57)', () => {
+        function open(onConfirm = vi.fn(), onCancel = vi.fn()) {
+            render(
+                <Inspector
+                    workspace={workspace}
+                    associations={[association()]}
+                    graftSwapPrompt={prompt}
+                    onConfirmGraftSwap={onConfirm}
+                    onCancelGraftSwap={onCancel}
+                />
+            );
+            return { onConfirm, onCancel };
+        }
+
+        it('both answers are boxed controls, and only the swap is destructive', () => {
+            open();
+            const keep = screen.getByTestId('graft-swap-keep');
+            const swap = screen.getByTestId('graft-swap-confirm');
+            for (const button of [keep, swap]) {
+                expect(button.className).toContain('rounded');
+                expect(button.className).toContain('px-2');
+                expect(button.className).toContain('py-1');
+                expect(button.style.border).not.toBe('');
+            }
+            expect(keep.dataset['destructive']).toBe('false');
+            expect(swap.dataset['destructive']).toBe('true');
+            // rgb, because jsdom normalises the hex. The shared DESTRUCTIVE_COLOR.
+            expect(swap.style.color).toBe('rgb(224, 101, 92)');
+        });
+
+        it('the default is "Keep existing": it holds focus and it is the one ringed', () => {
+            open();
+            const keep = screen.getByTestId('graft-swap-keep');
+            expect(keep.dataset['default']).toBe('true');
+            expect(screen.getByTestId('graft-swap-confirm').dataset['default']).toBe('false');
+            expect(document.activeElement).toBe(keep);
+            expect(keep.style.border).toContain('var(--nex-accent');
+            expect(keep.style.background).not.toBe('');
+        });
+
+        it('Return answers it, and answers it SAFELY — a stray keystroke never swaps', () => {
+            const { onConfirm, onCancel } = open();
+            fireEvent.keyDown(window, { key: 'Enter' });
+            expect(onCancel).toHaveBeenCalledTimes(1);
+            expect(onConfirm).not.toHaveBeenCalled();
+        });
+    });
 });

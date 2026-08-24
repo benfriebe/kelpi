@@ -9,6 +9,7 @@ import { ZERO_SYSTEM_STATS } from '@nex/protocol';
 
 import {
     StatusFooter,
+    clockLabel,
     fitStatGauges,
     footerGitStats,
     statGaugeWidth,
@@ -406,9 +407,15 @@ describe('canonical-path matching rules', () => {
 });
 
 describe('clock and sparkline', () => {
-    it('renders a zero-padded HH:MM clock', () => {
+    /*
+     * §M23: was `toBe('09:05')`. The footer now renders the OS format the shipped app renders
+     * (`.dateTime.hour().minute()`), so the assertion is the same instant read through the same
+     * formatter the component uses — locale-tolerant, and still exact about which minute.
+     */
+    it('renders the hour+minute clock in the viewer’s locale', () => {
         render(<StatusFooter summary={SUMMARY} now={NOW} />);
-        expect(screen.getByTestId('footer-clock').textContent).toBe('09:05');
+        expect(screen.getByTestId('footer-clock').textContent).toBe(clockLabel(new Date(NOW)));
+        expect(screen.getByTestId('footer-clock').textContent).toMatch(/\b0?9[:.]05\b/);
     });
 
     /**

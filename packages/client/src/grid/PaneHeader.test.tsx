@@ -74,9 +74,37 @@ describe('splitHeaderTitle (§4.2 middle truncation)', () => {
         expect(splitHeaderTitle('/repo/')).toEqual({ head: '/repo/', tail: '' });
     });
 
-    it('refuses a tail that would eat the whole header', () => {
+    /**
+     * §M19 — a last segment longer than the budget is CLAMPED, never abandoned.
+     *
+     * The first version handed the whole string back as the head, which fell straight through to
+     * plain tail-ellipsis in exactly the case middle truncation exists for: the informative end
+     * of the path was the part thrown away. `.truncationMode(.middle)` keeps both ends, so the
+     * tail becomes the last `tailMax` characters and the head is everything before them.
+     */
+    it('clamps a tail that would eat the whole header, keeping its END', () => {
         const monster = `/repo/${'x'.repeat(80)}`;
-        expect(splitHeaderTitle(monster)).toEqual({ head: monster, tail: '' });
+        const clamped = splitHeaderTitle(monster);
+        expect(clamped.tail).toBe('x'.repeat(24));
+        expect(clamped.head).toBe(`/repo/${'x'.repeat(56)}`);
+        // The two spans are adjacent, so a header wide enough still reads as one whole string.
+        expect(clamped.head + clamped.tail).toBe(monster);
+    });
+
+    it('keeps the informative end of a long last segment (the M19 case)', () => {
+        const title = '~/code/some-really-long-directory-name';
+        const split = splitHeaderTitle(title);
+        // The old fallback returned the whole title as the head and '' as the tail, so CSS
+        // ellipsis cut `…-name` off. The name is what the user is trying to read.
+        expect(split.tail).not.toBe('');
+        expect(title.endsWith(split.tail)).toBe(true);
+        expect(split.tail.endsWith('directory-name')).toBe(true);
+        expect(split.head + split.tail).toBe(title);
+    });
+
+    it('honours a custom budget on the clamped branch too', () => {
+        const split = splitHeaderTitle('/a/bbbbbbbbbb', 4);
+        expect(split).toEqual({ head: '/a/bbbbbb', tail: 'bbbb' });
     });
 });
 
@@ -303,10 +331,23 @@ describe('PaneHeader rendering', () => {
         expect(onToggleZoom).toHaveBeenCalledExactlyOnceWith('a');
     });
 
+    /**
+     * §M30 — the field is opened by the CONTEXT menu's "Rename…" (a bumped `renameToken`), which
+     * is the only gesture the Swift has (`PaneHeaderView.swift:354-356`); the header's own pencil
+     * is gone. The commit/abandon behaviour below is byte-for-byte the assertion set the
+     * button-driven version carried — only the way in changed.
+     */
     it('renames inline: Enter commits the trimmed draft, Escape abandons it', () => {
         const onRenamePane = vi.fn();
-        renderHeader(testPane('a', { label: 'old' }), { onRenamePane });
-        act(() => screen.getByTestId('pane-rename-a').click());
+        const pane = testPane('a', { label: 'old' });
+        // The token is a counter read on CHANGE (so an agent tick cannot re-open the field), so
+        // the menu's ask is a bump from the mounted value rather than a non-zero initial one.
+        const view = render(
+            <PaneHeader pane={pane} focused={false} nowSeconds={NOW} renameToken={0} onRenamePane={onRenamePane} />
+        );
+        view.rerender(
+            <PaneHeader pane={pane} focused={false} nowSeconds={NOW} renameToken={1} onRenamePane={onRenamePane} />
+        );
         const input = screen.getByTestId('pane-rename-input-a') as HTMLInputElement;
         expect(input.value).toBe('old');
         fireEvent.change(input, { target: { value: '  new  ' } });
@@ -314,10 +355,26 @@ describe('PaneHeader rendering', () => {
         expect(onRenamePane).toHaveBeenCalledExactlyOnceWith('a', 'new');
         expect(screen.queryByTestId('pane-rename-input-a')).toBeNull();
 
-        act(() => screen.getByTestId('pane-rename-a').click());
+        // A second ask re-opens it — which is what the token being a COUNTER is for.
+        view.rerender(
+            <PaneHeader pane={pane} focused={false} nowSeconds={NOW} renameToken={2} onRenamePane={onRenamePane} />
+        );
         fireEvent.change(screen.getByTestId('pane-rename-input-a'), { target: { value: 'nope' } });
         fireEvent.keyDown(screen.getByTestId('pane-rename-input-a'), { key: 'Escape' });
         expect(onRenamePane).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * §M30 — no rename pencil in the header. Swift's `:222-272` tail is split-right, split-down,
+     * globe, close; rename is a context-menu item there and the port's extra button sat next to
+     * the markdown edit-toggle's near-identical pencil.
+     */
+    it('offers no rename button on any pane type', () => {
+        const view = renderHeader(testPane('a'), { onRenamePane: vi.fn() });
+        for (const type of ['shell', 'markdown', 'diff', 'scratchpad', 'web'] as const) {
+            view.rerender(<PaneHeader pane={testPane('a', { type })} focused={false} nowSeconds={NOW} />);
+            expect(screen.queryByTestId('pane-rename-a')).toBeNull();
+        }
     });
 
     it('starts a pane-move drag from a header press but not from a button press', () => {
@@ -384,9 +441,15 @@ describe('truncation priority as the header narrows (TERM-102/104)', () => {
         }
 
         // The controls never shrink — a header that drops its ✕ before its path is backwards.
-        for (const testID of ['pane-rename-a', 'pane-split-right-a', 'pane-split-down-a', 'pane-close-a']) {
+        for (const testID of ['pane-split-right-a', 'pane-split-down-a', 'pane-close-a']) {
             expect(screen.getByTestId(testID).className).toContain('shrink-0');
         }
+
+        // M11: the title no longer GROWS. `flex-1` made it absorb every pixel of slack, which is
+        // what pushed ZOOM and SYNC out of the left cluster; the spacer owns the slack now, and
+        // its zero basis keeps it out of the negative-space share-out above.
+        expect(title.className).not.toContain('flex-1');
+        expect(screen.getByTestId('pane-spacer-a').className).toContain('flex-1');
     });
 
     it('keeps the fixed-word badges unshrinkable — there is nothing in them to truncate', () => {
@@ -402,6 +465,188 @@ describe('truncation priority as the header narrows (TERM-102/104)', () => {
         );
         expect(screen.getByTestId('pane-zoom-badge-a').className).toContain('shrink-0');
         expect(screen.getByTestId('pane-sync-badge-a').className).toContain('shrink-0');
+    });
+});
+
+/**
+ * §M11 — ZOOM and SYNC belong to the LEFT cluster, hugging the path.
+ *
+ * `PaneHeaderView.swift` orders the row glyph → label → path → ZOOM → SYNC → `Spacer()` (`:157`)
+ * → agent → branch → buttons, so the free space opens up AFTER the two fixed-word badges. The
+ * port's `flex-1` title took that space instead, which moved both badges over to the right
+ * cluster. jsdom has no layout, so what is assertable here is the DOM order and the flex
+ * contract that produces the split; the pixels are the audit's `pane-header-details` shots.
+ */
+describe('the header spacer (M11)', () => {
+    function order(): string[] {
+        return [...screen.getByTestId('pane-header-a').children]
+            .map((node) => node.getAttribute('data-testid') ?? '')
+            .filter((id) => id !== '');
+    }
+
+    it('sits after the ZOOM and SYNC badges and before the agent badge', () => {
+        render(
+            <PaneHeader
+                pane={testPane('a', {
+                    label: 'worker',
+                    gitBranch: 'main',
+                    agentSessionID: 's',
+                    status: 'running',
+                    agentStartedAt: null
+                })}
+                focused
+                zoomed
+                zoomAvailable
+                syncActive
+                nowSeconds={NOW}
+            />
+        );
+        const ids = order();
+        expect(ids).toEqual([
+            'pane-status-dot-a',
+            'pane-label-a',
+            'pane-title-a',
+            'pane-zoom-badge-a',
+            'pane-sync-badge-a',
+            'pane-spacer-a',
+            'pane-agent-badge-a',
+            'pane-branch-a',
+            'pane-split-right-a',
+            'pane-split-down-a',
+            'pane-new-web-a',
+            'pane-close-a'
+        ]);
+    });
+
+    it('and steps aside for the inline rename field, which owns the slack itself', () => {
+        const pane = testPane('a');
+        const view = render(<PaneHeader pane={pane} focused nowSeconds={NOW} renameToken={0} />);
+        expect(screen.getByTestId('pane-spacer-a')).toBeTruthy();
+        view.rerender(<PaneHeader pane={pane} focused nowSeconds={NOW} renameToken={1} />);
+        expect(screen.queryByTestId('pane-spacer-a')).toBeNull();
+        expect(screen.getByTestId('pane-rename-input-a').className).toContain('flex-1');
+    });
+
+    /**
+     * The spacer is deliberately NOT `pane-header-spacer-…`, and this is the guard.
+     *
+     * The audit harness counts panes and extracts pane ids with `[data-testid^="pane-header-"]`
+     * in eleven places (`scripts/ui-audit/audit.mjs:530,533`), so a second element under that
+     * prefix reads as a second pane in every one of them — a scoped run caught exactly that,
+     * with `fresh-boot` reporting `panes=2` beside `daemon agrees: one pane`. Only the header
+     * root may carry the prefix.
+     */
+    it('keeps the audit harness’s `pane-header-` prefix unique to the header root', () => {
+        render(
+            <PaneHeader
+                pane={testPane('a', { label: 'worker', gitBranch: 'main', agentSessionID: 's', status: 'running' })}
+                focused
+                zoomed
+                zoomAvailable
+                syncActive
+                nowSeconds={NOW}
+            />
+        );
+        const root = screen.getByTestId('pane-header-a');
+        const claimants = [...document.querySelectorAll('[data-testid^="pane-header-"]')];
+        expect(claimants).toEqual([root]);
+    });
+});
+
+/**
+ * §M14 / §M15 — the badges are three tones and two weights, not one recipe.
+ *
+ * `PaneHeaderView.swift`: label / ZOOM / SYNC fill at 12% (`:91`, `:112`, `:137`), SYNC OFF and
+ * the branch chip at 10% (`:153`, `:174`), the agent badge at 14% (`:329`, `:336`); every one is
+ * `cornerRadius: 3`. The fixed-word badges carry `.medium` (`:106`, `:131`, `:147`) and SYNC OFF
+ * is deliberately 9 pt against its peers' 10.
+ */
+describe('badge fills, radius and weight (M14/M15)', () => {
+    function renderAll() {
+        return render(
+            <PaneHeader
+                pane={testPane('a', {
+                    label: 'worker',
+                    gitBranch: 'main',
+                    agentSessionID: 's',
+                    status: 'running',
+                    agentStartedAt: null
+                })}
+                focused
+                zoomed
+                zoomAvailable
+                syncActive
+                nowSeconds={NOW}
+            />
+        );
+    }
+
+    it('gives each badge the Swift’s own fill percentage', () => {
+        renderAll();
+        const fill = (testID: string): string => screen.getByTestId(testID).style.background;
+        expect(fill('pane-label-a')).toContain(' 12%');
+        expect(fill('pane-zoom-badge-a')).toContain(' 12%');
+        expect(fill('pane-sync-badge-a')).toContain(' 12%');
+        expect(fill('pane-agent-badge-a')).toContain(' 14%');
+        expect(fill('pane-branch-a')).toContain(' 10%');
+    });
+
+    it('and SYNC OFF, which only exists on an excluded pane', () => {
+        render(<PaneHeader pane={testPane('a')} focused nowSeconds={NOW} syncActive syncExcluded />);
+        const badge = screen.getByTestId('pane-sync-off-badge-a');
+        expect(badge.style.background).toContain(' 10%');
+        expect(badge.className).toContain('text-[9px]');
+        expect(badge.className).toContain('font-medium');
+    });
+
+    it('rounds every badge to 3, not 4', () => {
+        renderAll();
+        for (const testID of [
+            'pane-label-a',
+            'pane-zoom-badge-a',
+            'pane-sync-badge-a',
+            'pane-agent-badge-a',
+            'pane-branch-a'
+        ]) {
+            expect(screen.getByTestId(testID).style.borderRadius).toBe('3px');
+        }
+    });
+
+    it('weights the fixed-word badges medium and leaves the user-data ones alone', () => {
+        renderAll();
+        expect(screen.getByTestId('pane-zoom-badge-a').className).toContain('font-medium');
+        expect(screen.getByTestId('pane-sync-badge-a').className).toContain('font-medium');
+        for (const testID of ['pane-label-a', 'pane-agent-badge-a', 'pane-branch-a']) {
+            const badge = screen.getByTestId(testID);
+            expect(badge.className).not.toContain('font-medium');
+            // …and they keep the common 10 pt: only SYNC OFF steps down.
+            expect(badge.className).toContain('text-[10px]');
+        }
+    });
+
+    /**
+     * §M13 — the label chip is `Color.accentColor` (`PaneHeaderView.swift:88,91`), the macOS
+     * SYSTEM accent, and the shipped app ships no `AccentColor.colorset`. The port reads its own
+     * `--nex-system-accent` name so a "Sidebar highlight" override cannot recolour the pane grid
+     * the way it does the sidebar. The value it falls back to today is still `--nex-accent` — the
+     * standing divergence is recorded in `tokens.ts`.
+     */
+    it('paints the label chip from the system-accent token, not the chrome accent', () => {
+        renderAll();
+        const chip = screen.getByTestId('pane-label-a');
+        expect(chip.style.color).toContain('--nex-system-accent');
+        expect(chip.style.background).toContain('--nex-system-accent');
+    });
+});
+
+/** §M17 — `HStack(spacing: 4)` (`PaneHeaderView.swift:52`), not the port's 6 px. */
+describe('header item spacing (M17)', () => {
+    it('sets the row gap to 4 px and keeps the 8 px horizontal padding', () => {
+        render(<PaneHeader pane={testPane('a')} focused nowSeconds={NOW} />);
+        const header = screen.getByTestId('pane-header-a');
+        expect(header.className).toContain('gap-1');
+        expect(header.className).not.toContain('gap-1.5');
+        expect(header.className).toContain('px-2');
     });
 });
 

@@ -85,6 +85,16 @@ type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof
  *
  * This daemon is not on Windows and this value never leaves the emulator; it is xterm's name
  * for a policy, not a claim about the host.
+ *
+ * **The one thing reflow-off costs every reader below, and it is not obvious.** xterm's
+ * post-shrink per-line trim lives *inside* `if (this._isReflowEnabled)` in `Buffer.resize`, so
+ * turning reflow off also turns that trim off: on a column shrink every existing `BufferLine`
+ * keeps the width it was allocated at while `_cols` becomes the new one, and those rows are
+ * re-used in place by everything the program prints afterwards. A row read with no column
+ * bounds is therefore WIDER than the grid — padding, plus any cells the shrink stranded past
+ * the new width, which `EL` and an ordinary overwrite can never reach. Every read that joins
+ * or indexes rows must bound itself to `term.cols`; `cellText` does, and the ⌘-click regression
+ * that taught us (`docs/audit/run-Q/FINDINGS.md` row 1) is pinned in `cell-text.test.ts`.
  */
 const NO_REFLOW: TerminalReflowPolicy = {
     backend: 'winpty',
@@ -473,7 +483,21 @@ export class TerminalStateServiceImpl implements TerminalStateService {
      *
      * Soft wraps are re-joined exactly as `search.ts` does (full-width rows for every row but
      * the last of a logical line) so a path that wrapped mid-line is one token again, and the
-     * clicked column still maps into it by `(row - start) * cols + col`.
+     * clicked column maps into the join.
+     *
+     * **Every row is read against the GRID, never against the line's allocation.** That is not
+     * belt-and-braces, it is the whole correctness of the join under `NO_REFLOW` (see the
+     * reflow policy above): xterm's post-shrink per-line trim lives *inside*
+     * `if (this._isReflowEnabled)` in `Buffer.resize`, so with reflow off a column shrink
+     * leaves every existing `BufferLine` at the width it was allocated at while `term.cols`
+     * becomes the new one. `translateToString()` with no column bounds then returns the whole
+     * allocation — a row 132 cells wide inside a 65-column grid — which glues 67 spaces into
+     * the middle of a soft-wrapped path and puts the clicked offset in the gap. That is the
+     * `run-Q` ⌘-click regression, and bounding the read to `cols` is what fixes it.
+     *
+     * The offset is derived from the text actually produced rather than from `row × cols`, so
+     * it stays exact when a row's cells and its characters are not one-to-one (a double-width
+     * CJK cell contributes one character, a combined cluster contributes several).
      *
      * Unknown pane, out-of-range row, or an empty line → null.
      */
@@ -491,18 +515,25 @@ export class TerminalStateServiceImpl implements TerminalStateService {
         while (start > 0 && buffer.getLine(start)?.isWrapped === true) start -= 1;
 
         let text = '';
+        let offset = 0;
         for (let cursor = start; cursor < buffer.length; cursor++) {
             if (cursor > start && buffer.getLine(cursor)?.isWrapped !== true) break;
             const line = buffer.getLine(cursor);
             if (!line) break;
-            // Full width for continued rows so the offset arithmetic below stays exact; the
-            // final row is trimmed, which is what makes the joined text end where content does.
+            // Full width for continued rows so the join reads as one logical line; the final
+            // row is trimmed, which is what makes the joined text end where content does.
             const isLast =
                 cursor + 1 >= buffer.length || buffer.getLine(cursor + 1)?.isWrapped !== true;
-            text += line.translateToString(isLast);
+            const width = Math.min(cols, line.length);
+            // Where the clicked cell lands in the join: the prefix rows, plus this row up to
+            // the clicked column.
+            if (cursor === y) {
+                offset = text.length + line.translateToString(false, 0, Math.min(Math.floor(col), width)).length;
+            }
+            text += line.translateToString(isLast, 0, width);
         }
         if (text === '') return null;
-        return { text, offset: (y - start) * cols + Math.floor(col) };
+        return { text, offset };
     }
 
     async cellTextAsync(

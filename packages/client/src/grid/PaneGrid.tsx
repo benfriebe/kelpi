@@ -637,8 +637,19 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                                 zoomed: zoomed === pane.id,
                                 dragging: draggingPaneID === pane.id
                             })}
-                            {props.renderPaneOverlay?.(pane.id) ?? null}
                         </div>
+                        {/* M12 — the pane overlay hangs off the PANE, not the pane body.
+                            `PaneGridView.swift:356-370` attaches the search bar with
+                            `.overlay(alignment: .topTrailing)` on the whole pane view, after
+                            `.frame(width:height:)`, so it floats over the 24 pt header and covers
+                            its trailing buttons. Mounted inside `pane-body` it was anchored below
+                            the header instead — the bar sat a header's height too low, over the
+                            terminal rather than the chrome (`run-N/70-terminal-search-counted.png`).
+                            The wrapper is `position: absolute`, so it is already the containing
+                            block the bar's `absolute right-2 top-2` needs; the ordering keeps the
+                            focus ring and the resize badge painting above it, as the Swift's later
+                            `.overlay` modifiers do (`:379`, `:387`). */}
+                        {props.renderPaneOverlay?.(pane.id) ?? null}
                         <FocusRing focused={focused} />
                         {resizing && visible ? (
                             <ResizeBadge
@@ -670,8 +681,11 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                         ...absolute(dropRect),
                         zIndex: 20,
                         borderRadius: 4,
-                        background: `color-mix(in srgb, ${tokens.accent} 20%, transparent)`,
-                        border: `2px solid color-mix(in srgb, ${tokens.accent} 50%, transparent)`
+                        // M13: `PaneGridView.swift:451-452` fills and borders with
+                        // `Color.accentColor` — the macOS system accent, not the chrome theme's
+                        // `accent`. See `tokens.ts` for the seam and the standing divergence.
+                        background: `color-mix(in srgb, ${tokens.systemAccent} 20%, transparent)`,
+                        border: `2px solid color-mix(in srgb, ${tokens.systemAccent} 50%, transparent)`
                     }}
                 />
             )}
@@ -714,8 +728,11 @@ function Divider({ info, dragging, onPointerDown }: DividerProps): ReactElement 
                     top: `${DIVIDER_HIT_INSET}px`,
                     width: `${info.rect.width}px`,
                     height: `${info.rect.height}px`,
+                    // M13: `SplitDividerView.swift:20` tints the dragged divider with
+                    // `Color.accentColor.opacity(0.5)` — the macOS system accent, not the chrome
+                    // theme's `accent`. See `tokens.ts` for the seam and the standing divergence.
                     background: dragging
-                        ? `color-mix(in srgb, ${tokens.accent} 50%, ${tokens.divider})`
+                        ? `color-mix(in srgb, ${tokens.systemAccent} 50%, ${tokens.divider})`
                         : tokens.divider
                 }}
             />
@@ -734,11 +751,17 @@ function ResizeBadge({ paneID, text }: ResizeBadgeProps): ReactElement {
         <div
             data-testid={`pane-size-${paneID}`}
             aria-hidden="true"
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md px-2 py-1 font-mono text-[13px] font-medium"
+            // M18: `ResizeDimensionsOverlay.swift:15-16` is `.padding(.horizontal, 12)` /
+            // `.padding(.vertical, 6)`; the port's `px-2 py-1` drew the chip a third smaller than
+            // the shipped one. `rounded-md` is already the Swift's `cornerRadius: 6`.
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md px-3 py-1.5 font-mono text-[13px] font-medium"
             style={{
                 background: tokens.headerBackground,
                 color: tokens.textPrimary,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                // M18: `.shadow(color: .black.opacity(0.25), radius: 4, y: 2)` (`:19`). The blur
+                // was already the right conversion (a SwiftUI shadow radius is ~half a CSS blur
+                // radius); the alpha was 0.35, which drew a heavier drop than the original.
+                boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
                 zIndex: 15
             }}
         >
@@ -751,16 +774,32 @@ interface EmptyGridProps {
     readonly onCreatePane?: (() => void) | undefined;
 }
 
-/** shell-ui.md §4: faint terminal glyph, "No panes", and a Return-activated New Pane button. */
+/**
+ * shell-ui.md §4: faint terminal glyph, "No panes", and a Return-activated New Pane button.
+ *
+ * M16 — the glyph and the label are **two tones**, not one. `PaneGridView.swift:492-500` paints
+ * the 36 pt terminal `.quaternary` (AppKit's quaternaryLabelColor: the label colour at 10%) and
+ * the "No panes" text `.secondary` at `.title3`. The port had both at `textTertiary`/`text-sm`,
+ * which made the ghost glyph read as a solid icon and left the label no more weight than a hint.
+ */
 function EmptyGrid({ onCreatePane }: EmptyGridProps): ReactElement {
     return (
         <div
             data-testid="pane-grid-empty"
             className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-            style={{ color: tokens.textTertiary }}
+            style={{ color: tokens.textSecondary }}
         >
-            <Icon name="terminal" size={36} />
-            <span className="text-sm">No panes</span>
+            {/* `.quaternary` transcribed literally: the primary label colour at 10%. */}
+            <span
+                data-testid="pane-grid-empty-glyph"
+                style={{ color: `color-mix(in srgb, ${tokens.textPrimary} 10%, transparent)` }}
+            >
+                <Icon name="terminal" size={36} />
+            </span>
+            {/* macOS `.title3` is **15 pt** (the macOS type ramp, not iOS's 20). */}
+            <span data-testid="pane-grid-empty-label" className="text-[15px]">
+                No panes
+            </span>
             <button
                 type="button"
                 data-testid="pane-grid-new-pane"

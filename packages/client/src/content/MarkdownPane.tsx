@@ -89,6 +89,13 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                 onFocusRequest={props.onFocusRequest}
                 scrollStore={props.scrollStore}
                 showGutter
+                /*
+                 * §M29: `MarkdownEditorView.swift:38-40` keeps the text container tracking the
+                 * view's width, so a markdown buffer wraps to the pane. Opted into here rather
+                 * than defaulted in the editor, because the SCRATCHPAD's `wrap="off"` is
+                 * ledgered as a deliberate divergence (`CONT-070`).
+                 */
+                wrap="soft"
             />
         );
     }

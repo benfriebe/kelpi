@@ -150,13 +150,11 @@ export {
     clampSelection,
     matchPaletteQuery,
     paletteNavigationOrder,
-    paletteSections,
     parsePaletteQuery,
     type BuildPaletteOptions,
     type PaletteItem,
     type PaletteItemKind,
     type PaletteScope,
-    type PaletteSection,
     type ParsedPaletteQuery
 } from './palette';
 

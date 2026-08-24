@@ -68,6 +68,15 @@ export function basename(path: string): string {
  * the split left it. So the string is split into a head that may ellipsize and a tail that
  * never does — the last path segment (with its separator), capped so a single monstrous segment
  * cannot eat the whole line. Titles with no separator, and short ones, keep the plain behaviour.
+ *
+ * M19 — the cap **clamps** the tail; it does not abandon it. The first version returned
+ * `{ head: title, tail: '' }` for any segment longer than the budget, which handed the whole
+ * string back to plain tail-ellipsis in exactly the case middle truncation exists for:
+ * `~/code/some-really-long-directory-name` threw away the directory name and kept `~/code/some-r…`.
+ * Over budget, the tail becomes the LAST `tailMax` characters of the title and the head is
+ * everything before them — so the head still ellipsizes from its right and the informative end
+ * survives, which is what `.truncationMode(.middle)` does. The two spans are adjacent, so when
+ * the header is wide enough they still read as one unbroken string.
  */
 export interface TruncatedTitle {
     readonly head: string;
@@ -81,7 +90,12 @@ export function splitHeaderTitle(title: string, tailMax = HEADER_TAIL_MAX): Trun
     // Nothing to protect: no separator, or the separator is the very first/last character.
     if (cut <= 0 || cut === title.length - 1) return { head: title, tail: '' };
     const tail = title.slice(cut);
-    if (tail.length > tailMax) return { head: title, tail: '' };
+    // M19: over budget, keep the tail's END rather than dropping the tail entirely — a long last
+    // segment is the case middle truncation is FOR. `title.length > tailMax` is guaranteed here
+    // (`tail` is a suffix of `title` and is itself longer than the budget), so the split is safe.
+    if (tail.length > tailMax) {
+        return { head: title.slice(0, title.length - tailMax), tail: title.slice(title.length - tailMax) };
+    }
     return { head: title.slice(0, cut), tail };
 }
 
@@ -154,6 +168,27 @@ function statusDotColor(status: PaneModel['status']): string {
 interface BadgeProps {
     readonly testID: string;
     readonly color: string;
+    /**
+     * M14 — the pill fill, in percent. `PaneHeaderView.swift` draws **three** tones, not one:
+     * the label chip / ZOOM / SYNC at 12 (`:91`, `:112`, `:137`), SYNC OFF and the branch chip
+     * at 10 (`:153`, `:174`), the agent badge at 14 (`:329`, `:336`). The port had flattened all
+     * six to `pill()`'s single 14%, which read the branch and SYNC OFF ~40% stronger than the
+     * shipped app draws them. Required rather than defaulted, so a new badge has to state its
+     * tone instead of silently inheriting the loudest one.
+     */
+    readonly fill: number;
+    /**
+     * M15 — `.medium` weight. The Swift gives it to the **fixed-word** badges only (ZOOM `:106`,
+     * SYNC `:131`, SYNC OFF `:147`); the label, branch and agent badges carry user data and stay
+     * at the regular weight (`:85`, `:168`, `:325`).
+     */
+    readonly strong?: boolean | undefined;
+    /**
+     * M15 — SYNC OFF's deliberate 9 pt (`:147`), one point below every other badge's 10. It is
+     * how the dimmed "sync is on but this pane opted out" state reads as secondary rather than
+     * as another live badge.
+     */
+    readonly small?: boolean | undefined;
     readonly icon?: IconName | undefined;
     readonly text: string;
     readonly title?: string | undefined;
@@ -172,7 +207,18 @@ interface BadgeProps {
     readonly onClick?: (() => void) | undefined;
 }
 
-function Badge({ testID, color, icon, text, title, shrinkable, onClick }: BadgeProps): ReactElement {
+function Badge({
+    testID,
+    color,
+    fill,
+    strong,
+    small,
+    icon,
+    text,
+    title,
+    shrinkable,
+    onClick
+}: BadgeProps): ReactElement {
     const content = (
         <>
             {icon === undefined ? null : <Icon name={icon} size={9} />}
@@ -181,11 +227,16 @@ function Badge({ testID, color, icon, text, title, shrinkable, onClick }: BadgeP
     );
     const style = {
         color,
-        background: pill(color),
-        borderRadius: 4,
+        background: pill(color, fill),
+        // M14: every badge in `PaneHeaderView.swift` is `RoundedRectangle(cornerRadius: 3)`.
+        borderRadius: 3,
         ...(shrinkable === true ? { minWidth: 0, maxWidth: '40%' } : {})
     };
-    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-1 px-1 py-px font-mono text-[10px] leading-none`;
+    // Both size classes are spelled out as literals: Tailwind scans SOURCE TEXT, so a class name
+    // assembled from an interpolated number would never be generated.
+    const sizeClass = small === true ? 'text-[9px]' : 'text-[10px]';
+    const weightClass = strong === true ? ' font-medium' : '';
+    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-1 px-1 py-px font-mono ${sizeClass}${weightClass} leading-none`;
     if (onClick === undefined) {
         return (
             <span data-testid={testID} className={className} style={style} {...(title === undefined ? {} : { title })}>
@@ -305,7 +356,6 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         onToggleMarkdownEdit,
         onRefreshDiff,
         onCopyDocument,
-        onSetFontSize,
         onNewWebPane,
         onPaneContextMenu
     } = props;
@@ -321,10 +371,9 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const [renameDraft, setRenameDraft] = useState<string | null>(null);
     const renaming = renameDraft !== null;
 
-    const startRename = (): void => setRenameDraft(pane.label ?? '');
-
-    // The context menu's "Rename…" reaches the field through a bumped token; the effect runs
-    // only on a CHANGE, so a re-render caused by an agent tick can never re-open it.
+    // The context menu's "Rename…" is now the ONLY way in (M30 dropped the header's own pencil,
+    // which the Swift never had): it reaches the field through a bumped token, and the effect
+    // runs only on a CHANGE, so a re-render caused by an agent tick can never re-open it.
     const lastRenameToken = useRef(renameToken);
     useEffect(() => {
         if (renameToken === lastRenameToken.current) return;
@@ -360,7 +409,10 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         <div
             data-testid={`pane-header-${pane.id}`}
             data-focused={focused ? 'true' : 'false'}
-            className="flex w-full shrink-0 select-none items-center gap-1.5 px-2"
+            // M17: `HStack(spacing: 4)` + `.padding(.horizontal, 8)` (`PaneHeaderView.swift:52,274`).
+            // The port's `gap-1.5` was 6 px — 50% wider, across a button tail plus three or four
+            // badges, which is why this header ran out of room sooner than the shipped one.
+            className="flex w-full shrink-0 select-none items-center gap-1 px-2"
             style={{
                 height,
                 background: tokens.headerBackground,
@@ -405,7 +457,11 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown' ? (
                 <Badge
                     testID={`pane-label-${pane.id}`}
-                    color={tokens.accent}
+                    // M13: `PaneHeaderView.swift:88,91` is `Color.accentColor` — the macOS system
+                    // accent, not the chrome theme's `accent`. See `tokens.ts` for the seam and
+                    // the standing divergence.
+                    color={tokens.systemAccent}
+                    fill={12}
                     icon="tag"
                     text={pane.label}
                     shrinkable
@@ -429,11 +485,18 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             ) : (
                 <span
                     data-testid={`pane-title-${pane.id}`}
-                    className="flex min-w-0 flex-1 font-mono text-[11px] leading-none"
+                    // M11 — no `flex-1`. The Swift's `Text(displayPath)` sizes to its content and
+                    // the free space belongs to the `Spacer()` at `PaneHeaderView.swift:157`,
+                    // AFTER the ZOOM and SYNC badges; a `flex-1` title absorbed every pixel of
+                    // slack instead, which pushed ZOOM and SYNC out of the left cluster (where
+                    // they hug the path) and over to the right one. Grow 0, shrink `TITLE_SHRINK`.
+                    className="flex min-w-0 font-mono text-[11px] leading-none"
                     // TERM-102/104's truncation priority, expressed the only way flexbox can:
                     // negative space is shared out in proportion to (shrink factor × base size),
                     // so a title weighted `TITLE_SHRINK` against the badges' 1 takes effectively
                     // the whole squeeze first, and the badges only give when it has nothing left.
+                    // The spacer below carries `flex-basis: 0`, so it contributes nothing to that
+                    // share-out and cannot steal the squeeze from the title.
                     style={{ color: focused ? tokens.textPrimary : tokens.textSecondary, flexShrink: TITLE_SHRINK }}
                     title={title}
                 >
@@ -447,6 +510,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-zoom-badge-${pane.id}`}
                     color="#D08237"
+                    fill={12}
+                    strong
                     icon="zoom"
                     text="ZOOM"
                     title="Toggle zoom"
@@ -459,6 +524,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-sync-badge-${pane.id}`}
                     color={tokens.activeAgent}
+                    fill={12}
+                    strong
                     icon="broadcast"
                     text="SYNC"
                     title="Synchronise input is on — keystrokes mirror to peer panes"
@@ -468,17 +535,35 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-sync-off-badge-${pane.id}`}
                     color={tokens.textTertiary}
+                    fill={10}
+                    strong
+                    small
                     icon="broadcast-off"
                     text="SYNC OFF"
                     title="Excluded from the workspace sync group"
                 />
             ) : null}
 
+            {/* 6 — spacer.
+                M11: `Spacer()` at `PaneHeaderView.swift:157`, and it is the reason ZOOM and SYNC
+                belong to the LEFT cluster. `flex-1` here (basis 0) takes the slack the title no
+                longer does, and contributes nothing to the negative-space share-out that decides
+                the truncation order. It is skipped while the inline rename field is up: that
+                field is `flex-1` too, and Swift has no counterpart to split the slack with, so
+                the field keeps the whole run of the header exactly as it did before.
+
+                The test id is deliberately NOT `pane-header-spacer-…`: the audit harness counts
+                panes and extracts pane ids with `[data-testid^="pane-header-"]` in eleven places
+                (`scripts/ui-audit/audit.mjs:530,533`), so a second element under that prefix would
+                read as a second pane in every one of them. */}
+            {renaming ? null : <div data-testid={`pane-spacer-${pane.id}`} aria-hidden="true" className="flex-1" />}
+
             {/* 7 — agent badge */}
             {badge === null ? null : (
                 <Badge
                     testID={`pane-agent-badge-${pane.id}`}
                     color={badge.tone === 'running' ? tokens.activeAgent : tokens.statusWaiting}
+                    fill={14}
                     text={badge.text}
                     shrinkable
                 />
@@ -489,44 +574,24 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-branch-${pane.id}`}
                     color={tokens.textSecondary}
+                    fill={10}
                     icon="branch"
                     text={pane.gitBranch}
                     shrinkable
                 />
             )}
 
-            {/* 9 — per-type buttons */}
-            {/* §3.16: font size is a PREVIEW control — the built-in editor is a fixed 13 px
-                monospace, so the pair cannot act in edit mode. It stays in the row DISABLED
-                rather than unmounting (run-B nit): a control that vanishes reflows every button
-                beside it on ⌘E, and the affordance goes undiscoverable in the mode you are in.
-                ⌥-click either one resets to 14 — the ⌘0 binding without a second pair. */}
-            {pane.type === 'markdown' ? (
-                <>
-                    <HeaderButton
-                        testID={`pane-font-smaller-${pane.id}`}
-                        label={
-                            pane.isEditing
-                                ? 'Font size applies to the preview (⌘E)'
-                                : 'Decrease font size (⌘-, ⌥-click resets)'
-                        }
-                        icon="font-smaller"
-                        disabled={pane.isEditing === true}
-                        onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'decrease')}
-                    />
-                    <HeaderButton
-                        testID={`pane-font-larger-${pane.id}`}
-                        label={
-                            pane.isEditing
-                                ? 'Font size applies to the preview (⌘E)'
-                                : 'Increase font size (⌘=, ⌥-click resets)'
-                        }
-                        icon="font-larger"
-                        disabled={pane.isEditing === true}
-                        onClick={(event) => onSetFontSize?.(pane.id, event.altKey ? 'reset' : 'increase')}
-                    />
-                </>
-            ) : null}
+            {/* 9 — per-type buttons.
+                M30: no `A−` / `A+` pair. `PaneHeaderView.swift:177-273` is the complete per-type
+                block — markdown-copy, markdown-edit, diff-refresh — and the shipped app exposes
+                preview font size ONLY through ⌘= / ⌘- / ⌘0. The pair existed here partly because
+                a focused preview could not receive those chords (§H9); that reason expired when
+                H9's chord relay landed — `content/bridge.ts` now posts a `focus` on any press
+                inside the frame and replays every chord the binding map claims, and
+                `increase/decrease/reset_markdown_font_size` are bound by default
+                (`core/config/bindings.ts:68-70` → `App.tsx:2565-2567`). The capability itself is
+                untouched: `PaneActions.onSetFontSize` and the `set-font-size` path stay, exactly
+                as `onRestartAgent` does below. */}
             {/* §TERM-103: the Swift's header copy menu — markdown, preview mode only (there is
                 no rendered document to copy while the editor is up). The menu is drawn by the
                 content frame; this asks it to open. */}
@@ -562,13 +627,14 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 `restart-pane-agent` verb, its daemon channel and `PaneActions.onRestartAgent`
                 are untouched, so any client — or a later context-menu item — can still reach it. */}
 
-            {/* 10–13 — rename, splits, close */}
-            <HeaderButton
-                testID={`pane-rename-${pane.id}`}
-                label="Rename pane"
-                icon="rename"
-                onClick={startRename}
-            />
+            {/* 10–13 — splits, new web pane, close.
+                M30: no rename button. `PaneHeaderView.swift:222-272` is split-right, split-down,
+                globe, close and nothing else; the shipped app's rename lives in the header's
+                CONTEXT menu (`:354-356`, "Rename…"), which the port already offers and drives
+                through `renameToken`. The pencil also sat immediately beside the markdown
+                edit-toggle's near-identical pencil, so the two glyphs read as one control
+                repeated. The inline field itself is unchanged — it is still the port's rename
+                affordance (TERM-112), just reached the way the Swift reaches it. */}
             <HeaderButton
                 testID={`pane-split-right-${pane.id}`}
                 label="Split right (⌘D)"

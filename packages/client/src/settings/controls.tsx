@@ -18,7 +18,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { normalizeHexColor, tokens, withAlpha } from '../chrome';
-import { hoverBackground, useHover } from './ui';
+import { SettingsDetail, hoverBackground, useHover } from './ui';
 
 export const SETTINGS_WRITE_DEBOUNCE_MS = 250;
 
@@ -81,19 +81,15 @@ export function ColorField(props: ColorFieldProps): ReactElement {
     const [shown, setShown] = useDebouncedValue(normalized, props.onChange);
     return (
         <div
-            className="flex items-center justify-between gap-3 rounded px-2 py-1.5"
+            className="flex flex-col gap-1 rounded px-2 py-1.5"
             style={{ background: withAlpha('#808080', 0.06) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
+            <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-col">
                 <span className="truncate text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
-                {props.detail === undefined ? null : (
-                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        {props.detail}
-                    </span>
-                )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
                 <span className="font-mono text-[11px]" style={{ color: tokens.textTertiary }}>
@@ -126,6 +122,10 @@ export function ColorField(props: ColorFieldProps): ReactElement {
                     />
                 </span>
             </div>
+            </div>
+            {/* M46: the caption is a row of its own, under the control, not a second line in the
+                label column. */}
+            {props.detail === undefined ? null : <SettingsDetail>{props.detail}</SettingsDetail>}
         </div>
     );
 }
@@ -152,19 +152,15 @@ export function SliderField(props: SliderFieldProps): ReactElement {
     const format = props.format ?? ((value: number) => `${String(Math.round(value * 100))}%`);
     return (
         <div
-            className="flex items-center gap-3 rounded px-2 py-1.5"
+            className="flex flex-col gap-1 rounded px-2 py-1.5"
             style={{ background: withAlpha('#808080', 0.06) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
+            <div className="flex items-center gap-3">
             <div className="flex w-[150px] shrink-0 flex-col">
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
-                {props.detail === undefined ? null : (
-                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        {props.detail}
-                    </span>
-                )}
             </div>
             <input
                 type="range"
@@ -190,6 +186,8 @@ export function SliderField(props: SliderFieldProps): ReactElement {
             >
                 {format(shown)}
             </span>
+            </div>
+            {props.detail === undefined ? null : <SettingsDetail>{props.detail}</SettingsDetail>}
         </div>
     );
 }
@@ -250,19 +248,15 @@ export interface SegmentedFieldProps<T extends string> {
 export function SegmentedField<T extends string>(props: SegmentedFieldProps<T>): ReactElement {
     return (
         <div
-            className="flex items-center justify-between gap-3 rounded px-2 py-1.5"
+            className="flex flex-col gap-1 rounded px-2 py-1.5"
             style={{ background: withAlpha('#808080', 0.06) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
+            <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-col">
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
-                {props.detail === undefined ? null : (
-                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        {props.detail}
-                    </span>
-                )}
             </div>
             <div
                 role="radiogroup"
@@ -288,6 +282,8 @@ export function SegmentedField<T extends string>(props: SegmentedFieldProps<T>):
                     );
                 })}
             </div>
+            </div>
+            {props.detail === undefined ? null : <SettingsDetail>{props.detail}</SettingsDetail>}
         </div>
     );
 }
@@ -305,19 +301,15 @@ export interface SelectFieldProps {
 export function SelectField(props: SelectFieldProps): ReactElement {
     return (
         <div
-            className="flex items-center justify-between gap-3 rounded px-2 py-1.5"
+            className="flex flex-col gap-1 rounded px-2 py-1.5"
             style={{ background: withAlpha('#808080', 0.06) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
+            <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-col">
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
-                {props.detail === undefined ? null : (
-                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        {props.detail}
-                    </span>
-                )}
             </div>
             <select
                 aria-label={props.label}
@@ -339,6 +331,8 @@ export function SelectField(props: SelectFieldProps): ReactElement {
                     </option>
                 ))}
             </select>
+            </div>
+            {props.detail === undefined ? null : <SettingsDetail>{props.detail}</SettingsDetail>}
         </div>
     );
 }
@@ -377,19 +371,15 @@ export function TextField(props: TextFieldProps): ReactElement {
     };
     return (
         <div
-            className="flex items-center justify-between gap-3 rounded px-2 py-1.5"
+            className="flex flex-col gap-1 rounded px-2 py-1.5"
             style={{ background: withAlpha('#808080', 0.06) }}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
+            <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-col">
                 <span className="text-[12px]" style={{ color: tokens.textPrimary }}>
                     {props.label}
                 </span>
-                {props.detail === undefined ? null : (
-                    <span className="text-[11px]" style={{ color: tokens.textTertiary }}>
-                        {props.detail}
-                    </span>
-                )}
             </div>
             <span className="flex shrink-0 items-center gap-2">
             <input
@@ -443,6 +433,8 @@ export function TextField(props: TextFieldProps): ReactElement {
                 </button>
             ) : null}
             </span>
+            </div>
+            {props.detail === undefined ? null : <SettingsDetail>{props.detail}</SettingsDetail>}
         </div>
     );
 }

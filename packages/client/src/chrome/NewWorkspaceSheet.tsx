@@ -40,13 +40,20 @@
  *     `busy` flag, so two submits in the SAME tick cannot both pass (`isSubmittingWorktree`,
  *     `NewWorkspaceSheet.swift:52-56`).
  *
- * Two divergences, stated. The worktree section is offered whenever the registry is non-empty (with
- * a repo picker inside it when the Repositories section did not name exactly one), where the Swift
- * shows it only for `selectedRepos.count == 1`. That is the port's existing, exercised behaviour —
- * `workspace-create-worktree` drives it with no repo chosen — and this change did not touch it.
- * And an EMPTY registry gets the Repositories heading plus one line saying where repositories come
- * from, where the Swift renders the section not at all; see the section's own comment for why a
- * silent gap was the user's report and why the line is not a focusable stop.
+ *   - **Create is the DEFAULT ACTION** (`.keyboardShortcut(.defaultAction)`,
+ *     `NewWorkspaceSheet.swift:205`), which on macOS is two things at once: the filled accent push
+ *     button, and Return from anywhere in the sheet. M9 restored both — the port's Create was an
+ *     outline identical in weight to Cancel, and Return only submitted from the name field,
+ *     because that is what a browser's implicit form submission happens to give you.
+ *
+ * One divergence, stated. An EMPTY registry gets the Repositories heading plus one line saying
+ * where repositories come from, where the Swift renders the section not at all; see the section's
+ * own comment for why a silent gap was the user's report and why the line is not a focusable stop.
+ *
+ * (The worktree section used to be a second one — offered whenever the registry was non-empty,
+ * with a repo `<select>` inside it. M4 took it back to the Swift's rule: it is revealed only when
+ * the Repositories section above names EXACTLY ONE repo, `NewWorkspaceSheet.swift:179-183`, and
+ * the picker inside it is gone because there is no longer anything for it to disambiguate.)
  */
 
 import type { WorkspaceColor } from '@nex/daemon/store';
@@ -62,7 +69,7 @@ import { createPortal } from 'react-dom';
 
 import { ChromeIcon } from './icons';
 import { RepoPicker } from './RepoPicker';
-import { workspaceColorHex, type ChromeBucket } from './theme';
+import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
     DEFAULT_PROFILE_NAME,
@@ -152,7 +159,6 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     const [chosenRepoIDs, setChosenRepoIDs] = useState<readonly string[]>(EMPTY_REPO_IDS);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [worktree, setWorktree] = useState(false);
-    const [repoID, setRepoID] = useState<string>(repos[0]?.id ?? '');
     const [worktreeName, setWorktreeName] = useState('');
     const [branch, setBranch] = useState('');
     const [branchEdited, setBranchEdited] = useState(false);
@@ -213,10 +219,19 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
         return repo === undefined ? [] : [repo];
     });
 
-    // §WS-078: the worktree is cut from the ONE selected repo when the Repositories section
-    // named exactly one; otherwise the section offers the registry to choose from.
-    const soleChosen = chosenRepos.length === 1 ? chosenRepos[0] : null;
-    const repo = soleChosen ?? repos.find((candidate) => candidate.id === repoID) ?? repos[0] ?? null;
+    /*
+     * §WS-078 / M4: the worktree is cut from the ONE selected repo, and the section only exists
+     * when there IS exactly one.
+     *
+     * `NewWorkspaceSheet.swift:179-183` — "Inline worktree creation (issue #222). Requires exactly
+     * one selected repo to branch from" — gates the whole section on `selectedRepos.count == 1`,
+     * and `visibleFields` (`:401-407`) gates the toggle's Tab stop on the same test. The port used
+     * to offer it whenever the registry was non-empty and put a "Worktree repository" `<select>`
+     * inside it to disambiguate, which is a second way to say the same thing in a sheet that
+     * already has a Repositories section — and it let the toggle be flipped with no repo chosen at
+     * all, so `repos[0]` decided what got branched.
+     */
+    const repo = chosenRepos.length === 1 ? (chosenRepos[0] ?? null) : null;
     const preview = worktreePreview({
         name: worktreeName,
         branch,
@@ -257,6 +272,10 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
             if (repos.length > 0) {
                 for (const entry of chosenRepos) order.push(`repo:${entry.id}`);
                 order.push('add-repo');
+            }
+            // M4: the worktree stops are on their own gate — `selectedRepos.count == 1`, not
+            // `!store.repoRegistry.isEmpty` (`NewWorkspaceSheet.swift:401-407`).
+            if (repo !== null) {
                 order.push('worktree-toggle');
                 if (worktreeOn) order.push('worktree-name', 'worktree-branch', 'update-main');
             }
@@ -267,6 +286,23 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
     };
 
     const onFormKeyDown = (event: ReactKeyboardEvent): void => {
+        /*
+         * M9's other half: `.keyboardShortcut(.defaultAction)` (`NewWorkspaceSheet.swift:205`) is
+         * not only the button's LOOK — it is Return from anywhere in the sheet, which is why the
+         * Swift's worktree-branch field also carries a bare `.onSubmit { create() }` (`:317`) and
+         * the name field carries `.onSubmit(create)` (`:130`) without either being special.
+         *
+         * The port had only the browser's implicit form submission, which fires from a text input
+         * and from nothing else: Return on the worktree checkboxes, on either picker, or on Cancel
+         * did nothing at all. Handling it here unifies the two routes onto one — `preventDefault`
+         * so a keypress in a text field cannot also trigger the implicit submit and run `submit()`
+         * twice (the in-flight ref would refuse the second, but a guard is not a design).
+         */
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void submit();
+            return;
+        }
         if (event.key !== 'Tab') return;
         const order = fieldOrder();
         const active = globalThis.document?.activeElement ?? null;
@@ -583,7 +619,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         </div>
                     ) : null}
 
-                    {isWorkspace && repos.length > 0 ? (
+                    {/* M4: revealed by the ONE chosen repo, not by a non-empty registry. */}
+                    {isWorkspace && repo !== null ? (
                         <label
                             className="flex cursor-pointer items-center gap-1.5 text-[11px]"
                             style={{ color: tokens.textSecondary }}
@@ -605,24 +642,6 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
 
                     {worktreeOn && repo !== null ? (
                         <div className="flex flex-col gap-1.5 pl-4" data-testid="new-workspace-worktree">
-                            {soleChosen === null && repos.length > 1 ? (
-                                <select
-                                    aria-label="Worktree repository"
-                                    data-testid="new-workspace-worktree-repo"
-                                    className="w-full rounded border bg-transparent px-1 py-[3px] text-[11px]"
-                                    style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                                    value={repo.id}
-                                    onChange={(event) => {
-                                        setRepoID(event.target.value);
-                                    }}
-                                >
-                                    {repos.map((candidate) => (
-                                        <option key={candidate.id} value={candidate.id} style={{ color: '#000' }}>
-                                            {candidate.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            ) : null}
                             <input
                                 ref={(element) => {
                                     registerStop('worktree-name', element);
@@ -710,17 +729,28 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                         >
                             Cancel
                         </button>
+                        {/*
+                          * M9: the DEFAULT ACTION button. `.keyboardShortcut(.defaultAction)`
+                          * makes AppKit draw a filled accent push button — the one control in the
+                          * sheet that is visually louder than the rest — where the port drew an
+                          * outline indistinguishable in weight from Cancel beside it. Disabled it
+                          * stays a filled push button, greyed, rather than becoming an outline:
+                          * a default button that changes SHAPE when it is unavailable reads as a
+                          * different control.
+                          */}
                         <button
                             ref={(element) => {
                                 registerStop('submit', element);
                             }}
                             type="submit"
                             data-testid={`new-${props.kind}-submit`}
+                            data-default-action="true"
                             disabled={!canSubmit}
-                            className="ml-auto rounded border px-2 py-1 text-[12px]"
+                            className="ml-auto rounded border px-2.5 py-1 text-[12px] font-medium"
                             style={{
-                                borderColor: canSubmit ? tokens.accent : tokens.divider,
-                                color: canSubmit ? tokens.accent : tokens.textTertiary
+                                background: canSubmit ? tokens.accent : withAlpha(tokens.textPrimary, 0.08),
+                                borderColor: canSubmit ? tokens.accent : 'transparent',
+                                color: canSubmit ? '#fff' : tokens.textTertiary
                             }}
                         >
                             {busy ? 'Creating…' : 'Create'}
@@ -775,7 +805,8 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
                         }}
                     >
-                        <div className="mb-2 text-[13px] font-semibold">Add Repositories</div>
+                        {/* M50: the headline is `RepoPicker`'s own now
+                            (`RepoPickerView.swift:62-63`), so all three hosts say one thing. */}
                         <RepoPicker
                             repos={repos}
                             mode="multiple"

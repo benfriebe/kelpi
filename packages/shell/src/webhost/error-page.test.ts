@@ -22,12 +22,41 @@ const FAILED = { url: 'https://nope.example/path?a=1', description: 'ERR_NAME_NO
 describe('the error card', () => {
     it('shows the failed URL, a sentence, the code, and a Retry that retries', () => {
         const html = webErrorPageHTML(FAILED);
-        expect(html).toContain('Failed to open page');
+        expect(html).toContain("Couldn't load page");
         expect(html).toContain('The server could not be found.');
         expect(html).toContain('(-105)');
         expect(html).toContain('https://nope.example/path?a=1');
         // The Retry anchor targets the failed address — that is the whole mechanism.
-        expect(html).toContain('<a class="retry" href="https://nope.example/path?a=1">Retry</a>');
+        expect(html).toContain('<a class="btn" href="https://nope.example/path?a=1">Retry</a>');
+    });
+
+    /**
+     * §M32 — the card is `WebPaneCoordinator.swift:803-901` transcribed. Each of these five was
+     * a separate drift: the heading, the missing red badge, the URL's colour and its position
+     * ABOVE the message, the filled `#0A84FF` Retry, and the card's shadow.
+     */
+    it('is the shipped card: badge, heading, blue URL above the message, filled Retry, shadow', () => {
+        const html = webErrorPageHTML(FAILED);
+
+        expect(html).toContain("<title>Couldn't load page</title>");
+        expect(html).toContain("<h1>Couldn't load page</h1>");
+
+        // The red circular `!` badge, at the Swift's size and both its colours.
+        expect(html).toContain('<div class="icon">!</div>');
+        expect(html).toContain('.icon{width:32px;height:32px;border-radius:50%;background:rgba(255,69,58,0.18);color:#FF453A;');
+
+        // The URL is blue monospace and comes BEFORE the message paragraph.
+        expect(html).toContain('color:#5AC8FA;');
+        expect(html.indexOf('class="url"')).toBeLessThan(html.indexOf('class="message"'));
+
+        // Retry is the filled system-blue button, not a muted outlined chip.
+        expect(html).toContain('background:#0A84FF;color:white;');
+        expect(html).not.toContain('#24405e');
+        expect(html).not.toContain('#3b6ea5');
+
+        // …and the card carries the Swift's drop shadow on the Swift's ground.
+        expect(html).toContain('box-shadow:0 10px 40px rgba(0,0,0,0.4);');
+        expect(html).toContain('background:#1c1c1e;color:#f2f2f7;');
     });
 
     it('is self-contained: no external stylesheet, script or image', () => {

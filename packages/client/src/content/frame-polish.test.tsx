@@ -8,6 +8,7 @@
  */
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTENT_BRIDGE_SOURCE, CONTENT_HOST_SOURCE } from './bridge';
@@ -229,19 +230,42 @@ describe('copy commands', () => {
         });
     });
 
+    /**
+     * §M28 — the floating in-document "Copy" chip is gone, so the header button is the only
+     * button that opens this menu. `PaneHeaderView.swift:177-194` gives a markdown pane one
+     * `doc.on.doc` control and nothing over the document; the port drew both, the second one
+     * parked on the reader's first line in the find bar's slot.
+     */
+    it('has no floating in-document copy chip — the header button is the only one', () => {
+        render(
+            <ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} copySource="# Doc\n" />
+        );
+        expect(screen.queryByTestId(`content-copy-${PANE}`)).toBeNull();
+        expect(screen.queryByLabelText('Copy document')).toBeNull();
+        // Nothing took its place either: a fresh preview carries no overlay at all.
+        expect(screen.queryByTestId(`content-copy-menu-${PANE}`)).toBeNull();
+    });
+
+    /*
+     * §M28: this used to click the in-document chip. Swapped one-for-one for the header route
+     * (`copyToken`), which opens the same menu with the same two items — asserted directly by
+     * "opens the menu from the header's copy button" below.
+     */
     it('copies the source with front matter stripped', () => {
         const writeClipboard = vi.fn();
-        render(
+        const frame = (copyToken: number): ReactElement => (
             <ContentFrame
                 paneID={PANE}
                 title="markdown preview"
                 html={DOCUMENT}
                 copySource={'---\ntitle: Doc\n---\n# Doc\n'}
                 writeClipboard={writeClipboard}
+                copyToken={copyToken}
             />
         );
+        const view = render(frame(0));
 
-        fireEvent.click(screen.getByTestId(`content-copy-${PANE}`));
+        view.rerender(frame(1));
         fireEvent.click(screen.getByTestId(`content-copy-markdown-${PANE}`));
 
         expect(writeClipboard).toHaveBeenCalledWith('# Doc\n');
@@ -318,20 +342,23 @@ describe('copy commands', () => {
         expect(menu.style.top).toBe('24px');
     });
 
+    // §M28: opened from the header route rather than the deleted chip — same menu, same item.
     it('asks the frame for the rendered DOM and writes both flavors', () => {
         const writeRichClipboard = vi.fn();
-        render(
+        const frame = (copyToken: number): ReactElement => (
             <ContentFrame
                 paneID={PANE}
                 title="markdown preview"
                 html={DOCUMENT}
                 copySource="# Doc\n"
                 writeRichClipboard={writeRichClipboard}
+                copyToken={copyToken}
             />
         );
+        const view = render(frame(0));
         const posted = captureToFrame();
 
-        fireEvent.click(screen.getByTestId(`content-copy-${PANE}`));
+        view.rerender(frame(1));
         fireEvent.click(screen.getByTestId(`content-copy-rich-${PANE}`));
 
         const request = posted.find((message) => message['kind'] === 'collect-rich-text');

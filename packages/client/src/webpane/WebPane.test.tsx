@@ -121,6 +121,50 @@ describe('chrome commands', () => {
         expect(sent.map((entry) => entry.verb)).toEqual(['back', 'forward', 'reload', 'newTab']);
     });
 
+    /**
+     * §M34 — the reload tooltip has always promised "⌥-click bypasses the cache", and
+     * `commands.reload(paneID, hard?)` has always supported it; the handler took no event, so
+     * the advertised gesture did nothing at all.
+     */
+    it('reloads hard on an ⌥-click and soft on a plain one (M34)', () => {
+        const { commands, sent } = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
+        const reload = screen.getByTestId(`web-reload-${PANE}`);
+        expect(reload.getAttribute('title')).toContain('⌥-click bypasses the cache');
+
+        fireEvent.click(reload);
+        expect(sent.at(-1)).toEqual({ verb: 'reload', args: [PANE, false] });
+        fireEvent.click(reload, { altKey: true });
+        expect(sent.at(-1)).toEqual({ verb: 'reload', args: [PANE, true] });
+    });
+
+    /**
+     * §M31 — `WebPaneChrome.swift:61-75` is one `VStack { navAndURLBar; tabStrip }` on one
+     * `headerBackground`, with a SINGLE `Divider()` overlaid at the bottom of the whole block.
+     * The port drew a rule under the nav row too, so every multi-tab pane got a seam between
+     * the URL bar and the tab strip that the shipped app never has.
+     */
+    it('draws one divider, under the whole chrome block, never between the rows (M31)', () => {
+        const { commands } = fakeCommands();
+        const view = render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
+
+        const block = screen.getByTestId(`web-chrome-${PANE}`);
+        const strip = screen.getByTestId(`web-tabs-${PANE}`);
+        const nav = strip.previousElementSibling as HTMLElement;
+
+        expect(block.style.borderBottom).not.toBe('');
+        expect(nav.style.borderBottom).toBe('');
+        expect(strip.style.borderBottom).toBe('');
+        // Both rows share the block's one unbroken fill.
+        expect(nav.style.background).toBe(strip.style.background);
+
+        // …and a single-tab pane still gets the block's rule, because it is the block's.
+        view.rerender(
+            <WebPane paneID={PANE} tabs={[TABS[0] as WebPaneTab]} activeTabID={TAB1} commands={commands} />
+        );
+        expect(screen.getByTestId(`web-chrome-${PANE}`).style.borderBottom).not.toBe('');
+    });
+
     it('offers dev tools only where they can actually open', () => {
         const { commands, sent } = fakeCommands();
         const view = render(
@@ -171,6 +215,29 @@ describe('tab strip', () => {
 
         view.rerender(<WebPane paneID={PANE} tabs={[]} activeTabID={null} commands={commands} />);
         expect(screen.getByTestId(`web-empty-${PANE}`).textContent).toContain('New web pane');
+    });
+
+    /**
+     * §M33 — `WebPaneView.swift:226-239` is a bare centred stack: a 32 pt tertiary globe over
+     * "New web pane" over "Type a URL above and press Return". The port had lost the glyph
+     * entirely and wrapped the two strings in a bordered card, which turned the quietest screen
+     * in the app into a floating panel.
+     */
+    it('shows the empty state as a bare stack under a 32 px globe (M33)', () => {
+        const { commands } = fakeCommands();
+        render(<WebPane paneID={PANE} tabs={[]} activeTabID={null} commands={commands} />);
+
+        const empty = screen.getByTestId(`web-empty-${PANE}`);
+        const globe = empty.querySelector('[data-icon="globe"]');
+        expect(globe).not.toBeNull();
+        expect(globe?.getAttribute('width')).toBe('32');
+        expect(empty.textContent).toContain('New web pane');
+        expect(empty.textContent).toContain('Type a URL above and press Return');
+
+        // No card: no border and no surface fill of its own.
+        expect((empty as HTMLElement).style.border).toBe('');
+        expect((empty as HTMLElement).style.background).toBe('');
+        expect(empty.className).not.toContain('rounded');
     });
 
     it('falls back to tabs[0] when activeTabID is stale (§17.2)', () => {

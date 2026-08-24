@@ -4,8 +4,14 @@
  * A web pane's storage is the one part of its state the daemon does *not* own: cookies live in
  * the Electron session the host built for the pane's partition. So everything here is a verb —
  * `web-cookies-list` to read, `web-cookie-set` to write, `web-cookies-delete` / `-clear` to
- * remove, and a `web-exec` for the localStorage read-out (no host verb needed, the page can read
- * its own storage).
+ * remove.
+ *
+ * **M39 — there is no localStorage read-out**, and there was never meant to be one:
+ * `StoragePanel.swift` is cookies, the private toggle and clear-all, full stop. The port had
+ * grown a "Local storage" button that ran a `web-exec` and dumped the page's keys into a mono
+ * block under the panel — an affordance the shipped app never shows, in the same class as the
+ * invented full-window drop overlay (§H20). `nex web exec` is still the way to read a page's
+ * storage; it is simply not a control in this panel.
  *
  * Faithful details worth naming, because each one is a rule rather than a look:
  *
@@ -28,6 +34,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 
 import { tokens } from '../grid/tokens';
+// H14's switch primitive, reused rather than re-drawn: `StoragePanel.swift:117-123` is the same
+// `.toggleStyle(.switch)` control as every Settings row's, so it should be the same object here.
+import { SettingsToggle } from '../settings/ui';
 import type { WebCookieWrite, WebPaneCommands } from './commands';
 import { WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 
@@ -144,7 +153,6 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
     const [cookies, setCookies] = useState<readonly WebCookie[]>([]);
     const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
     const [form, setForm] = useState<CookieForm | null>(null);
-    const [localStorageRows, setLocalStorageRows] = useState<readonly (readonly [string, string])[] | null>(null);
     const [confirm, setConfirm] = useState<{ kind: 'clear-all' | 'private'; message: string } | null>(null);
 
     const refresh = useCallback((): void => {
@@ -159,20 +167,6 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
     useEffect(refresh, [refresh]);
 
     const groups = useMemo(() => groupCookies(cookies), [cookies]);
-
-    const readLocalStorage = useCallback((): void => {
-        void commands
-            .exec(
-                paneID,
-                'Object.keys(localStorage).sort().slice(0, 200).map(function (k) { return [k, String(localStorage.getItem(k)).slice(0, 400)]; })'
-            )
-            .then((reply) => {
-                if (typeof reply !== 'object' || reply === null) return;
-                const record = reply as Record<string, unknown>;
-                const rows = record['result'];
-                setLocalStorageRows(Array.isArray(rows) ? (rows as readonly (readonly [string, string])[]) : []);
-            });
-    }, [commands, paneID]);
 
     const save = useCallback((): void => {
         if (form === null) return;
@@ -243,23 +237,36 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                 </button>
             </div>
 
-            {/* WEB-049: the private toggle, and the confirmation that guards both directions. */}
-            <label className="flex items-center gap-2">
-                <input
-                    type="checkbox"
-                    role="switch"
-                    aria-label="Private session"
-                    data-testid={`web-private-toggle-${paneID}`}
+            {/*
+             * WEB-049: the private toggle, and the confirmation that guards both directions.
+             *
+             * M36 — the row is `StoragePanel.swift:105-125` verbatim in shape: a two-line
+             * label (name over an explanatory caption that changes with the state) with the
+             * control pushed to the trailing edge by a `Spacer()`. The caption is the point of
+             * the row: "in-memory store" / "shared persistent store" named the MECHANISM, where
+             * the Swift names the CONSEQUENCE — which is what the user is deciding about.
+             * And the control is a real macOS switch (`.toggleStyle(.switch)`), not the square
+             * user-agent tick box the port drew — the same H14 primitive every Settings row now
+             * uses, so a toggle means the same thing on both surfaces.
+             */}
+            <div className="flex items-start gap-2">
+                <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                    <span className="font-medium">Private mode</span>
+                    <span className="text-[10px]" style={{ color: tokens.textSecondary }}>
+                        {props.isPrivate
+                            ? 'Cookies + caches discarded on quit; tabs blank on restart.'
+                            : 'Cookies + caches persist across restarts.'}
+                    </span>
+                </div>
+                <SettingsToggle
+                    label="Private session"
+                    testID={`web-private-toggle-${paneID}`}
                     checked={props.isPrivate}
                     onChange={() => {
                         setConfirm({ kind: 'private', message: privateModeWarning(!props.isPrivate) });
                     }}
                 />
-                <span>Private session</span>
-                <span style={{ color: tokens.textTertiary }}>
-                    {props.isPrivate ? 'in-memory store' : 'shared persistent store'}
-                </span>
-            </label>
+            </div>
 
             <div
                 data-testid={`web-cookie-groups-${paneID}`}
@@ -362,15 +369,6 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                         onClick={() => setForm(blankForm('', now()))}
                     >
                         Add cookie
-                    </button>
-                    <button
-                        type="button"
-                        data-testid={`web-localstorage-${paneID}`}
-                        className="rounded border px-2 py-[3px]"
-                        style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                        onClick={readLocalStorage}
-                    >
-                        Local storage
                     </button>
                     <button
                         type="button"
@@ -495,22 +493,6 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             Cancel
                         </button>
                     </div>
-                </div>
-            )}
-
-            {localStorageRows === null ? null : (
-                <div
-                    data-testid={`web-localstorage-rows-${paneID}`}
-                    className="max-h-24 overflow-y-auto rounded p-1.5 font-mono text-[10px]"
-                    style={{ border: `1px solid ${tokens.divider}`, color: tokens.textSecondary }}
-                >
-                    {localStorageRows.length === 0
-                        ? 'localStorage is empty'
-                        : localStorageRows.map(([key, value]) => (
-                              <div key={key} className="truncate">
-                                  {key} = {value}
-                              </div>
-                          ))}
                 </div>
             )}
 

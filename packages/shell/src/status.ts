@@ -29,7 +29,7 @@
  * a daemon that is gone is worse than no badge.
  */
 
-import { Menu, Notification, Tray, app, nativeImage } from 'electron';
+import { Menu, Notification, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
 import { type JsonObject, type WsDeltaEvent } from '@nex/protocol';
@@ -51,7 +51,14 @@ import type { DaemonLocation } from './daemon.js';
 import { shellHello } from './hello.js';
 // §SET-200/§SET-201: the report shape belongs to the module that produces it.
 import type { HotkeyStatusReport } from './hotkey.js';
-import { trayIconDataUrl, trayIconIsTemplate, type IconIndicator } from './icon.js';
+import {
+    resolveTrayStatusPalette,
+    trayIconDataUrl,
+    trayIconIsTemplate,
+    trayPaletteSignature,
+    type IconIndicator,
+    type TrayStatusPalette
+} from './icon.js';
 // §AGNT-073: the `nex-agent` category — its two actions and the index→action mapping.
 import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
 import {
@@ -286,8 +293,19 @@ export function createStatusController(options: StatusOptions): StatusController
     let tray: Tray | null = null;
     /** Last logged tray-menu shape, so an unchanged menu does not re-log on every delta. */
     let lastMenuSignature = '';
+    /** Last painted dot palette, so a recolour on an unchanged indicator still repaints (§M25). */
+    let lastPaletteSignature = '';
     /** §AGNT-117: the daemon's answer, or null until it has given one. */
     let daemonSettings: ShellDaemonSettings = { confirmQuitWhenActive: null };
+    /**
+     * §M25: `chrome-appearance` + `chrome-colors`, as delivered by the daemon's settings
+     * snapshot. Undefined / empty until a `welcome` has spoken, which resolves to the shipped
+     * light column — the tray exists before the socket does.
+     */
+    let chromeAppearance: string | undefined;
+    let chromeColors: Readonly<Record<string, string>> = {};
+    /** OS dark/light, or null in a headless test host with no `nativeTheme`. */
+    let systemDarkListener: (() => void) | null = null;
     /** In-flight `flush-saves-request` resolvers, keyed by the id we sent. */
     const pendingFlushes = new Map<string, (ok: boolean) => void>();
     let requestSeq = 0;
@@ -307,6 +325,31 @@ export function createStatusController(options: StatusOptions): StatusController
         const value = general['confirmQuitWhenActive'];
         if (typeof value !== 'boolean') return;
         daemonSettings = { confirmQuitWhenActive: value };
+    }
+
+    /**
+     * §M25: the two chrome fields the TRAY acts on, from the same settings payload.
+     *
+     * Separate from `readDaemonSettings` because it reads a different sub-object and must
+     * survive that one bailing out early (an older daemon with no `general.confirmQuitWhenActive`
+     * still has a palette). Defensive field by field for the same reason: a wire object with a
+     * missing or misshapen `chrome` block leaves the previous answer standing rather than
+     * blanking the palette to a guess.
+     */
+    function readChromePalette(payload: unknown): void {
+        if (!isRecord(payload)) return;
+        const chrome = payload['chrome'];
+        if (!isRecord(chrome)) return;
+        const appearance = chrome['appearance'];
+        if (typeof appearance === 'string') chromeAppearance = appearance;
+        const colors = chrome['colors'];
+        if (isRecord(colors)) {
+            const next: Record<string, string> = {};
+            for (const [key, value] of Object.entries(colors)) {
+                if (typeof value === 'string') next[key] = value;
+            }
+            chromeColors = next;
+        }
     }
 
     /**
@@ -431,28 +474,54 @@ export function createStatusController(options: StatusOptions): StatusController
     }
 
     /**
+     * §M25 — the dot colours the menu-bar icon is drawn with, resolved live.
+     *
+     * `AppReducer.swift:2538-2557` resolves a full `ChromeTheme` from the appearance preference
+     * and the user's colour overrides and hands `statusWaiting` / `statusRunning` to
+     * `StatusBarController.update(...)`; the port hard-coded one column, so the tray dot ignored
+     * both. The scheme is read off `nativeTheme` rather than the window, because the Swift reads
+     * it off `NSApp.effectiveAppearance` for the same stated reason: the menu bar sits in the
+     * OS appearance, not the app's.
+     */
+    function trayPalette(): TrayStatusPalette {
+        return resolveTrayStatusPalette({
+            appearance: chromeAppearance,
+            systemDark: nativeTheme.shouldUseDarkColors === true,
+            overrides: chromeColors
+        });
+    }
+
+    /**
      * §AGNT-087: the icon for one indicator, marked as a template image when it carries no
      * status dot — an idle glyph then TINTS with the menu bar (and inverts under a highlighted
      * status item) instead of sitting there as a fixed mid-grey. A dotted state cannot be a
      * template (AppKit keeps only alpha), so `trayIconIsTemplate` decides both here and in the
-     * drawing, from one rule.
+     * drawing, from one rule. The dot's COLOUR is `trayPalette()`'s (§M25); the two decisions
+     * stay separate, so an unresolvable colour never turns a dotted state into a template.
      */
     function trayImage(indicator_: IconIndicator): Electron.NativeImage {
-        const image = nativeImage.createFromDataURL(trayIconDataUrl(indicator_));
+        const image = nativeImage.createFromDataURL(trayIconDataUrl(indicator_, 2, trayPalette()));
         image.setTemplateImage(trayIconIsTemplate(indicator_));
         return image;
     }
 
     function updateTray(): void {
         const next = trayIndicator(counts, ready);
+        // §M25: a recoloured dot on an UNCHANGED indicator is still a repaint. Without this the
+        // Settings ▸ Appearance write, and an OS light/dark flip, would only reach the menu bar
+        // the next time an agent started or stopped.
+        const palette = trayPaletteSignature(trayPalette());
         if (tray === null) {
             tray = new Tray(trayImage(next));
             tray.on('click', () => host.showWindow());
             indicator = next;
+            lastPaletteSignature = palette;
             log(`tray ready (${next}${trayIconIsTemplate(next) ? ', template' : ''})`);
-        } else if (next !== indicator) {
+        } else if (next !== indicator || palette !== lastPaletteSignature) {
             tray.setImage(trayImage(next));
+            if (palette !== lastPaletteSignature) log(`tray palette: ${palette}`);
             indicator = next;
+            lastPaletteSignature = palette;
         }
         tray.setToolTip(trayTooltip(counts, ready));
         const rows = trayMenuRows(counts, ready);
@@ -634,6 +703,9 @@ export function createStatusController(options: StatusOptions): StatusController
                 // §AGNT-117: settings ride the handshake, so the quit gate has the real
                 // `confirm-quit-when-active` before the user can press ⌘Q.
                 readDaemonSettings(parsed['settings']);
+                // §M25: …and the chrome palette, so the tray's dot is the user's colour from the
+                // first paint rather than after their first agent event.
+                readChromePalette(parsed['settings']);
                 host.daemonSettingsReady?.(daemonSettings);
                 const daemon = isRecord(parsed['daemon']) ? parsed['daemon'] : {};
                 log(
@@ -707,6 +779,11 @@ export function createStatusController(options: StatusOptions): StatusController
                 // authority is the daemon, and reading it here is what lets a Settings toggle
                 // move the ⌘Q dialog without a restart.
                 readDaemonSettings(parsed['settings']);
+                // §M25: Settings ▸ Appearance recoloured a status dot (or switched the chrome's
+                // light/dark), and the menu bar has to follow it live — the Swift re-resolves the
+                // theme on every `updateExternalIndicators`, which a settings write triggers.
+                readChromePalette(parsed['settings']);
+                updateTray();
                 host.settingsChanged?.();
                 break;
             case 'flush-saves-result': {
@@ -810,6 +887,20 @@ export function createStatusController(options: StatusOptions): StatusController
             if (!stopped) return;
             stopped = false;
             fatal = false;
+            /*
+             * §M25: while the appearance preference is `system`, the tray's palette is the OS's
+             * to change. The Swift gets this for free — `updateExternalIndicators` re-resolves
+             * `NSApp.effectiveAppearance` every time it runs, and AppKit re-runs the view on an
+             * appearance change — so the port subscribes explicitly. Registered once per start,
+             * released in `stop`, and defensive about the host: a `nativeTheme` without an
+             * emitter (a stubbed Electron in a harness) simply means no live flip.
+             */
+            if (systemDarkListener === null && typeof nativeTheme?.on === 'function') {
+                systemDarkListener = (): void => {
+                    updateTray();
+                };
+                nativeTheme.on('updated', systemDarkListener);
+            }
             publish();
             open();
         },
@@ -819,12 +910,17 @@ export function createStatusController(options: StatusOptions): StatusController
                 clearTimeout(reconnectTimer);
                 reconnectTimer = null;
             }
+            if (systemDarkListener !== null) {
+                nativeTheme.off?.('updated', systemDarkListener);
+                systemDarkListener = null;
+            }
             dropSocket();
             for (const notification of liveNotifications.values()) notification.close();
             liveNotifications.clear();
             tray?.destroy();
             tray = null;
             indicator = null;
+            lastPaletteSignature = '';
         },
         revealPane(workspaceID: string, paneID: string): boolean {
             const current = socket;
@@ -922,7 +1018,25 @@ export function createStatusController(options: StatusOptions): StatusController
             });
         },
         acknowledgeActivation(): void {
+            /*
+             * §M24 — clear, then re-state. `ContentView.swift:347-349` is
+             * `NSApp.dockTile.badgeLabel = nil` immediately followed by
+             * `store.send(.updateExternalIndicators)`, whose effect
+             * (`AppReducer.swift:2559-2563`) re-derives the badge from the CURRENT waiting
+             * count. The clear is a flush, not a decision: a badge standing for agents still
+             * waiting in OTHER workspaces comes straight back, and only a badge whose cause the
+             * activation actually resolved stays gone.
+             *
+             * The port stopped at the clear, so the dock went quiet until the next daemon delta
+             * happened along — which, for agents nobody is looking at, can be never.
+             *
+             * `publish()` rather than a bare re-`setBadge`: the same `updateExternalIndicators`
+             * repaints the tray too, and re-running the whole publish is safe by construction —
+             * the waiting SET is unchanged, so `newlyWaitingPanes` is empty and nothing bounces
+             * or re-notifies.
+             */
             setBadge('');
+            publish();
         },
         refresh(): void {
             publish();

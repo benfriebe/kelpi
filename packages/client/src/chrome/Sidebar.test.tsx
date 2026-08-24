@@ -279,7 +279,8 @@ describe('context menus (portal-based)', () => {
         render(<Sidebar {...noopProps()} entries={entries()} onSetWorkspaceColor={onSetWorkspaceColor} />);
         fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
         fireEvent.mouseEnter(screen.getByText('Color'));
-        fireEvent.click(within(screen.getByTestId('context-submenu')).getByText('purple'));
+        // M3: the row READS `WorkspaceColor.displayName` — "Purple" — and still SENDS `purple`.
+        fireEvent.click(within(screen.getByTestId('context-submenu')).getByText('Purple'));
         expect(onSetWorkspaceColor).toHaveBeenCalledWith(W1, 'purple');
         expect(screen.queryByTestId('context-menu')).toBeNull();
     });
@@ -399,8 +400,22 @@ describe('context menus (portal-based)', () => {
         expect(labels).toHaveLength(11);
         // squad is green in the fixture, so that is the row that ticks.
         expect(submenu.querySelector('[data-menu-item="color:green"]')?.getAttribute('data-checked')).toBe('true');
+        // M3: every row after "None" is `displayName`, so the list reads as a menu rather than as
+        // ten wire tokens.
+        expect(labels.slice(1)).toEqual([
+            'Red',
+            'Orange',
+            'Yellow',
+            'Green',
+            'Blue',
+            'Purple',
+            'Pink',
+            'Gray',
+            'Black',
+            'White'
+        ]);
 
-        fireEvent.click(within(submenu).getByText('purple'));
+        fireEvent.click(within(submenu).getByText('Purple'));
         expect(onSetGroupColor).toHaveBeenCalledWith(G1, 'purple');
     });
 

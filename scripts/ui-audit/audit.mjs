@@ -3189,7 +3189,7 @@ function buildFlows(ctx) {
                 } else {
                     recorder.check('the markdown pane body is in the DOM', false, 'no pane body element');
                 }
-                recorder.eyes('typography, code-block styling, table borders, front-matter presentation, copy button on hover');
+                recorder.eyes('typography, code-block styling, table borders, front-matter presentation, and NO floating Copy chip over the first line (§M28 — the copy button is the pane header’s)');
             }
         },
         {
@@ -3229,11 +3229,21 @@ function buildFlows(ctx) {
                 );
 
                 /**
-                 * A long line runs past the right edge (`wrap="off"`, which is what a source
-                 * editor should do) — run-B's m10 called it "clipped with no visible horizontal
-                 * scrollbar", from a screenshot taken while macOS's overlay scroller was idle.
-                 * The question a picture cannot settle is whether the rest of the line is
-                 * REACHABLE: scroll the editor and see whether it moves.
+                 * §M29 — the MARKDOWN editor WRAPS.
+                 *
+                 * This block used to assert the opposite, and only conditionally: the editor ran
+                 * `wrap="off"`, a long prose line ran past the right edge, and the check —
+                 * guarded on `scrollWidth > clientWidth`, so it skipped itself on a fixture with
+                 * no long line — proved the tail was at least REACHABLE by scrolling, after
+                 * run-B's m10 called it "clipped with no visible horizontal scrollbar" off a
+                 * screenshot taken while macOS's overlay scroller was idle.
+                 * `MarkdownEditorView.swift:38-40` keeps the text container tracking the view's
+                 * width, so the shipped app wraps to the pane and there is no off-screen tail to
+                 * reach (`run-P/20-markdown-edit-toggle-edit.png` shows the port cutting a line
+                 * mid-word). The reachability question has no subject any more, so the assertion
+                 * is swapped one-for-one for the condition that replaces it — and unconditional,
+                 * where the old one could pass by not running. The SCRATCHPAD keeps `wrap="off"`
+                 * and its own ledgered divergence (CONT-070).
                  */
                 const scroller = await page.eval(
                     `(() => {
@@ -3243,17 +3253,31 @@ function buildFlows(ctx) {
                         area.scrollLeft = area.scrollWidth;
                         const after = area.scrollLeft;
                         area.scrollLeft = before;
-                        return { scrollWidth: Math.round(area.scrollWidth), clientWidth: Math.round(area.clientWidth), after: Math.round(after) };
+                        return { wrap: area.getAttribute('wrap'), padding: getComputedStyle(area).padding,
+                                 lineHeight: getComputedStyle(area).lineHeight, fontSize: getComputedStyle(area).fontSize,
+                                 scrollWidth: Math.round(area.scrollWidth), clientWidth: Math.round(area.clientWidth), after: Math.round(after) };
                     })()`
                 );
-                recorder.note(`editor h-scroll: ${JSON.stringify(scroller)}`);
-                if (scroller !== null && scroller.scrollWidth > scroller.clientWidth) {
-                    recorder.check(
-                        'a line wider than the editor is reachable by scrolling, not just cut off',
-                        scroller.after > 0,
-                        `scrollWidth ${String(scroller.scrollWidth)} vs clientWidth ${String(scroller.clientWidth)}, scrolled to ${String(scroller.after)}`
-                    );
-                }
+                recorder.note(`editor box: ${JSON.stringify(scroller)}`);
+                recorder.check(
+                    'the markdown editor soft-wraps to the pane (§M29)',
+                    scroller?.wrap === 'soft' &&
+                        Math.round(scroller.scrollWidth) <= Math.round(scroller.clientWidth) + 2 &&
+                        scroller.after === 0,
+                    `wrap=${String(scroller?.wrap)} scrollWidth ${String(scroller?.scrollWidth)} vs clientWidth ${String(scroller?.clientWidth)}, scrolled to ${String(scroller?.after)}`
+                );
+                /**
+                 * §M27 — and it is laid out at the `NSTextView`'s own metrics: an 8 pt
+                 * `textContainerInset` and a ~1.2 em row box on a 13 px face, where the port had
+                 * 12 px and 1.5 (about a quarter of the visible rows given away).
+                 */
+                recorder.check(
+                    'the editor insets 8 px and lays rows out at 1.2 em (§M27)',
+                    scroller?.padding === '8px' &&
+                        Math.abs(Number.parseFloat(String(scroller.lineHeight)) -
+                            1.2 * Number.parseFloat(String(scroller.fontSize))) < 0.6,
+                    `padding=${String(scroller?.padding)} line-height=${String(scroller?.lineHeight)} font-size=${String(scroller?.fontSize)}`
+                );
                 await page.key('KeyE', { modifiers: MOD.meta });
                 await sleep(1000);
                 await recorder.shot(page, 'preview');
@@ -3274,6 +3298,15 @@ function buildFlows(ctx) {
              * and emit one `<div>` per line, so a 4,000-line file was 4,000 nodes. Both halves
              * have to hold on screen: the node count stays bounded, AND the numbers are still
              * the right ones — a window that drifts is worse than no window.
+             *
+             * §M29's interaction, stated because this step cannot see it: the gutter draws one
+             * number per LOGICAL line at a fixed row pitch, so it is exact only while no line
+             * wraps. The markdown editor now soft-wraps (`MarkdownEditorView.swift:38-40`), and a
+             * wrapped line takes two visual rows the numbers do not account for. This fixture's
+             * lines are short and never wrap, so the claims below stand as written; the general
+             * case is recorded against CONT-070/CONT-078 rather than papered over here. An exact
+             * AND windowed gutter needs per-line wrapped heights, which a `<textarea>` does not
+             * expose — the Swift gets both from `NSLayoutManager`.
              */
             id: 'content-gutter-window',
             expect:
@@ -3340,8 +3373,16 @@ function buildFlows(ctx) {
                 // Scroll a long way down and re-read: the window has to MOVE with the text.
                 const jump = 2000;
                 await page.eval(
+                    /*
+                     * §M27 — the row height is READ off the element, not restated. This used to
+                     * multiply by a literal `19.5`, the editor's old `13 px × 1.5`; the row box
+                     * is now the `NSTextView`'s ~1.2 em, and a stale constant would have scrolled
+                     * to a different line than the assertion below expects while looking like a
+                     * product regression.
+                     */
                     `(() => { const area = document.querySelector('[data-testid="content-textarea-${pane.id}"]');
-                              area.scrollTop = ${String(jump)} * 19.5;
+                              const row = Number.parseFloat(getComputedStyle(area).lineHeight);
+                              area.scrollTop = ${String(jump)} * row;
                               area.dispatchEvent(new Event('scroll', { bubbles: true }));
                               return area.scrollTop; })()`
                 );
@@ -3379,8 +3420,10 @@ function buildFlows(ctx) {
                         const lineHeight = rows.length > 1
                             ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top
                             : 0;
-                        // Where that line's text sits: padding (12) + (n-1) rows, minus scroll.
-                        const expected = areaTop + 12 + (firstNumber - 1) * lineHeight - area.scrollTop;
+                        // Where that line's text sits: the editor's top inset + (n-1) rows, minus
+                        // scroll. §M27: the inset is READ (it moved 12 → 8), not restated.
+                        const inset = Number.parseFloat(getComputedStyle(area).paddingTop);
+                        const expected = areaTop + inset + (firstNumber - 1) * lineHeight - area.scrollTop;
                         return { firstNumber, lineHeight: Math.round(lineHeight * 100) / 100,
                                  delta: Math.round((rowTop - expected) * 100) / 100 };
                     })()`
@@ -3406,14 +3449,21 @@ function buildFlows(ctx) {
             /**
              * §TERM-103. The Swift keeps "Copy as Markdown / Copy as Rich Text" on the pane
              * HEADER (a native NSMenu popped at the button); the port had them only inside the
-             * preview's own right-click menu and its hover chip, so the capability existed and
-             * the affordance had moved. The header button is the missing half, and it is
-             * markdown-only and preview-only — there is no rendered document to copy while the
-             * editor is up.
+             * preview's own right-click menu and a floating in-document chip, so the capability
+             * existed and the affordance had moved. The header button is the missing half, and
+             * it is markdown-only and preview-only — there is no rendered document to copy while
+             * the editor is up.
+             *
+             * §M28 — and it is now the ONLY copy affordance. Restoring the header button left
+             * the port drawing both it AND the chip: two controls for one command, the second
+             * parked over the reader's first line in the find bar's own slot
+             * (`run-P/19-markdown-pane.png`), where `PaneHeaderView.swift:177-194` has exactly
+             * one. The chip's absence is asserted below, in the step that proves the survivor
+             * works.
              */
             id: 'markdown-copy-header',
             expect:
-                'The markdown pane header carries a copy button; clicking it opens the same two-item menu (Copy as Markdown / Copy as Rich Text) the in-frame chip opens, and the button is absent for shell and diff panes.',
+                'The markdown pane header carries a copy button and is the ONLY copy affordance on the pane (no floating in-document chip); clicking it opens the two-item menu (Copy as Markdown / Copy as Rich Text), and the button is absent for shell and diff panes.',
             needsEyes: true,
             async run(recorder) {
                 if (state.mdPane === null) {
@@ -3432,7 +3482,9 @@ function buildFlows(ctx) {
                             onOtherPanes: others.filter((id) =>
                                 document.querySelector('[data-testid="pane-copy-' + id + '"]') !== null
                             ).length,
-                            otherPanes: others.length
+                            otherPanes: others.length,
+                            // §M28: the deleted in-document chip.
+                            chip: document.querySelector('[data-testid="content-copy-${state.mdPane}"]') !== null
                         });
                     })()`
                 );
@@ -3447,6 +3499,11 @@ function buildFlows(ctx) {
                     'no other pane type has one',
                     info.onOtherPanes === 0,
                     `${String(info.onOtherPanes)} of ${String(info.otherPanes)} other panes`
+                );
+                recorder.check(
+                    'and it is the only copy affordance — no in-document chip (§M28)',
+                    info.chip === false,
+                    info.chip === true ? 'the floating Copy chip is still drawn' : 'header button only'
                 );
                 if (info.label === null) return;
 
@@ -3480,7 +3537,7 @@ function buildFlows(ctx) {
                 );
                 recorder.check('and it is actually on screen', opened.visible === true, JSON.stringify(opened));
 
-                // Dismiss it again: the scrim is the same one the chip's menu uses.
+                // Dismiss it again: the same scrim the preview's right-click menu uses.
                 await page.click(`[data-testid="content-copy-scrim-${state.mdPane}"]`);
                 await sleep(300);
                 const gone = await page.eval(
@@ -3860,6 +3917,44 @@ function buildFlows(ctx) {
                     await recorder.shot(page);
                     return;
                 }
+                /*
+                 * §M38 — the bar is styled as the app's ONE find bar (`grid/PaneSearchOverlay`,
+                 * i.e. `PaneSearchOverlay.swift:18-86`), read on a real bar BEFORE anything is
+                 * typed: a 160 px monospace "Search" field, no counter at all yet, and a chevron
+                 * pair that is dimmed and inert. It used to be a 192 px sans "Find in page" field
+                 * showing a permanent `0/0` beside arrows that were never disabled.
+                 */
+                const barStyle = await page.eval(
+                    `(() => {
+                        const field = document.querySelector('[data-testid="web-find-input-${paneID}"]');
+                        const next = document.querySelector('[data-testid="web-find-next-${paneID}"]');
+                        const style = field === null ? null : getComputedStyle(field);
+                        return { placeholder: field?.getAttribute('placeholder') ?? '',
+                                 width: field === null ? 0 : Math.round(field.getBoundingClientRect().width),
+                                 font: style === null ? '' : style.fontFamily,
+                                 size: style === null ? '' : style.fontSize,
+                                 counter: document.querySelector('[data-testid="web-find-count-${paneID}"]') !== null,
+                                 stepDisabled: next === null ? null : next.disabled,
+                                 stepOpacity: next === null ? '' : getComputedStyle(next).opacity };
+                    })()`
+                );
+                recorder.note(`find bar, before typing: ${JSON.stringify(barStyle)}`);
+                recorder.check(
+                    'the field is the shared bar\'s 160 px monospace "Search" (M38)',
+                    String(barStyle?.placeholder) === 'Search' &&
+                        (barStyle?.width ?? 0) === 160 &&
+                        /mono|Menlo|SFMono/i.test(String(barStyle?.font)) &&
+                        String(barStyle?.size) === '12px',
+                    JSON.stringify(barStyle)
+                );
+                recorder.check(
+                    'an empty needle shows NO counter and leaves the chevrons dimmed and inert (M38)',
+                    barStyle?.counter === false &&
+                        barStyle?.stepDisabled === true &&
+                        Number(barStyle?.stepOpacity) < 0.5,
+                    JSON.stringify(barStyle)
+                );
+
                 await page.click(`[data-testid="web-find-input-${paneID}"]`);
                 // `insertText`, not `type`: a React-controlled input receives both the synthetic
                 // keyDown's `text` and the following `char` event, and ends up with every
@@ -3982,7 +4077,7 @@ function buildFlows(ctx) {
                     `document.querySelector('[data-testid="web-find-${paneID}"]') === null`
                 );
                 recorder.check('Escape closed the find bar', closed === true);
-                recorder.eyes('find bar: is the needle field, the n/N counter and the ↑ ↓ ✕ row legible and aligned under the URL bar? Are the page marks visible in the screenshot?');
+                recorder.eyes('find bar: is the mono needle field, the n/N counter INSIDE its trailing edge and the chevron/✕ row legible and aligned under the URL bar (M38)? Are the page marks visible in the screenshot?');
             }
         },
         {
@@ -4147,13 +4242,17 @@ function buildFlows(ctx) {
                 recorder.check('each row carries its numbered chip', String(rows?.chips) === '1,2', String(rows?.chips));
 
                 /*
-                 * WEB-039 — the scope button's three states, and the one that needed a number.
+                 * WEB-039 — the scope button's three states, and the count that rides on all of
+                 * them.
                  *
-                 * Hiding the panel while it holds picks is the state the Swift badge existed to
-                 * disambiguate: without a count, "a hidden batch with two items waiting" and "no
-                 * batch at all" are the same grey glyph. Drive the real three-way toggle
-                 * (start → hide → show) and read the badge, its tooltip and the accent fill off
-                 * the live button in each state.
+                 * `WebPaneView.swift:114` hands the chrome `pendingItemCount: batchInspect?.items
+                 * .count ?? 0` with no reference to the panel, and `WebPaneChrome.swift:254-266`
+                 * draws the capsule on `pendingItemCount > 0` alone — so the count is live
+                 * toolbar feedback WHILE you pick, and hiding the panel merely leaves it in
+                 * place. §M35: the port used to suppress it while the panel was visible, so the
+                 * number only ever appeared after you hid the panel. Drive the real three-way
+                 * toggle (start → hide → show) and read the badge, its tooltip and the accent
+                 * fill off the live button in each state.
                  */
                 const scopeState = async () =>
                     page.eval(
@@ -4173,7 +4272,11 @@ function buildFlows(ctx) {
                     armedScope?.active === 'true' && String(armedScope?.title).includes('Hide'),
                     `${String(armedScope?.active)} / ${String(armedScope?.title)}`
                 );
-                recorder.check('and it carries no badge while you can see the rows', armedScope?.badge === null);
+                recorder.check(
+                    'and the badge already reports the two picks, with the rows still on screen (M35)',
+                    armedScope?.badge === '2',
+                    `badge=${String(armedScope?.badge)}`
+                );
 
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(600);
@@ -4196,8 +4299,8 @@ function buildFlows(ctx) {
                 await sleep(600);
                 const reopened = await scopeState();
                 recorder.check(
-                    'showing it again clears the badge and restores the rows',
-                    reopened?.panel === true && reopened?.badge === null,
+                    'showing it again restores the rows and the badge goes on counting them (M35)',
+                    reopened?.panel === true && reopened?.badge === '2',
                     `panel=${String(reopened?.panel)} badge=${String(reopened?.badge)}`
                 );
 
@@ -4687,6 +4790,38 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`strip pills: ${JSON.stringify(strip)}`);
+
+                /*
+                 * §M31 — with the strip up, the chrome must still read as ONE block.
+                 * `WebPaneChrome.swift:61-75` is `VStack { navAndURLBar; tabStrip }` on one
+                 * `headerBackground` with a SINGLE `Divider()` overlaid at the bottom of the
+                 * whole thing, so the two rows share an unbroken fill. The port drew a rule under
+                 * the nav row as well, which put a seam between the URL bar and the tab strip
+                 * that only multi-tab panes ever saw — which is why it is read here.
+                 */
+                const seam = await page.eval(
+                    `(() => {
+                        const block = document.querySelector('[data-testid="web-chrome-${paneID}"]');
+                        const strip = document.querySelector('[data-testid="web-tabs-${paneID}"]');
+                        const nav = strip?.previousElementSibling ?? null;
+                        const px = (node) => node === null ? '' : getComputedStyle(node).borderBottomWidth;
+                        return { block: px(block), nav: px(nav), strip: px(strip),
+                                 navFill: nav === null ? '' : getComputedStyle(nav).backgroundColor,
+                                 stripFill: strip === null ? '' : getComputedStyle(strip).backgroundColor };
+                    })()`
+                );
+                recorder.note(`chrome block rules: ${JSON.stringify(seam)}`);
+                recorder.check(
+                    'the chrome carries ONE bottom rule, on the block, with no seam between the rows (M31)',
+                    seam?.block !== '0px' && seam?.nav === '0px' && seam?.strip === '0px',
+                    JSON.stringify(seam)
+                );
+                recorder.check(
+                    'and both rows share the one unbroken header fill',
+                    String(seam?.navFill) === String(seam?.stripFill) && String(seam?.navFill) !== '',
+                    `${String(seam?.navFill)} / ${String(seam?.stripFill)}`
+                );
+
                 const activePill = (strip ?? []).find((pill) => pill.active === 'true');
                 const idlePills = (strip ?? []).filter((pill) => pill.active !== 'true');
                 recorder.check('exactly one pill is active', (strip ?? []).filter((p) => p.active === 'true').length === 1);
@@ -5480,6 +5615,45 @@ function buildFlows(ctx) {
                 );
                 recorder.check('groups start collapsed', groups?.collapsed === true);
 
+                /*
+                 * §M36 / §M39 — the panel's own furniture, read off the live DOM.
+                 *
+                 * `StoragePanel.swift:105-125` is a two-line private row ("Private mode" over a
+                 * caption naming what the choice COSTS) with a real `.toggleStyle(.switch)` on
+                 * the trailing edge; the port read "Private session · in-memory store" beside a
+                 * square user-agent tick box. And `StoragePanel.swift` is cookies + the toggle +
+                 * clear-all, full stop — the port had grown a "Local storage" button that ran a
+                 * `web-exec` and dumped the page's keys into the panel.
+                 */
+                const furniture = await page.eval(
+                    `(() => {
+                        const panel = document.querySelector('[data-testid="web-storage-${paneID}"]');
+                        const toggle = document.querySelector('[data-testid="web-private-toggle-${paneID}"]');
+                        const text = panel === null ? '' : (panel.innerText ?? '');
+                        return { caption: text.includes('Cookies + caches persist across restarts.'),
+                                 named: text.includes('Private mode'),
+                                 tag: text.includes('in-memory store') || text.includes('persistent store'),
+                                 appearance: toggle === null ? '' : getComputedStyle(toggle).appearance,
+                                 thumb: document.querySelector('[data-testid="web-private-toggle-${paneID}-thumb"]') !== null,
+                                 localStorage: document.querySelector('[data-testid="web-localstorage-${paneID}"]') !== null };
+                    })()`
+                );
+                recorder.note(`storage panel furniture: ${JSON.stringify(furniture)}`);
+                recorder.check(
+                    'the private row is named "Private mode" over the Swift\'s caption, not a three-word tag (M36)',
+                    furniture?.named === true && furniture?.caption === true && furniture?.tag === false,
+                    JSON.stringify(furniture)
+                );
+                recorder.check(
+                    'and its control is a real switch — track + thumb — not a user-agent checkbox (M36)',
+                    furniture?.appearance === 'none' && furniture?.thumb === true,
+                    `appearance=${String(furniture?.appearance)} thumb=${String(furniture?.thumb)}`
+                );
+                recorder.check(
+                    'the panel offers no "Local storage" read-out, which the shipped app never shows (M39)',
+                    furniture?.localStorage === false
+                );
+
                 const domainButton = await page.eval(
                     `document.querySelector('[data-testid^="web-cookie-group-"]')?.getAttribute('data-testid') ?? ''`
                 );
@@ -6079,6 +6253,33 @@ function buildFlows(ctx) {
                     String(accent).toUpperCase().includes('FE8019'),
                     String(accent)
                 );
+
+                /**
+                 * §M25 — and it reaches the MENU BAR, not just the window.
+                 *
+                 * `AppReducer.swift:2538-2557` resolves the live `ChromeTheme` — appearance plus
+                 * the user's colour overrides — and hands `statusRunning` / `statusWaiting` to
+                 * `StatusBarController.update(...)` on every indicator refresh. The port drew a
+                 * hard-coded column, so a preset like this one repainted every surface in the
+                 * app except the one status dot sitting outside it.
+                 *
+                 * A tray image cannot be screenshotted from outside the process (the limitation
+                 * §AGNT-090 already records), so the evidence is the shell's own log line: the
+                 * resolved palette, printed whenever it changes. Gruvbox Dark's `statusRunning`
+                 * is `B8BB26`, which is a value that exists nowhere in the shipped preset tables
+                 * — it can only have come through the override path.
+                 */
+                await sleep(600);
+                const palette = (runtime.shell?.text() ?? '')
+                    .split('\n')
+                    .filter((line) => line.includes('tray palette:'));
+                recorder.note(`tray palette lines: ${JSON.stringify(palette.slice(-3))}`);
+                recorder.check(
+                    'the menu-bar dot took the preset’s status colour too (§M25)',
+                    palette.some((line) => line.toUpperCase().includes('B8BB26')),
+                    palette.slice(-1).join('') || '(no tray palette line)'
+                );
+
                 recorder.eyes('did the SIDEBAR, header and status footer actually change colour — and is the preset grid legible?');
             }
         },
@@ -7095,6 +7296,67 @@ function buildFlows(ctx) {
                     `${String(mountedBefore)} hosts mounted`
                 );
 
+                /**
+                 * §M22 — a zero count is inert, NOT dimmed.
+                 *
+                 * `StatusBarView.swift:284-301` builds `countLabel` once, with one unconditional
+                 * `.foregroundStyle(theme.textSecondary)`, and the comment beside the branch says
+                 * why: "0-count items stay plain (un-dimmed, non-clickable)". The port dimmed the
+                 * inert branch to `textTertiary`, so `0 waiting` read as a disabled control.
+                 * Read here rather than in a unit test because it is a resolved colour: the
+                 * assertion is that the two chips paint the SAME pixel, whatever the theme says
+                 * that pixel is. (This step has ≥1 running agent, so there is a live chip and at
+                 * least one zero chip on screen at the same time.)
+                 *
+                 * §M23 rides along: the clock is the OS's hour+minute format now, not a
+                 * hard-coded zero-padded 24 h — so it matches the locale's short time pattern,
+                 * which is `H:mm`/`HH:mm` with an optional period and never carries seconds.
+                 */
+                const footerTone = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const chip = (bucket) => {
+                                    const el = document.querySelector('[data-testid="count-' + bucket + '"]');
+                                    return el === null
+                                        ? null
+                                        : { count: Number(el.getAttribute('data-count') ?? '-1'),
+                                            tag: el.tagName,
+                                            color: getComputedStyle(el).color };
+                                };
+                                const clock = document.querySelector('[data-testid="footer-clock"]');
+                                return JSON.stringify({
+                                    running: chip('running'),
+                                    waiting: chip('waiting'),
+                                    inactive: chip('inactive'),
+                                    clock: clock === null ? null : (clock.textContent ?? '').trim()
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`footer chips: ${JSON.stringify(footerTone)}`);
+                const liveChip = [footerTone.running, footerTone.waiting, footerTone.inactive].find(
+                    (chip) => chip !== null && chip.count > 0
+                );
+                const zeroChips = [footerTone.running, footerTone.waiting, footerTone.inactive].filter(
+                    (chip) => chip !== null && chip.count === 0
+                );
+                recorder.check(
+                    'a zero count is a <span>, a live one a <button> — inert, but the SAME tone (§M22)',
+                    liveChip !== undefined &&
+                        zeroChips.length > 0 &&
+                        zeroChips.every((chip) => chip.tag === 'SPAN' && chip.color === liveChip.color) &&
+                        liveChip.tag === 'BUTTON',
+                    JSON.stringify({ live: liveChip, zero: zeroChips })
+                );
+                recorder.check(
+                    'the clock is the locale’s hour+minute, with no seconds (§M23)',
+                    typeof footerTone.clock === 'string' &&
+                        /^\d{1,2}[:.]\d{2}(\s*[AaPp]\.?[Mm]\.?)?$/.test(footerTone.clock),
+                    String(footerTone.clock)
+                );
+
                 // The gesture: open the running bucket, find the row for the other workspace.
                 await page.click('[data-testid="count-running"]');
                 await page.waitFor(`document.querySelector('[data-testid="bucket-popover"]') !== null`, {
@@ -7103,6 +7365,61 @@ function buildFlows(ctx) {
                 });
                 await sleep(300);
                 await recorder.shot(page, 'popover');
+
+                /**
+                 * §M21 — `AgentStatusDetailPopover`'s own type scale, read off computed style.
+                 *
+                 * `StatusBarView.swift:340-408` is `.padding(12)` around a `VStack(spacing: 6)`
+                 * whose title is `.system(size: 13, weight: .semibold)` over a 7 pt dot and
+                 * whose rows are 12 pt with `.padding(.vertical, 3)`. The port padded 8, let the
+                 * title inherit the status row's 11 px regular, drew 6 px dots and stacked the
+                 * rows flush — a panel flattened into the bar it rises out of. Measured rather
+                 * than grepped, because these are the numbers a reader actually sees.
+                 */
+                const metrics = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const panel = document.querySelector('[data-testid="bucket-popover"]');
+                                const title = document.querySelector('[data-testid="bucket-popover-title"]');
+                                const row = document.querySelector('[data-testid="bucket-row"]');
+                                const dot = title?.querySelector('span[aria-hidden]') ?? null;
+                                const px = (el) => (el === null ? null : getComputedStyle(el));
+                                const panelStyle = px(panel);
+                                const titleStyle = px(title);
+                                const rowStyle = px(row);
+                                return JSON.stringify({
+                                    padding: panelStyle?.padding ?? null,
+                                    panelFont: panelStyle?.fontSize ?? null,
+                                    gap: panelStyle?.rowGap ?? null,
+                                    titleFont: titleStyle?.fontSize ?? null,
+                                    titleWeight: titleStyle?.fontWeight ?? null,
+                                    dot: dot === null ? null : Math.round(dot.getBoundingClientRect().width),
+                                    rowFont: rowStyle?.fontSize ?? null,
+                                    rowPadY: rowStyle?.paddingTop ?? null
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`popover metrics: ${JSON.stringify(metrics)}`);
+                recorder.check(
+                    'the popover pads 12 and stacks at 6, with 12 px rows (§M21)',
+                    metrics.padding === '12px' &&
+                        metrics.gap === '6px' &&
+                        metrics.panelFont === '12px' &&
+                        metrics.rowFont === '12px' &&
+                        metrics.rowPadY === '3px',
+                    JSON.stringify(metrics)
+                );
+                recorder.check(
+                    'its title is 13 px semibold over a 7 px dot, not the bar’s 11 px regular (§M21)',
+                    metrics.titleFont === '13px' &&
+                        Number(metrics.titleWeight) >= 600 &&
+                        metrics.dot === 7,
+                    JSON.stringify(metrics)
+                );
+
                 const rows = JSON.parse(
                     String(
                         await page.eval(
@@ -8177,11 +8494,34 @@ function buildFlows(ctx) {
                 await sleep(400);
                 await page.insertText('Worktree WS');
                 await sleep(200);
+                /*
+                 * M4: the section is revealed by `selectedRepos.count == 1`
+                 * (`NewWorkspaceSheet.swift:179-183`), not by a non-empty registry — so the setup
+                 * now CHOOSES the repo through the sheet's own Repositories section instead of
+                 * flipping a toggle that used to be offered with nothing selected and let
+                 * `repos[0]` decide what got branched. One-for-one: the assertion below is the
+                 * same one, on the same element, with the reason it is there brought up to date.
+                 */
+                await page.click('[data-testid="new-workspace-add-repo"]');
+                await sleep(600);
+                const repoRowID = await page.eval(
+                    `(() => {
+                        const row = document.querySelector('[data-testid="new-workspace-repo-picker"] [role="option"]');
+                        return row === null ? null : row.getAttribute('data-testid');
+                    })()`
+                );
+                recorder.note(`repo picker row: ${String(repoRowID)}`);
+                if (typeof repoRowID === 'string' && repoRowID.length > 0) {
+                    await page.click(`[data-testid="${repoRowID}"]`);
+                    await sleep(200);
+                    await page.click('[data-testid="repo-picker-choose"]');
+                    await sleep(500);
+                }
                 const hasToggle = await page.eval(
                     `document.querySelector('[data-testid="new-workspace-worktree-toggle"]') !== null`
                 );
                 recorder.check(
-                    'the form offers "Create git worktree" now that a repo is registered',
+                    'the form offers "Create git worktree" now that exactly one repo is selected',
                     hasToggle === true,
                     String(hasToggle)
                 );
@@ -8392,9 +8732,11 @@ function buildFlows(ctx) {
                     await sleep(900);
                 };
 
-                // Colour N: one command, both workspaces.
+                // Colour N: one command, both workspaces. M3: the ROW reads
+                // `WorkspaceColor.displayName` ("Purple"); the wire token asserted below is
+                // unchanged, and so is every assertion in this block.
                 await hoverMenuItem('bulk-color');
-                await clickSubmenuItem('purple');
+                await clickSubmenuItem('Purple');
                 const recoloured = await cli.json(['workspace', 'list', '--json']);
                 const colours = [first.id, second.id].map(
                     (id) => recoloured.find((workspace) => workspace.id === id)?.color
@@ -8561,6 +8903,78 @@ function buildFlows(ctx) {
                         await sleep(700);
                     }
                 }
+                /*
+                 * UI-FIDELITY M58 — the menu walks with the keyboard, like the `NSMenu` it is a
+                 * port of (`PaneHeaderView.swift:277` is a `.contextMenu`). ↑/↓ move the
+                 * highlight, → opens a submenu and ← closes it, Return activates. The port had
+                 * Escape and nothing else, so after `autoFocus` only Tab moved — and a
+                 * right-click menu, which deliberately does not autofocus, could not be driven
+                 * from the keyboard at all.
+                 *
+                 * Driven on a FRESH menu after the status round trip above, so nothing here can
+                 * reach the assertions before it; it dismisses with Escape and leaves the pane
+                 * exactly as it found it. Purely additive.
+                 */
+                await page.rightClick(`[data-testid="pane-header-${state.firstPane}"]`);
+                await sleep(350);
+                const menuFocus = async () =>
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const active = document.activeElement;
+                                const inMenu = active?.getAttribute?.('role') === 'menuitem';
+                                return JSON.stringify({
+                                    id: inMenu ? active.getAttribute('data-menu-item') : null,
+                                    highlighted: inMenu ? active.getAttribute('data-highlighted') : null,
+                                    submenu: document.querySelector('[data-testid="context-submenu"]') !== null,
+                                    menu: document.querySelector('[data-testid="context-menu"]') !== null
+                                });
+                            })()`
+                        )
+                    );
+                const beforeWalk = JSON.parse(await menuFocus());
+                await page.key('ArrowDown');
+                await sleep(150);
+                const firstStop = JSON.parse(await menuFocus());
+                recorder.note(`keyboard walk: ${JSON.stringify(beforeWalk)} → ${JSON.stringify(firstStop)}`);
+                recorder.check(
+                    '↓ takes the keyboard a right-click menu never asked for, and lights the row it lands on (M58)',
+                    beforeWalk.id === null && firstStop.id !== null && firstStop.highlighted === 'true',
+                    `${String(beforeWalk.id)} → ${String(firstStop.id)} (highlighted ${String(firstStop.highlighted)})`
+                );
+                let walked = firstStop;
+                for (let hop = 0; hop < 8 && walked.id !== 'status'; hop++) {
+                    await page.key('ArrowDown');
+                    await sleep(110);
+                    walked = JSON.parse(await menuFocus());
+                }
+                recorder.check('↓ walks on to the submenu parent (M58)', walked.id === 'status', String(walked.id));
+                await page.key('ArrowRight');
+                await sleep(300);
+                const opened = JSON.parse(await menuFocus());
+                await recorder.shot(page, 'keyboard-submenu');
+                recorder.check(
+                    '→ opens the submenu and hands it the keyboard (M58)',
+                    opened.submenu === true && opened.id !== null && opened.id !== 'status',
+                    JSON.stringify(opened)
+                );
+                await page.key('ArrowLeft');
+                await sleep(300);
+                const closedAgain = JSON.parse(await menuFocus());
+                recorder.check(
+                    '← closes it again and hands the parent row back (M58)',
+                    closedAgain.submenu === false && closedAgain.id === 'status',
+                    JSON.stringify(closedAgain)
+                );
+                await page.key('Escape');
+                await sleep(300);
+                const dismissed = JSON.parse(await menuFocus());
+                recorder.check(
+                    'and Escape still dismisses the whole menu',
+                    dismissed.menu === false,
+                    JSON.stringify(dismissed)
+                );
+
                 await page.key('Escape');
                 await sleep(200);
                 recorder.eyes('menu spacing, the submenu arrow, the checkmark column, and the destructive red on Close Pane');
@@ -14157,6 +14571,13 @@ function buildFlows(ctx) {
                                         order.push(el.getAttribute('data-testid'));
                                     }
                                     order.push('new-workspace-add-repo');
+                                }
+                                // M4: the worktree toggle is on its OWN gate — the Swift's
+                                // \`selectedRepos.count == 1\` (\`NewWorkspaceSheet.swift:401-407\`)
+                                // rather than \`!store.repoRegistry.isEmpty\`. Derived from the
+                                // screen for the same reason every other stop here is; the ORDER
+                                // is still what is asserted.
+                                if (has('new-workspace-worktree-toggle')) {
                                     order.push('new-workspace-worktree-toggle');
                                 }
                                 order.push('new-workspace-cancel', 'new-workspace-submit');
@@ -15349,8 +15770,10 @@ function buildFlows(ctx) {
                 await openSidebarMenu(page, '[data-testid="group-header"]', 'Drop Target');
                 const ticked = await openSubmenu(page, 'Color');
                 recorder.check(
+                    // M3: the ROW now reads `WorkspaceColor.displayName` ("Purple"); the wire
+                    // token the daemon is checked against below is unchanged.
                     'the tick follows the colour it just set',
-                    ticked.find((row) => row.label === 'purple')?.checked === 'true',
+                    ticked.find((row) => row.label === 'Purple')?.checked === 'true',
                     JSON.stringify(ticked.map((row) => [row.label, row.checked]))
                 );
                 await clickSubmenuItem(page, 'color:none');
@@ -18772,9 +19195,13 @@ function buildFlows(ctx) {
                     colours.length === 10,
                     `${String(colours.length)} rows`
                 );
+                // M3: the rows READ `WorkspaceColor.displayName` and the daemon still SPEAKS the
+                // lowercase token, so the expected label is the display name of what it holds.
+                const displayName = (raw) =>
+                    String(raw ?? '').replace(/^./, (first) => first.toUpperCase());
                 recorder.check(
                     'with the one it already has ticked',
-                    colours.find((entry) => entry.label === String(colourBefore?.color))?.checked === 'true',
+                    colours.find((entry) => entry.label === displayName(colourBefore?.color))?.checked === 'true',
                     `${String(colourBefore?.color)} · ${JSON.stringify(colours.map((entry) => [entry.label, entry.checked]))}`
                 );
                 await clickSubmenuItem(page, 'color:orange');
@@ -18796,7 +19223,7 @@ function buildFlows(ctx) {
                 const reTicked = await openSubmenu(page, 'Color');
                 recorder.check(
                     'and the tick follows it when the menu is rebuilt, so it PERSISTED',
-                    reTicked.find((entry) => entry.label === 'orange')?.checked === 'true',
+                    reTicked.find((entry) => entry.label === 'Orange')?.checked === 'true',
                     JSON.stringify(reTicked.map((entry) => [entry.label, entry.checked]))
                 );
                 await recorder.shot(page, 'colour-persisted');
@@ -19860,6 +20287,77 @@ function buildFlows(ctx) {
                     'the palette can still reach a workspace whose row is hidden',
                     Number(paletteRow) === 1,
                     `${String(paletteRow)} rows`
+                );
+
+                /*
+                 * UI-FIDELITY M53 / M54 / M56, measured on the frame above — WHERE the palette
+                 * is drawn and WHAT it lists. `ContentView.swift:262-285` hangs the overlay off
+                 * the CONTENT ROW with `.padding(.top, 40)`, so the card's top is 40 below that
+                 * row (32 + 40 = 72 from the window's top, which clears the 24 px pane header)
+                 * and the `Color.black.opacity(0.001)` hit target covers that row ALONE — the
+                 * title bar and the status footer stay live and untinted. `:264` is that
+                 * near-invisible black because a fully clear SwiftUI view takes no taps; a DOM
+                 * element hit-tests with `transparent`, so there is no wash to draw at all. And
+                 * `CommandPaletteView.swift:41-75` is one flat `ForEach` — a workspace followed
+                 * by ITS panes, with no section headings anywhere.
+                 *
+                 * Purely additive: nothing above is changed, and the reachability assertion
+                 * this sits under is untouched.
+                 */
+                const paletteBox = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const box = (el) => {
+                                    if (el === null) return null;
+                                    const r = el.getBoundingClientRect();
+                                    return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
+                                };
+                                const scrim = document.querySelector('[data-testid="palette-backdrop"]');
+                                const rows = [...document.querySelectorAll('[data-testid="palette-row"]')];
+                                const text = document.querySelector('[data-testid="command-palette"]')?.innerText ?? '';
+                                return JSON.stringify({
+                                    card: box(document.querySelector('[data-testid="command-palette"]')),
+                                    scrim: box(scrim),
+                                    scrimBg: scrim === null ? null : getComputedStyle(scrim).backgroundColor,
+                                    header: box(document.querySelector('[data-testid^="pane-header-"]')),
+                                    bar: box(document.querySelector('${PAGE.topBar}')),
+                                    footer: box(document.querySelector('${PAGE.footer}')),
+                                    kinds: rows.map((row) => row.getAttribute('data-item-kind')),
+                                    headings: /WORKSPACES|PANES|COMMANDS/.test(text)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`palette geometry: ${JSON.stringify(paletteBox)}`);
+                recorder.check(
+                    'the card clears the pane header rather than sitting flush with it (M53)',
+                    paletteBox.card !== null &&
+                        paletteBox.header !== null &&
+                        paletteBox.card.top >= paletteBox.header.bottom,
+                    `card top ${String(paletteBox.card?.top)} vs header bottom ${String(paletteBox.header?.bottom)}`
+                );
+                recorder.check(
+                    'the overlay is mounted on the CONTENT ROW: under the title bar, above the footer (M53)',
+                    paletteBox.scrim !== null &&
+                        paletteBox.bar !== null &&
+                        paletteBox.footer !== null &&
+                        paletteBox.scrim.top >= paletteBox.bar.bottom &&
+                        paletteBox.scrim.bottom <= paletteBox.footer.top,
+                    `scrim ${String(paletteBox.scrim?.top)}–${String(paletteBox.scrim?.bottom)} · bar ends ${String(paletteBox.bar?.bottom)} · footer starts ${String(paletteBox.footer?.top)}`
+                );
+                recorder.check(
+                    'and the backdrop is a hit target, not a scrim — nothing behind it is dimmed (M56)',
+                    paletteBox.scrimBg === 'rgba(0, 0, 0, 0)',
+                    String(paletteBox.scrimBg)
+                );
+                recorder.check(
+                    'the list is flat and interleaved — a workspace row after a pane row, no section headings (M54)',
+                    paletteBox.headings === false &&
+                        paletteBox.kinds.indexOf('pane') !== -1 &&
+                        paletteBox.kinds.lastIndexOf('workspace') > paletteBox.kinds.indexOf('pane'),
+                    `${JSON.stringify(paletteBox.kinds)} · headings=${String(paletteBox.headings)}`
                 );
                 await page.click(`[data-testid="palette-row"][data-item-id="ws:${String(edgeA.id)}"]`);
                 await sleep(2200);

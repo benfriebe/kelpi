@@ -1078,7 +1078,8 @@ function RepoPickerSheet(props: {
 }): ReactElement | null {
     return (
         <Sheet testID="repo-picker-sheet" label="Choose repository" onDismiss={props.onCancel}>
-            <div className="mb-3 text-[13px] font-semibold">Choose a Repository</div>
+            {/* M50: no headline here — `RepoPickerView.swift:62-63` draws the picker's own
+                ("Add Repository"), so a host that named it a third thing names nothing now. */}
             <RepoPicker
                 repos={props.repos}
                 mode="single"

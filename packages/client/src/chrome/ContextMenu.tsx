@@ -8,7 +8,9 @@
  * requirement: an open menu, and any open submenu, must survive a status re-render.
  *
  * Everything is data: `MenuItemSpec[]` in, `onSelect` callbacks out. Submenus are one level
- * deep (that is all §5.6/§5.7 use) and open on hover, matching the native menus.
+ * deep (that is all §5.6/§5.7 use) and open on hover, matching the native menus — and, since
+ * UI-FIDELITY M58, on → from the keyboard: ↑/↓ walk the panel, →/← open and close a submenu and
+ * Return activates, the way an `NSMenu` does. See the block above the listener in `ContextMenu`.
  *
  * Row *highlighting* is owned here too, and by nothing else: every menu in the client — the
  * sidebar's row and background menus, the footer chevron, the pane context menu, the titlebar
@@ -153,9 +155,10 @@ interface RowProps {
  * Three sources, ONE appearance, which is the part that matters:
  *
  *   - **hover** on any enabled row;
- *   - **keyboard focus**, so `autoFocus`'s landing row and a Tab walk read identically to a
- *     pointer — a menu that highlights only for the mouse is unusable from the keyboard, and
- *     two different-looking highlights would be worse than one;
+ *   - **keyboard focus**, so `autoFocus`'s landing row and a keyboard walk (the ↑/↓/→/← roving
+ *     focus below, M58) read identically to a pointer — a menu that highlights only for the
+ *     mouse is unusable from the keyboard, and two different-looking highlights would be worse
+ *     than one;
  *   - **an open submenu**, which is the existing behaviour and is kept: the parent stays lit
  *     while the pointer is away in its child panel, where hover alone would have dropped it.
  *
@@ -258,6 +261,15 @@ function MenuRow(props: RowProps): ReactElement {
     );
 }
 
+/** The rows a keyboard walk can land on: interactive, in DOM order. */
+function enabledRows(panel: HTMLElement | null, topLevelOnly: boolean): HTMLElement[] {
+    if (panel === null) return [];
+    const selector = topLevelOnly
+        ? ':scope > div > [role="menuitem"]:not([disabled])'
+        : '[role="menuitem"]:not([disabled])';
+    return [...panel.querySelectorAll<HTMLElement>(selector)];
+}
+
 export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     const rootRef = useRef<HTMLDivElement | null>(null);
     const [openSubmenuID, setOpenSubmenuID] = useState<string | null>(null);
@@ -286,6 +298,113 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
 
     const submenuItems = props.items.find((item) => item.id === openSubmenuID)?.submenu;
     const submenu = useSubmenuFlip(openSubmenuID !== null && submenuItems !== undefined);
+
+    /*
+     * UI-FIDELITY M58 — an `NSMenu` walks with the keyboard, and this one did not.
+     *
+     * Every `.contextMenu` in the shipped app (`PaneHeaderView.swift:277`,
+     * `WorkspaceListView.swift:513,562,610,824,1590`, `RepoRegistryView.swift:96`,
+     * `WorkspaceInspectorView.swift:388`) is a real `NSMenu`: ↑/↓ move the highlight, → opens a
+     * submenu and ← closes it, Return activates. The port had Escape (via `useDismissable`) and
+     * nothing else — after `autoFocus` only Tab moved, and a right-click menu could not be
+     * driven from the keyboard at all.
+     *
+     * Roving focus, derived from the DOM rather than mirrored into state: the focused row IS the
+     * highlighted row (`rowHighlight` already unions focus with hover), so there is no second
+     * source of truth to keep in step with hover, `autoFocus` or a submenu opening under the
+     * pointer. That is also why the listener can install once — everything it needs it reads at
+     * event time.
+     *
+     * Capture-phase on the document, like the Escape half, so a pane's own key handling cannot
+     * swallow the walk; and, like an `NSMenu`, an open menu owns those keys while it is up. The
+     * one deliberate narrowing is **Return**, which acts only when a menu row actually holds
+     * focus: with `autoFocus` off nothing is highlighted yet, so there is nothing to activate and
+     * the key belongs to whatever the user was in.
+     *
+     * Not implemented: **type-select** (typing "de" to jump to "Delete"). It is real `NSMenu`
+     * behaviour and it is deliberately left out — the arrow walk is what the finding names, and
+     * a first-letter jump wants a debounce, a prefix buffer and a wrap rule of its own.
+     */
+    const pendingSubmenuFocus = useRef(false);
+    useLayoutEffect(() => {
+        if (!pendingSubmenuFocus.current) return;
+        pendingSubmenuFocus.current = false;
+        enabledRows(submenu.ref.current, false)[0]?.focus();
+    });
+
+    const submenuRef = submenu.ref;
+    useEffect(() => {
+        const openSubmenuOf = (row: HTMLElement): boolean => {
+            if (row.getAttribute('aria-haspopup') !== 'menu') return false;
+            const id = row.getAttribute('data-menu-item');
+            if (id === null) return false;
+            pendingSubmenuFocus.current = true;
+            setOpenSubmenuID(id);
+            return true;
+        };
+        const onKeyDown = (event: KeyboardEvent): void => {
+            const key = event.key;
+            if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Enter') {
+                return;
+            }
+            const root = rootRef.current;
+            if (root === null) return;
+            const panel = submenuRef.current;
+            const active = globalThis.document.activeElement as HTMLElement | null;
+            const inSubmenu = active !== null && panel !== null && panel.contains(active);
+            const onRow = active !== null && active.getAttribute('role') === 'menuitem';
+            const consume = (): void => {
+                event.preventDefault();
+                event.stopPropagation();
+            };
+
+            if (key === 'ArrowDown' || key === 'ArrowUp') {
+                const rows = inSubmenu ? enabledRows(panel, false) : enabledRows(root, true);
+                if (rows.length === 0) return;
+                consume();
+                const at = active === null ? -1 : rows.indexOf(active);
+                const next =
+                    at === -1
+                        ? key === 'ArrowDown'
+                            ? 0
+                            : rows.length - 1
+                        : (at + (key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+                // Walking the parent panel takes the highlight off the submenu's parent row, so
+                // the child panel goes with it — an `NSMenu` never leaves an orphaned one open.
+                if (!inSubmenu) setOpenSubmenuID(null);
+                rows[next]?.focus();
+                return;
+            }
+
+            if (key === 'ArrowRight') {
+                if (inSubmenu || !onRow || active === null) return;
+                if (openSubmenuOf(active)) consume();
+                return;
+            }
+
+            if (key === 'ArrowLeft') {
+                if (!inSubmenu || panel === null) return;
+                consume();
+                // The parent row is the wrapper's own `menuitem`; the submenu is its sibling.
+                const parentRow = panel.parentElement?.querySelector<HTMLElement>('[role="menuitem"]') ?? null;
+                setOpenSubmenuID(null);
+                parentRow?.focus();
+                return;
+            }
+
+            // Enter: a submenu parent opens (and hands the keyboard to its first row), anything
+            // else activates through the row's own click path so there is one activation route.
+            if (!onRow || active === null) return;
+            consume();
+            if (!inSubmenu && openSubmenuOf(active)) return;
+            active.click();
+        };
+        const doc = globalThis.document;
+        doc.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            doc.removeEventListener('keydown', onKeyDown, true);
+        };
+    }, [submenuRef]);
 
     const container = props.container ?? globalThis.document?.body;
     if (container === undefined || container === null) return null;

@@ -20,6 +20,9 @@
  *   - the destination picker is seeded from the session's remembered target, Send is disabled
  *     until a destination has been **deliberately picked** and the batch is non-empty, and a
  *     target that disappeared resets the picker (WEB-132/WEB-133);
+ *   - the **furniture is the Swift's** (M37): an accent `scope` crosshair opens the header, the
+ *     item count closes it, and the footer is `Cancel … picker · Send N` — Cancel bottom-left,
+ *     Send filled as the default action and carrying the count it is about to dispatch;
  *   - hovering the panel forces the arrow cursor back, because the page sets `cursor:crosshair`
  *     on its own document while the picker is armed (WEB-145 — the same defect, one layer up).
  *
@@ -36,6 +39,7 @@ import { useCallback, useEffect, useRef, type ReactElement } from 'react';
 import { withAlpha } from '../chrome';
 import { tokens } from '../grid/tokens';
 import type { WebPaneCommands } from './commands';
+import { Glyph } from './glyphs';
 import { WEB_CHROME_TEXT_ATTRIBUTE } from './priority';
 import {
     BATCH_LOCAL_DESTINATION,
@@ -138,20 +142,21 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                 color: tokens.textPrimary
             }}
         >
-            <div className="flex items-center gap-2 text-[11px]">
-                <span className="font-medium">Element pickup</span>
-                <span style={{ color: tokens.textTertiary }}>
+            {/*
+             * M37 — the header is the Swift's `HStack { scope; "Element pickup"; Spacer();
+             * "N items" }` (`WebBatchInspectPanel.swift:95-109`). The accent crosshair is the
+             * whole point of the row: it is the same glyph as the toolbar button that opened the
+             * panel, which is what pairs the two. Cancel is NOT here — it lives in the footer,
+             * bottom-left, where `:224-247` puts it.
+             */}
+            <div className="flex items-center gap-1.5 text-[11px]">
+                <span className="flex shrink-0 items-center" style={{ color: tokens.accent }}>
+                    <Glyph name="scope" size={11} />
+                </span>
+                <span className="font-semibold">Element pickup</span>
+                <span className="ml-auto" style={{ color: tokens.textTertiary }}>
                     {session.items.length === 1 ? '1 item' : `${String(session.items.length)} items`}
                 </span>
-                <button
-                    type="button"
-                    data-testid={`web-batch-cancel-${paneID}`}
-                    className="ml-auto rounded border px-1.5 py-[1px] text-[10px]"
-                    style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
-                    onClick={() => void commands.batchCancel(paneID)}
-                >
-                    Cancel
-                </button>
             </div>
 
             {session.items.length === 0 ? (
@@ -273,11 +278,28 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                 </div>
             )}
 
-            <div className="flex items-center gap-1.5">
+            {/*
+             * M37 — the footer's own layout: `HStack(spacing: 8) { Cancel; Spacer();
+             * destinationPicker; Send N }` (`WebBatchInspectPanel.swift:224-247`). Cancel sits
+             * bottom-LEFT (it used to be a small chip in the header's top-right), and the picker
+             * and Send are pushed to the trailing edge by the spacer rather than the picker
+             * stretching across the row — the Swift picker is `.fixedSize()` with
+             * `minWidth: 140`.
+             */}
+            <div className="flex items-center gap-2">
+                <button
+                    type="button"
+                    data-testid={`web-batch-cancel-${paneID}`}
+                    className="shrink-0 rounded border px-2 py-[3px] text-[11px]"
+                    style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
+                    onClick={() => void commands.batchCancel(paneID)}
+                >
+                    Cancel
+                </button>
                 <select
                     aria-label="Send to pane"
                     data-testid={`web-batch-destination-${paneID}`}
-                    className="min-w-0 flex-1 rounded px-1.5 py-[3px] text-[11px] outline-none"
+                    className="ml-auto min-w-[140px] max-w-[240px] truncate rounded px-1.5 py-[3px] text-[11px] outline-none"
                     style={{
                         background: tokens.windowBackground,
                         // Unselected demands a pick, the way the Swift picker's accent
@@ -320,10 +342,14 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                     type="button"
                     data-testid={`web-batch-send-${paneID}`}
                     disabled={!canSend}
-                    className="shrink-0 rounded border px-2 py-[3px] text-[11px] disabled:opacity-40"
+                    className="shrink-0 rounded border px-2 py-[3px] text-[11px] font-medium disabled:opacity-40"
+                    // M37: `.buttonStyle(.borderedProminent)` — a FILLED accent button, which is
+                    // what marks it as the panel's default action against the outlined Cancel.
+                    // It was an outline in the same weight as Cancel.
                     style={{
                         borderColor: tokens.accent,
-                        color: tokens.accent,
+                        background: tokens.accent,
+                        color: '#fff',
                         cursor: canSend ? 'pointer' : 'default'
                     }}
                     // The wire's `sendTo` is still `null` for the local queue — that branch is
@@ -333,7 +359,11 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                         void commands.batchSend(paneID, isPaneDestination(destination) ? destination : null)
                     }
                 >
-                    Send
+                    {/*
+                     * M37: `Button("Send \(items.count)")` — the count is part of the label, so
+                     * the button says how much it is about to dispatch. It read a bare "Send".
+                     */}
+                    Send {session.items.length}
                 </button>
             </div>
         </div>

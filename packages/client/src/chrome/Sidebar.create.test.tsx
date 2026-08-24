@@ -277,6 +277,13 @@ describe('the Repositories section (§WS-075/§WS-080)', () => {
 describe('the Tab loop (§WS-077)', () => {
     it('walks the Swift’s Field order — name → colours → group → profile → repos → Cancel → Create — and wraps', () => {
         openWorkspaceForm({ repos: REPOS });
+        // M4: the worktree toggle's Tab stop is gated on `selectedRepos.count == 1`
+        // (`NewWorkspaceSheet.swift:401-407`), not on a non-empty registry — so the walk is set
+        // up with exactly one repo chosen, which also puts its remove button in the loop.
+        fireEvent.click(screen.getByTestId('new-workspace-add-repo'));
+        const picker = screen.getByTestId('new-workspace-repo-picker');
+        fireEvent.click(within(picker).getByTestId('repo-choice-r1'));
+        fireEvent.click(within(picker).getByTestId('repo-picker-choose'));
         const name = screen.getByLabelText('New workspace name');
         fireEvent.change(name, { target: { value: 'ws' } }); // enables Create, so it joins
         name.focus();
@@ -288,6 +295,7 @@ describe('the Tab loop (§WS-077)', () => {
         expect(step()).toBe(screen.getByTestId('new-workspace-colors'));
         expect(step()).toBe(screen.getByTestId('new-workspace-group'));
         expect(step()).toBe(screen.getByTestId('new-workspace-profile'));
+        expect(step()).toBe(screen.getByTestId('new-workspace-repo-remove-r1'));
         expect(step()).toBe(screen.getByTestId('new-workspace-add-repo'));
         expect(step()).toBe(screen.getByTestId('new-workspace-worktree-toggle'));
         // `NewWorkspaceSheet.swift:394-397`: Cancel, then Create.

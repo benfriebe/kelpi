@@ -259,6 +259,33 @@ export const ROW_ACTIVE_RING_PX = 1.5;
 export const ROW_SELECTION_RING_PX = 1;
 /** Each item's own outer vertical padding; two adjacent items are twice this apart. */
 export const ROW_OUTER_GAP_PX = 2;
+/**
+ * M7: the 8pt a workspace row gives up on its TRAILING edge, which a group band does not.
+ *
+ * `WorkspaceListView.swift:798,1339` wrap every workspace row in `.padding(.horizontal, 8)`;
+ * `GroupHeaderRow.swift:107` gives the band `.padding(.leading, 8)` and nothing on the trailing
+ * side — with the comment saying why (the leading 8 "stands in for the workspace row's call-site
+ * .padding(.horizontal, 8) … so the band edge + icon line up with the workspace ring + avatar").
+ * So band and row share a left edge and the band is 8pt wider on the right. The scroller's own
+ * `px-2` supplies the shared leading inset here; this is the trailing half, which the port had
+ * dropped — both boxes were flush right.
+ */
+export const ROW_TRAILING_INSET_PX = 8;
+/**
+ * M3: `WorkspaceColor.displayName` (`WorkspaceColor.swift:36`) is `rawValue.capitalized`, so every
+ * Color submenu row in the shipped app reads "Red" / "Gray". The port was rendering the raw wire
+ * token, which is lowercase.
+ */
+export function workspaceColorDisplayName(color: string): string {
+    return color.length === 0 ? color : `${color[0]?.toUpperCase() ?? ''}${color.slice(1)}`;
+}
+/**
+ * M8: SwiftUI's `design: .rounded` — the face the workspace avatar's LETTER is drawn in
+ * (`WorkspaceRowView.swift:145`). `ui-rounded` is the CSS generic for the platform's rounded UI
+ * face (SF Rounded on macOS); the named family and the UI face behind it are the fallbacks.
+ */
+export const ROUNDED_FONT_STACK =
+    'ui-rounded, "SF Pro Rounded", "SF Compact Rounded", system-ui, -apple-system, sans-serif';
 /** A SwiftUI `.stroke` is centred on the path — half in, half out. */
 export function ringOffsetPx(width: number): number {
     return -width / 2;
@@ -444,7 +471,7 @@ function Avatar(props: AvatarProps): ReactElement {
     const hex = workspaceColorHex(props.color, props.bucket);
     const glyph = iconGlyph(props.icon);
     return (
-        <span className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] text-[11px] font-semibold">
+        <span className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px]">
             <span
                 aria-hidden
                 className="absolute inset-0 rounded-[5px]"
@@ -457,9 +484,21 @@ function Avatar(props: AvatarProps): ReactElement {
                     border: `1px solid ${tintedColor(hex, SIDEBAR_TINT_VARS.avatarStroke, 0.45)}`
                 }}
             />
+            {/*
+             * M8: the avatar's three contents are THREE type recipes in the Swift
+             * (`WorkspaceRowView.swift:134-148`), not one — an emoji at 12, a symbol at 12
+             * semibold, and the LETTER at 11 bold in the ROUNDED face. The port had one
+             * `text-[11px] font-semibold` on the container, so every glyph was a point small
+             * and the letter was the UI face at the wrong weight.
+             */}
             <span
-                className="relative"
-                style={iconIsTintable(props.icon) || glyph === null ? { color: hex } : undefined}
+                className={glyph === null ? 'relative text-[11px] font-bold' : 'relative text-[12px] font-semibold'}
+                style={{
+                    ...(iconIsTintable(props.icon) || glyph === null ? { color: hex } : {}),
+                    // `design: .rounded` — SF Rounded, with the stack falling back to the UI face
+                    // wherever it is not installed.
+                    ...(glyph === null ? { fontFamily: ROUNDED_FONT_STACK } : {})
+                }}
             >
                 {glyph ?? avatarLetter(props.name)}
             </span>
@@ -740,6 +779,14 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
          * next measurement read this animation's own frame as a layout change).
          */
         marginLeft: nested ? NEST_INDENT_PX : 0,
+        /*
+         * M7: the row's own TRAILING inset (`ROW_TRAILING_INSET_PX`), which the group band above
+         * it does not get. It is a margin rather than padding for the same reason `marginLeft` is:
+         * it has to sit OUTSIDE the background box and the ring, so the band reads 8px wider on
+         * the right than the rows it heads — `WorkspaceRowView`'s call-site `.padding(.horizontal,
+         * 8)` against `GroupHeaderRow.swift:107`'s leading-only 8.
+         */
+        marginRight: ROW_TRAILING_INSET_PX,
         /*
          * The Swift's OUTER vertical padding (`WorkspaceRowView.swift:97`), which lives outside
          * the ring and is the whole reason a ring never touches its neighbour. It is inline
@@ -1041,7 +1088,14 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                 props.onContextMenu(group.id, event);
             }}
         >
-            <span className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[12px]">
+            {/*
+             * M8: the band's glyph slot is one step LARGER than a row's avatar in the Swift —
+             * `GroupHeaderRow.swift:145-167` draws the folder at 14 and an emoji at 13, where the
+             * port had 13 and 12. (A CUSTOM SF Symbol is 14 there and shares this 13px slot here,
+             * because the port draws it as a text glyph rather than as an image; M8 names the
+             * folder and the emoji, and that one-point residue is left where it was found.)
+             */}
+            <span className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[13px]">
                 {/*
                  * §WS-036: the folder is OUTLINED for a colourless group and FILLED once the
                  * group has a colour — the Swift's `folder` → `folder.fill` switch, in the
@@ -1053,7 +1107,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                     <span style={iconIsTintable(group.icon) ? { color: hex } : undefined}>{glyph}</span>
                 ) : (
                     <span style={{ color: hex }}>
-                        <ChromeIcon name="folder" size={13} filled={folderIcon === 'filled'} />
+                        <ChromeIcon name="folder" size={14} filled={folderIcon === 'filled'} />
                     </span>
                 )}
                 <StatusDot counts={props.counts} />
@@ -3052,7 +3106,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 label: `Color ${String(count)} Workspaces`,
                 submenu: WORKSPACE_COLORS.map((color) => ({
                     id: `bulk-color:${color}`,
-                    label: color,
+                    // M3: `WorkspaceColor.displayName` — the bulk list is the same `ForEach` over
+                    // `WorkspaceColor.allCases` as the single-row one (`:876-880`).
+                    label: workspaceColorDisplayName(color),
                     swatch: workspaceColorHex(color, bucket),
                     onSelect: () => {
                         props.onSetBulkColor?.(ids, color);
@@ -3218,45 +3274,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         setRename({ kind: 'workspace', id: workspaceID });
                     }
                 },
-                {
-                    id: 'icon',
-                    label: 'Change Icon',
-                    submenu: iconSubmenu('workspace', workspaceID, workspace.icon)
-                },
+                // M2: the Swift's row menu is Rename / Color / Profile / Change Icon / Labels /
+                // Move (`WorkspaceListView.swift:896-910`). The port had Change Icon second and
+                // Profile fifth; the two are swapped back here.
                 {
                     id: 'color',
                     label: 'Color',
                     submenu: WORKSPACE_COLORS.map((color) => ({
                         id: `color:${color}`,
-                        label: color,
+                        // M3: `WorkspaceColor.displayName` — "Red", not the wire token.
+                        label: workspaceColorDisplayName(color),
                         checked: workspace.color === color,
                         swatch: workspaceColorHex(color, bucket),
                         onSelect: () => {
                             props.onSetWorkspaceColor?.(workspaceID, color);
                         }
                     }))
-                },
-                {
-                    id: 'labels',
-                    label: 'Labels',
-                    submenu: [
-                        ...(presetItems.length + freeform.length === 0
-                            ? [{ id: 'no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
-                            : [...presetItems, ...freeform]),
-                        // shell-ui.md §5.7: the submenu offers existing presets only, so this is
-                        // the way to CREATE or recolor one.
-                        ...(props.onOpenSettings === undefined
-                            ? []
-                            : [
-                                  {
-                                      id: 'manage-labels',
-                                      label: 'Manage Labels…',
-                                      onSelect: () => {
-                                          props.onOpenSettings?.('labels');
-                                      }
-                                  } satisfies MenuItemSpec
-                              ])
-                    ]
                 },
                 // §WS-049: built at right-click time from whatever the config holds NOW — the
                 // profiles prop is re-read per snapshot, so there is no watcher to go stale.
@@ -3287,6 +3320,33 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               )
                           } satisfies MenuItemSpec
                       ]),
+                {
+                    id: 'icon',
+                    label: 'Change Icon',
+                    submenu: iconSubmenu('workspace', workspaceID, workspace.icon)
+                },
+                {
+                    id: 'labels',
+                    label: 'Labels',
+                    submenu: [
+                        ...(presetItems.length + freeform.length === 0
+                            ? [{ id: 'no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
+                            : [...presetItems, ...freeform]),
+                        // shell-ui.md §5.7: the submenu offers existing presets only, so this is
+                        // the way to CREATE or recolor one.
+                        ...(props.onOpenSettings === undefined
+                            ? []
+                            : [
+                                  {
+                                      id: 'manage-labels',
+                                      label: 'Manage Labels…',
+                                      onSelect: () => {
+                                          props.onOpenSettings?.('labels');
+                                      }
+                                  } satisfies MenuItemSpec
+                              ])
+                    ]
+                },
                 {
                     id: 'move',
                     label: 'Move to Group',
@@ -3433,11 +3493,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         setRename({ kind: 'group', id: groupID });
                     }
                 },
-                {
-                    id: 'icon',
-                    label: 'Change Icon',
-                    submenu: iconSubmenu('group', groupID, group.icon)
-                },
+                // M2: the Swift's group menu is New Workspace / — / Rename / Color / Change Icon /
+                // Expand|Collapse / — / Delete (`WorkspaceListView.swift:1183-1207`). Change Icon
+                // followed Rename here; it belongs after Color, as in the row menu.
                 // §WS-065: a group's colour is OPTIONAL, unlike a workspace's, so this list
                 // leads with "None" and the ten palette colours follow. Without it the colour
                 // could only ever be chosen at `group create --color` time.
@@ -3459,7 +3517,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                   ...WORKSPACE_COLORS.map(
                                       (color): MenuItemSpec => ({
                                           id: `color:${color}`,
-                                          label: color,
+                                          // M3: `WorkspaceColor.displayName`.
+                                          label: workspaceColorDisplayName(color),
                                           checked: group.color === color,
                                           swatch: workspaceColorHex(color, bucket),
                                           onSelect: () => {
@@ -3470,6 +3529,11 @@ export function Sidebar(props: SidebarProps): ReactElement {
                               ]
                           } satisfies MenuItemSpec
                       ]),
+                {
+                    id: 'icon',
+                    label: 'Change Icon',
+                    submenu: iconSubmenu('group', groupID, group.icon)
+                },
                 {
                     id: 'collapse',
                     label: collapsed ? 'Expand' : 'Collapse',
@@ -3796,12 +3860,26 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         );
                     }
                     if (row.kind === 'group-empty') {
+                        /*
+                         * M1 / §WS-007: the guide rule does NOT stop at an empty group.
+                         * `groupChildGuideColor` (`WorkspaceListView.swift:465-479`) returns a
+                         * colour for `.groupEmpty` exactly as it does for a child row, and the
+                         * overlay is hung on every entry alike (`:311-328`) — so the "No
+                         * workspaces" placeholder carries its own segment of the rule.
+                         *
+                         * Same 18px inset as a child row's: the placeholder's `ml-6` puts its own
+                         * left edge on the 24px nesting indent, so `left: -6` lands on 18. No
+                         * bridging either way — the placeholder is the group's only child, so
+                         * there is no sibling segment to meet.
+                         */
+                        const emptyGuideColor = guideColorFor(row.groupID);
                         return (
                             <div
                                 key={row.key}
                                 data-testid="group-empty"
                                 data-reorder="spring"
-                                className="ml-6 py-1.5 pl-2 text-[12px]"
+                                data-guide={emptyGuideColor === undefined ? undefined : 'true'}
+                                className="relative ml-6 py-1.5 pl-2 text-[12px]"
                                 style={{ color: tokens.textTertiary }}
                                 onContextMenu={(event) => {
                                     onGroupContextMenu(row.groupID, event);
@@ -3810,6 +3888,22 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                     registerRow(row.key, element);
                                 }}
                             >
+                                {emptyGuideColor === undefined ? null : (
+                                    <span
+                                        aria-hidden
+                                        data-testid="group-guide"
+                                        style={{
+                                            position: 'absolute',
+                                            left: -6,
+                                            top: 0,
+                                            bottom: 0,
+                                            width: 1.5,
+                                            borderRadius: 1,
+                                            background: emptyGuideColor,
+                                            pointerEvents: 'none'
+                                        }}
+                                    />
+                                )}
                                 No workspaces
                             </div>
                         );
@@ -3955,19 +4049,32 @@ export function Sidebar(props: SidebarProps): ReactElement {
             {selection.size > 0 ? (
                 <div
                     data-testid="selection-header"
-                    className="flex items-center gap-2 px-3 py-1 text-[11px]"
+                    /* M6: `.padding(.vertical, 6)` (`WorkspaceListView.swift:848`), not 4px. */
+                    className="flex items-center gap-2 px-3 py-1.5 text-[11px]"
                     /* §H22: `Color.accentColor.opacity(0.12)` (`WorkspaceListView.swift:850`) —
                        the live accent, not the dark preset's `#6F9BD8` frozen into the source. */
                     style={{ background: withAlpha(tokens.accent, 0.12), color: tokens.textSecondary }}
                 >
                     <span className="flex-1">{selection.size} selected</span>
-                    {/* §WS-043: "Select All" disappears once everything already IS selected —
-                        a button whose only effect would be to do nothing. */}
-                    {visibleOrder.every((id) => selection.has(id)) ? null : (
+                    {/*
+                      * §WS-043: "Select All" disappears once everything already IS selected — a
+                      * button whose only effect would be to do nothing.
+                      *
+                      * M6: the comparison is against the WHOLE workspace set, which is what
+                      * `if count < store.workspaces.count` (`WorkspaceListView.swift:838`) reads
+                      * and what `.selectAllWorkspaces` acts on. `visibleOrder` skips the members
+                      * of a collapsed group, so the port used to hide the button while rows the
+                      * user could reveal were still unselected — and to select fewer than the
+                      * menu's own "Select All Workspaces" does (§WS-045). Both now agree.
+                      */}
+                    {selection.size >= workspaceByID.size ? null : (
                         <button
                             type="button"
+                            /* M6: `.buttonStyle(.borderless)` at `:840-846` — an accent text
+                               button, not the strip's own secondary body colour. */
+                            style={{ color: tokens.accent }}
                             onClick={() => {
-                                setSelection(new Set(visibleOrder));
+                                setSelection(new Set(workspaceByID.keys()));
                             }}
                         >
                             Select All
@@ -3975,6 +4082,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     )}
                     <button
                         type="button"
+                        style={{ color: tokens.accent }}
                         onClick={() => {
                             setSelection(EMPTY_SELECTION);
                         }}
@@ -4169,6 +4277,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
             {emojiSheet === null ? null : (
                 <CustomEmojiSheet
+                    /* M5: the sheet names its subject — `Custom Emoji for "<name>"`
+                       (`GroupCustomEmojiSheet.swift:24-25`). Resolved here rather than carried on
+                       `emojiSheet` so the title follows a rename that lands while it is open. */
+                    subjectName={
+                        emojiSheet.kind === 'workspace'
+                            ? (workspaceByID.get(emojiSheet.id)?.name ?? '')
+                            : (groups.find((candidate) => candidate.id === emojiSheet.id)?.name ?? '')
+                    }
                     onCancel={() => {
                         setEmojiSheet(null);
                     }}
@@ -4211,6 +4327,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
 // ── inline forms & dialogs ──────────────────────────────────────────────────────────
 
 interface CustomEmojiSheetProps {
+    /** M5: the group or workspace the icon is being set on — the sheet's title names it. */
+    readonly subjectName?: string | undefined;
     readonly onSubmit: (grapheme: string) => void;
     readonly onCancel: () => void;
 }
@@ -4227,11 +4345,19 @@ interface CustomEmojiSheetProps {
  *     punctuation are rejected, and the same check runs again daemon-side (§WS-074);
  *   - the OS character palette has no browser equivalent, so the "Browse All Emoji…" button
  *     becomes the curated quick-pick grid below the field — one click fills it.
+ *
+ * M5 restored the three things the port had dropped: the sheet NAMES its subject
+ * (`Custom Emoji for "<name>"`, `GroupCustomEmojiSheet.swift:24-25`), it carries the explanatory
+ * caption under the title (`:27-31` — reworded only where it names a macOS-only gesture, since
+ * ⌃⌘Space opens a palette this client cannot route into its field, and the grid below IS the
+ * stand-in the sentence points at), and it is the Swift's 340pt wide rather than 280px.
  */
 function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
     const [value, setValue] = useState('');
     const container = globalThis.document?.body;
     const normalized = normalizeEmojiInput(value);
+    const subject = (props.subjectName ?? '').trim();
+    const title = subject === '' ? 'Custom Emoji' : `Custom Emoji for “${subject}”`;
     const setTruncated = (next: string): void => {
         setValue(firstGrapheme(next) ?? '');
     };
@@ -4241,8 +4367,8 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
         <div
             data-testid="emoji-sheet"
             role="dialog"
-            aria-label="Custom emoji"
-            className="fixed left-1/2 top-1/3 z-50 w-[280px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+            aria-label={title}
+            className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
             style={{
                 background: tokens.surfaceBackground,
                 border: `1px solid ${tokens.divider}`,
@@ -4256,14 +4382,36 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                     if (normalized !== null) props.onSubmit(normalized);
                 }}
             >
-                <label className="mb-2 block" htmlFor="nex-custom-emoji">
-                    Paste or type one emoji
-                </label>
+                {/* `Text("Custom Emoji for \"…\"").font(.headline)` — the sheet's first row. */}
+                <div data-testid="emoji-sheet-title" className="mb-2 text-[13px] font-semibold">
+                    {title}
+                </div>
+                {/*
+                 * The Swift's caption (`GroupCustomEmojiSheet.swift:27-31`), which the port had
+                 * dropped entirely — so the rejection message under the field was the only place
+                 * the rules were ever stated, and only after the user had broken one. The ⌃⌘Space
+                 * clause is the one divergence: that chord opens an OS palette whose selection
+                 * this client cannot route into the field, and the grid below is the stand-in the
+                 * Swift's own "or the button below" points at.
+                 */}
+                <div
+                    data-testid="emoji-sheet-caption"
+                    className="mb-2 text-[11px]"
+                    style={{ color: tokens.textSecondary }}
+                >
+                    Type or paste a single emoji or symbol. Use the grid below to browse. Letters,
+                    digits, and punctuation are rejected.
+                </div>
+                {/* The port's own "Paste or type one emoji" label is gone with M5: it was the
+                    stand-in for the missing title, and the caption above now says what it said,
+                    in the Swift's own words. The field keeps its `aria-label`, which was always
+                    its accessible name — the label was visual only. */}
                 <input
                     id="nex-custom-emoji"
                     autoFocus
                     aria-label="Custom emoji"
                     data-testid="emoji-input"
+                    placeholder="🔥"
                     className="mb-1 w-full rounded border bg-transparent px-2 py-1 text-center text-[20px] outline-none"
                     style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                     value={value}
@@ -4374,8 +4522,12 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
             }}
         >
             <div className="mb-3">
+                {/* M10: `groupDeleteTitle` is `Delete "<name>"?` (`WorkspaceListView.swift:
+                    859-863`) — the same shape as the workspace prompt below it, not a longer
+                    sentence of its own. What the group prompt says EXTRA is the detail line, which
+                    is where the membership consequence belongs. */}
                 {props.confirm.kind === 'group'
-                    ? `Delete the group “${props.confirm.name}”?`
+                    ? `Delete “${props.confirm.name}”?`
                     : props.confirm.kind === 'workspace'
                       ? `Delete “${props.confirm.name}”?`
                       : `Delete ${String(count)} workspace${count === 1 ? '' : 's'}?`}

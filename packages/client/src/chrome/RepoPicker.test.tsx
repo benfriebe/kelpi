@@ -188,3 +188,128 @@ describe('the scan row (§GIT-066)', () => {
         expect(onScan).toHaveBeenCalledWith('/src');
     });
 });
+
+/**
+ * The MEDIUM fidelity row on this sheet — M48 (row type and marks), M49 (the focused/unfocused
+ * selection fill) and M50 (the picker's own headline and its fixed height).
+ *
+ * All three are claims about `RepoPickerView.swift`'s own metrics, so each case names the lines
+ * it is measuring against.
+ */
+describe('the shipped picker’s presentation', () => {
+    /** M50: `Text(mode == .multiple ? "Add Repositories" : "Add Repository").font(.headline)`. */
+    it('M50 — owns its headline, in the Swift’s own two words', () => {
+        view({ mode: 'single' });
+        expect(screen.getByTestId('repo-picker-title').textContent).toBe('Add Repository');
+        cleanup();
+        view({ mode: 'multiple' });
+        expect(screen.getByTestId('repo-picker-title').textContent).toBe('Add Repositories');
+    });
+
+    /** …except embedded, where the host sheet's own title is the title. */
+    it('M50 — stays headline-less when a host embeds it under its own title', () => {
+        view({ mode: 'multiple', hideFooter: true });
+        expect(screen.queryByTestId('repo-picker-title')).toBeNull();
+    });
+
+    /**
+     * M50: `.frame(width: 360, height: 340)` — a FIXED box, so the sheet around it does not
+     * resize while the filter narrows. The port's `max-h` list shrank to its content.
+     */
+    it('M50 — keeps one list height while the filter narrows, and when it matches nothing', () => {
+        view({ mode: 'multiple' });
+        const list = screen.getByTestId('repo-picker-list');
+        expect(list.className).not.toContain('max-h-');
+        expect(list.style.height).toBe('220px');
+
+        fireEvent.change(screen.getByTestId('repo-picker-search'), { target: { value: 'app' } });
+        expect(screen.getByTestId('repo-picker-list').style.height).toBe('220px');
+
+        fireEvent.change(screen.getByTestId('repo-picker-search'), { target: { value: 'zzz' } });
+        expect(screen.getByTestId('repo-picker-empty').style.height).toBe('220px');
+    });
+
+    /** M48: `Text(repo.name).font(.system(size: 13, weight: .medium))` over an 11 pt path. */
+    it('M48 — sets the row’s two lines at 13 pt medium over 11 pt', () => {
+        view({ mode: 'multiple' });
+        const name = within(row('r1')).getByText('app');
+        expect(name.className).toContain('text-[13px]');
+        expect(name.className).toContain('font-medium');
+        const path = within(row('r1')).getByText('/src/app');
+        expect(path.className).toContain('text-[11px]');
+    });
+
+    /** M48: `.truncationMode(.middle)` — the informative TAIL of a long path survives. */
+    it('M48 — middle-truncates a long path and keeps the whole one on the row', () => {
+        const long = `/Users/ben/code/${'deeply-nested-'.repeat(6)}repo`;
+        cleanup();
+        render(
+            <RepoPicker
+                repos={[{ id: 'long', name: 'deep', path: long }]}
+                onConfirm={vi.fn()}
+                onCancel={vi.fn()}
+            />
+        );
+        const shown = row('long').querySelectorAll('span > span')[1]?.textContent ?? '';
+        expect(shown).toContain('…');
+        expect(shown.length).toBeLessThan(long.length);
+        // The tail is what middle truncation exists to keep.
+        expect(shown.endsWith('repo')).toBe(true);
+        expect(row('long').getAttribute('title')).toBe(long);
+    });
+
+    /**
+     * M48: `Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")` — a filled check,
+     * not the `◉`/`○` typographic marks the port drew at 11 px.
+     */
+    it('M48 — marks a multi-select row with a filled check, not a bullet character', () => {
+        view({ mode: 'multiple' });
+        const mark = screen.getByTestId('repo-check-r1');
+        expect(mark.textContent).toBe('');
+        expect(mark.dataset['checked']).toBe('false');
+        expect(mark.querySelector('svg circle')?.getAttribute('fill')).toBe('none');
+        expect(mark.querySelector('svg path')).toBeNull();
+
+        fireEvent.click(row('r1'));
+        const checked = screen.getByTestId('repo-check-r1');
+        expect(checked.dataset['checked']).toBe('true');
+        expect(checked.querySelector('svg circle')?.getAttribute('fill')).toBe('currentColor');
+        expect(checked.querySelector('svg path')).not.toBeNull();
+    });
+
+    /** M48: the keyboard anchor's ring is `Color.accentColor.opacity(0.5)`, not a divider rule. */
+    it('M48 — rings the keyboard anchor in the accent', () => {
+        view({ mode: 'multiple' });
+        const list = screen.getByTestId('repo-picker-list');
+        fireEvent.focus(list);
+        fireEvent.keyDown(list, { key: 'ArrowDown' });
+        const anchor = [...screen.getAllByRole('option')].find(
+            (node) => (node as HTMLElement).dataset['anchor'] === 'true'
+        ) as HTMLElement;
+        expect(anchor.style.outline).toContain('--nex-accent');
+        expect(anchor.style.outline).not.toContain('--nex-border');
+    });
+
+    /**
+     * M49: `rowBackground` (`RepoPickerView.swift:193-201`) dims a SELECTED row from accent@0.4
+     * to accent@0.25 the moment keyboard focus leaves the list — which is what tells you Return
+     * will not act on it. The port painted one neutral fill in both states.
+     */
+    it('M49 — dims the selection when the list loses keyboard focus', () => {
+        view({ mode: 'multiple' });
+        const list = screen.getByTestId('repo-picker-list');
+        fireEvent.focus(list);
+        fireEvent.click(row('r1'));
+        const focused = row('r1').style.background;
+        expect(focused).toContain('--nex-accent');
+        expect(focused).toContain('40%');
+
+        fireEvent.blur(list);
+        const blurred = row('r1').style.background;
+        expect(blurred).toContain('--nex-accent');
+        expect(blurred).toContain('25%');
+        expect(blurred).not.toBe(focused);
+        // Still selected — only its tone moved.
+        expect(row('r1').dataset['selected']).toBe('true');
+    });
+});

@@ -18,7 +18,15 @@ import { useState, type ReactElement, type ReactNode } from 'react';
 
 import { tokens } from '../grid/tokens';
 import { truncateMiddle, type WebFavourite } from '../webpane';
-import { SettingsButton, SettingsFooterNote, SettingsSection, hoverBackground, useHover } from './ui';
+import { StarGlyph } from './glyphs';
+import {
+    SettingsButton,
+    SettingsEmptyState,
+    SettingsFooterNote,
+    SettingsSection,
+    hoverBackground,
+    useHover
+} from './ui';
 
 /**
  * One favourite row. H11: the Swift list's rows light under the pointer and these did not —
@@ -97,22 +105,19 @@ export function WebTab(props: WebTabProps): ReactElement {
                 hint="Saved from a web pane's URL bar. The star fills when the page you are on is already saved."
                 testID="settings-favourites"
             >
+                {/*
+                 * M45: `SettingsView.swift:710-720` — `Image(systemName: "star")` at 28 pt in
+                 * `.tertiary`, not an 18 px `☆` in favourite-yellow. The Swift empty state's
+                 * glyph is the same faint label tone as the other three; the yellow belongs to
+                 * the star on a ROW, which is a value rather than an illustration.
+                 */}
                 {favourites.length === 0 ? (
-                    <div
-                        data-testid="settings-favourites-empty"
-                        className="flex flex-col items-center gap-1 rounded px-3 py-6 text-center"
-                        style={{ border: `1px dashed ${tokens.divider}`, color: tokens.textTertiary }}
-                    >
-                        <span className="text-[18px]" style={{ color: '#F2C230' }}>
-                            ☆
-                        </span>
-                        <span className="text-[12px]" style={{ color: tokens.textSecondary }}>
-                            No favourites yet
-                        </span>
-                        <span className="text-[11px]">
-                            Open a page in a web pane and press the star in its URL bar to save it here.
-                        </span>
-                    </div>
+                    <SettingsEmptyState
+                        testID="settings-favourites-empty"
+                        glyph={<StarGlyph size={28} />}
+                        title="No favourites yet"
+                        detail="Click the star button in a web pane's URL bar to save one."
+                    />
                 ) : (
                     <div className="flex flex-col gap-1" data-testid="settings-favourites-list">
                         {favourites.map((favourite, index) => (

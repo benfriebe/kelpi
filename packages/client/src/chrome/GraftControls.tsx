@@ -16,7 +16,7 @@
  * (the `Inspector`'s own contract), so all three render from a fixture in a test.
  */
 
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useModalPresence } from './modal-presence';
@@ -225,10 +225,24 @@ export interface GraftSwapDialogProps {
 /**
  * §GIT-050's confirmation. Escape and the backdrop both CANCEL, which is what the shipped
  * `confirmationDialog`'s dismiss binding does — dismissing must never silently swap.
+ *
+ * UI-FIDELITY M57 — it is a DIALOG, so its answers are buttons.
+ *
+ * `WorkspaceListView.swift:246-262` is a `.confirmationDialog` with two real `Button`s, one of
+ * them `role: .destructive` and one `role: .cancel`; AppKit gives that pair padding, a border, a
+ * radius, a focused default and a Return binding. The port drew them as bare coloured text with
+ * no box and nothing focused, while `QuitConfirmDialog.tsx:299-330` — the app's own other
+ * dialog — already did it properly. This reuses that pattern verbatim, including its rule about
+ * *which* button is the default: **"Keep existing" takes focus and takes Return**, because a
+ * stray keystroke must never stop a running graft. That is `normalizeQuitGateSpec`'s own
+ * "both default to Cancel: the safe answer is the one a stray Return or Escape gives", and it
+ * agrees with `.cancel` owning the dialog's dismiss binding. The swap keeps the destructive
+ * tone (`#E0655C`, the shared `DESTRUCTIVE_COLOR`) and stays a deliberate click.
  */
 export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | null {
     const container = props.container ?? (typeof document === 'undefined' ? null : document.body);
     const onCancel = props.onCancel;
+    const defaultRef = useRef<HTMLButtonElement | null>(null);
     /*
      * H1: park a live web pane while the prompt is up. `docs/audit/run-O/83-graft-swap-prompt-
      * prompt.png` is this dialog cut to "Kee" with the swap button gone — it renders inside the
@@ -236,10 +250,23 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
      */
     useModalPresence();
     useEffect(() => {
+        defaultRef.current?.focus();
+    }, []);
+    useEffect(() => {
         const onKey = (event: KeyboardEvent): void => {
-            if (event.key !== 'Escape') return;
-            event.stopPropagation();
-            onCancel();
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                onCancel();
+                return;
+            }
+            // M57: macOS's default button, made explicit — Return takes the safe answer even if
+            // focus has wandered off it. The quit dialog's own line, for the same reason.
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                event.stopPropagation();
+                onCancel();
+            }
         };
         window.addEventListener('keydown', onKey, true);
         return () => {
@@ -278,12 +305,22 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
                         `Only one graft per parent repo is allowed. Swap to mirror ${prompt.newBranch} ` +
                         `(${newWorktree}) instead, or keep the existing graft and resolve manually.`}
                 </div>
+                {/* M57: the quit dialog's button recipe — `rounded px-2 py-1`, the default
+                    ringed in the accent and holding focus, the destructive one in the shared
+                    red. `data-default` / `data-destructive` are read the same way there. */}
                 <div className="flex justify-end gap-2">
                     <button
                         type="button"
+                        ref={defaultRef}
                         data-testid="graft-swap-keep"
-                        className="cursor-pointer"
-                        style={{ color: tokens.textSecondary }}
+                        data-default="true"
+                        data-destructive="false"
+                        className="cursor-pointer rounded px-2 py-1"
+                        style={{
+                            color: tokens.textPrimary,
+                            border: `1px solid ${tokens.accent}`,
+                            background: 'rgba(111,155,216,0.16)'
+                        }}
                         onClick={props.onCancel}
                     >
                         Keep existing
@@ -291,8 +328,10 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
                     <button
                         type="button"
                         data-testid="graft-swap-confirm"
-                        className="cursor-pointer"
-                        style={{ color: '#E0655C' }}
+                        data-default="false"
+                        data-destructive="true"
+                        className="cursor-pointer rounded px-2 py-1"
+                        style={{ color: '#E0655C', border: '1px solid transparent' }}
                         onClick={props.onConfirm}
                     >
                         Stop existing &amp; swap

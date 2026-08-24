@@ -152,6 +152,152 @@ describe('ContextMenu', () => {
 });
 
 /**
+ * UI-FIDELITY M58 — the keyboard walk an `NSMenu` has and this menu did not.
+ *
+ * Every `.contextMenu` in the shipped app is a real `NSMenu` (`PaneHeaderView.swift:277`,
+ * `WorkspaceListView.swift:513,562,610,824,1590`, `RepoRegistryView.swift:96`,
+ * `WorkspaceInspectorView.swift:388`): ↑/↓ move the highlight, → opens a submenu, ← closes it,
+ * Return activates. The port answered Escape and nothing else — after `autoFocus` only Tab moved.
+ *
+ * The focused row IS the highlighted row (`rowHighlight` unions focus with hover), so these
+ * assertions read `document.activeElement` and `data-highlighted` together: one appearance, one
+ * source of truth, no second selection model to drift.
+ */
+describe('keyboard navigation — an NSMenu walk (M58)', () => {
+    const rows = [
+        { id: 'rename', label: 'Rename…' },
+        { id: 'unavailable', label: 'Unavailable', disabled: true },
+        { id: 'status', label: 'Status', submenu: [{ id: 'idle', label: 'Idle' }, { id: 'busy', label: 'Busy' }] },
+        { id: 'delete', label: 'Delete', danger: true }
+    ];
+    const focusedID = (): string | null =>
+        (document.activeElement as HTMLElement | null)?.getAttribute('data-menu-item') ?? null;
+    const open = (onClose = () => undefined, autoFocus = false): void => {
+        render(<ContextMenu x={0} y={0} items={rows} autoFocus={autoFocus} onClose={onClose} />);
+    };
+
+    it('↓ takes the keyboard from wherever it was and lands on the first enabled row', () => {
+        open();
+        expect(document.activeElement).toBe(document.body);
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('rename');
+        // …and the landing row is HIGHLIGHTED, not merely focused.
+        expect((document.activeElement as HTMLElement).getAttribute('data-highlighted')).toBe('true');
+    });
+
+    it('↑/↓ skip a disabled row and wrap at both ends, the way a native menu does', () => {
+        open();
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        // 'unavailable' is not a stop.
+        expect(focusedID()).toBe('status');
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('delete');
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('rename');
+        fireEvent.keyDown(document, { key: 'ArrowUp' });
+        expect(focusedID()).toBe('delete');
+    });
+
+    it('→ opens a submenu and hands it the keyboard; ← closes it and hands the parent back', () => {
+        open();
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('status');
+
+        fireEvent.keyDown(document, { key: 'ArrowRight' });
+        expect(screen.getByTestId('context-submenu')).toBeTruthy();
+        expect(focusedID()).toBe('idle');
+
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('busy');
+
+        fireEvent.keyDown(document, { key: 'ArrowLeft' });
+        expect(screen.queryByTestId('context-submenu')).toBeNull();
+        expect(focusedID()).toBe('status');
+    });
+
+    it('walking the parent panel closes an open submenu rather than orphaning it', () => {
+        open();
+        fireEvent.mouseEnter(screen.getByText('Status'));
+        expect(screen.queryByTestId('context-submenu')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(screen.queryByTestId('context-submenu')).toBeNull();
+    });
+
+    it('Return activates the focused row and closes the menu', () => {
+        let closed = false;
+        const selected: string[] = [];
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                items={[
+                    { id: 'rename', label: 'Rename…', onSelect: () => selected.push('rename') },
+                    { id: 'delete', label: 'Delete', onSelect: () => selected.push('delete') }
+                ]}
+                onClose={() => {
+                    closed = true;
+                }}
+            />
+        );
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(focusedID()).toBe('delete');
+        fireEvent.keyDown(document, { key: 'Enter' });
+        expect(selected).toEqual(['delete']);
+        expect(closed).toBe(true);
+    });
+
+    it('Return on a submenu PARENT opens it — it does not fire the parent as a command', () => {
+        open();
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'ArrowDown' });
+        fireEvent.keyDown(document, { key: 'Enter' });
+        expect(screen.getByTestId('context-submenu')).toBeTruthy();
+        expect(focusedID()).toBe('idle');
+    });
+
+    it('Return does NOT act while no row holds focus — the key belongs to whatever the user was in', () => {
+        let closed = false;
+        const selected: string[] = [];
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                items={[{ id: 'rename', label: 'Rename…', onSelect: () => selected.push('rename') }]}
+                onClose={() => {
+                    closed = true;
+                }}
+            />
+        );
+        expect(document.activeElement).toBe(document.body);
+        fireEvent.keyDown(document, { key: 'Enter' });
+        expect(selected).toEqual([]);
+        expect(closed).toBe(false);
+    });
+
+    it('the walk consumes its keys, so nothing behind the menu also acts on them', () => {
+        open();
+        const event = fireEvent.keyDown(document, { key: 'ArrowDown' });
+        expect(event).toBe(false); // preventDefault was called
+    });
+
+    it('a menu with no enabled rows at all is left alone rather than eating the arrows', () => {
+        render(
+            <ContextMenu
+                x={0}
+                y={0}
+                items={[{ id: 'caption', label: '2 workspaces selected', kind: 'caption' }]}
+                onClose={() => undefined}
+            />
+        );
+        expect(fireEvent.keyDown(document, { key: 'ArrowDown' })).toBe(true);
+        expect(document.activeElement).toBe(document.body);
+    });
+});
+
+/**
  * The highlight — the user's second report, and the only feedback a menu gives about which row
  * a click is about to hit.
  *

@@ -26,12 +26,122 @@ import { deflateSync } from 'node:zlib';
 
 export type IconIndicator = 'idle' | 'running' | 'waiting' | 'disconnected';
 
-/** §5.9's resolved dark-mode status colours (the menu bar is its own appearance). */
+export type TrayStatusKind = Exclude<IconIndicator, 'idle'>;
+
+/** The three dot colours a tray image can carry, as `#RRGGBB`. */
+export type TrayStatusPalette = Readonly<Record<TrayStatusKind, string>>;
+
+/**
+ * §M25 — the chrome palette's status column, restated here.
+ *
+ * `StatusBarController.swift:26-28, 41-60` takes its two dot colours as *arguments*, and
+ * `AppReducer.swift:2538-2557` resolves them from the live `ChromeTheme` — appearance
+ * preference + the user's `chrome-colors` overrides — on every `updateExternalIndicators`. The
+ * port hard-coded one column, so a user who recoloured "Running" in Settings ▸ Appearance, or
+ * who simply runs a dark chrome, got a menu-bar dot that agreed with nothing in the window.
+ *
+ * The two tables are copied from `client/src/chrome/theme.ts`'s `LIGHT_CHROME_THEME` /
+ * `DARK_CHROME_THEME` rather than imported, for the same reason `appearance.ts` re-implements a
+ * one-key config read: the main process does not (and must not) load the renderer bundle. If
+ * shell-ui.md §2's preset table ever changes, both copies change with it — which is why the
+ * values are named after their keys rather than pasted as anonymous hexes.
+ */
+export const LIGHT_TRAY_STATUS: TrayStatusPalette = {
+    running: '#4FA46B', // statusRunning
+    waiting: '#5E8AC4', // statusWaiting
+    disconnected: '#9A9A96' // statusInactive
+};
+
+export const DARK_TRAY_STATUS: TrayStatusPalette = {
+    running: '#5FBE89', // statusRunning
+    waiting: '#6F9BD8', // statusWaiting
+    disconnected: '#8A8A92' // statusInactive
+};
+
+/**
+ * What an unconfigured shell draws: the light column, which is what the tray drew before the
+ * palette became an input. A tray exists before the daemon has said anything at all, so
+ * "nothing known yet" has to have an answer, and the answer is the one that does not change
+ * today's pixels.
+ */
+export const DEFAULT_TRAY_STATUS: TrayStatusPalette = LIGHT_TRAY_STATUS;
+
+/** The override key the app stores for each dot (`"<bucket>:<ChromeColorKey>"`). */
+const OVERRIDE_KEY: Readonly<Record<TrayStatusKind, string>> = {
+    running: 'statusRunning',
+    waiting: 'statusWaiting',
+    disconnected: 'statusInactive'
+};
+
+export interface TrayPaletteInput {
+    /** `chrome-appearance`. Anything else (including undefined) reads as `system`. */
+    readonly appearance?: string | undefined;
+    /**
+     * The OS colour scheme. `AppReducer.swift:2543-2545` resolves the theme against
+     * `NSApp.effectiveAppearance` with the comment "the menu bar sits in the OS appearance",
+     * so this is the tray's own scheme, not the window's.
+     */
+    readonly systemDark?: boolean | undefined;
+    /** `chrome-colors`: `"<light|dark>:<key>" → "RRGGBB"`. */
+    readonly overrides?: Readonly<Record<string, string>> | undefined;
+}
+
+/** `#RRGGBB` / `RRGGBB` → an opaque RGBA quad; anything else is null. */
+export function parseTrayHex(value: string): [number, number, number, number] | null {
+    const match = /^#?([0-9a-fA-F]{6})$/.exec(value.trim());
+    if (match === null) return null;
+    const hex = match[1] as string;
+    return [
+        Number.parseInt(hex.slice(0, 2), 16),
+        Number.parseInt(hex.slice(2, 4), 16),
+        Number.parseInt(hex.slice(4, 6), 16),
+        0xff
+    ];
+}
+
+/**
+ * `resolveChromeTheme`'s status column, for the tray: the preset for the resolved bucket, then
+ * any valid `<bucket>:<key>` override on top. An unparseable override is ignored rather than
+ * drawn — a mistyped hex must not blank the dot.
+ */
+export function resolveTrayStatusPalette(input: TrayPaletteInput = {}): TrayStatusPalette {
+    const appearance = input.appearance;
+    const bucket =
+        appearance === 'light' || appearance === 'dark'
+            ? appearance
+            : input.systemDark === true
+              ? 'dark'
+              : 'light';
+    const base = bucket === 'dark' ? DARK_TRAY_STATUS : LIGHT_TRAY_STATUS;
+    const overrides = input.overrides;
+    if (overrides === undefined) return base;
+    const resolved: Record<string, string> = { ...base };
+    for (const kind of ['running', 'waiting', 'disconnected'] as const) {
+        const raw = overrides[`${bucket}:${OVERRIDE_KEY[kind]}`];
+        if (typeof raw !== 'string' || parseTrayHex(raw) === null) continue;
+        resolved[kind] = raw;
+    }
+    return resolved as unknown as TrayStatusPalette;
+}
+
+/**
+ * A repaint key. `updateTray` only redraws when the *indicator* changes, so a recoloured dot on
+ * an unchanged state would never reach the menu bar without this.
+ */
+export function trayPaletteSignature(palette: TrayStatusPalette): string {
+    return `${palette.running}/${palette.waiting}/${palette.disconnected}`;
+}
+
+/**
+ * Which indicators carry a dot, and therefore cannot be template images. The colours themselves
+ * are now the caller's (see `resolveTrayStatusPalette`); this map is only the null/non-null
+ * shape the template rule reads.
+ */
 export const STATUS_COLORS: Readonly<Record<IconIndicator, [number, number, number, number] | null>> = {
     idle: null,
-    running: [0x4f, 0xa4, 0x6b, 0xff],
-    waiting: [0x5e, 0x8a, 0xc4, 0xff],
-    disconnected: [0x9a, 0x9a, 0x96, 0xff]
+    running: parseTrayHex(DEFAULT_TRAY_STATUS.running),
+    waiting: parseTrayHex(DEFAULT_TRAY_STATUS.waiting),
+    disconnected: parseTrayHex(DEFAULT_TRAY_STATUS.disconnected)
 };
 
 /** The non-template glyph tone: mid-grey reads on a light AND a dark menu bar. */
@@ -166,7 +276,11 @@ function fillCircle(
  * The raw pixels, so tests can assert on the drawing without decoding a PNG.
  * `scale` multiplies the 22pt base; every coordinate below is in base points.
  */
-export function trayIconPixels(indicator: IconIndicator, scale = 2): Canvas {
+export function trayIconPixels(
+    indicator: IconIndicator,
+    scale = 2,
+    palette: TrayStatusPalette = DEFAULT_TRAY_STATUS
+): Canvas {
     const size = ICON_BASE_SIZE * scale;
     const canvas = createCanvas(size);
     const unit = (value: number): number => Math.round(value * scale);
@@ -199,20 +313,36 @@ export function trayIconPixels(indicator: IconIndicator, scale = 2): Canvas {
     // … and the cursor underscore.
     fillRect(canvas, left + unit(8), top + unit(9), unit(5), stroke, GLYPH);
 
-    const dot = STATUS_COLORS[indicator];
-    if (dot !== null) {
+    /*
+     * §M25: the colour comes from the resolved palette, and only the template rule
+     * (`STATUS_COLORS[indicator] === null`) still decides WHETHER there is a dot. A palette
+     * whose entry does not parse falls back to the shipped preset rather than to no dot — an
+     * indicator that should carry one must never silently become a template image, because that
+     * is a different macOS behaviour, not just a different colour.
+     */
+    if (!trayIconIsTemplate(indicator)) {
+        const kind = indicator as TrayStatusKind;
+        const dot = parseTrayHex(palette[kind]) ?? parseTrayHex(DEFAULT_TRAY_STATUS[kind]);
         // §8.2: a 6px dot in the top-right corner, overlapping the glyph.
-        fillCircle(canvas, size - unit(4), unit(4), unit(3), dot);
+        if (dot !== null) fillCircle(canvas, size - unit(4), unit(4), unit(3), dot);
     }
     return canvas;
 }
 
-export function trayIconPng(indicator: IconIndicator, scale = 2): Buffer {
-    const canvas = trayIconPixels(indicator, scale);
+export function trayIconPng(
+    indicator: IconIndicator,
+    scale = 2,
+    palette: TrayStatusPalette = DEFAULT_TRAY_STATUS
+): Buffer {
+    const canvas = trayIconPixels(indicator, scale, palette);
     return encodePng(canvas.width, canvas.height, canvas.rgba);
 }
 
 /** `nativeImage.createFromDataURL` input — the form Electron takes without touching disk. */
-export function trayIconDataUrl(indicator: IconIndicator, scale = 2): string {
-    return `data:image/png;base64,${trayIconPng(indicator, scale).toString('base64')}`;
+export function trayIconDataUrl(
+    indicator: IconIndicator,
+    scale = 2,
+    palette: TrayStatusPalette = DEFAULT_TRAY_STATUS
+): string {
+    return `data:image/png;base64,${trayIconPng(indicator, scale, palette).toString('base64')}`;
 }

@@ -7,7 +7,8 @@
  *   `WebPane.tsx`       the chrome (URL bar, tab strip, nav buttons) + the page-area hole
  *   `WebFindBar.tsx`    ⌘F over a page the host owns (§10)
  *   `BatchPanel.tsx`    the batch "element pickup" session's panel (§12)
- *   `StoragePanel.tsx`  cookies, local storage and the private-session toggle (§13)
+ *   `StoragePanel.tsx`  cookies, clear-all and the private-mode toggle (§13)
+ *   `glyphs.tsx`        the chrome's own SVG marks, shared with the pickup panel's header
  *   `FavouritesMenu.tsx` the URL-bar star and the bookmarks menu (§14)
  *   `priority.ts`       the ⌘L/⌘R/⌘←/⌘→/⌘T/⌘W/⌘⇧[]/⌘=-0 layer that runs before the keymap
  *   `state.ts`          read models for favourites + batch sessions, and their matching rules
@@ -45,7 +46,7 @@ export {
     type WebCookie
 } from './StoragePanel';
 
-export { WebFindBar, findCountLabel, type WebFindBarProps } from './WebFindBar';
+export { WebFindBar, type WebFindBarProps } from './WebFindBar';
 
 export {
     WEB_CHORD_COMMAND_PREFIX,

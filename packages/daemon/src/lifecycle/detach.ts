@@ -15,6 +15,7 @@ import path from 'node:path';
 
 import {
     probeControlPing,
+    type ControlPingCompat,
     type ControlPingPersistence,
     type ControlPingProbe,
     type ControlPingTcp
@@ -94,6 +95,10 @@ export interface DaemonProbe {
      * (or the daemon predates the field) — which must never read as "it bound".
      */
     readonly tcp?: ControlPingTcp | undefined;
+    /** The CLI-compat socket is degraded (another Nex owns it). Undefined = serving. */
+    readonly compat?: ControlPingCompat | undefined;
+    /** The `NEX_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
+    readonly paneRoute?: string | undefined;
     readonly reason?: string | undefined;
 }
 
@@ -117,6 +122,8 @@ export async function probeDaemon(paths: RunPaths, options: DaemonProbeOptions =
         stalePidRecord: record !== undefined && !isProcessAlive(record.pid),
         ...(ping.persistence !== undefined ? { persistence: ping.persistence } : {}),
         ...(ping.tcp !== undefined ? { tcp: ping.tcp } : {}),
+        ...(ping.compat !== undefined ? { compat: ping.compat } : {}),
+        ...(ping.paneRoute !== undefined ? { paneRoute: ping.paneRoute } : {}),
         ...(ping.reason !== undefined ? { reason: ping.reason } : {})
     };
 }

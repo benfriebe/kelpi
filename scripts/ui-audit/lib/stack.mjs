@@ -149,6 +149,20 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
     const controlPort = await freePort();
     const debugPort = await freePort();
 
+    // What the packaged app stages at Resources/cli and hands over as NEXD_HELPERS_DIR: a
+    // `nex` the daemon prepends to every pane's PATH. With it, a bare `nex event …` typed (or
+    // hook-fired) INSIDE a sandbox pane resolves this repo's CLI and routes via the pane's
+    // injected NEX_SOCKET — the same chain a real install's Claude Code hooks take. Without
+    // it, in-pane `nex` resolution falls to the audit machine's own PATH (often the Swift
+    // app's helper), which is exactly the ambiguity the routing fix exists to remove.
+    const helpersDir = path.join(root, 'helpers');
+    fs.mkdirSync(helpersDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(helpersDir, 'nex'),
+        `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js')}" "$@"\n`,
+        { mode: 0o755 }
+    );
+
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
@@ -161,6 +175,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         NEXD_HTTP_PORT: String(httpPort),
         NEXD_HTTP_HOST: '127.0.0.1',
         NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'),
+        NEXD_HELPERS_DIR: helpersDir,
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
         NEX_HARNESS: '1',
@@ -176,6 +191,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         configPath,
         ghosttyConfigPath,
         socketPath,
+        helpersDir,
         httpPort,
         controlPort,
         debugPort,

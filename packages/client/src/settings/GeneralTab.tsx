@@ -249,6 +249,21 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         {bindError}
                     </p>
                 )}
+                {/*
+                 * The routing fix's coexistence state: another Nex (the Swift app) owns the
+                 * shared CLI-compat socket. Not destructive-toned — panes are unaffected
+                 * (their NEX_SOCKET is injected at spawn) — but the one place a user goes
+                 * looking when plain-terminal `nex` commands answer as the wrong app.
+                 */}
+                {props.transport?.compat == null ? null : (
+                    <p
+                        data-testid="compat-degraded-note"
+                        className="text-[11px]"
+                        style={{ color: tokens.textTertiary }}
+                    >
+                        {`Another Nex owns ${props.transport.compat.path}, so plain-terminal nex commands reach that app. Panes are unaffected — they route here automatically.`}
+                    </p>
+                )}
             </SettingsSection>
 
             <p className="text-[11px]" style={{ color: tokens.textTertiary }}>

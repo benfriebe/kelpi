@@ -43,8 +43,34 @@ export interface ControlPingProbe {
     readonly persistence?: ControlPingPersistence | undefined;
     /** Did the optional TCP listener bind? Undefined = no TCP listener was configured. */
     readonly tcp?: ControlPingTcp | undefined;
+    /** The CLI-compat socket is degraded (another Nex owns it). Undefined = serving. */
+    readonly compat?: ControlPingCompat | undefined;
+    /** The `NEX_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
+    readonly paneRoute?: string | undefined;
     /** Why the probe concluded "not alive" (`ENOENT`, `ECONNREFUSED`, `timeout`, …). */
     readonly reason?: string | undefined;
+}
+
+/**
+ * The `compat` block of a `ping` reply: the CLI-compat socket failed to bind — typically the
+ * Swift app owning `/tmp/nex.sock` — while the daemon serves on via its run-dir socket and
+ * pane-route TCP. A degraded compat socket is not a degraded daemon, but `nexd status` must
+ * say where plain-terminal commands are actually going.
+ */
+export interface ControlPingCompat {
+    readonly path: string;
+    readonly error: string;
+}
+
+/** Decode `ping`'s additive `compat` block; undefined when absent or malformed. */
+export function readCompatStatus(reply: Record<string, unknown>): ControlPingCompat | undefined {
+    const raw = reply['compat'];
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+    const source = raw as Record<string, unknown>;
+    const path = readString(source, 'path');
+    const error = readString(source, 'error');
+    if (path === undefined || error === undefined) return undefined;
+    return { path, error };
 }
 
 /**
@@ -169,6 +195,8 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                 const build = readString(reply, 'build');
                 const persistence = readPersistenceHealth(reply);
                 const tcp = readTcpStatus(reply);
+                const compat = readCompatStatus(reply);
+                const paneRoute = readString(reply, 'pane_route');
                 finish({
                     alive: true,
                     reply,
@@ -176,7 +204,9 @@ export function probeControlPing(target: ControlProbeTarget, options: ControlPro
                     ...(version !== undefined ? { version } : {}),
                     ...(build !== undefined ? { build } : {}),
                     ...(persistence !== undefined ? { persistence } : {}),
-                    ...(tcp !== undefined ? { tcp } : {})
+                    ...(tcp !== undefined ? { tcp } : {}),
+                    ...(compat !== undefined ? { compat } : {}),
+                    ...(paneRoute !== undefined ? { paneRoute } : {})
                 });
                 return;
             }

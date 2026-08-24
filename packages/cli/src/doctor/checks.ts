@@ -35,11 +35,17 @@ export interface PingFacts {
     version?: string | undefined;
     build?: string | undefined;
     protocol?: number | undefined;
+    /** The daemon's CLI-compat socket is degraded (another Nex owns it); from `ping`. */
+    compat?: { path: string; error: string } | undefined;
+    /** The `NEX_SOCKET` value the daemon injects into pane environments; from `ping`. */
+    paneRoute?: string | undefined;
 }
 
-export function transportCheck(transport: Transport): DoctorCheck {
+export function transportCheck(transport: Transport, fromEnv?: boolean): DoctorCheck {
     if (transport.kind === 'unix') {
-        return { name: 'transport', status: 'PASS', detail: `Unix socket at ${transport.path}` };
+        const provenance =
+            fromEnv === undefined ? '' : fromEnv ? ' (from NEX_SOCKET)' : ' (the default; NEX_SOCKET unset)';
+        return { name: 'transport', status: 'PASS', detail: `Unix socket at ${transport.path}${provenance}` };
     }
     return {
         name: 'transport',
@@ -118,10 +124,66 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
     facts.version = asString(json['version']);
     facts.build = asString(json['build']);
     facts.protocol = asInt(json['protocol']);
+    const compat = json['compat'];
+    if (typeof compat === 'object' && compat !== null && !Array.isArray(compat)) {
+        const record = compat as Record<string, unknown>;
+        const compatPath = record['path'];
+        const compatError = record['error'];
+        if (typeof compatPath === 'string' && typeof compatError === 'string') {
+            facts.compat = { path: compatPath, error: compatError };
+        }
+    }
+    facts.paneRoute = asString(json['pane_route']);
     return {
         name: 'ping',
         status: 'PASS',
         detail: `round-trip ok (app pid ${facts.pid === undefined ? '?' : String(facts.pid)})`
+    };
+}
+
+/**
+ * Where agent events actually route — the check the routing fix (7a7875d) earned.
+ *
+ * Three stories it can tell:
+ *   - the answering daemon is the SWIFT app (its ping carries no `protocol` field): name it,
+ *     because a port CLI dialing the default socket on a machine running both apps reaches
+ *     the Swift daemon and every port-pane event silently vanishes there;
+ *   - the port daemon answered but its CLI-compat socket is DEGRADED (the Swift app owns
+ *     it): plain-terminal `nex` commands are reaching the other app, panes are unaffected
+ *     (their `NEX_SOCKET` is injected at spawn);
+ *   - everything is where it should be, in which case the pane route is printed so a user
+ *     can see what their panes carry.
+ */
+export function routingCheck(facts: PingFacts): DoctorCheck {
+    if (facts.pid === undefined) {
+        return { name: 'routing', status: 'SKIP', detail: 'no daemon answered ping' };
+    }
+    if (facts.protocol === undefined) {
+        return {
+            name: 'routing',
+            status: 'WARN',
+            detail:
+                'the answering daemon is the Swift Nex app (no `protocol` field in its ping reply), not this CLI\'s own daemon.',
+            repair:
+                'Inside new-Nex panes, commands route automatically (the pane env carries NEX_SOCKET). In plain terminals, set NEX_SOCKET=tcp:127.0.0.1:<port> to reach the new daemon, or quit the Swift app so it releases /tmp/nex.sock.'
+        };
+    }
+    if (facts.compat !== undefined) {
+        return {
+            name: 'routing',
+            status: 'WARN',
+            detail: `this daemon's CLI-compat socket ${facts.compat.path} is degraded: ${facts.compat.error}. Plain-terminal \`nex\` commands on the default socket reach a DIFFERENT app; panes are unaffected${facts.paneRoute === undefined ? '' : ` (their injected NEX_SOCKET is ${facts.paneRoute})`}.`,
+            repair:
+                'Quit the other Nex app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set NEX_SOCKET explicitly in plain terminals.'
+        };
+    }
+    return {
+        name: 'routing',
+        status: 'PASS',
+        detail:
+            facts.paneRoute === undefined
+                ? 'compat socket serving; no pane route reported (older daemon)'
+                : `compat socket serving; panes carry NEX_SOCKET=${facts.paneRoute}`
     };
 }
 

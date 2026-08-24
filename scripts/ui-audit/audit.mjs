@@ -7206,6 +7206,210 @@ function buildFlows(ctx) {
         },
         {
             /**
+             * The REAL hook chain (routing fix 7a7875d). Every other agent step injects events
+             * through the harness CLI with NEX_SOCKET set — this one types the event commands
+             * INTO the pane's shell, so the `nex` binary is resolved from the pane's own PATH
+             * (the sandbox's NEXD_HELPERS_DIR shim, exactly what the packaged app stages) and
+             * the routing is carried by the pane's own injected NEX_SOCKET. The harness CLI is
+             * used only as the keyboard (`pane send`) and the reader (`pane list`/`capture`);
+             * the events themselves never touch a harness-privileged transport.
+             */
+            id: 'agent-hook-routing',
+            expect:
+                'A bare `nex event …` typed inside a pane — resolved from the pane PATH, routed by the injected NEX_SOCKET — binds a session id and moves the pane status through running → awaiting input on the header, sidebar and footer, with no harness socket override anywhere.',
+            async run(recorder) {
+                const shellPane = await widestShellPane(page, cli);
+                if (shellPane === null) {
+                    recorder.check('a terminal pane to type into', false, 'none');
+                    return;
+                }
+                const paneID = shellPane.id;
+                // §AGNT-055: reads happen seconds after the events, so the pane under test must
+                // not hold the focus ring (the dwell would clear the very status asserted).
+                const focusedExpr = `(document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? null)`;
+                const focusWas = await page.eval(focusedExpr);
+                if (focusWas === paneID) {
+                    const sibling = (await cli.json(['pane', 'list', '--json'])).find(
+                        (item) => item.is_active_workspace === true && item.id !== paneID
+                    );
+                    if (sibling !== undefined) await clickPaneHeader(page, sibling.id);
+                }
+
+                // The pane's shell must have reached a prompt before anything is typed at it —
+                // a keystroke landing mid-init gets mangled by readline coming up (run 2 of
+                // this step's bring-up read `beprintf: command not found`).
+                const promptBy = Date.now() + 10_000;
+                while (Date.now() < promptBy) {
+                    const screen = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    if (/[$%#]\s*$/.test(screen.trimEnd())) break;
+                    await sleep(300);
+                }
+
+                // 1. The pane's environment really carries the route: NEX_PANE_ID names this
+                //    pane, NEX_SOCKET a tcp loopback listener, and PATH starts with the shim.
+                await cli.ok(['pane', 'send', '--target', paneID, 'printf "route=%s pane=%s nexbin=%s\\n" "$NEX_SOCKET" "$NEX_PANE_ID" "$(command -v nex)"']);
+                await sleep(900);
+                const probe = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                recorder.check('the pane env names this pane', probe.includes(`pane=${paneID}`), probe.slice(-300));
+                recorder.check('the pane env carries a tcp NEX_SOCKET route', /route=tcp:127\.0\.0\.1:\d+/.test(probe), String(probe.match(/route=tcp:\S*/)?.[0]));
+                recorder.check(
+                    'a bare `nex` resolves the sandbox helpers shim (packaged-app PATH shape)',
+                    probe.includes(`nexbin=${sandbox.helpersDir}/nex`),
+                    String(probe.match(/nexbin=\/\S*/)?.[0])
+                );
+
+                // 2. In-pane session-start + start: the id binds and the status runs.
+                const sessionID = 'e2e00000-1111-4222-8333-routechain01';
+                await cli.ok(['pane', 'send', '--target', paneID, `printf '{"session_id":"${sessionID}"}' | nex event session-start && nex event start`]);
+                const runningBy = Date.now() + 12_000;
+                let entry;
+                while (Date.now() < runningBy) {
+                    entry = (await cli.json(['pane', 'list', '--json'])).find((item) => item.id === paneID);
+                    if (entry?.status === 'running') break;
+                    await sleep(300);
+                }
+                recorder.check('the typed events mark the pane running', entry?.status === 'running', `status=${String(entry?.status)}`);
+                recorder.check('…and bound the session id', entry?.agent_session_id === sessionID, String(entry?.agent_session_id));
+                await recorder.shot(page);
+                const header = await page.eval(
+                    `(document.querySelector('[data-testid="pane-status-dot-${paneID}"]')?.getAttribute('data-status') ?? null)`
+                );
+                recorder.check('the header dot renders the typed running state', header === 'running', String(header));
+                const footer = await page.eval(`(document.querySelector('${PAGE.footer}')?.innerText ?? '').replace(/\\n/g,' ')`);
+                recorder.check('the footer counts the typed agent', /1\s*running/.test(String(footer)), String(footer));
+
+                // 3. In-pane stop → awaiting input; session-end → id cleared.
+                await cli.ok(['pane', 'send', '--target', paneID, `nex event stop && printf '{"session_id":"${sessionID}"}' | nex event session-end`]);
+                const waitingBy = Date.now() + 12_000;
+                while (Date.now() < waitingBy) {
+                    entry = (await cli.json(['pane', 'list', '--json'])).find((item) => item.id === paneID);
+                    if (entry?.status === 'waitingForInput' && (entry?.agent_session_id ?? null) === null) break;
+                    await sleep(300);
+                }
+                recorder.check('the typed stop flips to awaiting input', entry?.status === 'waitingForInput', `status=${String(entry?.status)}`);
+                recorder.check('the typed session-end cleared the id', (entry?.agent_session_id ?? null) === null, String(entry?.agent_session_id));
+
+                // Leave the world idle: focusing the pane runs §AGNT-055's 600 ms dwell — but
+                // §AGNT-056 suspends it while the app is inactive, and a scoped audit window
+                // usually is. So do what `agent-lifecycle` does: report activation over the
+                // real wire (a second WS client speaking the shell's `shell-activation`), then
+                // focus the pane and let the dwell clear it.
+                const tokenFile = fs.readdirSync(sandbox.runDir).find((entry) => entry.endsWith('.token'));
+                const token =
+                    tokenFile === undefined
+                        ? null
+                        : fs.readFileSync(path.join(sandbox.runDir, tokenFile), 'utf8').trim();
+                if (token !== null) {
+                    const activation = new WebSocket(`${sandbox.base.replace(/^http/, 'ws')}/ws?token=${token}`);
+                    await new Promise((resolve) => {
+                        activation.addEventListener('open', () => {
+                            activation.send(
+                                JSON.stringify({
+                                    type: 'hello',
+                                    protocolVersion: 1,
+                                    token,
+                                    client: { kind: 'browser', name: 'audit-routing-activation' }
+                                })
+                            );
+                            resolve();
+                        });
+                        activation.addEventListener('error', resolve);
+                    });
+                    await sleep(300);
+                    await clickPaneHeader(page, paneID);
+                    activation.send(JSON.stringify({ type: 'shell-activation', active: true }));
+                    await sleep(1500);
+                    const cleared = (await cli.json(['pane', 'list', '--json'])).find((item) => item.id === paneID);
+                    recorder.check('focusing the active pane cleared it back to idle (dwell)', cleared?.status === 'idle', `status=${String(cleared?.status)}`);
+                    activation.close();
+                } else {
+                    recorder.check('the audit can speak the shell’s side of the wire', false, 'no token file');
+                }
+                if (typeof focusWas === 'string' && focusWas !== paneID) {
+                    await page.click(`[data-testid="pane-body-${focusWas}"]`);
+                    await sleep(400);
+                }
+            }
+        },
+        {
+            /**
+             * Coexistence (routing fix 7a7875d): another Nex owning the CLI-compat socket must
+             * degrade that one listener, not the daemon — and panes must still route via their
+             * injected NEX_SOCKET. This boots its OWN daemon-only sandbox with a decoy
+             * ping-answering server pre-bound at the sandbox's compat path (never the real
+             * `/tmp/nex.sock`), so the shared audit stack is untouched.
+             */
+            id: 'agent-coexistence',
+            expect:
+                'With a live decoy owning the sandbox compat socket, the daemon boots degraded (loud log line), the decoy is left untouched and still answers afterwards, and an in-pane `nex event start` still reaches the daemon via the injected NEX_SOCKET.',
+            async run(recorder) {
+                const box = await makeSandbox(repoRoot, { label: 'coexist' });
+                let decoy;
+                let daemon2;
+                try {
+                    // The decoy: answers the stale-socket ping probe like a live daemon, so the
+                    // booting daemon must refuse to steal the path (and must survive refusing).
+                    decoy = net.createServer((socket) => {
+                        socket.once('data', () => {
+                            socket.end('{"ok":true,"version":"decoy","pid":99999}\n');
+                        });
+                    });
+                    await new Promise((resolve, reject) => {
+                        decoy.once('error', reject);
+                        decoy.listen(box.socketPath, resolve);
+                    });
+
+                    daemon2 = startDaemon(box, { repoRoot });
+                    await waitForHealthz(box.base);
+                    recorder.check(
+                        'the daemon boots degraded instead of dying',
+                        daemon2.exited === false && daemon2.text().includes('CLI-compat socket disabled'),
+                        daemon2.text().split('\n').find((line) => line.includes('compat')) ?? '(no compat log line)'
+                    );
+
+                    // In-pane events still land: type a bare `nex event start` into the default
+                    // pane's shell (helpers-shim PATH + injected NEX_SOCKET, nothing else).
+                    const cli2 = makeCli(box, { repoRoot });
+                    const panes = await cli2.json(['pane', 'list', '--json']);
+                    const paneID = panes.find((item) => item.type === 'shell')?.id;
+                    recorder.check('the degraded daemon still serves its default pane', paneID !== undefined, JSON.stringify(panes).slice(0, 200));
+                    if (paneID !== undefined) {
+                        await sleep(1500);
+                        await cli2.ok(['pane', 'send', '--target', paneID, 'nex event start']);
+                        const deadline = Date.now() + 12_000;
+                        let status;
+                        while (Date.now() < deadline) {
+                            status = (await cli2.json(['pane', 'list', '--json'])).find((item) => item.id === paneID)?.status;
+                            if (status === 'running') break;
+                            await sleep(300);
+                        }
+                        recorder.check('an in-pane typed event still reaches the degraded daemon', status === 'running', `status=${String(status)}`);
+                    }
+
+                    // The decoy — the stand-in for the Swift app — is untouched and answering.
+                    const decoyReply = await new Promise((resolve) => {
+                        const probe = net.createConnection({ path: box.socketPath }, () => {
+                            probe.write('{"command":"ping"}\n');
+                        });
+                        let data = '';
+                        probe.on('data', (chunk) => (data += String(chunk)));
+                        probe.on('end', () => resolve(data));
+                        probe.on('error', () => resolve(''));
+                        setTimeout(() => {
+                            probe.destroy();
+                            resolve(data);
+                        }, 3000).unref();
+                    });
+                    recorder.check('the decoy still owns and answers on the compat path', decoyReply.includes('"version":"decoy"'), decoyReply.trim());
+                } finally {
+                    await daemon2?.stop();
+                    await new Promise((resolve) => (decoy === undefined ? resolve() : decoy.close(resolve)));
+                    box.cleanup();
+                }
+            }
+        },
+        {
+            /**
              * §APP-076 — the count popover's cross-workspace jump.
              *
              * The Swift makes the destination surface first responder while the popover still

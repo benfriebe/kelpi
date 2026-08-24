@@ -419,9 +419,10 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
                 );
             }
             if (failure.code === 'ECONTROLBUSY') {
-                // The most likely one during the port: the Swift app owns /tmp/nex.sock.
+                // Only the RUN-DIR socket is fatal now (a daemon of this protocol is already
+                // running there); a busy CLI-compat socket merely degrades (`startCompat`).
                 io.err(
-                    `Repair: another process owns that control socket. Set NEXD_SOCKET_PATH (and NEXD_TCP_PORT for the CLI) to give this daemon its own endpoints.`
+                    `Repair: a live daemon already owns this run dir's socket — use it (\`nexd status\`), or point NEXD_RUN_DIR at a different run dir for a second daemon.`
                 );
             }
             await daemon.stop();
@@ -564,6 +565,13 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
                               bound: tcp.bound ?? null,
                               error: tcp.error ?? null
                           },
+                // null = the compat socket is serving (or an older daemon did not report).
+                compat:
+                    probe.compat === undefined
+                        ? null
+                        : { path: probe.compat.path, error: probe.compat.error },
+                // The NEX_SOCKET value panes carry; null = the daemon did not report one.
+                pane_route: probe.paneRoute ?? null,
                 ...(probe.alive ? {} : { reason: probe.reason ?? 'not running' })
             })
         );
@@ -581,7 +589,15 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(`nexd is running (pid ${probe.pid === undefined ? 'unknown' : String(probe.pid)})`);
     io.out(`  version: ${probe.version ?? 'unknown'} (build ${probe.build ?? 'unknown'})`);
     io.out(`  protocol: ${String(paths.protocol)}`);
-    io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
+    // A degraded compat socket is not a degraded daemon — panes route via their injected
+    // NEX_SOCKET — but this line is where a user learns their plain-terminal `nex` commands
+    // on the default socket are reaching a DIFFERENT app (typically the Swift one).
+    io.out(
+        probe.compat === undefined
+            ? `  control: ${resolveControlEndpoints(env).socketPath}`
+            : `  control: ${probe.compat.path} DEGRADED — ${probe.compat.error}`
+    );
+    if (probe.paneRoute !== undefined) io.out(`  pane route: ${probe.paneRoute}`);
     // §SET-021 / §AGNT-005: a `tcp-port` that never bound used to be a log line inside the
     // daemon, so every `NEX_SOCKET=tcp:…` client just timed out with nothing to read. Printed
     // only when TCP was actually asked for — silence still means "Unix socket only".

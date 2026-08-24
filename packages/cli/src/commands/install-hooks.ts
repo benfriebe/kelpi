@@ -196,5 +196,13 @@ export function handleInstallHooks(args: string[]): void {
             ? 'Dry run: nothing was written. Re-run without --dry-run to apply.'
             : 'Done. Restart any running agent sessions to pick up the new hooks.'
     );
+    if (!dryRun) {
+        // Routing, in one line: hooks run a bare `nex`, and inside Nex panes that resolves
+        // and routes automatically (the pane env carries the bundled CLI on PATH plus an
+        // injected NEX_SOCKET) — the shared default socket only matters in plain terminals.
+        printLine(
+            'Inside Nex panes, hook routing is automatic; the default /tmp/nex.sock only matters for plain terminals.'
+        );
+    }
     exit(0);
 }

@@ -679,6 +679,12 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             : null;
     };
 
+    /** What `welcome.transport` / `transport-changed` carry (Settings ▸ Network). */
+    const wsTransportStatus = (): { tcp: ControlTcpStatus | null; compat: { path: string; error: string } | null } => ({
+        tcp: controlTcpStatus(),
+        compat: compatDegraded !== null ? { path: endpoints.socketPath, error: compatDegraded } : null
+    });
+
     /**
      * §AGNT-005's live re-bind: `tcp-port` changed in the config file, so move the listener.
      *
@@ -728,7 +734,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         } catch (error) {
             report(error, 'tcp rebind');
         }
-        ws?.broadcast({ type: WS_TRANSPORT_CHANGED_MESSAGE, transport: { tcp: controlTcpStatus() } });
+        ws?.broadcast({ type: WS_TRANSPORT_CHANGED_MESSAGE, transport: wsTransportStatus() });
     };
 
     /**
@@ -771,7 +777,9 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                     ? `${toError(error).message}; CLI-compat socket disabled — panes reach this daemon via their injected NEX_SOCKET`
                     : `CLI-compat socket ${server.socketPath} failed to bind: ${toError(error).message}`
             );
-            if (endpoints.tcpPort !== undefined && server.tcpStatus === null) {
+            // `start()` threw before `bindTcp` ran, so a configured `tcp-port` never bound
+            // (`tcpStatus.bound` is null, not the status itself — the request is remembered).
+            if (endpoints.tcpPort !== undefined && server.tcpPort === undefined) {
                 try {
                     await server.startTCP(endpoints.tcpPort);
                 } catch (tcpError) {
@@ -1313,7 +1321,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 // §SET-021: `welcome.transport` — Settings ▸ Network shows what the listener
                 // actually did, not what the config file hoped for. A getter, because
                 // `restart-control-server` can re-bind under an attached client.
-                transport: () => ({ tcp: controlTcpStatus() }),
+                transport: wsTransportStatus,
                 // The pane header's restart button: typing a resume command needs the same
                 // TerminalInput (live VT modes, no sync mirroring) the CLI's `pane send` uses.
                 agents: createAgentChannel({ store, pty, input }),

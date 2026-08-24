@@ -237,5 +237,26 @@ describe('Settings ▸ General', () => {
             );
             expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
         });
+
+        it('notes the coexistence state when another Nex owns the compat socket', () => {
+            renderTab(
+                { tcpPort: 0 },
+                {
+                    tcp: null,
+                    compat: { path: '/tmp/nex.sock', error: 'already owned by a live daemon (pid 5)' }
+                }
+            );
+            const note = screen.getByTestId('compat-degraded-note');
+            expect(note.textContent).toContain('Another Nex owns /tmp/nex.sock');
+            expect(note.textContent).toContain('Panes are unaffected');
+        });
+
+        it('shows no coexistence note while the compat socket serves (or the daemon is old)', () => {
+            renderTab({ tcpPort: 0 }, { tcp: null, compat: null });
+            expect(screen.queryByTestId('compat-degraded-note')).toBeNull();
+            cleanup();
+            renderTab({ tcpPort: 0 }, { tcp: null });
+            expect(screen.queryByTestId('compat-degraded-note')).toBeNull();
+        });
     });
 });

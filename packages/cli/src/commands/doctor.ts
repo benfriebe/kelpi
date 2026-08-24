@@ -1,5 +1,7 @@
 /**
- * `nex doctor [--json]` (cli.md §16) — seven checks, in order, with concrete repair tips.
+ * `nex doctor [--json]` (cli.md §16) — eight checks, in order, with concrete repair tips.
+ * (`routing` is the eighth: where agent events actually go, on a machine that may be
+ * running the Swift app on the same default socket — see `doctor/checks.ts` routingCheck.)
  *
  * Exit code: 1 when any check FAILed, 0 otherwise (WARN is advisory), and **2** for an
  * unexpected argument — the only place in the CLI that uses exit 2.
@@ -19,6 +21,7 @@ import {
     pingCheck,
     processCheck,
     reachabilityCheck,
+    routingCheck,
     transportCheck,
     versionCheck,
     type PingFacts
@@ -47,7 +50,7 @@ export async function handleDoctor(args: string[]): Promise<void> {
     const checks: DoctorCheck[] = [];
     const facts: PingFacts = {};
 
-    checks.push(transportCheck(transport));
+    checks.push(transportCheck(transport, env()['NEX_SOCKET'] !== undefined));
     checks.push(
         await reachabilityCheck(transport, {
             socketExists: nodeDoctorDeps.socketExists,
@@ -57,6 +60,7 @@ export async function handleDoctor(args: string[]): Promise<void> {
     // 2-second window: fast enough that a wedged peer fails promptly.
     const ping = await sendJSONAndReadReply({ command: 'ping' }, { timeoutSeconds: 2 });
     checks.push(pingCheck(ping, facts));
+    checks.push(routingCheck(facts));
     checks.push(
         await processCheck(
             transport,

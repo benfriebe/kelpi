@@ -16,6 +16,7 @@ import {
     reachabilityCheck,
     readDaemonRecord,
     resolveRunDir,
+    routingCheck,
     transportCheck,
     versionCheck,
     type PingFacts,
@@ -99,6 +100,68 @@ describe('ping', () => {
         const check = pingCheck(JSON.stringify({ ok: true, pid: 4242, version: '0.1.0', build: '1', protocol: 1 }), facts);
         expect(check).toMatchObject({ status: 'PASS', detail: 'round-trip ok (app pid 4242)' });
         expect(facts).toEqual({ pid: 4242, version: '0.1.0', build: '1', protocol: 1 });
+    });
+
+    it('stashes the routing facts (compat + pane_route) when the daemon reports them', () => {
+        const facts: PingFacts = {};
+        pingCheck(
+            JSON.stringify({
+                ok: true,
+                pid: 1,
+                protocol: 1,
+                compat: { path: '/tmp/nex.sock', error: 'already owned by a live daemon (pid 7)' },
+                pane_route: 'tcp:127.0.0.1:49213'
+            }),
+            facts
+        );
+        expect(facts.compat).toEqual({ path: '/tmp/nex.sock', error: 'already owned by a live daemon (pid 7)' });
+        expect(facts.paneRoute).toBe('tcp:127.0.0.1:49213');
+        // A malformed compat block is ignored, never a crash.
+        const loose: PingFacts = {};
+        pingCheck(JSON.stringify({ ok: true, pid: 1, compat: { path: 7 } }), loose);
+        expect(loose.compat).toBeUndefined();
+    });
+});
+
+describe('routing', () => {
+    it('skips when no daemon answered', () => {
+        expect(routingCheck({})).toMatchObject({ name: 'routing', status: 'SKIP' });
+    });
+
+    it('names the Swift app when the answering daemon has no protocol field', () => {
+        const check = routingCheck({ pid: 99, version: '0.32.0', build: '1' });
+        expect(check.status).toBe('WARN');
+        expect(check.detail).toContain('Swift Nex app');
+        expect(check.repair).toContain('NEX_SOCKET');
+    });
+
+    it('warns with the pane route when the compat socket is degraded', () => {
+        const check = routingCheck({
+            pid: 7,
+            protocol: 1,
+            compat: { path: '/tmp/nex.sock', error: 'already owned by a live daemon (pid 5)' },
+            paneRoute: 'tcp:127.0.0.1:50000'
+        });
+        expect(check.status).toBe('WARN');
+        expect(check.detail).toContain('/tmp/nex.sock is degraded');
+        expect(check.detail).toContain('tcp:127.0.0.1:50000');
+        expect(check.repair).toContain('Restart Socket Server');
+    });
+
+    it('passes and prints the pane route when everything is where it should be', () => {
+        const check = routingCheck({ pid: 7, protocol: 1, paneRoute: 'tcp:127.0.0.1:50000' });
+        expect(check).toMatchObject({ name: 'routing', status: 'PASS' });
+        expect(check.detail).toContain('NEX_SOCKET=tcp:127.0.0.1:50000');
+    });
+});
+
+describe('transport provenance', () => {
+    it('says whether the unix default or NEX_SOCKET picked the endpoint', () => {
+        const unix = { kind: 'unix', path: '/tmp/nex.sock' } as const;
+        expect(transportCheck(unix, false).detail).toContain('the default; NEX_SOCKET unset');
+        expect(transportCheck(unix, true).detail).toContain('(from NEX_SOCKET)');
+        // No provenance flag (older callers): the old wording, byte-identical.
+        expect(transportCheck(unix).detail).toBe('Unix socket at /tmp/nex.sock');
     });
 });
 

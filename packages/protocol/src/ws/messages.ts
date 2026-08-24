@@ -350,6 +350,14 @@ export interface WsTcpTransportStatus {
 export interface WsTransportStatus {
     /** null = no TCP listener was configured — NOT the same as one that failed to bind. */
     readonly tcp: WsTcpTransportStatus | null;
+    /**
+     * The CLI-compat socket's bind failure (typically another Nex — the Swift app — owning
+     * `/tmp/nex.sock`), or null/absent while it serves. Additive: an older client ignores it.
+     * A degraded compat socket is not a degraded daemon (panes route via their injected
+     * `NEX_SOCKET`), but Settings ▸ Network must be able to say where plain-terminal `nex`
+     * commands are going.
+     */
+    readonly compat?: { readonly path: string; readonly error: string } | null;
 }
 
 /**

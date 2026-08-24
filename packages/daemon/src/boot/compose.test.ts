@@ -11,6 +11,7 @@ import path from 'node:path';
 import { leaf } from '@nex/core/layout';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { probeControlPing } from '../control/index.js';
 import { createPersistence } from '../db/index.js';
 import { spawnEnvVars } from '../handlers/pane/index.js';
 import type { PersistedSnapshot } from '../store/index.js';
@@ -223,6 +224,10 @@ describe('createDaemon', () => {
             home: second.home,
             runDir: second.runDir,
             controlSocketPath: first.socketPath,
+            // A configured tcp-port (0 = ephemeral here) must survive the degraded unix bind:
+            // dev-container `NEX_SOCKET=tcp:…` clients keep working while the Swift app keeps
+            // the socket file. `startCompat` salvages it with a standalone TCP bind.
+            tcpPort: 0,
             dbPath: second.dbPath,
             configPath: second.configPath,
             httpPort: 0,
@@ -233,6 +238,7 @@ describe('createDaemon', () => {
         const info = await intruder.start();
         expect(intruder.running).toBe(true);
         expect(fs.existsSync(intruder.paths.socket)).toBe(true);
+        expect(intruder.ctx.controlTransport?.().tcp?.bound).not.toBeNull();
 
         // The degraded state is a `ping`-visible fact, not just a log line.
         const transport = intruder.ctx.controlTransport?.();
@@ -242,6 +248,13 @@ describe('createDaemon', () => {
         // spawns will carry — never the socket the other daemon owns.
         expect(transport?.paneRoute).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
         expect(info.socketPath).toBe(first.socketPath);
+
+        // The degraded state travels the wire: a real `ping` over the run-dir socket decodes
+        // into the same facts `nexd status` and `nex doctor` print.
+        const probed = await probeControlPing({ socketPath: intruder.paths.socket });
+        expect(probed.alive).toBe(true);
+        expect(probed.compat).toMatchObject({ path: first.socketPath });
+        expect(probed.paneRoute).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
 
         // The owner is untouched: still running, still the one serving the compat path.
         expect(fs.existsSync(first.socketPath)).toBe(true);

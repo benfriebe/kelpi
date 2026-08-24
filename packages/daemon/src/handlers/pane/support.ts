@@ -175,7 +175,8 @@ export function spawnEnvVars(
         );
     }
     const profileEnv = resolveProfileEnv(profiles, profileName);
-    return mergedEnvVars({ paneID, path, profileEnv });
+    const socketRoute = ctx.spawn?.controlRoute?.() ?? null;
+    return mergedEnvVars({ paneID, path, socketRoute, profileEnv });
 }
 
 /**

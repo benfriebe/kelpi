@@ -23,7 +23,13 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
             // `tcp-port` never bound answers `ping` on the Unix socket perfectly well while every
             // dev-container `NEX_SOCKET=tcp:…` client times out; the reply is where that stops
             // being invisible (`nexd status` prints it, Settings ▸ Network shows it).
-            const tcp = ctx.controlTransport?.().tcp ?? null;
+            const transport = ctx.controlTransport?.();
+            const tcp = transport?.tcp ?? null;
+            // `compat` / `pane_route` are additive too. A compat socket owned by another Nex
+            // (the Swift app) never answers here, so THIS reply — reached via the run-dir
+            // socket or a pane's injected NEX_SOCKET — is where a doctor learns why.
+            const compat = transport?.compat ?? null;
+            const paneRoute = transport?.paneRoute ?? null;
             ok(reply, {
                 version: ctx.version.version,
                 build: ctx.version.build,
@@ -39,6 +45,8 @@ export function pingHandlerEntries(): readonly (readonly [string, AppHandler])[]
                               ...(tcp.error !== null ? { error: tcp.error } : {})
                           }
                       }),
+                ...(compat === null ? {} : { compat: { path: compat.path, error: compat.error } }),
+                ...(paneRoute === null ? {} : { pane_route: paneRoute }),
                 ...(health === undefined
                     ? {}
                     : {

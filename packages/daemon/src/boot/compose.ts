@@ -35,6 +35,7 @@ import {
     type SettingsService
 } from '../settings/index.js';
 import {
+    ControlSocketBusyError,
     createControlServer,
     resolveControlEndpoints,
     type ControlServer,
@@ -140,6 +141,13 @@ import { resolveDaemonVersion, type DaemonVersion } from './version.js';
 
 export const HTTP_PORT_ENV = 'NEXD_HTTP_PORT';
 export const HTTP_HOST_ENV = 'NEXD_HTTP_HOST';
+/**
+ * Directory holding the bundled `nex` CLI, prepended to every pane's PATH. Set by the shell
+ * at daemon-spawn time (mirroring `NEXD_CLIENT_DIR`): the daemon has no idea it lives inside
+ * an app bundle, so the side that knows tells it. Without it a pane's `nex` is whatever the
+ * user's rc files resolve — which on a machine also running the Swift app is the WRONG one.
+ */
+export const HELPERS_DIR_ENV = 'NEXD_HELPERS_DIR';
 
 /**
  * Opt in to running WITHOUT persistence (`1` / `true` / `yes`).
@@ -638,15 +646,38 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
 
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
+    /**
+     * Why the CLI-compat socket is not serving (typically: another Nex — the Swift app — owns
+     * `/tmp/nex.sock`), or null while it is. A degraded compat socket never takes the daemon
+     * down: panes reach it via their injected `NEX_SOCKET`, and this is what `ping` reports so
+     * `nex doctor` can say where plain-terminal commands are going instead.
+     */
+    let compatDegraded: string | null = null;
+    /** True when the compat path IS the run-dir path, so `runControl` owns the configured TCP. */
+    const runOwnsCompatPath = endpoints.socketPath === paths.socket;
 
     /**
-     * §SET-021 / §AGNT-005: whichever control server owns the optional TCP listener, and what
-     * happened to it. Only one of the two ever has TCP configured (`start()` re-creates
-     * `runControl` with the port when the compat path IS the run-dir path), so first-non-null
-     * wins and `null` means "no TCP listener was asked for".
+     * §SET-021 / §AGNT-005: what happened to the TCP listener the USER asked for. `runControl`
+     * always carries a TCP listener now (the pane-route port, ephemeral unless it owns the
+     * configured one), but an internal ephemeral bind is not the config's `tcp-port` — SET-021
+     * reports only a configured request, so an unconfigured daemon still answers "none".
      */
-    const controlTcpStatus = (): ControlTcpStatus | null =>
-        compatControl?.tcpStatus ?? runControl?.tcpStatus ?? null;
+    const controlTcpStatus = (): ControlTcpStatus | null => {
+        if (compatControl !== undefined) return compatControl.tcpStatus;
+        const status = runControl?.tcpStatus ?? null;
+        if (status !== null && status.requested === 0 && !(runOwnsCompatPath && endpoints.tcpPort !== undefined)) {
+            return null;
+        }
+        return status;
+    };
+
+    /** The `NEX_SOCKET` value pane environments carry, or null before/without a TCP bind. */
+    const paneRouteValue = (): string | null => {
+        const status = runControl?.tcpStatus ?? null;
+        return status !== null && status.bound !== null
+            ? `tcp:${status.host}:${String(status.bound)}`
+            : null;
+    };
 
     /**
      * §AGNT-005's live re-bind: `tcp-port` changed in the config file, so move the listener.
@@ -666,9 +697,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // `tcp-port = 0` out of the file and tear down a listener the operator asked for on the
         // command line, taking every `NEX_SOCKET=tcp:…` client with it.
         if (endpoints.source.tcpPort === 'env') return;
-        const owner = compatControl?.tcpStatus !== null && compatControl !== undefined
-            ? compatControl
-            : (runControl ?? compatControl);
+        // The configured `tcp-port` always lives on the compat server when one exists — the
+        // run-dir server's TCP listener is the pane route (injected `NEX_SOCKET`), and a
+        // config change must never tear THAT down under the live panes carrying its port.
+        const owner = compatControl ?? runControl;
         if (owner === undefined) return;
         const wanted = port > 0 ? port : undefined;
         const current = owner.tcpStatus;
@@ -684,6 +716,15 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                       ? `control tcp listener rebound on ${next.host}:${String(next.bound)}`
                       : `control tcp listener FAILED on port ${String(next.requested)}: ${String(next.error)}`
             );
+            // No compat server means the configured TCP shares `runControl` with the pane
+            // route; disabling it would strand every live pane's injected NEX_SOCKET, so the
+            // route falls back to a fresh ephemeral (new panes pick it up at spawn).
+            if (owner === runControl && next === null) {
+                const rebound = await owner.startTCP(0);
+                if (rebound?.bound != null) {
+                    log(`pane-route tcp listener rebound on ${rebound.host}:${String(rebound.bound)}; existing panes keep their old NEX_SOCKET until respawned`);
+                }
+            }
         } catch (error) {
             report(error, 'tcp rebind');
         }
@@ -710,13 +751,57 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * wedged `/tmp/nex.sock` and every client FD hanging off it; `start()`'s stale-socket probe
      * then finds nothing and binds cleanly.
      */
+    /**
+     * The CLI-compat listener is best-effort: on a machine where another Nex (the Swift app)
+     * owns `/tmp/nex.sock`, refusing to boot would take every pane, hook and client down with
+     * it — the one outcome worse than a missing convenience socket. The daemon stays fully
+     * alive on its run-dir socket + pane-route TCP; the failure is remembered for `ping`,
+     * logged loudly, and retried on every "Restart Socket Server". A configured `tcp-port`
+     * is salvaged with a standalone TCP bind so dev-container clients keep working too.
+     */
+    const startCompat = async (server: ControlServer): Promise<void> => {
+        try {
+            await server.start();
+            compatDegraded = null;
+        } catch (error) {
+            compatDegraded = toError(error).message;
+            report(toError(error), 'compat-control');
+            log(
+                error instanceof ControlSocketBusyError
+                    ? `${toError(error).message}; CLI-compat socket disabled — panes reach this daemon via their injected NEX_SOCKET`
+                    : `CLI-compat socket ${server.socketPath} failed to bind: ${toError(error).message}`
+            );
+            if (endpoints.tcpPort !== undefined && server.tcpStatus === null) {
+                try {
+                    await server.startTCP(endpoints.tcpPort);
+                } catch (tcpError) {
+                    report(toError(tcpError), 'compat-tcp');
+                }
+            }
+        }
+    };
+
     const restartControlServers = async (): Promise<{ socketPath: string; tcpPort?: number | undefined }> => {
         if (runControl === undefined) throw new Error('the control server is not running');
         const previousCompat = compatControl;
+        const previousRoutePort = runControl.tcpPort;
         await runControl.stop();
         await previousCompat?.stop();
         await runControl.start();
-        await previousCompat?.start();
+        // Keep the pane-route port stable across the rebind: every live pane's injected
+        // NEX_SOCKET names the OLD port and those environments cannot be updated. Best-effort;
+        // if something grabbed the port in the window, the fresh ephemeral stands (logged).
+        if (previousRoutePort !== undefined && runControl.tcpPort !== previousRoutePort) {
+            const repinned = await runControl.startTCP(previousRoutePort);
+            if (repinned !== null && repinned.bound === null) {
+                await runControl.startTCP(0);
+                log(
+                    `pane-route tcp port ${String(previousRoutePort)} was taken during the rebind; ` +
+                        `now on ${String(runControl.tcpPort)} — existing panes keep their old NEX_SOCKET until respawned`
+                );
+            }
+        }
+        if (previousCompat !== undefined) await startCompat(previousCompat);
         log(`control server rebound on ${runControl.socketPath}`);
         const port = previousCompat?.tcpPort ?? runControl.tcpPort;
         return {
@@ -788,8 +873,17 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     // ever rendered — and for exactly those panes it offers the spawn to the gate instead, so
     // the fallback grid is a timeout's worth of patience away rather than the first thing the
     // shell sees.
+    // The bundled-CLI dir: an explicit option wins (tests), then the shell's env handoff.
+    const envHelpersDir = env[HELPERS_DIR_ENV]?.trim();
+    const helpersDir =
+        options.spawn?.helpersDir ??
+        (envHelpersDir !== undefined && envHelpersDir.length > 0 ? envHelpersDir : undefined);
     const spawnDefaults: PaneSpawnDefaults = {
         ...(options.spawn ?? {}),
+        ...(helpersDir !== undefined ? { helpersDir } : {}),
+        // Read at env-build time (not captured): the route exists only once the run-dir
+        // control server has bound its TCP listener, and it must survive a live re-bind.
+        controlRoute: options.spawn?.controlRoute ?? paneRouteValue,
         sizeFor: (paneID: string) => geometry.sizeFor(paneID),
         deferSpawn: (paneID, spawn) => {
             // `get`, not `sizeFor`: the fallback-to-latest read is a good GUESS for a brand-new
@@ -818,8 +912,16 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // it could.
         persistenceHealth: () => persistence.health(),
         // §SET-021: `ping` reports this too — a `tcp-port` that never bound is otherwise a log
-        // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out.
-        controlTransport: () => ({ tcp: controlTcpStatus() }),
+        // line nobody reads, and every `NEX_SOCKET=tcp:…` client just times out. `compat` and
+        // `paneRoute` ride along so a doctor can see where events actually route.
+        controlTransport: () => ({
+            tcp: controlTcpStatus(),
+            compat:
+                compatDegraded !== null
+                    ? { path: endpoints.socketPath, error: compatDegraded }
+                    : null,
+            paneRoute: paneRouteValue()
+        }),
         profiles: readProfiles,
         // §SET-209: the undefined-profile warning `WorkspaceProfilesClient.resolveEnv` logs.
         // It lands in the daemon log, where every other spawn-path diagnostic goes.
@@ -1287,6 +1389,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // looking?" question has no useful answer here. This window is the expectation that a
         // window is on its way — see `DEFAULT_BOOT_DEFER_WINDOW_MS`.
         bootDeferUntil = (options.now ?? Date.now)() + (options.bootDeferWindowMs ?? DEFAULT_BOOT_DEFER_WINDOW_MS);
+
+        // The run-dir control server binds BEFORE the restored panes spawn: their env is
+        // built eagerly (`boot/resume.ts`), and the NEX_SOCKET route it embeds is this
+        // server's TCP port. That listener is always on — the configured `tcp-port` when this
+        // path IS the compat path, an ephemeral loopback port otherwise — because `tcp:` is
+        // the only NEX_SOCKET form both CLIs honor (anything else silently falls back to the
+        // shared `/tmp/nex.sock`, which may belong to another Nex entirely). A busy RUN-DIR
+        // socket stays fatal: that is the "a daemon of this protocol is already running" case
+        // the discover-or-spawn flow depends on.
+        runControl = createControlServer({
+            socketPath: paths.socket,
+            dispatcher,
+            tcpPort: runOwnsCompatPath && endpoints.tcpPort !== undefined ? endpoints.tcpPort : 0,
+            ...(onError !== undefined ? { onError } : {})
+        });
+        await runControl.start();
+
         const spawned = spawnRestoredPanes(store.getState(), {
             pty,
             term,
@@ -1296,35 +1415,19 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             ...(onError !== undefined ? { onError } : {})
         });
 
-        runControl = createControlServer({
-            socketPath: paths.socket,
-            dispatcher,
-            ...(onError !== undefined ? { onError } : {})
-        });
-        await runControl.start();
-
-        if (endpoints.socketPath !== paths.socket) {
+        if (!runOwnsCompatPath) {
             compatControl = createControlServer({
                 socketPath: endpoints.socketPath,
                 dispatcher,
                 ...(endpoints.tcpPort !== undefined ? { tcpPort: endpoints.tcpPort } : {}),
                 ...(onError !== undefined ? { onError } : {})
             });
-        } else if (endpoints.tcpPort !== undefined) {
-            // The compat path IS the run-dir path (an explicit override); the TCP listener
-            // still belongs to it, so re-create it with TCP rather than binding twice.
-            await runControl.stop();
-            runControl = createControlServer({
-                socketPath: paths.socket,
-                dispatcher,
-                tcpPort: endpoints.tcpPort,
-                ...(onError !== undefined ? { onError } : {})
-            });
-            await runControl.start();
+            // Best-effort by design: another Nex owning `/tmp/nex.sock` degrades this socket,
+            // it does not take the daemon down (`startCompat`).
+            await startCompat(compatControl);
         }
 
         try {
-            await compatControl?.start();
             ws = await startWs(token);
         } catch (error) {
             await runControl.stop();
@@ -1424,7 +1527,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             workspaces: store.getState().workspaces.length,
             resumeTuples: loaded.tuples.length
         };
-        log(`nexd listening: control ${info.socketPath}, http ${info.url}`);
+        log(
+            `nexd listening: control ${compatDegraded === null ? info.socketPath : `${paths.socket} (compat ${info.socketPath} degraded)`}, ` +
+                `pane route ${paneRouteValue() ?? 'none'}, http ${info.url}`
+        );
         return info;
     };
 
@@ -1458,7 +1564,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             return ws;
         },
         get control() {
-            return compatControl ?? runControl;
+            // A degraded compat server exists but is not serving; hand back the one that is.
+            return compatControl?.running === true ? compatControl : runControl;
         },
         get running() {
             return running;

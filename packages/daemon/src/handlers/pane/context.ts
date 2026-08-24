@@ -37,6 +37,13 @@ export interface AsyncTerminalReads {
 export interface PaneSpawnDefaults {
     /** Directory holding the bundled `nex` CLI; prepended to `PATH` when present. */
     readonly helpersDir?: string | undefined;
+    /**
+     * The `NEX_SOCKET` value routing this pane's `nex` CLI back at THIS daemon
+     * (`tcp:127.0.0.1:<port>`), read at env-build time so it reflects the live listener.
+     * Without it a hook firing inside the pane resolves the shared `/tmp/nex.sock` — which on
+     * a machine also running the Swift app is somebody else's daemon. Null = no injection.
+     */
+    readonly controlRoute?: (() => string | null) | undefined;
     /** `PATH` inherited by the daemon; defaults to `process.env.PATH`. */
     readonly inheritedPath?: string | null | undefined;
     /** Login shell; undefined = the user's default. */

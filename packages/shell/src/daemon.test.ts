@@ -10,6 +10,7 @@ import {
     daemonEntryCandidates,
     daemonSpawnEnv,
     daemonUrl,
+    HELPERS_DIR_ENV,
     readHttpPort,
     resolveDaemonEntry,
     resolveNodeBinary
@@ -120,6 +121,37 @@ describe('daemonSpawnEnv', () => {
         expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
         fs.mkdirSync(path.join(resources, 'client'));
         expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
+    });
+
+    /** A packaged `Contents/Resources` with a CLI payload (the `nex` launcher) in it. */
+    function addCliPayload(resources: string): string {
+        fs.mkdirSync(path.join(resources, 'cli'), { recursive: true });
+        fs.writeFileSync(path.join(resources, 'cli', 'nex'), '#!/bin/sh\n');
+        return path.join(resources, 'cli');
+    }
+
+    it('tells a daemon it starts where the bundled nex CLI is (pane PATH routing)', () => {
+        const resources = resourcesWithClient();
+        const cliDir = addCliPayload(resources);
+        expect(daemonSpawnEnv({ PATH: '/usr/bin' }, { resourcesPath: resources })).toEqual({
+            PATH: '/usr/bin',
+            [CLIENT_DIR_ENV]: path.join(resources, 'client'),
+            [HELPERS_DIR_ENV]: cliDir
+        });
+    });
+
+    it('leaves an explicit NEXD_HELPERS_DIR alone', () => {
+        const resources = resourcesWithClient();
+        addCliPayload(resources);
+        const env = { [CLIENT_DIR_ENV]: '/work/client/dist', [HELPERS_DIR_ENV]: '/work/cli' };
+        expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
+    });
+
+    it('adds no helpers dir when the build carries no CLI payload', () => {
+        const resources = resourcesWithClient();
+        const spawnEnv = daemonSpawnEnv({ PATH: '/usr/bin' }, { resourcesPath: resources });
+        expect(spawnEnv[HELPERS_DIR_ENV]).toBeUndefined();
+        expect(spawnEnv[CLIENT_DIR_ENV]).toBe(path.join(resources, 'client'));
     });
 });
 

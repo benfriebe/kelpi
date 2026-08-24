@@ -60,6 +60,11 @@ export function packagedCliLauncher(resourcesPath: string): string {
     return path.join(resourcesPath, RESOURCE_NAMES.cli, CLI_LAUNCHER_NAME);
 }
 
+/** The CLI payload directory — what the shell hands the daemon as `NEXD_HELPERS_DIR`. */
+export function packagedCliDir(resourcesPath: string): string {
+    return path.join(resourcesPath, RESOURCE_NAMES.cli);
+}
+
 /** The bundled Claude Code skill's name — `nex install-hooks` is what installs it. */
 export const BUNDLED_SKILL_NAME = 'nex-agentic';
 

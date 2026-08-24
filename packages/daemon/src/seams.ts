@@ -203,6 +203,15 @@ export interface HandlerContext<State, Action, Event> {
           readonly error: string | null;
           readonly host: string;
         } | null;
+        /**
+         * The CLI-compat socket's bind failure (typically: another Nex owns `/tmp/nex.sock`),
+         * or null/absent while it is serving. A degraded compat socket is not a degraded
+         * daemon — panes still route here via their injected `NEX_SOCKET` — but `nex doctor`
+         * and `nexd status` must be able to say where plain-terminal commands are going.
+         */
+        readonly compat?: { readonly path: string; readonly error: string } | null;
+        /** The `NEX_SOCKET` value injected into pane environments, or null when none is. */
+        readonly paneRoute?: string | null;
       })
     | undefined;
 }

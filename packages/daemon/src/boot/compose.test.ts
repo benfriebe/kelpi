@@ -5,12 +5,14 @@
  */
 
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 
 import { leaf } from '@nex/core/layout';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createPersistence } from '../db/index.js';
+import { spawnEnvVars } from '../handlers/pane/index.js';
 import type { PersistedSnapshot } from '../store/index.js';
 import { createDaemon, type Daemon } from './compose.js';
 import { readPortFile, writePortFile } from './port.js';
@@ -206,12 +208,15 @@ describe('createDaemon', () => {
         ).toEqual([]);
     }, 20_000);
 
-    it('refuses to steal a live control socket, and leaves nothing bound behind', async () => {
+    it('boots DEGRADED when another daemon owns the CLI-compat socket, leaving it untouched', async () => {
         const first = scratch();
         const owner = daemonFor(first);
         await owner.start();
 
-        // A second daemon (its own run dir + DB) pointed at the same CLI-compat socket.
+        // A second daemon (its own run dir + DB) pointed at the same CLI-compat socket — the
+        // shape of a machine where the Swift app owns `/tmp/nex.sock`. Refusing to boot here
+        // used to take every pane, hook and client down with it; now the compat socket alone
+        // degrades and the daemon serves its run-dir socket + pane-route TCP.
         const second = scratch();
         const intruder = createDaemon({
             env: {},
@@ -225,12 +230,65 @@ describe('createDaemon', () => {
         });
         cleanups.push(() => intruder.stop());
 
-        await expect(intruder.start()).rejects.toMatchObject({ code: 'ECONTROLBUSY' });
-        // Rollback: its own discovery socket must not be left listening.
-        expect(fs.existsSync(intruder.paths.socket)).toBe(false);
-        // The owner is untouched.
+        const info = await intruder.start();
+        expect(intruder.running).toBe(true);
+        expect(fs.existsSync(intruder.paths.socket)).toBe(true);
+
+        // The degraded state is a `ping`-visible fact, not just a log line.
+        const transport = intruder.ctx.controlTransport?.();
+        expect(transport?.compat).toMatchObject({ path: first.socketPath });
+        expect(transport?.compat?.error).toContain('already owned by a live daemon');
+        // The pane route is the intruder's OWN loopback TCP listener — the env every pane it
+        // spawns will carry — never the socket the other daemon owns.
+        expect(transport?.paneRoute).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
+        expect(info.socketPath).toBe(first.socketPath);
+
+        // The owner is untouched: still running, still the one serving the compat path.
         expect(fs.existsSync(first.socketPath)).toBe(true);
         expect(owner.running).toBe(true);
+        expect(owner.ctx.controlTransport?.().compat ?? null).toBeNull();
+
+        // Stopping the degraded daemon must not unlink the socket it never bound.
+        await intruder.stop();
+        expect(fs.existsSync(first.socketPath)).toBe(true);
+    }, 20_000);
+
+    it('injects the pane route + bundled-CLI PATH into every spawn env, and the route answers', async () => {
+        const paths = scratch();
+        const helpers = path.join(paths.root, 'helpers');
+        fs.mkdirSync(helpers, { recursive: true });
+        const daemon = daemonFor(paths, { env: { NEXD_HELPERS_DIR: helpers } });
+        await daemon.start();
+        await daemon.restored;
+
+        const workspace = daemon.store.getState().workspaces[0];
+        expect(workspace).toBeDefined();
+        const env = spawnEnvVars(
+            daemon.ctx,
+            'CCCCCCCC-0000-4000-8000-000000000001',
+            workspace as NonNullable<typeof workspace>
+        );
+        const byKey = Object.fromEntries(env.map((entry) => [entry.key, entry.value]));
+        // The bundled CLI shadows whatever the inherited PATH resolves.
+        expect(byKey['PATH']?.startsWith(`${helpers}:`)).toBe(true);
+        // The injected NEX_SOCKET is the daemon's own loopback TCP listener…
+        expect(byKey['NEX_SOCKET']).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
+        expect(daemon.ctx.controlTransport?.().paneRoute).toBe(byKey['NEX_SOCKET']);
+
+        // …and it ANSWERS: a `ping` over exactly that route reaches exactly this daemon.
+        const port = Number((byKey['NEX_SOCKET'] as string).split(':').pop());
+        const reply = await new Promise<string>((resolve, reject) => {
+            const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+                socket.write('{"command":"ping"}\n');
+            });
+            const chunks: Buffer[] = [];
+            socket.on('data', (chunk) => chunks.push(chunk));
+            socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+            socket.on('error', reject);
+        });
+        const parsed = JSON.parse(reply) as { ok: boolean; pid: number };
+        expect(parsed.ok).toBe(true);
+        expect(parsed.pid).toBe(process.pid);
     }, 20_000);
 
     it('reuses the remembered HTTP port, and falls back when it is taken', async () => {

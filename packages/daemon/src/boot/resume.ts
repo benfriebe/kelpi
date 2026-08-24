@@ -99,7 +99,8 @@ function restoreEnvVars(
         deps.profiles,
         effectiveProfileName(normalizedAssignment(workspace.profileName))
     );
-    return mergedEnvVars({ paneID, path, profileEnv });
+    const socketRoute = deps.spawn?.controlRoute?.() ?? null;
+    return mergedEnvVars({ paneID, path, socketRoute, profileEnv });
 }
 
 /**

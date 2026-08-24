@@ -78,12 +78,53 @@ describe('mergedEnvVars', () => {
         const merged = mergedEnvVars({
             paneID: PANE_ID,
             path: '/helpers:/usr/bin',
-            profileEnv: { NEX_PANE_ID: 'hijacked', PATH: '/evil', OK: 'yes' }
+            profileEnv: { NEX_PANE_ID: 'hijacked', PATH: '/evil', NEX_SOCKET: '/evil.sock', OK: 'yes' }
         });
         expect(merged).toEqual([
             { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' },
             { key: 'OK', value: 'yes' }
+        ]);
+    });
+
+    it('injects NEX_SOCKET between PATH and the profile vars when a route is given', () => {
+        const merged = mergedEnvVars({
+            paneID: PANE_ID,
+            path: '/helpers:/usr/bin',
+            socketRoute: 'tcp:127.0.0.1:49213',
+            profileEnv: { ALPHA: '2' }
+        });
+        expect(merged).toEqual([
+            { key: 'NEX_PANE_ID', value: PANE_ID },
+            { key: 'PATH', value: '/helpers:/usr/bin' },
+            { key: 'NEX_SOCKET', value: 'tcp:127.0.0.1:49213' },
+            { key: 'ALPHA', value: '2' }
+        ]);
+    });
+
+    it('injects nothing for a null, absent or empty route (byte-identical to the old env)', () => {
+        const expected = [
+            { key: 'NEX_PANE_ID', value: PANE_ID },
+            { key: 'PATH', value: '/helpers:/usr/bin' }
+        ];
+        expect(mergedEnvVars({ paneID: PANE_ID, path: '/helpers:/usr/bin', profileEnv: {} })).toEqual(expected);
+        expect(
+            mergedEnvVars({ paneID: PANE_ID, path: '/helpers:/usr/bin', socketRoute: null, profileEnv: {} })
+        ).toEqual(expected);
+        expect(
+            mergedEnvVars({ paneID: PANE_ID, path: '/helpers:/usr/bin', socketRoute: '', profileEnv: {} })
+        ).toEqual(expected);
+    });
+
+    it('a profile line cannot spoof NEX_SOCKET even when no route is injected', () => {
+        const merged = mergedEnvVars({
+            paneID: PANE_ID,
+            path: '/helpers:/usr/bin',
+            profileEnv: { NEX_SOCKET: 'tcp:evil.example:1' }
+        });
+        expect(merged).toEqual([
+            { key: 'NEX_PANE_ID', value: PANE_ID },
+            { key: 'PATH', value: '/helpers:/usr/bin' }
         ]);
     });
 });

@@ -31,7 +31,14 @@ import {
 } from '@nex/daemon/lifecycle';
 
 import { log, warn } from './log.js';
-import { hasClientBuild, packagedClientDir, packagedDaemonEntry, packagedNodeBinary } from './resources.js';
+import {
+    hasClientBuild,
+    hasCliPayload,
+    packagedClientDir,
+    packagedCliDir,
+    packagedDaemonEntry,
+    packagedNodeBinary
+} from './resources.js';
 
 /** Where `nexd` lives, when it is not in the default dev/packaged locations. */
 export const ENTRY_ENV = 'NEXD_ENTRY';
@@ -41,6 +48,8 @@ export const NODE_ENV_VAR = 'NEXD_NODE';
 export const LOG_FILE_ENV = 'NEXD_LOG_FILE';
 /** The daemon's own name for "the directory holding the built web client" (`ws/http.ts`). */
 export const CLIENT_DIR_ENV = 'NEXD_CLIENT_DIR';
+/** The daemon's name for "the directory holding the bundled `nex` CLI" (`boot/compose.ts`). */
+export const HELPERS_DIR_ENV = 'NEXD_HELPERS_DIR';
 
 export const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const PROBE_TIMEOUT_MS = 750;
@@ -185,12 +194,30 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
  * client directory it was started with.
  */
 export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {}): NodeJS.ProcessEnv {
-    const existing = env[CLIENT_DIR_ENV]?.trim();
-    if (existing !== undefined && existing.length > 0) return env;
-    if (lookup.resourcesPath === undefined || lookup.resourcesPath.length === 0) return env;
-    const bundled = packagedClientDir(lookup.resourcesPath);
-    if (!hasClientBuild(bundled)) return env;
-    return { ...env, [CLIENT_DIR_ENV]: bundled };
+    let result = env;
+    const resourcesPath = lookup.resourcesPath;
+    const existingClient = env[CLIENT_DIR_ENV]?.trim();
+    if (
+        (existingClient === undefined || existingClient.length === 0) &&
+        resourcesPath !== undefined &&
+        resourcesPath.length > 0
+    ) {
+        const bundled = packagedClientDir(resourcesPath);
+        if (hasClientBuild(bundled)) result = { ...result, [CLIENT_DIR_ENV]: bundled };
+    }
+    // Same shape for the bundled CLI: the daemon prepends this directory to every pane's PATH
+    // so `nex event …` fired by a hook inside a pane resolves THIS app's CLI — not whatever
+    // the user's rc files put first (on a machine also running the Swift app, the wrong one).
+    const existingHelpers = env[HELPERS_DIR_ENV]?.trim();
+    if (
+        (existingHelpers === undefined || existingHelpers.length === 0) &&
+        resourcesPath !== undefined &&
+        resourcesPath.length > 0 &&
+        hasCliPayload(resourcesPath)
+    ) {
+        result = { ...result, [HELPERS_DIR_ENV]: packagedCliDir(resourcesPath) };
+    }
+    return result;
 }
 
 // ── readiness ───────────────────────────────────────────────────────────────────────
@@ -288,6 +315,9 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     const spawnEnv = daemonSpawnEnv(env, lookup);
     if (spawnEnv[CLIENT_DIR_ENV] !== env[CLIENT_DIR_ENV]) {
         log(`daemon client dir ${String(spawnEnv[CLIENT_DIR_ENV])} (from the app bundle)`);
+    }
+    if (spawnEnv[HELPERS_DIR_ENV] !== env[HELPERS_DIR_ENV]) {
+        log(`daemon helpers dir ${String(spawnEnv[HELPERS_DIR_ENV])} (from the app bundle)`);
     }
     // `start --foreground` is what `nexd start` itself execs after detaching; going straight
     // to it skips a redundant process hop and gives us the daemon's real pid.

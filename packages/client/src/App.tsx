@@ -133,6 +133,11 @@ import {
     suppressReveal
 } from './app/seed-test-group';
 import {
+    CLOSE_PANE_CHORD_COMMAND,
+    createShellCloseBridge,
+    installShellCloseBridge
+} from './app/shell-close';
+import {
     isOkReply,
     replyError,
     replySearchMatch,
@@ -2376,6 +2381,21 @@ function Shell(props: AppProps): ReactElement {
         return { ...(terminalTheme ?? {}), background };
     }, [terminalTheme, settings.appearance.backgroundColor]);
 
+    /**
+     * §N17 — is `paneFill` actually translucent? Then the engine canvas must let it through.
+     *
+     * The comment above states the port's old limit: "the desktop shows through the window
+     * fill, the grid gutters and the pane padding, but NOT through the terminal's own canvas —
+     * the engine paints that with this opaque hex". That limit is gone. `ghostty-web`
+     * `0.4.0-nex.3` implements the `allowTransparency` option it always accepted and never
+     * read: with it on, the DEFAULT background is cleared rather than filled, so `paneFill`'s
+     * `rgba()` is what shows in every blank cell — the composite libghostty produced inside the
+     * surface in the shipped app (`PaneGridView.swift:370-378` leaves a shell pane's wrapper
+     * unpainted for exactly that reason). The colour still goes to the engine as an opaque hex
+     * (`paneTheme` above): the opacity is the container's job, the palette is the renderer's.
+     */
+    const paneTransparency = settings.appearance.backgroundOpacity < 1;
+
     const paneFill = useMemo(
         () => withAlpha(settings.appearance.backgroundColor, settings.appearance.backgroundOpacity),
         [settings.appearance.backgroundColor, settings.appearance.backgroundOpacity]
@@ -2545,11 +2565,29 @@ function Shell(props: AppProps): ReactElement {
 
     // ── keybindings ─────────────────────────────────────────────────────────────────
 
+    /**
+     * N14 — the shell's File ▸ Close (⌘W) routes THROUGH this page rather than closing the
+     * window, exactly as `KeyBinding.swift:285-296` keeps `close_pane` out of the menu-bar set
+     * so the Swift's own monitor always wins. `request()` replays the chord into the dispatcher
+     * below; the shell closes the window only if that answers "nothing to close".
+     */
+    const shellClose = useMemo(
+        () => createShellCloseBridge({ replay: () => replayChordCommand(CLOSE_PANE_CHORD_COMMAND) }),
+        []
+    );
+    useEffect(() => installShellCloseBridge(shellClose), [shellClose]);
+
     const keyActions = useMemo<KeyActionRegistry>(
         () => ({
             split_right: () => act.splitFocused('horizontal'),
             split_down: () => act.splitFocused('vertical'),
-            close_pane: () => act.closeFocused(),
+            // The mark is N14's double-close guard: a menu-routed ⌘W that lands on the heels of
+            // this one is answered "already handled" instead of taking a second pane.
+            close_pane: () => {
+                const closed = act.closeFocused();
+                if (closed !== false) shellClose.noteKeyboardClose();
+                return closed;
+            },
             focus_next_pane: () => act.focusStep(1),
             focus_previous_pane: () => act.focusStep(-1),
             move_pane_left: () => act.movePaneDirection('left'),
@@ -2619,7 +2657,7 @@ function Shell(props: AppProps): ReactElement {
             web_zoom_reset: () => webAct.run((pane) => webAct.zoom(pane.paneID, 'reset')),
             ...workspaceSwitchHandlers((index) => act.switchToIndex(index))
         }),
-        [act, webAct]
+        [act, webAct, shellClose]
     );
 
     const keyActionsRef = useRef(keyActions);
@@ -3446,6 +3484,7 @@ function Shell(props: AppProps): ReactElement {
                         accessibilityName={paneDisplayTitle(pane, daemonHome)}
                         theme={paneTheme}
                         background={paneFill}
+                        allowTransparency={paneTransparency}
                         {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
                         {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
                         onFocusRequest={onTerminalFocus}
@@ -3567,6 +3606,7 @@ function Shell(props: AppProps): ReactElement {
                     accessibilityName={paneDisplayTitle(pane, daemonHome)}
                     theme={theme}
                     background={paneFill}
+                    allowTransparency={paneTransparency}
                     {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
                     {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
                     onFocusRequest={onTerminalFocus}
@@ -3631,7 +3671,12 @@ function Shell(props: AppProps): ReactElement {
                beside it) — and so the traffic lights drawn over its leading edge land on the
                strip rather than on the sidebar's filter field. */
             className="relative flex h-full w-full flex-col overflow-hidden"
-            style={{ background: chromeTokens.windowBackground, color: chromeTokens.textPrimary }}
+            /* §N17: `windowFill`, not `windowBackground` — this element is the app's GROUND, the
+               port's `RootChromeView` backdrop, and `RootChromeView.swift:32-39` paints that
+               backdrop only while `background-opacity >= 1` ("an opaque backdrop here would
+               defeat" a non-opaque window). Below 1 the token is `transparent`, so the desktop
+               reaches the pane fills instead of being multiplied away by stacked 0.85 grounds. */
+            style={{ background: chromeTokens.windowFill, color: chromeTokens.textPrimary }}
             onDragEnter={onDragEnter}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}

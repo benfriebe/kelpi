@@ -283,3 +283,49 @@ describe('chromeThemeCssVars windowOpacity', () => {
         );
     });
 });
+
+/**
+ * §N17 — the GROUND is a second, separate answer, and it is the one that stops alpha stacking.
+ *
+ * `--nex-bg` gaining alpha is not enough on its own: FIVE elements painted it — `<body>`, the
+ * app root, the grid container, every pane wrapper, every pane body — and alpha multiplies, so
+ * 0.85 came out at 1 − 0.15⁵ = 0.99992 and the owner saw a solid pane. `--nex-window-fill` is
+ * what the two GROUND elements paint instead, and below opacity 1 it paints nothing at all:
+ * `RootChromeView.swift:32-39` skips its opaque backdrop entirely "with `background-opacity <
+ * 1`", leaving each pane's own fill as the single translucent layer over the desktop.
+ */
+describe('chromeThemeCssVars window ground (--nex-window-fill)', () => {
+    it('is the window background, byte for byte, at the default opacity', () => {
+        const theme = presetChromeTheme('dark');
+        expect(chromeThemeCssVars(theme)['--nex-window-fill']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, {})['--nex-window-fill']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--nex-window-fill']).toBe(
+            theme.windowBackground
+        );
+        // A nonsense opacity is not a transparent window.
+        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--nex-window-fill']).toBe(
+            theme.windowBackground
+        );
+    });
+
+    it('paints nothing below 1, while --nex-bg keeps its alpha for the gaps', () => {
+        const theme = presetChromeTheme('dark');
+        const vars = chromeThemeCssVars(theme, { windowOpacity: 0.85 });
+        expect(vars['--nex-window-fill']).toBe('transparent');
+        // Deliberately two different answers: the gap colour still carries alpha, so a
+        // placeholder or a popover that reads `--nex-bg` is translucent rather than absent.
+        expect(vars['--nex-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
+    });
+
+    it('follows the light preset too, so the ground is never a dark hex on a light chrome', () => {
+        const light = presetChromeTheme('light');
+        expect(chromeThemeCssVars(light)['--nex-window-fill']).toBe(light.windowBackground);
+        expect(chromeThemeCssVars(light, { windowOpacity: 0.5 })['--nex-window-fill']).toBe(
+            'transparent'
+        );
+    });
+
+    it('is a real token, so a component mounted without a provider still has a ground', () => {
+        expect(CHROME_TOKEN_FALLBACKS['--nex-window-fill']).toBe(CHROME_TOKEN_FALLBACKS['--nex-bg']);
+    });
+});

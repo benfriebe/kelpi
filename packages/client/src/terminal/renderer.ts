@@ -101,7 +101,16 @@ export interface TerminalRendererOptions {
     /** `ghostty-web`: scrollback in BYTES — its `scrollback` option is bytes (issue #140). */
     readonly scrollbackBytes?: number | undefined;
     readonly cursorBlink?: boolean | undefined;
-    /** Sub-1.0 pane background opacity composites through to the window (§4). */
+    /**
+     * Let the pane fill BEHIND the canvas show through the terminal's default background (§4).
+     *
+     * §N17 — this used to default to `true` and mean nothing: `ghostty-web` accepted the option
+     * and never read it, so the canvas was filled opaque whatever the pane behind it did, and a
+     * `background-opacity = 0.85` terminal came out solid. The vendored engine implements it
+     * now (`RendererOptions.allowTransparency`, `0.4.0-nex.3`), which makes the DEFAULT
+     * load-bearing: it is `false`, the value both engines document, so an opaque config takes
+     * exactly the paint path it always did. Assembly passes `backgroundOpacity < 1`.
+     */
     readonly allowTransparency?: boolean | undefined;
 }
 
@@ -589,7 +598,8 @@ function resolveOptions(options: TerminalRendererOptions | undefined, engine: Te
         scrollbackLines: options?.scrollbackLines ?? DEFAULT_SCROLLBACK_LINES,
         scrollbackBytes: options?.scrollbackBytes ?? DEFAULT_SCROLLBACK_BYTES,
         cursorBlink: options?.cursorBlink ?? true,
-        allowTransparency: options?.allowTransparency ?? true
+        // §N17: `false`, both engines' own default. See `TerminalRendererOptions`.
+        allowTransparency: options?.allowTransparency ?? false
     };
 }
 

@@ -48,6 +48,23 @@ export interface RendererOptions {
   cursorBlink?: boolean; // Default: false
   theme?: ITheme;
   devicePixelRatio?: number; // Default: window.devicePixelRatio
+  /**
+   * Let whatever is BEHIND the canvas show through the default background. Default: false.
+   *
+   * `ITerminalOptions.allowTransparency` has existed since v0.4.0 and reached `this.options`,
+   * but nothing ever read it: every paint of the DEFAULT background was an opaque
+   * `fillRect(theme.background)`, so an embedder that painted a translucent fill behind the
+   * canvas — the whole point of the option — got a solid terminal anyway.
+   *
+   * With it on, those paints become `clearRect`: the canvas is already
+   * `getContext('2d', { alpha: true })`, so a cleared cell composites straight through to the
+   * element behind it, while text and any cell carrying an EXPLICIT background colour stay
+   * fully opaque. That is what ghostty's own `background-opacity` does natively — the opacity
+   * applies to the default background only, never to the glyphs.
+   *
+   * Off (the default) every code path below is byte-for-byte what it always was.
+   */
+  allowTransparency?: boolean;
 }
 
 export interface FontMetrics {
@@ -99,6 +116,10 @@ export class CanvasRenderer {
   private cursorStyle: 'block' | 'underline' | 'bar';
   private cursorBlink: boolean;
   private theme: Required<ITheme>;
+  /** See `RendererOptions.allowTransparency`. */
+  private allowTransparency: boolean;
+  /** `theme.background` as components, kept in step with it. See `isDefaultCellBackground`. */
+  private defaultBackgroundRGB: { r: number; g: number; b: number } | null;
   private devicePixelRatio: number;
   private metrics: FontMetrics;
   private palette: string[];
@@ -152,6 +173,8 @@ export class CanvasRenderer {
     this.cursorStyle = options.cursorStyle ?? 'block';
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
+    this.allowTransparency = options.allowTransparency ?? false;
+    this.defaultBackgroundRGB = CanvasRenderer.parseRGB(this.theme.background);
     this.devicePixelRatio = options.devicePixelRatio ?? window.devicePixelRatio ?? 1;
 
     // Build color palette (16 ANSI colors)
@@ -226,6 +249,54 @@ export class CanvasRenderer {
     return `rgb(${r}, ${g}, ${b})`;
   }
 
+  /**
+   * `#RGB` / `#RRGGBB` / `rgb(r, g, b)` → components, or null for anything else.
+   *
+   * Only `allowTransparency` needs this, and only to answer one question: is this cell's
+   * background the DEFAULT one? See `isDefaultCellBackground`.
+   */
+  private static parseRGB(color: string): { r: number; g: number; b: number } | null {
+    const trimmed = color.trim();
+    if (trimmed.startsWith('#')) {
+      let hex = trimmed.slice(1);
+      if (hex.length === 3) {
+        hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+      }
+      if (hex.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(hex)) return null;
+      const value = Number.parseInt(hex, 16);
+      return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
+    }
+    const match = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (match === null) return null;
+    return {
+      r: Number.parseInt(match[1], 10),
+      g: Number.parseInt(match[2], 10),
+      b: Number.parseInt(match[3], 10),
+    };
+  }
+
+  /**
+   * Lay down the DEFAULT background over a rectangle — the one paint `allowTransparency` owns.
+   *
+   * Every site that used to write `fillStyle = this.theme.background; fillRect(…)` goes through
+   * here instead, so the opaque and the see-through cases cannot drift apart. With the option
+   * off this is literally those two statements. With it on the rectangle is CLEARED, which on
+   * an `alpha: true` canvas (this one always has been) leaves the element behind it — the
+   * embedder's translucent pane fill — to show through.
+   *
+   * Clearing rather than filling with an `rgba()` is deliberate: these rectangles are repainted
+   * per frame and per line, and a translucent fill would COMPOUND, so a cell would darken
+   * towards opaque the longer it sat on screen. A clear is idempotent.
+   */
+  private paintDefaultBackground(x: number, y: number, width: number, height: number): void {
+    if (this.allowTransparency) {
+      this.ctx.clearRect(x, y, width, height);
+      return;
+    }
+    this.ctx.fillStyle = this.theme.background;
+    this.ctx.fillRect(x, y, width, height);
+  }
+
   // ==========================================================================
   // Canvas Sizing
   // ==========================================================================
@@ -253,8 +324,7 @@ export class CanvasRenderer {
     this.ctx.textAlign = 'left';
 
     // Fill background after resize
-    this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, 0, cssWidth, cssHeight);
+    this.paintDefaultBackground(0, 0, cssWidth, cssHeight);
   }
 
   // ==========================================================================
@@ -519,8 +589,7 @@ export class CanvasRenderer {
     // Clear line background with theme color.
     // We clear just the cell area - glyph overflow is handled by also
     // redrawing adjacent rows (see render() method).
-    this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, lineY, cols * this.metrics.width, this.metrics.height);
+    this.paintDefaultBackground(0, lineY, cols * this.metrics.width, this.metrics.height);
 
     // PASS 1: Draw all cell backgrounds first
     // This ensures all backgrounds are painted before any text, allowing text
@@ -538,6 +607,31 @@ export class CanvasRenderer {
       if (cell.width === 0) continue; // Skip spacer cells for wide characters
       this.renderCellText(cell, x, y);
     }
+  }
+
+  /**
+   * Does this cell carry the DEFAULT background — the one the theme paints per line?
+   *
+   * Upstream's rule is `(0, 0, 0)`, on the assumption that a cell with no explicit SGR
+   * background comes back as zeroes. That holds only when the WASM terminal was configured
+   * without a `bgColor`: hand it one (Nex does — the ghostty `background` key), and every
+   * untouched cell reports that colour instead, so the two-pass renderer fills each of them
+   * opaquely and the theme fill underneath is never seen. Invisible while both are the same
+   * opaque colour; fatal the moment the fill is meant to be see-through.
+   *
+   * So under `allowTransparency` a cell whose background IS the theme background counts as
+   * default too, and is left alone for `paintDefaultBackground`'s clear to show through.
+   *
+   * The honest edge: an application that sets a cell's background EXPLICITLY to the exact
+   * theme background (`SGR 48;2;…`) becomes translucent there rather than opaque. Nothing on
+   * screen can tell the two apart except the desktop behind the window, and the alternative —
+   * every cell opaque — is the defect this exists to remove.
+   */
+  private isDefaultCellBackground(r: number, g: number, b: number): boolean {
+    if (r === 0 && g === 0 && b === 0) return true;
+    if (!this.allowTransparency) return false;
+    const base = this.defaultBackgroundRGB;
+    return base !== null && r === base.r && g === base.g && b === base.b;
   }
 
   /**
@@ -574,7 +668,7 @@ export class CanvasRenderer {
 
     // Only draw cell background if it's different from the default (black)
     // This lets the theme background (drawn earlier) show through for default cells
-    const isDefaultBg = bg_r === 0 && bg_g === 0 && bg_b === 0;
+    const isDefaultBg = this.isDefaultCellBackground(bg_r, bg_g, bg_b);
     if (!isDefaultBg) {
       this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
@@ -770,6 +864,9 @@ export class CanvasRenderer {
    */
   public setTheme(theme: ITheme): void {
     this.theme = { ...DEFAULT_THEME, ...theme };
+    // Kept in step with the background the palette below is derived from, so a theme change
+    // cannot leave `isDefaultCellBackground` matching the PREVIOUS background's components.
+    this.defaultBackgroundRGB = CanvasRenderer.parseRGB(this.theme.background);
 
     // Rebuild palette
     this.palette = [
@@ -854,8 +951,7 @@ export class CanvasRenderer {
     const scrollbarTrackHeight = canvasHeight - scrollbarPadding * 2;
 
     // Always clear the scrollbar area first (fixes ghosting when fading out)
-    ctx.fillStyle = this.theme.background;
-    ctx.fillRect(scrollbarX - 2, 0, scrollbarWidth + 6, canvasHeight);
+    this.paintDefaultBackground(scrollbarX - 2, 0, scrollbarWidth + 6, canvasHeight);
 
     // Don't draw scrollbar if fully transparent or no scrollback
     if (opacity <= 0 || scrollbackLength === 0) return;
@@ -966,8 +1062,7 @@ export class CanvasRenderer {
    * Clear entire canvas
    */
   public clear(): void {
-    this.ctx.fillStyle = this.theme.background;
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.paintDefaultBackground(0, 0, this.canvas.width, this.canvas.height);
   }
 
   /**

@@ -4,6 +4,9 @@ import { DEFAULT_KEYBIND_LINES } from '@nex/core/config';
 
 import {
     CHECK_FOR_UPDATES_LABEL,
+    CLOSE_ACCELERATOR,
+    CLOSE_LABEL,
+    CLOSE_PANE_EXPRESSION,
     COMMAND_PALETTE_ACCELERATOR,
     COMMAND_PALETTE_COMMAND,
     COMMAND_PALETTE_LABEL,
@@ -12,6 +15,7 @@ import {
     DESELECT_ALL_WORKSPACES_LABEL,
     DESELECT_ALL_WORKSPACES_MENU_ID,
     FILE_MENU_LOG_FRAGMENT,
+    FORCE_RELOAD_ACCELERATOR,
     NEW_GROUP_ACCELERATOR,
     NEW_GROUP_COMMAND,
     NEW_GROUP_LABEL,
@@ -37,11 +41,13 @@ import {
     VIEW_MENU_LOG_FRAGMENT,
     appMenuTemplate,
     applyWorkspaceSelection,
+    closeRouteLogLine,
     debugMenuLogFragment,
     debugMenuSection,
     debugMenuTemplate,
     fileMenuTemplate,
     menuLogLine,
+    routeCloseRequest,
     switchWorkspaceAccelerator,
     switchWorkspaceCommand,
     switchWorkspaceLabel,
@@ -140,6 +146,7 @@ describe('File menu (§APP-018 / §WS-151)', () => {
         sendMenuRequest: () => true,
         promptOpenFile: () => undefined,
         platform: 'darwin',
+        closeFocusedPane: () => undefined,
         ...overrides
     });
 
@@ -163,7 +170,9 @@ describe('File menu (§APP-018 / §WS-151)', () => {
             SELECT_ALL_WORKSPACES_LABEL,
             DESELECT_ALL_WORKSPACES_LABEL,
             'separator',
-            'close'
+            // N14: a real "Close" row where `{ role: 'close' }` used to sit. Same place, same
+            // ⌘W — it is the ACTION that changed, and the row below asserts that.
+            CLOSE_LABEL
         ]);
         // The row a user would press to get a SECOND Electron window is simply not there, which
         // is the §APP-018 clause: ⌘N is New Workspace, not New Window.
@@ -438,6 +447,248 @@ describe('File menu (§APP-018 / §WS-151)', () => {
 
     it('ends in Quit off macOS, where there is no app menu to carry it', () => {
         expect(rows(fileMenuTemplate(fileDeps({ platform: 'linux' }))).at(-1)).toBe('quit');
+    });
+});
+
+/**
+ * N14 — File ▸ Close (⌘W) must not be a bare `role: 'close'`.
+ *
+ * The shipped app has no ⌘W menu item at all (`KeyBinding.swift:285-296` keeps `close_pane` out
+ * of `isMenuBarAction`, so the local monitor always wins). A macOS File menu still wants a Close
+ * row, so the port keeps the row and takes away its authority: the click asks the focused
+ * window's PAGE to run `close_pane` first, and only a page that has nothing to close — or does
+ * not answer — gets its window closed.
+ */
+describe('File ▸ Close (N14)', () => {
+    const fileDeps = (overrides: Partial<Parameters<typeof fileMenuTemplate>[0]> = {}) => ({
+        sendMenuRequest: () => true,
+        promptOpenFile: () => undefined,
+        platform: 'darwin',
+        closeFocusedPane: () => undefined,
+        ...overrides
+    });
+
+    it('is a real row with the visible ⌘W, not the window-closing role', () => {
+        const row = fileMenuTemplate(fileDeps()).at(-1);
+
+        expect(row?.label).toBe(CLOSE_LABEL);
+        expect(row?.accelerator).toBe(CLOSE_ACCELERATOR);
+        expect(CLOSE_ACCELERATOR).toBe('CommandOrControl+W');
+        // The defect, pinned: a `role` here is Electron closing the window behind the app's back.
+        expect(row?.role).toBeUndefined();
+    });
+
+    it('routes its click at the renderer rather than at the window', () => {
+        const closeFocusedPane = vi.fn();
+        const row = fileMenuTemplate(fileDeps({ closeFocusedPane })).at(-1);
+
+        // Electron passes the item, the window and the event; the handler wants none of them.
+        (row?.click as (() => void) | undefined)?.();
+
+        expect(closeFocusedPane).toHaveBeenCalledTimes(1);
+    });
+
+    it('names the global the client installs (pinned on both sides)', () => {
+        // `client/src/app/shell-close.ts` exports SHELL_CLOSE_GLOBAL and asserts the same
+        // literal; the two packages cannot import each other, so a rename fails here.
+        expect(CLOSE_PANE_EXPRESSION).toContain('window.__nexShellClosePane()');
+        // `=== true`, so an older client (or a mangled global) reads as "not handled".
+        expect(CLOSE_PANE_EXPRESSION).toContain('=== true');
+    });
+
+    it('leaves the window alone when the page says it closed a pane', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({
+            askRenderer: () => Promise.resolve(true),
+            closeWindow
+        });
+
+        expect(outcome).toBe('pane');
+        expect(closeWindow).not.toHaveBeenCalled();
+        expect(closeRouteLogLine(outcome)).toContain('close_pane');
+    });
+
+    it('closes the window when the page reports nothing to close', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({
+            askRenderer: () => Promise.resolve(false),
+            closeWindow
+        });
+
+        expect(outcome).toBe('window');
+        expect(closeWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes the window when the page answers with something that is not `true`', async () => {
+        // An older client has no global at all; a mangled one could answer anything. Neither may
+        // leave ⌘W doing nothing.
+        for (const answer of [undefined, null, 'yes', 1]) {
+            const closeWindow = vi.fn();
+            const outcome = await routeCloseRequest({
+                askRenderer: () => Promise.resolve(answer),
+                closeWindow
+            });
+            expect(outcome).toBe('window');
+            expect(closeWindow).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    it('closes the window when the evaluation rejects (a page mid-navigation, or crashed)', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({
+            askRenderer: () => Promise.reject(new Error('Script failed to execute')),
+            closeWindow
+        });
+
+        expect(outcome).toBe('window');
+        expect(closeWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes the window when a wedged renderer never answers — ⌘W always does something', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({
+            // The renderer is hung: this promise never settles.
+            askRenderer: () => new Promise<boolean>(() => undefined),
+            closeWindow,
+            timeoutMs: 5
+        });
+
+        expect(outcome).toBe('window');
+        expect(closeWindow).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing at all when there is no window to ask', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({ askRenderer: null, closeWindow });
+
+        expect(outcome).toBe('none');
+        expect(closeWindow).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The sweep N14 asked for: is any OTHER chord the app claims left to a native menu default?
+     *
+     * The rule this encodes is the whole lesson of the defect. A row's `role` is Electron acting
+     * on its own — closing the window, quitting, reloading the page — and it fires from a chord
+     * the page may also have a meaning for. A row with a `click` cannot surprise anyone: it runs
+     * the app's own code, in the app's own order.
+     *
+     * So: every accelerator the app menu carries that the BINDING MAP also claims must be a
+     * click row. What is left over is the honest list of native defaults, and it is checked
+     * below rather than left to a reader's memory.
+     */
+    const acceleratorToConfig = (accelerator: string): string =>
+        accelerator
+            .split('+')
+            .map((part) => (part === 'CommandOrControl' ? 'super' : part.toLowerCase()))
+            .join('+');
+
+    const claimedTriggers = new Set(DEFAULT_KEYBIND_LINES.map((line) => line.slice(0, line.lastIndexOf('='))));
+    /** The config spells modifiers in one order; the menu in another. Compare as sets. */
+    const sameChord = (accelerator: string, trigger: string): boolean => {
+        const left = acceleratorToConfig(accelerator).split('+').sort().join('+');
+        return left === trigger.split('+').sort().join('+');
+    };
+
+    /**
+     * A role's accelerator is IMPLICIT — `{ role: 'close' }` prints ⌘W with nothing written down
+     * — which is exactly how the defect hid: a row with no `accelerator` field still claimed the
+     * chord. Every role the app uses that carries one is listed here, so the check below sees
+     * them too.
+     */
+    const ROLE_ACCELERATORS: Readonly<Record<string, string>> = {
+        close: 'CommandOrControl+W',
+        quit: 'CommandOrControl+Q',
+        reload: 'CommandOrControl+R',
+        forceReload: 'CommandOrControl+Shift+R',
+        minimize: 'CommandOrControl+M',
+        hide: 'CommandOrControl+H',
+        undo: 'CommandOrControl+Z',
+        redo: 'CommandOrControl+Shift+Z',
+        cut: 'CommandOrControl+X',
+        copy: 'CommandOrControl+C',
+        paste: 'CommandOrControl+V',
+        selectAll: 'CommandOrControl+A'
+    };
+
+    it('leaves no chord the binding map claims to a native menu default', () => {
+        const rows = [
+            ...fileMenuTemplate(fileDeps()),
+            ...viewMenuTemplate({ sendMenuRequest: () => true }),
+            ...appMenuTemplate({ checkForUpdates: () => undefined, canCheckForUpdates: true })
+        ].map((item) => ({
+            ...item,
+            // The written accelerator, or the one the role brings with it.
+            accelerator:
+                item.accelerator ??
+                (typeof item.role === 'string' ? ROLE_ACCELERATORS[item.role] : undefined)
+        }));
+        const rowsWithAccelerators = rows.filter((item) => typeof item.accelerator === 'string');
+        // The sweep is only worth anything if it is actually looking at things.
+        expect(rowsWithAccelerators.length).toBeGreaterThan(10);
+
+        for (const row of rowsWithAccelerators) {
+            const accelerator = row.accelerator as string;
+            if (![...claimedTriggers].some((trigger) => sameChord(accelerator, trigger))) continue;
+            // ⌘W was the one that broke this rule: `role: 'close'`, no click, and the page's
+            // `close_pane` racing it.
+            expect({ accelerator, role: row.role, hasClick: typeof row.click === 'function' }).toEqual({
+                accelerator,
+                role: undefined,
+                hasClick: true
+            });
+        }
+    });
+
+    it('moves Force Reload off ⇧⌘R, which the binding map spends on rename_workspace', () => {
+        // The sweep's other catch, and the same shape as ⌘W: a role's IMPLICIT accelerator
+        // sitting on a chord the app claims, with a destructive default behind it (a full
+        // client reload). The Swift has no Reload row at all, so nothing is owed to parity here.
+        expect(DEFAULT_KEYBIND_LINES).toContain('shift+super+r=rename_workspace');
+        const row = viewMenuTemplate({ sendMenuRequest: () => true }).find(
+            (item) => item.role === 'forceReload'
+        );
+        expect(row?.accelerator).toBe(FORCE_RELOAD_ACCELERATOR);
+        expect(FORCE_RELOAD_ACCELERATOR).toBe('CommandOrControl+Alt+R');
+    });
+
+    it('states the native defaults that remain, none of which the app claims', () => {
+        // Roles left in the menu, each one a chord the binding map does NOT claim, so no page
+        // gesture can collide with it: ⌘Q (quit, through the quit gate), ⌘H/⌥⌘H (hide), the Edit
+        // roles, ⌘M/zoom, and View's three web-contents rows.
+        //
+        // ⌘R / ⇧⌘R (reload / force reload) are the ones worth naming: they reload the WHOLE
+        // client window. No default binding claims ⌘R, so nothing here is racing — but a web
+        // pane's priority layer does claim it while a web pane is focused, and the Swift app has
+        // no Reload item at all. Left as it stands (a deliberate dev affordance) and recorded
+        // here so the next person meets it as a decision rather than as a surprise.
+        const viewRoles = viewMenuTemplate({ sendMenuRequest: () => true })
+            .map((item) => item.role)
+            .filter((role): role is NonNullable<typeof role> => role !== undefined);
+        expect(viewRoles).toEqual(['reload', 'forceReload', 'toggleDevTools', 'togglefullscreen']);
+
+        const appRoles = appMenuTemplate({ checkForUpdates: () => undefined, canCheckForUpdates: true })
+            .map((item) => item.role)
+            .filter((role): role is NonNullable<typeof role> => role !== undefined);
+        expect(appRoles).toContain('quit');
+        // And the one that started all this is gone from every template the app builds.
+        expect(appRoles).not.toContain('close');
+        expect(fileMenuTemplate(fileDeps()).some((item) => item.role === 'close')).toBe(false);
+    });
+
+    it('answers a slow-but-alive renderer, rather than racing it to the window', async () => {
+        const closeWindow = vi.fn();
+        const outcome = await routeCloseRequest({
+            askRenderer: () =>
+                new Promise<boolean>((resolve) => {
+                    setTimeout(() => resolve(true), 5);
+                }),
+            closeWindow,
+            timeoutMs: 200
+        });
+
+        expect(outcome).toBe('pane');
+        expect(closeWindow).not.toHaveBeenCalled();
     });
 });
 

@@ -28,10 +28,21 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.2';
+const EXPECTED_VERSION = '0.4.0-nex.3';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
+
+/**
+ * Markers of `-nex.3`'s honoured `allowTransparency` (§N17).
+ *
+ * The same loss the caret markers guard against, one release later: upstream's option was
+ * accepted and never read, so every default-background paint was an opaque `fillRect` and a
+ * `background-opacity < 1` pane rendered solid however translucent the window and the fill
+ * behind the canvas were. `paintDefaultBackground` is the single seam that clears instead —
+ * take a future npm release wholesale and translucency silently goes back to solid.
+ */
+const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
 
 /**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
@@ -80,6 +91,13 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).not.toContain(REPLACED_CHIP_LABEL);
     });
 
+    it('ships a bundle whose renderer honours allowTransparency (§N17)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of TRANSPARENCY_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -89,5 +107,10 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).toContain('updatePreedit');
         expect(terminalSource).toContain('data-ime-preedit');
         expect(terminalSource).not.toContain(REPLACED_CHIP_LABEL);
+        // §N17's half of the fork, in the two files that carry it.
+        expect(terminalSource).toContain('allowTransparency: this.options.allowTransparency');
+        const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
+        expect(rendererSource).toContain('paintDefaultBackground');
+        expect(rendererSource).toContain('this.ctx.clearRect');
     });
 });

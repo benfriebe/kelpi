@@ -75,15 +75,19 @@ import {
 } from './hotkey.js';
 import { log, logError, warn } from './log.js';
 import {
+    CLOSE_PANE_EXPRESSION,
     appMenuTemplate,
     applyWorkspaceSelection,
+    closeRouteLogLine,
     debugMenuSection,
     fileMenuTemplate,
     menuLogLine,
+    routeCloseRequest,
     viewMenuTemplate,
     workspaceSelectionLogLine
 } from './menu.js';
 import { contentContextMenuLogLine, contentContextMenuTemplate } from './context-menu.js';
+import { focusWindowContents, presentWindow, presentWindowLogLine } from './window-present.js';
 import { isForwardableOpenPath } from './shell-actions.js';
 import { titleBarLogLine, titleBarStyleFor, trafficLightQuery } from './titlebar.js';
 import { describeSkillRefresh, refreshBundledSkill } from './skill.js';
@@ -420,7 +424,14 @@ function createWindow(): BrowserWindow {
     }
     applySecurityPolicy(window);
 
-    window.once('ready-to-show', () => window.show());
+    window.once('ready-to-show', () => {
+        window.show();
+        // N15: a window built by `presentWindow` was focused before it had anything to focus —
+        // the widget only exists once the page is ready to be shown. Re-asserting it here is
+        // what makes a REOPENED window typable without a click; a window that is not the active
+        // one is unaffected, because focusing web contents is scoped to its own window.
+        focusWindowContents(window);
+    });
     window.on('resize', () => scheduleBoundsSave(window));
     window.on('move', () => scheduleBoundsSave(window));
     window.on('enter-full-screen', () => saveFullScreenFlag(window, true));
@@ -494,16 +505,24 @@ function createWindow(): BrowserWindow {
     return window;
 }
 
+/**
+ * §8.5 / N15 — raise the window, whatever asked (a tray click, a reveal, a Dock activation, a
+ * second launch).
+ *
+ * One path for every case, including the one that has to BUILD the window: a reopened window
+ * that was only `show()`n came up unable to take a keystroke (N15), because `focus()` and the
+ * page's own `webContents.focus()` lived in the other branch. `./window-present.ts` owns the
+ * order; this is just the Electron end of it.
+ */
 function showWindow(): void {
-    if (mainWindow === null || mainWindow.isDestroyed()) {
-        mainWindow = createWindow();
-        mainWindow.show();
-        return;
-    }
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    if (process.platform === 'darwin') app.focus({ steal: true });
+    const result = presentWindow<BrowserWindow>({
+        current: mainWindow,
+        create: () => createWindow(),
+        platform: process.platform,
+        appFocus: () => app.focus({ steal: true })
+    });
+    mainWindow = result.window;
+    log(presentWindowLogLine(result));
 }
 
 // ── global hotkey (config-keybindings.md §8) ────────────────────────────────────────
@@ -862,6 +881,39 @@ function applyWorkspaceSelectionCount(selectedCount: number): void {
     log(workspaceSelectionLogLine(selectedCount));
 }
 
+/**
+ * N14 — File ▸ Close (⌘W), routed through the page instead of closing the window.
+ *
+ * The window this acts on is the FOCUSED one (the menu belongs to whatever is key), falling back
+ * to the main window for a click that arrives while nothing is focused. `CLOSE_PANE_EXPRESSION`
+ * runs the client's own `close_pane` — the same path `chrome/keys.ts` takes for a keystroke — and
+ * the window is closed only when the page says it had nothing to close, or does not answer
+ * inside the timeout. A wedged renderer must never make a window unclosable.
+ */
+function closeFocusedPaneOrWindow(): void {
+    const target = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    const alive = target !== null && !target.isDestroyed();
+    void routeCloseRequest({
+        askRenderer:
+            alive && !target.webContents.isDestroyed()
+                ? () => target.webContents.executeJavaScript(CLOSE_PANE_EXPRESSION, true)
+                : null,
+        closeWindow: () => {
+            if (target !== null && !target.isDestroyed()) target.close();
+        }
+    }).then(
+        (outcome) => {
+            log(closeRouteLogLine(outcome));
+        },
+        (error: unknown) => {
+            // `routeCloseRequest` swallows the renderer's own failures; anything reaching here is
+            // ours, and the window must still be closable.
+            logError('menu: Close routing failed', error);
+            if (target !== null && !target.isDestroyed()) target.close();
+        }
+    );
+}
+
 function buildMenu(): void {
     // Keep it minimal: the UI owns its own commands, but macOS needs an app menu for ⌘Q,
     // and Edit needs its roles for copy/paste to reach the web contents.
@@ -900,6 +952,8 @@ function buildMenu(): void {
                 ...relay,
                 promptOpenFile: () => promptOpenFile(null),
                 platform: process.platform,
+                // N14: ⌘W asks the page to close a PANE before this process closes a window.
+                closeFocusedPane: () => closeFocusedPaneOrWindow(),
                 // A rebuild (there is only the launch one today) must not un-grey a row the
                 // client has already told us belongs greyed.
                 hasWorkspaceSelection: workspaceSelectionCount > 0
@@ -1268,11 +1322,18 @@ if (!app.requestSingleInstanceLock()) {
     );
 
     app.on('activate', () => {
-        // macOS dock click with no window open: the sessions never went anywhere, so this is
-        // just a new view onto them.
-        if (BrowserWindow.getAllWindows().length === 0 && daemon !== null) {
-            mainWindow = createWindow();
-            mainWindow.show();
+        /*
+         * macOS Dock click with no window open: the sessions never went anywhere, so this is
+         * just a new view onto them.
+         *
+         * N15: it goes through `showWindow()` like every other raise. This branch used to build
+         * a window and `show()` it — no `focus()`, no `webContents.focus()`, no app activation —
+         * and the reopened window could not be typed into at all. The only thing left here is
+         * the precondition: with no daemon there is nothing for a window to load, so a click
+         * during boot waits for the launch sequence to make one rather than opening a blank one.
+         */
+        if (BrowserWindow.getAllWindows().length === 0 && daemon === null) {
+            log('activate: no window and no daemon yet — leaving the launch sequence to it');
         } else {
             showWindow();
         }

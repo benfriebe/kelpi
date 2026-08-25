@@ -27,6 +27,16 @@
  * and preventDefaults exactly those — the two halves of what the Swift monitor does by
  * returning `nil` or the event.
  *
+ * **N14 hardened two of that relay's edges**, because ⌘W is the one claimed chord whose escape
+ * is destructive (the native menu's answer to it used to be "close the window"):
+ *
+ *   - the claimed set is **seeded into the script** as well as messaged, so a document that has
+ *     just been re-injected (a watcher write, a theme swap, a font change) relays from its first
+ *     keystroke instead of from its first answered `ready`;
+ *   - the listener is **capture-phase on `window`**, so a script inside the rendered note — the
+ *     markdown pipeline passes raw HTML through — cannot `stopPropagation()` a chord back off
+ *     the relay and hand it to the menu.
+ *
  * The `copy` hop replaces the Swift app's `copyCodeBlock` webkit message handler; the host
  * writes the text with `navigator.clipboard.writeText`. The button's own 1.5 s `copied` window
  * and `aria-label` swap stay inside the frame, exactly as §3.10 specifies.
@@ -310,6 +320,23 @@ export function chordKeysForBindings(bindings: KeyBindingMap): string[] {
 }
 
 /**
+ * The claimed set as the injected script's own lookup object (N14's seed).
+ *
+ * A plain object literal for the same reason the message handler builds one: the frame is ES5
+ * in a string and has no `Set`. Only well-formed `bits/Code` keys are let through — every chord
+ * key carries a `/`, which is what keeps `constructor` (truthy on a bare object) out of the
+ * table, and it means a malformed entry cannot smuggle anything into the document's script.
+ */
+export function chordSeedObject(chords: readonly string[]): Record<string, true> {
+    const seed: Record<string, true> = {};
+    for (const chord of chords) {
+        if (typeof chord !== 'string' || !/^\d+\/[A-Za-z0-9]+$/.test(chord)) continue;
+        seed[chord] = true;
+    }
+    return seed;
+}
+
+/**
  * Replay a relayed chord into the host document, where the app's own capture-phase dispatcher
  * (`chrome/keys.ts` → `installKeyDispatcher`) is listening.
  *
@@ -353,6 +380,17 @@ export interface PrepareDocumentOptions {
     readonly colorScheme?: 'dark' | 'light' | undefined;
     /** SET-219's overridable find-highlight colours; absent = the Swift defaults. */
     readonly findPalette?: Partial<FindPalette> | undefined;
+    /**
+     * N14 — the claimed chord set, baked into the script the document carries.
+     *
+     * The `chords` MESSAGE stays (a rebind has to reach a frame that is already open), but the
+     * relay must not depend on a handshake having completed: a document is re-injected on every
+     * watcher write, theme swap and font change, and until its `ready` is answered its claimed
+     * set is empty — a ⌘W pressed in that window falls straight past the frame to the native
+     * menu, which is exactly the escape N14 is about. Seeding the set at injection time makes
+     * the first keystroke after a reload as safe as the thousandth.
+     */
+    readonly claimedChords?: readonly string[] | undefined;
 }
 
 /**
@@ -430,7 +468,7 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
         else document = style + document;
     }
 
-    const script = `<script>\n${contentBridgeScript(options.paneID, options.findPalette)}\n</script>\n`;
+    const script = `<script>\n${contentBridgeScript(options.paneID, options.findPalette, options.claimedChords)}\n</script>\n`;
     // `lastIndexOf`: a note may legitimately contain the literal text `</body>` inside a code
     // block, and the real end tag is the last one.
     const bodyEnd = document.lastIndexOf('</body>');
@@ -443,10 +481,19 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
  *
  * Written as ES5-flavored plain DOM so it runs unchanged in any engine that renders a pane, and
  * guarded by `__nexContentBridge` so a re-injection is a no-op.
+ *
+ * `seedChords` (N14) is the claimed set as of injection time; the `chords` message still
+ * replaces it, so a rebind reaches an open frame, but the relay is armed from the first
+ * keystroke rather than from the first answered handshake.
  */
-export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPalette> | undefined): string {
+export function contentBridgeScript(
+    paneID: string,
+    findPalette?: Partial<FindPalette> | undefined,
+    seedChords?: readonly string[] | undefined
+): string {
     const id = JSON.stringify(paneID);
     const find = resolveFindPalette(findPalette);
+    const seed = JSON.stringify(chordSeedObject(seedChords ?? []));
     return `(function () {
   if (window.__nexContentBridge) return;
   window.__nexContentBridge = true;
@@ -499,7 +546,11 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
   // chord set, and a claimed chord is preventDefaulted and posted for the host's dispatcher to
   // replay — while an UNCLAIMED one is left entirely alone, so ⌘C still copies the selection,
   // exactly as an unmatched event falls past the Swift's local monitor into the WKWebView.
-  var claimedChords = {};
+  //
+  // N14: the set is SEEDED at injection (below) as well as sent, so a document that has just
+  // been re-injected relays from its first keystroke rather than from its first answered
+  // handshake — the window in which a ⌘W would otherwise reach the native menu.
+  var claimedChords = ${seed};
   var chordKey = function (event) {
     var bits = 0;
     if (event.ctrlKey) bits += 1;
@@ -508,7 +559,11 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
     if (event.metaKey) bits += 8;
     return String(bits) + '/' + event.code;
   };
-  document.addEventListener('keydown', function (event) {
+  // CAPTURE, on the window (N14): the relay is the app's key monitor, and the Swift's runs
+  // before any responder gets the event. On \`document\` in the bubble phase a script inside the
+  // rendered note — markdown passes raw HTML through — could stopPropagation() a keydown and
+  // silently take ⌘W back off the relay, handing it to the native menu.
+  window.addEventListener('keydown', function (event) {
     if ((event.metaKey || event.ctrlKey) && (event.key === 'e' || event.key === 'E')) {
       event.preventDefault();
       post({ kind: 'toggle-edit' });
@@ -531,7 +586,7 @@ export function contentBridgeScript(paneID: string, findPalette?: Partial<FindPa
       shiftKey: !!event.shiftKey,
       metaKey: !!event.metaKey
     });
-  });
+  }, true);
 
   // §3.14 — the two copy commands are also reachable from the preview's context menu; the
   // host owns the menu because the frame has no chrome of its own to draw one in.

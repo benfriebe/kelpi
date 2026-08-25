@@ -441,3 +441,69 @@ describe('the ⌘W active-agents gate (TERM-077 / WS-109)', () => {
         ).toBe(true);
     });
 });
+
+/**
+ * N14 — the shell's File ▸ Close (⌘W), arriving as a request rather than as a window close.
+ *
+ * The menu row in the main process no longer decides anything: it evaluates
+ * `window.__nexShellClosePane()` in this page and only closes the WINDOW if the answer is not
+ * `true` (`shell/src/menu.ts`). What is asserted here is this end of that contract — the global
+ * exists, it runs the same `close_pane` a keystroke runs, and one ⌘W can never close two panes
+ * however many routes it arrives by.
+ */
+describe('the shell’s Close request (N14)', () => {
+    const askShellClose = (): boolean => {
+        const request = (window as unknown as Record<string, unknown>)['__nexShellClosePane'];
+        if (typeof request !== 'function') throw new Error('the client installed no close bridge');
+        return (request as () => boolean)();
+    };
+
+    it('closes the focused pane and answers "handled", so the window stays', async () => {
+        const h = setup({ split: true });
+
+        let handled = false;
+        act(() => {
+            handled = askShellClose();
+        });
+
+        expect(handled).toBe(true);
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({ command: 'pane-close' });
+        });
+    });
+
+    it('does not close a second pane when the keystroke already closed one', async () => {
+        const h = setup({ split: true });
+
+        fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+        await waitFor(() => {
+            expect(h.commands().filter((payload) => payload['command'] === 'pane-close')).toHaveLength(1);
+        });
+
+        // The same ⌘W reaching the menu row anyway (whether a native accelerator can still fire
+        // after a cross-origin frame preventDefaults it is not observable from in here, so this
+        // side is written to be correct either way).
+        let handled = false;
+        act(() => {
+            handled = askShellClose();
+        });
+
+        expect(handled).toBe(true);
+        expect(h.commands().filter((payload) => payload['command'] === 'pane-close')).toHaveLength(1);
+    });
+
+    it('is the dispatcher’s answer, not a private path: the delete gate still stops it', async () => {
+        const h = setup({ agent: true });
+        const before = h.commands().length;
+
+        act(() => {
+            askShellClose();
+        });
+
+        // Same gate ⌘W raises — the request goes through `close_pane`, so it inherits every
+        // condition the keystroke has.
+        const gate = await screen.findByTestId('agent-delete-gate');
+        expect(gate.dataset['activeAgents']).toBe('1');
+        expect(h.commands()).toHaveLength(before);
+    });
+});

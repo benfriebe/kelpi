@@ -569,7 +569,15 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
             data-testid="pane-grid"
             data-resizing={resizing ? 'true' : 'false'}
             className={`relative h-full w-full overflow-hidden${className === undefined ? '' : ` ${className}`}`}
-            style={{ background: tokens.windowBackground }}
+            /*
+             * §N17 — NO fill here. `PaneGridView.swift:104-118` is a bare `ZStack` over a
+             * `GeometryReader`: the grid paints nothing, the app's ground shows through the
+             * gutters, and the only fill in the tree is each pane's own. This container used to
+             * repaint `--nex-bg`, which is invisible at opacity 1 (same colour as the ground
+             * behind it) and lethal below it — a second 0.85 layer, and alpha multiplies. The
+             * one place the Swift DOES paint `windowBackground` is the empty placeholder
+             * (`:509-510`), which `EmptyGrid` now carries itself.
+             */
         >
             {isEmptyLayout(layout) && panes.length === 0 ? (
                 <EmptyGrid {...(onCreatePane === undefined ? {} : { onCreatePane })} />
@@ -602,8 +610,23 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             // id rather than the `panes` array, which is a deliberate, separate
                             // choice: it keeps React from moving a terminal's node when the tree
                             // is rearranged.)
-                            zIndex: visible ? 1 : 0,
-                            background: tokens.windowBackground
+                            zIndex: visible ? 1 : 0
+                            /*
+                             * §N17 — and NO fill on the wrapper either.
+                             *
+                             * `PaneGridView.swift:370-378` is explicit about this: the pane's
+                             * `.background` is painted for markdown / scratchpad / diff / web
+                             * bodies ONLY, at the ghostty colour and the ghostty opacity. A
+                             * `.shell` pane's wrapper paints nothing at all, because the
+                             * libghostty surface inside it already carries the opacity and any
+                             * fill behind it would be a second layer to composite through.
+                             *
+                             * The port's equivalent of that surface fill is the `background`
+                             * each pane body paints (`App.tsx`'s `paneFill`, an
+                             * `rgba(ghostty-bg, opacity)`), so this wrapper's job is layout,
+                             * not paint. The header and the `flex-1` body cover it edge to
+                             * edge, which is why removing it is invisible at opacity 1.
+                             */
                         }}
                         // L33: no focus-on-press here. The wrapper used to claim the press in the
                         // CAPTURE phase, so clicking Split Down or ✕ on a background pane focused
@@ -836,7 +859,11 @@ function EmptyGrid({ onCreatePane }: EmptyGridProps): ReactElement {
         <div
             data-testid="pane-grid-empty"
             className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-            style={{ color: tokens.textSecondary }}
+            /* §N17: the placeholder carries its own fill, because the Swift's does —
+               `PaneGridView.swift:508-510`: "the 'No panes' placeholder fills an empty grid (no
+               pane bodies), so it reads as a window gap → chrome windowBackground". It used to
+               borrow the grid container's, which no longer paints one. */
+            style={{ background: tokens.windowBackground, color: tokens.textSecondary }}
         >
             {/* `.quaternary` transcribed literally: the primary label colour at 10%. */}
             <span

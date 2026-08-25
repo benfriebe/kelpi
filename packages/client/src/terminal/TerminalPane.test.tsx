@@ -476,6 +476,87 @@ describe('TerminalPane — input and focus', () => {
         expect(requested).toEqual(['pane-1']);
     });
 
+    /**
+     * N15 — the caret comes back when the WINDOW does.
+     *
+     * A window rebuilt after a close (the Dock reopen) renders a live grid with nothing holding
+     * the caret, and the focus effect cannot help: none of `focused`, `visible` or the engine's
+     * status changes when the OS hands the window back, so the pane stays keyboard-dead — and
+     * clicking it does not help either, because it is already the focused pane and nothing
+     * re-renders. The window's own `focus` event is the signal that does arrive.
+     */
+    it('re-grabs the caret when the window takes focus (N15)', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        const renderer = renderers.last();
+        const before = renderer.focusCount;
+
+        fireEvent.focus(window);
+
+        expect(renderer.focusCount).toBe(before + 1);
+    });
+
+    it('leaves the caret alone on window focus when a chrome field holds it', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        const renderer = renderers.last();
+        const before = renderer.focusCount;
+
+        // A sidebar rename or the palette field, mid-type when the window came back.
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        input.focus();
+        fireEvent.focus(window);
+        expect(renderer.focusCount).toBe(before);
+
+        input.remove();
+    });
+
+    it('does not re-grab the caret for a pane that is not the focused one', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+
+        fireEvent.focus(window);
+
+        expect(renderers.last().focusCount).toBe(0);
+    });
+
     it('reports process exit, bell and title to the host', async () => {
         const renderers = createFakeRendererFactory();
         const pty = createFakePtyApi();

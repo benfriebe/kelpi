@@ -195,6 +195,14 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     const colorScheme = props.isDark === false ? 'light' : 'dark';
     const documentBackground = props.documentBackground ?? FRAME_DOCUMENT_BACKGROUND[colorScheme];
 
+    /**
+     * N14: the claimed set is baked INTO the document as well as posted to it, so the relay is
+     * armed the instant the script runs rather than when the first `ready` is answered. A
+     * rebind still arrives as a `chords` message; it also rebuilds this document, which is
+     * harmless (the array's identity only moves when the binding map does) and is exactly what
+     * keeps the seed from going stale.
+     */
+    const seedChords = props.claimedChords ?? EMPTY_CHORDS;
     const srcDoc = useMemo(
         () =>
             prepareContentDocument(html, {
@@ -202,9 +210,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                 assetBase: props.assetBase ?? null,
                 background: documentBackground,
                 colorScheme,
-                findPalette: props.findPalette
+                findPalette: props.findPalette,
+                claimedChords: seedChords
             }),
-        [html, paneID, props.assetBase, documentBackground, colorScheme, props.findPalette]
+        [html, paneID, props.assetBase, documentBackground, colorScheme, props.findPalette, seedChords]
     );
 
     // ── find-in-page (§3.13), per client ────────────────────────────────────────────
@@ -299,14 +308,14 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     }, [copyable, toFrame, srcDoc]);
 
     /**
-     * H9: the claimed chord set, on the same schedule as the copy-menu flag — a re-injected
-     * document has an empty set until it is told, and a re-recorded keybinding has to reach a
-     * frame that is already open.
+     * H9: the claimed chord set, on the same schedule as the copy-menu flag — a re-recorded
+     * keybinding has to reach a frame that is already open. (Since N14 the same set is also
+     * seeded into the document itself, so this message CORRECTS a live frame rather than being
+     * the only thing that ever arms it.)
      */
-    const claimedChords = props.claimedChords ?? EMPTY_CHORDS;
     useEffect(() => {
-        toFrame({ kind: 'chords', chords: claimedChords });
-    }, [claimedChords, toFrame, srcDoc]);
+        toFrame({ kind: 'chords', chords: seedChords });
+    }, [seedChords, toFrame, srcDoc]);
 
     const copyMarkdown = useCallback((): void => {
         setMenu(null);

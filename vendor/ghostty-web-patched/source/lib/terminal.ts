@@ -492,6 +492,12 @@ export class Terminal implements ITerminalCore {
         cursorStyle: this.options.cursorStyle,
         cursorBlink: this.options.cursorBlink,
         theme: this.options.theme,
+        // `ITerminalOptions.allowTransparency` reached `this.options` and stopped there: the
+        // renderer never received it, so the default background was always painted opaque and
+        // an embedder's translucent fill behind the canvas could never show through. Handing
+        // it over is what makes the option mean something — see
+        // `RendererOptions.allowTransparency` in `renderer.ts`.
+        allowTransparency: this.options.allowTransparency,
       });
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)

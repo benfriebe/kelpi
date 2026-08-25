@@ -13,6 +13,15 @@
 /** Dark-column fallbacks (shell-ui.md §2 preset table). */
 export const CHROME_TOKEN_FALLBACKS = {
     '--nex-bg': '#0A0A0C',
+    /**
+     * §N17 — the window GROUND, `theme.ts`'s `WINDOW_FILL_CSS_VAR`.
+     *
+     * Same value as `--nex-bg` until the shell creates the window transparent, at which point
+     * it becomes `transparent`: `RootChromeView.swift:32-39` skips its opaque backdrop below
+     * `background-opacity` 1 so each pane's own fill is the single translucent layer. Only two
+     * elements may read it — `<body>` and the app root. Everything else keeps `--nex-bg`.
+     */
+    '--nex-window-fill': '#0A0A0C',
     '--nex-sidebar-bg': '#0C0C10',
     '--nex-surface': '#101013',
     '--nex-header-bg': '#13131A',
@@ -42,6 +51,8 @@ export function token(name: ChromeTokenName): string {
 /** Named reads, so components say `tokens.textSecondary` rather than a raw variable. */
 export const tokens = {
     windowBackground: token('--nex-bg'),
+    /** §N17: the ground. `<body>` and the app root only — see `CHROME_TOKEN_FALLBACKS`. */
+    windowFill: token('--nex-window-fill'),
     sidebarBackground: token('--nex-sidebar-bg'),
     surfaceBackground: token('--nex-surface'),
     headerBackground: token('--nex-header-bg'),

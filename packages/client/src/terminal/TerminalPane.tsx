@@ -175,6 +175,24 @@ export interface TerminalPaneProps {
      * window exactly as it does for markdown/diff panes (content-panes.md §3.8).
      */
     readonly background?: string | undefined;
+    /**
+     * §N17 — the `background` above is TRANSLUCENT, so the canvas must let it through.
+     *
+     * `background` has always been handed the ghostty colour at the ghostty opacity, and it has
+     * always been painted for nothing under a terminal: the engine fills its canvas with an
+     * opaque default background, so a 0.85 pane came out solid however transparent the window
+     * and the fill behind it were. Passing this on tells the engine to CLEAR the default
+     * background instead of filling it (`ghostty-web` `RendererOptions.allowTransparency`),
+     * which leaves this element's `rgba()` as the single translucent layer over the desktop —
+     * the composite `SurfaceView`'s libghostty surface produces natively in the shipped app.
+     *
+     * Assembly passes `backgroundOpacity < 1`, so at the default opacity the engine takes
+     * exactly the code path it always did. Read at engine CONSTRUCTION, which is sound because
+     * crossing 1.0 already needs a relaunch (the window's `transparent` flag is fixed at
+     * creation — `shell/src/appearance.ts`); changes that stay below 1 only move the `rgba()`
+     * alpha, which is a repaint of this element and needs no engine rebuild.
+     */
+    readonly allowTransparency?: boolean | undefined;
     /** A click in the pane wants focus; assembly turns this into a daemon focus report. */
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly fontFamily?: string | undefined;
@@ -297,6 +315,15 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     const [status, setStatus] = useState<PaneStatus>('loading');
     /** Engine builds so far in this mount — surfaced on the root for the audit harness. */
     const [attempts, setAttempts] = useState(0);
+    /**
+     * §N17 — the `allowTransparency` the LIVE engine was actually built with.
+     *
+     * Not the prop: the option is read once, when the engine is constructed, so the prop and
+     * the engine can disagree for the lifetime of a pane that was built before the daemon's
+     * settings snapshot arrived. Recording what was passed is what makes
+     * `data-terminal-transparent` an honest report rather than a restatement of the input.
+     */
+    const [engineTransparent, setEngineTransparent] = useState(false);
     /** Set by the mount effect; the placeholder's Retry button is the only other caller. */
     const restartRef = useRef<(() => void) | null>(null);
 
@@ -494,8 +521,16 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             const renderer = factory({
                 ...(current.fontFamily !== undefined ? { fontFamily: current.fontFamily } : {}),
                 ...(current.fontSize !== undefined ? { fontSize: current.fontSize } : {}),
+                // §N17: only when assembly says the pane fill is translucent. Absent (a test
+                // harness, a standalone mount) the engine keeps its opaque default background,
+                // which is what every caller before this got.
+                ...(current.allowTransparency === undefined
+                    ? {}
+                    : { allowTransparency: current.allowTransparency }),
                 theme: current.theme ?? resolveTerminalTheme(host)
             });
+            // §N17: report what the engine was BUILT with, not what the prop says now.
+            setEngineTransparent(current.allowTransparency === true);
             // Measured through the renderer's own cell metrics, which before `open()` are the
             // font-derived estimate — now accurate, because the face has loaded.
             const initial = measureGeometry(host, renderer, current.measure);
@@ -825,6 +860,21 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (!latest.current.visible) return;
             syncGeometry(true);
             rendererRef.current?.repaint();
+            /*
+             * N15 — the caret comes back with the window.
+             *
+             * A window that has just taken focus (a Dock click, ⌘Tab, a window REBUILT after a
+             * close) has a live DOM but nothing holding the caret, and the focus effect below
+             * only runs when `focused`/`visible`/`status` change — none of which they do when
+             * the OS hands the window back. The result is a window that renders and takes no
+             * keystrokes at all, which is the half of N15 that lives in the page.
+             *
+             * `shouldGrabFocus` is the same politeness the mount path uses: a sidebar rename,
+             * the palette or any other chrome field that holds the caret keeps it.
+             */
+            if (latest.current.focused === true && shouldGrabFocus(hostRef.current)) {
+                rendererRef.current?.focus();
+            }
         };
         document.addEventListener('visibilitychange', resync);
         window.addEventListener('focus', resync);
@@ -900,6 +950,14 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             /* Cell metrics in CSS pixels, so the audit can compute the cell a pixel lands in
                and assert a mouse report byte for byte instead of pattern-matching it. */
             data-terminal-cell={cellHint}
+            /* §N17 — whether this pane's ENGINE was built to let the fill behind it through.
+               Published for exactly the reason the mouse mode and the kitty flags are: a
+               screenshot cannot see through a window, so "the opacity reached the renderer"
+               has to be an observable fact about the pane rather than an inference from a CSS
+               variable set somewhere else. It is read at engine construction (see the prop's
+               doc comment), so this reports the value that is actually in force, not the
+               current prop. */
+            data-terminal-transparent={engineTransparent ? 'true' : 'false'}
             /* §APP-014 — the background and foreground this pane last handed its ENGINE.
                Published for the same reason as the mouse mode and the kitty flags above: "the
                resolved theme reached the renderer" has to be an observable fact about the pane

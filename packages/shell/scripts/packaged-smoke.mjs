@@ -796,6 +796,21 @@ async function launchPhase() {
             app.text().includes('cli-install: tray item enabled'),
             app.lines.find((line) => line.includes('cli-install: tray item')) ?? ''
         );
+        /*
+         * UI-FIDELITY U2 / defect N16, asserted on the SHIPPED bundle rather than on the source.
+         * The defect was owner-observed on a packaged app: a left-click on the status item both
+         * opened the tray menu and pulled the window forward, because `status.ts` registered
+         * `tray.on('click', …)` next to `setContextMenu` — where the Swift status item only
+         * toggles its popover (`StatusBarController.swift:32-39,117-126`). A native tray is not
+         * screenshottable or introspectable from another process, so the evidence is the count
+         * the app reads off its own `Tray` and logs (`handlers=`), from inside `app.asar`.
+         */
+        const packagedTray = await app.waitForLine(/tray ready/, 'the packaged tray');
+        check(
+            'the packaged app’s tray carries no event handler — the context menu is the gesture',
+            packagedTray.includes('handlers=0'),
+            packagedTray.trim() || '(no tray ready line)'
+        );
         const healedCli = spawnSync(sandbox.cliLinkPath, ['--version'], {
             encoding: 'utf8',
             env: { PATH: '/usr/bin:/bin', HOME: sandbox.home }

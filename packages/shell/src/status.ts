@@ -76,7 +76,13 @@ const RECONNECT_JITTER = 0.2;
 const BOUNCE_COOLDOWN_MS = 3_000;
 
 export interface StatusHost {
-    /** Tray "Show Nex" / tray click / a clicked notification. */
+    /**
+     * Tray "Show Nex", a tray pane row's reveal, or a clicked notification.
+     *
+     * Deliberately NOT the tray icon's own click: the shipped status item only toggles its
+     * popover (`StatusBarController.swift:32-39,117-126`), so raising the window is always a
+     * row the user chose, never a side effect of opening the menu (see `updateTray`).
+     */
     showWindow(): void;
     /** Bounce suppression: §7.1's `isAppActive`. */
     isWindowFocused(): boolean;
@@ -513,10 +519,24 @@ export function createStatusController(options: StatusOptions): StatusController
         const palette = trayPaletteSignature(trayPalette());
         if (tray === null) {
             tray = new Tray(trayImage(next));
-            tray.on('click', () => host.showWindow());
+            // NO `tray.on('click', …)` here, and none anywhere else (UI-FIDELITY U2 / N16).
+            // `setContextMenu` alone is the whole gesture: macOS opens the menu on a left-click,
+            // and Electron ALSO delivers the `click` event next to it — so a handler that raised
+            // the window made one click do two things, and the window came forward under a menu
+            // the user had only meant to read. The shipped app's status item does exactly one:
+            // its button's action is `togglePopover`, which shows or closes the popover and
+            // nothing else — no `activate`, no window raise (`StatusBarController.swift:32-39,
+            // 117-126`). Raising the window stays a DELIBERATE choice inside the menu: the
+            // "Show Nex" row below, or any pane row (which reveals through `revealFromTray`).
             indicator = next;
             lastPaletteSignature = palette;
-            log(`tray ready (${next}${trayIconIsTemplate(next) ? ', template' : ''})`);
+            // `handlers=` is MEASURED off the tray's own listener registry, not asserted: the
+            // absence above is the whole fix, and a comment saying so is not observable from
+            // outside the process — where a tray is not screenshottable either (§AGNT-090's
+            // limitation). `smoke.mjs` and the audit read this number, so a handler that creeps
+            // back in — for any event, under any name — shows up here as `handlers=1`.
+            const handlers = tray.eventNames().length;
+            log(`tray ready (${next}${trayIconIsTemplate(next) ? ', template' : ''}, handlers=${String(handlers)})`);
         } else if (next !== indicator || palette !== lastPaletteSignature) {
             tray.setImage(trayImage(next));
             if (palette !== lastPaletteSignature) log(`tray palette: ${palette}`);

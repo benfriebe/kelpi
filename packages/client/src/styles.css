@@ -54,6 +54,11 @@
 
   /* chrome — shell-ui.md §2, dark column */
   --nex-bg: #0a0a0c;
+  /* §N17: the GROUND. Same value as `--nex-bg` until `ThemeProvider` learns the window was
+     created transparent, at which point it becomes `transparent` — see `chrome/theme.ts`.
+     Defined per bucket here so the frame before the provider stamps is never the dark hex on
+     a light chrome. */
+  --nex-window-fill: #0a0a0c;
   --nex-sidebar-bg: #0c0c10;
   --nex-surface: #101013;
   --nex-surface-bg: #101013; /* grid/tokens.ts spelling */
@@ -116,6 +121,7 @@
     color-scheme: light;
 
     --nex-bg: #eae8e2;
+    --nex-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
     --nex-sidebar-bg: #efeee9;
     --nex-surface: #ffffff;
     --nex-surface-bg: #ffffff;
@@ -168,6 +174,7 @@
   color-scheme: light;
 
   --nex-bg: #eae8e2;
+  --nex-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
   --nex-sidebar-bg: #efeee9;
   --nex-surface: #ffffff;
   --nex-surface-bg: #ffffff;
@@ -224,7 +231,13 @@ body,
 }
 
 body {
-  background: var(--nex-bg);
+  /* §N17 — the window GROUND, not the "window gaps" colour.
+     `--nex-window-fill` is `--nex-bg` until the shell creates the window transparent, then it
+     is `transparent`: `RootChromeView.swift:32-39` paints its backdrop "only when the terminal
+     is fully opaque", so at `background-opacity < 1` each pane's own fill is the ONE
+     translucent layer over the desktop instead of one of five stacked ones. The `var()`
+     fallback keeps the preset ground before `ThemeProvider` has stamped anything. */
+  background: var(--nex-window-fill, var(--nex-bg));
   color: var(--nex-fg);
   font-family: var(--nex-font-ui);
   font-size: 13px;

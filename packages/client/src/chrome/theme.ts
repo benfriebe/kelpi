@@ -308,7 +308,7 @@ export const CHROME_CSS_VAR_ALIASES: Readonly<Record<string, string>> = {
 export interface ChromeCssVarOptions {
     /**
      * The ghostty `background-opacity` (APP-012 / SET-049). Below 1 the WINDOW fill —
-     * `--nex-bg`, which `<body>`, the pane grid's gutters and the app root all paint — is
+     * `--nex-bg`, which the pane grid's gutters, the placeholders and the popovers paint — is
      * emitted as `rgba(…, opacity)` rather than an opaque hex, so a window the Electron shell
      * created transparent lets the desktop through everywhere the client is not deliberately
      * opaque (the sidebar, the header, popovers, the settings dialog).
@@ -319,6 +319,27 @@ export interface ChromeCssVarOptions {
      */
     readonly windowOpacity?: number | undefined;
 }
+
+/**
+ * §N17 — the window GROUND, as a name of its own, distinct from `--nex-bg`.
+ *
+ * `--nex-bg` is the chrome's "window gaps" colour and a dozen surfaces read it. The ground is
+ * a different question: it is what `<body>` and the app root paint BEHIND everything else, and
+ * once the window is transparent it must paint nothing at all. `RootChromeView.swift:32-39`
+ * says so outright — the opaque backdrop is painted "only when the terminal is fully opaque",
+ * because "with `background-opacity < 1` the window is non-opaque … an opaque backdrop here
+ * would defeat that". Each pane's own fill is then the single translucent layer over the
+ * desktop, exactly as libghostty's surface is in the shipped app.
+ *
+ * The port had no such name, so five elements painted `--nex-bg` on top of one another —
+ * `<body>`, the app root, the grid container, every pane wrapper, every pane body. Alpha
+ * multiplies: 0.85 stacked five deep is 1 − 0.15⁵ = **0.99992**, i.e. solid, which is the
+ * whole of N17's "fully solid pane" at the DOM layer.
+ *
+ * At opacity 1 (the shipped default) this is `theme.windowBackground` — the same value those
+ * elements already painted, so the rendered result is byte-identical.
+ */
+export const WINDOW_FILL_CSS_VAR = '--nex-window-fill';
 
 /** The theme as a `{ '--nex-*': value }` map, ready for an inline `style` or `:root` block. */
 export function chromeThemeCssVars(
@@ -331,12 +352,14 @@ export function chromeThemeCssVars(
         vars[name] = typeof value === 'number' ? String(value) : value;
     }
     const opacity = options.windowOpacity;
-    if (typeof opacity === 'number' && Number.isFinite(opacity) && opacity < 1) {
-        vars[CHROME_CSS_VARS.windowBackground] = withAlpha(
-            theme.windowBackground,
-            Math.max(0, opacity)
-        );
+    const transparentWindow =
+        typeof opacity === 'number' && Number.isFinite(opacity) && opacity < 1;
+    if (transparentWindow) {
+        vars[CHROME_CSS_VARS.windowBackground] = withAlpha(theme.windowBackground, Math.max(0, opacity));
     }
+    // §N17: the ground paints nothing under a transparent window (see WINDOW_FILL_CSS_VAR), so
+    // each pane's own fill is the only translucent layer between the desktop and the terminal.
+    vars[WINDOW_FILL_CSS_VAR] = transparentWindow ? 'transparent' : theme.windowBackground;
     for (const [alias, canonical] of Object.entries(CHROME_CSS_VAR_ALIASES)) {
         const value = vars[canonical];
         if (value !== undefined) vars[alias] = value;

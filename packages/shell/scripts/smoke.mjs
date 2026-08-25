@@ -607,6 +607,16 @@ async function adoptPhase() {
 
         const tray = await shell.waitForLine(/tray ready/, 'the tray');
         check('a tray item was created', tray !== undefined, tray.trim());
+        // UI-FIDELITY U2 / defect N16: the tray's whole gesture is its context menu. macOS opens
+        // that menu on a left-click and Electron emits `click` next to it, so a `click` handler
+        // that raised the window made one gesture do two things — where the shipped status item
+        // only toggles its popover (`StatusBarController.swift:32-39,117-126`). `handlers=` is a
+        // count of listeners on the REAL `Tray`, which is the only view of one from out here.
+        check(
+            '…with no event handler on it — the context menu is the whole gesture',
+            tray.includes('handlers=0'),
+            tray.trim()
+        );
 
         // APP-020/APP-026/APP-027: the application menu is not observable from outside the
         // process, so the shell logs what it built and this is the check.
@@ -695,6 +705,23 @@ async function adoptPhase() {
         // here, so the shell logs it and this is the check.
         const raised = await shell.waitForLine(/open: raised the window/, 'the window raise', 10_000);
         check('the app raised its window for the file it was handed (CONT-125)', raised !== undefined, raised.trim());
+        /*
+         * N15: every raise goes through ONE path now (`window-present.ts`), and that path is what
+         * a reopened window depends on — a window that is only `show()`n comes up unable to take
+         * a keystroke. The steps it took are logged because keyboard focus is not observable from
+         * out here: a synthesised key would bypass exactly the native focus this is about.
+         *
+         * This raise is of a window that already exists; the `created` variant of the same line
+         * is what a Dock reopen prints, and it runs the same three calls.
+         */
+        const presented = await shell.waitForLine(/window: presented \(/, 'the window focus handoff', 10_000);
+        check(
+            'the raise focused the window and handed focus to its web contents (N15)',
+            presented !== undefined &&
+                presented.includes('focused') &&
+                presented.includes('contents-focused'),
+            presented?.trim() ?? '(no line)'
+        );
         const afterOpen = await controlCommand(sandbox.runSocket, { command: 'pane-list' });
         // CONT-124: `open` renders whatever it is handed AS MARKDOWN, so the `.png` must never
         // have been forwarded — one new pane, not two.

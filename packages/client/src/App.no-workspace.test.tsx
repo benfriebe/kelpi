@@ -152,3 +152,21 @@ describe('the no-workspace empty state (§APP-067 / §WS-156)', () => {
         expect(screen.queryByTestId('no-workspace-empty')).toBeNull();
     });
 });
+
+/**
+ * N14 — the honest "no" that lets ⌘W still close the window.
+ *
+ * The shell's Close row asks this page first and closes the window only when the answer is not
+ * `true`. With nothing to close the answer has to BE false: a client that always claimed the
+ * keystroke would make the window unclosable from the menu bar, which is a worse defect than the
+ * one N14 fixes.
+ */
+describe('the shell’s Close request with nothing to close (N14)', () => {
+    it('answers false, so the shell falls back to closing the window', () => {
+        setup(emptySnapshot());
+
+        const request = (window as unknown as Record<string, unknown>)['__nexShellClosePane'];
+        expect(typeof request).toBe('function');
+        expect((request as () => boolean)()).toBe(false);
+    });
+});

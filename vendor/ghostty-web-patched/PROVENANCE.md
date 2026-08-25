@@ -1,13 +1,15 @@
-# ghostty-web 0.4.0-nex.2 (vendored)
+# ghostty-web 0.4.0-nex.3 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus one
-Nex-authored adaptation on top of them (`-nex.2`: the caret-anchored IME, below).
+review in the orchestrating session and explicit user authorization to integrate both — plus two
+Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
+`allowTransparency` that does something).
 
 | Version | What it added |
 |---|---|
 | `0.4.0-nex.1` | upstream v0.4.0 + PR #120 + PR #159 + the local adaptations they needed |
 | `0.4.0-nex.2` | the IME (hidden textarea **and** preedit) anchored to the cursor cell |
+| `0.4.0-nex.3` | `allowTransparency` HONOURED: the default background is cleared, not filled |
 
 ## Base
 
@@ -97,6 +99,87 @@ Not addressed here, and still open: nothing reports a caret rect to the *OS* bey
 box (that is the browser's job and it is what the box exists for), and modifier press/release
 (TERM-030) remains unimplemented — the bundle still registers zero `keyup` listeners.
 
+## Nex adaptation: `allowTransparency`, honoured (`0.4.0-nex.3`, 2026-08-25)
+
+`ITerminalOptions.allowTransparency` has existed since v0.4.0. It was read once, into
+`baseOptions` (`lib/terminal.ts:162`), and then never again: the renderer was constructed
+without it and every paint of the DEFAULT background was an opaque
+`fillStyle = theme.background; fillRect(…)`. So an embedder that painted a translucent fill
+behind the canvas — the entire purpose of the option — still got a solid terminal.
+
+That is the engine half of **N17**: a Nex sandbox seeded with `background-opacity = 0.85`
+showed zero bleed-through on a terminal pane. The window was created transparent, the DOM
+carried the alpha, and the canvas painted over all of it.
+
+`-nex.3` makes the option mean what it says, in `lib/renderer.ts`:
+
+- **`paintDefaultBackground(x, y, w, h)`** — one seam for the four places that used to write
+  `fillStyle = theme.background; fillRect(…)`: `resize()`, `renderLine()`, `clear()` and the
+  scrollbar's clear strip. With the option OFF it is literally those two statements. With it on
+  the rectangle is `clearRect`ed, and the canvas has always been
+  `getContext('2d', { alpha: true })`, so the element behind it shows through. **Clearing, not
+  filling with an `rgba()`** — these rectangles are repainted per frame and per line, and a
+  translucent fill would COMPOUND, darkening a cell towards opaque the longer it sat there.
+- **`isDefaultCellBackground(r, g, b)`** — upstream decides "this cell has no background of its
+  own" by `(0, 0, 0)`, which holds only when the WASM terminal was configured without a
+  `bgColor`. Nex configures one (the ghostty `background` key), and every untouched cell then
+  reports *that* colour, so pass 1 filled every cell opaquely and the cleared line underneath
+  was never seen. Under `allowTransparency` a cell whose background IS the theme background
+  counts as default too. `defaultBackgroundRGB` caches the components and `setTheme` refreshes
+  it alongside the palette.
+- `lib/terminal.ts` passes `this.options.allowTransparency` into the `CanvasRenderer`.
+
+Text is untouched: glyphs, explicit `SGR 48` cell backgrounds, selection and cursor all still
+paint opaque, which is what ghostty's own `background-opacity` does — it dims the background,
+never the characters.
+
+The honest edge, stated where the code makes it: an application that sets a cell's background
+EXPLICITLY to the exact theme background becomes translucent there rather than opaque. Nothing
+on screen can tell those apart except the desktop behind the window, and the alternative is the
+defect this removes.
+
+## Verification of `0.4.0-nex.3` (2026-08-25)
+
+Sandboxed throughout (`scripts/ui-audit/lib/stack.mjs`: `mkdtemp` root, `NEXD_*` overrides,
+ephemeral non-reserved ports, private Electron `--user-data-dir`), never the dev stack.
+
+- **Canvas readback, live pane, `background-opacity = 0.85`** — `getImageData` on the engine's
+  own canvas at four rows down the pane plus three margin pixels: **`(0, 0, 0, 0)` at all
+  seven**, on the boot pane *and* on a pane created afterwards by `nex pane split`. Before the
+  patch the same seven read `(10, 10, 12, 255)`.
+- **On the PACKAGED app too**, which is where the defect was reported: the same readback against
+  `packages/shell/out/Nex-darwin-arm64/Nex.app`'s own binary and its own staged client — window
+  logged `transparent (background-opacity 0.85)`, `data-terminal-transparent="true"`, all seven
+  points `(0, 0, 0, 0)` on both panes, glyph alpha 255, and the app root / `<body>` / grid all
+  `rgba(0, 0, 0, 0)` with the pane's `rgba(10, 10, 12, 0.85)` the only painted layer.
+- **Glyphs stayed opaque** in the same frame: the prompt row scanned 900 × 24 device px, **max
+  alpha 255**, 934 lit pixels (i.e. the text and only the text).
+- **The opaque default is unchanged**: with no `background-opacity` line the window logs
+  `opaque (background-opacity 1.00)`, the pane reports `data-terminal-transparent="false"`, and
+  the same seven pixels read `(10, 10, 12, 255)` with the prompt-row scan fully lit
+  (21600/21600) — the fill path, untouched.
+- `pnpm --filter @nex/shell smoke:terminal` — **14/19**, and the five that fail are *not* this
+  patch's. They are the `tall`, `re-attach` and `re-boot` phases, every one of them a claim
+  about the WINDOW's restored bounds and the daemon's geometry cache (`prompt widths [122,122]`
+  against `COLUMNS=84` — the wide session's grid surviving into the tall one). The `wide` and
+  `narrow` phases, which exercise exactly the chain this patch touches — the Nerd font, the
+  canvas fitting the pane, `$COLUMNS`, a `$COLUMNS`-wide ruler and a p10k-shaped prompt filling
+  it exactly — are **green**. The smoke rebuilds the shell bundle before it runs, and
+  `packages/shell/src/main.ts` is being rewritten concurrently in this working tree by the N14 /
+  N15 / N16 lanes (`showWindow`, `presentWindow`, a new `ready-to-show` focus handoff); nothing
+  in this change can move a window or a column count. Re-run once those land to attribute it
+  properly.
+- Client unit suite via `vitest run packages/client` — **148 files, 2170 tests**, all passing,
+  including this directory's `vendor-engine.test.ts` (extended with the `-nex.3` markers).
+- Rebuild sanity: `dist/ghostty-web.js` is **691.93 kB** (was 689.55 kB at `-nex.2`'s recipe
+  numbers), still contains `data-ime-preedit` / `data-ime-caret` / `syncImeCaret` and no
+  `조합중`, and now also `paintDefaultBackground`. `ghostty-vt.wasm` re-copied byte-identical
+  (`sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`).
+- What is still NOT verified here, and cannot be: that the desktop is actually visible through
+  the pane. A CDP screenshot composites the PAGE, not the screen behind the window. Every layer
+  between the two is asserted (window flag, computed styles, canvas alpha); the last inch is a
+  human looking at a real screen.
+
 ## Verification at integration time (2026-08-21)
 
 - Root `pnpm check` green; terminal-fidelity smoke 19/19; audit steps fresh-boot,
@@ -169,11 +252,17 @@ The wasm is the one thing `source/` does not carry (413 KB of binary, byte-ident
 above can come from there:
 `sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~672 KiB (688 kB, +4 kB over `-nex.1`), and
-it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret` and no `조합중` (the chip label
-`-nex.2` removed). `npx tsc --noEmit` on the snapshot reports only the four pre-existing
-`Bun` / `fs/promises` errors in `lib/ghostty.ts` (the tsconfig asks for `bun-types`, which the
-npm install does not provide); nothing in `terminal.ts` or `input-handler.ts`.
+Sanity checks on a rebuild: `dist/ghostty-web.js` is ~673 KiB (691.93 kB as vite reports it,
++2.4 kB over `-nex.2`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+`paintDefaultBackground` (`-nex.3`) and no `조합중` (the chip label `-nex.2` removed). Those
+markers are asserted in CI by `packages/client/src/terminal/vendor-engine.test.ts`, which also
+pins the version this file documents — bump both together or the guard fails. `npx tsc
+--noEmit` on the snapshot reports only the four pre-existing `Bun` / `fs/promises` errors in
+`lib/ghostty.ts` (the tsconfig asks for `bun-types`, which the npm install does not provide);
+nothing in `terminal.ts`, `renderer.ts` or `input-handler.ts`.
+
+`vite build` prints those same four errors and still exits 0 — that is expected, not a broken
+build; the `dist/` line count at the end is the signal to read.
 
 ## Refreshing
 
@@ -181,7 +270,16 @@ When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 mer
 vendor dir and the root `pnpm.overrides['ghostty-web']`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
-Note that the caret anchoring above is **not** an upstream PR — it is Nex's own. Taking a
-future npm release wholesale would put the preedit back in the container's corner and reopen
-TERM-032 / TERM-033, so either re-apply it to the new base (the `syncImeCaret` / `setPreedit` /
-`updatePreedit` trio and the textarea styling in `open()`) or carry it as this vendor dir does.
+Note that **neither** Nex adaptation is an upstream PR. Taking a future npm release wholesale
+would:
+
+- put the preedit back in the container's corner and reopen TERM-032 / TERM-033 — so re-apply
+  the `syncImeCaret` / `setPreedit` / `updatePreedit` trio and the textarea styling in `open()`,
+  or carry them as this vendor dir does; and
+- make `allowTransparency` inert again, which turns every `background-opacity < 1` terminal
+  solid and reopens **N17** — so re-apply `paintDefaultBackground`, `isDefaultCellBackground`
+  and the option's journey from `this.options` into the `CanvasRenderer`.
+
+The second is the easier one to lose: nothing about it is visible on an opaque config, which is
+what almost every developer runs. `vendor-engine.test.ts` fails on the missing markers, and the
+`window-transparency` audit step asserts the live canvas's alpha — those two are the net.

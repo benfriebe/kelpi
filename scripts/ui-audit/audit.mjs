@@ -13983,6 +13983,26 @@ function buildFlows(ctx) {
                     runtime.shell.text().includes('tray menu:'),
                     runtime.shell.text().split('\n').filter((line) => line.includes('tray menu:')).slice(-1).join('') || '(none)'
                 );
+                /*
+                 * UI-FIDELITY U2 / defect N16: the menu above is the tray's WHOLE gesture. macOS
+                 * opens it on a left-click and Electron emits `click` alongside, so the port's
+                 * `tray.on('click', () => showWindow())` made one click both open the menu and
+                 * raise the window \u2014 where the shipped status item only toggles its popover
+                 * (`StatusBarController.swift:32-39,117-126`). Same limitation as the rows: a
+                 * native tray cannot be screenshotted or introspected from out here, so the
+                 * evidence is the listener count the shell reads off its own `Tray` and logs.
+                 */
+                const trayReady = runtime.shell
+                    .text()
+                    .split('\n')
+                    .filter((line) => line.includes('tray ready'))
+                    .slice(-1)
+                    .join('');
+                recorder.check(
+                    'the tray carries no event handler \u2014 raising the window stays a menu row',
+                    trayReady.includes('handlers=0'),
+                    trayReady || '(no tray ready line)'
+                );
             }
         },
         {
@@ -19301,6 +19321,151 @@ function buildFlows(ctx) {
                     );
                 }
 
+                /*
+                 * §N17 — COUNT THE LAYERS, then read the canvas.
+                 *
+                 * The checks above ask whether `--nex-bg` carries alpha, and it always did.
+                 * What made a 0.85 pane render SOLID was arithmetic nobody measured: five
+                 * elements painted that variable — `<body>`, the app root, the grid container,
+                 * every pane wrapper, every pane body — and alpha multiplies, so 1 − 0.15⁵ is
+                 * 0.99992. Then the engine filled its canvas opaque on top of the lot.
+                 *
+                 * `PaneGridView.swift:370-378` is the rule: a `.shell` pane's wrapper paints
+                 * NOTHING (the libghostty surface carries the opacity), and only markdown /
+                 * scratchpad / diff / web bodies get the ghostty fill. `RootChromeView.swift:32-39`
+                 * is the other half: no backdrop at all below opacity 1.
+                 *
+                 * So the invariant, at any opacity: exactly ONE painted layer between the
+                 * window and a terminal's glyphs. Below 1 that layer is translucent and the
+                 * canvas's default background is CLEAR; at 1 the layer is opaque and the canvas
+                 * is filled, byte for byte as it always was. Both are asserted, because "most
+                 * users run opaque" is exactly the case a translucency fix can quietly break.
+                 */
+                const stack = await page.eval(
+                    `(() => {
+                        const bg = (el) => (el === null ? null : getComputedStyle(el).backgroundColor);
+                        const clear = (value) => value === null || /rgba\\([^)]*,\\s*0\\)$/.test(value);
+                        const body = document.querySelector('[data-terminal-status="live"]');
+                        const wrapper = body === null ? null : body.closest('[data-pane-id][data-focused]');
+                        const canvas = body === null ? null : body.querySelector('[data-terminal-host] canvas');
+                        let cells = null;
+                        let glyphs = null;
+                        if (canvas !== null) {
+                            try {
+                                const ctx = canvas.getContext('2d');
+                                cells = [0.35, 0.6, 0.9].map((fy) => {
+                                    const d = ctx.getImageData(
+                                        Math.floor(canvas.width * 0.5),
+                                        Math.floor(canvas.height * fy),
+                                        1, 1
+                                    ).data;
+                                    return d[3];
+                                });
+                                // The prompt row: glyphs must stay fully opaque at every
+                                // opacity — ghostty dims the background, never the text.
+                                const rowY = Math.max(2, Math.floor(canvas.height * 0.012));
+                                const strip = ctx.getImageData(0, rowY, Math.min(canvas.width, 900), 24).data;
+                                let best = 0;
+                                for (let i = 3; i < strip.length; i += 4) if (strip[i] > best) best = strip[i];
+                                glyphs = best;
+                            } catch (error) {
+                                cells = String(error && error.message ? error.message : error);
+                            }
+                        }
+                        return {
+                            grounds: {
+                                body: bg(document.body),
+                                appRoot: bg(document.querySelector('[data-testid="nex-app"]')),
+                                grid: bg(document.querySelector('[data-testid="pane-grid"]')),
+                                paneWrapper: wrapper === null ? null : bg(wrapper)
+                            },
+                            groundsClear: [document.body, document.querySelector('[data-testid="nex-app"]'),
+                                           document.querySelector('[data-testid="pane-grid"]'), wrapper]
+                                .map((el) => clear(bg(el))),
+                            paneFill: bg(body),
+                            engineTransparent: body === null ? null : body.getAttribute('data-terminal-transparent'),
+                            cells,
+                            glyphs
+                        };
+                    })()`
+                );
+                recorder.note(`pane paint stack: ${JSON.stringify(stack)}`);
+                const paneFill = String(stack?.paneFill ?? '');
+                const cellAlphas = Array.isArray(stack?.cells) ? stack.cells : [];
+                /*
+                 * TWO facts here, not one — and run-U's first attempt is why this is spelled out.
+                 *
+                 * The window's compositing is fixed at CREATION (`createdTransparent`). The
+                 * client's opacity is LIVE, and `appearance-terminal` has already dragged it to
+                 * 0.85 by the time this step runs — which is the product's own documented state
+                 * ("Panes already follow it; the window itself becomes transparent the next time
+                 * Nex starts", `main.ts` ▸ `applyAppearanceSettings`). Keying the CANVAS
+                 * assertions off the window flag asserted a state the run had deliberately left
+                 * behind, and reported three failures against correct behaviour.
+                 *
+                 * So they are separated: the GROUND follows the WINDOW (the client gates
+                 * `windowOpacity` on `?windowTransparent=1` — `App.tsx:312-319`), and the pane
+                 * fill, the engine flag and the canvas follow the CLIENT's live opacity, read
+                 * back off the pane fill itself. Both directions are asserted in both cases, so
+                 * nothing goes unwatched either way.
+                 */
+                const fillAlpha = /rgba\([^)]*,\s*([\d.]+)\s*\)$/.exec(paneFill);
+                const clientTranslucent = fillAlpha !== null && Number(fillAlpha[1]) < 1;
+                recorder.note(
+                    `window ${createdTransparent ? 'transparent' : 'opaque'} · client opacity ${fillAlpha === null ? '1 (opaque fill)' : fillAlpha[1]}`
+                );
+                if (createdTransparent) {
+                    recorder.check(
+                        'the ground paints NOTHING under a transparent window: body, app root, grid and pane wrapper are all clear',
+                        Array.isArray(stack?.groundsClear) && stack.groundsClear.every(Boolean),
+                        JSON.stringify(stack?.grounds)
+                    );
+                } else {
+                    recorder.check(
+                        'the ground stays OPAQUE under an opaque window — a clear body would expose the raw BrowserWindow fill',
+                        Array.isArray(stack?.groundsClear) && stack.groundsClear[0] === false,
+                        JSON.stringify(stack?.grounds)
+                    );
+                }
+                if (clientTranslucent) {
+                    recorder.check(
+                        'the pane fill is the ONE translucent layer — it carries the ghostty opacity',
+                        /rgba\([^)]*0\.85\)/.test(paneFill),
+                        paneFill
+                    );
+                    recorder.check(
+                        'the ENGINE was built to let that fill through (ghostty-web allowTransparency)',
+                        stack?.engineTransparent === 'true',
+                        String(stack?.engineTransparent)
+                    );
+                    recorder.check(
+                        "so the canvas's default background is CLEAR — alpha 0 in every sampled cell",
+                        cellAlphas.length === 3 && cellAlphas.every((alpha) => alpha === 0),
+                        JSON.stringify(stack?.cells)
+                    );
+                } else {
+                    recorder.check(
+                        'the pane fill is opaque, and it is the only layer that paints under the canvas',
+                        !/rgba\(/.test(paneFill) || /,\s*1\)$/.test(paneFill),
+                        paneFill
+                    );
+                    recorder.check(
+                        'the engine keeps its opaque default background at opacity 1',
+                        stack?.engineTransparent === 'false',
+                        String(stack?.engineTransparent)
+                    );
+                    recorder.check(
+                        'so the canvas is FILLED — alpha 255 in every sampled cell, exactly as it always was',
+                        cellAlphas.length === 3 && cellAlphas.every((alpha) => alpha === 255),
+                        JSON.stringify(stack?.cells)
+                    );
+                }
+                recorder.check(
+                    'glyphs stay fully opaque either way — the opacity is the background’s, never the text’s',
+                    stack?.glyphs === 255,
+                    String(stack?.glyphs)
+                );
+
                 // The crossing case. Electron fixes `transparent` at construction, so this is
                 // reported rather than applied: the shell says so in its log (and, on a desktop
                 // that shows them, in a notification).
@@ -19357,13 +19522,18 @@ function buildFlows(ctx) {
                 await sleep(1200);
                 recorder.note(
                     'Scope, so the screenshot is not read as more than it is: under a transparent window the ' +
-                        'desktop shows through the window fill, the grid gutters and the pane padding, NOT through a ' +
-                        "terminal's own canvas — the engine paints that with an opaque hex (ghostty-web maps rgba() to " +
-                        'black), where the Swift app had libghostty apply the opacity inside the surface.'
+                        'desktop shows through the window fill, the grid gutters, the pane padding AND — since ' +
+                        "§N17 — a terminal's own canvas, whose default background the engine now CLEARS " +
+                        '(ghostty-web 0.4.0-nex.3 honours `allowTransparency`) so the pane container’s ' +
+                        'rgba() is the single translucent layer, which is what libghostty did inside the surface ' +
+                        'in the Swift app. What stays opaque, by construction rather than by oversight: a ' +
+                        'markdown/diff document (a sandboxed srcdoc frame with an opaque origin paints over a ' +
+                        'white base, so `contentDocumentFill` flattens the composite instead) and a web pane ' +
+                        '(a native view the shell owns).'
                 );
                 recorder.eyes(
                     createdTransparent
-                        ? 'DESKTOP-THROUGH CHECK — and the one thing no capture here can settle: a CDP screenshot composites the PAGE, not the screen behind the window, so whether the desktop is visible through the window fill has to be looked at on a real screen. The DOM + shell-log assertions above are what can be automated.'
+                        ? 'DESKTOP-THROUGH CHECK — and the one thing no capture here can settle: a CDP screenshot composites the PAGE, not the screen behind the window, so whether the desktop is visible through the window fill and through the terminal has to be looked at on a real screen. Every layer between the two is asserted above (the window flag from the shell log, the four grounds all clear, the pane fill at 0.85, the engine flag, and alpha 0 read back off the canvas); the last inch is a pair of eyes.'
                         : 'the opaque window as shipped; run with NEX_AUDIT_GHOSTTY_EXTRA="background-opacity = 0.85" to photograph the transparent case.'
                 );
             }

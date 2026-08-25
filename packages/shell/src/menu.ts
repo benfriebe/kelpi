@@ -130,6 +130,97 @@ export const CHECK_FOR_UPDATES_LABEL = 'Check for Updates…';
 export const DEBUG_MENU_LABEL = 'Debug';
 export const SEED_TEST_GROUP_LABEL = 'Seed Test Group';
 
+// ── File ▸ Close (N14) ──────────────────────────────────────────────────────────────
+
+/**
+ * The macOS Close row, and why it is no longer `{ role: 'close' }`.
+ *
+ * `role: 'close'` is a native accelerator whose answer to ⌘W is "close the window", and it
+ * raced the page for every keystroke: with a terminal focused the renderer consumed the chord
+ * first and only the PANE closed, but with focus inside a markdown/diff preview — a cross-origin
+ * frame, a different renderer — the window went instead (N14). The shipped app cannot have that
+ * race: `KeyBinding.swift:285-296` keeps `close_pane` out of `isMenuBarAction` precisely so its
+ * `NSEvent` monitor always gets ⌘W first, whatever holds first responder.
+ *
+ * The row stays (a macOS File menu without Close, and a ⌘W with no visible home, is wrong for
+ * the platform) but it no longer decides anything: the click ASKS the focused window's page to
+ * run `close_pane` — the same path a keystroke takes through `client/src/chrome/keys.ts` — and
+ * the window is closed only when the page says there is nothing to close, or does not answer.
+ */
+export const CLOSE_LABEL = 'Close';
+/** ⌘W, still on the row: the point is to route it, not to hide it. */
+export const CLOSE_ACCELERATOR = 'CommandOrControl+W';
+
+/**
+ * What the shell evaluates in the focused window.
+ *
+ * The global is installed by `client/src/app/shell-close.ts` (`SHELL_CLOSE_GLOBAL`) and pinned in
+ * both suites, exactly as the `menu-command` names are: the two packages cannot import each
+ * other, so the literal is stated twice and asserted twice.
+ *
+ * `=== true` on the way out, so a page that answers with something else (an older client, a
+ * mangled global) reads as "not handled" and the window still closes — a wedged or unexpected
+ * renderer must never make a window unclosable.
+ */
+export const CLOSE_PANE_EXPRESSION =
+    "(function () { try { return window.__nexShellClosePane() === true; } catch (error) { return false; } })()";
+
+/** How long the row waits for the page before falling back to closing the window. */
+export const CLOSE_ROUTE_TIMEOUT_MS = 500;
+
+/** What a Close click did: closed a pane in the page, closed the window, or had no window. */
+export type CloseRouteOutcome = 'pane' | 'window' | 'none';
+
+export interface CloseRouteDeps {
+    /**
+     * `webContents.executeJavaScript(CLOSE_PANE_EXPRESSION, true)` for the focused window, or
+     * null when there is no window to ask (nothing to close, and nothing to close it on).
+     */
+    readonly askRenderer: (() => Promise<unknown>) | null;
+    /** `window.close()` — the fallback, taken when the page declines or does not answer. */
+    readonly closeWindow: () => void;
+    readonly timeoutMs?: number | undefined;
+}
+
+/**
+ * Renderer-first close routing.
+ *
+ * Every failure mode ends in `closeWindow()` on purpose: a rejected evaluation (the page is
+ * mid-navigation, or crashed), a non-`true` answer (nothing focused to close) and a silent one
+ * (a wedged renderer) all mean the same thing to a user pressing ⌘W — this window should go.
+ */
+export async function routeCloseRequest(deps: CloseRouteDeps): Promise<CloseRouteOutcome> {
+    const ask = deps.askRenderer;
+    if (ask === null) return 'none';
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), deps.timeoutMs ?? CLOSE_ROUTE_TIMEOUT_MS);
+        timer.unref?.();
+    });
+
+    let handled = false;
+    try {
+        handled = await Promise.race([
+            (async () => (await ask()) === true)().catch(() => false),
+            timeout
+        ]);
+    } finally {
+        if (timer !== null) clearTimeout(timer);
+    }
+
+    if (handled) return 'pane';
+    deps.closeWindow();
+    return 'window';
+}
+
+/** The line `main.ts` logs, and the only trace of this decision visible from outside the process. */
+export function closeRouteLogLine(outcome: CloseRouteOutcome): string {
+    if (outcome === 'pane') return 'menu: Close routed to the window’s pane (close_pane)';
+    if (outcome === 'window') return 'menu: Close fell back to closing the window';
+    return 'menu: Close had no window to act on';
+}
+
 export interface MenuRelayDeps {
     /**
      * `status.sendMenuRequest`. Returns `false` when no window is attached yet — the same
@@ -160,6 +251,18 @@ function relayRow(
 }
 
 /**
+ * ⌥⌘R for Force Reload, in place of the role's own ⇧⌘R.
+ *
+ * Found by N14's sweep: `{ role: 'forceReload' }` brings ⇧⌘R with it, and ⇧⌘R is
+ * `rename_workspace` in the binding map (`core/src/config/bindings.ts`; `KeyBinding.swift`'s
+ * default). That is the same shape as the ⌘W defect — a chord the app claims, left to a native
+ * menu default that does something else and something destructive (a full client reload throws
+ * away every piece of view state the window is holding). The Swift app has no Reload row at all,
+ * so there is no parity cost to moving it; the dev affordance stays, on a chord nothing claims.
+ */
+export const FORCE_RELOAD_ACCELERATOR = 'CommandOrControl+Alt+R';
+
+/**
  * The View submenu: the two *product* toggles first, in the shipped app's own order, then the
  * web-contents roles the shell has always carried.
  */
@@ -168,8 +271,11 @@ export function viewMenuTemplate(deps: ViewMenuDeps): MenuItemConstructorOptions
         relayRow(deps, TOGGLE_SIDEBAR_LABEL, TOGGLE_SIDEBAR_ACCELERATOR, TOGGLE_SIDEBAR_COMMAND),
         relayRow(deps, TOGGLE_INSPECTOR_LABEL, TOGGLE_INSPECTOR_ACCELERATOR, TOGGLE_INSPECTOR_COMMAND),
         { type: 'separator' },
+        // ⌘R: not in the binding map, so nothing is shadowed. (A web pane's priority layer does
+        // claim ⌘R while a web pane is focused — that is the page consuming it first, which is
+        // the ordering this whole file relies on, not a menu default overriding a binding.)
         { role: 'reload' },
-        { role: 'forceReload' },
+        { role: 'forceReload', accelerator: FORCE_RELOAD_ACCELERATOR },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'togglefullscreen' }
@@ -192,6 +298,15 @@ export interface FileMenuDeps extends MenuRelayDeps {
      * would drop an open menu and re-register every accelerator for one greyed row.
      */
     readonly hasWorkspaceSelection?: boolean | undefined;
+    /**
+     * N14 — what File ▸ Close (⌘W) runs. `main.ts` hands it a `routeCloseRequest` call, which
+     * asks the focused window's page to close a PANE first and closes the window only when it
+     * cannot.
+     *
+     * Required rather than optional: an absent handler could only fall back to the bare
+     * `role: 'close'` this replaced, and that is the defect.
+     */
+    readonly closeFocusedPane: () => void;
 }
 
 /**
@@ -291,7 +406,23 @@ export function fileMenuTemplate(deps: FileMenuDeps): MenuItemConstructorOptions
             }
         },
         { type: 'separator' },
-        deps.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
+        /*
+         * N14: the macOS Close row, routed rather than native. See `CLOSE_LABEL` above for the
+         * race it removes; the row keeps its label and its ⌘W so the menu still reads like a
+         * macOS File menu, and only the ACTION changed.
+         *
+         * The non-darwin tail is untouched: on Windows/Linux this last row is Quit, and ⌘W/⌃W is
+         * not a window-close accelerator the OS expects to find here.
+         */
+        deps.platform === 'darwin'
+            ? {
+                  label: CLOSE_LABEL,
+                  accelerator: CLOSE_ACCELERATOR,
+                  click: () => {
+                      deps.closeFocusedPane();
+                  }
+              }
+            : { role: 'quit' }
     ];
 }
 

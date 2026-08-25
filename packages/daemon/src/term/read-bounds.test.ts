@@ -78,10 +78,17 @@ describe('capture (readRegion) — bounded to the grid', () => {
         await write(service, 'p', '\x1b[H/tmp/dir/notes-xy.md');
 
         const term = termOf(service, 'p');
-        // The defect, proven against the live buffer: the row is still 40 cells wide and the
-        // read the reader used to do still returns the stale tail.
-        expect(allocation(term, 0)).toBeGreaterThan(term.cols);
-        expect(unbounded(term, 0)).toContain('STRANDED');
+        /*
+         * N23 moved this half. The stranded cells used to survive the shrink (the row stayed 40
+         * cells wide and an unbounded read handed back the stale tail), because `NO_REFLOW` turns
+         * xterm's post-shrink per-line trim off along with the rewrap. `applyGrid` now runs that
+         * trim itself, so there is nothing left to strand — which is what the SNAPSHOT needed,
+         * being the one reader that cannot bound itself (`@xterm/addon-serialize` walks
+         * `line.length`, and no option changes that). The reader's own bound stays below as
+         * defence in depth.
+         */
+        expect(allocation(term, 0)).toBeLessThanOrEqual(term.cols);
+        expect(unbounded(term, 0)).not.toContain('STRANDED');
 
         // The shipped reader answers with what the pane actually shows.
         expect(service.capture('p', { scrollback: false })).toBe('/tmp/dir/notes-xy.md');
@@ -103,9 +110,10 @@ describe('capture (readRegion) — bounded to the grid', () => {
 
         const term = termOf(service, 'p');
         expect(term.buffer.active.getLine(1)?.isWrapped).toBe(true);
-        // Old shape: row 0 hands back all 40 of its cells, so the join is 44 characters for a
-        // 20-column grid — 20 of them invisible in every renderer.
-        expect(`${unbounded(term, 0)}${unbounded(term, 1)}`).toHaveLength(44);
+        // Was 44 for a 20-column grid (row 0 handed back all 40 of its cells, 20 of them
+        // invisible in every renderer). N23's trim takes the row back to the grid, so the join
+        // is the 20 columns that are on screen plus the continuation row.
+        expect(`${unbounded(term, 0)}${unbounded(term, 1)}`).toHaveLength(24);
 
         // Bounded: the 20 columns the grid shows, plus the continuation row.
         expect(service.capture('p', { scrollback: false })).toBe(`${'a'.repeat(20)}TAIL`);
@@ -139,7 +147,8 @@ describe('search (collectLogicalLines / findMatches) — bounded to the grid', (
         await write(service, 'p', '\x1b[H/tmp/dir/notes-xy.md');
 
         const term = termOf(service, 'p');
-        expect(unbounded(term, 0)).toContain('STRANDED'); // still in the buffer's allocation
+        // N23: the shrink no longer leaves it in the allocation either (see the capture test).
+        expect(unbounded(term, 0)).not.toContain('STRANDED');
 
         expect(service.search('p', 'STRANDED')).toEqual([]);
         expect(service.search('p', 'notes-xy')).toHaveLength(1);
@@ -161,11 +170,16 @@ describe('search (collectLogicalLines / findMatches) — bounded to the grid', (
 
         const term = termOf(service, 'p');
         const cols = term.cols;
-        // Old shape, computed here: unbounded first row (40 chars), `40 % 20 === 0` so no pad,
-        // then the continuation. The needle lands at offset 40 and the division claims row 2 —
-        // a row this logical line never touched.
+        /*
+         * The arithmetic that used to lie: unbounded first row (40 chars), `40 % 20 === 0` so no
+         * pad, needle at offset 40, `floor(40 / 20)` claiming row 2 — a row this logical line
+         * never touched. N23's trim takes row 0 back to 20 cells, so even this shape now lands
+         * on row 1; the row MAP below is still what the reader answers from, because a trimmed
+         * row is not the same claim as "every row is exactly `cols` wide" (a widen leaves rows
+         * SHORTER than the grid, and the division lies again there).
+         */
         const legacy = `${unbounded(term, 0)}${unbounded(term, 1)}`;
-        expect(Math.floor(legacy.indexOf('NEEDLE') / cols)).toBe(2);
+        expect(Math.floor(legacy.indexOf('NEEDLE') / cols)).toBe(1);
 
         const matches = service.search('p', 'NEEDLE');
         expect(matches).toHaveLength(1);

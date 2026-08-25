@@ -31,7 +31,7 @@ export interface IngestTarget {
     reset(): void;
 }
 
-/** Live bytes held while a replay is pending; beyond this the oldest chunks are dropped. */
+/** Live bytes held while a replay is pending; beyond this the hold is dropped WHOLE. */
 export const PENDING_LIVE_LIMIT_BYTES = 256 * 1024;
 
 export interface TerminalIngest {
@@ -53,6 +53,8 @@ export interface TerminalIngest {
     resume(): void;
     /** Replay frames applied so far (diagnostics / tests). */
     readonly replays: number;
+    /** Times an overflowing hold was dropped whole rather than spliced (diagnostics / tests). */
+    readonly drops: number;
     /** Whether a replay is currently awaited. */
     readonly awaitingReplay: boolean;
     /** Whether the target is sealed off. */
@@ -61,6 +63,7 @@ export interface TerminalIngest {
 
 export function createTerminalIngest(target: IngestTarget): TerminalIngest {
     let replays = 0;
+    let drops = 0;
     let awaiting = true;
     let paused = false;
     /** A replay landed while sealed: the release has to lead with a reset, as `replay()` does. */
@@ -68,14 +71,31 @@ export function createTerminalIngest(target: IngestTarget): TerminalIngest {
     let held: (Uint8Array | string)[] = [];
     let heldBytes = 0;
 
+    /**
+     * Hold a live chunk until the replay that supersedes it lands.
+     *
+     * **Overflow drops the hold WHOLE, never its oldest chunks (N23).** A terminal stream is not
+     * a set of independent chunks: cut one out of the middle and everything after it is parsed
+     * against state that never happened — a multi-byte codepoint loses its continuation and
+     * renders as U+FFFD, an escape sequence loses its final byte and eats the text that follows
+     * it. Drop-oldest therefore turned an overflow into a spliced stream, painted at full width;
+     * the same shape as the daemon's own flow-control rule ("once a byte is lost the queue is no
+     * longer a faithful continuation of the stream", `ws/streams.ts`), which drops its queue
+     * whole and re-seeds. Dropping everything here is safe for the same reason it is there:
+     * bytes are only ever held while a replay is AWAITED (the attach snapshot, or the one a
+     * `pty-resync` promises) or while the target is sealed pending a rebuilt engine, and every
+     * one of those paths ends in a replay that resets the screen and describes it completely.
+     */
     const hold = (data: Uint8Array | string): void => {
         held.push(data);
         heldBytes += data.length;
-        while (heldBytes > PENDING_LIVE_LIMIT_BYTES && held.length > 1) {
-            const dropped = held.shift();
-            if (dropped === undefined) break;
-            heldBytes -= dropped.length;
-        }
+        if (heldBytes <= PENDING_LIVE_LIMIT_BYTES) return;
+        // A replay parked at the head of the hold (`replay()` while paused) is the screen
+        // itself, not a continuation of anything — it survives, and the live tail behind it goes.
+        const snapshot = heldReplay ? held[0] : undefined;
+        held = snapshot === undefined ? [] : [snapshot];
+        heldBytes = snapshot === undefined ? 0 : snapshot.length;
+        drops += 1;
     };
 
     /** Hand everything held to the target and clear the buffer. */
@@ -149,6 +169,9 @@ export function createTerminalIngest(target: IngestTarget): TerminalIngest {
         },
         get replays(): number {
             return replays;
+        },
+        get drops(): number {
+            return drops;
         },
         get awaitingReplay(): boolean {
             return awaiting;

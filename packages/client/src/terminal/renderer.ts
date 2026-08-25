@@ -709,6 +709,21 @@ class AdapterRenderer implements TerminalRenderer {
 
     write(data: Uint8Array | string): void {
         if (this.disposed || this.poisoned) return;
+        /**
+         * ZERO BYTES ARE A NO-OP, AND THEY MUST NOT REACH THE ENGINE (N23, and the whole of N1).
+         *
+         * ghostty-web's `write()` hands `bytes.length` to the WASM allocator and then does
+         * `new Uint8Array(memory.buffer).set(bytes, ptr)`. Zig answers a ZERO-size allocation
+         * with its non-null sentinel address — 0xFFFFFFFF, which JS reads back as `-1` — so
+         * `set(empty, -1)` throws `RangeError: offset is out of bounds`. That is the exact
+         * stack run-F, run-H, run-U and run-V all logged, and the daemon produces the input for
+         * it routinely: a pane whose shell has not printed yet snapshots to NOTHING, so its
+         * attach replay is an empty frame and the first write into the fresh engine kills it
+         * (61 of 181 replays in a 60-round close/adjust storm were empty). Fixed in the engine
+         * too (`0.4.0-nex.5`); kept here because this layer decides whether a pane restarts,
+         * and it must never restart over zero bytes.
+         */
+        if (data.length === 0) return;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             this.queue(data);

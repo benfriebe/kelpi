@@ -715,6 +715,39 @@ describe('a poisoned engine (run-F N1)', () => {
         expect(engine.terminal.writes).toEqual([]);
         expect(renderer.failed).toBe(false);
     });
+
+    /**
+     * N23 / the root of N1: ZERO bytes must never reach an engine.
+     *
+     * ghostty-web's `write()` asks the WASM allocator for `bytes.length` and then does
+     * `new Uint8Array(memory.buffer).set(bytes, ptr)`. A zero-size allocation comes back as
+     * Zig's non-null sentinel `0xFFFFFFFF` — `-1` off the `i32` export — and `set(empty, -1)`
+     * throws `RangeError: offset is out of bounds`. The daemon produces exactly that input on
+     * every attach to a pane whose shell has not printed yet (its snapshot serializes to the
+     * empty string), which is why a freshly created pane could come up on the *terminal renderer
+     * failed to start* placeholder. Fixed in the engine (`0.4.0-nex.5`) and here, because this
+     * layer is the one that decides whether a pane restarts — and it must never restart over
+     * zero bytes.
+     */
+    it('never hands the engine a zero-length write, before or after open', async () => {
+        const engine = throwingEngine(1); // any write at all would poison this renderer
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+
+        renderer.write(''); // pre-open: must not even be queued
+        renderer.write(new Uint8Array(0));
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        expect(renderer.failed).toBe(false);
+        expect(engine.terminal.writes).toEqual([]);
+
+        renderer.write(new Uint8Array(0)); // post-open: still a no-op, still not a fault
+        expect(renderer.failed).toBe(false);
+        expect(engine.terminal.writes).toEqual([]);
+        renderer.dispose();
+    });
 });
 
 /**

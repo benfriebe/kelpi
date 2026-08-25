@@ -48,6 +48,9 @@ function harness(
     };
 }
 
+/** One turn of the event loop: long enough for an awaited snapshot to land. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('attach → replay → live', () => {
     it('replays the terminal snapshot, then streams live output', async () => {
         const h = harness();
@@ -246,6 +249,8 @@ describe('ack-based flow control', () => {
 
         h.term.setSnapshot(PANE_A, 'REBUILT');
         ack(h.session, PANE_A, 4);
+        // The re-seed takes the FLUSHING snapshot (N23), so it lands a turn later.
+        await settle();
 
         const frames = h.frames();
         expect(frames.at(-1)).toEqual({ type: PTY_FRAME_TYPES.replay, paneID: PANE_A, text: 'REBUILT' });
@@ -269,9 +274,99 @@ describe('ack-based flow control', () => {
         expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
 
         ack(h.session, PANE_A, 0);
+        await settle();
         expect(h.transport.ofType('pty-resync')).toEqual([]);
         ack(h.session, PANE_A, 4);
+        await settle();
         expect(h.transport.ofType('pty-resync')).toHaveLength(1);
+    });
+
+    /**
+     * N23, the flow-control half: the re-seed must take the FLUSHING snapshot, must zero the
+     * window it re-seeds, and must not start twice.
+     *
+     * `feed()` only queues — xterm parses asynchronously — so the sync `snapshot()` this path
+     * used to call described everything parsed SO FAR and silently omitted chunks fed a moment
+     * ago. Those chunks had also been dropped from this client's queue, so they were gone from
+     * its screen for the life of the pane: a hole in the middle of a byte stream, which is the
+     * shape of every corruption in this family.
+     */
+    it('re-seeds from the flushing snapshot, so a chunk mid-parse is not lost', async () => {
+        const h = harness({ windowBytes: 4, maxQueuedBytes: 4 });
+        h.term.asyncSnapshots = true; // the real service: `snapshotAsync` settles the write chain
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, 'aaaa');
+        h.pty.emit(PANE_A, 'bbbb');
+        h.pty.emit(PANE_A, 'cccc');
+        expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
+
+        // The chunk that is still being parsed when the ack arrives: it reaches the emulator
+        // (boot feeds it) and is dropped from this client's queue, so ONLY a flushing snapshot
+        // can put it back on screen.
+        h.term.setSnapshot(PANE_A, 'REBUILT+mid-parse');
+        ack(h.session, PANE_A, 4);
+        await vi.waitFor(() => expect(h.transport.ofType('pty-resync')).toHaveLength(1));
+
+        expect(h.frames().at(-1)).toEqual({
+            type: PTY_FRAME_TYPES.replay,
+            paneID: PANE_A,
+            text: 'REBUILT+mid-parse'
+        });
+    });
+
+    it('zeroes the window it re-seeds, so the pane cannot stall on stale acks', async () => {
+        // The client zeroes its own unacked/pending the instant a replay lands, dropping any ack
+        // it had not flushed yet. A daemon that kept charging those bytes would never let this
+        // client out of its window again — the same fix the settled-resize path has.
+        const h = harness({ windowBytes: 4, maxQueuedBytes: 4 });
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, 'aaaa');
+        h.pty.emit(PANE_A, 'bbbb');
+        h.pty.emit(PANE_A, 'cccc');
+
+        h.term.setSnapshot(PANE_A, 'S');
+        ack(h.session, PANE_A, 4);
+        await settle();
+
+        // Exactly the replay's own bytes are outstanding — nothing from before it.
+        expect(h.session.stats(PANE_A)?.unacked).toBe(1);
+    });
+
+    it('does not wipe a client screen when the pane was disposed before the re-seed', async () => {
+        // The same rule the settled-resize path has: an empty snapshot is not a re-seed, it is a
+        // blank screen. A flow-control drop that races a pane close must not paint one.
+        const h = harness({ windowBytes: 4, maxQueuedBytes: 4 });
+        h.term.setSnapshot(PANE_A, 'content');
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, 'aaaa');
+        h.pty.emit(PANE_A, 'bbbb');
+        h.pty.emit(PANE_A, 'cccc');
+        h.term.service.dispose(PANE_A);
+
+        ack(h.session, PANE_A, 4);
+        await settle();
+
+        expect(h.transport.ofType('pty-resync')).toEqual([]);
+        expect(h.frames().filter((frame) => frame.type === PTY_FRAME_TYPES.replay)).toHaveLength(1);
+    });
+
+    it('starts one re-seed however many acks arrive while the snapshot settles', async () => {
+        const h = harness({ windowBytes: 4, maxQueuedBytes: 4 });
+        h.term.asyncSnapshots = true;
+        await h.session.attach(PANE_A);
+        h.pty.emit(PANE_A, 'aaaa');
+        h.pty.emit(PANE_A, 'bbbb');
+        h.pty.emit(PANE_A, 'cccc');
+
+        h.term.setSnapshot(PANE_A, 'ONE');
+        ack(h.session, PANE_A, 4);
+        ack(h.session, PANE_A, 0);
+        ack(h.session, PANE_A, 0);
+        await vi.waitFor(() => expect(h.transport.ofType('pty-resync')).toHaveLength(1));
+        await settle();
+
+        expect(h.transport.ofType('pty-resync')).toHaveLength(1);
+        expect(h.frames().filter((frame) => frame.type === PTY_FRAME_TYPES.replay)).toHaveLength(2);
     });
 });
 

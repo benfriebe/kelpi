@@ -150,4 +150,57 @@ describe('terminal ingest', () => {
         expect(held * chunk.length).toBeLessThanOrEqual(PENDING_LIVE_LIMIT_BYTES);
         expect(target.writes[0]).toBe('SNAPSHOT');
     });
+
+    /**
+     * N23: an overflowing hold is dropped WHOLE, never spliced.
+     *
+     * Drop-oldest looks kinder and is the corrupting choice: a terminal stream is one parse, so
+     * removing a chunk from the middle hands the VT a continuation of something that never
+     * arrived — a codepoint short of its bytes (U+FFFD, at whatever width the row was) and an
+     * escape sequence short of its final byte, which then eats the text behind it. The daemon
+     * already reasons this way about its own queue ("once a byte is lost the queue is no longer
+     * a faithful continuation of the stream"); this is the client saying the same thing.
+     */
+    it('drops the whole hold on overflow rather than splicing the stream', () => {
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        const chunk = 'x'.repeat(64 * 1024);
+        const chunks = Math.ceil(PENDING_LIVE_LIMIT_BYTES / chunk.length) + 4;
+        for (let index = 0; index < chunks; index += 1) ingest.live(chunk);
+        // The tail that arrives after the overflow is a continuation of bytes that were dropped,
+        // so it must not be written either — only the replay may repaint the screen.
+        ingest.live('TAIL');
+        expect(ingest.drops).toBeGreaterThan(0);
+
+        ingest.replay('SNAPSHOT');
+        const afterReplay = target.writes.slice(1);
+        expect(target.writes[0]).toBe('SNAPSHOT');
+        // Whatever survived is an unbroken suffix of the held stream, and never a splice across
+        // a dropped chunk: the first thing released is the first chunk held since the drop.
+        expect(afterReplay.every((write) => write === chunk || write === 'TAIL')).toBe(true);
+        // The point of the drop: the release is bounded and starts from a chunk boundary that
+        // nothing was cut out ahead of.
+        expect(afterReplay.length * chunk.length).toBeLessThanOrEqual(PENDING_LIVE_LIMIT_BYTES);
+    });
+
+    it('keeps a replay parked behind a pause when the live tail overflows', () => {
+        // The hold can carry the snapshot itself (`replay()` while paused). Dropping it with the
+        // tail would leave `resume()` resetting the engine and then writing nothing — a blank
+        // pane until the next resize.
+        const target = recorder();
+        const ingest = createTerminalIngest(target);
+
+        ingest.pause();
+        ingest.replay('SNAPSHOT');
+        const chunk = 'y'.repeat(64 * 1024);
+        for (let index = 0; index < Math.ceil(PENDING_LIVE_LIMIT_BYTES / chunk.length) + 4; index += 1) {
+            ingest.live(chunk);
+        }
+        ingest.resume();
+
+        expect(ingest.drops).toBeGreaterThan(0);
+        expect(target.resets).toBe(1);
+        expect(target.writes[0]).toBe('SNAPSHOT');
+    });
 });

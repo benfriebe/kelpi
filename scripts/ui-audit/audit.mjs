@@ -1913,7 +1913,7 @@ function buildFlows(ctx) {
         {
             id: 'terminal-resize-storm',
             expect:
-                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; and the pane is still a live shell when the window is handed back.',
+                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; ten split/close rounds over multibyte text leave the client\'s screen EQUAL to the daemon\'s (§N23: nothing missing, nothing invented, no replacement characters); and the pane is still a live shell when the window is handed back.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -1985,10 +1985,68 @@ function buildFlows(ctx) {
                     await sleep(1400);
                 };
 
+                /**
+                 * §N23's comparison: is the CLIENT looking at the daemon's screen?
+                 *
+                 * Not string equality — the two VTs wrap independently and a client screen may
+                 * legitimately sit at a different scroll offset — but the two halves that a
+                 * corrupt replay always breaks:
+                 *
+                 *   1. everything the daemon shows reaches the client (whitespace-insensitive,
+                 *      so a re-wrap is not a failure), and
+                 *   2. the client shows NOTHING the daemon does not have anywhere in its buffer,
+                 *      which is what "rows of stale garbage after a close/adjust" looks like from
+                 *      here: text on the user's screen that no longer exists on the pane.
+                 *
+                 * Plus the signature the owner photographed: a replacement character in the
+                 * client's own buffer means a byte stream was cut mid-codepoint.
+                 */
+                const squash = (text) => text.replace(/\s+/gu, '');
+                const compareClientToServer = async (label, clientText) => {
+                    const viewport = await cli.ok(['pane', 'capture', '--target', paneID]);
+                    const history = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    recorder.artifact(`${label}-server-viewport.txt`, viewport);
+                    const clientSquashed = squash(clientText);
+                    const historySquashed = squash(history);
+
+                    recorder.check(
+                        `${label}: the client's screen carries no replacement character (N23)`,
+                        !clientText.includes('�'),
+                        JSON.stringify(
+                            (clientText.split('\n').find((line) => line.includes('�')) ?? '').slice(0, 80)
+                        )
+                    );
+
+                    const missing = viewport
+                        .split('\n')
+                        .map((line) => squash(line))
+                        .filter((line) => line.length > 8 && !clientSquashed.includes(line));
+                    recorder.check(
+                        `${label}: every line the daemon shows is on the client's screen`,
+                        missing.length === 0,
+                        `${String(missing.length)} missing, first: ${JSON.stringify((missing[0] ?? '').slice(0, 80))}`
+                    );
+
+                    // Runs of eight or more non-space characters: long enough that a coincidence
+                    // is not credible, short enough that a re-wrap cannot break every one of them.
+                    const invented = [...clientText.matchAll(/\S{8,}/gu)]
+                        .map((match) => match[0])
+                        .filter((run) => !historySquashed.includes(squash(run)));
+                    recorder.check(
+                        `${label}: the client shows nothing the daemon's buffer does not have`,
+                        invented.length === 0,
+                        `${String(invented.length)} invented, first: ${JSON.stringify((invented[0] ?? '').slice(0, 80))}`
+                    );
+                };
+
                 try {
                     // ── 1. a shell whose prompt fills the width ──────────────────────
                     await focusPaneBody(page, paneID);
                     await runInTerminal(page, `exec env ZDOTDIR=${zdotdir} zsh`, { settleMs: 2500 });
+                    // NOTHING may run in this pane between here and the storm: the trail count
+                    // below is over the whole scrollback, and every command a shell runs leaves
+                    // another prompt in it. The multibyte fixture therefore lives in phase 4c,
+                    // after the last NEXTRAIL assertion.
                     const armed = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                     recorder.artifact('armed-capture.txt', armed);
                     const armedTrails = (armed.match(/NEXTRAIL/g) ?? []).length;
@@ -2057,66 +2115,122 @@ function buildFlows(ctx) {
                     // off the pixels: this is the engine's buffer talking, and it is the half
                     // of the defect a server-side capture cannot see.
                     const paneRoot = `[data-pane-id="${paneID}"][data-terminal-status]`;
-                    const grid = await page.eval(
-                        `(() => {
-                            const root = document.querySelector('${paneRoot}');
-                            if (root === null) return null;
-                            const host = root.querySelector('[data-terminal-host]');
-                            const node = host?.querySelector('canvas') ?? host ?? root;
-                            const rect = node.getBoundingClientRect();
-                            const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
-                            return {
-                                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-                                cellWidth: Number(cell[0] ?? 0), cellHeight: Number(cell[1] ?? 0)
-                            };
-                        })()`
-                    );
-                    recorder.note(`client grid: ${JSON.stringify(grid)}`);
-                    if (grid === null || !(grid.cellWidth > 0) || !(grid.cellHeight > 0)) {
-                        recorder.check('the pane publishes its cell metrics (data-terminal-cell)', false, JSON.stringify(grid));
-                        return;
-                    }
-                    // A sentinel first, so "the engine copied nothing" cannot pass as a clean
-                    // read of somebody else's clipboard (the OSC 52 step's rule).
-                    const seeded = await page.eval(
-                        `navigator.clipboard.writeText(${JSON.stringify(CLIP_SENTINEL_STORM)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
-                    );
-                    recorder.note(`clipboard sentinel: ${String(seeded)}`);
+                    /**
+                     * The client engine's own screen text, read the only honest way there is:
+                     * a real drag across the canvas, which ghostty-web answers with
+                     * `getSelection()` and copies on mouse-up. Re-measured every call — the grid
+                     * moves under this step by design.
+                     */
+                    const readClientScreen = async (label) => {
+                        const grid = await page.eval(
+                            `(() => {
+                                const root = document.querySelector('${paneRoot}');
+                                if (root === null) return null;
+                                const host = root.querySelector('[data-terminal-host]');
+                                const node = host?.querySelector('canvas') ?? host ?? root;
+                                const rect = node.getBoundingClientRect();
+                                const cell = (root.getAttribute('data-terminal-cell') ?? '').split('x');
+                                return {
+                                    x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+                                    cellWidth: Number(cell[0] ?? 0), cellHeight: Number(cell[1] ?? 0)
+                                };
+                            })()`
+                        );
+                        recorder.note(`client grid (${label}): ${JSON.stringify(grid)}`);
+                        if (grid === null || !(grid.cellWidth > 0) || !(grid.cellHeight > 0)) {
+                            recorder.check(
+                                `${label}: the pane publishes its cell metrics (data-terminal-cell)`,
+                                false,
+                                JSON.stringify(grid)
+                            );
+                            return null;
+                        }
+                        // A sentinel first, so "the engine copied nothing" cannot pass as a clean
+                        // read of somebody else's clipboard (the OSC 52 step's rule).
+                        const seeded = await page.eval(
+                            `navigator.clipboard.writeText(${JSON.stringify(CLIP_SENTINEL_STORM)}).then(() => 'ok').catch((error) => 'ERR:' + String(error))`
+                        );
+                        recorder.note(`clipboard sentinel (${label}): ${String(seeded)}`);
 
-                    const from = { x: grid.x + grid.cellWidth * 0.5, y: grid.y + grid.cellHeight * 0.5 };
-                    const to = {
-                        x: grid.x + grid.width - grid.cellWidth * 0.5,
-                        y: grid.y + grid.height - grid.cellHeight * 0.5
+                        const from = { x: grid.x + grid.cellWidth * 0.5, y: grid.y + grid.cellHeight * 0.5 };
+                        const to = {
+                            x: grid.x + grid.width - grid.cellWidth * 0.5,
+                            y: grid.y + grid.height - grid.cellHeight * 0.5
+                        };
+                        await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
+                        await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                        await sleep(80);
+                        await page.mouse('mouseMoved', (from.x + to.x) / 2, (from.y + to.y) / 2, { button: 'left', buttons: 1 });
+                        await sleep(60);
+                        await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
+                        await sleep(80);
+                        await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+                        await sleep(600);
+
+                        const selectedChars = await page.eval(
+                            `Number(document.querySelector('${paneRoot}')?.getAttribute('data-terminal-selection') ?? 0)`
+                        );
+                        const copied = await page.eval(
+                            `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
+                        );
+                        const text = typeof copied === 'string' ? copied : '';
+                        recorder.artifact(`${label}-client-selection.txt`, text);
+                        recorder.check(
+                            `${label}: the client engine handed back its own buffer (a real selection, not a stale clipboard)`,
+                            selectedChars > 0 && text !== CLIP_SENTINEL_STORM && !text.startsWith('ERR:'),
+                            `${String(selectedChars)} chars selected · ${JSON.stringify(text.slice(0, 60))}`
+                        );
+                        return text;
                     };
-                    await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
-                    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
-                    await sleep(80);
-                    await page.mouse('mouseMoved', (from.x + to.x) / 2, (from.y + to.y) / 2, { button: 'left', buttons: 1 });
-                    await sleep(60);
-                    await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
-                    await sleep(80);
-                    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                    await sleep(600);
 
-                    const selectedChars = await page.eval(
-                        `Number(document.querySelector('${paneRoot}')?.getAttribute('data-terminal-selection') ?? 0)`
-                    );
-                    const copied = await page.eval(
-                        `navigator.clipboard.readText().then((text) => text).catch((error) => 'ERR:' + String(error))`
-                    );
-                    const clientText = typeof copied === 'string' ? copied : '';
-                    recorder.artifact('after-storm-client-selection.txt', clientText);
-                    recorder.check(
-                        'the client engine handed back its own buffer (a real selection, not a stale clipboard)',
-                        selectedChars > 0 && clientText !== CLIP_SENTINEL_STORM && !clientText.startsWith('ERR:'),
-                        `${String(selectedChars)} chars selected · ${JSON.stringify(clientText.slice(0, 60))}`
-                    );
+                    const clientText = (await readClientScreen('after-storm')) ?? '';
+                    if (clientText === '') return;
                     const clientTrails = (clientText.match(/NEXTRAIL/g) ?? []).length;
                     recorder.note(`client engine screen: NEXTRAIL x${String(clientTrails)}`);
                     recorder.check(
                         'THE DEFECT: the client engine shows exactly ONE prompt too (post-resize resync)',
                         clientTrails === 1,
                         `NEXTRAIL x${String(clientTrails)} in the engine's own selection`
+                    );
+
+                    // ── 4b. §N23: the client's screen IS the daemon's screen ─────────
+                    await compareClientToServer('after-storm', clientText);
+
+                    /*
+                     * ── 4c. THE OWNER'S GESTURE (§N23) ──────────────────────────────
+                     *
+                     * A window drag is not what the report was about: closing or adjusting a
+                     * PANE is, and it reaches the same seam by a different road — a sibling
+                     * appears or disappears, this pane is re-measured, and the settled-resize
+                     * replay lands while the shell is still repainting. Ten rounds of it, with
+                     * multibyte text on screen throughout, and then the same two questions.
+                     */
+                    for (let round = 0; round < 10; round += 1) {
+                        const sibling = await cli.json([
+                            'pane', 'split', '--direction', round % 2 === 0 ? 'vertical' : 'horizontal',
+                            '--target', paneID, '--json'
+                        ]);
+                        const siblingID = String(sibling.pane_id ?? '');
+                        await sleep(260);
+                        await focusPaneBody(page, paneID);
+                        await runInTerminal(
+                            page,
+                            `printf '┌── 日本語テスト %s ✅ 🚀 あいうえお漢字 ──┐\\n' ${String(round)}`,
+                            { settleMs: 180 }
+                        );
+                        if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
+                        await sleep(320);
+                    }
+                    // Past the client's debounce and the daemon's settle, so this reads the
+                    // SETTLED state rather than the middle of the last close.
+                    await sleep(2500);
+                    await recorder.shot(page, 'after-close-storm');
+                    await focusPaneBody(page, paneID);
+                    const afterCloses = (await readClientScreen('after-close-storm')) ?? '';
+                    if (afterCloses !== '') await compareClientToServer('after-close-storm', afterCloses);
+                    recorder.eyes(
+                        'after ten split/close rounds the pane must read as clean text — no rows of ' +
+                            'replacement characters (\u{fffd}), no half-drawn box glyphs, no two lines spliced onto one row'
                     );
 
                     // ── 5. still a live shell when the window is handed back ─────────

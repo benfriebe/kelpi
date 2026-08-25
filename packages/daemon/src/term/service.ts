@@ -95,6 +95,16 @@ type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof
  * the new width, which `EL` and an ordinary overwrite can never reach. Every read that joins
  * or indexes rows must bound itself to `term.cols`; `cellText` does, and the ⌘-click regression
  * that taught us (`docs/audit/run-Q/FINDINGS.md` row 1) is pinned in `cell-text.test.ts`.
+ *
+ * **N23 closed the last reader that could not bound itself: the SNAPSHOT.**
+ * `@xterm/addon-serialize` walks `line.length`, not `term.cols`, and there is no option that
+ * changes it — so every replay frame carried the stranded cells, and the client's engine (which
+ * has no stranded cells of its own) rendered them as content, wrapped the overflow onto the next
+ * row and shifted every row below. That is the owner's "rows of garbage glyphs after closing or
+ * adjusting panes". Rather than teach one more reader to bound itself, `applyGrid` now does the
+ * trim xterm's reflow path would have done (`trimStrandedCells`), so the stranded cells never
+ * exist and EVERY reader — including the one that cannot be bounded — is correct by
+ * construction.
  */
 const NO_REFLOW: TerminalReflowPolicy = {
     backend: 'winpty',
@@ -112,6 +122,51 @@ const NO_REFLOW: TerminalReflowPolicy = {
  * window showing history instead of empty space.
  */
 const STOCK_REFLOW: TerminalReflowPolicy = {};
+
+/** The slice of xterm's internals `trimStrandedCells` needs, all optional (see the function). */
+interface XtermBufferLine {
+    readonly length: number;
+    resize?: (cols: number, fillCharData: unknown) => void;
+}
+interface XtermBuffer {
+    lines?: { length: number; get: (index: number) => XtermBufferLine | undefined };
+    getNullCell?: () => unknown;
+}
+interface XtermCore {
+    _bufferService?: { buffers?: { normal?: XtermBuffer; alt?: XtermBuffer } };
+}
+
+/**
+ * The post-shrink per-line trim `NO_REFLOW` takes away, done by hand (N23).
+ *
+ * xterm's `Buffer.resize` ends with "trim the end of the line off if cols shrunk" — a
+ * `line.resize(newCols, nullCell)` over every line in the buffer — but that loop sits inside
+ * `if (this._isReflowEnabled)`, bundled with the rewrap this daemon must not have. So the trim
+ * is replayed here: no rewrap, no rows inserted, no cursor arithmetic touched (N11/N12 are
+ * untouched by construction — `line.resize` only drops cells that are already past the grid and
+ * therefore unreachable), and afterwards no line is wider than the terminal.
+ *
+ * Both buffers, because `BufferSet.resize` resizes both and an application can switch to the
+ * alternate screen at any time. Reached through `_core`, which is private API: every step is
+ * feature-detected and a shape that does not answer leaves the buffer exactly as it was — the
+ * pre-N23 behaviour, which is degraded but not broken.
+ */
+function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
+    const core = (term as unknown as { _core?: XtermCore })._core;
+    const buffers = core?._bufferService?.buffers;
+    if (buffers === undefined) return;
+    for (const buffer of [buffers.normal, buffers.alt]) {
+        const lines = buffer?.lines;
+        if (buffer === undefined || lines === undefined) continue;
+        const fill = buffer.getNullCell?.();
+        if (fill === undefined) continue;
+        for (let index = 0; index < lines.length; index += 1) {
+            const line = lines.get(index);
+            if (line === undefined || line.length <= cols) continue;
+            line.resize?.(cols, fill);
+        }
+    }
+}
 
 export interface TerminalStateOptions {
     /** Scrollback lines retained per pane. Default 10 000. */
@@ -642,7 +697,14 @@ export class TerminalStateServiceImpl implements TerminalStateService {
                 term.options.windowsPty = NO_REFLOW;
             }
         }
-        if (term.cols !== cols) term.resize(cols, term.rows);
+        if (term.cols !== cols) {
+            const shrank = cols < term.cols;
+            term.resize(cols, term.rows);
+            // A column SHRINK is the only direction that strands cells (N23). Growing widens
+            // the lines again on demand, and a line shorter than the grid is what xterm does
+            // itself.
+            if (shrank) trimStrandedCells(term, cols);
+        }
     }
 
     /** Emit `onModesChange` when this pane's modes are not what they last were. */

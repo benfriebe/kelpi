@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.4';
+const EXPECTED_VERSION = '0.4.0-nex.5';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -55,6 +55,23 @@ const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
  * Take a future npm release wholesale and every pane starts blinking again.
  */
 const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDirty'];
+
+/**
+ * The marker of `-nex.5`'s zero-length `write()` guard (§N1 / §N23).
+ *
+ * `GhosttyTerminal.write()` hands `bytes.length` to the WASM allocator, and a ZERO-size request
+ * comes back as Zig's non-null sentinel `0xFFFFFFFF` — `-1` off the `i32` export — so the
+ * `Uint8Array.set(bytes, ptr)` that follows throws `RangeError: offset is out of bounds`. The
+ * daemon replays an EMPTY snapshot for any pane whose shell has not printed yet, so that throw
+ * is the first write into a fresh engine: N1's "terminal renderer failed to start", and the
+ * `external-editor` error `run-U` and `run-V` both logged.
+ *
+ * Unlike the other three adaptations this one is ALSO defended in the client (`renderer.ts`
+ * returns early on zero bytes), so taking a regressed engine would fix itself invisibly here and
+ * break for any other embedder — which is exactly the kind of silent fork loss this file exists
+ * to catch. The needle is the minified form (`vite` keeps the guard as its own statement).
+ */
+const EMPTY_WRITE_MARKERS = ['B.length === 0', 'ghostty_wasm_alloc_u8_array(B.length)'];
 
 /**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
@@ -117,6 +134,17 @@ describe('vendored ghostty-web engine', () => {
         }
     });
 
+    it('ships a bundle whose write() survives zero bytes (§N1 / §N23)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of EMPTY_WRITE_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        // The guard has to come BEFORE the allocation it protects, or it protects nothing.
+        expect(bundle.indexOf(EMPTY_WRITE_MARKERS[0] as string)).toBeLessThan(
+            bundle.indexOf(EMPTY_WRITE_MARKERS[1] as string)
+        );
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -137,5 +165,8 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).toContain('focused: this.surfaceFocused');
         expect(rendererSource).toContain('renderHollowCursor');
         expect(rendererSource).toContain('this.cursorVisible || !this.focused');
+        // §N1/§N23's half, in the file that carries it.
+        const ghosttySource = read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'));
+        expect(ghosttySource).toContain('if (bytes.length === 0) return;');
     });
 });

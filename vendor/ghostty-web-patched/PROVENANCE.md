@@ -1,10 +1,10 @@
-# ghostty-web 0.4.0-nex.4 (vendored)
+# ghostty-web 0.4.0-nex.5 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus three
+review in the orchestrating session and explicit user authorization to integrate both — plus four
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
-focus).
+focus; `-nex.5`: a `write()` that survives zero bytes).
 
 | Version | What it added |
 |---|---|
@@ -12,6 +12,7 @@ focus).
 | `0.4.0-nex.2` | the IME (hidden textarea **and** preedit) anchored to the cursor cell |
 | `0.4.0-nex.3` | `allowTransparency` HONOURED: the default background is cleared, not filled |
 | `0.4.0-nex.4` | `setFocused` — an unfocused surface draws ghostty's steady hollow cursor |
+| `0.4.0-nex.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
 
 ## Base
 
@@ -193,6 +194,80 @@ upstream's behaviour byte for byte.
 Not addressed here: ghostty's `cursor-style-blink` and `adjust-cursor-thickness` config keys are
 not parsed anywhere in this port, so the blink is whatever the embedder passes (`cursorBlink`,
 `true` in Nex) and the outline is ghostty's default 1 px.
+
+## Nex adaptation: `write()` survives zero bytes (`0.4.0-nex.5`, 2026-08-25)
+
+One line, and it closes the oldest open defect in the register (**N1**, and the `external-editor`
+`RangeError` `run-U` and `run-V` both logged).
+
+`GhosttyTerminal.write()` (`lib/ghostty.ts`) does, unconditionally:
+
+```ts
+const ptr = this.exports.ghostty_wasm_alloc_u8_array(bytes.length);
+new Uint8Array(this.memory.buffer).set(bytes, ptr);
+```
+
+For `bytes.length === 0` the allocator returns Zig's **non-null sentinel for a zero-size
+allocation** — `0xFFFFFFFF`, which JS reads back off the `i32` export as **`-1`** — and
+`Uint8Array.prototype.set(empty, -1)` rejects the offset: `RangeError: offset is out of bounds`.
+Measured directly against this wasm (`ghostty_wasm_alloc_u8_array(0) → -1`, every non-zero size
+returning a pointer that fits); it is not a heap-corruption symptom and it is not intermittent —
+**every** zero-length write throws, on every terminal, always.
+
+Nex feeds it zero bytes routinely. The daemon replays the pane's server-side VT snapshot on
+attach, and a pane whose shell has not printed yet serializes to the empty string, so the frame is
+zero-length and the FIRST write into the fresh engine is the one that throws — which is exactly
+N1's "a newly created pane sometimes came up with *terminal renderer failed to start*", exactly
+why it clustered on panes created six-at-a-time, and exactly why a retry usually cleared it (by
+the second attempt the prompt had arrived and the snapshot was no longer empty). In a 60-round
+close/adjust storm against a sandbox daemon, **61 of 181 replay frames were empty**; with the
+engine unpatched every one of them poisoned an engine (478 faults, 478 rebuilds), and with the
+guard in place: **0 faults**.
+
+```ts
+if (bytes.length === 0) return;
+```
+
+A no-op write is a no-op — nothing downstream can tell the difference, and upstream's behaviour
+for every non-empty write is byte-identical. Nex also guards the caller
+(`packages/client/src/terminal/renderer.ts`), because that layer is what decides whether a pane
+restarts and it must never restart over zero bytes; both are deliberate, and either one alone
+fixes the symptom.
+
+Not addressed here (a landmine found while reading, not reached by any caller in this fork):
+`getViewport()` asks the render state for `_cols * _rows` cells and then parses that many out of
+the buffer regardless of the `count` the WASM call returns, so a JS/WASM grid disagreement would
+have it parse *uninitialised heap* into the cell pool — garbage codepoints, straight to the
+canvas. Every caller today goes through `getLine()`, which calls `update()` first and makes
+`count` the full grid; measured across alt-screen switches, DECCOLM and `CSI 8 t` the two never
+disagree. Left alone rather than widened into an unmeasured patch.
+
+## Verification of `0.4.0-nex.5` (2026-08-25)
+
+- **The fault, reproduced and then absent, against a real daemon.** Headless client speaking the
+  real pane-stream protocol to a sandbox daemon (`mkdtemp`, `NEXD_*`, ephemeral non-reserved
+  ports), feeding every frame through the client's own `ingest.ts` into this engine: 60 rounds of
+  split → resize → close → resize. Before: 478 `RangeError: offset is out of bounds`, every one
+  of them on an empty replay frame. After: **0**, same script, same seed of work.
+- **The allocator, directly.** `ghostty_wasm_alloc_u8_array(0)` returns `-1`; `1 KiB`, `64 KiB`,
+  `1 MiB` and `4 MiB` all return pointers that fit inside `memory.buffer` after the growth the
+  call itself performs. So the guard is the whole fix, and no pointer arithmetic changed.
+- **Partial UTF-8 is NOT this bug and needs no patch**: splitting a mixed box-drawing/CJK/emoji
+  chunk at every one of its 75 byte boundaries and writing the two halves produces the identical
+  screen 75/75 times — the WASM stream parser holds its decoder state across `write()` calls, as
+  a streaming decoder must.
+- **Rebuild sanity**: `dist/ghostty-web.js` is **696.60 kB** as vite reports it (was 696.56 kB at
+  `-nex.4`, +0.04 kB), sha256
+  `9899a94fb6279ee2b2b9ae220f2b69ba3b9ca70ca56d2216ab90b2d6ad2ab4aa`;
+  `ghostty-web.umd.cjs` sha256
+  `1725c3fd97434da09967047d332604562a5b27b456f656e3cf3518108d3eceec`; `index.d.ts` **unchanged**
+  from `-nex.4` (`2d4f75a1…`, no public type moved); `ghostty-vt.wasm` re-copied byte-identical
+  (`d6f0326f…`). All of `-nex.2`/`-nex.3`/`-nex.4`'s markers are present in the new bundle and the
+  chip label `-nex.2` removed is still absent (asserted by `vendor-engine.test.ts`).
+- **The toolchain was proven before it was trusted**: the same scratch-sandbox recipe, run against
+  the *pristine* `-nex.4` source (`git show HEAD:…/lib/ghostty.ts`), reproduces the shipping
+  `-nex.4` artifacts to the byte (`d96985f7…`, `03ab14cb…`, `2d4f75a1…`). The only delta in the
+  `-nex.5` bundle is therefore the four lines above.
 
 ## Verification of `0.4.0-nex.4` (2026-08-25)
 
@@ -398,10 +473,11 @@ The wasm is the one thing `source/` does not carry (413 KB of binary, byte-ident
 above can come from there:
 `sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~680 KiB (696.56 kB as vite reports it,
-+4.63 kB over `-nex.3`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+Sanity checks on a rebuild: `dist/ghostty-web.js` is ~680 KiB (696.60 kB as vite reports it,
++0.04 kB over `-nex.4`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
-(`-nex.4`) and no `조합중` (the chip label `-nex.2` removed). Those
+(`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
+own statement) and no `조합중` (the chip label `-nex.2` removed). Those
 markers are asserted in CI by `packages/client/src/terminal/vendor-engine.test.ts`, which also
 pins the version this file documents — bump both together or the guard fails. `npx tsc
 --noEmit` on the snapshot reports only the four pre-existing `Bun` / `fs/promises` errors in
@@ -417,7 +493,7 @@ When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 mer
 vendor dir and the root `pnpm.overrides['ghostty-web']`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
-Note that **none** of the three Nex adaptations is an upstream PR. Taking a future npm release
+Note that **none** of the four Nex adaptations is an upstream PR. Taking a future npm release
 wholesale would:
 
 - put the preedit back in the container's corner and reopen TERM-032 / TERM-033 — so re-apply
@@ -431,7 +507,13 @@ wholesale would:
   `renderHollowCursor`, the `cursorStateDirty` repaint and the `!this.focused` clause in the
   render loop's cursor-visibility test. The client half (`TerminalRenderer.setSurfaceFocus`,
   `EngineHandle.setSurfaceFocus`, the pane's `focused && visible && windowFocused`) lives in this
-  repo and survives; it would simply be talking to an engine that ignores it.
+  repo and survives; it would simply be talking to an engine that ignores it; and
+- put the zero-length `write()` throw back, reopening **N1** — a pane whose replay frame is empty
+  (its shell has not printed yet) would again poison its engine on the first write and, three
+  attempts running, paint the *terminal renderer failed to start* placeholder. Re-apply the
+  `if (bytes.length === 0) return;` guard in `GhosttyTerminal.write`. Unlike the other three this
+  one is also defended in the client (`renderer.ts` skips zero-length writes), so taking a
+  regressed engine would not be visible — which is precisely why the marker below is asserted.
 
 The last two are the easy ones to lose. Nothing about transparency is visible on an opaque
 config, which is what almost every developer runs; and a lone terminal blinking a filled block is

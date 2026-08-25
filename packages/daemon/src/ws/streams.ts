@@ -176,6 +176,8 @@ interface PaneEntry {
     queue: Uint8Array[];
     queuedBytes: number;
     resyncPending: boolean;
+    /** A flow-control re-seed is awaiting its snapshot; a second ack must not start another. */
+    reseeding: boolean;
     sentBytes: number;
 }
 
@@ -363,6 +365,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
                 queue: [],
                 queuedBytes: 0,
                 resyncPending: false,
+                reseeding: false,
                 sentBytes: 0
             };
             this.panes.set(paneID, entry);
@@ -578,22 +581,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
             if (entry.unacked >= windowBytes) return;
 
             if (entry.resyncPending) {
-                let snapshot: { data: Uint8Array; cols: number; rows: number };
-                try {
-                    snapshot = term.snapshot(paneID);
-                } catch (error) {
-                    report(error, `pty-resync ${paneID}`);
-                    return;
-                }
-                entry.resyncPending = false;
-                entry.queue = [];
-                entry.queuedBytes = 0;
-                this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
-                this.transport.sendJson({
-                    type: PTY_RESYNC_MESSAGE_TYPE,
-                    paneID,
-                    reason: 'flow-control-drop'
-                });
+                void this.reseed(paneID, entry);
                 return;
             }
 
@@ -603,6 +591,63 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
                 this.send(paneID, entry, PTY_FRAME_TYPES.output, chunk);
             }
             if (entry.queue.length === 0) entry.queuedBytes = 0;
+        }
+
+        /**
+         * Re-seed a client whose backlog was dropped (`enqueue`), once it is back inside its
+         * window.
+         *
+         * Two things this used to get wrong, both of them byte-level (N23):
+         *
+         *   - **It read the SYNC snapshot.** `feed()` only queues — xterm parses asynchronously
+         *     — so `snapshot()` describes everything parsed *so far* and silently omits chunks
+         *     that were fed a moment ago. Those chunks were also dropped from this client's
+         *     queue, so they were gone from its screen for the life of the pane. The attach and
+         *     settled-resize paths both take the FLUSHING snapshot for exactly this reason; this
+         *     one now does too. Nothing is racing ahead of it while it settles: `resyncPending`
+         *     is still set, so `deliver` keeps enqueueing-and-dropping, and every one of those
+         *     bytes is inside the snapshot being taken.
+         *   - **It left `unacked` charged.** The client zeroes its own counters the instant a
+         *     replay lands (`client/src/connection/pty.ts`), dropping any ack it had not flushed
+         *     — so the bytes it was holding stayed charged against its window here, forever, and
+         *     enough of them stall the pane. `sendResync` has zeroed them since it was written;
+         *     this path had the same bug and not the same fix.
+         *
+         * Re-entrancy: acks keep arriving while the snapshot settles, so the flag says one
+         * re-seed is already in flight and the second ack does nothing.
+         */
+        private async reseed(paneID: string, entry: PaneEntry): Promise<void> {
+            if (entry.reseeding || this.disposed || closed) return;
+            // A pane the emulator has already disposed snapshots EMPTY, and an empty replay is
+            // not a re-seed — it is a client screen wiped by a race with a close (`resyncPane`
+            // makes the same check for the same reason). Leave it to the detach on its way.
+            if (!paneIsKnown(term, paneID)) return;
+            entry.reseeding = true;
+            let snapshot: { data: Uint8Array; cols: number; rows: number };
+            try {
+                snapshot = await snapshotOf(term, paneID);
+            } catch (error) {
+                report(error, `pty-resync ${paneID}`);
+                entry.reseeding = false;
+                return;
+            }
+            // Nothing below may await — the same rule `attach` and `resyncPane` follow, and what
+            // makes the replay/live handover gapless.
+            entry.reseeding = false;
+            if (this.disposed || closed) return;
+            // Identity, not presence: a detach + re-attach during the settle installs a NEW entry
+            // with a replay of its own, and this stale one must not paint over it.
+            if (this.panes.get(paneID) !== entry) return;
+            entry.resyncPending = false;
+            entry.queue = [];
+            entry.queuedBytes = 0;
+            entry.unacked = 0;
+            this.send(paneID, entry, PTY_FRAME_TYPES.replay, snapshot.data);
+            this.transport.sendJson({
+                type: PTY_RESYNC_MESSAGE_TYPE,
+                paneID,
+                reason: 'flow-control-drop'
+            });
         }
 
         private send(paneID: string, entry: PaneEntry, type: PtyFrameType, payload: Uint8Array): void {

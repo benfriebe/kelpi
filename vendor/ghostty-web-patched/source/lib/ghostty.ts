@@ -341,6 +341,13 @@ export class GhosttyTerminal {
 
   write(data: string | Uint8Array): void {
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    // A zero-length write is a no-op, and it must never reach the allocator: Zig answers a
+    // zero-size allocation with its non-null sentinel address (0xFFFFFFFF, which JS reads back
+    // as -1), so `Uint8Array.set(bytes, -1)` below throws `RangeError: offset is out of bounds`
+    // — the terminal is fine, but every caller sees a fatal write. Nex `-nex.5` (N1/N23): an
+    // empty attach replay is the common case for a pane whose shell has not printed yet, and
+    // it was killing the first write into a fresh terminal.
+    if (bytes.length === 0) return;
     const ptr = this.exports.ghostty_wasm_alloc_u8_array(bytes.length);
     new Uint8Array(this.memory.buffer).set(bytes, ptr);
     this.exports.ghostty_terminal_write(this.handle, ptr, bytes.length);

@@ -73,6 +73,17 @@ export class FakeRenderer implements TerminalRenderer {
     /** The engine was abandoned mid-flight (`poison()`); it takes no further bytes. */
     failed = false;
 
+    /**
+     * §N24 — a fake has no canvas and no WASM cell storage, so it never holds its paint.
+     * Present because `TerminalRenderer` declares it.
+     */
+    readonly paintHeld = false;
+    readonly paintHoldTimeouts = 0;
+
+    onPaintHoldChange(): () => void {
+        return () => undefined;
+    }
+
     private readonly dataListeners = new Set<(data: string) => void>();
     private readonly bellListeners = new Set<() => void>();
     private readonly titleListeners = new Set<(title: string) => void>();

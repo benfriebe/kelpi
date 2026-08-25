@@ -31,12 +31,21 @@
  *   - The settled-resize replay carried rows WIDER than the pane (`NO_REFLOW` strands cells past
  *     the grid and `@xterm/addon-serialize` walks `line.length`), so the client rendered text the
  *     daemon never showed. Fixed in `term/service.ts` (`trimStrandedCells`).
- *   - STILL OPEN: after ~40 rounds of continuous churn the client engine's own cell buffer can
- *     come back holding garbage codepoints and U+FFFD runs while the bytes that produced it are
- *     provably clean (a fresh engine fed the same replay renders it perfectly). Grids, fill
- *     counts and buffer pointers all agree at that moment, and an independent raw read of the
- *     WASM render state shows the same garbage — so it is below the vendored JS. Re-run this to
- *     measure it; `--rounds 60` or more is where it starts.
+ *   - The residual this used to report as STILL OPEN — after ~40 rounds of continuous churn the
+ *     client engine's own cell buffer comes back holding garbage codepoints while the bytes that
+ *     produced it are provably clean — was root-caused by §N24 (2026-08-25) and is now
+ *     UNPAINTABLE rather than merely rare. It is `ghostty_terminal_resize` widening a grid under
+ *     heap churn: cells the VT never wrote, in libghostty-vt's own storage, below the vendored
+ *     JS exactly as this note said (`ghostty_render_state_get_viewport` returns `count ===
+ *     totalCells` and zeroing the destination first changes nothing, so it is written by the
+ *     wasm, not read past its output). The app's answer is to suspend the engine's PAINT for the
+ *     length of the resize→replay window (`renderer.ts`, `ghostty-web 0.4.0-nex.6`); the frames
+ *     are proved absent by `scripts/ui-audit/resize-flash-storm.mjs`.
+ *
+ *     THIS script deliberately does not take that path: it drives the engine directly rather
+ *     than through the client adapter, so it still measures the raw buffer and its `INVENTED`
+ *     rounds are the same deterministic set they have always been (41, 47, 49, 51, 53, 55, 57,
+ *     59 …) — which is what makes it a stable N23 regression net. Re-run with `--rounds 90`.
  *
  * Usage:
  *

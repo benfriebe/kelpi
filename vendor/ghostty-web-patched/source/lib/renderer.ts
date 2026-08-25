@@ -166,6 +166,11 @@ export class CanvasRenderer {
    * pane that lost focus while idle keeps its filled block painted until the next keystroke.
    */
   private cursorStateDirty: boolean = false;
+  /**
+   * Paint is SUSPENDED — the canvas is a frozen frame, not a live surface (vendor
+   * 0.4.0-nex.6). See `setPaintSuspended`.
+   */
+  private paintSuspended: boolean = false;
 
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
@@ -343,11 +348,57 @@ export class CanvasRenderer {
   // ==========================================================================
 
   /**
+   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   *
+   * While suspended `render()` returns without touching the canvas and `resize()` carries the
+   * pixels across instead of clearing to the background, so the canvas holds the LAST GOOD
+   * FRAME for as long as the embedder asks it to.
+   *
+   * Why an engine needs this at all: a widening `ghostty_terminal_resize` under heap churn can
+   * leave cells in the terminal's own storage that were never written by the VT — they read back
+   * as runs of monotonically increasing codepoints at a constant stride, i.e. non-text memory
+   * seen as text — and every frame from then until something rewrites the screen paints them.
+   * The state is inside libghostty-vt (the wasm is a prebuilt binary here), so it cannot be
+   * fixed at the source; what CAN be guaranteed is that no frame is ever produced from it. Nex's
+   * embedder resizes, suspends, and resumes when the authoritative server-side replay has been
+   * written back in — see `TerminalRenderer.resize` in the app.
+   *
+   * Upstream behaviour is untouched for any embedder that never calls this: the flag starts
+   * `false` and nothing else sets it.
+   */
+  public setPaintSuspended(suspended: boolean): void {
+    this.paintSuspended = suspended;
+  }
+
+  /** Is paint currently suspended? (`setPaintSuspended`) */
+  public isPaintSuspended(): boolean {
+    return this.paintSuspended;
+  }
+
+  /**
    * Resize canvas to fit terminal dimensions
    */
   public resize(cols: number, rows: number): void {
     const cssWidth = cols * this.metrics.width;
     const cssHeight = rows * this.metrics.height;
+
+    /**
+     * vendor 0.4.0-nex.6: while paint is suspended the canvas is the frozen last good frame,
+     * and setting `canvas.width`/`height` below wipes it. Take a copy first and lay it back
+     * down afterwards, so a suspended resize shows the previous content at its previous size
+     * (any newly exposed area is background) rather than a blank pane.
+     */
+    let frozen: HTMLCanvasElement | null = null;
+    if (this.paintSuspended && this.canvas.width > 0 && this.canvas.height > 0) {
+      const copy = document.createElement('canvas');
+      copy.width = this.canvas.width;
+      copy.height = this.canvas.height;
+      const copyCtx = copy.getContext('2d');
+      if (copyCtx) {
+        copyCtx.drawImage(this.canvas, 0, 0);
+        frozen = copy;
+      }
+    }
 
     // Set CSS size (what user sees)
     this.canvas.style.width = `${cssWidth}px`;
@@ -366,6 +417,18 @@ export class CanvasRenderer {
 
     // Fill background after resize
     this.paintDefaultBackground(0, 0, cssWidth, cssHeight);
+
+    // …and, when suspended, put the frozen frame back on top of it (nex.6). The context is
+    // scaled by the DPR, so the device-pixel copy is drawn at its CSS size.
+    if (frozen !== null) {
+      this.ctx.drawImage(
+        frozen,
+        0,
+        0,
+        frozen.width / this.devicePixelRatio,
+        frozen.height / this.devicePixelRatio
+      );
+    }
   }
 
   // ==========================================================================
@@ -382,6 +445,12 @@ export class CanvasRenderer {
     scrollbackProvider?: IScrollbackProvider,
     scrollbarOpacity: number = 1
   ): void {
+    // vendor 0.4.0-nex.6 (§N24): paint is suspended — produce NO frame at all. Deliberately the
+    // first statement in the method, before the buffer is read, so a suspended terminal never
+    // converts a single cell into a pixel. Dirty flags are left alone (`clearDirty()` below is
+    // skipped with everything else), so the forced render on resume redraws from a clean slate.
+    if (this.paintSuspended) return;
+
     // Store buffer reference for grapheme lookups in renderCell
     this.currentBuffer = buffer;
 

@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.5';
+const EXPECTED_VERSION = '0.4.0-nex.6';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -72,6 +72,27 @@ const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDi
  * to catch. The needle is the minified form (`vite` keeps the guard as its own statement).
  */
 const EMPTY_WRITE_MARKERS = ['B.length === 0', 'ghostty_wasm_alloc_u8_array(B.length)'];
+
+/**
+ * Markers of `-nex.6`'s paint suspension (§N24).
+ *
+ * The fourth adaptation, and the one whose absence is invisible until someone photographs it: a
+ * widening `ghostty_terminal_resize` under heap churn leaves cells in libghostty-vt's own
+ * storage that the VT never wrote, and upstream's render loop paints them on the very next
+ * frame — measured at 66.7 flashes per 100 close/reopen cycles over a left/right split, nine to
+ * ten frames each. The app suspends the engine's paint for the length of the resize→replay
+ * window (`TerminalRenderer.resize`); take a future npm release wholesale and the suspension
+ * becomes a call into nothing, the hold silently stops holding, and the flash comes back.
+ */
+const PAINT_SUSPEND_MARKERS = ['setPaintSuspended', 'isPaintSuspended', 'this.paintSuspended'];
+
+/**
+ * The guard has to be the FIRST thing `render()` does — before a single cell is read.
+ *
+ * Vite keeps the early return as its own statement; the parameter names are minified, hence the
+ * pattern rather than a literal.
+ */
+const PAINT_SUSPEND_GUARD = /render\([^)]*\)\s*\{\s*(?:var\s+\w+;\s*)?if\s*\(this\.paintSuspended\)\s*return;/;
 
 /**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
@@ -145,6 +166,14 @@ describe('vendored ghostty-web engine', () => {
         );
     });
 
+    it('ships a bundle that can suspend its paint, guarded before the first cell read (§N24)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of PAINT_SUSPEND_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        expect(bundle).toMatch(PAINT_SUSPEND_GUARD);
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -168,5 +197,13 @@ describe('vendored ghostty-web engine', () => {
         // §N1/§N23's half, in the file that carries it.
         const ghosttySource = read(path.join(vendorRoot, 'source', 'lib', 'ghostty.ts'));
         expect(ghosttySource).toContain('if (bytes.length === 0) return;');
+        // §N24's half, in the two files that carry it: the Terminal remembers the flag across
+        // `open()` and forces a full frame on resume; the renderer refuses to paint and carries
+        // the pixels across a suspended resize.
+        expect(terminalSource).toContain('setPaintSuspended(suspended: boolean)');
+        expect(terminalSource).toContain('if (this.paintSuspended) this.renderer.setPaintSuspended(true)');
+        expect(terminalSource).toContain('if (!this.paintSuspended) {');
+        expect(rendererSource).toContain('if (this.paintSuspended) return;');
+        expect(rendererSource).toContain('this.paintSuspended && this.canvas.width > 0');
     });
 });

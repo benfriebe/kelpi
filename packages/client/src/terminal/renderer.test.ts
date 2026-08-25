@@ -4,6 +4,7 @@ import {
     DEFAULT_FONT_FAMILY,
     DEFAULT_TERMINAL_ENGINE,
     DEFAULT_TERMINAL_THEME,
+    RESIZE_PAINT_HOLD_TIMEOUT_MS,
     TERMINAL_RESET_SEQUENCE,
     compactTheme,
     createRendererFromLoader,
@@ -126,6 +127,10 @@ class StubEngine {
     cell: CellSize | undefined;
     /** §N20 — every surface-focus report the handle received, in order. */
     readonly surfaceFocuses: boolean[] = [];
+    /** §N24 — every paint-suspension report the handle received, in order. */
+    readonly paintSuspensions: boolean[] = [];
+    /** §N24 — build a handle WITHOUT `setPaintSuspended` (the `@xterm/xterm` / fake shape). */
+    supportsPaintSuspension = true;
 
     private release: (() => void) | undefined;
     private readonly gate: Promise<void>;
@@ -144,7 +149,7 @@ class StubEngine {
 
     readonly loader = async (): Promise<EngineHandle> => {
         await this.gate;
-        return {
+        const handle: EngineHandle = {
             terminal: this.terminal,
             cellSize: (): CellSize | undefined => this.cell,
             setTheme: (theme: TerminalTheme): void => {
@@ -159,6 +164,13 @@ class StubEngine {
             },
             setSurfaceFocus: (focused: boolean): void => {
                 this.surfaceFocuses.push(focused);
+            }
+        };
+        if (!this.supportsPaintSuspension) return handle;
+        return {
+            ...handle,
+            setPaintSuspended: (suspended: boolean): void => {
+                this.paintSuspensions.push(suspended);
             }
         };
     };
@@ -632,6 +644,192 @@ describe('engine startup serialization (run-F N1)', () => {
         expect(second.terminal.opened).not.toBeNull();
         a.dispose();
         b.dispose();
+    });
+});
+
+/**
+ * §N24 — the resize→replay paint hold.
+ *
+ * The defect it closes is not in this repo: a widening `ghostty_terminal_resize` under heap
+ * churn leaves cells in libghostty-vt's own storage that the VT never wrote, and every frame
+ * from then until something rewrites the screen paints them (measured: 66.7 flashes per 100
+ * close/reopen cycles over a left/right split, 9-10 frames each — the daemon's whole 150 ms
+ * settle window). The wasm is a prebuilt binary, so what is guaranteed here is the other half:
+ * between the moment the engine's grid changes and the moment the authoritative replay has
+ * been written into it, the engine paints NOTHING.
+ */
+describe('the resize→replay paint hold (§N24)', () => {
+    async function live(): Promise<{ engine: StubEngine; renderer: ReturnType<typeof createRendererFromLoader> }> {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+        return { engine, renderer };
+    }
+
+    it('suspends the engine BEFORE the resize reaches it, and resumes on the replay', async () => {
+        const { engine, renderer } = await live();
+        engine.paintSuspensions.length = 0;
+        // Ordering is the whole point: a suspension that lands after the resize has already
+        // let the engine's own forced render through is a suspension that came too late.
+        const order: string[] = [];
+        engine.terminal.onResizeRecorded = (): void => {
+            order.push('resize');
+        };
+        renderer.onPaintHoldChange((held) => {
+            order.push(held ? 'suspend' : 'resume');
+        });
+
+        renderer.resize(120, 40);
+        expect(renderer.paintHeld).toBe(true);
+        expect(order).toEqual(['suspend', 'resize']);
+
+        // The replay, exactly as `ingest.replay()` produces it.
+        renderer.reset();
+        expect(renderer.paintHeld).toBe(true);
+        renderer.write('snapshot');
+        expect(renderer.paintHeld).toBe(false);
+        expect(order).toEqual(['suspend', 'resize', 'resume']);
+        renderer.dispose();
+    });
+
+    it('does not resume on ordinary live output — only on the write behind a reset', async () => {
+        const { engine, renderer } = await live();
+        renderer.resize(120, 40);
+        expect(renderer.paintHeld).toBe(true);
+
+        // A shell that keeps printing during the settle window must not end the hold: those
+        // bytes are parsed against the very screen that is not to be painted.
+        renderer.write('output while the daemon settles');
+        renderer.write('more output');
+        expect(renderer.paintHeld).toBe(true);
+        expect(engine.paintSuspensions).toEqual([true]);
+
+        renderer.reset();
+        renderer.write('snapshot');
+        expect(renderer.paintHeld).toBe(false);
+        expect(engine.paintSuspensions).toEqual([true, false]);
+        renderer.dispose();
+    });
+
+    it('ends the hold on an EMPTY replay too — a pane that has printed nothing still gets one', async () => {
+        const { engine, renderer } = await live();
+        renderer.resize(120, 40);
+        expect(renderer.paintHeld).toBe(true);
+        // ~34 % of replay frames under close/adjust churn are empty (N23's own measurement).
+        // The RIS in front of it is the part that matters; freezing the pane until the timeout
+        // for a replay that arrived would be the fix causing the symptom it was meant to remove.
+        renderer.reset();
+        renderer.write(new Uint8Array(0));
+        expect(renderer.paintHeld).toBe(false);
+        expect(renderer.paintHoldTimeouts).toBe(0);
+        // …and the zero-length write still never reached the engine (N1's guard is intact).
+        expect(engine.terminal.writes).not.toContain('');
+        renderer.dispose();
+    });
+
+    it('re-arms across a burst and ends at the last resize’s replay', async () => {
+        const { engine, renderer } = await live();
+        renderer.resize(100, 30);
+        renderer.reset();
+        renderer.write('replay one');
+        expect(renderer.paintHeld).toBe(false);
+
+        // A drag emits several grid changes; each gets its own window.
+        renderer.resize(110, 32);
+        expect(renderer.paintHeld).toBe(true);
+        renderer.resize(120, 34);
+        expect(renderer.paintHeld).toBe(true);
+        renderer.reset();
+        renderer.write('replay two');
+        expect(renderer.paintHeld).toBe(false);
+        expect(engine.paintSuspensions).toEqual([true, false, true, false]);
+        renderer.dispose();
+    });
+
+    it('a reset seen BEFORE the resize does not arm the release', async () => {
+        const { engine, renderer } = await live();
+        // The attach replay lands, then the layout changes: the next write is live output, not
+        // the snapshot for this grid, and it must not lift the hold.
+        renderer.reset();
+        renderer.write('attach replay');
+        renderer.resize(120, 40);
+        renderer.write('live output');
+        expect(renderer.paintHeld).toBe(true);
+        expect(engine.paintSuspensions).toEqual([true]);
+        renderer.dispose();
+    });
+
+    it('releases on the timeout when the replay never arrives, and counts it', async () => {
+        vi.useFakeTimers();
+        try {
+            const engine = stubEngine();
+            const renderer = createRendererFromLoader('ghostty', engine.loader);
+            const opening = renderer.open(host());
+            engine.settle();
+            await opening;
+
+            renderer.resize(120, 40);
+            expect(renderer.paintHeld).toBe(true);
+            expect(renderer.paintHoldTimeouts).toBe(0);
+
+            // A socket that dropped mid-gesture, a pane the daemon already detached: a pane
+            // must never be frozen by a replay that is not coming.
+            vi.advanceTimersByTime(RESIZE_PAINT_HOLD_TIMEOUT_MS + 1);
+            expect(renderer.paintHeld).toBe(false);
+            expect(renderer.paintHoldTimeouts).toBe(1);
+            expect(engine.paintSuspensions).toEqual([true, false]);
+            renderer.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('never holds an engine that cannot suspend its paint (xterm, a fake)', async () => {
+        const engine = stubEngine();
+        engine.supportsPaintSuspension = false;
+        const renderer = createRendererFromLoader('xterm', engine.loader);
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        renderer.resize(120, 40);
+        // No canvas paint to hold and no uninitialised cell storage to paint from: the window
+        // is a ghostty-web problem, and an engine without the hook keeps its old behaviour.
+        expect(renderer.paintHeld).toBe(false);
+        expect(engine.terminal.resizes).toContainEqual({ cols: 120, rows: 40 });
+        renderer.dispose();
+    });
+
+    it('does not hold for a resize the engine would ignore', async () => {
+        const { engine, renderer } = await live();
+        engine.paintSuspensions.length = 0;
+        // Same grid: the engine is never resized, so there is no window to hold.
+        renderer.resize(engine.terminal.cols, engine.terminal.rows);
+        expect(renderer.paintHeld).toBe(false);
+        expect(engine.paintSuspensions).toEqual([]);
+        renderer.dispose();
+    });
+
+    it('drops the hold when the engine is poisoned, and again on dispose', async () => {
+        const { engine, renderer } = await live();
+        renderer.resize(120, 40);
+        expect(renderer.paintHeld).toBe(true);
+        // A poisoned engine is about to be thrown away; the pane rebuilds on a fresh one.
+        engine.terminal.write = (): void => {
+            throw new RangeError('offset is out of bounds');
+        };
+        renderer.write('boom');
+        expect(renderer.failed).toBe(true);
+        expect(renderer.paintHeld).toBe(false);
+
+        const second = await live();
+        second.renderer.resize(120, 40);
+        expect(second.renderer.paintHeld).toBe(true);
+        second.renderer.dispose();
+        expect(second.renderer.paintHeld).toBe(false);
+        renderer.dispose();
     });
 });
 

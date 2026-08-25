@@ -1913,7 +1913,7 @@ function buildFlows(ctx) {
         {
             id: 'terminal-resize-storm',
             expect:
-                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; ten split/close rounds over multibyte text leave the client\'s screen EQUAL to the daemon\'s (§N23: nothing missing, nothing invented, no replacement characters); and the pane is still a live shell when the window is handed back.',
+                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; ten split/close rounds over multibyte text leave the client\'s screen EQUAL to the daemon\'s (§N23: nothing missing, nothing invented, no replacement characters); eight LEFT/RIGHT close rounds under a per-frame canvas probe paint NOT ONE frame while the engine is resized-but-not-yet-replayed, and every hold ends on a replay rather than on its timeout (§N24); and the pane is still a live shell when the window is handed back.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -2228,6 +2228,135 @@ function buildFlows(ctx) {
                     await focusPaneBody(page, paneID);
                     const afterCloses = (await readClientScreen('after-close-storm')) ?? '';
                     if (afterCloses !== '') await compareClientToServer('after-close-storm', afterCloses);
+
+                    /*
+                     * ── 4d. §N24: NO FRAME FROM A RESIZED-BUT-NOT-YET-REPLAYED BUFFER ───
+                     *
+                     * 4c asks whether the pane SETTLES correctly, and it does either way —
+                     * N24 is what the canvas shows *during* the gesture, and the corruption
+                     * heals the instant the settled-resize replay lands, so a settled read
+                     * cannot see it. Measured with a frame-level probe
+                     * (`scripts/ui-audit/resize-flash-storm.mjs`): closing a pane in a
+                     * LEFT/RIGHT split leaves cells in libghostty-vt's own storage that the VT
+                     * never wrote — constant-stride runs of increasing codepoints, plus stale
+                     * off-screen text spliced onto the rows below — and ghostty-web's render
+                     * loop painted them for the whole ~150 ms settle window (10.8 flashes per
+                     * 100 close/reopen cycles, 9-10 frames each).
+                     *
+                     * The wasm is a prebuilt binary, so the fix is the other half of the
+                     * problem: `TerminalRenderer.resize` suspends the engine's paint before the
+                     * grid moves and resumes it once the replay has been written in
+                     * (`ghostty-web 0.4.0-nex.6`). That makes the guarantee a PIXEL one, and
+                     * this is where it is asserted: while the pane publishes
+                     * `data-terminal-paint-held="true"`, the canvas must not change. A frozen
+                     * frame inside the window is the accepted trade; a NEW frame inside it is
+                     * the defect.
+                     */
+                    const holdProbe = `(() => {
+                        const root = document.querySelector('${paneRoot}');
+                        const canvas = root === null ? null : root.querySelector('canvas');
+                        if (canvas === null) return 'no canvas';
+                        const probe = { frames: 0, held: 0, changedWhileHeld: 0, holdWindows: 0, stop: false };
+                        window.__nexN24 = probe;
+                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                        let last = null;
+                        let wasHeld = false;
+                        const hash = () => {
+                            // A strided sample rather than the whole surface: cheap enough to run
+                            // every frame, and a garbage row lights hundreds of cells, so nothing
+                            // this defect does could hide between the samples.
+                            const w = canvas.width, h = canvas.height;
+                            if (w === 0 || h === 0) return 'empty';
+                            let acc = 2166136261;
+                            for (let y = 2; y < h; y += 9) {
+                                const row = ctx.getImageData(0, y, w, 1).data;
+                                for (let i = 0; i < row.length; i += 37) {
+                                    acc = ((acc ^ row[i]) * 16777619) >>> 0;
+                                }
+                            }
+                            return w + 'x' + h + ':' + acc.toString(16);
+                        };
+                        const tick = () => {
+                            if (probe.stop) return;
+                            probe.frames += 1;
+                            const held = root.getAttribute('data-terminal-paint-held') === 'true';
+                            if (held && !wasHeld) probe.holdWindows += 1;
+                            let now;
+                            try { now = hash(); } catch { now = last; }
+                            if (held) {
+                                probe.held += 1;
+                                // The canvas SIZE legitimately changes inside the window (the
+                                // engine is resized); the PIXELS must not be re-derived from the
+                                // buffer. A size change alone is not a repaint, so compare the
+                                // hash only when the dimensions are unchanged.
+                                if (last !== null && now !== last && now.split(':')[0] === last.split(':')[0]) {
+                                    probe.changedWhileHeld += 1;
+                                }
+                            }
+                            wasHeld = held;
+                            last = now;
+                            requestAnimationFrame(tick);
+                        };
+                        requestAnimationFrame(tick);
+                        return 'armed';
+                    })()`;
+                    const armedProbe = await page.eval(holdProbe);
+                    recorder.check(
+                        '§N24: the frame probe is watching the pane canvas',
+                        armedProbe === 'armed',
+                        String(armedProbe)
+                    );
+
+                    if (armedProbe === 'armed') {
+                        // The owner's exact gesture, and only it: a LEFT/RIGHT split, where the
+                        // survivor takes its largest column change on close.
+                        for (let round = 0; round < 8; round += 1) {
+                            const sibling = await cli.json([
+                                'pane', 'split', '--direction', 'horizontal', '--target', paneID, '--json'
+                            ]);
+                            const siblingID = String(sibling.pane_id ?? '');
+                            await sleep(300);
+                            await focusPaneBody(page, paneID);
+                            await runInTerminal(
+                                page,
+                                `printf '┌── 日本語テスト %s ✅ 🚀 あいうえお漢字 你好世界 ──┐\\n' ${String(round)}`,
+                                { settleMs: 160 }
+                            );
+                            if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
+                            // Long enough to cover the daemon's 150 ms settle plus its snapshot:
+                            // the whole window has to be inside the probe's watch.
+                            await sleep(700);
+                        }
+                        await sleep(1200);
+                        const probe = JSON.parse(
+                            String(
+                                await page.eval(
+                                    'JSON.stringify((() => { const p = window.__nexN24; if (p === undefined) return null; p.stop = true; return p; })())'
+                                )
+                            )
+                        );
+                        const timeouts = await page.eval(
+                            `document.querySelector('${paneRoot}')?.getAttribute('data-terminal-paint-hold-timeouts') ?? 'absent'`
+                        );
+                        recorder.note(`§N24 frame probe: ${JSON.stringify(probe)} · hold timeouts ${String(timeouts)}`);
+                        recorder.check(
+                            '§N24: the paint hold actually engaged over the close storm (the assertion below is not vacuous)',
+                            probe !== null && probe.holdWindows >= 8 && probe.held > 0,
+                            JSON.stringify(probe)
+                        );
+                        recorder.check(
+                            '§N24: NOT ONE frame was painted while the engine was resized-but-not-yet-replayed',
+                            probe !== null && probe.changedWhileHeld === 0,
+                            `${String(probe === null ? 'no probe' : probe.changedWhileHeld)} repaint(s) inside the hold, over ${String(probe === null ? 0 : probe.held)} held frames`
+                        );
+                        recorder.check(
+                            '§N24: every hold ended on a replay, never on the timeout',
+                            String(timeouts) === '0',
+                            `data-terminal-paint-hold-timeouts=${String(timeouts)}`
+                        );
+                        await recorder.shot(page, 'after-n24-close-storm');
+                    }
+
                     recorder.eyes(
                         'after ten split/close rounds the pane must read as clean text — no rows of ' +
                             'replacement characters (\u{fffd}), no half-drawn box glyphs, no two lines spliced onto one row'

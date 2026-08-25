@@ -81,6 +81,14 @@ export class Terminal implements ITerminalCore {
    */
   private surfaceFocused = true;
 
+  /**
+   * Paint suspension (vendor 0.4.0-nex.6) — see `setPaintSuspended`.
+   *
+   * Held on the Terminal as well as on the renderer for the same reason `surfaceFocused` is:
+   * the renderer does not exist until `open()`, and an embedder may suspend before then.
+   */
+  private paintSuspended = false;
+
   // ── Caret-anchored IME (vendor 0.4.0-nex.2) ───────────────────────────────
   // The cursor cell's box in the coordinate space the absolutely-positioned textarea and
   // preedit overlay share (their containing block == the canvas's offsetParent), so a canvas
@@ -512,6 +520,9 @@ export class Terminal implements ITerminalCore {
         // blinking as if it had the caret. See `setFocused`.
         focused: this.surfaceFocused,
       });
+      // vendor 0.4.0-nex.6: carry a suspension asked for before `open()` onto the renderer that
+      // is only now being built. See `setPaintSuspended`.
+      if (this.paintSuspended) this.renderer.setPaintSuspended(true);
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);
@@ -750,17 +761,30 @@ export class Terminal implements ITerminalCore {
     // Resize renderer
     this.renderer!.resize(cols, rows);
 
-    // Update canvas dimensions
-    const metrics = this.renderer!.getMetrics();
-    this.canvas!.width = metrics.width * cols;
-    this.canvas!.height = metrics.height * rows;
-    this.canvas!.style.width = `${metrics.width * cols}px`;
-    this.canvas!.style.height = `${metrics.height * rows}px`;
+    /**
+     * vendor 0.4.0-nex.6 (§N24): while paint is suspended, `renderer.resize()` above is the
+     * ONLY thing allowed to touch the canvas.
+     *
+     * The block below re-assigns `canvas.width`/`height` in CSS pixels, which (a) wipes the
+     * canvas — and while suspended it is holding the frozen last good frame — and (b) drops the
+     * device-pixel-ratio scaling `renderer.resize()` just applied. Unsuspended that is harmless
+     * because the forced render at the bottom notices the mismatch and re-sizes properly; with
+     * the render suppressed there is nothing to notice it, so the canvas would sit at half
+     * resolution for the whole suspension.
+     */
+    if (!this.paintSuspended) {
+      // Update canvas dimensions
+      const metrics = this.renderer!.getMetrics();
+      this.canvas!.width = metrics.width * cols;
+      this.canvas!.height = metrics.height * rows;
+      this.canvas!.style.width = `${metrics.width * cols}px`;
+      this.canvas!.style.height = `${metrics.height * rows}px`;
+    }
 
     // Fire resize event
     this.resizeEmitter.fire({ cols, rows });
 
-    // Force full render
+    // Force full render (no-op while suspended — `CanvasRenderer.render` returns immediately)
     this.renderer!.render(this.wasmTerm!, true, this.viewportY, this);
   }
 
@@ -841,6 +865,40 @@ export class Terminal implements ITerminalCore {
   setFocused(focused: boolean): void {
     this.surfaceFocused = focused;
     this.renderer?.setFocused(focused);
+  }
+
+  /**
+   * Suspend or resume PAINTING (vendor 0.4.0-nex.6 — Nex §N24).
+   *
+   * Suspended, the render loop and the forced render inside `resize()` produce nothing and the
+   * canvas keeps the last frame that was painted, carried across any resize that happens
+   * meanwhile (`CanvasRenderer.resize`). Resuming forces one full render, so the first frame
+   * after the suspension is a complete, current one rather than a partial dirty-row update.
+   *
+   * The embedder uses it to make "resize the grid" and "re-seed the grid from the authoritative
+   * server-side snapshot" look like ONE step: a widening `ghostty_terminal_resize` can leave
+   * cells in libghostty-vt's own storage that the VT never wrote (constant-stride runs of
+   * increasing codepoints — non-text memory read as text), and every frame between the resize
+   * and the re-seed would otherwise paint them. Suspending across that window means such a
+   * frame is never produced. See `renderer.ts` `setPaintSuspended`.
+   *
+   * Safe before `open()`: the state is remembered and handed to the renderer when it is built.
+   */
+  setPaintSuspended(suspended: boolean): void {
+    if (this.paintSuspended === suspended) return;
+    this.paintSuspended = suspended;
+    const renderer = this.renderer;
+    if (!renderer) return;
+    renderer.setPaintSuspended(suspended);
+    if (suspended || !this.isOpen || !this.wasmTerm) return;
+    // Resume with a FULL frame: dirty tracking was left untouched while suspended, so an
+    // incremental pass could leave rows that changed during the window unpainted.
+    renderer.render(this.wasmTerm, true, this.viewportY, this);
+  }
+
+  /** Is paint currently suspended? (`setPaintSuspended`) */
+  isPaintSuspended(): boolean {
+    return this.paintSuspended;
   }
 
   /**

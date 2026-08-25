@@ -299,6 +299,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     });
 
     const hostRef = useRef<HTMLDivElement | null>(null);
+    /**
+     * §N24 — the pane's root node, so the resize→replay paint hold can be published without a
+     * React render. A drag opens one window per debounce fire; re-rendering the pane twice per
+     * fire to move a `data-` attribute would be a cost the defect does not justify.
+     */
+    const rootRef = useRef<HTMLDivElement | null>(null);
     const rendererRef = useRef<TerminalRenderer | null>(null);
     const streamRef = useRef<PtyStreamHandle | null>(null);
     const geometryRef = useRef<TerminalGeometry | null>(null);
@@ -576,6 +582,22 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 ingest.pause();
                 failed(error, 'engine');
             });
+            /**
+             * §N24 — publish the resize→replay paint hold onto the root node.
+             *
+             * The invariant it makes observable is a pixel one, and it is the audit's whole
+             * assertion: while this reads `true` the engine is suspended, so the canvas must
+             * not change. `paint-hold-timeouts` rides along because a hold that ended on the
+             * timeout instead of on a replay is the one case where the guarantee lapses.
+             */
+            const publishHold = (held: boolean): void => {
+                const root = rootRef.current;
+                if (root === null) return;
+                root.setAttribute('data-terminal-paint-held', held ? 'true' : 'false');
+                root.setAttribute('data-terminal-paint-hold-timeouts', String(renderer.paintHoldTimeouts));
+            };
+            publishHold(false);
+            const offHold = renderer.onPaintHoldChange(publishHold);
 
             void renderer.open(host).then(
                 () => {
@@ -612,6 +634,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 offTitle();
                 offSelection();
                 offFailure();
+                offHold();
                 stream.unsubscribe();
                 renderer.dispose();
                 rendererRef.current = null;
@@ -993,6 +1016,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
 
     return (
         <div
+            ref={rootRef}
             data-pane-id={paneID}
             data-terminal-status={status}
             data-terminal-attempts={String(attempts)}

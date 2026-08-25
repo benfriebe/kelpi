@@ -219,6 +219,23 @@ export interface TerminalRenderer {
      * taken against the fallback.
      */
     remeasure?(): void;
+    /**
+     * Is the engine currently holding its paint across a resize→replay window? (§N24.)
+     *
+     * Diagnostics only — the pane mirrors it into a `data-` attribute so the audit can assert
+     * that the hold engages and, more importantly, that it always ends.
+     */
+    readonly paintHeld: boolean;
+    /** Resize→replay windows this renderer released on the TIMEOUT rather than on a replay. */
+    readonly paintHoldTimeouts: number;
+    /**
+     * Fires on every transition of `paintHeld`. Returns an unsubscribe.
+     *
+     * The pane mirrors it onto its root node imperatively (no React re-render — a drag opens a
+     * window per debounce fire), which is what lets the audit assert the invariant in pixels:
+     * while the attribute reads `true` the canvas must not change.
+     */
+    onPaintHoldChange(listener: (held: boolean) => void): () => void;
     dispose(): void;
 }
 
@@ -279,6 +296,16 @@ export interface EngineHandle {
      */
     setSurfaceFocus?(focused: boolean): void;
     /**
+     * Suspend or resume PAINTING, without touching the VT (§N24 — `ghostty-web 0.4.0-nex.6`).
+     *
+     * Optional, and only ghostty-web has it: a widening `ghostty_terminal_resize` can leave
+     * cells in libghostty-vt's own storage that the VT never wrote, and the engine's render
+     * loop paints them on the very next frame. `@xterm/xterm` has no such state (its buffer is
+     * JS objects), and a fake engine has no canvas — both simply omit this, and the adapter's
+     * hold becomes a no-op for them.
+     */
+    setPaintSuspended?(suspended: boolean): void;
+    /**
      * Scroll a search match into view and select it. Engine-specific on purpose: the two
      * engines' `scrollToLine` mean different things (xterm.js takes the absolute buffer line to
      * put at the top of the viewport; ghostty-web takes the number of lines scrolled UP from the
@@ -326,6 +353,22 @@ export const PENDING_WRITE_LIMIT_BYTES = 4 * 1024 * 1024;
  * failure mode is a hung window.
  */
 export const ENGINE_STARTUP_GATE_TIMEOUT_MS = 10_000;
+
+/**
+ * Ceiling on the resize→replay paint hold (§N24). See `AdapterRenderer.resize`.
+ *
+ * The daemon owes one settled-resize replay per changed grid and takes
+ * `DEFAULT_RESIZE_RESYNC_MS` (150 ms) to settle before it even snapshots, so the honest window
+ * is "150 ms plus a snapshot plus a socket". This is the defensive cap on top of that: a replay
+ * that never arrives — a socket that dropped mid-gesture, a pane the daemon has already
+ * detached, a resize the hub decided not to resync — must not leave a pane frozen forever.
+ *
+ * Releasing on the timeout is a DELIBERATE fall back to the pre-N24 behaviour for that one
+ * frame (the engine may still be holding the corrupt cells), because a stale-but-live pane is
+ * better than a dead one, and the very next byte from the shell repaints it. It is counted
+ * (`paintHoldTimeouts`) precisely so "this never happens in practice" stays a measurement.
+ */
+export const RESIZE_PAINT_HOLD_TIMEOUT_MS = 1_000;
 
 /**
  * Dark palette matching the chrome tokens (`--nex-bg` / `--nex-fg`). Hex only — see
@@ -666,6 +709,21 @@ class AdapterRenderer implements TerminalRenderer {
     private requestedRows: number;
     private readonly faults: EngineFaultHook | undefined;
 
+    /**
+     * §N24 — the resize→replay paint hold.
+     *
+     * `holding` is set the moment the engine's grid actually changes and cleared when the
+     * settled-resize replay has been written back in (or the timeout fires). `sawResetWhileHeld`
+     * is how the replay is recognised: `ingest.replay()` is the ONLY caller of `reset()`, and it
+     * always does `reset()` then `write(snapshot)` — so the write that follows a reset is the
+     * authoritative screen, and the frame after it is safe to paint.
+     */
+    private holding = false;
+    private sawResetWhileHeld = false;
+    private holdTimer: ReturnType<typeof setTimeout> | null = null;
+    private holdTimeouts = 0;
+    private readonly holdListeners = new Set<(held: boolean) => void>();
+
     constructor(
         engine: TerminalEngine,
         private readonly loader: EngineLoader,
@@ -696,6 +754,21 @@ class AdapterRenderer implements TerminalRenderer {
         return this.poisoned;
     }
 
+    /** §N24 — is a resize→replay paint hold in force right now? */
+    get paintHeld(): boolean {
+        return this.holding;
+    }
+
+    /** §N24 — holds released by the timeout instead of by a replay. Expected to stay 0. */
+    get paintHoldTimeouts(): number {
+        return this.holdTimeouts;
+    }
+
+    onPaintHoldChange(listener: (held: boolean) => void): () => void {
+        this.holdListeners.add(listener);
+        return () => this.holdListeners.delete(listener);
+    }
+
     onEngineFailure(listener: (error: unknown) => void): () => void {
         this.failureListeners.add(listener);
         return () => this.failureListeners.delete(listener);
@@ -723,7 +796,19 @@ class AdapterRenderer implements TerminalRenderer {
          * too (`0.4.0-nex.5`); kept here because this layer decides whether a pane restarts,
          * and it must never restart over zero bytes.
          */
-        if (data.length === 0) return;
+        if (data.length === 0) {
+            /**
+             * …but an EMPTY replay is still a replay (§N24).
+             *
+             * ~34 % of replay frames under close/adjust churn are empty — a pane whose shell has
+             * not printed yet snapshots to nothing — and the `reset()` in front of this one has
+             * already applied the authoritative screen (RIS clears it, which is exactly what the
+             * corrupt cells needed). Returning without ending the hold would leave the pane
+             * frozen on its last good frame until the timeout, for a replay that DID arrive.
+             */
+            if (this.holding && this.sawResetWhileHeld) this.releaseHold();
+            return;
+        }
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             this.queue(data);
@@ -735,10 +820,24 @@ class AdapterRenderer implements TerminalRenderer {
         // rejection, and the pane keeps feeding a dead engine. Caught here it poisons the
         // renderer exactly once, which is the signal the pane restarts on.
         this.guard(() => terminal.write(data), 'write');
+        /**
+         * §N24 — this was the replay: end the hold, in the SAME synchronous turn as the write.
+         *
+         * `reset()` + `write()` is `ingest.replay()`, and nothing else in the client produces
+         * that pair. Resuming here (rather than on a timer, or from the pane) is what makes the
+         * whole window atomic with respect to painting: the engine's grid changed, every frame
+         * since was suppressed, and the first frame allowed through is the one drawn from the
+         * snapshot that has just been parsed. `setPaintSuspended(false)` forces a full render,
+         * so that frame is complete rather than a dirty-row patch.
+         */
+        if (this.holding && this.sawResetWhileHeld) this.releaseHold();
     }
 
     reset(): void {
         if (this.disposed || this.poisoned) return;
+        // §N24: a reset while held is the leading edge of the replay — the write behind it is
+        // the authoritative screen, and that is what ends the hold (see `write`).
+        if (this.holding) this.sawResetWhileHeld = true;
         const terminal = this.handle?.terminal;
         if (terminal === undefined) {
             /**
@@ -818,6 +917,30 @@ class AdapterRenderer implements TerminalRenderer {
         const terminal = this.handle?.terminal;
         if (terminal === undefined) return; // applied at open
         if (terminal.cols === nextCols && terminal.rows === nextRows) return;
+        /**
+         * §N24 — HOLD THE PAINT ACROSS THE RESIZE→REPLAY WINDOW.
+         *
+         * The grid is about to change under a VT whose contents this client does not own. The
+         * daemon owns them: it resizes the PTY and the server-side VT, waits for the gesture to
+         * settle, and sends one replay that re-seeds this engine (`ws/streams.ts` `resyncPane`,
+         * N11/N12's contract — the server VT is authoritative and the replay is the sync
+         * mechanism). Between the two, the engine holds a grid it has not been told the contents
+         * of, and ghostty-web will happily paint it: a widening `ghostty_terminal_resize` under
+         * heap churn leaves cells in libghostty-vt's own storage that the VT never wrote, which
+         * read back as constant-stride runs of increasing codepoints and stale off-screen text
+         * (N23's exonerated residual — measured at 119 of 120 close/reopen cycles, and every
+         * frame in the window, not just the first).
+         *
+         * So: suspend the engine's paint BEFORE the resize (the canvas then keeps the last good
+         * frame across it, `0.4.0-nex.6`), and resume when the replay lands. No frame is ever
+         * produced from a resized-but-not-yet-replayed buffer. Nothing about the byte stream
+         * changes — this suppresses PAINTS, not writes, so there is no second reconciliation
+         * path and the daemon stays the only source of truth.
+         *
+         * A re-arm during an existing hold is deliberate: a drag emits several grid changes and
+         * each one gets its own window, ending at the last one's replay.
+         */
+        this.beginHold();
         this.guard(() => terminal.resize(nextCols, nextRows), 'resize');
     }
 
@@ -885,6 +1008,12 @@ class AdapterRenderer implements TerminalRenderer {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        const wasHolding = this.holding;
+        this.clearHoldTimer();
+        this.holding = false;
+        this.sawResetWhileHeld = false;
+        if (wasHolding) this.announceHold(false);
+        this.holdListeners.clear();
         this.releaseEngine();
         this.pending = [];
         this.pendingBytes = 0;
@@ -896,6 +1025,59 @@ class AdapterRenderer implements TerminalRenderer {
     }
 
     // ── internals ───────────────────────────────────────────────────────────────────
+
+    /**
+     * §N24 — start (or re-arm) the resize→replay paint hold.
+     *
+     * A no-op for an engine with no `setPaintSuspended` (`@xterm/xterm`, a fake): its buffer is
+     * JS objects, it has no uninitialised cell storage to paint, and holding a paint it cannot
+     * suspend would only cost a timer.
+     */
+    private beginHold(): void {
+        if (this.handle?.setPaintSuspended === undefined) return;
+        this.sawResetWhileHeld = false;
+        if (!this.holding) {
+            this.holding = true;
+            this.swallow(() => this.handle?.setPaintSuspended?.(true));
+            this.announceHold(true);
+        }
+        this.clearHoldTimer();
+        // The net under the net: the daemon always sends one replay per settled resize, but a
+        // pane must never be frozen by one that does not arrive.
+        this.holdTimer = setTimeout(() => {
+            this.holdTimer = null;
+            if (!this.holding) return;
+            this.holdTimeouts += 1;
+            this.releaseHold();
+        }, RESIZE_PAINT_HOLD_TIMEOUT_MS);
+        (this.holdTimer as unknown as { unref?: () => void }).unref?.();
+    }
+
+    /** End the hold and let the engine paint again (a forced full frame, in the engine). */
+    private releaseHold(): void {
+        this.clearHoldTimer();
+        if (!this.holding) return;
+        this.holding = false;
+        this.sawResetWhileHeld = false;
+        if (!this.disposed) this.swallow(() => this.handle?.setPaintSuspended?.(false));
+        this.announceHold(false);
+    }
+
+    private clearHoldTimer(): void {
+        if (this.holdTimer === null) return;
+        clearTimeout(this.holdTimer);
+        this.holdTimer = null;
+    }
+
+    private announceHold(held: boolean): void {
+        for (const listener of [...this.holdListeners]) {
+            try {
+                listener(held);
+            } catch {
+                /* a listener that throws must not take the hold's bookkeeping with it */
+            }
+        }
+    }
 
     /**
      * Run an engine call that touches the VT. A throw means the engine is gone — poison it,
@@ -933,6 +1115,14 @@ class AdapterRenderer implements TerminalRenderer {
         this.poisoned = true;
         this.pending = [];
         this.pendingBytes = 0;
+        // §N24: a poisoned engine is about to be disposed and replaced — drop the hold rather
+        // than leave a timer pointing at a dead adapter. Announced, so the pane's published
+        // state cannot be left saying "held" for an engine that no longer exists.
+        const wasHolding = this.holding;
+        this.clearHoldTimer();
+        this.holding = false;
+        this.sawResetWhileHeld = false;
+        if (wasHolding) this.announceHold(false);
         if (!this.opened) return;
         for (const listener of [...this.failureListeners]) {
             try {
@@ -1167,6 +1357,12 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
         // flag and hands it to the renderer it builds there (`0.4.0-nex.4`).
         setSurfaceFocus: (focused): void => {
             terminal.setFocused(focused);
+        },
+        // §N24 — `0.4.0-nex.6`. Suspends the engine's render loop and the forced render inside
+        // its own `resize()`, and carries the canvas pixels across the resize instead of
+        // clearing them, so the pane shows its last good frame for the length of the window.
+        setPaintSuspended: (suspended): void => {
+            terminal.setPaintSuspended(suspended);
         },
         repaint: (): void => {
             const renderer = terminal.renderer;

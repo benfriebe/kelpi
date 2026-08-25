@@ -1,10 +1,10 @@
-# ghostty-web 0.4.0-nex.5 (vendored)
+# ghostty-web 0.4.0-nex.6 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus four
+review in the orchestrating session and explicit user authorization to integrate both — plus five
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
-focus; `-nex.5`: a `write()` that survives zero bytes).
+focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended).
 
 | Version | What it added |
 |---|---|
@@ -13,6 +13,7 @@ focus; `-nex.5`: a `write()` that survives zero bytes).
 | `0.4.0-nex.3` | `allowTransparency` HONOURED: the default background is cleared, not filled |
 | `0.4.0-nex.4` | `setFocused` — an unfocused surface draws ghostty's steady hollow cursor |
 | `0.4.0-nex.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
+| `0.4.0-nex.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
 
 ## Base
 
@@ -195,6 +196,114 @@ Not addressed here: ghostty's `cursor-style-blink` and `adjust-cursor-thickness`
 not parsed anywhere in this port, so the blink is whatever the embedder passes (`cursorBlink`,
 `true` in Nex) and the outline is ghostty's default 1 px.
 
+## Nex adaptation: a paint that can be suspended (`0.4.0-nex.6`, 2026-08-25)
+
+The engine can now be told to stop producing frames — `Terminal.setPaintSuspended(boolean)` and
+`CanvasRenderer.setPaintSuspended(boolean)` — and the canvas keeps the last frame it painted,
+carried across any resize that happens meanwhile. It exists because of **N24**, and because the
+state it protects against is below anything this fork can patch.
+
+**The defect.** A widening `ghostty_terminal_resize` under heap churn — a sibling terminal freed
+a moment earlier, which is what closing a pane does — leaves cells in libghostty-vt's own storage
+that the VT never wrote. Read back they are runs of *monotonically increasing codepoints at a
+constant stride*, i.e. non-text memory seen as text, plus the previous grid's rows spliced onto
+the ends of the current ones. Measured in this tree:
+
+- an engine-level probe (two terminals in one shared WASM instance; free the sibling, widen the
+  survivor 60 → 150 columns) hits it on **119 of 120 cycles**, with the identical codepoints each
+  time — `40684, 40804, 40924, 41044 …`, stride 120. **Verifier re-check (2026-08-25): this
+  isolated figure did not reproduce** — three independently written constructions (fresh
+  terminals per cycle, a long-lived survivor, both with render-loop cycles folded in) returned
+  0/120 on an instrument proven against real cells, so the bare create/resize/free loop is NOT
+  sufficient and the corruption appears to need the whole stack's heap conditions. The
+  END-TO-END defect is unaffected: it reproduces at 10.8 flashes/100 cycles on the pre-fix tree
+  with the constant-stride signature to the codepoint (`docs/audit/run-X-attempts/evidence/`),
+  and the fix suspends painting across the entire window in which the cells can exist;
+- the cells are **written by the wasm**, not read past its output: `ghostty_render_state_get_viewport`
+  returns `count === totalCells` on every one of those calls (so this is *not* the `getViewport()`
+  landmine `-nex.5` documents below — that one is real and still unreached), and zeroing the
+  destination buffer before the call changes nothing;
+- `ghostty_render_state_update()` reports the rows dirty and `needsFullRedraw()` is `true`, so the
+  render state is doing what it is told; the garbage survives `markClean()` + a second `update()`,
+  and survives resizing back to the old grid. It is in the terminal's storage, not in the render
+  state's copy of it;
+- **only a full rewrite clears it.** RIS (`ESC c`) does; an innocuous `ESC[0m` does not; twenty
+  further idle frames all still carry it.
+
+`ghostty-vt.wasm` here is byte-identical to npm `ghostty-web@0.4.0` and there is no Zig toolchain
+in this environment, so the state cannot be fixed at its source. What can be guaranteed is that
+**no frame is ever produced from it**, and that needs a hook in the JS half, because the paint is
+the engine's: `startRenderLoop()` renders every rAF, and `Terminal.resize()` forces a full render
+of its own the moment the grid moves.
+
+**The patch**, three edits and one guard:
+
+- `CanvasRenderer.render()` returns on `this.paintSuspended` as its **first statement**, before
+  the buffer is read — so a suspended terminal never converts a single cell into a pixel. Dirty
+  flags are left alone (`clearDirty()` is skipped with everything else), which is why the resume
+  forces a full frame rather than an incremental one.
+- `CanvasRenderer.resize()` copies the canvas to an offscreen bitmap and lays it back down after
+  the new dimensions are applied, *when suspended*. Setting `canvas.width` wipes the surface, so
+  without this the freeze would be a blank pane rather than the last good frame. The default
+  background is still painted first, so the newly exposed area is background in the opaque case
+  and cleared in the `allowTransparency` case (`-nex.3`'s paint, unchanged).
+- `Terminal.resize()` skips its own `canvas.width`/`height` re-assignment while suspended. That
+  block re-sizes the canvas in CSS pixels and drops the device-pixel-ratio scaling
+  `renderer.resize()` just applied; unsuspended it is harmless because the forced render notices
+  the mismatch and re-sizes properly, but with the render suppressed there is nothing to notice
+  it and a retina canvas would sit at half resolution for the whole suspension.
+- `Terminal.setPaintSuspended()` remembers the flag across `open()` (same shape as `-nex.4`'s
+  `setFocused`) and forces one full render on resume.
+
+`paintSuspended` starts `false` and nothing inside the engine sets it, so an embedder that never
+calls this gets upstream's behaviour exactly.
+
+**What the embedder does with it** (`packages/client/src/terminal/renderer.ts`): suspend before
+the grid changes, resume when the authoritative server-side replay has been written back in. The
+daemon owns the pane's contents — it resizes the PTY and its own VT, waits 150 ms for the gesture
+to settle, snapshots and replays (N11/N12) — so the window between the client's resize and that
+replay is precisely the window in which the engine holds a grid nobody has told it the contents
+of. Suspending across it makes the two look like one step to the canvas. There is a timeout on
+the hold, because a pane must never be frozen by a replay that does not arrive.
+
+## Verification of `0.4.0-nex.6` (2026-08-25)
+
+- **The defect, at frame level, end to end.** `scripts/ui-audit/resize-flash-storm.mjs`: a sandbox
+  daemon (`mkdtemp`, `NEXD_*`, ephemeral non-reserved ports), a real PTY running a real zsh, the
+  real client `ingest.ts` and the real client renderer adapter, and a ~60 Hz ticker that reads the
+  cells the engine would paint and classifies each frame. Driving the owner's gesture — a
+  LEFT/RIGHT split, multibyte output in both panes, close the sibling, adjust, repeat — over 120
+  cycles: **13 flashes, 121 garbage frames, longest run 10 frames, median 9** (the daemon's whole
+  settle window) with the hold disabled, and **0 garbage frames, 0 hold timeouts** with it on.
+  The captured bad frame carries the signature exactly: 88 consecutive foreign codepoints at a
+  constant stride of 124, starting at `48386`, with the rows below carrying other rows' text.
+- **The guard is first.** `vendor-engine.test.ts` pins `setPaintSuspended` / `isPaintSuspended` /
+  `this.paintSuspended` in the built bundle *and* asserts, by pattern, that `render()`'s early
+  return is its opening statement — a suspension that fires after the first cell read is not a
+  suspension.
+- **Rebuild sanity**: `dist/ghostty-web.js` is **700.12 kB** as vite reports it (was 696.60 kB at
+  `-nex.5`, +3.52 kB), sha256
+  `60a3063011c01af3f32f80fac4086dc84ae622974ea5c5a6efd5b6127199b8d4`;
+  `ghostty-web.umd.cjs` **645.71 kB**, sha256
+  `4bdb132bcb709093c5e90512ed5cdfafe2c673006e9543e4edbea7ac80ddcf76`; `index.d.ts` sha256
+  `1c5042e611b251eb241081292e9a998cf63e7073687493b77834344357f9f22f` (the two new public methods
+  moved into it); `ghostty-vt.wasm` re-copied byte-identical (`d6f0326f…`);
+  `__vite-browser-external-2447137e.js` unchanged
+  (`f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6`). All of
+  `-nex.2`/`-nex.3`/`-nex.4`/`-nex.5`'s markers are present in the new bundle and the chip label
+  `-nex.2` removed is still absent (asserted by `vendor-engine.test.ts`).
+- **The toolchain was proven before it was trusted, again.** The documented recipe was run first
+  against the *pristine* `-nex.5` source in a scratch sandbox and reproduced the shipping
+  `-nex.5` artifacts **to the byte** (`ghostty-web.js` `9899a94f…`, `ghostty-web.umd.cjs`
+  `1725c3fd…`). The only delta in the `-nex.6` bundle is therefore the edits above.
+- **`npx tsc --noEmit`** on the snapshot reports only the pre-existing `bun-types` entry-point
+  error; nothing in `terminal.ts` or `renderer.ts`.
+- **The paint paths `-nex.6` shares a bundle with were not assumed.** `render()`'s early return
+  sits above §N17's `paintDefaultBackground` and §N20's `renderHollowCursor`, and neither is
+  reachable while suspended by construction; both are re-measured in the run this change ships
+  with (`packages/client` transparency + cursor-focus suites, and the audit's scoped
+  transparency / cursor-focus recipes).
+
 ## Nex adaptation: `write()` survives zero bytes (`0.4.0-nex.5`, 2026-08-25)
 
 One line, and it closes the oldest open defect in the register (**N1**, and the `external-editor`
@@ -240,7 +349,12 @@ the buffer regardless of the `count` the WASM call returns, so a JS/WASM grid di
 have it parse *uninitialised heap* into the cell pool — garbage codepoints, straight to the
 canvas. Every caller today goes through `getLine()`, which calls `update()` first and makes
 `count` the full grid; measured across alt-screen switches, DECCOLM and `CSI 8 t` the two never
-disagree. Left alone rather than widened into an unmeasured patch.
+disagree. Left alone rather than widened into an unmeasured patch. **Re-measured for `-nex.6`
+(2026-08-25) and still unreached**: across the widening-resize storm that reproduces N24 on
+demand, `ghostty_render_state_get_viewport` returned `count === totalCells` on every call, and
+zeroing the destination buffer before the call left the garbage untouched — so N24 is the wasm
+writing those cells, not this function reading past them. The landmine remains real and remains
+unfired.
 
 ## Verification of `0.4.0-nex.5` (2026-08-25)
 
@@ -473,16 +587,18 @@ The wasm is the one thing `source/` does not carry (413 KB of binary, byte-ident
 above can come from there:
 `sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~680 KiB (696.60 kB as vite reports it,
-+0.04 kB over `-nex.4`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+Sanity checks on a rebuild: `dist/ghostty-web.js` is ~684 KiB (700.12 kB as vite reports it,
++3.52 kB over `-nex.5`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
 (`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
-own statement) and no `조합중` (the chip label `-nex.2` removed). Those
-markers are asserted in CI by `packages/client/src/terminal/vendor-engine.test.ts`, which also
-pins the version this file documents — bump both together or the guard fails. `npx tsc
---noEmit` on the snapshot reports only the four pre-existing `Bun` / `fs/promises` errors in
-`lib/ghostty.ts` (the tsconfig asks for `bun-types`, which the npm install does not provide);
-nothing in `terminal.ts`, `renderer.ts` or `input-handler.ts`.
+own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
+early return as `render()`'s opening statement (`-nex.6`) and no `조합중` (the chip label
+`-nex.2` removed). Those markers are asserted in CI by
+`packages/client/src/terminal/vendor-engine.test.ts`, which also pins the version this file
+documents — bump both together or the guard fails. `npx tsc --noEmit` on the snapshot reports only
+the pre-existing `bun-types` / `fs/promises` errors in `lib/ghostty.ts` (the tsconfig asks for
+`bun-types`, which the npm install does not provide); nothing in `terminal.ts`, `renderer.ts` or
+`input-handler.ts`.
 
 `vite build` prints those same four errors and still exits 0 — that is expected, not a broken
 build; the `dist/` line count at the end is the signal to read.
@@ -493,7 +609,7 @@ When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 mer
 vendor dir and the root `pnpm.overrides['ghostty-web']`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
-Note that **none** of the four Nex adaptations is an upstream PR. Taking a future npm release
+Note that **none** of the five Nex adaptations is an upstream PR. Taking a future npm release
 wholesale would:
 
 - put the preedit back in the container's corner and reopen TERM-032 / TERM-033 — so re-apply
@@ -513,11 +629,22 @@ wholesale would:
   attempts running, paint the *terminal renderer failed to start* placeholder. Re-apply the
   `if (bytes.length === 0) return;` guard in `GhosttyTerminal.write`. Unlike the other three this
   one is also defended in the client (`renderer.ts` skips zero-length writes), so taking a
-  regressed engine would not be visible — which is precisely why the marker below is asserted.
+  regressed engine would not be visible — which is precisely why the marker below is asserted; and
+- take `setPaintSuspended` away, reopening **N24** — the app would go on calling it, the call
+  would land on nothing, and the resize→replay hold would silently stop holding: rows of
+  constant-stride garbage codepoints flashing for the length of every settled-resize window,
+  strongest when a pane in a left/right split is closed. Re-apply the early return at the top of
+  `CanvasRenderer.render()`, the frozen-frame copy in `CanvasRenderer.resize()`, the suspended
+  branch in `Terminal.resize()`'s canvas re-assignment and `Terminal.setPaintSuspended`. This is
+  the one adaptation whose absence is invisible to every unit test in the client, because the
+  client half keeps working perfectly — which is what the `render()`-guard pattern assertion in
+  `vendor-engine.test.ts` and the per-frame canvas probe in `terminal-resize-storm` are for.
 
-The last two are the easy ones to lose. Nothing about transparency is visible on an opaque
+The last three are the easy ones to lose. Nothing about transparency is visible on an opaque
 config, which is what almost every developer runs; and a lone terminal blinking a filled block is
 CORRECT, so the cursor regression only shows up with two panes open and only if someone looks.
-`vendor-engine.test.ts` fails on the missing markers of all three, the `window-transparency` step
-asserts the live canvas's alpha, and `terminal-cursor-focus` counts the lit pixels in a cursor
-cell in both panes — those are the net.
+And a paint that is never suspended looks exactly like upstream until somebody closes a pane at
+the wrong moment. `vendor-engine.test.ts` fails on the missing markers of all four, the
+`window-transparency` step asserts the live canvas's alpha, `terminal-cursor-focus` counts the lit
+pixels in a cursor cell in both panes, and `terminal-resize-storm`'s §N24 phase hashes the canvas
+every frame through eight left/right close rounds — those are the net.

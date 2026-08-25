@@ -181,4 +181,60 @@ describe('command palette jump', () => {
         expect(afterJump.filter((read) => read.refresh)).toHaveLength(1);
         vi.restoreAllMocks();
     });
+
+    /**
+     * One confirm, one command — found while sweeping N19's palette entry point.
+     *
+     * `CommandPalette.confirm` calls `item.run?.()` and then `props.onConfirm(item)`, and
+     * `App`'s `onPaletteConfirm` used to call `item.run?.()` AGAIN for every
+     * `kind === 'command'` item. A single ⌘P → Enter therefore fired every palette command
+     * twice: two panes from "New Scratchpad" (live: the audit's `scratchpad-create` step read
+     * `1 → 3, 2 scratchpad(s)`), two splits from "Split Right", and a silent no-op from a
+     * toggle whose second call undid the first. Neither side's tests could see it — the
+     * component's pass a mock `onConfirm`, and the ones above assert routing rather than
+     * repetition — so the assertion that closes it counts what reached the WIRE.
+     */
+    it('runs a confirmed command exactly once', () => {
+        Element.prototype.scrollIntoView = function (this: Element): void {
+            /* no layout in jsdom */
+        };
+        const sockets = createFakeSocketFactory();
+        const store = createNexStore();
+        const runtime = createNexRuntime({
+            url: 'ws://daemon.test/ws',
+            token: 'tok',
+            socketFactory: sockets.factory,
+            store,
+            notifications: null,
+            tokenStorage: null,
+            heartbeatIntervalMs: 0,
+            backoff: { initialMs: 10, maxMs: 10, factor: 1, jitter: 0 }
+        });
+        render(<App runtime={runtime} createRenderer={createFakeRendererFactory().factory} />);
+        act(() => {
+            completeHandshake(sockets.last(), { state: snapshotState() });
+        });
+        const socket = sockets.last();
+
+        act(() => {
+            fireEvent.keyDown(window, { code: 'KeyP', key: 'p', metaKey: true });
+        });
+        const input = screen.getByTestId('command-palette').querySelector('input');
+        act(() => {
+            fireEvent.change(input as HTMLInputElement, { target: { value: 'New Scratchpad' } });
+        });
+        const row = screen.getAllByTestId('palette-row')[0] as HTMLElement;
+        expect(row.textContent).toContain('New Scratchpad');
+        act(() => {
+            fireEvent.click(row);
+        });
+
+        const created = socket
+            .messages()
+            .filter((message) => message['type'] === 'command')
+            .map((message) => message['payload'] as Record<string, unknown> | undefined)
+            .filter((payload) => payload?.['command'] === 'create-scratchpad');
+        expect(created).toHaveLength(1);
+        vi.restoreAllMocks();
+    });
 });

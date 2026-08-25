@@ -54,6 +54,14 @@ export class FakeRenderer implements TerminalRenderer {
     resets = 0;
     focusCount = 0;
     blurCount = 0;
+    /**
+     * §N20 — every `setSurfaceFocus` report, in order.
+     *
+     * A list rather than a counter because the QUESTION is which state the surface is in and
+     * how it got there: `[true, false]` (focused, then the window went away) and `[false]` (a
+     * background pane that never had it) are different stories about the same final cursor.
+     */
+    readonly surfaceFocuses: boolean[] = [];
     repaints = 0;
     /** Every `revealMatch` the search overlay asked for, in order. */
     readonly revealed: TerminalMatchLocation[] = [];
@@ -181,6 +189,11 @@ export class FakeRenderer implements TerminalRenderer {
 
     blur(): void {
         this.blurCount += 1;
+    }
+
+    /** §N20 — every surface-focus report, in order; the last one is the live state. */
+    setSurfaceFocus(focused: boolean): void {
+        this.surfaceFocuses.push(focused);
     }
 
     setTheme(theme: TerminalTheme): void {

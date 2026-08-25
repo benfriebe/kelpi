@@ -124,6 +124,8 @@ class StubEngine {
     remeasures = 0;
     onRemeasure: (() => void) | undefined;
     cell: CellSize | undefined;
+    /** §N20 — every surface-focus report the handle received, in order. */
+    readonly surfaceFocuses: boolean[] = [];
 
     private release: (() => void) | undefined;
     private readonly gate: Promise<void>;
@@ -154,6 +156,9 @@ class StubEngine {
             remeasure: (): void => {
                 this.remeasures += 1;
                 this.onRemeasure?.();
+            },
+            setSurfaceFocus: (focused: boolean): void => {
+                this.surfaceFocuses.push(focused);
             }
         };
     };
@@ -305,6 +310,46 @@ describe('TerminalRenderer adapter', () => {
 
         expect(engine.terminal.cols).toBe(169);
         expect(engine.terminal.rows).toBe(47);
+        renderer.dispose();
+    });
+
+    /**
+     * §N20 — a pane that is told it is unfocused BEFORE its engine exists must open unfocused.
+     *
+     * This is the common case, not the corner: a restored grid builds every pane at once and
+     * exactly one of them is focused, while the engines take an `await init()` + font load to
+     * come up. The engine is constructed `focused: true` (upstream's behaviour for embedders
+     * that never report focus), so without replaying the last report at `open()` every pane in
+     * the grid would come up blinking a filled block and only correct itself on the next focus
+     * CHANGE — which for a background pane never comes.
+     */
+    it('applies a surface-focus report made before the engine finished loading (§N20)', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+
+        const opening = renderer.open(host());
+        renderer.setSurfaceFocus(false);
+        expect(engine.surfaceFocuses).toEqual([]); // nothing to tell yet
+
+        engine.settle();
+        await opening;
+
+        expect(engine.surfaceFocuses).toEqual([false]);
+
+        renderer.setSurfaceFocus(true);
+        expect(engine.surfaceFocuses).toEqual([false, true]);
+        renderer.dispose();
+    });
+
+    it('reports the default (focused) surface state for a pane that never says otherwise', async () => {
+        const engine = stubEngine();
+        const renderer = createRendererFromLoader('ghostty', engine.loader);
+
+        const opening = renderer.open(host());
+        engine.settle();
+        await opening;
+
+        expect(engine.surfaceFocuses).toEqual([true]);
         renderer.dispose();
     });
 

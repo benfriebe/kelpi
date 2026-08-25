@@ -4,7 +4,7 @@
  * The Swift makes the destination surface first responder *while the popover still holds key*
  * (`StatusBarView.swift:303-316`), so the main window's own responder restoration cannot revert
  * the selection back to the pane the user came from. The port's equivalent is the double
- * hand-off in `onSelectStatusPane`: `focusTerminalElement` now, and again on the next animation
+ * hand-off in `onSelectStatusPane`: `focusPaneSurface` now, and again on the next animation
  * frame — the second one is the load-bearing half, because a jump that CROSSES workspaces has
  * no destination pane mounted at all when the row is clicked (the row itself is a button that is
  * about to unmount with the popover).

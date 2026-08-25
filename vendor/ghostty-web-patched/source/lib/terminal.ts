@@ -71,6 +71,16 @@ export class Terminal implements ITerminalCore {
   private canvas?: HTMLCanvasElement;
   private compositionPreview?: HTMLDivElement;
 
+  /**
+   * Surface focus (vendor 0.4.0-nex.4) — see `setFocused`.
+   *
+   * Held on the Terminal as well as on the renderer because the renderer does not exist until
+   * `open()`, and an embedder building a grid of panes sets each one's focus while they are
+   * still being constructed. Defaults to `true`: upstream's behaviour for anyone who never
+   * calls it.
+   */
+  private surfaceFocused = true;
+
   // ── Caret-anchored IME (vendor 0.4.0-nex.2) ───────────────────────────────
   // The cursor cell's box in the coordinate space the absolutely-positioned textarea and
   // preedit overlay share (their containing block == the canvas's offsetParent), so a canvas
@@ -498,6 +508,9 @@ export class Terminal implements ITerminalCore {
         // it over is what makes the option mean something — see
         // `RendererOptions.allowTransparency` in `renderer.ts`.
         allowTransparency: this.options.allowTransparency,
+        // vendor 0.4.0-nex.4: a pane whose focus was set before it opened must not come up
+        // blinking as if it had the caret. See `setFocused`.
+        focused: this.surfaceFocused,
       });
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
@@ -809,6 +822,25 @@ export class Terminal implements ITerminalCore {
     if (this.isOpen && this.element) {
       this.element.blur();
     }
+  }
+
+  /**
+   * Tell the terminal whether its surface has KEYBOARD FOCUS (vendor 0.4.0-nex.4).
+   *
+   * The port of `ghostty_surface_set_focus`, and deliberately separate from `focus()`/`blur()`,
+   * which move the DOM caret. An embedder with several terminals on one page has exactly one
+   * focused surface and the rest have to LOOK unfocused — in ghostty that means a steady hollow
+   * cursor rather than a blinking filled one (`src/renderer/cursor.zig:59-60`) — and the host
+   * app, not the DOM, is the authority on which pane that is: the caret may legitimately sit in
+   * a rename field or a command palette while a pane still holds the app's focus, and a window
+   * that loses OS focus unfocuses its surface without the DOM's `activeElement` changing at all
+   * (`BaseTerminalController.syncFocusToSurfaceTree` gates on `window.isKeyWindow`).
+   *
+   * Safe before `open()`: the state is remembered and handed to the renderer when it is built.
+   */
+  setFocused(focused: boolean): void {
+    this.surfaceFocused = focused;
+    this.renderer?.setFocused(focused);
   }
 
   /**

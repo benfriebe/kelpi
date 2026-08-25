@@ -1026,7 +1026,19 @@ async function main() {
         await buildAll(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
     }
 
-    const clientDir = path.join(repoRoot, 'packages', 'client', 'dist');
+    /*
+     * `NEX_AUDIT_CLIENT_DIR` — serve a DIFFERENT client build than the working tree's.
+     *
+     * It exists for one question this harness could not otherwise answer on this machine: does
+     * the fix hold in the app the OWNER runs, i.e. the packaged one? `--packaged` launches the
+     * real `Nex.app` binary, and that binary's DevTools port accepts a TCP connection and then
+     * never answers `/json` (reproduced standalone, with no daemon in the picture, on Electron
+     * 43 / macOS 26 — `curl` times out while `lsof` shows the listener), so CDP cannot attach
+     * to it at all. Pointing this at `Nex.app/Contents/Resources/client` serves the packaged
+     * app's OWN staged bytes — the exact JS a user's window loads — into a shell CDP can drive.
+     * It is not the packaged binary, and no run should claim it is; it is the packaged CLIENT.
+     */
+    const clientDir = process.env['NEX_AUDIT_CLIENT_DIR'] ?? path.join(repoRoot, 'packages', 'client', 'dist');
     if (!options.packaged && !fs.existsSync(path.join(clientDir, 'index.html'))) {
         throw new Error(`the web client is not built: ${clientDir}`);
     }
@@ -3305,6 +3317,33 @@ function buildFlows(ctx) {
                 recorder.note(`edit-mode DOM: ${JSON.stringify({ textareas: editing?.textareas, gutter: editing?.gutter, previewFrame: editing?.previewFrame, font: editing?.font })}`);
                 recorder.check('an editor surface appeared', (editing?.textareas ?? 0) >= 1, `${String(editing?.textareas)} textarea`);
                 recorder.check('the preview frame was replaced, not stacked', (editing?.previewFrame ?? 1) === 0, `previewFrame=${String(editing?.previewFrame)}`);
+
+                /*
+                 * N19's sweep, on the entry point the row names next.
+                 *
+                 * This step focuses the pane by clicking its HEADER, which is exactly the
+                 * gesture that leaves the DOM caret where it already was — in the terminal that
+                 * had it. `MarkdownEditorView.swift:78-80` claims first responder in
+                 * `makeNSView`, so the editor ⌘E puts on screen has to be the thing the next
+                 * keystroke reaches; an editor you must click first is the scratchpad's defect
+                 * wearing a different hat.
+                 */
+                const caret = await page.eval(
+                    `(() => {
+                        const el = document.activeElement;
+                        const area = document.querySelector('[data-testid="content-textarea-${state.mdPane}"]');
+                        return {
+                            held: el === area,
+                            active: el === null ? 'null' : el.tagName.toLowerCase() + '/' + (el.getAttribute?.('data-testid') ?? el.getAttribute?.('aria-label') ?? '-')
+                        };
+                    })()`
+                );
+                recorder.check(
+                    'the editor holds the DOM caret, not the terminal (N19)',
+                    caret?.held === true,
+                    String(caret?.active)
+                );
+
                 recorder.check('the editor is monospaced', /mono/i.test(String(editing?.font ?? '')), String(editing?.font));
                 recorder.check(
                     'the editor holds the raw source',
@@ -10721,6 +10760,382 @@ function buildFlows(ctx) {
             }
         },
         {
+            id: 'terminal-cursor-focus',
+            expect:
+                'Only the FOCUSED pane blinks. libghostty draws the focused surface\'s cursor as the terminal asked for it ' +
+                '(a filled block, blinking) and every other surface\'s as a STEADY HOLLOW BLOCK — `renderer/cursor.zig:59-60`, ' +
+                'reached through `ghostty_surface_set_focus` — so a grid of panes has exactly one cursor moving in it. ' +
+                'Read off the engine\'s own canvas in device pixels, with the cursor parked on a known cell by a CUP escape: ' +
+                'the unfocused pane\'s cursor cell is IDENTICAL across two blink periods and paints only its perimeter ' +
+                '(border pixels lit, centre and inset on the background), while the focused pane\'s fills the whole cell and ' +
+                'changes between frames. The window is half of it: a Nex window that loses focus has no blinking cursor ' +
+                'anywhere in it (`BaseTerminalController.syncFocusToSurfaceTree` gates on `window.isKeyWindow`), so a window ' +
+                'blur turns the focused pane\'s cursor hollow too, and a window focus restores it.',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * §N20. The defect the owner reported was "every pane blinks", and the shape of
+                 * the evidence matters: a screenshot of a blinking cursor is a coin toss (it
+                 * catches whichever half of the phase the shutter landed on), and a DOM read
+                 * proves only that the CLIENT thinks a pane is unfocused. What settles it is the
+                 * canvas the engine paints into, sampled repeatedly: "steady" is frames that do
+                 * not differ, and "hollow" is a count of the pixels that are not the background.
+                 */
+                const domIDs = new Set(await domPaneIDs(page));
+                let shells = (await cli.json(['pane', 'list', '--json'])).filter(
+                    (pane) => pane.type === 'shell' && domIDs.has(pane.id)
+                );
+                /*
+                 * A borrowed pane has to be GIVEN BACK — `run-V` is the record of what happens
+                 * when it is not.
+                 *
+                 * This step needs two shell panes and will make one when the grid has only one.
+                 * The first version left it there, and `pane-header-details` five steps later
+                 * reads `529px → 529px` where every earlier run read `529 → 296 → 127`: that
+                 * step narrows the widest shell pane with `nex pane resize`, which acts on the
+                 * pane's ENCLOSING split, and the split this one added is a vertical one — so
+                 * the resize moved a height and the header's width never budged. Same class as
+                 * ledger **N9** (a leaked pane poisoning a step sixty later), reached by a
+                 * different route. `borrowed` is closed at the end of the step, so the grid this
+                 * step hands on is the grid it was given.
+                 */
+                let borrowed = null;
+                if (shells.length === 1) {
+                    recorder.note('only one shell pane on screen — splitting one off, because the whole claim is about a GRID');
+                    const split = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', shells[0].id, '--json']);
+                    borrowed = typeof split?.pane_id === 'string' ? split.pane_id : null;
+                    recorder.note(`borrowed a sibling for the comparison, to be closed at the end of this step: ${String(borrowed)}`);
+                    await sleep(2400);
+                    const grown = new Set(await domPaneIDs(page));
+                    shells = (await cli.json(['pane', 'list', '--json'])).filter(
+                        (pane) => pane.type === 'shell' && grown.has(pane.id)
+                    );
+                }
+                if (shells.length < 2) {
+                    recorder.check(
+                        'two shell panes on screen, so a focused cursor can be compared with an unfocused one',
+                        false,
+                        `${String(shells.length)} shell pane(s) in the active grid`
+                    );
+                    // Even on the way out: a step that gives up still gives the grid back.
+                    if (borrowed !== null) await cli.run(['pane', 'close', '--target', borrowed]);
+                    return;
+                }
+                const focusedPane = shells[0].id;
+                const otherPane = shells[1].id;
+                recorder.note(`focused pane ${focusedPane} · background pane ${otherPane}`);
+
+                /*
+                 * Bring the WINDOW to the front first, and say which world the run is in.
+                 *
+                 * An unfocused window has no blinking cursor at all — that is the behaviour the
+                 * second half of this step asserts — so a run driven from a terminal that kept
+                 * the OS focus would measure a hollow cursor in BOTH panes and read it as the
+                 * defect being unfixed. `Page.bringToFront` is the harness's ⌘Tab.
+                 */
+                try {
+                    await page.send('Page.bringToFront');
+                } catch {
+                    /* a Chromium without the Page domain here still runs the rest */
+                }
+                await sleep(500);
+                let windowKey = await page.eval('document.hasFocus()');
+                if (windowKey !== true) {
+                    recorder.note(
+                        'the app window is NOT the key window on this machine (something else has the OS focus), so the ' +
+                            'window-focus signal is delivered synthetically below — the same `focus` event Chromium fires ' +
+                            'when the BrowserWindow takes focus, on the same listener'
+                    );
+                    await page.eval("(() => { window.dispatchEvent(new Event('focus')); return 'ok'; })()");
+                    await sleep(300);
+                }
+                windowKey = await page.eval('document.hasFocus()');
+
+                // The cursor is parked by an escape the TERMINAL is told to obey, then held
+                // there by a reader that prints nothing — so the cell being read is arithmetic
+                // the harness owns, never a coordinate the engine reported about itself.
+                const CELL = { row: 3, col: 10 };
+                const park = async (paneID) => {
+                    await focusPaneBody(page, paneID);
+                    await runInTerminal(page, `clear; printf '\\033[${String(CELL.row)};${String(CELL.col)}H'; cat`, {
+                        settleMs: 900
+                    });
+                };
+                await park(otherPane);
+                await park(focusedPane);
+
+                /*
+                 * Five frames 300 ms apart — 1200 ms, longer than two 530 ms blink periods, so a
+                 * blinking cursor is guaranteed to be caught in BOTH phases and a steady one has
+                 * had every chance to move.
+                 *
+                 * `lit` is the count of pixels in the cursor cell that are NOT the background
+                 * (sampled from the next cell along, which `clear` left empty). That single
+                 * number separates the three states without knowing a single colour: ~0 for a
+                 * cursor in its dark blink phase, ~perimeter for a hollow outline, ~w×h for a
+                 * filled block.
+                 */
+                const SAMPLES = 5;
+                const GAP_MS = 300;
+                const sampleCursor = async (paneID) =>
+                    await page.eval(
+                        `(async () => {
+                            const root = document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]');
+                            if (root === null) return { error: 'no pane root' };
+                            const canvas = root.querySelector('[data-terminal-host] canvas');
+                            if (canvas === null) return { error: 'no canvas' };
+                            const ctx = canvas.getContext('2d');
+                            if (ctx === null) return { error: 'no 2d context' };
+                            const rect = canvas.getBoundingClientRect();
+                            const dpr = rect.width > 0 ? canvas.width / rect.width : 1;
+                            const parts = (root.getAttribute('data-terminal-cell') || '').split('x');
+                            const cellW = Number(parts[0] || 0);
+                            const cellH = Number(parts[1] || 0);
+                            if (!(cellW > 0) || !(cellH > 0)) return { error: 'no cell metrics on the pane' };
+                            const x = Math.round(${String(CELL.col - 1)} * cellW * dpr);
+                            const y = Math.round(${String(CELL.row - 1)} * cellH * dpr);
+                            const w = Math.round(cellW * dpr);
+                            const h = Math.round(cellH * dpr);
+                            if (x + w > canvas.width || y + h > canvas.height) {
+                                return { error: 'the probed cell is outside this canvas' };
+                            }
+                            const half = (value) => Math.floor(value / 2);
+                            const probes = {
+                                top: [x + half(w), y],
+                                bottom: [x + half(w), y + h - 1],
+                                left: [x, y + half(h)],
+                                right: [x + w - 1, y + half(h)],
+                                centre: [x + half(w), y + half(h)],
+                                inset: [x + 1, y + 1],
+                                background: [x + w + half(w), y + half(h)]
+                            };
+                            const read = () => {
+                                const frame = {};
+                                for (const name of Object.keys(probes)) {
+                                    const point = probes[name];
+                                    const pixel = ctx.getImageData(point[0], point[1], 1, 1).data;
+                                    frame[name] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+                                }
+                                const cell = ctx.getImageData(x, y, w, h).data;
+                                const bg = frame.background;
+                                let hash = 2166136261;
+                                let lit = 0;
+                                for (let i = 0; i < cell.length; i += 4) {
+                                    if (
+                                        cell[i] !== bg[0] ||
+                                        cell[i + 1] !== bg[1] ||
+                                        cell[i + 2] !== bg[2] ||
+                                        cell[i + 3] !== bg[3]
+                                    ) {
+                                        lit++;
+                                    }
+                                    for (let k = 0; k < 4; k++) {
+                                        hash ^= cell[i + k];
+                                        hash = (hash * 16777619) >>> 0;
+                                    }
+                                }
+                                frame.lit = lit;
+                                frame.hash = hash;
+                                return frame;
+                            };
+                            const frames = [];
+                            for (let i = 0; i < ${String(SAMPLES)}; i++) {
+                                frames.push(read());
+                                if (i < ${String(SAMPLES)} - 1) {
+                                    await new Promise((done) => setTimeout(done, ${String(GAP_MS)}));
+                                }
+                            }
+                            return {
+                                cursorFocus: root.getAttribute('data-terminal-cursor-focus'),
+                                paneFocused: root.closest('[data-pane-id][data-focused]') !== null,
+                                dpr,
+                                cell: { w, h, x, y },
+                                perimeter: 2 * w + 2 * h - 4,
+                                filled: w * h,
+                                frames
+                            };
+                        })()`
+                    );
+
+                const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a.join(',') === b.join(',');
+                const summarise = (sample) =>
+                    sample?.frames === undefined
+                        ? String(sample?.error ?? 'no sample')
+                        : `lit ${sample.frames.map((frame) => String(frame.lit)).join(' → ')} of ${String(sample.filled)} ` +
+                          `(perimeter ${String(sample.perimeter)}) · hashes ${
+                              new Set(sample.frames.map((frame) => frame.hash)).size
+                          } distinct`;
+
+                const idle = await sampleCursor(otherPane);
+                const active = await sampleCursor(focusedPane);
+                await recorder.shot(page, 'focused-vs-unfocused');
+                recorder.block(
+                    'cursor cell readback (device pixels, five frames 300 ms apart)',
+                    `window is key: ${String(windowKey)}\n` +
+                        `focused pane   ${focusedPane}: ${summarise(active)}\n` +
+                        `unfocused pane ${otherPane}: ${summarise(idle)}\n` +
+                        `cell box (device px): focused ${JSON.stringify(active?.cell ?? null)} · unfocused ${JSON.stringify(idle?.cell ?? null)}\n` +
+                        `probes, first frame — focused ${JSON.stringify(active?.frames?.[0] ?? null)}\n` +
+                        `probes, first frame — unfocused ${JSON.stringify(idle?.frames?.[0] ?? null)}`
+                );
+
+                if (idle?.frames === undefined || active?.frames === undefined) {
+                    recorder.check(
+                        'both panes hand back a canvas the cursor cell can be read from',
+                        false,
+                        `${summarise(active)} | ${summarise(idle)}`
+                    );
+                    return;
+                }
+
+                // ── the client's own report, which is the input to everything below ──
+                recorder.check(
+                    'the client tells each engine which surface is focused (§N20 — `ghostty_surface_set_focus`)',
+                    active.cursorFocus === 'true' && idle.cursorFocus === 'false',
+                    `focused pane: ${String(active.cursorFocus)} · other pane: ${String(idle.cursorFocus)}`
+                );
+
+                // ── the unfocused pane: steady, and hollow ───────────────────────────
+                const idleHashes = new Set(idle.frames.map((frame) => frame.hash));
+                recorder.check(
+                    'the UNFOCUSED pane\'s cursor cell is identical in all five frames — steady, across two blink periods',
+                    idleHashes.size === 1,
+                    `${String(idleHashes.size)} distinct frames over ${String((SAMPLES - 1) * GAP_MS)}ms`
+                );
+                const idleLit = idle.frames[0].lit;
+                recorder.check(
+                    'and it paints its PERIMETER, not its area — a hollow block',
+                    idleLit > 0 && idleLit <= idle.perimeter * 1.5 && idleLit < idle.filled * 0.5,
+                    `${String(idleLit)} non-background pixels · perimeter ${String(idle.perimeter)} · filled would be ${String(idle.filled)}`
+                );
+                const idleFrame = idle.frames[0];
+                recorder.check(
+                    'its four edges are lit',
+                    !same(idleFrame.top, idleFrame.background) &&
+                        !same(idleFrame.bottom, idleFrame.background) &&
+                        !same(idleFrame.left, idleFrame.background) &&
+                        !same(idleFrame.right, idleFrame.background),
+                    `top ${JSON.stringify(idleFrame.top)} bottom ${JSON.stringify(idleFrame.bottom)} ` +
+                        `left ${JSON.stringify(idleFrame.left)} right ${JSON.stringify(idleFrame.right)} ` +
+                        `background ${JSON.stringify(idleFrame.background)}`
+                );
+                recorder.check(
+                    'and its middle is NOT — the cell shows through, which is what makes it an outline',
+                    same(idleFrame.centre, idleFrame.background),
+                    `centre ${JSON.stringify(idleFrame.centre)} vs background ${JSON.stringify(idleFrame.background)}`
+                );
+                recorder.note(
+                    `outline thickness probe: the pixel one in from the corner is ${
+                        same(idleFrame.inset, idleFrame.background) ? 'background' : 'lit'
+                    } — ghostty's own \`cursor_thickness\` is 1 DEVICE pixel (font/Metrics.zig:32-34), and this canvas ` +
+                        `is at dpr ${String(idle.dpr)}`
+                );
+
+                // ── the focused pane: filled, and blinking ───────────────────────────
+                const activeHashes = new Set(active.frames.map((frame) => frame.hash));
+                const activeLit = active.frames.map((frame) => frame.lit);
+                const maxLit = Math.max(...activeLit);
+                const minLit = Math.min(...activeLit);
+                recorder.check(
+                    'the FOCUSED pane\'s cursor fills its cell — the block the terminal asked for, not an outline',
+                    maxLit >= active.filled * 0.9,
+                    `${String(maxLit)} non-background pixels at its brightest, of ${String(active.filled)} in the cell`
+                );
+                recorder.check(
+                    'and it BLINKS — the same cell is dark in another frame',
+                    activeHashes.size > 1 && minLit <= active.perimeter,
+                    `lit ${activeLit.map(String).join(' → ')} · ${String(activeHashes.size)} distinct frames`
+                );
+                const litFrame = active.frames.find((frame) => frame.lit === maxLit) ?? active.frames[0];
+                recorder.check(
+                    'both cursors are drawn in the SAME colour — one theme, two treatments',
+                    same(litFrame.centre, idleFrame.top),
+                    `focused fill ${JSON.stringify(litFrame.centre)} vs unfocused outline ${JSON.stringify(idleFrame.top)}`
+                );
+
+                /*
+                 * ── the WINDOW's half ────────────────────────────────────────────────
+                 *
+                 * AppKit does not resign a view's first-responder status when its window stops
+                 * being key, so ghostty computes surface focus with `window.isKeyWindow` in it
+                 * and a backgrounded Nex window has no blinking cursor anywhere. The browser's
+                 * equivalent is the window's own `focus`/`blur` event, which is what the client
+                 * listens to — and which is dispatched here rather than acted out, because
+                 * taking the OS focus away from the harness would also take it away from the
+                 * debugger driving it. The listener, the state and the paint are the same ones
+                 * the OS event reaches; what a real ⌘Tab adds is Chromium's own delivery, which
+                 * is the line under `recorder.eyes` below.
+                 */
+                await page.eval("(() => { window.dispatchEvent(new Event('blur')); return 'ok'; })()");
+                await sleep(500);
+                const backgrounded = await sampleCursor(focusedPane);
+                await recorder.shot(page, 'window-blurred');
+                recorder.block('the focused pane after the WINDOW lost focus', summarise(backgrounded));
+                const backgroundedHashes = new Set((backgrounded?.frames ?? []).map((frame) => frame.hash));
+                recorder.check(
+                    'a window that loses focus takes the blink with it — the focused pane\'s cursor goes hollow and steady',
+                    backgrounded?.cursorFocus === 'false' &&
+                        backgroundedHashes.size === 1 &&
+                        (backgrounded?.frames?.[0]?.lit ?? 0) > 0 &&
+                        (backgrounded?.frames?.[0]?.lit ?? 0) < (backgrounded?.filled ?? 1) * 0.5,
+                    `report ${String(backgrounded?.cursorFocus)} · ${summarise(backgrounded)}`
+                );
+
+                await page.eval("(() => { window.dispatchEvent(new Event('focus')); return 'ok'; })()");
+                await sleep(500);
+                const restored = await sampleCursor(focusedPane);
+                recorder.block('the same pane after the window came back', summarise(restored));
+                recorder.check(
+                    'and the window coming back restores it — filled and blinking again',
+                    restored?.cursorFocus === 'true' &&
+                        Math.max(...(restored?.frames ?? [{ lit: 0 }]).map((frame) => frame.lit)) >=
+                            (restored?.filled ?? 1) * 0.9,
+                    `report ${String(restored?.cursorFocus)} · ${summarise(restored)}`
+                );
+
+                // Hand both panes back with live shells — this step leaves a `cat` on two ttys.
+                // (A pane about to be closed is skipped: killing the `cat` is what closing does.)
+                for (const paneID of [otherPane, focusedPane]) {
+                    if (paneID === borrowed) continue;
+                    let handedBack = false;
+                    for (let attempt = 0; attempt < 3 && !handedBack; attempt++) {
+                        await focusPaneBody(page, paneID);
+                        await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
+                        await sleep(400);
+                        await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 500 });
+                        const probe = `CURSOROK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                        await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 700 });
+                        const back = await cli.run(['pane', 'capture', '--target', paneID]);
+                        handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                    }
+                    recorder.check(`pane ${paneID} is handed back with a live shell, not a reader on the tty`, handedBack);
+                    await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 400 });
+                }
+
+                // Give the borrowed pane back, and prove the grid is the shape it was handed.
+                if (borrowed !== null) {
+                    await cli.run(['pane', 'close', '--target', borrowed]);
+                    await sleep(1200);
+                    const left = await domPaneIDs(page);
+                    recorder.check(
+                        'the pane this step borrowed is closed again — the next step gets the grid it was given',
+                        !left.includes(borrowed),
+                        `${String(left.length)} pane(s) on screen · borrowed ${String(borrowed)}`
+                    );
+                    await focusPaneBody(page, focusedPane === borrowed ? otherPane : focusedPane);
+                    await sleep(300);
+                }
+
+                recorder.eyes(
+                    'the "focused-vs-unfocused" shot: ONE cursor in the grid should be a solid block and the other a thin ' +
+                        'outline (it is a single device pixel wide — ghostty\'s own thickness — so look closely rather ' +
+                        'than for a heavy border). What no capture here can settle: that a real ⌘Tab away from Nex, ' +
+                        'rather than a dispatched `blur`, stops the cursor blinking — Chromium\'s delivery of the window ' +
+                        'event is the one link in the chain a page cannot observe about itself.'
+                );
+            }
+        },
+        {
             id: 'terminal-osc52',
             expect:
                 'OSC 52 is honoured for WRITES behind a setting that ships OFF, and refused outright for READS. With ' +
@@ -12600,7 +13015,125 @@ function buildFlows(ctx) {
                         `document.querySelector('[data-pane-id="${scratch.id}"] textarea') !== null`
                     );
                     recorder.check('it opens in edit mode (an editable body)', editable === true);
+
+                    /*
+                     * N19 — the focus RING is not the caret.
+                     *
+                     * The owner's report: ⇧⌘N draws the ring on the new pane and the first
+                     * keystrokes go nowhere (in fact to the terminal it was split off, whose
+                     * hidden `<textarea>` still held the DOM caret — ghostty-web's `blur()`
+                     * blurs the container, not that field). So the assertion is not "an
+                     * editable body exists", it is "the editable body HAS the caret", and then
+                     * the only proof that matters: type, with no click anywhere, and find the
+                     * characters in the buffer. Swift's `ScratchpadEditorView.makeNSView`
+                     * claims first responder on creation, which is what this is porting.
+                     */
+                    const active = await page.eval(
+                        `(() => {
+                            const el = document.activeElement;
+                            if (el === null) return 'null';
+                            const pane = el.closest?.('[data-pane-id]')?.getAttribute('data-pane-id') ?? '-';
+                            return el.tagName.toLowerCase() + ' testid=' + (el.getAttribute?.('data-testid') ?? '-') + ' pane=' + pane;
+                        })()`
+                    );
+                    recorder.note(`document.activeElement after ⇧⌘N: ${String(active)}`);
+                    const caretHeld = await page.eval(
+                        `document.activeElement === document.querySelector('[data-testid="content-textarea-${scratch.id}"]')`
+                    );
+                    recorder.check(
+                        'the scratchpad’s <textarea> holds the DOM caret — no click needed (N19)',
+                        caretHeld === true,
+                        String(active)
+                    );
+
+                    /*
+                     * Letters only, one `keyDown`-with-text per character — NOT `page.type`.
+                     * `page.type` also dispatches a separate `char` event, which a canvas
+                     * needs and a real `<textarea>` double-counts (the first run of this
+                     * assertion read back `nn1199…`). A DOM text field takes its character
+                     * from the keyDown's own `text`, which is what a physical key produces.
+                     */
+                    const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+                    const nonce = Array.from(
+                        { length: 8 },
+                        () => alphabet[Math.floor(Math.random() * alphabet.length)]
+                    ).join('');
+                    for (const character of nonce) {
+                        await page.key(`Key${character.toUpperCase()}`, { key: character, text: character });
+                    }
+                    await sleep(600);
+                    const typed = await page.eval(
+                        `document.querySelector('[data-testid="content-textarea-${scratch.id}"]')?.value ?? ''`
+                    );
+                    recorder.check(
+                        'and typing straight after the keystroke lands IN it',
+                        String(typed).includes(nonce),
+                        `${nonce} → ${JSON.stringify(String(typed).slice(0, 40))}`
+                    );
+                    // Nothing leaked into the terminal it was split from.
+                    const source = await cli.ok(['pane', 'capture', '--target', String(state.firstPane)]);
+                    recorder.check(
+                        'and NOT into the terminal it was split off',
+                        !source.includes(nonce),
+                        nonce
+                    );
+                    await recorder.shot(page, 'typed');
+
                     await cli.ok(['pane', 'close', '--target', scratch.id]);
+                    await sleep(1000);
+                }
+
+                /*
+                 * The SECOND entry point, swept for the same defect (N19): the palette's "New
+                 * Scratchpad". It is the harder case, because the palette schedules a focus
+                 * handoff 200 ms after it closes (§10.4) aimed at the pane that was focused
+                 * when the command ran — i.e. at the terminal the new scratchpad was split
+                 * off. A handoff that fires blind takes the caret straight back out again, so
+                 * the assertion is made AFTER that window has passed, not before it.
+                 */
+                const beforePalette = await cli.json(['pane', 'list', '--json']);
+                await focusPaneBody(page, state.firstPane);
+                await page.key('KeyP', { modifiers: MOD.meta });
+                await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
+                    timeoutMs: 8000,
+                    label: 'the command palette'
+                });
+                await page.insertText('New Scratchpad');
+                await sleep(700);
+                await page.key('Enter');
+                // Well past FOCUS_HANDOFF_MS (200 ms) — the point is to catch a handoff that
+                // undoes the create's own focus.
+                await sleep(2600);
+                await recorder.shot(page, 'palette');
+
+                const afterPalette = await cli.json(['pane', 'list', '--json']);
+                const paletteScratch = afterPalette.filter((pane) => pane.type === 'scratchpad');
+                recorder.note(
+                    `panes after the palette route: ${afterPalette.map((pane) => pane.type).join(', ')}`
+                );
+                recorder.check(
+                    'the palette’s "New Scratchpad" creates exactly one pane',
+                    afterPalette.length === beforePalette.length + 1 && paletteScratch.length === 1,
+                    `${String(beforePalette.length)} → ${String(afterPalette.length)}, ${String(paletteScratch.length)} scratchpad(s)`
+                );
+                if (paletteScratch.length >= 1) {
+                    const target = paletteScratch[paletteScratch.length - 1];
+                    const paletteCaret = await page.eval(
+                        `(() => {
+                            const el = document.activeElement;
+                            const area = document.querySelector('[data-testid="content-textarea-${target.id}"]');
+                            return {
+                                held: el === area,
+                                active: el === null ? 'null' : el.tagName.toLowerCase() + '/' + (el.getAttribute?.('data-testid') ?? el.getAttribute?.('aria-label') ?? '-')
+                            };
+                        })()`
+                    );
+                    recorder.check(
+                        'and the palette route leaves the caret in it too (N19)',
+                        paletteCaret?.held === true,
+                        String(paletteCaret?.active)
+                    );
+                    for (const pane of paletteScratch) await cli.ok(['pane', 'close', '--target', pane.id]);
                     await sleep(1000);
                 }
                 recorder.eyes('does the scratchpad read as a note pane — glyph, title, caret in the editor?');
@@ -12773,6 +13306,20 @@ function buildFlows(ctx) {
                 recorder.check('the preview offers an "$EDITOR" affordance', present === true);
                 if (present !== true) return;
 
+                /*
+                 * Focus the pane by its HEADER before pressing the affordance (N19).
+                 *
+                 * Two reasons, and both are the point of the caret assertion below. A header
+                 * tap moves PANE focus without moving the DOM caret — which stays in whatever
+                 * terminal had it — so the surface that replaces the preview has to claim the
+                 * keyboard on its own. And the affordance itself does not focus the pane
+                 * (`PaneGridView.swift:263-272`: a button consumes its own tap), so without
+                 * this the hosted editor would be a BACKGROUND pane and declining the caret
+                 * would be the correct answer rather than an interesting one.
+                 */
+                await clickPaneHeader(page, paneID);
+                await sleep(500);
+
                 await page.click(affordance);
                 await sleep(2600);
                 await recorder.shot(page, 'hosted');
@@ -12788,6 +13335,31 @@ function buildFlows(ctx) {
                 recorder.note(`hosted-editor DOM: ${JSON.stringify(hosted)}`);
                 recorder.check('the preview was replaced by a terminal', (hosted?.terminal ?? 0) === 1, JSON.stringify(hosted));
                 recorder.check('and the preview frame is gone, not stacked behind it', (hosted?.preview ?? 1) === 0, JSON.stringify(hosted));
+
+                /*
+                 * N19's sweep — the third editor entry point. The affordance is a BUTTON, so
+                 * the click leaves the caret on a node that is about to unmount; the surface
+                 * that replaces it has to claim the keyboard by itself, before anybody clicks
+                 * into the pane body. Asserted here rather than after the `focusPaneBody` call
+                 * further down, which would hand it the caret and hide the answer.
+                 */
+                const hostedCaret = await page.eval(
+                    `(() => {
+                        const el = document.activeElement;
+                        const host = document.querySelector('[data-pane-id="${paneID}"] [data-terminal-host]');
+                        const wrapper = document.querySelector('[data-pane-id="${paneID}"][data-focused]');
+                        return {
+                            focused: wrapper?.getAttribute('data-focused') ?? 'unknown',
+                            held: el !== null && host !== null && host.contains(el),
+                            active: el === null ? 'null' : el.tagName.toLowerCase() + '/' + (el.getAttribute?.('aria-label') ?? '-')
+                        };
+                    })()`
+                );
+                recorder.check(
+                    'the hosted editor takes the caret with no click into the body (N19)',
+                    hostedCaret?.held === true,
+                    `pane focused=${String(hostedCaret?.focused)}, caret on ${String(hostedCaret?.active)}`
+                );
 
                 const panes = await cli.json(['pane', 'list', '--json']);
                 const pane = panes.find((entry) => entry.id === paneID);

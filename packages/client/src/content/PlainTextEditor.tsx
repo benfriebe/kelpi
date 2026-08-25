@@ -28,6 +28,7 @@ import {
     type ReactElement
 } from 'react';
 
+import { PANE_SURFACE_ATTR, shouldGrabFocus } from '../app/pane-focus';
 import { cachedLineStarts, visibleLineWindow, type LineWindow } from './gutter';
 import { contentScrollStore, type ScrollStore } from './scroll';
 import { editorTextColor } from './types';
@@ -128,16 +129,6 @@ export interface PlainTextEditorProps {
     readonly testID?: string | undefined;
 }
 
-/** Never steal the caret from a text field outside this pane (a rename, the palette). */
-function mayGrabFocus(element: HTMLElement | null): boolean {
-    if (typeof document === 'undefined') return true;
-    const active = document.activeElement;
-    if (active === null || active === document.body || active === element) return true;
-    const tag = active.tagName.toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return false;
-    return !(active instanceof HTMLElement && active.isContentEditable);
-}
-
 export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
     const { paneID, value: incoming, ariaLabel } = props;
     const store = props.scrollStore ?? contentScrollStore;
@@ -170,17 +161,36 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
         if (max > 0) area.scrollTop = saved.fraction * max;
     }, [paneID, store]);
 
-    // Mounting into a focused pane claims the caret; losing focus releases it so the next
-    // pane's claim is not blocked (§4.3).
+    /*
+     * Mounting into a focused pane claims the caret; losing focus releases it so the next
+     * pane's claim is not blocked (§4.3) — the port of `ScratchpadEditorView.swift:86-89,
+     * 108-116` (`claimFirstResponder` in `makeNSView`, `releaseFirstResponderIfHeld` on
+     * true → false), which `MarkdownEditorView.swift:78-80,102-116` repeats verbatim.
+     *
+     * N19 — two things were wrong here, and both are visible the moment a scratchpad is born
+     * out of a TERMINAL, which is every ⇧⌘N:
+     *
+     *   - the politeness test was local, and read the ghostty-web engine's hidden `<textarea>`
+     *     as "a text field outside this pane" — so the claim was declined every time and the
+     *     new pane got a focus ring with no caret. `shouldGrabFocus` is now the shared rule
+     *     (`app/pane-focus.ts`): chrome text fields still win, pane SURFACES do not. Note the
+     *     Swift's own guard here is narrower still — only `sidebarTextEditingActive`.
+     *   - `visible` was not consulted, so an editor mounted into a pane that is focused but
+     *     off-screen (its workspace is not the one on screen; a zoomed sibling covers it)
+     *     would have taken the window's caret. `TerminalPane` has always gated on both, and a
+     *     BACKGROUND create must not steal the keyboard from the pane the user is typing in.
+     */
     const focused = props.focused === true;
+    const onScreen = props.visible !== false;
+    const claimable = focused && onScreen;
     const wasFocused = useRef(false);
     useEffect(() => {
         const area = areaRef.current;
         if (area === null) return;
-        if (focused && !wasFocused.current && mayGrabFocus(area)) area.focus();
-        if (!focused && wasFocused.current && document.activeElement === area) area.blur();
-        wasFocused.current = focused;
-    }, [focused]);
+        if (claimable && !wasFocused.current && shouldGrabFocus(area)) area.focus();
+        if (!claimable && wasFocused.current && document.activeElement === area) area.blur();
+        wasFocused.current = claimable;
+    }, [claimable]);
 
     // A pane whose body unmounts (workspace switch, ⌘E back to preview) still owes its text.
     useEffect(
@@ -516,6 +526,11 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
             <textarea
                 ref={areaRef}
                 data-testid={`content-textarea-${paneID}`}
+                /* N19: this IS the pane's surface — the caret belongs here, not to the chrome.
+                   Marking it makes the shared politeness rule treat it as `SurfaceContainerView`
+                   treats a terminal surface, and lets `focusPaneSurface` hand an editor pane the
+                   caret on an overlay close (the palette handoff, ⌘, closing, ⌘F closing). */
+                {...{ [PANE_SURFACE_ATTR]: '' }}
                 aria-label={ariaLabel}
                 // §M27: `p-2` = the Swift's 8 pt `textContainerInset`.
                 className="h-full min-w-0 flex-1 resize-none border-0 bg-transparent p-2 outline-none"

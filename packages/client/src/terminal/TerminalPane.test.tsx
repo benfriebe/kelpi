@@ -557,6 +557,74 @@ describe('TerminalPane — input and focus', () => {
         expect(renderers.last().focusCount).toBe(0);
     });
 
+    /**
+     * §N20 — the CURSOR's focus, which is a different question from the caret's.
+     *
+     * libghostty draws a focused surface's cursor as the terminal asked for it (blinking, if it
+     * asked) and every other surface's as a steady hollow block, and `ghostty_surface_set_focus`
+     * is the only input to that decision. The port had no equivalent call at all, so every pane
+     * on screen blinked a filled block — the owner's report.
+     */
+    it('tells the engine which surface is focused, and follows the pane (§N20)', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+        const props = {
+            paneID: 'pane-1',
+            ptyApi: pty,
+            visible: true,
+            createRenderer: renderers.factory,
+            measure: box(800, 480)
+        };
+
+        const view = render(<TerminalPane {...props} focused={false} />);
+        await settle();
+        const renderer = renderers.last();
+        expect(renderer.surfaceFocuses.at(-1)).toBe(false);
+        expect(view.container.querySelector('[data-pane-id="pane-1"]')?.getAttribute('data-terminal-cursor-focus')).toBe('false');
+
+        view.rerender(<TerminalPane {...props} focused />);
+        expect(renderer.surfaceFocuses.at(-1)).toBe(true);
+        expect(view.container.querySelector('[data-pane-id="pane-1"]')?.getAttribute('data-terminal-cursor-focus')).toBe('true');
+
+        // A pane parked off-screen (another workspace) is nobody's focused surface.
+        view.rerender(<TerminalPane {...props} focused visible={false} />);
+        expect(renderer.surfaceFocuses.at(-1)).toBe(false);
+    });
+
+    /**
+     * §N20 — and the WINDOW is half the answer.
+     *
+     * AppKit does not resign a view's first-responder status when its window stops being key,
+     * so ghostty computes surface focus as `window.isKeyWindow && … && isFirstResponder`
+     * (`BaseTerminalController.syncFocusToSurfaceTree`): a Nex window in the background has no
+     * blinking cursor anywhere in it. Nothing about `focused`, `visible` or the engine's status
+     * changes when the OS takes the window away, so the window's own event is the only signal.
+     */
+    it('unfocuses the cursor when the WINDOW loses focus, and restores it (§N20)', async () => {
+        const renderers = createFakeRendererFactory();
+        const pty = createFakePtyApi();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={renderers.factory}
+                measure={box(800, 480)}
+            />
+        );
+        await settle();
+        const renderer = renderers.last();
+        expect(renderer.surfaceFocuses.at(-1)).toBe(true);
+
+        fireEvent.blur(window);
+        expect(renderer.surfaceFocuses.at(-1)).toBe(false);
+
+        fireEvent.focus(window);
+        expect(renderer.surfaceFocuses.at(-1)).toBe(true);
+    });
+
     it('reports process exit, bell and title to the host', async () => {
         const renderers = createFakeRendererFactory();
         const pty = createFakePtyApi();
@@ -936,6 +1004,54 @@ describe('TerminalPane — helpers', () => {
         input.blur();
         expect(shouldGrabFocus(document.createElement('div'))).toBe(true);
         input.remove();
+    });
+
+    /**
+     * N19 — losing pane focus has to RELEASE the caret, not just tell the engine.
+     *
+     * `Terminal.blur()` blurs the container (`vendor/…/terminal.ts:808-812`) while `focus()`
+     * focuses the hidden `<textarea>` inside it, so the DOM caret survived `renderer.blur()`
+     * and the whole window went on reading as "a text field is focused". The next surface's
+     * claim — a scratchpad born from ⇧⌘N — was declined on those grounds. This is the port of
+     * the editors' `releaseFirstResponderIfHeld` (`ScratchpadEditorView.swift:113-115`).
+     */
+    it('releases the DOM caret when the pane loses focus, so the next surface can claim it', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory();
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        // Stand in for the engine's hidden input: the fake renderer has no DOM of its own.
+        const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
+        expect(host.hasAttribute('data-pane-surface')).toBe(true);
+        const engineInput = document.createElement('textarea');
+        host.appendChild(engineInput);
+        engineInput.focus();
+        expect(document.activeElement).toBe(engineInput);
+
+        view.rerender(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        expect(document.activeElement).not.toBe(engineInput);
+        expect(shouldGrabFocus(document.createElement('div'))).toBe(true);
     });
 });
 

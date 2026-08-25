@@ -27,6 +27,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { PANE_SURFACE_ATTR, releasePaneCaret, shouldGrabFocus } from '../app/pane-focus';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
@@ -281,19 +282,11 @@ export function measureMouseSurface(
 }
 
 /**
- * Polite focus (terminal-surface.md §6): a (re)mounting pane grabs the caret unless a text
- * editor outside it currently holds it — a sidebar rename or the command palette must survive
- * a grid re-render.
+ * Polite focus (terminal-surface.md §6) — shared with the editor surfaces since N19, because
+ * `SurfaceContainerView`'s `firstResponder is NSText` guard and the editors'
+ * `releaseFirstResponderIfHeld` are two halves of one rule. See `app/pane-focus.ts`.
  */
-export function shouldGrabFocus(host: HTMLElement | null): boolean {
-    if (typeof document === 'undefined') return true;
-    const active = document.activeElement;
-    if (active === null || active === document.body) return true;
-    if (host !== null && host.contains(active)) return true;
-    const tag = active.tagName.toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return false;
-    return !(active instanceof HTMLElement && active.isContentEditable);
-}
+export { shouldGrabFocus };
 
 type PaneStatus = 'loading' | 'live' | 'error';
 
@@ -892,8 +885,76 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (shouldGrabFocus(hostRef.current)) renderer.focus();
             return;
         }
-        if (!focused) renderer.blur();
+        if (!focused) {
+            renderer.blur();
+            /*
+             * N19 — and let the caret GO, which `renderer.blur()` does not do.
+             *
+             * ghostty-web's `blur()` blurs the CONTAINER (`terminal.ts:808-812`), while its
+             * `focus()` focuses the hidden `<textarea>` inside it, so a pane that lost focus
+             * went on holding the DOM caret indefinitely. Everything downstream then read the
+             * window as "a text field is focused": the next surface's `shouldGrabFocus` said
+             * no, and a scratchpad created with ⇧⌘N got the focus ring and no caret.
+             *
+             * This is the port of `ScratchpadEditorView.swift:113-115` /
+             * `MarkdownEditorView.swift:107-111` `releaseFirstResponderIfHeld`, which exists in
+             * the Swift for exactly this reason ("so the next pane's focus claim isn't
+             * blocked"). It only ever blurs a node inside THIS host, so a claim that already
+             * landed elsewhere in the same commit is never undone — which is what makes the
+             * two panes' effects order-independent.
+             */
+            releasePaneCaret(hostRef.current);
+        }
     }, [focused, visible, status]);
+
+    // ── surface focus, i.e. the CURSOR's focus (§N20) ───────────────────────────────
+    //
+    // The port of `ghostty_surface_set_focus`, and deliberately not folded into the effect
+    // above: that one moves the DOM caret and is POLITE about it (a rename field mid-edit keeps
+    // it), while this one is a statement of fact — "this pane is/isn't the focused surface" —
+    // that has to reach the engine whether or not the caret moved. libghostty draws the
+    // difference: the focused surface's cursor is the one the terminal asked for, blinking if
+    // it asked for that, and every other surface's is a steady hollow block
+    // (`src/renderer/cursor.zig:59-60`). Without this every pane on screen blinked a filled
+    // block, which is what the owner reported.
+    //
+    // The WINDOW is part of the answer, which is the half a browser makes easy to miss. AppKit
+    // does not resign a view's first-responder status when its window stops being key, so
+    // ghostty computes surface focus as `window.isKeyWindow && … && isFirstResponder`
+    // (`BaseTerminalController.syncFocusToSurfaceTree`) — a Nex window sent to the background
+    // has NO blinking cursor in it. `window` focus/blur is the browser's `isKeyWindow`, and
+    // `document.hasFocus()` seeds it for a pane that mounts into an already-background window.
+    //
+    // One deliberate simplification, recorded so it reads as a decision: ghostty's third term is
+    // `isFirstResponder`, so in the Swift app a sidebar rename or the palette taking the caret
+    // ALSO hollows the pane's cursor. Here the pane's own focus is used instead — the same input
+    // the focus RING is drawn from — so an overlay that borrows the caret leaves the ring and the
+    // cursor agreeing with each other. Following the DOM's `activeElement` instead would mean
+    // re-deciding on every focusin/focusout, including the transient blurs the engine's own copy
+    // path performs, for a difference visible only while a chrome field is mid-edit.
+    const [windowFocused, setWindowFocused] = useState<boolean>(() =>
+        typeof document === 'undefined' ? true : document.hasFocus()
+    );
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const gained = (): void => setWindowFocused(true);
+        const lost = (): void => setWindowFocused(false);
+        window.addEventListener('focus', gained);
+        window.addEventListener('blur', lost);
+        // Re-seed on mount: the window may have lost focus between the initial state and here.
+        setWindowFocused(document.hasFocus());
+        return () => {
+            window.removeEventListener('focus', gained);
+            window.removeEventListener('blur', lost);
+        };
+    }, []);
+
+    const surfaceFocused = focused && visible && windowFocused;
+    useEffect(() => {
+        // `status` is in the deps for the same reason the focus effect has it: a restart builds
+        // a FRESH engine (which defaults to focused), and it has to be told again.
+        rendererRef.current?.setSurfaceFocus(surfaceFocused);
+    }, [surfaceFocused, status]);
 
     // ── theme ───────────────────────────────────────────────────────────────────────
     useEffect(() => {
@@ -958,6 +1019,12 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                doc comment), so this reports the value that is actually in force, not the
                current prop. */
             data-terminal-transparent={engineTransparent ? 'true' : 'false'}
+            /* §N20 — what this pane last told its ENGINE about surface focus, which is the
+               cursor's whole story: `true` draws the terminal's own cursor (blinking if it
+               asked), `false` draws ghostty's steady hollow block. Published rather than
+               inferred from `data-focused` because the window's focus is half of it, and
+               because a pixel readback needs to know which treatment it is looking for. */
+            data-terminal-cursor-focus={surfaceFocused ? 'true' : 'false'}
             /* §APP-014 — the background and foreground this pane last handed its ENGINE.
                Published for the same reason as the mouse mode and the kitty flags above: "the
                resolved theme reached the renderer" has to be an observable fact about the pane
@@ -1004,7 +1071,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             <span id={`terminal-help-${paneID}`} style={VISUALLY_HIDDEN}>
                 {TERMINAL_ACCESSIBILITY_HELP}
             </span>
-            <div ref={hostRef} className="h-full w-full" data-terminal-host="" />
+            {/* N19: `data-pane-surface` marks the subtree that legitimately owns this pane's
+                caret — the engine's hidden `<textarea>` lives in here. It is what tells the
+                politeness rule in `app/pane-focus.ts` that a focused terminal is a SURFACE and
+                not a chrome text field, and it is what `focusPaneSurface` hands the caret to. */}
+            <div ref={hostRef} className="h-full w-full" data-terminal-host="" {...{ [PANE_SURFACE_ATTR]: '' }} />
             {status === 'error' ? (
                 // Interactive on purpose (it used to be `pointer-events-none`): the placeholder
                 // is now the last stop on the retry path, not a dead end. The pane root still

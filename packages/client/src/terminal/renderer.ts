@@ -183,6 +183,22 @@ export interface TerminalRenderer {
     resize(cols: number, rows: number): void;
     focus(): void;
     blur(): void;
+    /**
+     * Does the PANE hold focus? (§N20 — `ghostty_surface_set_focus`.)
+     *
+     * Separate from `focus()`/`blur()`, which move the DOM caret, because the two answers
+     * differ in both directions and the cursor follows this one:
+     *
+     *   - a window that loses OS focus keeps its `document.activeElement` exactly where it was,
+     *     and native ghostty unfocuses the surface anyway
+     *     (`BaseTerminalController.syncFocusToSurfaceTree` gates on `window.isKeyWindow`);
+     *   - a pane whose engine is mid-load has not been focused yet but already knows whether it
+     *     is the focused pane.
+     *
+     * Focused, the cursor is the one the terminal asked for, blinking if it asked for that.
+     * Unfocused, it is a steady hollow block — `src/renderer/cursor.zig:59-60`.
+     */
+    setSurfaceFocus(focused: boolean): void;
     setTheme(theme: TerminalTheme): void;
     /** CSS-pixel cell metrics; falls back to a font-derived estimate before the engine is up. */
     cellSize(): CellSize;
@@ -252,6 +268,16 @@ export interface EngineHandle {
     remeasure?(): void;
     /** Force a full redraw. */
     repaint?(): void;
+    /**
+     * Report SURFACE focus, so the cursor can take ghostty's unfocused treatment (§N20).
+     *
+     * Optional because it is engine-specific in an asymmetric way. `ghostty-web` had no such
+     * concept at all until `0.4.0-nex.4` added `Terminal.setFocused` (every pane on the page
+     * blinked a filled block forever, which is the defect); `@xterm/xterm` has drawn an outline
+     * cursor on blur since forever, driven by its own DOM focus, so its handle omits this and
+     * `focus()`/`blur()` remain the whole story there. A fake engine omits it too.
+     */
+    setSurfaceFocus?(focused: boolean): void;
     /**
      * Scroll a search match into view and select it. Engine-specific on purpose: the two
      * engines' `scrollToLine` mean different things (xterm.js takes the absolute buffer line to
@@ -629,6 +655,13 @@ class AdapterRenderer implements TerminalRenderer {
     private pending: (Uint8Array | string)[] = [];
     private pendingBytes = 0;
     private wantFocus = false;
+    /**
+     * §N20 — the SURFACE's focus, which is not the same thing as the DOM caret (`wantFocus`).
+     *
+     * `true` until the pane reports otherwise, so an engine that opens before its first focus
+     * report looks the way upstream always did rather than flashing an outline for a frame.
+     */
+    private wantSurfaceFocus = true;
     private requestedCols: number;
     private requestedRows: number;
     private readonly faults: EngineFaultHook | undefined;
@@ -783,6 +816,12 @@ class AdapterRenderer implements TerminalRenderer {
         this.wantFocus = false;
         if (this.disposed || this.poisoned) return;
         this.swallow(() => this.handle?.terminal.blur());
+    }
+
+    setSurfaceFocus(focused: boolean): void {
+        this.wantSurfaceFocus = focused;
+        if (this.disposed || this.poisoned) return;
+        this.swallow(() => this.handle?.setSurfaceFocus?.(focused));
     }
 
     setTheme(theme: TerminalTheme): void {
@@ -1026,6 +1065,10 @@ class AdapterRenderer implements TerminalRenderer {
             // ghostty-web#100: `open()` focuses itself. Re-assert what the caller asked for.
             if (this.wantFocus) terminal.focus();
             else terminal.blur();
+            // §N20: and the surface's focus with it — the engine is built with `focused: true`,
+            // so a pane that was told it is unfocused BEFORE its engine finished loading (every
+            // pane in a restored grid but one) would otherwise open blinking.
+            handle.setSurfaceFocus?.(this.wantSurfaceFocus);
         } catch (error) {
             this.poisoned = true;
             this.releaseEngine();
@@ -1104,6 +1147,11 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             // Belt and braces: the loader already awaited the font, but a face that landed
             // during `open()` would otherwise leave the cell at fallback metrics forever.
             terminal.renderer?.remeasureFont();
+        },
+        // §N20 — `ghostty_surface_set_focus`'s port. Safe before `open()`: the engine keeps the
+        // flag and hands it to the renderer it builds there (`0.4.0-nex.4`).
+        setSurfaceFocus: (focused): void => {
+            terminal.setFocused(focused);
         },
         repaint: (): void => {
             const renderer = terminal.renderer;

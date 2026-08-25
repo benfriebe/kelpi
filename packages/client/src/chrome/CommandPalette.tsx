@@ -190,6 +190,16 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
             scheduleHandoff(props.fallbackPaneID ?? null);
             return;
         }
+        /*
+         * The palette runs the item — and it is the ONLY thing that runs it. `App.tsx`'s
+         * `onPaletteConfirm` used to call `item.run?.()` a second time for every
+         * `kind === 'command'`, so one ⌘P → Enter fired every palette command TWICE: two panes
+         * from "New Scratchpad" (measured live in the audit's `scratchpad-create` step —
+         * `1 → 3, 2 scratchpad(s)`), two splits from "Split Right", and a silent no-op from any
+         * toggle, whose second call undid the first. Present since the client's first commit
+         * (`1628def`) and invisible to the tests on both sides: this one passes a mock
+         * `onConfirm`, and the App's palette tests never assert an effect count.
+         */
         item.run?.();
         props.onConfirm(item);
         scheduleHandoff(item.paneID ?? props.fallbackPaneID ?? null);

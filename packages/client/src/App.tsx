@@ -125,6 +125,7 @@ import {
 } from './app/file-menu';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
+import { focusPaneSurface } from './app/pane-focus';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     SEED_TEST_GROUP_COMMAND,
@@ -699,7 +700,7 @@ function Shell(props: AppProps): ReactElement {
             const timer = setTimeout(() => {
                 timers.delete(timer);
                 runtime.focusPane(target.workspaceID, target.paneID);
-                focusTerminalElement(target.paneID);
+                focusPaneSurface(target.paneID);
             }, 0);
             timers.add(timer);
         });
@@ -2545,7 +2546,7 @@ function Shell(props: AppProps): ReactElement {
     const closeSettings = useCallback((): void => {
         setSettingsTab(null);
         const paneID = selectFocusedPaneID(store.getState());
-        if (paneID !== null) focusTerminalElement(paneID);
+        if (paneID !== null) focusPaneSurface(paneID);
     }, [store]);
 
     // ── favicon / tab badge ─────────────────────────────────────────────────────────
@@ -3005,10 +3006,17 @@ function Shell(props: AppProps): ReactElement {
     const onPaletteConfirm = useCallback(
         (item: PaletteItem): void => {
             store.getState().setPaletteOpen(false);
-            if (item.kind === 'command') {
-                item.run?.();
-                return;
-            }
+            /*
+             * A command item has ALREADY run by the time this is called — `CommandPalette`'s
+             * own `confirm` invokes `item.run?.()` and its unit test pins that. This branch
+             * used to call it a second time, so a single ⌘P → Enter fired every palette
+             * command twice: "New Scratchpad" made two panes (measured live in the audit's
+             * `scratchpad-create` step — `1 → 3, 2 scratchpad(s)`), "Split Right" split twice,
+             * and any toggle looked inert because the second call undid the first. It survived
+             * since `1628def` because neither side's tests count effects: the component's pass
+             * a mock `onConfirm`, and the App's palette tests assert routing, not repetition.
+             */
+            if (item.kind === 'command') return;
             if (item.workspaceID === null) return;
             // §8.5 ordering: activate the workspace, then focus the pane.
             //
@@ -3024,10 +3032,23 @@ function Shell(props: AppProps): ReactElement {
     const onFocusHandoff = useCallback(
         (paneID: string | null): void => {
             if (paneID === null) return;
-            act.focusPane(paneID);
-            focusTerminalElement(paneID);
+            /*
+             * §10.4 hands the caret back to THE focused pane. For Escape, a backdrop click and
+             * a jump the confirm has already performed, that is `paneID` — the target the
+             * palette captured when it closed.
+             *
+             * N19: it is not `paneID` when the command the palette ran MOVED focus. "New
+             * Scratchpad" creates a pane and focuses it, and the target was captured 200 ms
+             * earlier — before the new pane existed — so the handoff would take the caret out
+             * of the fresh scratchpad and put it back in the terminal it was split from. The
+             * client's own focused pane is the authority; the captured id is only the
+             * fallback for the window that has not answered yet.
+             */
+            const target = selectFocusedPaneID(store.getState()) ?? paneID;
+            act.focusPane(target);
+            focusPaneSurface(target);
         },
-        [act]
+        [act, store]
     );
 
     // ── status footer ───────────────────────────────────────────────────────────────
@@ -3057,9 +3078,9 @@ function Shell(props: AppProps): ReactElement {
             // the user clicks. Twice on purpose: now for a jump inside this workspace (the host
             // is already mounted), and again after the next frame for a jump that crosses
             // workspaces, where the destination pane does not exist yet.
-            focusTerminalElement(paneID);
+            focusPaneSurface(paneID);
             const soon = globalThis.requestAnimationFrame;
-            const again = (): void => focusTerminalElement(paneID);
+            const again = (): void => focusPaneSurface(paneID);
             if (typeof soon === 'function') soon(again);
             else setTimeout(again, 0);
         },
@@ -3293,7 +3314,7 @@ function Shell(props: AppProps): ReactElement {
                     onPrevious={() => act.stepSearch('prev')}
                     onClose={() => {
                         act.closeSearch();
-                        focusTerminalElement(paneID);
+                        focusPaneSurface(paneID);
                     }}
                 />
             );
@@ -4128,7 +4149,7 @@ function Shell(props: AppProps): ReactElement {
                     onClose={() => {
                         setHelpOpen(false);
                         const paneID = selectFocusedPaneID(store.getState());
-                        if (paneID !== null) focusTerminalElement(paneID);
+                        if (paneID !== null) focusPaneSurface(paneID);
                     }}
                     onOpenKeybindings={() => {
                         setHelpOpen(false);
@@ -4637,15 +4658,11 @@ function statusItems(workspaces: readonly WorkspaceState[], bucket: AgentBucket)
     return items;
 }
 
-/**
- * Hand the caret back to a terminal after an overlay closes. The renderer owns whatever is
- * actually focusable inside the host (a textarea for both engines today), so this asks the DOM
- * rather than the engine — the engine seam deliberately exposes no such handle.
+/*
+ * N19 — `focusTerminalElement` was exactly that: it looked for `[data-terminal-host]` and gave
+ * up on anything else, so every overlay-close handoff below (Settings, Help, the pane search
+ * bar, the palette's §10.4 handoff, a status-popover jump, a socket-driven focus) was a silent
+ * no-op when the focused pane was a scratchpad or a markdown editor — the window came back with
+ * the caret nowhere. `focusPaneSurface` (app/pane-focus.ts) resolves the pane's marked surface
+ * instead, which is the terminal host for a shell pane and the textarea for an editor.
  */
-function focusTerminalElement(paneID: string): void {
-    if (typeof document === 'undefined') return;
-    const host = document.querySelector<HTMLElement>(`[data-pane-id="${paneID}"] [data-terminal-host]`);
-    if (host === null) return;
-    const focusable = host.querySelector<HTMLElement>('textarea, canvas[tabindex], [tabindex]') ?? host;
-    focusable.focus?.();
-}

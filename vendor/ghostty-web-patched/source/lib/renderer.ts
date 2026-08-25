@@ -65,6 +65,22 @@ export interface RendererOptions {
    * Off (the default) every code path below is byte-for-byte what it always was.
    */
   allowTransparency?: boolean;
+  /**
+   * Does the surface holding this terminal have KEYBOARD FOCUS? Default: true.
+   *
+   * Native ghostty draws two different cursors and the difference is focus, not style: the
+   * focused surface gets the cursor the terminal asked for (blinking if it asked for that),
+   * and an unfocused one gets a STEADY HOLLOW BLOCK — `src/renderer/cursor.zig:59-60`,
+   * "If we're not focused, our cursor is always visible so that we can show the hollow box",
+   * which returns `.block_hollow` BEFORE the blink check and regardless of the requested
+   * bar/underline style. `ghostty_surface_set_focus` is what drives it.
+   *
+   * Upstream ghostty-web has no such concept: every terminal on the page blinks a filled block
+   * forever, so a grid of panes reads as if all of them had the caret. The default here is
+   * `true` so a single-terminal embedder that never calls `setFocused` sees exactly the
+   * behaviour it always saw.
+   */
+  focused?: boolean;
 }
 
 export interface FontMetrics {
@@ -72,6 +88,17 @@ export interface FontMetrics {
   height: number; // Character cell height in CSS pixels
   baseline: number; // Distance from top to text baseline
 }
+
+/**
+ * Border thickness, in DEVICE pixels, of the unfocused (hollow) cursor.
+ *
+ * ghostty's `font.Metrics.cursor_thickness` — the value `cursor_hollow_rect` insets by — is not
+ * measured from the font. It defaults to 1 and only the `adjust-cursor-thickness` config moves
+ * it (`src/font/Metrics.zig:32-34`, `src/font/SharedGridSet.zig:670`), and ghostty's metrics are
+ * device pixels. That config key is not plumbed through this port, so this is the constant
+ * ghostty ships with.
+ */
+const CURSOR_OUTLINE_DEVICE_PX = 1;
 
 // ============================================================================
 // Default Theme
@@ -128,6 +155,17 @@ export class CanvasRenderer {
   private cursorVisible: boolean = true;
   private cursorBlinkInterval?: number;
   private lastCursorPosition: { x: number; y: number } = { x: 0, y: 0 };
+  /** See `RendererOptions.focused`. */
+  private focused: boolean;
+  /**
+   * The cursor's TREATMENT changed (focus flipped) without the cursor moving.
+   *
+   * Filled-block ↔ hollow-outline is a repaint of the cursor cell that nothing else asks for:
+   * the row is not dirty (no bytes arrived), the cursor did not move, and with `cursorBlink`
+   * off the per-frame "redraw the cursor line" branch is not taken either. Without this flag a
+   * pane that lost focus while idle keeps its filled block painted until the next keystroke.
+   */
+  private cursorStateDirty: boolean = false;
 
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
@@ -174,6 +212,7 @@ export class CanvasRenderer {
     this.cursorBlink = options.cursorBlink ?? false;
     this.theme = { ...DEFAULT_THEME, ...options.theme };
     this.allowTransparency = options.allowTransparency ?? false;
+    this.focused = options.focused ?? true;
     this.defaultBackgroundRGB = CanvasRenderer.parseRGB(this.theme.background);
     this.devicePixelRatio = options.devicePixelRatio ?? window.devicePixelRatio ?? 1;
 
@@ -200,8 +239,10 @@ export class CanvasRenderer {
     // Measure font metrics
     this.metrics = this.measureFont();
 
-    // Setup cursor blinking if enabled
-    if (this.cursorBlink) {
+    // Setup cursor blinking if enabled. An unfocused terminal never blinks (ghostty stops the
+    // blink timer on focus loss — `src/renderer/Thread.zig:398-404`), so there is nothing to
+    // start until it takes focus.
+    if (this.cursorBlink && this.focused) {
       this.startCursorBlink();
     }
   }
@@ -371,10 +412,12 @@ export class CanvasRenderer {
       this.lastViewportY = viewportY;
     }
 
-    // Check if cursor position changed or if blinking (need to redraw cursor line)
+    // Check if cursor position changed, if blinking, or if the cursor's TREATMENT changed
+    // under it (focus flipped — see `cursorStateDirty`): all three need the cursor line
+    // redrawn so the previous frame's cursor is erased before this one's is painted.
     const cursorMoved =
       cursor.x !== this.lastCursorPosition.x || cursor.y !== this.lastCursorPosition.y;
-    if (cursorMoved || this.cursorBlink) {
+    if (cursorMoved || this.cursorBlink || this.cursorStateDirty) {
       // Mark cursor lines as needing redraw
       if (!forceAll && !buffer.isRowDirty(cursor.y)) {
         // Need to redraw cursor line
@@ -553,8 +596,13 @@ export class CanvasRenderer {
 
     // Link underlines are drawn during cell rendering (see renderCell)
 
-    // Render cursor (only if we're at the bottom, not scrolled)
-    if (viewportY === 0 && cursor.visible && this.cursorVisible) {
+    // Render cursor (only if we're at the bottom, not scrolled).
+    //
+    // The blink PHASE only gates a focused cursor. Unfocused, ghostty shows the hollow box
+    // "always" (`src/renderer/cursor.zig:58-60`) — the terminal's own visibility (DECTCEM,
+    // `cursor.visible`) still hides it, exactly as the `!state.cursor.visible` check that runs
+    // one line earlier over there does.
+    if (viewportY === 0 && cursor.visible && (this.cursorVisible || !this.focused)) {
       this.renderCursor(cursor.x, cursor.y);
     }
 
@@ -565,6 +613,8 @@ export class CanvasRenderer {
 
     // Update last cursor position
     this.lastCursorPosition = { x: cursor.x, y: cursor.y };
+    // The focus flip has been painted.
+    this.cursorStateDirty = false;
 
     // ALWAYS clear dirty flags after rendering, regardless of forceAll.
     // This is critical - if we don't clear after a full redraw, the dirty
@@ -808,6 +858,14 @@ export class CanvasRenderer {
     const cursorX = x * this.metrics.width;
     const cursorY = y * this.metrics.height;
 
+    // vendor 0.4.0-nex.4: an UNFOCUSED surface's cursor is a hollow block, whatever style the
+    // terminal asked for. `src/renderer/cursor.zig:59-60` returns `.block_hollow` before it
+    // ever looks at `visual_style`, so a bar or underline cursor becomes an outline too.
+    if (!this.focused) {
+      this.renderHollowCursor(cursorX, cursorY);
+      return;
+    }
+
     this.ctx.fillStyle = this.theme.cursor;
 
     switch (this.cursorStyle) {
@@ -833,6 +891,58 @@ export class CanvasRenderer {
         this.ctx.fillRect(cursorX, cursorY, barWidth, this.metrics.height);
         break;
     }
+  }
+
+  /**
+   * The unfocused cursor: a hollow block outlining the cell (vendor 0.4.0-nex.4).
+   *
+   * ghostty draws this as a sprite — `font/sprite/draw/special.zig:300-323`
+   * (`cursor_hollow_rect`): fill the whole cell, then punch out everything inset by
+   * `metrics.cursor_thickness`. So it is a border of exactly that thickness around the full
+   * cell, in the cursor colour, over a cell whose glyph keeps its normal foreground (the
+   * cursor-text inversion is applied to the FILLED block only — `renderer/generic.zig:2519`,
+   * `if (style == .block)`).
+   *
+   * `cursor_thickness` is not derived from the font: it defaults to 1 and is only moved by the
+   * `adjust-cursor-thickness` config (`font/Metrics.zig:32-34`). ghostty's metrics are in
+   * DEVICE pixels (its surface is sized in them), so the outline is one device pixel — which is
+   * why this paints under an identity transform instead of the DPR-scaled one the rest of the
+   * renderer uses. Painting 1/dpr in scaled space would land the rectangle between device
+   * pixels on a fractional cell origin and anti-alias the outline into a grey smear; snapping
+   * to the device grid keeps every edge a single fully-lit row of pixels, which is both what
+   * ghostty draws and what a pixel readback can verify.
+   */
+  private renderHollowCursor(cursorX: number, cursorY: number): void {
+    const dpr = this.devicePixelRatio;
+    const left = Math.round(cursorX * dpr);
+    const top = Math.round(cursorY * dpr);
+    const width = Math.round(this.metrics.width * dpr);
+    const height = Math.round(this.metrics.height * dpr);
+    // ghostty's `Minimums.cursor_thickness` is 1 (`font/Metrics.zig:65`), and so is the
+    // unadjusted default; a cell too small to hold two edges plus a gap keeps a filled block,
+    // which is what `width -| thickness * 2` saturating to zero does over there.
+    const thickness = Math.max(1, CURSOR_OUTLINE_DEVICE_PX);
+    if (width <= 0 || height <= 0) return;
+
+    this.ctx.save();
+    // Identity transform: these are DEVICE pixels, not the CSS pixels the rest of the paint
+    // path works in.
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.fillStyle = this.theme.cursor;
+    if (width <= thickness * 2 || height <= thickness * 2) {
+      this.ctx.fillRect(left, top, width, height);
+    } else {
+      this.ctx.fillRect(left, top, width, thickness); // top
+      this.ctx.fillRect(left, top + height - thickness, width, thickness); // bottom
+      this.ctx.fillRect(left, top + thickness, thickness, height - thickness * 2); // left
+      this.ctx.fillRect(
+        left + width - thickness,
+        top + thickness,
+        thickness,
+        height - thickness * 2
+      ); // right
+    }
+    this.ctx.restore();
   }
 
   // ==========================================================================
@@ -918,11 +1028,44 @@ export class CanvasRenderer {
   public setCursorBlink(enabled: boolean): void {
     if (enabled && !this.cursorBlink) {
       this.cursorBlink = true;
-      this.startCursorBlink();
+      // An unfocused terminal shows a steady outline; its timer starts when it takes focus.
+      if (this.focused) this.startCursorBlink();
     } else if (!enabled && this.cursorBlink) {
       this.cursorBlink = false;
       this.stopCursorBlink();
     }
+  }
+
+  /**
+   * Does the surface holding this terminal have keyboard focus? (vendor 0.4.0-nex.4)
+   *
+   * The port of `ghostty_surface_set_focus`. Focus changes two things and only these two:
+   *
+   *   - the cursor's TREATMENT — filled, in the terminal's requested style, when focused; a
+   *     steady hollow block when not (`renderCursor` / `renderHollowCursor`);
+   *   - the blink TIMER — ghostty stops it on focus loss and, on focus gain, shows the cursor
+   *     immediately and restarts it (`src/renderer/Thread.zig:379-424`), so a pane that has
+   *     just been clicked never opens on the dark half of someone else's blink phase.
+   *
+   * Nothing about input routing lives here: `focus()` / `blur()` still own the DOM caret. An
+   * embedder that never calls this keeps upstream's always-focused behaviour.
+   */
+  public setFocused(focused: boolean): void {
+    if (this.focused === focused) return;
+    this.focused = focused;
+    // The cursor cell has to be repainted even though nothing in the buffer changed.
+    this.cursorStateDirty = true;
+    if (focused) {
+      this.cursorVisible = true;
+      if (this.cursorBlink && this.cursorBlinkInterval === undefined) this.startCursorBlink();
+    } else {
+      this.stopCursorBlink();
+    }
+  }
+
+  /** Focus state, for embedders that need to read back what they set. */
+  public isFocused(): boolean {
+    return this.focused;
   }
 
   /**

@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.3';
+const EXPECTED_VERSION = '0.4.0-nex.4';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -43,6 +43,18 @@ const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
  * take a future npm release wholesale and translucency silently goes back to solid.
  */
 const TRANSPARENCY_MARKERS = ['paintDefaultBackground', 'allowTransparency'];
+
+/**
+ * Markers of `-nex.4`'s focus-aware cursor (§N20).
+ *
+ * The third thing upstream does not have and the app cannot see the absence of in a unit test:
+ * `ghostty-web` draws one cursor, filled and blinking, in every terminal on the page — so a
+ * grid of panes reads as if all of them had the caret. `setFocused` is the port of
+ * `ghostty_surface_set_focus`, and `renderHollowCursor` is the treatment it selects
+ * (`src/renderer/cursor.zig:59-60` — steady, hollow, whatever style the terminal asked for).
+ * Take a future npm release wholesale and every pane starts blinking again.
+ */
+const CURSOR_FOCUS_MARKERS = ['setFocused', 'renderHollowCursor', 'cursorStateDirty'];
 
 /**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
@@ -98,6 +110,13 @@ describe('vendored ghostty-web engine', () => {
         }
     });
 
+    it('ships a bundle whose cursor follows surface focus (§N20)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of CURSOR_FOCUS_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -112,5 +131,11 @@ describe('vendored ghostty-web engine', () => {
         const rendererSource = read(path.join(vendorRoot, 'source', 'lib', 'renderer.ts'));
         expect(rendererSource).toContain('paintDefaultBackground');
         expect(rendererSource).toContain('this.ctx.clearRect');
+        // §N20's half, in the two files that carry it: the Terminal remembers the flag across
+        // `open()` and the renderer picks the treatment from it.
+        expect(terminalSource).toContain('setFocused(focused: boolean)');
+        expect(terminalSource).toContain('focused: this.surfaceFocused');
+        expect(rendererSource).toContain('renderHollowCursor');
+        expect(rendererSource).toContain('this.cursorVisible || !this.focused');
     });
 });

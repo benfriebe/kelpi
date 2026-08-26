@@ -4345,15 +4345,22 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`web page hole: ${JSON.stringify(placeholder)}`);
                 /*
-                 * §N27: a FOCUSED pane's view is placed inset by the focus-ring width on left,
-                 * right and bottom, so the ring is not painted underneath it. The DOM hole stays
-                 * flush (that is what stops the client reflowing), so the page's own viewport is
+                 * §N27: the view is placed inset by the focus-ring width on left, right and
+                 * bottom, so the ring is not painted underneath it. The DOM hole stays flush
+                 * (that is what stops the client reflowing), so the page's own viewport is
                  * expected to be exactly that much smaller — an exact quantity, not slack in the
                  * ±2 px rounding tolerance below.
+                 *
+                 * §N27a — the inset is UNCONDITIONAL. This arithmetic used to be gated on
+                 * `placeholder.focused` ("− ring only when focused"), which is precisely the
+                 * regression the owner reported: a focus-dependent rect resizes a live native
+                 * view by 4×2 px every time the ring moves, and the page visibly reflows. The
+                 * gutter is reserved focused or not, so the expected viewport no longer reads
+                 * the focus state at all — and the assertion now FAILS if it ever does again.
                  */
                 const N27_RING = 2;
-                const expectedPageW = (placeholder?.w ?? 0) - (placeholder?.focused === true ? N27_RING * 2 : 0);
-                const expectedPageH = (placeholder?.h ?? 0) - (placeholder?.focused === true ? N27_RING : 0);
+                const expectedPageW = (placeholder?.w ?? 0) - N27_RING * 2;
+                const expectedPageH = (placeholder?.h ?? 0) - N27_RING;
 
                 /**
                  * The placement, proved from BOTH ends.
@@ -4389,14 +4396,14 @@ function buildFlows(ctx) {
                     recorder.check(
                         'the page is laid out at the pane\'s width, not the automation viewport',
                         Math.abs((metrics?.iw ?? 0) - expectedPageW) <= 2,
-                        `page ${String(metrics?.iw)}px vs hole ${String(placeholder.w)}px` +
-                            (placeholder.focused === true ? ` − ${String(N27_RING * 2)}px focus ring (§N27) = ${String(expectedPageW)}px` : '')
+                        `page ${String(metrics?.iw)}px vs hole ${String(placeholder.w)}px − ` +
+                            `${String(N27_RING * 2)}px focus-ring gutter (§N27, reserved always) = ${String(expectedPageW)}px`
                     );
                     recorder.check(
                         'the page is laid out at the pane\'s height',
                         Math.abs((metrics?.ih ?? 0) - expectedPageH) <= 2,
-                        `page ${String(metrics?.ih)}px vs hole ${String(placeholder.h)}px` +
-                            (placeholder.focused === true ? ` − ${String(N27_RING)}px focus ring (§N27) = ${String(expectedPageH)}px` : '')
+                        `page ${String(metrics?.ih)}px vs hole ${String(placeholder.h)}px − ` +
+                            `${String(N27_RING)}px focus-ring gutter (§N27, reserved always) = ${String(expectedPageH)}px`
                     );
                     recorder.check(
                         'the page renders at the window\'s device pixel ratio',
@@ -6875,15 +6882,19 @@ function buildFlows(ctx) {
                 /*
                  * §N27 — where the native view SHOULD sit for a given hole.
                  *
-                 * A focused pane's page hole is reported inset by the focus-ring width on left,
-                 * right and bottom, so the ring is not painted underneath the native view. The
-                 * DOM hole element does not move (that is what keeps the client from reflowing),
-                 * so "same bounds" has to be computed from the hole AND the pane's focus state
-                 * rather than read off the hole alone.
+                 * The page hole is reported inset by the focus-ring width on left, right and
+                 * bottom, so the ring is not painted underneath the native view. The DOM hole
+                 * element does not move (that is what keeps the client from reflowing), so
+                 * "same bounds" is computed from the hole rather than read straight off it.
+                 *
+                 * §N27a — and it is computed from the hole ALONE. This used to be
+                 * `hole.focused === true ? { x: hole.x + RING … } : { x: hole.x … }`, encoding
+                 * the focus-dependent inset that turned every focus change into a 4×2 px resize
+                 * of a live view. One hole now has exactly one placement, and a park/restore
+                 * that spans a focus change can no longer be handed back at different bounds.
                  */
                 const RING = 2;
-                const expectedPlacement = (hole) =>
-                    hole.focused === true ? { x: hole.x + RING, y: hole.y } : { x: hole.x, y: hole.y };
+                const expectedPlacement = (hole) => ({ x: hole.x + RING, y: hole.y });
                 const embedOf = (paneID) => {
                     const lines = (runtime.shell?.lines ?? []).filter((line) =>
                         line.includes(`web pane ${String(paneID)} view `)
@@ -6926,8 +6937,9 @@ function buildFlows(ctx) {
                  * hole reaches that wrapper's left, right and bottom edges — so on a focused LIVE
                  * web pane the ring's lower three sides used to sit inside the box the native
                  * view occupies, leaving only the strip beside the header visible. The fix insets
-                 * the REPORTED hole by the ring width on those three edges when the pane is
-                 * focused; the DOM hole does not move, so nothing in this document reflows.
+                 * the REPORTED hole by the ring width on those three edges — §N27a: ALWAYS, not
+                 * only while focused, so a focus change moves no geometry; the DOM hole does not
+                 * move either, so nothing in this document reflows.
                  * These numbers were recorded here while N27 was open; they are asserted now.
                  */
                 const ringVsHole = await page.eval(
@@ -6950,25 +6962,196 @@ function buildFlows(ctx) {
                  * The assertion the note above could not make: compare the ring to where the
                  * NATIVE VIEW actually is. The DOM hole is the wrong yardstick — it deliberately
                  * stays flush — so the shell's own placement line is the only honest source.
+                 *
+                 * A function rather than a one-off block, because §N27a below re-runs it after
+                 * each focus change: the ring has to paint on all four sides of whichever pane
+                 * currently wears it, not merely of the one that happened to be focused first.
                  */
-                if (ringVsHole !== 'no focused pane' && ringVsHole?.hole != null) {
+                const ringGeometry = async () =>
+                    page.eval(
+                        `(() => {
+                            const ring = document.querySelector('[data-testid="focus-ring"]');
+                            if (ring === null) return null;
+                            const r = ring.getBoundingClientRect();
+                            return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+                        })()`
+                    );
+                /*
+                 * Verification hardening: the two "cannot answer" paths record a FAILED check
+                 * rather than a note. A silent `return` would let a regression pay for itself in
+                 * assertion COUNT instead of in red — exactly the shape the census discipline
+                 * exists to catch — and it costs nothing when green, because each call still
+                 * contributes exactly one check either way.
+                 */
+                const checkRingClearsView = async (label) => {
+                    const ring = await ringGeometry();
                     const focusedHole = (await holes()).find((entry) => entry.focused === true) ?? null;
-                    const placement = focusedHole === null ? '(no focused web pane)' : embedOf(focusedHole.id);
-                    const bounds = /bounds=(-?\d+),(-?\d+) (\d+)×(\d+)/.exec(placement);
-                    const ring = ringVsHole.ring;
-                    if (bounds !== null && focusedHole !== null) {
-                        const v = { x: Number(bounds[1]), y: Number(bounds[2]), w: Number(bounds[3]), h: Number(bounds[4]) };
-                        recorder.note(`§N27 focused web pane: ring=${JSON.stringify(ring)} native view=${JSON.stringify(v)}`);
+                    if (ring === null || focusedHole === null) {
                         recorder.check(
-                            '§N27: a focused web pane’s native view clears the focus ring on all four sides',
-                            v.x >= ring.x + RING &&
-                                v.x + v.w <= ring.x + ring.w - RING &&
-                                v.y + v.h <= ring.y + ring.h - RING &&
-                                v.y >= ring.y + RING,
-                            `view=${JSON.stringify(v)} ring=${JSON.stringify(ring)}`
+                            `§N27 (${label}): a focused web pane’s native view clears the focus ring on all four sides`,
+                            false,
+                            `no ring/focused web pane to check (ring=${JSON.stringify(ring)})`
+                        );
+                        return;
+                    }
+                    const bounds = /bounds=(-?\d+),(-?\d+) (\d+)×(\d+)/.exec(embedOf(focusedHole.id));
+                    if (bounds === null) {
+                        recorder.check(
+                            `§N27 (${label}): a focused web pane’s native view clears the focus ring on all four sides`,
+                            false,
+                            `no placement line for ${focusedHole.id.slice(0, 8)}`
+                        );
+                        return;
+                    }
+                    const v = { x: Number(bounds[1]), y: Number(bounds[2]), w: Number(bounds[3]), h: Number(bounds[4]) };
+                    recorder.note(`§N27 ${label}: ring=${JSON.stringify(ring)} native view=${JSON.stringify(v)}`);
+                    recorder.check(
+                        `§N27 (${label}): a focused web pane’s native view clears the focus ring on all four sides`,
+                        v.x >= ring.x + RING &&
+                            v.x + v.w <= ring.x + ring.w - RING &&
+                            v.y + v.h <= ring.y + ring.h - RING &&
+                            v.y >= ring.y + RING,
+                        `view=${JSON.stringify(v)} ring=${JSON.stringify(ring)}`
+                    );
+                };
+                if (ringVsHole !== 'no focused pane' && ringVsHole?.hole != null) {
+                    await checkRingClearsView('as opened');
+                }
+
+                /*
+                 * ── §N27a — A FOCUS CHANGE MOVES NO GEOMETRY ────────────────────────────────
+                 *
+                 * The owner's regression, made into an assertion. N27's first cut insetted the
+                 * hole only WHILE FOCUSED, so clicking a web pane's header resized its live
+                 * native view by 4 px wide and 2 px tall and the page visibly shrank and
+                 * reflowed under the click. The ring gutter is reserved permanently now, so the
+                 * focus state decides only what is PAINTED in it.
+                 *
+                 * Asserted from both ends, and byte-identically rather than within a tolerance:
+                 * the client's own reported hole (what it asks for) and the SHELL's `bounds=`
+                 * string (what it did). A third assertion is stronger still — the shell must not
+                 * even LOG a new placement, because an unchanged report is dropped upstream, so
+                 * the count of `owner=main` lines cannot move either.
+                 */
+                const geometrySnapshot = async (label) => {
+                    const list = await holes();
+                    const rows = list.map((hole) => ({
+                        id: hole.id,
+                        focused: hole.focused,
+                        hole: `${String(hole.x)},${String(hole.y)} ${String(hole.w)}×${String(hole.h)}`,
+                        // The shell's own account, verbatim. Identical strings = the view never moved.
+                        placement: (/bounds=(-?\d+,-?\d+ \d+×\d+)/.exec(embedOf(hole.id)) ?? [])[1] ?? '(none)',
+                        placements: (runtime.shell?.lines ?? []).filter((line) =>
+                            line.includes(`web pane ${hole.id} view owner=main`)
+                        ).length
+                    }));
+                    recorder.note(`§N27a ${label}: ${JSON.stringify(rows)}`);
+                    return rows;
+                };
+
+                /*
+                 * The owner's exact gesture: a click on the pane HEADER, not in the page.
+                 *
+                 * `left`/`right` are the two panes in the order they were OPENED, which is not
+                 * their order on screen — hence "pane A"/"pane B" in the labels and the shot
+                 * names, so nobody reads a screen position into a frame that does not show one.
+                 *
+                 * FOUR flips, not one. A single A→B change proves the two states agree; it does
+                 * not prove the rect is STABLE, and a 2 px drift that accumulates per flip is a
+                 * real shape for this defect to come back in (the ring gutter is applied to a
+                 * measured rect, and a measurement fed back into the layout would creep). Every
+                 * snapshot below is therefore compared against the FIRST one, not against its
+                 * predecessor, so drift cannot hide by being small each time.
+                 */
+                const focusOrder = [
+                    { pane: left, label: 'ring on pane A', shot: 'n27a-focus-a' },
+                    { pane: right, label: 'ring on pane B', shot: 'n27a-focus-b' },
+                    { pane: left, label: 'ring back on pane A', shot: 'n27a-focus-a2' },
+                    { pane: right, label: 'ring back on pane B', shot: 'n27a-focus-b2' }
+                ];
+                const flips = [];
+                for (const flip of focusOrder) {
+                    await clickPaneHeader(page, flip.pane);
+                    await sleep(1000);
+                    const rows = await geometrySnapshot(flip.label);
+                    await recorder.shot(page, flip.shot);
+                    await checkRingClearsView(flip.label);
+                    flips.push({ label: flip.label, rows });
+                }
+
+                /*
+                 * Vacuity guard: if the clicks moved no ring, everything below is trivially true.
+                 * "No focused pane at all" must NOT satisfy it — the original `?? 'a'` / `?? 'b'`
+                 * placeholders made `(none) → (none)` pass, which is precisely the state in which
+                 * the byte-identity assertions mean nothing. The ring has to have been on a real
+                 * pane at every step, and to have alternated at every one of the four flips.
+                 */
+                const wearer = (rows) => rows.find((row) => row.focused)?.id ?? null;
+                const wearers = flips.map((flip) => wearer(flip.rows));
+                recorder.check(
+                    '§N27a: all four header clicks actually moved the focus ring between the two panes',
+                    wearers.every((id) => id !== null) &&
+                        wearers.every((id, index) => index === 0 || id !== wearers[index - 1]),
+                    wearers.map((id) => String(id ?? '(none)').slice(0, 8)).join(' → ')
+                );
+
+                const first = flips[0];
+                for (const flip of flips.slice(1)) {
+                    for (const before of first.rows) {
+                        const after = flip.rows.find((row) => row.id === before.id);
+                        const tag = `${before.id.slice(0, 8)} @ ${flip.label}`;
+                        if (after === undefined) {
+                            recorder.check(`§N27a: ${tag} survived the focus change`, false, 'pane vanished');
+                            continue;
+                        }
+                        recorder.check(
+                            `§N27a: ${tag} — reported hole byte-identical to the first flip`,
+                            after.hole === before.hole,
+                            `${before.hole} (focused=${String(before.focused)}) → ${after.hole} (focused=${String(after.focused)})`
+                        );
+                        recorder.check(
+                            `§N27a: ${tag} — NATIVE VIEW bounds byte-identical to the first flip`,
+                            after.placement === before.placement && after.placement !== '(none)',
+                            `${before.placement} → ${after.placement}`
+                        );
+                        recorder.check(
+                            `§N27a: ${tag} — the shell was never asked to re-place it for a focus change`,
+                            after.placements === before.placements,
+                            `${String(before.placements)} → ${String(after.placements)} owner=main placements`
                         );
                     }
                 }
+
+                /*
+                 * …and what the reserved gutter shows when the ring is NOT in it: the page hole's
+                 * own fill, which is the very colour the pane chrome above it wears. That is what
+                 * makes a permanent 2 px gutter read as an ordinary margin rather than as a
+                 * mysterious dark strip — and it is checkable, because nothing native covers it.
+                 */
+                const gutterFill = await page.eval(
+                    `(() => [...document.querySelectorAll('[data-testid^="web-page-"]')].map((el) => {
+                        const id = el.getAttribute('data-testid').slice('web-page-'.length);
+                        const root = document.querySelector('[data-testid="web-pane-' + id + '"]');
+                        return { id: id.slice(0, 8),
+                                 hole: getComputedStyle(el).backgroundColor,
+                                 pane: root === null ? '(no pane root)' : getComputedStyle(root).backgroundColor };
+                    }))()`
+                );
+                recorder.note(`§N27a gutter fill: ${JSON.stringify(gutterFill)}`);
+                recorder.check(
+                    '§N27a: the reserved gutter is painted in the PANE background, so it reads as a margin',
+                    Array.isArray(gutterFill) &&
+                        gutterFill.length > 0 &&
+                        gutterFill.every((row) => row.hole === row.pane && row.hole !== 'rgba(0, 0, 0, 0)'),
+                    JSON.stringify(gutterFill)
+                );
+                recorder.eyes(
+                    'compare the four "n27a-focus-*" frames (a → b → a2 → b2, the ring flipping between the two ' +
+                        'panes four times) — both pages must be PIXEL-IDENTICAL in every one of them (nothing ' +
+                        'shrinks, nothing reflows, and nothing creeps across repeated flips); the only difference ' +
+                        'is which pane wears the blue ring, and the unfocused pane’s reserved 2 px gutter must ' +
+                        'read as an ordinary margin in the pane background rather than a visible seam'
+                );
 
                 /**
                  * One matrix row: open the surface, prove every page it covers is parked (and
@@ -7025,14 +7208,15 @@ function buildFlows(ctx) {
                     );
                     for (const hole of after) {
                         const line = embedOf(hole.id);
-                        // Compared against where the view BELONGS now (§N27: a focused pane's
-                        // view is inset by the ring width), not against a pre-park number that a
-                        // focus change during the interaction would legitimately invalidate.
+                        // Compared against where the view BELONGS (§N27: inset by the ring width
+                        // on left/right/bottom). §N27a made that a property of the HOLE alone, so
+                        // a focus change during the interaction can no longer change the answer —
+                        // which is why this is also a valid restore-to-the-SAME-bounds check.
                         const want = expectedPlacement(hole);
                         recorder.check(
                             `${name.label}: ${hole.id.slice(0, 8)}'s view is back in the window at the right bounds`,
                             line.includes('owner=main') && line.includes(`${String(want.x)},${String(want.y)}`),
-                            `${line} · want ${String(want.x)},${String(want.y)}${hole.focused === true ? ' (focused, ring-inset)' : ''}`
+                            `${line} · want ${String(want.x)},${String(want.y)} (ring-inset, focused=${String(hole.focused)})`
                         );
                     }
                 };

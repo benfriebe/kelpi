@@ -148,7 +148,7 @@ function measureElement(element: HTMLElement): GeometryRect {
 }
 
 /**
- * §N27 — make room for the focus ring on the three edges the page hole shares with it.
+ * §N27 — reserve the focus ring's gutter on the three edges the page hole shares with it.
  *
  * `FocusRing` is `absolute inset-0` on the pane WRAPPER: a 2 px inner border around the whole
  * pane, header included (shell-ui.md §4.1). A web pane's page hole reaches that wrapper's left,
@@ -160,21 +160,24 @@ function measureElement(element: HTMLElement): GeometryRect {
  * hole has to shrink. This is the `BatchPanel` shape one step smaller — that panel already
  * shrinks the hole by being a sibling row rather than an overlay, for exactly this reason.
  *
- * Only the FOCUSED pane insets, so an unfocused pane's page stays flush to its edges and the
- * cost is paid only where the ring is actually drawn. The top is left alone because the header
- * already holds it clear.
+ * **The inset is UNCONDITIONAL — the same rect focused or not (§N27a).** The first cut insetted
+ * only while focused, which made every focus change a 4×2 px RESIZE of a live native view: the
+ * owner clicks a web pane's header and watches the page visibly shrink and reflow. A resize is a
+ * far louder defect than a 2 px margin, so the gutter is now reserved permanently: the ring
+ * paints into it when the pane is focused, and the page hole's own `windowBackground` — the very
+ * fill the pane chrome above it wears — paints there when it is not, reading as an ordinary
+ * margin. **Focus therefore changes only what is PAINTED in the gutter, never any geometry.**
  *
- * Measured cost: the view resizes by 2·`ring` wide and `ring` tall on a focus change. The page's
- * own layout viewport is unaffected in the ordinary case — Chromium keeps `window.innerWidth`
- * at the pinned automation viewport — so there is no visible reflow; the live probe asserts the
- * delta is bounded by the ring width rather than assuming it.
+ * The top is left alone because the header already holds it clear; moving `y` down would open a
+ * band of pane background between the chrome and the page.
+ *
+ * **Stated divergence from Swift.** `WebPaneView`'s WKWebView is an AppKit subview in the same
+ * window, so SwiftUI's border composites *over* it and the shipped app reserves nothing. A
+ * DOM-under-native port has no such move — this 2 px gutter is the price of the architecture,
+ * and paying it constantly is strictly cheaper than paying it on every focus change.
  */
-export function insetHoleForFocusRing(
-    rect: GeometryRect,
-    focused: boolean,
-    ring: number = FOCUS_RING_WIDTH
-): GeometryRect {
-    if (!focused || ring <= 0) return rect;
+export function insetHoleForFocusRing(rect: GeometryRect, ring: number = FOCUS_RING_WIDTH): GeometryRect {
+    if (ring <= 0) return rect;
     // A hole too small to give up the strips keeps them: a zero- or negative-sized view would
     // be a worse defect than a clipped ring, and panes this small do not exist in practice.
     const horizontal = rect.w > ring * 2 ? ring : 0;
@@ -489,12 +492,16 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
             // §N27: the REPORTED rect shrinks for the focus ring; the DOM box does not move.
             // The hole element still fills the pane, so nothing in this document reflows — only
             // the native view is placed 2 px inside on the three edges it shares with the ring.
-            rect: insetHoleForFocusRing(rect, focused),
+            // The inset does NOT read `focused` (§N27a): the gutter is reserved permanently, so
+            // a focus change re-publishes a BYTE-IDENTICAL rect and never resizes the view.
+            rect: insetHoleForFocusRing(rect),
             visible: true,
             devicePixelRatio:
                 dpr ?? (globalThis as { devicePixelRatio?: number }).devicePixelRatio ?? 1
         });
-    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays, focused]);
+        // `focused` is deliberately NOT a dependency (§N27a): nothing in the report depends on
+        // it any more, so a focus change must not even re-identify this callback.
+    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays]);
 
     // Layout effect, and deliberately with no dependency list: the grid re-renders a pane
     // whenever anything about the layout moves, so "after every render" IS the change signal.

@@ -64,6 +64,27 @@ function fixedRect(rect: GeometryRect): (element: HTMLElement) => GeometryRect {
 
 const RECT: GeometryRect = { x: 12, y: 40, w: 900, h: 500 };
 
+/**
+ * §N27a — the rect the client REPORTS for a measured hole.
+ *
+ * The page hole permanently reserves the focus ring's gutter on left, right and bottom, so this
+ * is what the shell is told **whether or not the pane is focused**. Focus decides what is
+ * painted in that gutter (the ring, or the pane background); it never moves a pixel of geometry.
+ *
+ * Written out by hand rather than by calling `insetHoleForFocusRing`, so a test that expects a
+ * ringed rect cannot be satisfied by the function agreeing with itself.
+ */
+function withRingGutter(rect: GeometryRect): GeometryRect {
+    return {
+        x: rect.x + FOCUS_RING_WIDTH,
+        y: rect.y,
+        w: rect.w - FOCUS_RING_WIDTH * 2,
+        h: rect.h - FOCUS_RING_WIDTH
+    };
+}
+
+const RINGED = withRingGutter(RECT);
+
 afterEach(() => {
     cleanup();
 });
@@ -309,32 +330,15 @@ describe('geometry reporting', () => {
 
     it('reports the page-area rect on mount', () => {
         const h = mount();
+        // §N27a: the ring gutter is reserved on mount, unfocused — it is not a focus effect.
         expect(h.reports).toEqual([
-            { paneID: PANE, tabID: TAB1, rect: RECT, visible: true, devicePixelRatio: 2 }
+            { paneID: PANE, tabID: TAB1, rect: RINGED, visible: true, devicePixelRatio: 2 }
         ]);
     });
 
     describe('§N27 — the focus ring needs the three edges the hole shares with it', () => {
-        it('insets a FOCUSED pane’s hole on left, right and bottom, never the top', () => {
-            const h = mount({ focused: true });
-            // The header already holds the top clear, so `y` must not move — shifting it down
-            // would put a 2 px band of pane background between the chrome and the page.
-            expect(h.reports.at(-1)?.rect).toEqual({
-                x: RECT.x + FOCUS_RING_WIDTH,
-                y: RECT.y,
-                w: RECT.w - FOCUS_RING_WIDTH * 2,
-                h: RECT.h - FOCUS_RING_WIDTH
-            });
-        });
-
-        it('leaves an UNFOCUSED pane’s hole flush, so the cost is paid only where the ring is', () => {
-            const h = mount({ focused: false });
-            expect(h.reports.at(-1)?.rect).toEqual(RECT);
-        });
-
-        it('re-reports on a focus change, so the ring appears without waiting for a resize', () => {
-            const h = mount({ focused: false });
-            expect(h.reports.at(-1)?.rect).toEqual(RECT);
+        /** Re-render the mounted pane with a different focus state and nothing else changed. */
+        const refocus = (h: ReturnType<typeof mount>, focused: boolean): void => {
             act(() => {
                 h.view.rerender(
                     <WebPane
@@ -344,7 +348,7 @@ describe('geometry reporting', () => {
                         commands={h.commands}
                         embedded={true}
                         visible={true}
-                        focused={true}
+                        focused={focused}
                         measure={fixedRect(RECT)}
                         devicePixelRatio={2}
                         onGeometry={(report) => h.reports.push(report)}
@@ -352,16 +356,62 @@ describe('geometry reporting', () => {
                     />
                 );
             });
-            expect(h.reports.at(-1)?.rect).toEqual({
-                x: RECT.x + FOCUS_RING_WIDTH,
-                y: RECT.y,
-                w: RECT.w - FOCUS_RING_WIDTH * 2,
-                h: RECT.h - FOCUS_RING_WIDTH
-            });
+        };
+
+        it('insets a FOCUSED pane’s hole on left, right and bottom, never the top', () => {
+            const h = mount({ focused: true });
+            // The header already holds the top clear, so `y` must not move — shifting it down
+            // would put a 2 px band of pane background between the chrome and the page.
+            expect(h.reports.at(-1)?.rect).toEqual(RINGED);
+        });
+
+        /*
+         * §N27a — the assertion this pair replaces read "leaves an UNFOCUSED pane's hole FLUSH,
+         * so the cost is paid only where the ring is". That arithmetic was the regression: the
+         * two rects differed, so every focus change resized a live native view by 4×2 px and the
+         * page visibly reflowed under the owner's click. The gutter is reserved permanently now,
+         * and the unfocused rect is the focused one.
+         */
+        it('insets an UNFOCUSED pane’s hole by exactly the same amount — the gutter is constant', () => {
+            const h = mount({ focused: false });
+            expect(h.reports.at(-1)?.rect).toEqual(RINGED);
+        });
+
+        it('reports a BYTE-IDENTICAL rect across a focus change — zero geometry moves (§N27a)', () => {
+            const h = mount({ focused: false });
+            const unfocused = h.reports.at(-1)?.rect;
+            refocus(h, true);
+            const focused = h.reports.at(-1)?.rect;
+            refocus(h, false);
+            const unfocusedAgain = h.reports.at(-1)?.rect;
+
+            // Field by field, not merely "equal": this is the regression's own shape.
+            expect(focused).toEqual(unfocused);
+            expect(unfocusedAgain).toEqual(unfocused);
+            expect(new Set(h.reports.map((report) => JSON.stringify(report.rect))).size).toBe(1);
+            // …and the one rect they all share is the ringed one, so the ring still has its gutter.
+            expect(unfocused).toEqual(RINGED);
+        });
+
+        it('never asks the shell to move the view on focus alone (no report differs)', () => {
+            const h = mount({ focused: false });
+            const before = h.reports.length;
+            const last = h.reports.at(-1);
+            refocus(h, true);
+            /*
+             * Re-publishing is fine and expected — the layout effect has no dep list, and the
+             * host drops identical reports. Publishing a DIFFERENT report is the defect, so the
+             * comparison is the whole object (tab, visibility and dpr as well as the rect): what
+             * the shell acts on is the report, not the rect alone.
+             */
+            expect(h.reports.length).toBeGreaterThan(before);
+            for (const report of h.reports.slice(before)) {
+                expect(report).toEqual(last);
+            }
         });
 
         it('shrinks the hole by exactly the ring width — the ring is 2 px of a 2 px strip', () => {
-            const ringed = insetHoleForFocusRing(RECT, true);
+            const ringed = insetHoleForFocusRing(RECT);
             // Left/right/bottom each give up exactly `FOCUS_RING_WIDTH`; nothing else moves.
             expect(ringed.x - RECT.x).toBe(FOCUS_RING_WIDTH);
             expect(RECT.x + RECT.w - (ringed.x + ringed.w)).toBe(FOCUS_RING_WIDTH);
@@ -372,14 +422,33 @@ describe('geometry reporting', () => {
         it('refuses to inset a hole too small to give the strips up', () => {
             // A zero- or negative-sized native view is a worse defect than a clipped ring.
             const tiny: GeometryRect = { x: 0, y: 0, w: FOCUS_RING_WIDTH * 2, h: FOCUS_RING_WIDTH };
-            expect(insetHoleForFocusRing(tiny, true)).toEqual(tiny);
+            expect(insetHoleForFocusRing(tiny)).toEqual(tiny);
             const thin: GeometryRect = { x: 0, y: 0, w: 3, h: 100 };
-            expect(insetHoleForFocusRing(thin, true).w).toBe(3);
+            expect(insetHoleForFocusRing(thin).w).toBe(3);
         });
 
-        it('is the identity when the pane is not focused, whatever the rect', () => {
-            expect(insetHoleForFocusRing(RECT, false)).toBe(RECT);
-            expect(insetHoleForFocusRing(RECT, true, 0)).toBe(RECT);
+        /*
+         * The gutter composes with the surfaces that already shrink the hole — the batch pickup
+         * panel and the find bar are SIBLING ROWS, not overlays (that is the whole reason
+         * `BatchPanel` is a row), so they change the measured hole and the single inset is
+         * applied downstream of the measurement. There is nothing focus-dependent left for them
+         * to interact with; a shorter hole simply gets the same constant gutter.
+         */
+        it('applies the same gutter to a hole a sibling row has already shrunk', () => {
+            const withPanel: GeometryRect = { x: RECT.x, y: RECT.y, w: RECT.w, h: RECT.h - 120 };
+            expect(insetHoleForFocusRing(withPanel)).toEqual(withRingGutter(withPanel));
+        });
+
+        /*
+         * §N27a — was "is the identity when the pane is not focused, whatever the rect". There is
+         * no focus argument left to be the identity for: the only identity is a zero-width ring.
+         */
+        it('is the identity only for a zero-width ring — never for a focus state', () => {
+            expect(insetHoleForFocusRing(RECT, 0)).toBe(RECT);
+            expect(insetHoleForFocusRing(RECT, -1)).toBe(RECT);
+            // The function cannot see focus at all, which is what makes the constancy structural
+            // rather than a convention two call sites have to keep.
+            expect(insetHoleForFocusRing.length).toBe(1);
         });
     });
 
@@ -402,7 +471,7 @@ describe('geometry reporting', () => {
                 />
             );
         });
-        expect(h.reports.at(-1)?.rect).toEqual(moved);
+        expect(h.reports.at(-1)?.rect).toEqual(withRingGutter(moved));
     });
 
     it('reports the active tab so a switch re-targets the view', () => {
@@ -497,13 +566,33 @@ describe('geometry reporting', () => {
             expect(hiddenOnce(h.hidden)).toEqual([PANE]);
             close(overlay);
             expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
+            // §N27a: the restored rect carries the ring gutter, and it is the SAME rect the pane
+            // was parked from — a park/restore round-trip cannot be where the constancy is lost.
             expect(h.reports.at(-1)).toEqual({
                 paneID: PANE,
                 tabID: TAB1,
-                rect: RECT,
+                rect: RINGED,
                 visible: true,
                 devicePixelRatio: 2
             });
+            expect(h.reports.at(-1)?.rect).toEqual(h.reports[0]?.rect);
+        });
+
+        /**
+         * §N26 × §N27a — park a FOCUSED pane, restore it, and the bounds must be the ones it had
+         * before. The previous rule made this the sharpest trap in the codebase: the restore had
+         * to recompute the placement from the pane's focus state, so a focus change while the
+         * surface was up silently invalidated the pre-park number. With a constant gutter the
+         * question disappears — there is only ever one rect for a given hole.
+         */
+        it('round-trips a FOCUSED pane through park/restore at the identical rect', () => {
+            const h = mount({ focused: true });
+            const parked = h.reports.at(-1)?.rect;
+            const overlay = open({ x: 100, y: 100, w: 200, h: 200 });
+            expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+            close(overlay);
+            expect(h.reports.at(-1)?.rect).toEqual(parked);
+            expect(h.reports.at(-1)?.rect).toEqual(RINGED);
         });
 
         it('a surface BESIDE the pane leaves it placed — the whole point of the rect', () => {

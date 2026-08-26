@@ -977,6 +977,12 @@ class AdapterRenderer implements TerminalRenderer {
          *
          * Cheap and idempotent (one walk of the cell buffer), and a theme only changes when a
          * config file does.
+         *
+         * §N18: until `ghostty-web 0.4.0-nex.7` this walk repainted the OLD background anyway —
+         * a cell reports the colours its WASM terminal was CONSTRUCTED with, and the engine
+         * painted them literally, so the theme reached everything except the cells. The engine
+         * now resolves a DEFAULT cell through its live theme at paint time, and this repaint is
+         * what makes that resolution reach the rows nothing has written to since.
          */
         this.repaint();
     }
@@ -1334,17 +1340,21 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             const renderer = terminal.renderer;
             renderer?.setTheme(compactTheme(theme));
             /*
-             * …then CLEAR the canvas to the new background (§APP-014).
+             * …then CLEAR the canvas to the new background (§APP-014), which is the MARGIN's
+             * half of the repaint.
              *
-             * The forced render that follows (`repaint`) walks the VT's rows and fills each
-             * one — but only the rows the buffer actually has. On a screen with two lines of
-             * output that is two rows of new background over ~50 rows of the OLD one, which
-             * the audit photographed: `--nex-term-bg` and the pane container had followed the
-             * theme while the canvas underneath them was still `10,10,12`.
+             * The forced render that follows (`repaint`) walks the VT's rows and paints each
+             * one, so the cell area is covered by that — but a canvas is `cols × rows` cells
+             * plus whatever is left over at the right and bottom, and nothing in `render()`
+             * touches the leftover. `clear()` is the engine's own one-line "fill the whole
+             * canvas with `theme.background`" (a CLEAR under `allowTransparency`, §N17), so it
+             * costs one rect and cannot disagree with the palette the line above just set.
              *
-             * `clear()` is the engine's own one-line "fill the whole canvas with
-             * `theme.background`", so it costs one `fillRect` and cannot disagree with the
-             * palette the line above just set.
+             * The CELL area used to need it too, and it did not help: the cells reported the
+             * colours the WASM terminal was CONSTRUCTED with, so the render behind this clear
+             * filled the old background straight back over it, row by row — §N18, fixed in the
+             * engine (`0.4.0-nex.7`: `setTerminalDefaultColors` + a paint-time lookup), not
+             * here. This call is the margin's, and the margin's only.
              */
             renderer?.clear();
         },

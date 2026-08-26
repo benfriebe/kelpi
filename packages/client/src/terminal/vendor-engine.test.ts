@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.6';
+const EXPECTED_VERSION = '0.4.0-nex.7';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -93,6 +93,36 @@ const PAINT_SUSPEND_MARKERS = ['setPaintSuspended', 'isPaintSuspended', 'this.pa
  * pattern rather than a literal.
  */
 const PAINT_SUSPEND_GUARD = /render\([^)]*\)\s*\{\s*(?:var\s+\w+;\s*)?if\s*\(this\.paintSuspended\)\s*return;/;
+
+/**
+ * Markers of `-nex.7`'s live default colours (§N18).
+ *
+ * The fifth adaptation, and the one that only shows itself the moment a user changes
+ * `theme = …` with the app running: `ghostty_terminal_new_with_config` takes `bg_color` /
+ * `fg_color` ONCE and there is no export that moves them, so every cell the VT has not coloured
+ * explicitly reports the colours the terminal was BORN with for the rest of its life. Paint
+ * those literally and a live theme change repaints the CSS around the canvas, the margins and
+ * the cursor while the cell area keeps the previous theme — and under `background-opacity < 1`
+ * the stale fill is opaque, so a translucent pane goes solid until relaunch (measured at 359 497
+ * px of the old background). `setTerminalDefaultColors` is how the terminal tells the renderer
+ * which two colours mean "default", and `liveThemeColor` is the paint-time lookup that answers
+ * them from the LIVE theme. Take a future npm release wholesale and the call lands on nothing.
+ */
+const LIVE_THEME_MARKERS = [
+    'setTerminalDefaultColors',
+    'liveThemeColor',
+    'isTerminalDefaultBackground',
+    'isTerminalDefaultForeground'
+];
+
+/**
+ * …and the lookup has to be IN the two paint sites, not merely defined.
+ *
+ * A default-colour table nothing consults is the failure mode a `toContain` cannot see: both
+ * `fillStyle` assignments — the cell background (pass 1) and the glyph (pass 2) — must go
+ * through it before falling back to the cell's own components.
+ */
+const LIVE_THEME_PAINT_SITES = /fillStyle\s*=\s*this\.liveThemeColor\([^)]*\)\s*\?\?\s*this\.rgbToCSS\(/g;
 
 /**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
@@ -174,6 +204,18 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).toMatch(PAINT_SUSPEND_GUARD);
     });
 
+    it('ships a bundle whose default cell colours follow a LIVE theme (§N18)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of LIVE_THEME_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        // Both paint sites, or the fix is half a fix: the cell background AND the glyph.
+        expect(bundle.match(LIVE_THEME_PAINT_SITES) ?? []).toHaveLength(2);
+        // …and the terminal has to declare the colours, beside the `createTerminal` that used
+        // them — a renderer with nothing declared falls back to upstream's `(0,0,0)` rule.
+        expect(bundle).toMatch(/setTerminalDefaultColors\(\s*[A-Za-z_$]/);
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -205,5 +247,12 @@ describe('vendored ghostty-web engine', () => {
         expect(terminalSource).toContain('if (!this.paintSuspended) {');
         expect(rendererSource).toContain('if (this.paintSuspended) return;');
         expect(rendererSource).toContain('this.paintSuspended && this.canvas.width > 0');
+        // §N18's half, in the two files that carry it: the Terminal declares the colours the
+        // WASM terminal was built with, and the renderer resolves a default cell through the
+        // live theme at paint time (in the default-background test AND in both fills).
+        expect(terminalSource).toContain('this.renderer.setTerminalDefaultColors(');
+        expect(rendererSource).toContain('setTerminalDefaultColors(background: number | null');
+        expect(rendererSource).toContain('if (this.isTerminalDefaultBackground(r, g, b)) return true;');
+        expect(rendererSource.match(/this\.liveThemeColor\(\w+_r, \w+_g, \w+_b\) \?\?/g) ?? []).toHaveLength(2);
     });
 });

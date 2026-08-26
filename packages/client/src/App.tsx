@@ -2687,6 +2687,60 @@ function Shell(props: AppProps): ReactElement {
      */
     const sidebarEscapeRef = useRef<(() => boolean) | null>(null);
 
+    /**
+     * N14's named residual — ⌘W while a modal overlay owns the keyboard.
+     *
+     * Before this, step 1 declined the chord, `__nexShellClosePane()` answered `false`, and the
+     * shell's Close row did the only other thing it knows: it closed the WINDOW. The Swift is no
+     * help as a spec — its monitor stands down for the palette too (`NexCommands.swift:200-203`)
+     * and `CommandPaletteView.swift:92-105` binds only ↑ / ↓ / Escape, so what happens there is
+     * whatever SwiftUI's default File ▸ Close does, which nothing chose. The port states the
+     * decision instead: **⌘W closes the topmost closeable overlay, and never the window.**
+     *
+     * The overlays are mutually exclusive in practice (this same guard is what stops one being
+     * opened over another), so the order below is a tie-break rather than a z-order. Each closes
+     * exactly the way its own dismiss does, focus handoff included — a window left with the caret
+     * on an element that no longer exists types nowhere (the reason `closeSettings` and the Help
+     * overlay hand off, §10.4).
+     *
+     * **Two are deliberately consumed-but-not-closed**, and returning `true` for them is the
+     * point: the chord is answered, so the shell's window fallback never runs.
+     *
+     *   - **Settings**, because its key recorder must be able to record ⌘W. `KeybindingsTab`
+     *     arms a capture listener on `window` while a row is recording *precisely* because the
+     *     overlay gates the dispatcher, and closing the overlay out from under it would fight
+     *     the one gesture the surface exists for. (Our `stopPropagation` does not silence that
+     *     listener — same node, registered later — so recording keeps working unchanged.)
+     *     Escape and the close button are still its dismiss; ⌘W is a no-op there.
+     *   - **The sidebar's create sheet**, because this assembly cannot close it (the sidebar
+     *     owns that state; `onCreateSheetOpenChange` only reports it up) — and a swallowed ⌘W is
+     *     what AppKit does under a sheet anyway, where File ▸ Close is disabled.
+     */
+    const closeModalOverlay = useCallback((): boolean => {
+        const handOff = (): void => {
+            const paneID = selectFocusedPaneID(store.getState());
+            if (paneID !== null) focusPaneSurface(paneID);
+        };
+        // Consumed, not closed — see the two cases in the header.
+        if (createSheetOpenRef.current || settingsOpenRef.current) return true;
+        if (store.getState().ui.palette.open) {
+            store.getState().setPaletteOpen(false);
+            handOff();
+        } else if (helpOpenRef.current) {
+            setHelpOpen(false);
+            handOff();
+        } else {
+            return false; // no overlay after all (a state change raced the keystroke)
+        }
+        /*
+         * The same mark a keyboard `close_pane` leaves. If the native accelerator fires anyway
+         * after this preventDefault — a Chromium/AppKit redispatch detail that is not observable
+         * from in here — the menu-routed request that follows must not then take a PANE as well.
+         */
+        shellClose.noteKeyboardClose();
+        return true;
+    }, [store, shellClose]);
+
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
     // store only mints a new settings object on a REAL change — so a `settings-changed` that
@@ -2705,6 +2759,8 @@ function Shell(props: AppProps): ReactElement {
                 settingsOpenRef.current ||
                 helpOpenRef.current ||
                 createSheetOpenRef.current,
+            // N14's residual: the one chord that guard does NOT hand to the overlay's text field.
+            onCloseChordWhileModal: closeModalOverlay,
             hasActiveWorkspace: () => selectActiveWorkspace(store.getState()) !== null,
             // §7.2 step 2 (SET-186 / APP-109). Returning false leaves Escape to the normal
             // lookup, which is `close_search` by default.
@@ -2728,7 +2784,7 @@ function Shell(props: AppProps): ReactElement {
             webPanePriority: (trigger, event) => webPriorityRef.current(trigger, event)
         });
         return installKeyDispatcher(window, dispatcher);
-    }, [store, keybindLines]);
+    }, [store, keybindLines, closeModalOverlay]);
 
     /**
      * ⌘, opens Settings — the platform convention, and NOT a `NexAction`: the Swift app reaches

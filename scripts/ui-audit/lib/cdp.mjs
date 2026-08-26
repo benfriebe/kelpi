@@ -38,13 +38,32 @@ function loadWebSocket(repoRoot) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Poll `http://127.0.0.1:<port>/json` until a page target shows up. */
-export async function waitForPageTarget(port, { timeoutMs = 60_000, match } = {}) {
+/**
+ * Poll `http://127.0.0.1:<port>/json` until a page target shows up.
+ *
+ * `requestTimeoutMs` is not a nicety — without it this function's own `timeoutMs` is
+ * unenforceable, and that is what N22's second half looked like. A booting **packaged** app
+ * answers its DevTools port late and erratically (measured over four launches of one bundle:
+ * 2.8 s, 4.7 s, 47 s, and once not at all): the connection is accepted and the request simply
+ * sits there. `fetch` has no useful default response timeout — undici allows 300 s — so one
+ * such request blocks this loop for five minutes, the deadline below is never reached in time,
+ * and the run eventually dies reporting `fetch failed` long after the app came up. Aborting each
+ * attempt keeps the poll a poll, and hands the server a fresh connection every fifth of a second
+ * instead of one abandoned socket it has already stopped looking at.
+ */
+export async function waitForPageTarget(port, { timeoutMs = 60_000, match, requestTimeoutMs = 3_000 } = {}) {
     const deadline = Date.now() + timeoutMs;
     let lastError = 'no response yet';
     for (;;) {
         try {
-            const response = await fetch(`http://127.0.0.1:${String(port)}/json`);
+            const response = await fetch(`http://127.0.0.1:${String(port)}/json`, {
+                signal: AbortSignal.timeout(requestTimeoutMs),
+                // No keep-alive while we are waiting for a process that is still coming up:
+                // undici would otherwise hand the next attempt the same pooled socket, and if
+                // that one is a connection the DevTools server has stopped servicing, every
+                // later poll inherits its silence. One fresh connection per attempt.
+                headers: { connection: 'close' }
+            });
             if (response.ok) {
                 const targets = await response.json();
                 const pages = targets.filter(

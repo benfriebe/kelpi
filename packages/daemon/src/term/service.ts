@@ -105,6 +105,16 @@ type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof
  * trim xterm's reflow path would have done (`trimStrandedCells`), so the stranded cells never
  * exist and EVERY reader — including the one that cannot be bounded — is correct by
  * construction.
+ *
+ * **READ-4 closed the one column that trim could not reach: the HALF GLYPH.** A cell count is
+ * not a column count. A double-width glyph occupies two cells, and when the new right edge
+ * falls between them, trimming to `cols` cells keeps the glyph's lead cell (still `width: 2`)
+ * and drops the spacer holding its second column — so the line is `cols` cells and `cols + 1`
+ * COLUMNS, and the serializer, which encodes cells, emitted every one of them. One column of
+ * overflow is one wrapped row on the client and every row below it moves down. The trim now
+ * blanks that half glyph (see `trimStrandedCells`), which is the state xterm's own parser
+ * would have produced anyway — it wraps a wide char rather than putting its lead in the last
+ * column, so a lead cell there is a shape the emulator can neither reach nor draw.
  */
 const NO_REFLOW: TerminalReflowPolicy = {
     backend: 'winpty',
@@ -127,6 +137,8 @@ const STOCK_REFLOW: TerminalReflowPolicy = {};
 interface XtermBufferLine {
     readonly length: number;
     resize?: (cols: number, fillCharData: unknown) => void;
+    getWidth?: (index: number) => number;
+    setCell?: (index: number, cell: unknown) => void;
 }
 interface XtermBuffer {
     lines?: { length: number; get: (index: number) => XtermBufferLine | undefined };
@@ -147,9 +159,22 @@ interface XtermCore {
  * therefore unreachable), and afterwards no line is wider than the terminal.
  *
  * Both buffers, because `BufferSet.resize` resizes both and an application can switch to the
- * alternate screen at any time. Reached through `_core`, which is private API: every step is
- * feature-detected and a shape that does not answer leaves the buffer exactly as it was — the
- * pre-N23 behaviour, which is degraded but not broken.
+ * alternate screen at any time. Both walk `buffer.lines`, which for the normal buffer is the
+ * whole `CircularList` — scrollback included, not just the viewport rows — because a line that
+ * scrolled off before the shrink is still in the snapshot the client replays.
+ *
+ * **The half glyph (READ-4).** Cutting a line to `cols` CELLS does not cut it to `cols`
+ * COLUMNS: a double-width glyph straddling the new right edge keeps its lead cell (`width: 2`)
+ * and loses the spacer that carried its second column, leaving a row one column wider than the
+ * grid — which the serializer emits in full and a fresh VT wraps onto the next row, shifting
+ * every row below it. So the trim finishes the job xterm's `BufferLine.resize` leaves half
+ * done and blanks that lead cell. Nothing is lost that could have been shown: xterm's own
+ * parser never puts a wide char's lead in the last column (it wraps instead), so the cell is
+ * undrawable, and like the cells past it, unreachable — no `EL` and no overwrite lands there.
+ *
+ * Reached through `_core`, which is private API: every step is feature-detected and a shape
+ * that does not answer leaves the buffer exactly as it was — the pre-N23 behaviour, which is
+ * degraded but not broken.
  */
 function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
     const core = (term as unknown as { _core?: XtermCore })._core;
@@ -162,8 +187,13 @@ function trimStrandedCells(term: HeadlessTerminal, cols: number): void {
         if (fill === undefined) continue;
         for (let index = 0; index < lines.length; index += 1) {
             const line = lines.get(index);
-            if (line === undefined || line.length <= cols) continue;
-            line.resize?.(cols, fill);
+            if (line === undefined) continue;
+            if (line.length > cols) line.resize?.(cols, fill);
+            // The cut can land inside a wide glyph; its orphaned lead half is one column of
+            // overflow, so blank it. Guarded on the exact width the trim produced, so a line
+            // the resize above could not touch is left exactly as it was.
+            if (line.length !== cols || line.getWidth?.(cols - 1) !== 2) continue;
+            line.setCell?.(cols - 1, fill);
         }
     }
 }

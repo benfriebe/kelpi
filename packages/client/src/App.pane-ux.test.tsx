@@ -492,6 +492,107 @@ describe('the shell’s Close request (N14)', () => {
         expect(h.commands().filter((payload) => payload['command'] === 'pane-close')).toHaveLength(1);
     });
 
+    /**
+     * The residual N14's row named, and the decision that closes it: with the command palette
+     * up, step 1 used to decline ⌘W, the bridge answered `false`, and the shell's Close row took
+     * the WINDOW. ⌘W now closes the palette — the topmost closeable thing — by both routes.
+     */
+    describe('with the command palette open', () => {
+        const openPalette = async (): Promise<void> => {
+            fireEvent.keyDown(window, { code: 'KeyP', key: 'p', metaKey: true });
+            await screen.findByTestId('command-palette');
+        };
+
+        it('⌘W closes the palette and leaves both the panes and the window alone', async () => {
+            const h = setup({ split: true });
+            await openPalette();
+            const before = h.commands().length;
+
+            fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+
+            await waitFor(() => {
+                expect(screen.queryByTestId('command-palette')).toBeNull();
+            });
+            expect(h.commands()).toHaveLength(before);
+        });
+
+        it('answers the shell “handled”, which is what stops the window closing', async () => {
+            const h = setup({ split: true });
+            await openPalette();
+            const before = h.commands().length;
+
+            let handled = false;
+            act(() => {
+                handled = askShellClose();
+            });
+
+            expect(handled).toBe(true);
+            await waitFor(() => {
+                expect(screen.queryByTestId('command-palette')).toBeNull();
+            });
+            expect(h.commands()).toHaveLength(before);
+        });
+
+        it('does not then take a pane when the same ⌘W arrives by the menu route as well', async () => {
+            const h = setup({ split: true });
+            await openPalette();
+            const before = h.commands().length;
+
+            fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+            await waitFor(() => {
+                expect(screen.queryByTestId('command-palette')).toBeNull();
+            });
+
+            let handled = false;
+            act(() => {
+                handled = askShellClose();
+            });
+
+            // Answered from the coalescing mark the overlay close leaves, not by closing a pane.
+            expect(handled).toBe(true);
+            expect(h.commands()).toHaveLength(before);
+        });
+    });
+
+    /**
+     * Settings is the deliberate exception: its key recorder arms a capture listener on `window`
+     * to record chords the map would otherwise eat — ⌘W among them — so the chord is ANSWERED
+     * (the window is safe) but the overlay is not closed out from under it. Escape and the close
+     * button remain its dismiss.
+     */
+    describe('with Settings open', () => {
+        const openSettings = async (): Promise<void> => {
+            fireEvent.keyDown(window, { code: 'Comma', key: ',', metaKey: true });
+            await screen.findByTestId('settings-window');
+        };
+
+        it('answers the shell "handled" but leaves the overlay — the recorder keeps ⌘W', async () => {
+            const h = setup({ split: true });
+            await openSettings();
+            const before = h.commands().length;
+
+            let handled = false;
+            act(() => {
+                handled = askShellClose();
+            });
+
+            expect(handled).toBe(true);
+            expect(screen.queryByTestId('settings-window')).not.toBeNull();
+            expect(h.commands()).toHaveLength(before);
+        });
+
+        it('and the keystroke closes neither the overlay nor a pane', async () => {
+            const h = setup({ split: true });
+            await openSettings();
+            const before = h.commands().length;
+
+            fireEvent.keyDown(window, { code: 'KeyW', key: 'w', metaKey: true });
+
+            expect(screen.queryByTestId('settings-window')).not.toBeNull();
+            expect(h.commands()).toHaveLength(before);
+        });
+    });
+
     it('is the dispatcher’s answer, not a private path: the delete gate still stops it', async () => {
         const h = setup({ agent: true });
         const before = h.commands().length;

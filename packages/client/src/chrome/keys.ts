@@ -155,6 +155,28 @@ export interface KeyDispatcherOptions {
      * letters — the interceptor must not look at the map at all.
      */
     readonly isPaletteOpen?: (() => boolean) | undefined;
+    /**
+     * N14's named residual — the ONE chord the guard above does not hand to the overlay's field.
+     *
+     * The Swift is ambiguous here by omission rather than by design: `PaneShortcutMonitor`
+     * stands down while the palette is up (`NexCommands.swift:200-203`, the same rule as step 1)
+     * and `CommandPaletteView.swift:92-105` binds only ↑ / ↓ / Escape — so nothing in the app
+     * answers ⌘W, and the only consumer left is the File ▸ Close item SwiftUI installs by
+     * default, which closes the WINDOW. Nothing chose that; it is what falls out when two
+     * layers each decline.
+     *
+     * **Stated decision for the port**: while a modal overlay owns the keyboard, ⌘W belongs to
+     * the OVERLAY — it closes the topmost closeable thing and can never reach the window. That
+     * is also what AppKit does with a sheet up (File ▸ Close is disabled), and it is what makes
+     * the shell's `__nexShellClosePane()` answer `true` in this state instead of `false`, which
+     * is the whole reason the window used to go (`app/shell-close.ts`).
+     *
+     * Called only for a chord the binding map resolves to `close_pane`, so a rebind moves it
+     * and a plain letter typed into the palette still reaches the field untouched. Return true
+     * when the overlay dealt with it (the event is then consumed); false falls through to the
+     * unchanged step-1 behaviour.
+     */
+    readonly onCloseChordWhileModal?: (() => boolean) | undefined;
     /** §7.2 step 3: nothing pane-related dispatches without an active workspace. */
     readonly hasActiveWorkspace?: (() => boolean) | undefined;
     /**
@@ -228,8 +250,11 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
     const editable = options.isEditableTarget ?? isEditableTarget;
 
     return (event: KeyEventLike): boolean => {
-        // 1. Palette open: let typing through untouched.
-        if (options.isPaletteOpen?.() === true) return false;
+        // 1. Palette open: let typing through untouched — except for the close chord, which
+        //    belongs to the overlay rather than to the window (N14's residual; see the option).
+        if (options.isPaletteOpen?.() === true) {
+            return closesModalOverlay(options, event) ? consume(event) : false;
+        }
 
         const trigger = triggerFromEvent(event);
 
@@ -267,6 +292,23 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         if (handler({ action, trigger, event }) === false) return false;
         return consume(event);
     };
+}
+
+/**
+ * Step 1's single exception: is this the `close_pane` chord, and did the modal overlay take it?
+ *
+ * The action is resolved through the SAME map a normal dispatch uses rather than against a
+ * hard-coded ⌘W, so a user who rebinds `close_pane` moves this with it — and so that everything
+ * else the palette is being typed into (letters, ⌘A, the caret keys) is untouched.
+ */
+function closesModalOverlay(options: KeyDispatcherOptions, event: KeyEventLike): boolean {
+    const close = options.onCloseChordWhileModal;
+    if (close === undefined) return false;
+    const trigger = triggerFromEvent(event);
+    if (trigger === null) return false;
+    const bindings = resolve(options.bindings ?? DEFAULT_KEYBINDINGS);
+    if (actionForTrigger(bindings, trigger) !== 'close_pane') return false;
+    return close() === true;
 }
 
 function sameTrigger(a: KeyTrigger, b: KeyTrigger): boolean {

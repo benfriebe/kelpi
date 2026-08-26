@@ -5,6 +5,8 @@ import {
     MINIMUM_NODE_MAJOR,
     PACKAGED_APP_FILES,
     STAGED_RESOURCE_NAMES,
+    adhocSignCommands,
+    adhocSignRequired,
     appIconPixels,
     appIconPng,
     buildAppIcns,
@@ -182,5 +184,38 @@ describe('cookieEncryptionFuseEnabled', () => {
         expect(cookieEncryptionFuseEnabled('Developer ID Application: Someone (TEAMID)')).toBe(true);
         expect(isSignedBuild('Developer ID Application: Someone (TEAMID)')).toBe(true);
         expect(isSignedBuild('')).toBe(false);
+    });
+});
+
+describe('the post-package ad-hoc signature (N22)', () => {
+    // Forge's fuses plugin signs at packageAfterCopy; packager renames the app and all four
+    // helper bundles AFTER that, so without this step the shipped bundle's seal is broken and
+    // the app runs under the stale `com.github.Electron` identity — which is what stopped CDP
+    // attaching to the packaged app.
+    it('is required for an ad-hoc macOS build', () => {
+        expect(adhocSignRequired('', 'darwin')).toBe(true);
+        expect(adhocSignRequired(undefined, 'darwin')).toBe(true);
+        expect(adhocSignRequired('   ', 'mas')).toBe(true);
+    });
+
+    it('is skipped when osxSign already signed the finished bundle', () => {
+        expect(adhocSignRequired('Developer ID Application: Someone (TEAMID)', 'darwin')).toBe(false);
+    });
+
+    it('does not run off macOS, where there is nothing to seal', () => {
+        expect(adhocSignRequired('', 'linux')).toBe(false);
+        expect(adhocSignRequired('', 'win32')).toBe(false);
+    });
+
+    it('re-signs the whole bundle ad-hoc and then proves the seal', () => {
+        const commands = adhocSignCommands('/out/Nex.app');
+        expect(commands.map((command) => [...command])).toEqual([
+            // --deep: the four renamed `Nex Helper*.app` bundles are broken too, not just the
+            // outer one. --force: there is a (stale) signature to replace.
+            ['codesign', '--force', '--deep', '--sign', '-', '/out/Nex.app'],
+            // The verify is the point of the exercise — a silent codesign success over a bundle
+            // that still fails --strict would ship the same defect.
+            ['codesign', '--verify', '--strict', '/out/Nex.app']
+        ]);
     });
 });

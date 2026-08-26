@@ -300,10 +300,22 @@ describe('ack-based flow control', () => {
         h.pty.emit(PANE_A, 'cccc');
         expect(h.session.stats(PANE_A)?.resyncPending).toBe(true);
 
-        // The chunk that is still being parsed when the ack arrives: it reaches the emulator
-        // (boot feeds it) and is dropped from this client's queue, so ONLY a flushing snapshot
-        // can put it back on screen.
-        h.term.setSnapshot(PANE_A, 'REBUILT+mid-parse');
+        // What the emulator has PARSED…
+        h.term.setSnapshot(PANE_A, 'REBUILT');
+        // …and the chunk boot fed a moment later, still inside the write chain when the ack
+        // arrives. It was dropped from this client's queue too, so it exists nowhere else: only
+        // a flushing snapshot can put it back on screen.
+        h.term.feedMidParse(PANE_A, '+mid-parse');
+
+        /*
+         * The fixture DISCRIMINATES, and this line is why the assertion below means anything:
+         * the two snapshots differ, so a re-seed that reads the sync one is visibly a different
+         * replay rather than the same bytes by another route. (Both of this pair's assertions
+         * used to hold on the pre-fix source — `snapshot()` and `snapshotAsync()` returned
+         * identical data — which is a net that catches nothing.)
+         */
+        expect(textOf(h.term.service.snapshot(PANE_A).data)).toBe('REBUILT');
+
         ack(h.session, PANE_A, 4);
         await vi.waitFor(() => expect(h.transport.ofType('pty-resync')).toHaveLength(1));
 
@@ -318,17 +330,25 @@ describe('ack-based flow control', () => {
         // The client zeroes its own unacked/pending the instant a replay lands, dropping any ack
         // it had not flushed yet. A daemon that kept charging those bytes would never let this
         // client out of its window again — the same fix the settled-resize path has.
-        const h = harness({ windowBytes: 4, maxQueuedBytes: 4 });
+        //
+        // The window has to be CHARGED at the moment of the re-seed or this measures nothing:
+        // an ack that drains it to zero leaves "the replay's own byte" outstanding whether or
+        // not the path zeroes anything. So the ack below is PARTIAL — it brings the client back
+        // inside its window (which is what starts the re-seed) with five of eight bytes still
+        // charged, the shape §N23 measured.
+        const h = harness({ windowBytes: 8, maxQueuedBytes: 4 });
         await h.session.attach(PANE_A);
-        h.pty.emit(PANE_A, 'aaaa');
-        h.pty.emit(PANE_A, 'bbbb');
-        h.pty.emit(PANE_A, 'cccc');
+        h.pty.emit(PANE_A, 'aaaaaaaa'); // sent, fills the window exactly
+        h.pty.emit(PANE_A, 'bbbb'); // queued (at the bound)
+        h.pty.emit(PANE_A, 'cccc'); // overflows → queue dropped, resync armed
+        expect(h.session.stats(PANE_A)).toMatchObject({ unacked: 8, resyncPending: true });
 
         h.term.setSnapshot(PANE_A, 'S');
-        ack(h.session, PANE_A, 4);
+        ack(h.session, PANE_A, 3); // 8 − 3 = 5 charged, and 5 < 8 → the re-seed starts
         await settle();
 
-        // Exactly the replay's own bytes are outstanding — nothing from before it.
+        // Exactly the replay's own byte is outstanding — nothing from before it. Pre-fix the
+        // five stale bytes stayed charged and this read 6.
         expect(h.session.stats(PANE_A)?.unacked).toBe(1);
     });
 

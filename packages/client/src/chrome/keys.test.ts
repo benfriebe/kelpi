@@ -172,6 +172,133 @@ describe('conditional rules', () => {
         expect(fired).toEqual([]);
     });
 
+    /**
+     * N14's residual. Step 1 declining ⌘W is what let the shell's Close row take the WINDOW:
+     * the bridge replays the chord through this dispatcher, an unconsumed replay reads as
+     * "nothing here to close", and the row's fallback is `window.close()`.
+     */
+    describe('the close chord while a modal overlay is open (N14)', () => {
+        it('hands ⌘W to the overlay and consumes it, so the window is never the fallback', () => {
+            const { registry, fired } = recorder();
+            let closed = 0;
+            const dispatch = createKeyDispatcher({
+                actions: registry,
+                isPaletteOpen: () => true,
+                onCloseChordWhileModal: () => {
+                    closed += 1;
+                    return true;
+                }
+            });
+            const event = keyEvent('KeyW', { meta: true });
+            expect(dispatch(event)).toBe(true);
+            expect(event.prevented()).toBe(1);
+            expect(closed).toBe(1);
+            // The overlay closed; `close_pane` itself never ran, so no pane went with it.
+            expect(fired).toEqual([]);
+        });
+
+        it('leaves every other keystroke to the overlay, ⌘W’s own letter included', () => {
+            const { registry, fired } = recorder();
+            const seen: string[] = [];
+            const dispatch = createKeyDispatcher({
+                actions: registry,
+                isPaletteOpen: () => true,
+                onCloseChordWhileModal: () => {
+                    seen.push('asked');
+                    return true;
+                }
+            });
+            // A bare `w` typed into the palette field, and a chord bound to something else.
+            expect(dispatch(keyEvent('KeyW'))).toBe(false);
+            expect(dispatch(keyEvent('KeyD', { meta: true }))).toBe(false);
+            expect(dispatch(keyEvent('KeyP', { meta: true }))).toBe(false);
+            expect(seen).toEqual([]);
+            expect(fired).toEqual([]);
+        });
+
+        it('follows the binding map rather than a hard-coded ⌘W', () => {
+            const { registry } = recorder();
+            const asked: string[] = [];
+            const dispatch = createKeyDispatcher({
+                // `close_pane` moved to ⌘⇧W; ⌘W now splits.
+                bindings: keyBindingsFromOverrideLines(['super+shift+w=close_pane', 'super+w=split_right']),
+                actions: registry,
+                isPaletteOpen: () => true,
+                onCloseChordWhileModal: () => {
+                    asked.push('asked');
+                    return true;
+                }
+            });
+            expect(dispatch(keyEvent('KeyW', { meta: true }))).toBe(false);
+            expect(dispatch(keyEvent('KeyW', { meta: true, shift: true }))).toBe(true);
+            expect(asked).toEqual(['asked']);
+        });
+
+        it('falls through unchanged when the overlay declines, and when nothing is wired', () => {
+            const { registry, fired } = recorder();
+            const declines = createKeyDispatcher({
+                actions: registry,
+                isPaletteOpen: () => true,
+                onCloseChordWhileModal: () => false
+            });
+            const declined = keyEvent('KeyW', { meta: true });
+            expect(declines(declined)).toBe(false);
+            expect(declined.prevented()).toBe(0);
+
+            const unwired = createKeyDispatcher({ actions: registry, isPaletteOpen: () => true });
+            expect(unwired(keyEvent('KeyW', { meta: true }))).toBe(false);
+            expect(fired).toEqual([]);
+        });
+
+        it('is the modal path only: with no overlay up, ⌘W is the ordinary close_pane', () => {
+            const { registry, fired } = recorder();
+            const asked: string[] = [];
+            const dispatch = createKeyDispatcher({
+                actions: registry,
+                isPaletteOpen: () => false,
+                onCloseChordWhileModal: () => {
+                    asked.push('asked');
+                    return true;
+                }
+            });
+            expect(dispatch(keyEvent('KeyW', { meta: true }))).toBe(true);
+            expect(asked).toEqual([]);
+            expect(fired).toEqual(['close_pane']);
+        });
+
+        /**
+         * Consuming here must not take the chord away from Settings ▸ Keybindings' RECORDER,
+         * which arms its own capture listener on `window` while a row is recording (it is
+         * allowed to, precisely because the overlay gates this dispatcher). `consume` calls
+         * `stopPropagation`, never `stopImmediatePropagation`, so a listener registered later
+         * on the same node still runs — this pins that, because the alternative silently breaks
+         * recording ⌘W.
+         */
+        it('does not silence a listener the recorder registers on the same node', () => {
+            const { registry } = recorder();
+            const dispatcher = createKeyDispatcher({
+                actions: registry,
+                isPaletteOpen: () => true,
+                onCloseChordWhileModal: () => true
+            });
+            const removeDispatcher = installKeyDispatcher(window, dispatcher);
+            const recorded: string[] = [];
+            const armed = (event: KeyboardEvent): void => {
+                recorded.push(`${event.code}${event.metaKey ? '+meta' : ''}`);
+            };
+            window.addEventListener('keydown', armed, true);
+            try {
+                document.body.dispatchEvent(
+                    new KeyboardEvent('keydown', { code: 'KeyW', metaKey: true, bubbles: true, cancelable: true })
+                );
+            } finally {
+                window.removeEventListener('keydown', armed, true);
+                removeDispatcher();
+            }
+            expect(recorded).toEqual(['KeyW+meta']);
+        });
+    });
+
     it('suppresses pane bindings while a text field is focused, but keeps menu-bar ones', () => {
         const { registry, fired } = recorder();
         const dispatch = createKeyDispatcher({ actions: registry });

@@ -39,14 +39,18 @@
  *
  * ## Signing
  *
- * Nothing here is signed or notarized by default; there is no `osxSign`/`osxNotarize` block, so
- * `pnpm dist` produces an ad-hoc-signed (arm64 requirement) app that Gatekeeper will quarantine
- * on any machine that did not build it. That gap, and the checklist for closing it, are written
- * down in the repo README ("Signing and notarization"). Setting `NEX_MACOS_IDENTITY` opts into
- * `osxSign` with that identity — the first half of the checklist, untested until someone with a
- * Developer ID runs it.
+ * Nothing here is notarized by default; there is no `osxSign`/`osxNotarize` block, so `pnpm dist`
+ * produces an ad-hoc-signed (arm64 requirement) app that Gatekeeper will quarantine on any machine
+ * that did not build it. That gap, and the checklist for closing it, are written down in the repo
+ * README ("Signing and notarization"). Setting `NEX_MACOS_IDENTITY` opts into `osxSign` with that
+ * identity — the first half of the checklist, untested until someone with a Developer ID runs it.
+ *
+ * The ad-hoc signature is applied in `postPackage`, *after* the renames and `Info.plist` rewrites
+ * that packaging does — the `FusesPlugin` signature is stale by then, and shipping the stale one
+ * left the app running under the wrong code identity entirely (N22; `adhocSignCommands`).
  */
 
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -249,6 +253,27 @@ module.exports = {
                 // The launcher is exec'd directly by a shell through /usr/local/bin/nex, so a
                 // lost exec bit would only surface as "command not found" on a user's machine.
                 fs.accessSync(path.join(resources, RESOURCE_NAMES.cli, 'nex'), fs.constants.X_OK);
+
+                /**
+                 * Seal the bundle we actually ship (N22). The fuses plugin signed ad-hoc at
+                 * `packageAfterCopy`; every rename and `Info.plist` rewrite since then broke that
+                 * seal, and a bundle whose seal is broken runs under the *stale* signature's
+                 * identity (`com.github.Electron`) — which, among other things, makes the browser
+                 * process's remote-debugging port accept connections and never answer them. See
+                 * `adhocSignCommands` in `src/packaging.ts` for the measurements.
+                 */
+                const { adhocSignRequired, adhocSignCommands } = packagingHelpers();
+                if (adhocSignRequired(signingIdentity, result.platform)) {
+                    for (const [command, ...args] of adhocSignCommands(path.join(appPath, 'Nex.app'))) {
+                        const signed = spawnSync(command, args, { encoding: 'utf8' });
+                        if (signed.status !== 0) {
+                            throw new Error(
+                                `${command} ${args.join(' ')} failed (exit ${String(signed.status)}):\n${signed.stderr ?? ''}`
+                            );
+                        }
+                    }
+                    process.stdout.write('\n  ad-hoc signed and verified\n');
+                }
                 process.stdout.write(`\n  packaged ${path.join(appPath, 'Nex.app')}\n`);
             }
         }

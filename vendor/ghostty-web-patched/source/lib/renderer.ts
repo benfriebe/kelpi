@@ -147,6 +147,19 @@ export class CanvasRenderer {
   private allowTransparency: boolean;
   /** `theme.background` as components, kept in step with it. See `isDefaultCellBackground`. */
   private defaultBackgroundRGB: { r: number; g: number; b: number } | null;
+  /**
+   * The default colours the WASM TERMINAL was CONSTRUCTED with (vendor 0.4.0-nex.7 — Nex §N18).
+   *
+   * Not the theme's: `ghostty_terminal_new_with_config` takes `bg_color`/`fg_color` once and
+   * there is no export that moves them, so every cell the VT has not explicitly coloured reports
+   * those components for the life of the terminal — *including* after `setTheme`. Painting them
+   * literally is what leaves a live theme change stranded on the old palette; see
+   * `liveThemeColor`. `null` for an embedder that configured neither, which is upstream's own
+   * case and is left exactly as it was.
+   */
+  private terminalDefaultBackgroundRGB: { r: number; g: number; b: number } | null = null;
+  /** The construction `fg_color`, the foreground half of the pair above. */
+  private terminalDefaultForegroundRGB: { r: number; g: number; b: number } | null = null;
   private devicePixelRatio: number;
   private metrics: FontMetrics;
   private palette: string[];
@@ -319,6 +332,13 @@ export class CanvasRenderer {
       g: Number.parseInt(match[2], 10),
       b: Number.parseInt(match[3], 10),
     };
+  }
+
+  /** `0xRRGGBB` → components, the form `ghostty_terminal_new_with_config` takes (nex.7). */
+  private static rgbFromInt(color: number | null): { r: number; g: number; b: number } | null {
+    if (color === null || !Number.isFinite(color)) return null;
+    const value = color >>> 0;
+    return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
   }
 
   /**
@@ -745,12 +765,59 @@ export class CanvasRenderer {
    * theme background (`SGR 48;2;…`) becomes translucent there rather than opaque. Nothing on
    * screen can tell the two apart except the desktop behind the window, and the alternative —
    * every cell opaque — is the defect this exists to remove.
+   *
+   * vendor 0.4.0-nex.7 adds the third clause, and it is the one that survives a THEME CHANGE:
+   * the components above are the theme's, which `setTheme` moves, while the cell's are the
+   * TERMINAL's, which nothing moves — so after a live `theme =` the two no longer meet and
+   * every untouched cell was being painted in the old background again (opaquely, over the
+   * cleared line, which is §N18). `isTerminalDefaultBackground` asks the question the cell can
+   * actually answer, at every opacity.
    */
   private isDefaultCellBackground(r: number, g: number, b: number): boolean {
     if (r === 0 && g === 0 && b === 0) return true;
+    if (this.isTerminalDefaultBackground(r, g, b)) return true;
     if (!this.allowTransparency) return false;
     const base = this.defaultBackgroundRGB;
     return base !== null && r === base.r && g === base.g && b === base.b;
+  }
+
+  /**
+   * Is this the background the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7)?
+   *
+   * `false` for every embedder that never called `setTerminalDefaultColors` — which is what
+   * keeps upstream's behaviour exactly upstream's.
+   */
+  private isTerminalDefaultBackground(r: number, g: number, b: number): boolean {
+    const base = this.terminalDefaultBackgroundRGB;
+    return base !== null && r === base.r && g === base.g && b === base.b;
+  }
+
+  /** The foreground half of `isTerminalDefaultBackground` (vendor 0.4.0-nex.7). */
+  private isTerminalDefaultForeground(r: number, g: number, b: number): boolean {
+    const base = this.terminalDefaultForegroundRGB;
+    return base !== null && r === base.r && g === base.g && b === base.b;
+  }
+
+  /**
+   * The LIVE theme's colour for a cell colour that is one of the terminal's construction
+   * defaults, or `null` when the cell carries a colour of its own (vendor 0.4.0-nex.7).
+   *
+   * This is the paint-time palette lookup the two default slots need. A cell's `fg_r/g/b` and
+   * `bg_r/g/b` are resolved RGB, frozen at whatever the terminal was configured with, so a
+   * renderer that paints them literally can never follow a theme change; asking "is this one of
+   * the two defaults, and if so what is the theme's answer NOW" makes the default slots live
+   * without inventing state.
+   *
+   * Deliberately limited to those two slots. The 16 palette entries are frozen in the same way,
+   * but a cell that reports an ANSI colour is indistinguishable from a true-colour cell that
+   * happens to match it, and remapping those would move colours an application asked for by
+   * value. Before a theme change the mapping is the identity in pixels (the terminal's defaults
+   * ARE the theme's), so the whole of its effect lives in the window §N18 is about.
+   */
+  private liveThemeColor(r: number, g: number, b: number): string | null {
+    if (this.isTerminalDefaultBackground(r, g, b)) return this.theme.background;
+    if (this.isTerminalDefaultForeground(r, g, b)) return this.theme.foreground;
+    return null;
   }
 
   /**
@@ -789,7 +856,10 @@ export class CanvasRenderer {
     // This lets the theme background (drawn earlier) show through for default cells
     const isDefaultBg = this.isDefaultCellBackground(bg_r, bg_g, bg_b);
     if (!isDefaultBg) {
-      this.ctx.fillStyle = this.rgbToCSS(bg_r, bg_g, bg_b);
+      // vendor 0.4.0-nex.7: an INVERSE cell paints its FOREGROUND here, and that slot is frozen
+      // at construction like the background is — so it goes through the live theme too, or the
+      // block stays the previous theme's colour (§N18). `null` for a colour of the cell's own.
+      this.ctx.fillStyle = this.liveThemeColor(bg_r, bg_g, bg_b) ?? this.rgbToCSS(bg_r, bg_g, bg_b);
       this.ctx.fillRect(cellX, cellY, cellWidth, this.metrics.height);
     }
   }
@@ -833,7 +903,12 @@ export class CanvasRenderer {
         fg_b = cell.bg_b;
       }
 
-      this.ctx.fillStyle = this.rgbToCSS(fg_r, fg_g, fg_b);
+      // vendor 0.4.0-nex.7: the glyph's colour is the terminal's DEFAULT foreground for every
+      // cell nothing coloured explicitly, and that default is frozen at construction — so text
+      // already on screen kept the previous theme's foreground across a live `theme =` for the
+      // same reason the cell backgrounds kept its background (§N18). One lookup, and only for
+      // the two default slots; anything the application coloured itself is painted as it asked.
+      this.ctx.fillStyle = this.liveThemeColor(fg_r, fg_g, fg_b) ?? this.rgbToCSS(fg_r, fg_g, fg_b);
     }
 
     // Apply faint effect
@@ -1066,6 +1141,24 @@ export class CanvasRenderer {
       this.theme.brightCyan,
       this.theme.brightWhite,
     ];
+  }
+
+  /**
+   * Declare the default colours the WASM terminal was CONSTRUCTED with (vendor 0.4.0-nex.7).
+   *
+   * Both arguments are the `0xRRGGBB` integers handed to `ghostty_terminal_new_with_config` as
+   * `bg_color` / `fg_color` — not the theme's, and not a copy of them: the point is precisely
+   * that the two can DIFFER, because `setTheme` moves the theme and nothing can move the
+   * terminal's. Pass `null` (or never call this) for a terminal that was configured without the
+   * colour, which leaves upstream's `(0, 0, 0)` rule as the only default test — exactly the
+   * behaviour every other embedder gets.
+   *
+   * Called once, from `Terminal.open()`, beside the `createTerminal` that consumed the same
+   * numbers. See `liveThemeColor` for what the renderer does with them.
+   */
+  public setTerminalDefaultColors(background: number | null, foreground: number | null): void {
+    this.terminalDefaultBackgroundRGB = CanvasRenderer.rgbFromInt(background);
+    this.terminalDefaultForegroundRGB = CanvasRenderer.rgbFromInt(foreground);
   }
 
   /**

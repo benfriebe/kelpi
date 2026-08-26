@@ -1,10 +1,11 @@
-# ghostty-web 0.4.0-nex.6 (vendored)
+# ghostty-web 0.4.0-nex.7 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus five
+review in the orchestrating session and explicit user authorization to integrate both — plus six
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
-focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended).
+focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
+`-nex.7`: default cells that follow a live theme).
 
 | Version | What it added |
 |---|---|
@@ -14,6 +15,7 @@ focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that ca
 | `0.4.0-nex.4` | `setFocused` — an unfocused surface draws ghostty's steady hollow cursor |
 | `0.4.0-nex.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
 | `0.4.0-nex.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
+| `0.4.0-nex.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
 
 ## Base
 
@@ -195,6 +197,139 @@ upstream's behaviour byte for byte.
 Not addressed here: ghostty's `cursor-style-blink` and `adjust-cursor-thickness` config keys are
 not parsed anywhere in this port, so the blink is whatever the embedder passes (`cursorBlink`,
 `true` in Nex) and the outline is ghostty's default 1 px.
+
+## Nex adaptation: default cells follow a LIVE theme (`0.4.0-nex.7`, 2026-08-26)
+
+The renderer can now be told which two colours the WASM terminal was **constructed** with —
+`CanvasRenderer.setTerminalDefaultColors(bg, fg)` — and it resolves a cell carrying either of them
+through the theme it is running **now** instead of painting the frozen components. It exists
+because of **N18**, and because the state it works around is, again, below anything this fork can
+patch.
+
+**The defect.** `ghostty_terminal_new_with_config` takes `bg_color` / `fg_color` **once**, and no
+export moves them afterwards. Measured directly against this wasm (`Ghostty.load()`, one terminal
+configured `bg 0x0a0a0c` / `fg 0xffffff`, one write, `update()` + `getViewport()`):
+
+- every cell — written or untouched — reports `bg 10,10,12` and `fg 255,255,255`, and
+  `ghostty_render_state_get_bg_color` / `_fg_color` report the same pair;
+- an `SGR 48;2;200;30;30` / `38;2;1;2;3` cell reports `200,30,30` / `1,2,3`, and the cell after
+  `SGR 0` is back on the construction pair — so an explicit colour IS distinguishable from a
+  default one, which is what makes the lookup below safe;
+- **OSC 11 cannot move them**: this wasm answers `ESC ]11;rgb:30/19/34 ESC \` with
+  `warning(osc): OSC 11 requires an allocator, but none was provided` → `invalid OSC command`, so
+  the pair is fixed for the life of the terminal by construction, not merely by convention;
+- a resize does not move them either, and a terminal built with **no** config reports
+  `bg 0,0,0` / `fg 204,204,204` — upstream's own default, which is why the adaptation is inert
+  for any embedder that does not opt in.
+
+So after a live `theme = …` the embedder repaints everything it owns — the pane container, the
+CSS tokens, the margins (`clear()`), the cursor (`theme.cursor`) — and then the render loop puts
+the **old** background back over the cell area one row at a time, because `renderLine`'s
+`paintDefaultBackground` lays down the new colour and pass 1 fills every cell on top of it in the
+colour the cell reports. Measured end to end at both opacities (the audit's `settings-live-apply`
+step, canvas histogram over 416 000 device pixels, sandbox daemon + real PTY + real Electron
+window):
+
+- **opacity 1**: `404 796` px of the old `10,10,12` against `10 360` of the new `48,25,52` on
+  arrival (`404 803` after a screen-clearing write) — and the new colour is *only* the
+  right/bottom margin, the part `clear()` paints and `renderLine` never touches. Glyphs stayed
+  `255,255,255` (the previous theme's foreground) too;
+- **`background-opacity = 0.85`**: `404 796` px of **opaque** `10,10,12` with only `10 360`
+  cleared — i.e. a pane that was translucent goes **solid** in the previous theme's colour, which
+  is the half §N17 made visible (its `clear()` no longer hides the stale fill behind an identical
+  one).
+
+**The patch**, one declaration and one lookup:
+
+- `CanvasRenderer.setTerminalDefaultColors(background, foreground)` takes the same `0xRRGGBB`
+  integers that were handed to `ghostty_terminal_new_with_config`, so the renderer's idea of
+  "default" is the terminal's own, not a copy of the theme's.
+- `Terminal.open()` calls it beside the `createTerminal` that consumed those numbers, and **only
+  where the theme actually named the colour** — no config, or a theme naming neither, declares
+  nothing.
+- `isDefaultCellBackground` gains a clause for the construction background, at **every** opacity.
+  Its two existing clauses stay: upstream's `(0,0,0)`, and `-nex.3`'s theme-background match
+  under `allowTransparency`.
+- `liveThemeColor(r,g,b)` returns `theme.background` / `theme.foreground` for a cell colour that
+  is one of the two construction defaults and `null` otherwise; both `fillStyle` assignments —
+  the cell background in pass 1 and the glyph in pass 2 — go through it before falling back to
+  the cell's own components. Pass 1 needs it for `INVERSE` cells (whose background is the cell's
+  *foreground*); pass 2 needs it for ordinary text.
+
+**Why by value, and what it deliberately does not do.** The wasm flattens SGR to resolved RGB, so
+"is this cell default" can only be asked by comparing components. The two default slots are safe
+to ask that of: **before** a theme change the mapping is the identity in pixels (the terminal's
+defaults *are* the theme's), so the whole of its effect lives inside the window N18 is about. The
+16 palette entries are frozen in exactly the same way, and are deliberately **left alone**: an
+indexed cell is indistinguishable from a true-colour cell that happens to match, so remapping
+them would move colours an application asked for by name. The consequence is stated rather than
+hidden — after a live theme change, text an application coloured with `SGR 31` keeps the previous
+theme's red until the application repaints it, while default text and the background follow
+immediately. Native Ghostty has no equivalent gap (it stores palette *indices* and
+`ghostty_app_update_config` rebuilds the surface's whole frame); closing that last part needs a
+wasm that can be told a new palette.
+
+The honest edge is `-nex.3`'s, widened by exactly one case: a cell whose background an application
+set **explicitly** to the terminal's default background now follows a theme change instead of
+staying put. Before the change the two are the same colour, so nothing on screen can tell them
+apart until the theme moves — at which point following it is the better of the two answers.
+
+## Verification of `0.4.0-nex.7` (2026-08-26)
+
+- **The defect and the fix, with one instrument, at both opacities.** The audit's
+  `settings-live-apply` step (a sandbox daemon + shell — `mkdtemp`, `NEXD_*`, ephemeral ports —
+  a fixture ghostty theme picked in the real Settings window, and a canvas histogram read off the
+  engine's own canvas through CDP), run four times over the same 416 000 device pixels: the
+  **pre-fix client bundle** (a `git archive HEAD` tree with its `-nex.6` engine rebuilt from
+  source, served into this harness via `NEX_AUDIT_CLIENT_DIR`) fails at
+  **404 796 px old / 10 360 px new** opaque and **404 796 px opaque old / 10 360 cleared** at
+  `0.85`; the fixed tree comes back **414 883 px of `48,25,52` with 0 px of the old background**
+  opaque, and **415 156 of 416 000 pixels CLEARED with 0 opaque pixels of the old background** at
+  `0.85`. Glyphs move with it: `255,255,255` → `127,255,212`, the theme file's own `#7fffd4`.
+- **In the shipped bytes.** The same two runs against
+  `Nex.app/Contents/Resources/client` — the packaged app's own staged chunk, which carries
+  `setTerminalDefaultColors` / `liveThemeColor` / `isTerminalDefaultBackground` /
+  `isTerminalDefaultForeground` and **both** `fillStyle=this.liveThemeColor(` sites after
+  minification — reproduce it: `415 156` px of `48,25,52` opaque, `415 156` cleared at `0.85`,
+  0 px of the old background either way. `pnpm --filter @nex/shell smoke:packaged` is **61/61**
+  against that build.
+- **The assertion it goes green on is STRICTER than the one it was red on.** The audit used to
+  accept the theme's background appearing anywhere in the canvas's top four colours — which the
+  margin alone satisfied, and which is why this defect sat behind a passing assertion in every
+  scoped run. It now requires the theme's background to be the **most-painted** colour with
+  **zero** pixels of the previous one (or, under `allowTransparency`, a majority-cleared canvas
+  with zero opaque pixels of the previous one), on arrival **and** after a full-screen redraw —
+  the second of which used to be recorded-not-asserted precisely because this engine could not
+  do it. Both fail on the pre-fix bundle and pass on this one.
+- **The paint paths this bundle shares were re-measured, not assumed.** `-nex.7` edits the two
+  methods `-nex.3` and `-nex.4` live in: §N20's `terminal-cursor-focus` comes back **4 / 37 / 0**
+  with run-W's and run-X's numbers to the assertion (unfocused **88 lit of 480**, perimeter 88,
+  one frame hash over 1 200 ms; focused `480 → 0 → 480 → 480 → 0`, two hashes), and §N17's
+  `window-transparency` **2 / 11 / 0** in both directions (canvas alpha **0** in every sampled
+  cell at `0.85`, opaque at 1, glyph alpha 255 either way). §N24's own probe is unmoved:
+  `terminal-resize-storm` reports **2 384 frames, 280 held over 16 hold windows,
+  `changedWhileHeld` 0, hold timeouts 0**, with §N23's nets green (0 U+FFFD, 0 missing, 0
+  invented lines).
+- **Rebuild sanity**: `dist/ghostty-web.js` is **704.24 kB** as vite reports it (was 700.12 kB at
+  `-nex.6`, **+4.12 kB**), sha256
+  `20c89a59f65e586e0e912f5854e9964d2cbf0ca132796fb25fe4e4302545bc4c`;
+  `ghostty-web.umd.cjs` **646.74 kB**, sha256
+  `714ab4bd0f55b3964954c58e97f08cf1cfa520c6e260ec491a54d08fb68531e6`; `index.d.ts` sha256
+  `f5c01cb7c31fa7e56fab9410df471a25c41fc9d0f01444ca8c02593770b6cdda` (the new public method moved
+  into it); `ghostty-vt.wasm` re-copied byte-identical (`d6f0326f…`);
+  `__vite-browser-external-2447137e.js` unchanged
+  (`f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6`). All of
+  `-nex.2`/`-nex.3`/`-nex.4`/`-nex.5`/`-nex.6`'s markers are present in the new bundle, the
+  `render()` paint-suspension guard is still its opening statement, and the chip label `-nex.2`
+  removed is still absent (all asserted by `vendor-engine.test.ts`).
+- **The toolchain was proven before it was trusted, again — twice.** The documented recipe was run
+  against the *pristine* `-nex.6` source in a scratch sandbox and reproduced the shipping `-nex.6`
+  artifacts **to the byte** (`ghostty-web.js` `60a3063011c01af3f32f80fac4086dc84ae622974ea5c5a6efd5b6127199b8d4`,
+  `ghostty-web.umd.cjs` `4bdb132b…`, `index.d.ts` `1c5042e6…`), and again from a second,
+  independently extracted `git archive HEAD` tree — same hash. The only delta in the `-nex.7`
+  bundle is therefore the edits above.
+- **`npx tsc --noEmit`** on the snapshot reports only the pre-existing `bun-types` entry-point
+  error; nothing in `terminal.ts` or `renderer.ts`.
 
 ## Nex adaptation: a paint that can be suspended (`0.4.0-nex.6`, 2026-08-25)
 
@@ -587,13 +722,15 @@ The wasm is the one thing `source/` does not carry (413 KB of binary, byte-ident
 above can come from there:
 `sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~684 KiB (700.12 kB as vite reports it,
-+3.52 kB over `-nex.5`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+Sanity checks on a rebuild: `dist/ghostty-web.js` is ~688 KiB (704.24 kB as vite reports it,
++4.12 kB over `-nex.6`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
 (`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
 own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
-early return as `render()`'s opening statement (`-nex.6`) and no `조합중` (the chip label
-`-nex.2` removed). Those markers are asserted in CI by
+early return as `render()`'s opening statement (`-nex.6`), `setTerminalDefaultColors` /
+`liveThemeColor` / `isTerminalDefaultBackground` / `isTerminalDefaultForeground` with **two**
+`fillStyle = this.liveThemeColor(…) ?? this.rgbToCSS(…)` sites (`-nex.7` — one per pass), and no
+`조합중` (the chip label `-nex.2` removed). Those markers are asserted in CI by
 `packages/client/src/terminal/vendor-engine.test.ts`, which also pins the version this file
 documents — bump both together or the guard fails. `npx tsc --noEmit` on the snapshot reports only
 the pre-existing `bun-types` / `fs/promises` errors in `lib/ghostty.ts` (the tsconfig asks for
@@ -609,7 +746,7 @@ When upstream ships 0.5.0 (release PR #182 pending): check whether #120/#159 mer
 vendor dir and the root `pnpm.overrides['ghostty-web']`, take the npm release, and re-run the
 terminal smoke + audit input matrix + the IME audit step before trusting it.
 
-Note that **none** of the five Nex adaptations is an upstream PR. Taking a future npm release
+Note that **none** of the six Nex adaptations is an upstream PR. Taking a future npm release
 wholesale would:
 
 - put the preedit back in the container's corner and reopen TERM-032 / TERM-033 — so re-apply
@@ -638,7 +775,18 @@ wholesale would:
   branch in `Terminal.resize()`'s canvas re-assignment and `Terminal.setPaintSuspended`. This is
   the one adaptation whose absence is invisible to every unit test in the client, because the
   client half keeps working perfectly — which is what the `render()`-guard pattern assertion in
-  `vendor-engine.test.ts` and the per-frame canvas probe in `terminal-resize-storm` are for.
+  `vendor-engine.test.ts` and the per-frame canvas probe in `terminal-resize-storm` are for; and
+- take `setTerminalDefaultColors` away, reopening **N18** — `Terminal.open()` would declare
+  nothing, every default cell would go back to being painted in the colour the WASM terminal was
+  BORN with, and a live `theme = …` would repaint the CSS, the margins and the cursor while the
+  cell area kept the previous theme (opaquely, so a `background-opacity < 1` pane goes solid until
+  relaunch). Re-apply `setTerminalDefaultColors` on the renderer, the `isTerminalDefaultBackground`
+  clause in `isDefaultCellBackground`, `liveThemeColor` at both `fillStyle` sites, and the
+  declaration in `Terminal.open()` beside `createTerminal`. Like `-nex.6` this one is invisible to
+  a unit test that only runs the client — the call simply lands on nothing — which is why
+  `vendor-engine.test.ts` counts the paint sites in the built bundle and the audit's
+  `settings-live-apply` step asserts the theme's background is the canvas's *dominant* colour
+  rather than merely present on it.
 
 The last three are the easy ones to lose. Nothing about transparency is visible on an opaque
 config, which is what almost every developer runs; and a lone terminal blinking a filled block is

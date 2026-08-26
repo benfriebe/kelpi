@@ -89,6 +89,20 @@ export interface StubTerm {
     readonly fed: { paneID: string; data: string }[];
     /** What the next `snapshot()` returns for a pane. */
     setSnapshot(paneID: string, data: string): void;
+    /**
+     * A chunk that has REACHED the emulator but has not been parsed yet.
+     *
+     * This is the difference the flow-control re-seed turns on (N23), and the stub could not
+     * express it: `feed()` only queues — xterm parses asynchronously — so the sync `snapshot()`
+     * describes everything parsed *so far* and silently omits a chunk fed a moment ago, while
+     * `snapshotAsync()` settles the write chain first and therefore includes it. Two snapshots
+     * that read alike cannot tell the pre-fix path from the fixed one, which is what made the
+     * "re-seeds from the flushing snapshot" test pass either way.
+     *
+     * Absent from `snapshot()` and from `capture()`; folded into the parsed text by the next
+     * `snapshotAsync()` — the settle IS the parse, exactly as it is in `term/service.ts`.
+     */
+    feedMidParse(paneID: string, data: string): void;
     /** Resolve `snapshotAsync` on the next microtask instead of immediately. */
     asyncSnapshots: boolean;
     /** What `modes()` reports from here on (§TERM-037's `pane-modes` stream). */
@@ -118,6 +132,16 @@ export function stubTerm(): StubTerm {
      */
     const disposed = new Set<string>();
 
+    /** Fed but not parsed (`feedMidParse`): what only a FLUSHING snapshot can see. */
+    const midParse = new Map<string, string>();
+    const flush = (paneID: string): void => {
+        const pending = midParse.get(paneID);
+        if (pending === undefined) return;
+        midParse.delete(paneID);
+        if (disposed.has(paneID)) return;
+        snapshots.set(paneID, (snapshots.get(paneID) ?? '') + pending);
+    };
+
     const service: TerminalStateService & {
         snapshotAsync(paneID: string): Promise<{ data: Uint8Array; cols: number; rows: number }>;
         has(paneID: string): boolean;
@@ -137,11 +161,15 @@ export function stubTerm(): StubTerm {
         snapshot: read,
         async snapshotAsync(paneID) {
             if (state.asyncSnapshots) await new Promise<void>((resolve) => setImmediate(resolve));
+            // Settling the write chain is what parses the pending chunk — after this the sync
+            // snapshot can see it too, just as it can in the real service.
+            flush(paneID);
             return read(paneID);
         },
         modes: () => state.modes,
         dispose: (paneID) => {
             snapshots.delete(paneID);
+            midParse.delete(paneID);
             disposed.add(paneID);
         }
     };
@@ -152,6 +180,10 @@ export function stubTerm(): StubTerm {
         fed,
         setSnapshot(paneID, data) {
             snapshots.set(paneID, data);
+        },
+        feedMidParse(paneID, data) {
+            fed.push({ paneID, data });
+            midParse.set(paneID, (midParse.get(paneID) ?? '') + data);
         },
         get asyncSnapshots() {
             return state.asyncSnapshots;

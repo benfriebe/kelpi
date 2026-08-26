@@ -523,6 +523,27 @@ export class Terminal implements ITerminalCore {
       // vendor 0.4.0-nex.6: carry a suspension asked for before `open()` onto the renderer that
       // is only now being built. See `setPaintSuspended`.
       if (this.paintSuspended) this.renderer.setPaintSuspended(true);
+      /**
+       * vendor 0.4.0-nex.7 (Nex §N18): tell the renderer which default colours the WASM terminal
+       * a few lines above was BUILT with.
+       *
+       * `ghostty_terminal_new_with_config` takes `bg_color`/`fg_color` once and there is no
+       * export that moves them, so every cell the VT has not explicitly coloured reports those
+       * two components for the life of the terminal — including after `setTheme`. Handing them
+       * over is what lets the renderer recognise a default cell and paint it in the LIVE theme
+       * instead of the one the terminal was born with; without it a live `theme =` change
+       * repaints everything around the cells and leaves the cells themselves stale.
+       *
+       * Passed only where the theme actually named the colour, so this stays exactly the numbers
+       * `buildWasmConfig` handed the wasm: with no config (upstream's default terminal) or a
+       * theme that names neither, nothing is declared and the renderer keeps upstream's
+       * `(0, 0, 0)` rule as its only default test.
+       */
+      const themeColors = this.options.theme;
+      this.renderer.setTerminalDefaultColors(
+        config !== undefined && themeColors?.background !== undefined ? (config.bgColor ?? null) : null,
+        config !== undefined && themeColors?.foreground !== undefined ? (config.fgColor ?? null) : null
+      );
 
       // Size canvas to terminal dimensions (use renderer.resize for proper DPI scaling)
       this.renderer.resize(this.cols, this.rows);

@@ -42,10 +42,13 @@ import { fileURLToPath } from 'node:url';
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
 import { createReport } from './lib/report.mjs';
 import {
+    assertPackagedSignature,
     buildAll,
     freePort,
     makeCli,
     makeSandbox,
+    packageApp,
+    packagedResource,
     startDaemon,
     startShell,
     waitForHealthz
@@ -1024,29 +1027,37 @@ async function main() {
 
     if (options.build) {
         await buildAll(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
+        // A `--packaged` run drives `Nex.app`, so the bundle is a build input like any other:
+        // rebuild it from the bundles above rather than debugging whatever `out/` happens to
+        // hold. (`--no-build` still skips this, and the signature check below still runs.)
+        if (options.packaged) await packageApp(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
     }
+    // N22: a packaged bundle with a broken seal accepts CDP connections and answers none of
+    // them, which reads as an unexplained 90-second timeout. Say so up front instead.
+    if (options.packaged) await assertPackagedSignature(repoRoot);
 
     /*
-     * `NEX_AUDIT_CLIENT_DIR` — serve a DIFFERENT client build than the working tree's.
+     * Which client build the daemon serves.
      *
-     * It exists for one question this harness could not otherwise answer on this machine: does
-     * the fix hold in the app the OWNER runs, i.e. the packaged one? `--packaged` launches the
-     * real `Nex.app` binary, and that binary's DevTools port accepts a TCP connection and then
-     * never answers `/json` (reproduced standalone, with no daemon in the picture, on Electron
-     * 43 / macOS 26 — `curl` times out while `lsof` shows the listener), so CDP cannot attach
-     * to it at all. Pointing this at `Nex.app/Contents/Resources/client` serves the packaged
-     * app's OWN staged bytes — the exact JS a user's window loads — into a shell CDP can drive.
-     * It is not the packaged binary, and no run should claim it is; it is the packaged CLIENT.
+     * The harness starts the daemon itself and the shell discovers it, so the daemon — not the
+     * app — decides what the window loads. A `--packaged` run therefore points at the app's OWN
+     * staged client (`Nex.app/Contents/Resources/client`); together with the packaged main
+     * process, the packaged daemon and the bundled Node (`startDaemon`'s `packaged` flag), that
+     * makes every layer under the audit the shipped bytes. Before N22 was fixed this branch
+     * unset the client dir entirely, and the packaged run's window got the daemon's plain
+     * "client not built" page — the second reason no packaged run ever produced a green step.
+     *
+     * `NEX_AUDIT_CLIENT_DIR` still overrides both, which is what `run-V-packaged-client` used to
+     * drive the packaged client from a dev shell while the packaged binary was unreachable.
      */
-    const clientDir = process.env['NEX_AUDIT_CLIENT_DIR'] ?? path.join(repoRoot, 'packages', 'client', 'dist');
-    if (!options.packaged && !fs.existsSync(path.join(clientDir, 'index.html'))) {
+    const clientDir =
+        process.env['NEX_AUDIT_CLIENT_DIR'] ??
+        (options.packaged ? packagedResource(repoRoot, 'client') : path.join(repoRoot, 'packages', 'client', 'dist'));
+    if (!fs.existsSync(path.join(clientDir, 'index.html'))) {
         throw new Error(`the web client is not built: ${clientDir}`);
     }
 
-    const sandbox = await makeSandbox(repoRoot, {
-        label: 'ui',
-        ...(options.packaged ? {} : { clientDir })
-    });
+    const sandbox = await makeSandbox(repoRoot, { label: 'ui', clientDir });
     if (options.packaged) delete sandbox.env.NEXD_ENTRY;
 
     const work = writeFixtures(sandbox);
@@ -1101,21 +1112,47 @@ async function main() {
         // CONT-082/083's resolution order ends at the process environment when the sandbox HOME
         // has no rc files, so this is what the daemon's `$EDITOR` probe finds.
         sandbox.env.EDITOR = path.join(work, 'audit-editor.sh');
-        runtime.daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose });
+        runtime.daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose, packaged: options.packaged });
         await waitForHealthz(sandbox.base);
 
-        runtime.shell = startShell(sandbox, {
-            repoRoot,
-            packaged: options.packaged,
-            verbose: options.verbose,
-            extraEnv: {
-                NEX_AUDIT: '1',
-                // The ⌘O step's scripted answer to the native open panel — an OS window CDP
-                // cannot click. See `shell/src/main.ts` `promptOpenFile`.
-                NEX_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+        const launchShell = () =>
+            startShell(sandbox, {
+                repoRoot,
+                packaged: options.packaged,
+                verbose: options.verbose,
+                extraEnv: {
+                    NEX_AUDIT: '1',
+                    // The ⌘O step's scripted answer to the native open panel — an OS window CDP
+                    // cannot click. See `shell/src/main.ts` `promptOpenFile`.
+                    NEX_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+                }
+            });
+        /*
+         * Attaching to a PACKAGED app is not the sure thing attaching to the dev shell is.
+         * Its cold start is dominated by first-touch I/O over a 250 MB signed bundle, and on a
+         * loaded machine (this one sat at load 14 while other lanes built) that start can simply
+         * *stop*: with a timestamped boot log, the app's main process went silent between two
+         * adjacent lines for 49.6 s, answering nothing — no window load, no DevTools reply — and
+         * then finished everything inside 300 ms. So: a wide window, and if it still expires, one
+         * fresh launch, which re-rolls the dice rather than failing a 20-minute run on a stall.
+         * (`startShell` also takes each child out of the inherited background task policy, which
+         * is what makes the stall common in the first place.)
+         */
+        const attachTimeoutMs = options.packaged ? 180_000 : 90_000;
+        const attempts = options.packaged ? 2 : 1;
+        let target = null;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            runtime.shell = launchShell();
+            try {
+                target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: attachTimeoutMs });
+                break;
+            } catch (error) {
+                if (attempt === attempts) throw error;
+                process.stdout.write(`  the packaged app never answered CDP (${String(error.message ?? error)}); relaunching it once\n`);
+                await runtime.shell.quit();
+                runtime.shell = null;
             }
-        });
-        const target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: 90_000 });
+        }
         const page = await connect(target.webSocketDebuggerUrl, { repoRoot, verbose: false });
         runtime.page = page;
         await page.send('Page.enable');
@@ -2754,6 +2791,61 @@ function buildFlows(ctx) {
                             'state the app actually boots in.'
                     );
                 }
+
+                /*
+                 * §N14's named residual: ⌘W while the command palette is up.
+                 *
+                 * Step 1 of the dispatcher stands down for the palette, so the chord used to
+                 * fall through to the shell's Close row — which, being answered `false` by
+                 * `window.__nexShellClosePane()`, closed the WINDOW. The stated decision is that
+                 * ⌘W belongs to the topmost overlay and can never reach the window, and both of
+                 * its routes are reachable from here: CDP's key event walks the renderer path a
+                 * keystroke walks, and the global IS the menu row's whole question (the native
+                 * menu item itself is the one link automation cannot press).
+                 */
+                const paletteOpenExpr = `document.querySelector('[data-testid="command-palette"]') !== null`;
+                const panesBeforePalette = await page.eval(paneCountExpr);
+
+                await focusPaneBody(page, state.firstPane);
+                await page.key('KeyP', { modifiers: MOD.meta });
+                await page.waitFor(paletteOpenExpr, { timeoutMs: 8000, label: 'the command palette' });
+                await recorder.shot(page, 'palette-open');
+                await page.key('KeyW', { modifiers: MOD.meta });
+                await sleep(900);
+                const afterChord = JSON.parse(
+                    String(
+                        await page.eval(
+                            `JSON.stringify({ palette: ${paletteOpenExpr}, panes: ${paneCountExpr}, title: document.title })`
+                        )
+                    )
+                );
+                recorder.note(`⌘W with the palette open: ${JSON.stringify(afterChord)}`);
+                await recorder.shot(page, 'palette-closed-by-close-chord');
+                recorder.check(
+                    '⌘W with the palette open closes the PALETTE — not a pane, and not the window (§N14)',
+                    afterChord.palette === false && afterChord.panes === panesBeforePalette,
+                    `palette open → ${String(afterChord.palette)}, panes ${String(panesBeforePalette)} → ${String(afterChord.panes)}`
+                );
+
+                // The menu row's own question, asked exactly as `menu.ts` asks it. `false` here
+                // is what used to make the shell close the window.
+                await page.key('KeyP', { modifiers: MOD.meta });
+                await page.waitFor(paletteOpenExpr, { timeoutMs: 8000, label: 'the command palette' });
+                const answer = await page.eval(
+                    `(() => { try { return window.__nexShellClosePane() === true; } catch (error) { return String(error); } })()`
+                );
+                // The answer is synchronous; the overlay it closes is a React render, so the DOM
+                // is read after it has landed rather than in the same turn.
+                await sleep(900);
+                const routed = JSON.parse(
+                    String(await page.eval(`JSON.stringify({ palette: ${paletteOpenExpr}, panes: ${paneCountExpr} })`))
+                );
+                recorder.note(`the shell’s Close question, palette open: answer=${String(answer)} ${JSON.stringify(routed)}`);
+                recorder.check(
+                    'and the shell’s Close row is answered "handled", so its window fallback never runs (§N14)',
+                    answer === true && routed.palette === false && routed.panes === panesBeforePalette,
+                    `answer=${String(answer)}, palette open → ${String(routed.palette)}, panes ${String(routed.panes)}`
+                );
             }
         },
         {
@@ -15137,7 +15229,7 @@ function buildFlows(ctx) {
         {
             id: 'settings-live-apply',
             expect:
-                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014).',
+                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014). The repaint reaches the CELL AREA, not just the margin around it: the theme\u2019s background is the most-painted colour on the engine\u2019s own canvas on arrival AND after a full-screen redraw \u2014 or, under `background-opacity < 1`, the cell area is CLEARED and carries no opaque pixel of the previous background (\u00a7N18).',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -15447,13 +15539,28 @@ function buildFlows(ctx) {
                         if (ctx === null) return { error: 'no 2d context' };
                         const data = ctx.getImageData(0, 0, canvas.width, Math.min(canvas.height, 400)).data;
                         const counts = new Map();
+                        const opaqueCounts = new Map();
+                        let cleared = 0;
+                        let total = 0;
                         for (let i = 0; i < data.length; i += 4) {
                             const key = data[i] + ',' + data[i + 1] + ',' + data[i + 2];
                             counts.set(key, (counts.get(key) ?? 0) + 1);
+                            total += 1;
+                            // §N17/§N18: under background-opacity < 1 the engine CLEARS the
+                            // default background instead of filling it, so alpha is the only
+                            // thing that separates "the theme's ground" from "no ground at all".
+                            if (data[i + 3] === 0) cleared += 1;
+                            else opaqueCounts.set(key, (opaqueCounts.get(key) ?? 0) + 1);
                         }
                         const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+                        const topOpaque = [...opaqueCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
                         return {
                             top,
+                            topOpaque,
+                            cleared,
+                            total,
+                            // What the LIVE engine was BUILT with (§N17), not what a prop says.
+                            engineTransparent: host.dataset.terminalTransparent === 'true',
                             canvases: canvases.length,
                             dpr: window.devicePixelRatio,
                             size: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
@@ -15461,6 +15568,41 @@ function buildFlows(ctx) {
                         };
                     })()`
                 );
+                /**
+                 * §N18 — did the CELL AREA take the new palette, or only the margin?
+                 *
+                 * The distinction is the whole of the defect: `clear()` repaints the whole
+                 * canvas, but `renderLine` repaints every row over the top of it, so a renderer
+                 * that paints each cell in the colour the WASM terminal was BORN with leaves the
+                 * new background visible only in the right/bottom margin — which is exactly what
+                 * this assertion used to accept. Dominance is the honest test: the most-painted
+                 * colour on a terminal canvas is its background.
+                 *
+                 * Under `background-opacity < 1` the same question has a different answer: the
+                 * default background is CLEARED, not filled, so the cell area must come back
+                 * transparent — and it must not go opaque in the OLD background, which is the
+                 * form N18 took there (a translucent pane turning solid on a theme change).
+                 */
+                const cellAreaTookTheTheme = (sample) => {
+                    if (sample === null || typeof sample !== 'object') return { ok: false, why: 'no sample' };
+                    const rgb = (entry) => String(entry?.[0] ?? '');
+                    const count = (entries, key) =>
+                        (entries ?? []).find((entry) => rgb(entry) === key)?.[1] ?? 0;
+                    const oldBackground = count(sample.topOpaque, '10,10,12');
+                    if (sample.engineTransparent === true) {
+                        const cleared = Number(sample.cleared ?? 0);
+                        const total = Math.max(1, Number(sample.total ?? 0));
+                        return {
+                            ok: oldBackground === 0 && cleared / total > 0.5,
+                            why: `cleared ${String(cleared)}/${String(total)}, opaque old-bg ${String(oldBackground)}`
+                        };
+                    }
+                    const dominant = rgb(sample.topOpaque?.[0]);
+                    return {
+                        ok: /^48\s*,\s*25\s*,\s*52$/.test(dominant) && oldBackground === 0,
+                        why: `dominant ${dominant || '(none)'}, old-bg ${String(oldBackground)}`
+                    };
+                };
                 const engineTheme = String(
                     await page.eval(
                         `(() => {
@@ -15477,13 +15619,11 @@ function buildFlows(ctx) {
                 );
                 const paintedOnArrival = await sampleCanvas();
                 recorder.note(`canvas the moment the broadcast landed: ${JSON.stringify(paintedOnArrival)}`);
-                const themePixelsOnArrival = (paintedOnArrival?.top ?? []).some(
-                    (entry) => /^48\s*,\s*25\s*,\s*52$/.test(String(entry?.[0] ?? ''))
-                );
+                const arrivalVerdict = cellAreaTookTheTheme(paintedOnArrival);
                 recorder.check(
                     'the theme’s background is on the ENGINE’s canvas, not only in the CSS around it',
-                    themePixelsOnArrival,
-                    JSON.stringify((paintedOnArrival?.top ?? []).map((entry) => entry?.[0]))
+                    arrivalVerdict.ok,
+                    `${arrivalVerdict.why} — ${JSON.stringify((paintedOnArrival?.top ?? []).map((entry) => entry?.[0]))}`
                 );
                 /*
                  * One screen-clearing write, sent over the CLI so nothing here depends on where
@@ -15495,26 +15635,35 @@ function buildFlows(ctx) {
                 const paneID = String(state.firstPane ?? '');
                 if (paneID !== '') await cli.run(['pane', 'send', '--target', paneID, 'clear']);
                 let paintedAfterRedraw = paintedOnArrival;
+                let redrawVerdict = arrivalVerdict;
                 // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep.
                 for (let attempt = 0; attempt < 30; attempt++) {
                     paintedAfterRedraw = await sampleCanvas();
-                    if (/^48\s*,\s*25\s*,\s*52$/.test(String(paintedAfterRedraw?.top?.[0]?.[0] ?? ''))) break;
+                    redrawVerdict = cellAreaTookTheTheme(paintedAfterRedraw);
+                    if (redrawVerdict.ok) break;
                     await sleep(400);
                 }
                 /*
-                 * RECORDED, NOT ASSERTED — and the distinction is the point.
+                 * ASSERTED as of §N18's fix, and the upgrade is the point.
                  *
-                 * Everything the port owns is asserted above: the daemon resolved the file, the
-                 * pane handed its engine `#301934 / #7fffd4`, the container repainted, and the
-                 * theme's own pixels are on the canvas. What this second sample measures is
-                 * `ghostty-web`'s repaint policy for the region it has ALREADY painted, which
-                 * this port does not own: the engine repaints per row and per cell, so the part
-                 * of the viewport nothing has written to since the change can still hold the
-                 * pixels it was painted with before. `setTheme` asks the engine to clear (see
-                 * `renderer.ts`), and this number says how much of the old paint survives it —
-                 * so a future engine bump can be read off this line rather than argued about.
+                 * This line used to be RECORDED-not-asserted, because what it measures was an
+                 * engine limitation the port did not own: `ghostty-web` paints each cell in the
+                 * colour the WASM terminal was CONSTRUCTED with, and `ghostty_terminal_new_with_config`
+                 * takes that colour once — so after a live theme change every cell reported the
+                 * old background and the two-pass renderer filled it back in over the newly
+                 * cleared line, leaving the theme visible only in the margin. The note said "a
+                 * future engine bump can be read off this line rather than argued about";
+                 * `0.4.0-nex.7` is that bump (the renderer resolves a DEFAULT cell through the
+                 * live theme at paint time), so the line is now an assertion — a screen-clearing
+                 * write marks every row dirty, and the whole viewport must come back in the
+                 * theme's own background.
                  */
                 recorder.note(`canvas after one redraw: ${JSON.stringify(paintedAfterRedraw)}`);
+                recorder.check(
+                    'and a full-screen redraw comes back in it too — every row, not just the margin (§N18)',
+                    redrawVerdict.ok,
+                    `${redrawVerdict.why} — ${JSON.stringify((paintedAfterRedraw?.top ?? []).map((entry) => entry?.[0]))}`
+                );
 
                 // Settings says WHERE the palette came from — the resolution is inspectable.
                 const notedPath = String(

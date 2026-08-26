@@ -9,7 +9,7 @@
  * `packages/shell/scripts/web-smoke.mjs`, which has the same constraints.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -64,6 +64,33 @@ export function run(command, args, opts = {}) {
         child.on('error', reject);
         child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
     });
+}
+
+/**
+ * Take a just-spawned child out of the **background task policy** it inherited from this harness.
+ *
+ * A run started from an agent session or a CI shell is usually running under `DARWIN_BG`: macOS
+ * throttles its disk I/O hard and coalesces its timers, and every child inherits that. The dev
+ * shell shrugs it off; the **packaged** app does not, because its cold start is mostly
+ * first-touch I/O — a 250 MB signed bundle to page in and validate, asar integrity, the staged
+ * `Resources` payload. Under the background policy that start *freezes*: with a timestamped boot
+ * log, the app's whole main process went silent between two adjacent lines for 49.6 s and then
+ * finished every pending task inside 300 ms. Nothing answers while it is frozen — not the window
+ * load, not the DevTools port — which is exactly N22's "the port listens and never replies", and
+ * it is why the packaged path still looked like a coin flip after the code-signing half was fixed.
+ *
+ * Measured, packaged, harness-daemon shape: `-B` on the child attached in 191–207 ms on 7 of 8
+ * launches; without it, 1 of 8 (the rest never answered inside 15 s). It has to be the CHILD's
+ * pid — clearing the policy on this process first does not propagate to what it spawns (measured:
+ * 0/4). Best-effort: a missing `taskpolicy` just leaves the inherited policy in place.
+ */
+export function clearBackgroundTaskPolicy(pid) {
+    if (process.platform !== 'darwin' || pid === undefined) return;
+    try {
+        spawnSync('/usr/sbin/taskpolicy', ['-B', '-p', String(pid)], { stdio: 'ignore' });
+    } catch {
+        // the policy stays as inherited; a packaged run may then be slow to attach
+    }
 }
 
 function signalGroup(child, signal) {
@@ -205,14 +232,26 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
 
 // ── daemon ──────────────────────────────────────────────────────────────────────────
 
-export function startDaemon(sandbox, { repoRoot, verbose = false }) {
-    const entry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+/**
+ * `packaged: true` runs the daemon the app *ships* — `Contents/Resources/daemon/nexd.js` under
+ * the bundled `Contents/Resources/node`, with the packaged `node-pty` behind every PTY — instead
+ * of the working tree's `dist/`.
+ *
+ * The harness starts the daemon before the shell, and the shell then *discovers* it rather than
+ * spawning one (`daemon ready … (spawned=false)`). So in a `--packaged` run this is the only
+ * thing that decides whether the daemon under test is the shipped one; leaving it on the working
+ * tree's build would have quietly re-introduced exactly the gap N22 is about.
+ */
+export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = false }) {
+    const entry = packaged ? path.join(packagedResource(repoRoot, 'daemon'), 'nexd.js') : path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+    const runtime = packaged ? packagedResource(repoRoot, 'node') : process.execPath;
     const lines = [];
-    const child = spawn(process.execPath, [entry, 'start', '--foreground'], {
+    const child = spawn(runtime, [entry, 'start', '--foreground'], {
         cwd: repoRoot,
         env: sandbox.env,
         stdio: ['ignore', 'pipe', 'pipe']
     });
+    clearBackgroundTaskPolicy(child.pid);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     const collect = (chunk) => {
@@ -271,18 +310,64 @@ function electronBinary(repoRoot) {
     throw new Error('electron is not installed (run pnpm install)');
 }
 
+export function packagedApp(repoRoot) {
+    return path.join(repoRoot, 'packages', 'shell', 'out', `Nex-darwin-${process.arch}`, 'Nex.app');
+}
+
+/** `Contents/Resources/<name>` — the payload `forge.config.cjs` stages beside `app.asar`. */
+export function packagedResource(repoRoot, name) {
+    return path.join(packagedApp(repoRoot), 'Contents', 'Resources', name);
+}
+
 export function packagedBinary(repoRoot) {
-    return path.join(
-        repoRoot,
-        'packages',
-        'shell',
-        'out',
-        `Nex-darwin-${process.arch}`,
-        'Nex.app',
-        'Contents',
-        'MacOS',
-        'Nex'
-    );
+    return path.join(packagedApp(repoRoot), 'Contents', 'MacOS', 'Nex');
+}
+
+/**
+ * Repackage `Nex.app` from the bundles `buildAll` just produced.
+ *
+ * `--packaged` runs are only worth anything if the bundle under the debugger is the one this
+ * working tree makes *now*; a run against yesterday's `out/` is a screenshot of yesterday's
+ * bugs. `electron-forge package` (not `make`) — the audit drives the `.app`, and building a
+ * DMG on top of it would add a minute for nothing.
+ */
+export async function packageApp(repoRoot, { log = () => {} } = {}) {
+    log('packaging Nex.app… (~1 min)');
+    const result = await run('pnpm', ['--filter', '@nex/shell', 'package'], { cwd: repoRoot });
+    if (result.code !== 0) {
+        throw new Error(`packaging failed (exit ${String(result.code)}):\n${result.stdout}${result.stderr}`);
+    }
+    return packagedApp(repoRoot);
+}
+
+/**
+ * Refuse to drive a packaged app whose code signature is broken — N22, and the reason the audit
+ * spent the whole port unable to reach shipped bytes.
+ *
+ * Forge's fuses plugin signs ad-hoc at `packageAfterCopy`; `@electron/packager` then renames the
+ * app and its four helper bundles and rewrites their `Info.plist`s, and (with no `osxSign`
+ * config) nothing signs again. The bundle still launches, but it runs under the *stale*
+ * signature's identity — `tccd` logs it as `com.github.Electron` — and in that state the
+ * browser process's `--remote-debugging-port` listener accepts a TCP connection and never
+ * answers it: `waitForPageTarget` just burns its 90 s and the run dies with nothing to show.
+ * `packages/shell/forge.config.cjs` re-signs in `postPackage` now, so a bundle that fails this
+ * check is one built before that fix.
+ */
+export async function assertPackagedSignature(repoRoot) {
+    const appPath = packagedApp(repoRoot);
+    if (!fs.existsSync(appPath)) {
+        throw new Error(`packaged app is missing: ${appPath} (run \`pnpm --filter @nex/shell package\`)`);
+    }
+    const verify = await run('/usr/bin/codesign', ['--verify', '--strict', appPath]);
+    if (verify.code !== 0) {
+        throw new Error(
+            `the packaged app's code signature is not valid, so CDP cannot attach to it (N22):\n` +
+                `  ${verify.stderr.trim().split('\n').join('\n  ')}\n` +
+                `Repackage it — \`pnpm --filter @nex/shell package\` — which now ad-hoc signs the\n` +
+                `finished bundle. (A run started without --no-build does this for you.)`
+        );
+    }
+    return appPath;
 }
 
 /**
@@ -308,6 +393,8 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true
     });
+    // Before anything else: the packaged app's cold start must not run under DARWIN_BG.
+    clearBackgroundTaskPolicy(child.pid);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let pending = '';

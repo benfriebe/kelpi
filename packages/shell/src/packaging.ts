@@ -147,6 +147,58 @@ export function cookieEncryptionFuseEnabled(identity: string | null | undefined)
     return isSignedBuild(identity);
 }
 
+// ── the ad-hoc signature ────────────────────────────────────────────────────────────
+
+/**
+ * Does this build have to be ad-hoc signed **after** packaging finishes? Yes, unless a real
+ * identity is configured — in which case `@electron/packager`'s own `osxSign` step already
+ * signed the finished bundle and re-signing it would throw that signature away.
+ */
+export function adhocSignRequired(identity: string | null | undefined, platform: string): boolean {
+    return !isSignedBuild(identity) && (platform === 'darwin' || platform === 'mas');
+}
+
+/**
+ * `codesign` invocations that give an unsigned build a *valid* ad-hoc signature — and then
+ * prove it. Run in order; a non-zero exit from either one must fail the build.
+ *
+ * ## Why this exists (N22)
+ *
+ * Forge's `FusesPlugin` flips the fuses at the `packageAfterCopy` hook and, because there is no
+ * `osxSign` config, re-signs ad-hoc right there. Packaging then keeps going: `@electron/packager`
+ * renames `Electron.app` → `Nex.app` and all four `Electron Helper*.app` bundles, rewrites every
+ * one of their `Info.plist`s (`appBundleId`, `productName`, `extendInfo`, the asar integrity
+ * hash) and copies `extraResource` in. Nothing re-signs afterwards. So the shipped bundle used
+ * to carry a signature sealed over the *pre-rename* contents:
+ *
+ *     $ codesign --verify --strict Nex.app
+ *     Nex.app: invalid Info.plist (plist or signature have been modified)
+ *     $ codesign -dv Nex.app
+ *     Identifier=com.github.Electron        ← not com.benfriebe.newnex
+ *     Info.plist=not bound
+ *
+ * That is not cosmetic. macOS derives the app's *identity* from the code signature, and a broken
+ * seal leaves the app running under whatever identifier the stale CodeDirectory names — `tccd`
+ * logs the packaged app as `com.github.Electron` and its renderers as `com.github.Electron.helper`.
+ * The measured consequence: the browser process's `--remote-debugging-port` listener accepts a
+ * TCP connection (`lsof` shows the accepted fd) and the reply never leaves the process, so no
+ * CDP client can attach to the packaged app at all — which is why the UI audit could never run
+ * against shipped bytes. An ad-hoc re-sign of the finished bundle fixes it outright, and the
+ * fuse set is untouched (an otherwise byte-identical copy with the *same* fuses, re-signed,
+ * answers `/json/version` in ~5 ms).
+ *
+ * `--deep` is the right tool *here* and only here: this is an ad-hoc signature with no
+ * entitlements and no Developer ID, and the four renamed helper bundles need the same treatment
+ * as the outer one. A real signing run takes the `osxSign` path instead, which signs inside-out
+ * with per-bundle entitlements the way Apple documents.
+ */
+export function adhocSignCommands(appPath: string): readonly (readonly string[])[] {
+    return [
+        ['codesign', '--force', '--deep', '--sign', '-', appPath],
+        ['codesign', '--verify', '--strict', appPath]
+    ];
+}
+
 // ── the bundled Node runtime ────────────────────────────────────────────────────────
 
 /** What `<node> -p "process.versions.node + ' ' + process.arch"` tells us about a candidate. */

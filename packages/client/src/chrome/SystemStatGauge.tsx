@@ -20,9 +20,10 @@
  * mouse-only, which leaves the detail unreachable by keyboard. Same content, one more way in.
  */
 
-import { useId, useState, type ReactElement } from 'react';
+import { useId, useRef, useState, type ReactElement } from 'react';
 
 import { ChromeIcon } from './icons';
+import { useOverlayPresence } from './modal-presence';
 import {
     compactStatLabel,
     detailStatLabel,
@@ -151,6 +152,20 @@ export function SystemStatGauge(props: SystemStatGaugeProps): ReactElement | nul
     const meta = systemStatMeta(props.kind);
     const [open, setOpen] = useState(false);
     const popoverID = useId();
+    const popoverRef = useRef<HTMLDivElement | null>(null);
+    /*
+     * §N26 — a 222 px card that rises off the footer into the grid, so over a bottom web pane it
+     * was painted under the page (`docs/audit/n26-popup-layering`, step `05-stat-popover`).
+     *
+     * This is the surface that decided the shape of the fix. It opens on HOVER: enrolling it the
+     * way H1 enrolled the dialogs would blank EVERY page in the window each time the pointer
+     * swept the footer, one native attach/detach per pass. Registering its box instead parks
+     * only the pane the card is actually over — usually one, often none.
+     *
+     * Hooks before the `meta === null` guard: an early return above them would make the hook
+     * order depend on the stat kind.
+     */
+    useOverlayPresence(popoverRef, open);
     if (meta === null) return null;
 
     const value = compactStatLabel(meta.kind, props.stats);
@@ -203,6 +218,7 @@ export function SystemStatGauge(props: SystemStatGaugeProps): ReactElement | nul
 
             {open ? (
                 <div
+                    ref={popoverRef}
                     id={popoverID}
                     role="dialog"
                     aria-label={meta.displayName}

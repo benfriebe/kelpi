@@ -22,6 +22,7 @@ import { ContextMenu, type MenuItemSpec } from './ContextMenu';
 import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
+import { useOverlayPresence } from './modal-presence';
 import { withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import type { ChromePane } from './types';
@@ -122,6 +123,13 @@ export function TopBar(props: TopBarProps): ReactElement {
      * typed. Same hook the pane context menu uses.
      */
     useDismissable(layoutMenuOpen, closeLayoutMenu, [layoutMenuRef, layoutToggleRef]);
+    /*
+     * §N26 — and it drops STRAIGHT onto the grid. Right-aligned under the title bar, this panel
+     * lands over whatever pane is top-right, so over a web pane it was painted under the page
+     * (`docs/audit/n26-popup-layering`, step `03-layout-menu`). Same registry as the context
+     * menu it sits beside, at the same precision: only the panes its box reaches park.
+     */
+    useOverlayPresence(layoutMenuRef, layoutMenuOpen);
     const hasWorkspace = props.workspaceName !== null;
     const paneCount = props.panes.length;
     const syncable = (props.syncedPaneCount ?? 0) >= 2;

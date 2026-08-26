@@ -31,6 +31,7 @@ import {
     type ReactElement
 } from 'react';
 
+import { overlayCovers, useOverlayRects } from '../chrome/modal-presence';
 import { Icon } from '../grid/icons';
 import { pill, tokens } from '../grid/tokens';
 import { BatchPanel } from './BatchPanel';
@@ -417,25 +418,43 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
     const onHidden = props.onHidden;
     const dpr = props.devicePixelRatio;
 
+    /**
+     * §N26 — the floating surfaces that are over THIS pane's page area right now.
+     *
+     * `App.tsx`'s `modalOpen` is the whole-window half of the same rule (H1): a dialog owns the
+     * window, so every page parks for it. A menu or a popover does not — it covers a box — so it
+     * registers that box (`chrome/modal-presence.ts`) and only the panes it actually intersects
+     * park. A rect that could not be measured covers everything, which is exactly H1's answer;
+     * the precision can only remove a park it can prove is unnecessary.
+     */
+    const overlays = useOverlayRects();
+    const [coveredByOverlay, setCoveredByOverlay] = useState(false);
+
     const publish = useCallback(() => {
+        const element = pageRef.current;
+        // Measured (and answered) BEFORE the `embedded` gate: "is this page covered" is a fact
+        // about this document, and `data-visible` — what the audit and the unit tests read —
+        // must state it whether or not this particular client has a native view to place.
+        const rect = element === null ? null : measure(element);
+        const covered = overlayCovers(rect, overlays);
+        setCoveredByOverlay(covered);
         // A browser client has nothing to place: reporting from it would only be noise the
         // host has to reject (and it does, on `ownWindow`).
         if (!embedded) return;
-        const element = pageRef.current;
-        if (element === null) return;
-        if (!visible) {
+        if (element === null || rect === null) return;
+        if (!visible || covered) {
             onHidden?.(paneID);
             return;
         }
         onGeometry?.({
             paneID,
             tabID: active?.id ?? null,
-            rect: measure(element),
+            rect,
             visible: true,
             devicePixelRatio:
                 dpr ?? (globalThis as { devicePixelRatio?: number }).devicePixelRatio ?? 1
         });
-    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr]);
+    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays]);
 
     // Layout effect, and deliberately with no dependency list: the grid re-renders a pane
     // whenever anything about the layout moves, so "after every render" IS the change signal.
@@ -771,7 +790,11 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
             <div
                 ref={pageRef}
                 data-testid={`web-page-${paneID}`}
-                data-visible={visible ? 'true' : 'false'}
+                // The pane's EFFECTIVE placement, so one attribute answers "is the page on
+                // screen": `visible` is the assembly's (a modal, a hidden workspace) and
+                // `coveredByOverlay` is §N26's per-pane half.
+                data-visible={visible && !coveredByOverlay ? 'true' : 'false'}
+                data-overlay-covered={coveredByOverlay ? 'true' : 'false'}
                 className="relative min-h-0 flex-1 overflow-hidden"
                 // Nothing is drawn here when embedded: the shell's native view covers this box
                 // exactly, and anything underneath would only be visible while it catches up.

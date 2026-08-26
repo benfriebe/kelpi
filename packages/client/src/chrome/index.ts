@@ -328,7 +328,21 @@ export {
  * The two contracts every modal/transient surface in the chrome owes (UI-FIDELITY H1 / H15):
  * "park the web pane while I am painted", and "close me on an outside click or Escape".
  */
-export { modalPresenceCount, registerModal, useAnyModalOpen, useModalPresence } from './modal-presence';
+export {
+    measureOverlayRect,
+    modalPresenceCount,
+    overlayCovers,
+    overlayPresenceCount,
+    registerModal,
+    registerOverlay,
+    UNMEASURED_OVERLAY,
+    useAnyModalOpen,
+    useModalPresence,
+    useOverlayPresence,
+    useOverlayRects,
+    type OverlayHandle,
+    type OverlayRect
+} from './modal-presence';
 export { useDismissable } from './dismissable';
 /** …and the hover recipe those same surfaces owe a pointer (H11). */
 export { hoverFill, hoverText, useHoverKey, type HoverBinding } from './hover';

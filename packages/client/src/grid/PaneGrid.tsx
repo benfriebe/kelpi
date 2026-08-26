@@ -62,6 +62,7 @@ import {
     throttleTrailing,
     type Throttled
 } from './divider';
+import { useOverlayPresence } from '../chrome/modal-presence';
 import { FocusRing, useFocusDwell } from './FocusRing';
 import { Icon } from './icons';
 import { PANE_HEADER_HEIGHT, PaneHeader } from './PaneHeader';
@@ -562,6 +563,15 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                   const rect = frames.get(dropTarget.paneID);
                   return rect === undefined ? null : dropZoneOverlayRect(dropTarget.zone, rect);
               })();
+    /*
+     * §N26 — the drop highlight is drawn INSIDE the target pane, so when the target is a web
+     * pane it was painted under the live page and the gesture had no visible answer at all
+     * (`docs/audit/n26-popup-layering`, step `08-pane-drop-zone`). It registers its box with
+     * `chrome/modal-presence` for the length of the drag, which parks the pane being dropped on
+     * — and only that pane — so the accent fill and its outline are actually on screen.
+     */
+    const dropZoneRef = useRef<HTMLDivElement | null>(null);
+    useOverlayPresence(dropZoneRef, dropRect !== null && dropTarget !== null);
 
     return (
         <div
@@ -687,6 +697,16 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             `.overlay` modifiers do (`:379`, `:387`). */}
                         {props.renderPaneOverlay?.(pane.id) ?? null}
                         <FocusRing focused={focused} />
+                        {/*
+                          * §N26's matrix, for the record: this badge is over the page area of a
+                          * WEB pane too, and there it is invisible — a native `WebContentsView`
+                          * is composited above this document. It is deliberately not enrolled in
+                          * `chrome/modal-presence`: it is painted only while a divider is being
+                          * dragged, its box moves with every frame of that drag, and enrolling it
+                          * would park (and un-park) a real OS-level view continuously to show a
+                          * `W x H` readout — while the page resizing under the drag IS the
+                          * feedback. The surfaces enrolled are the ones a user reads and clicks.
+                          */}
                         {resizing && visible ? (
                             <ResizeBadge
                                 paneID={pane.id}
@@ -708,6 +728,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
 
             {dropRect === null || dropTarget === null ? null : (
                 <div
+                    ref={dropZoneRef}
                     data-testid="drop-zone-overlay"
                     data-zone={dropTarget.zone}
                     data-target={dropTarget.paneID}

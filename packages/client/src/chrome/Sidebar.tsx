@@ -39,6 +39,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
+import { useModalPresence } from './modal-presence';
 import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
     ChromeIcon,
@@ -2315,6 +2316,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
             ghost.style.outlineOffset = '-1px';
             ghost.style.boxShadow = '0 12px 32px rgba(0,0,0,0.55)';
             ghost.style.transformOrigin = 'top left';
+            /*
+             * §N26, deliberately NOT enrolled in `chrome/modal-presence`.
+             *
+             * This clone can be dragged out over the grid, and over a web pane's page it is
+             * invisible like every other DOM surface there. It is left that way on purpose: its
+             * box is rewritten from the raw pointer on every mousemove (that is the whole design
+             * two comments up), so registering it would attach and detach a real OS-level view
+             * dozens of times per gesture — a page flickering in and out for the length of a
+             * drag, to keep a decoration visible in the one place the drop can never land, since
+             * every drop target for this gesture is inside the sidebar. The surfaces that ARE
+             * enrolled are the ones a user reads and clicks: menus, popovers, dialogs, and the
+             * drop highlight the pane drag actually aims at (`grid/PaneGrid.tsx`).
+             */
             body.appendChild(ghost);
             dragGhostRef.current = ghost;
             /*
@@ -4553,6 +4567,8 @@ interface CustomEmojiSheetProps {
  */
 function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
     const [value, setValue] = useState('');
+    // §N26: a sheet, so the whole-window park — the same enrolment its sibling dialog takes.
+    useModalPresence();
     const container = globalThis.document?.body;
     const normalized = normalizeEmojiInput(value);
     const subject = (props.subjectName ?? '').trim();
@@ -4684,6 +4700,15 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     // Hooks before the container guard: a conditional early return above `useState` would make
     // the hook order depend on the DOM being present.
     const [suppress, setSuppress] = useState(false);
+    /*
+     * §N26 — the surface the owner photographed. This is the destructive confirmation the
+     * workspace/group row menu raises, and it is the one modal H1's registry never enrolled:
+     * `docs/audit/n26-popup-layering` caught it painted UNDER a live page, sliced at the pane's
+     * edge exactly as run-O/53 caught the quit dialog. It is an app-modal alert (the Swift's
+     * `WorkspaceDeleteGate` is `runModal()`), so it takes the whole-window park rather than the
+     * per-rect one — the window behind it is not to be read while it is up.
+     */
+    useModalPresence();
     const container = globalThis.document?.body;
     if (container === undefined || container === null) return null;
     const isGroup = props.confirm.kind === 'group';

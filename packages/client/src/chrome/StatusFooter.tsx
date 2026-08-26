@@ -24,6 +24,7 @@ import { useSecondsTicker } from './clock';
 import { useDismissable } from './dismissable';
 import { hoverFill, hoverText, useHoverKey } from './hover';
 import { ChromeIcon } from './icons';
+import { useOverlayPresence } from './modal-presence';
 import { Sparkline, SystemStatGauge, type SparklineStyle } from './SystemStatGauge';
 import { systemStatMeta, visibleStatKinds } from './stats';
 import {
@@ -556,6 +557,12 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
      * chip would otherwise dismiss the panel a moment before that chip's own click re-opened it.
      */
     useDismissable(openBucket !== null, closeBucket, [popoverRef, runningRef, waitingRef, inactiveRef]);
+    /*
+     * §N26 — the panel rises off the footer INTO the grid, so over a bottom web pane it was
+     * painted under the page. It registers its box with `modal-presence`, which parks the panes
+     * it actually covers — and only those — for as long as it is open.
+     */
+    useOverlayPresence(popoverRef, openBucket !== null);
 
     /*
      * §M20 — and it is anchored to the chip that opened it, measured off the real boxes. Null

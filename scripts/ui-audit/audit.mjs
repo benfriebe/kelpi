@@ -6534,6 +6534,629 @@ function buildFlows(ctx) {
             }
         },
 
+        {
+            /**
+             * §N26 — every floating DOM surface, judged against a LIVE page.
+             *
+             * A web pane's page is a native `WebContentsView` the shell composites ON TOP of the
+             * renderer, so nothing in the document can be drawn over it: the only way a menu or
+             * a dialog is visible over a page is for the client to hand that page's view back
+             * first (H1's mechanism — `chrome/modal-presence.ts` → `webpane/geometry.ts` →
+             * `shell/webhost/embed.ts`). H1 enrolled the modals; the owner's 2026-08-26 frame
+             * showed the rest of the class still painted underneath — the sidebar's delete
+             * confirmation, the title bar's layout dropdown, the footer's gauge popover, the web
+             * chrome's own bookmarks menu, the pane-drag drop zone.
+             *
+             * This step is that matrix, live. Every case is asserted from BOTH ends, because
+             * either alone can lie: the client's `data-visible` (what it decided) and the
+             * shell's own placement log (`view owner=holder` / `owner=main` — what actually
+             * happened to the OS-level view). And every case asserts the return trip too: a
+             * surface that closes must hand the page back AT THE SAME BOUNDS, or the fix has
+             * traded N26 for a pane that goes dark and stays dark.
+             *
+             * TWO web panes, filling the grid, in a workspace of this step's own. Its own,
+             * because the geometry has to be known — a surface is anchored to the window (the
+             * title bar's right edge, the footer's gauges) and "does it land on a page" must not
+             * depend on which column the flow happened to leave a shell pane in. Two, because
+             * that is what makes the PRECISION observable: the registration is a rect rather
+             * than a count, so a menu in the sidebar parks the pane it reaches and leaves the
+             * one beside it live — which is why hovering a footer gauge no longer blanks every
+             * page in the window.
+             */
+            id: 'web-popup-layering',
+            expect:
+                'Every floating DOM surface that can land over a web pane is VISIBLE over it: the sidebar row menu, its delete confirmation, the title bar layout dropdown, the footer stat popover and the pane\'s own bookmarks menu each park the page they cover (client `data-visible=false` + the shell taking the view back to the holder), leave the pages they do NOT cover placed, and hand every page back at the same bounds on close.',
+            needsEyes: true,
+            async run(recorder) {
+                const workspaceName = 'n26-popup-layering';
+                const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
+                recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim() || created.stderr.trim());
+                if (created.code !== 0) return;
+                await sleep(1500);
+
+                const openWeb = async () => {
+                    const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
+                    await sleep(2500);
+                    return (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                };
+                const left = await openWeb();
+                const right = await openWeb();
+                recorder.check('two web panes opened', left !== null && right !== null, `${String(left)} / ${String(right)}`);
+                if (left === null || right === null) return;
+
+                // The new workspace's own shell pane goes, so the two pages fill the grid and
+                // every window-anchored surface has a page under it.
+                const panes = await cli.json(['pane', 'list', '--json'], { timeoutMs: 40_000 });
+                for (const pane of panes.filter((entry) => entry.is_active_workspace === true && entry.type !== 'web')) {
+                    await cli.run(['pane', 'close', '--target', String(pane.id)], { timeoutMs: 40_000 });
+                    await sleep(600);
+                }
+                await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left });
+                await sleep(1500);
+
+                /** Both ends of one pane's placement: what the client decided, what the shell did. */
+                const holes = async () =>
+                    page.eval(
+                        `(() => [...document.querySelectorAll('[data-testid^="web-page-"]')].map((el) => {
+                            const r = el.getBoundingClientRect();
+                            return { id: el.getAttribute('data-testid').slice('web-page-'.length),
+                                     visible: el.getAttribute('data-visible'),
+                                     x: Math.round(r.x), y: Math.round(r.y),
+                                     w: Math.round(r.width), h: Math.round(r.height) };
+                        }))()`
+                    );
+                const embedOf = (paneID) => {
+                    const lines = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes(`web pane ${String(paneID)} view `)
+                    );
+                    return lines[lines.length - 1] ?? '(none)';
+                };
+                /** The union of a surface and everything inside it (a submenu hangs off its parent). */
+                const surfaceRect = async (selector) =>
+                    page.eval(
+                        `(() => {
+                            const el = document.querySelector(${JSON.stringify(selector)});
+                            if (el === null) return null;
+                            const own = el.getBoundingClientRect();
+                            let box = { left: own.left, top: own.top, right: own.right, bottom: own.bottom };
+                            for (const kid of el.querySelectorAll('*')) {
+                                const r = kid.getBoundingClientRect();
+                                if (r.width <= 0 || r.height <= 0) continue;
+                                box = { left: Math.min(box.left, r.left), top: Math.min(box.top, r.top),
+                                        right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom) };
+                            }
+                            return { x: Math.round(box.left), y: Math.round(box.top),
+                                     w: Math.round(box.right - box.left), h: Math.round(box.bottom - box.top) };
+                        })()`
+                    );
+                const overlaps = (a, b) =>
+                    a !== null && b !== null && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+                const opening = await holes();
+                recorder.note(`page holes: ${JSON.stringify(opening)}`);
+                recorder.check(
+                    'both pages start placed, filling the grid',
+                    opening.length === 2 && opening.every((hole) => hole.visible === 'true'),
+                    JSON.stringify(opening)
+                );
+
+                /*
+                 * Recorded, not asserted — the same class one surface over.
+                 *
+                 * `FocusRing` is `absolute inset-0` on the PANE wrapper, and a web pane's page
+                 * hole reaches that wrapper's left, right and bottom edges, so on a focused LIVE
+                 * web pane the ring's lower three sides are inside the box the native view
+                 * occupies. It is not a popup and it was not reported, so it is not N26's; these
+                 * numbers exist so the question can be settled from data rather than a squint.
+                 */
+                const ringVsHole = await page.eval(
+                    `(() => {
+                        const ring = document.querySelector('[data-testid="focus-ring"]');
+                        if (ring === null) return 'no focused pane';
+                        const r = ring.getBoundingClientRect();
+                        const hit = [...document.querySelectorAll('[data-testid^="web-page-"]')]
+                            .map((el) => ({ id: el.getAttribute('data-testid').slice('web-page-'.length), b: el.getBoundingClientRect() }))
+                            .find((h) => h.b.left < r.right && r.left < h.b.right && h.b.top < r.bottom && r.top < h.b.bottom);
+                        return { ring: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+                                 hole: hit === undefined ? null
+                                     : { id: hit.id.slice(0, 8), x: Math.round(hit.b.x), y: Math.round(hit.b.y),
+                                         w: Math.round(hit.b.width), h: Math.round(hit.b.height) } };
+                    })()`
+                );
+                recorder.note(`focus ring vs page hole: ${JSON.stringify(ringVsHole)}`);
+
+                /**
+                 * One matrix row: open the surface, prove every page it covers is parked (and
+                 * that the SHELL agrees), prove every page it does not cover is untouched, then
+                 * close it and prove all of them come back where they were.
+                 */
+                const layer = async (name, open, close, { whole = false } = {}) => {
+                    const baseline = await holes();
+                    await open();
+                    await sleep(900);
+                    const rect = await surfaceRect(name.selector);
+                    const during = await holes();
+                    await recorder.shot(page, name.shot);
+                    recorder.note(`${name.shot}: rect=${JSON.stringify(rect)} holes=${JSON.stringify(during)}`);
+                    recorder.check(`${name.label}: the surface is on screen`, rect !== null && rect.w > 0, JSON.stringify(rect));
+
+                    const covered = during.filter((hole) => overlaps(rect, hole));
+                    recorder.check(
+                        `${name.label}: it lands over a live page at all (else this proves nothing)`,
+                        covered.length > 0,
+                        `${String(covered.length)} of ${String(during.length)}`
+                    );
+                    recorder.check(
+                        `${name.label}: every page under it is parked, so the surface is not sliced`,
+                        covered.length > 0 && covered.every((hole) => hole.visible === 'false'),
+                        covered.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`).join(' ')
+                    );
+                    for (const hole of covered) {
+                        const line = embedOf(hole.id);
+                        recorder.check(
+                            `${name.label}: the SHELL took ${hole.id.slice(0, 8)}'s view back to the holder`,
+                            line.includes('owner=holder'),
+                            line
+                        );
+                    }
+                    if (!whole) {
+                        // The rect's whole point: a surface parks what it covers and nothing else.
+                        for (const hole of during.filter((entry) => !overlaps(rect, entry))) {
+                            recorder.check(
+                                `${name.label}: the page it does NOT cover (${hole.id.slice(0, 8)}) is still placed`,
+                                hole.visible === 'true',
+                                `${String(hole.visible)} · ${embedOf(hole.id)}`
+                            );
+                        }
+                    }
+
+                    await close();
+                    await sleep(1000);
+                    const after = await holes();
+                    recorder.check(
+                        `${name.label}: closing it hands every page back`,
+                        after.length === baseline.length && after.every((hole) => hole.visible === 'true'),
+                        JSON.stringify(after.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`))
+                    );
+                    for (const hole of after) {
+                        const before = baseline.find((entry) => entry.id === hole.id);
+                        const line = embedOf(hole.id);
+                        recorder.check(
+                            `${name.label}: ${hole.id.slice(0, 8)}'s view is back in the window at the same bounds`,
+                            line.includes('owner=main') &&
+                                before !== undefined &&
+                                line.includes(`${String(before.x)},${String(before.y)}`),
+                            line
+                        );
+                    }
+                };
+
+                // 1 — the sidebar's row menu: the surface the owner's frame was raised from.
+                await layer(
+                    { label: 'sidebar row menu', shot: 'sidebar-menu', selector: '[data-testid="context-menu"]' },
+                    async () => {
+                        await page.rightClick('[data-testid="workspace-row"]');
+                    },
+                    async () => {
+                        await page.key('Escape');
+                    }
+                );
+
+                // 2 — …with a SUBMENU open, which hangs off the panel and past its own box.
+                await layer(
+                    { label: 'row menu + submenu', shot: 'sidebar-submenu', selector: '[data-testid="context-menu"]' },
+                    async () => {
+                        await page.rightClick('[data-testid="workspace-row"]');
+                        await sleep(700);
+                        const opened = await page.eval(
+                            `(() => {
+                                const menu = document.querySelector('[data-testid="context-menu"]');
+                                if (menu === null) return 'no menu';
+                                const row = [...menu.querySelectorAll('[role="menuitem"]')].find((r) => (r.textContent ?? '').includes('▸'));
+                                if (row === undefined) return 'no submenu row';
+                                row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                                row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                                return (row.textContent ?? '').trim();
+                            })()`
+                        );
+                        recorder.note(`submenu row: ${String(opened)}`);
+                    },
+                    async () => {
+                        await page.key('Escape');
+                    }
+                );
+
+                /*
+                 * 3 — the DELETE confirmation: N26's photographed frame, and a whole-window
+                 * modal rather than a positioned popover, so it parks every page. Cancelled,
+                 * never confirmed — and raised on the OTHER workspace's row, so a stray confirm
+                 * could not take this step's own panes with it.
+                 */
+                await layer(
+                    { label: 'delete confirmation', shot: 'delete-confirm', selector: '[data-testid="confirm-dialog"]' },
+                    async () => {
+                        const raised = await page.eval(
+                            `(() => {
+                                const rows = [...document.querySelectorAll('[data-testid="workspace-row"]')];
+                                const row = rows.find((el) => !(el.textContent ?? '').includes(${JSON.stringify(workspaceName)})) ?? rows[0];
+                                if (row === undefined) return 'no workspace row';
+                                row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 200 }));
+                                return (row.textContent ?? '').trim().slice(0, 40);
+                            })()`
+                        );
+                        recorder.note(`row: ${String(raised)}`);
+                        await sleep(700);
+                        const clicked = await page.eval(
+                            `(() => {
+                                const menu = document.querySelector('[data-testid="context-menu"]');
+                                if (menu === null) return 'no menu';
+                                const row = [...menu.querySelectorAll('[role="menuitem"]')].find((r) => /^delete$/i.test((r.textContent ?? '').trim()));
+                                if (row === undefined) return 'no delete row';
+                                if (row.hasAttribute('disabled')) return 'the delete row is disabled';
+                                row.click();
+                                return 'confirmation raised';
+                            })()`
+                        );
+                        recorder.note(`delete row: ${String(clicked)}`);
+                    },
+                    async () => {
+                        await page.eval(
+                            `(() => {
+                                const cancel = document.querySelector('[data-testid="confirm-cancel"]');
+                                if (cancel !== null) cancel.click();
+                                return null;
+                            })()`
+                        );
+                    },
+                    // An alert owns the window, so it parks every page — there is no "spare" here.
+                    { whole: true }
+                );
+
+                // 4 — the title bar's layout dropdown, which drops straight onto the grid.
+                await layer(
+                    { label: 'layout dropdown', shot: 'layout-menu', selector: '[data-testid="layout-menu"]' },
+                    async () => {
+                        await page.click('[data-testid="layout-menu-toggle"]');
+                    },
+                    async () => {
+                        await page.key('Escape');
+                    }
+                );
+
+                /*
+                 * 5 — the footer's stat popover: the HOVER surface, and the reason the
+                 * registration is a rect rather than a count. Enrolled as a modal it would blank
+                 * every page in the window every time the pointer crossed the footer.
+                 */
+                const gauge = await page.box('[data-testid="stat-gauge-cpu"]');
+                if (gauge === null) {
+                    recorder.note('no cpu gauge in this footer; the stat popover is not exercised');
+                } else {
+                    await layer(
+                        { label: 'stat popover', shot: 'stat-popover', selector: '[data-testid="stat-popover-cpu"]' },
+                        async () => {
+                            await page.mouse(
+                                'mouseMoved',
+                                Math.round(gauge.x + gauge.width / 2),
+                                Math.round(gauge.y + gauge.height / 2)
+                            );
+                        },
+                        async () => {
+                            await page.mouse('mouseMoved', Math.round(gauge.x), 200);
+                        }
+                    );
+                }
+
+                // 6 — the pane's OWN bookmarks menu, which drops over its own page.
+                await layer(
+                    {
+                        label: 'bookmarks menu',
+                        shot: 'favourites-menu',
+                        selector: `[data-testid="web-favourites-list-${left}"]`
+                    },
+                    async () => {
+                        await page.click(`[data-testid="web-favourites-menu-${left}"]`);
+                    },
+                    async () => {
+                        await page.eval(
+                            `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return null; })()`
+                        );
+                    }
+                );
+
+                /*
+                 * 7 — the pane's OWN header menu, and the half no park assertion proves on its
+                 * own: that a row drawn over a live page can still be CLICKED.
+                 *
+                 * Parking the view is exactly what makes that true — a native `WebContentsView`
+                 * sitting over the row is what would take the click — so the row is measured
+                 * against the page hole FIRST and only then activated. (The audit's own click
+                 * is a CDP `Input.dispatchMouseEvent` into this renderer, which reaches the
+                 * document whatever is composited above it; what carries the claim for a real
+                 * pointer is the pair of park assertions beside it, not the click.)
+                 */
+                await layer(
+                    {
+                        label: 'web pane header menu',
+                        shot: 'pane-header-menu',
+                        selector: '[data-testid="context-menu"]'
+                    },
+                    async () => {
+                        await page.rightClick(`[data-testid="pane-header-${right}"]`);
+                    },
+                    async () => {
+                        await page.key('Escape');
+                    }
+                );
+
+                /*
+                 * …and the same claim carried by a row whose OWN box is inside a page hole. The
+                 * layout dropdown drops off the title bar and its lower rows land on the grid,
+                 * so the last one is picked by measurement rather than by name — a menu that
+                 * moved would fail this loudly instead of quietly testing the title bar.
+                 */
+                const layoutBefore = await page.eval(
+                    `(document.querySelector('[data-testid="layout-cycle"]')?.textContent ?? '').trim()`
+                );
+                await page.click('[data-testid="layout-menu-toggle"]');
+                await sleep(800);
+                const overRow = await page.eval(
+                    `(() => {
+                        const menu = document.querySelector('[data-testid="layout-menu"]');
+                        if (menu === null) return null;
+                        const rows = [...menu.querySelectorAll('[role="menuitem"]')];
+                        const holes = [...document.querySelectorAll('[data-testid^="web-page-"]')].map((el) => el.getBoundingClientRect());
+                        const hit = rows.reverse().find((row) => {
+                            const r = row.getBoundingClientRect();
+                            return holes.some((h) => r.left < h.right && h.left < r.right && r.top < h.bottom && h.top < r.bottom);
+                        });
+                        if (hit === undefined) return null;
+                        const r = hit.getBoundingClientRect();
+                        return { label: (hit.textContent ?? '').trim(),
+                                 x: Math.round(r.x), y: Math.round(r.y),
+                                 w: Math.round(r.width), h: Math.round(r.height),
+                                 cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2) };
+                    })()`
+                );
+                recorder.note(`layout row over a page hole: ${JSON.stringify(overRow)} (was "${String(layoutBefore)}")`);
+                recorder.check(
+                    'a layout row is drawn OVER a page area (else clicking it proves nothing)',
+                    overRow !== null,
+                    JSON.stringify(overRow)
+                );
+                if (overRow !== null) {
+                    await page.clickAt(overRow.cx, overRow.cy);
+                    await sleep(1500);
+                    const layoutAfter = await page.eval(
+                        `(document.querySelector('[data-testid="layout-cycle"]')?.textContent ?? '').trim()`
+                    );
+                    recorder.check(
+                        'clicking it ACTED — the layout changed, so the row was not swallowed',
+                        typeof layoutAfter === 'string' &&
+                            layoutAfter.toLowerCase().includes(String(overRow.label).toLowerCase()),
+                        `${String(layoutBefore)} → ${String(layoutAfter)}`
+                    );
+                    await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left, timeoutMs: 40_000 });
+                    await sleep(1500);
+                }
+                const afterRowClick = await holes();
+                recorder.check(
+                    'and every page is placed again once the menu is gone',
+                    afterRowClick.length > 0 && afterRowClick.every((hole) => hole.visible === 'true'),
+                    JSON.stringify(afterRowClick.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`))
+                );
+
+                /*
+                 * 8 — the pane-drag DROP ZONE. Drawn INSIDE the target pane, so over a web pane
+                 * it was invisible and a drag onto a page had no visible answer at all.
+                 *
+                 * The gesture doubles as the proof that the park is what makes the rest of the
+                 * drag work. `calculateDropZone` is a closest-edge quadrant test on the pane
+                 * FRAME, so a pointer on the header answers `top` and a pointer three quarters
+                 * of the way down the PAGE answers `bottom` — and the second point is inside
+                 * the box the native view occupies. A zone that changes top → bottom is the
+                 * pointer arriving somewhere it could not have reached with the view attached.
+                 */
+                const dragFrom = await page.box(`[data-testid="pane-header-${left}"]`);
+                const dragOnto = await page.box(`[data-testid="pane-header-${right}"]`);
+                const beforeDrag = await holes();
+                const dropHole = beforeDrag.find((hole) => hole.id.toLowerCase() === String(right).toLowerCase()) ?? null;
+                if (dragFrom === null || dragOnto === null || dropHole === null) {
+                    recorder.check(
+                        'both pane headers and the target page hole are on screen for the drag',
+                        false,
+                        `${JSON.stringify(dragFrom)} / ${JSON.stringify(dragOnto)} / ${JSON.stringify(dropHole)}`
+                    );
+                } else {
+                    await page.mouse('mouseMoved', dragFrom.cx, dragFrom.cy, { button: 'none', buttons: 0 });
+                    await page.mouse('mousePressed', dragFrom.cx, dragFrom.cy, { button: 'left', clickCount: 1 });
+                    // Past the drag threshold first, then onto the target's HEADER — which is
+                    // document, above the page, and is what bootstraps the whole gesture.
+                    await page.mouse('mouseMoved', dragFrom.cx + 30, dragFrom.cy + 6, { button: 'left', buttons: 1 });
+                    await page.mouse('mouseMoved', dragOnto.cx, dragOnto.cy, { button: 'left', buttons: 1 });
+                    await sleep(600);
+                    const onHeader = await page.eval(
+                        `(() => { const el = document.querySelector('[data-testid="drop-zone-overlay"]');
+                                  return el === null ? null : el.getAttribute('data-zone'); })()`
+                    );
+                    recorder.note(`zone with the pointer on the target's header: ${String(onHeader)}`);
+
+                    const intoX = Math.round(dropHole.x + dropHole.w / 2);
+                    const intoY = Math.round(dropHole.y + dropHole.h * 0.75);
+                    await page.mouse('mouseMoved', intoX, intoY, { button: 'left', buttons: 1 });
+                    await sleep(800);
+                    const zone = await page.eval(
+                        `(() => {
+                            const el = document.querySelector('[data-testid="drop-zone-overlay"]');
+                            if (el === null) return null;
+                            const r = el.getBoundingClientRect();
+                            return { zone: el.getAttribute('data-zone'), target: el.getAttribute('data-target'),
+                                     x: Math.round(r.x), y: Math.round(r.y),
+                                     w: Math.round(r.width), h: Math.round(r.height) };
+                        })()`
+                    );
+                    const during = await holes();
+                    await recorder.shot(page, 'pane-drop-zone');
+                    recorder.note(`drop zone ${JSON.stringify(zone)} holes=${JSON.stringify(during)}`);
+                    recorder.check(
+                        'the drop highlight is on screen and names the web pane as its target',
+                        zone !== null && String(zone.target).toLowerCase() === String(right).toLowerCase(),
+                        JSON.stringify(zone)
+                    );
+                    recorder.check(
+                        'the pointer reached the document INSIDE the page area (zone top → bottom)',
+                        onHeader === 'top' && zone !== null && zone.zone === 'bottom',
+                        `${String(onHeader)} → ${String(zone?.zone)}`
+                    );
+                    const dropped = during.find((hole) => hole.id.toLowerCase() === String(right).toLowerCase()) ?? null;
+                    recorder.check(
+                        'the pane being dropped ON is parked, so the highlight is actually visible',
+                        dropped !== null && dropped.visible === 'false',
+                        JSON.stringify(dropped)
+                    );
+                    recorder.check(
+                        "the SHELL took the drop target's view back to the holder",
+                        embedOf(dropped?.id ?? right).includes('owner=holder'),
+                        embedOf(dropped?.id ?? right)
+                    );
+                    for (const hole of during.filter(
+                        (entry) => entry.id.toLowerCase() !== String(right).toLowerCase()
+                    )) {
+                        recorder.check(
+                            `the page the highlight does NOT cover (${hole.id.slice(0, 8)}) is still placed`,
+                            hole.visible === 'true',
+                            `${String(hole.visible)} · ${embedOf(hole.id)}`
+                        );
+                    }
+
+                    await page.mouse('mouseReleased', intoX, intoY, { button: 'left', clickCount: 1 });
+                    await sleep(2000);
+                    const afterDrop = await holes();
+                    recorder.note(`after the drop: ${JSON.stringify(afterDrop)}`);
+                    recorder.check(
+                        'the drop ACTED — the two pages are stacked now, not side by side',
+                        afterDrop.length === 2 &&
+                            Math.abs(afterDrop[0].x - afterDrop[1].x) < 8 &&
+                            Math.abs(afterDrop[0].y - afterDrop[1].y) > 8,
+                        JSON.stringify(afterDrop)
+                    );
+                    recorder.check(
+                        'and every page is placed again the moment the drag ends',
+                        afterDrop.length > 0 && afterDrop.every((hole) => hole.visible === 'true'),
+                        JSON.stringify(afterDrop.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`))
+                    );
+                    await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left, timeoutMs: 40_000 });
+                    await sleep(1500);
+                }
+
+                /*
+                 * 9 — the sidebar's custom-emoji sheet: the OTHER surface the row menu raises,
+                 * and the second of the two H1 never enrolled. A sheet, so the whole-window
+                 * park. Cancelled, so the subject workspace's icon is unchanged.
+                 */
+                await layer(
+                    { label: 'custom emoji sheet', shot: 'emoji-sheet', selector: '[data-testid="emoji-sheet"]' },
+                    async () => {
+                        await page.rightClick('[data-testid="workspace-row"]');
+                        await sleep(700);
+                        const opened = await page.eval(
+                            `(() => {
+                                const menu = document.querySelector('[data-testid="context-menu"]');
+                                if (menu === null) return 'no menu';
+                                const row = menu.querySelector('[data-menu-item="icon"]');
+                                if (row === null) return 'no Change Icon row';
+                                row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                                row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+                                return 'submenu opened';
+                            })()`
+                        );
+                        recorder.note(`change-icon: ${String(opened)}`);
+                        await sleep(600);
+                        const picked = await page.eval(
+                            `(() => {
+                                const row = document.querySelector('[data-menu-item="icon:custom"]');
+                                if (row === null) return 'no Custom Emoji row';
+                                row.click();
+                                return 'sheet raised';
+                            })()`
+                        );
+                        recorder.note(`custom emoji: ${String(picked)}`);
+                    },
+                    async () => {
+                        await page.eval(
+                            `(() => {
+                                const sheet = document.querySelector('[data-testid="emoji-sheet"]');
+                                if (sheet === null) return null;
+                                const cancel = [...sheet.querySelectorAll('button')]
+                                    .find((b) => (b.textContent ?? '').trim() === 'Cancel');
+                                if (cancel !== undefined) cancel.click();
+                                return null;
+                            })()`
+                        );
+                    },
+                    { whole: true }
+                );
+
+                /*
+                 * 10 — the footer's agent bucket popover, live. It needs a non-zero chip (a zero
+                 * one is inert, §M22), so the step mints a shell pane of its own and puts an
+                 * agent in it; both go with the scratch workspace at the end, so nothing outside
+                 * this step ever sees the count.
+                 */
+                const helper = await cli.json(['pane', 'split', '--target', String(left), '--json'], {
+                    timeoutMs: 40_000
+                });
+                const helperID = typeof helper?.pane_id === 'string' ? helper.pane_id : null;
+                recorder.check('a shell pane for the agent bucket exists', helperID !== null, JSON.stringify(helper));
+                if (helperID !== null) {
+                    await sleep(1500);
+                    await cli.ok(['event', 'start'], {
+                        paneID: helperID,
+                        stdin: JSON.stringify({ session_id: 'n26-0000-1111-2222' }),
+                        timeoutMs: 40_000
+                    });
+                    await sleep(1200);
+                    await layer(
+                        { label: 'bucket popover', shot: 'bucket-popover', selector: '[data-testid="bucket-popover"]' },
+                        async () => {
+                            await page.click('[data-testid="count-running"]');
+                        },
+                        async () => {
+                            await page.key('Escape');
+                        }
+                    );
+                }
+
+                /*
+                 * Park the pointer off the chrome before leaving.
+                 *
+                 * Not hygiene theatre: this step is the only one that clicks a FOOTER chip, and
+                 * a chip is `hoverText(hovered || open, …)` — it paints `textPrimary` while the
+                 * pointer is on it. Chromium does not fire `mouseout` when an element is merely
+                 * covered by a later overlay, so leaving the pointer there carried a hover key
+                 * twenty-two steps down the run and turned §M22's tone assertion in
+                 * `status-popover` red (`run-Z-attempts/attempt1`, live chip `rgb(230,230,234)`
+                 * against the zero chips' `rgb(154,154,160)`; every other run reads them equal).
+                 * A step that leaves a hover behind is a step that fails someone else's.
+                 */
+                await page.mouse('mouseMoved', 640, 300, { button: 'none', buttons: 0 });
+                await sleep(300);
+
+                recorder.eyes(
+                    'in `delete-confirm` and `emoji-sheet` the dialog is WHOLE — message and both buttons — over blanked panes rather than sliced at a page edge; in `sidebar-menu`, `sidebar-submenu`, `layout-menu`, `pane-header-menu` and `bucket-popover` the surface is whole AND the page it does not cover is still painted; in `pane-drop-zone` the accent half-pane highlight and its outline are visible inside the target web pane'
+                );
+
+                // Leave the app as this step found it: the scratch workspace and its panes go.
+                const removed = await cli.run(['workspace', 'delete', workspaceName, '--force'], { timeoutMs: 60_000 });
+                recorder.check(
+                    'the scratch workspace was removed again',
+                    removed.code === 0,
+                    removed.stdout.trim() || removed.stderr.trim()
+                );
+                await sleep(1500);
+            }
+        },
+
         // ── settings ────────────────────────────────────────────────────────────────
         {
             id: 'settings-open',

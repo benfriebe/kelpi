@@ -22,6 +22,7 @@
 
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
+import { useOverlayPresence } from '../chrome/modal-presence';
 import { tokens } from '../grid/tokens';
 import { Glyph } from './glyphs';
 import { favouriteMatching, truncateMiddle, type WebFavourite } from './state';
@@ -77,6 +78,16 @@ export interface BookmarksMenuProps {
 export function BookmarksMenu(props: BookmarksMenuProps): ReactElement {
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
+    /*
+     * §N26 — this menu drops off the toolbar straight onto its OWN pane's page, and that page is
+     * a native `WebContentsView` composited above this document: it was painted under the page
+     * every time (`docs/audit/n26-popup-layering`, step `06-favourites-menu`). It registers its
+     * box with `chrome/modal-presence`, so the pane it covers parks while the list is down — and
+     * because the registration is a rect rather than a count, a second web pane beside it keeps
+     * its page.
+     */
+    useOverlayPresence(listRef, open);
 
     // A menu that does not close on an outside click is a menu that covers the page.
     useEffect(() => {
@@ -111,6 +122,7 @@ export function BookmarksMenu(props: BookmarksMenuProps): ReactElement {
 
             {!open ? null : (
                 <div
+                    ref={listRef}
                     data-testid={`web-favourites-list-${props.paneID}`}
                     role="menu"
                     className="absolute right-0 top-[24px] z-20 flex w-[280px] flex-col gap-0.5 rounded-md p-1 text-[11px]"

@@ -30,7 +30,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { useDismissable } from './dismissable';
-import { useModalPresence } from './modal-presence';
+import { useOverlayPresence } from './modal-presence';
 import { autoTextColor } from './theme';
 import { tokens } from './tokens';
 
@@ -317,11 +317,16 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
     useDismissable(true, onClose, [rootRef]);
 
     /*
-     * H1: a menu is an app-modal surface. Drawn while a web pane's page is live it would be
-     * sliced at the page's edge, so it counts itself into `modalPresenceCount` and the shell
-     * parks the view for as long as it is open.
+     * H1: a menu drawn while a web pane's page is live would be sliced at the page's edge, so it
+     * registers with `modal-presence` and the shell parks the view for as long as it is open.
+     *
+     * §N26 narrows that from `useModalPresence` (park EVERY page in the window) to the menu's
+     * own box: a menu that stays inside the sidebar parks nothing, and one that reaches across a
+     * two-pane grid parks only the pane it reaches. The registered box is the union of this
+     * panel and everything inside it, so an open SUBMENU — an absolutely-positioned child that
+     * hangs off the panel's side — counts as part of the surface.
      */
-    useModalPresence();
+    useOverlayPresence(rootRef);
 
     const autoFocus = props.autoFocus ?? false;
     useEffect(() => {

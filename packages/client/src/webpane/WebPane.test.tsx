@@ -10,6 +10,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { registerOverlay, type OverlayHandle, type OverlayRect } from '../chrome/modal-presence';
 import type { CommandReply } from '../connection';
 import { WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
@@ -368,5 +369,88 @@ describe('geometry reporting', () => {
         const h = mount({ embedded: false });
         expect(h.reports).toEqual([]);
         expect(h.hidden).toEqual([]);
+    });
+
+    /**
+     * §N26 — a menu or popover drawn over the page area.
+     *
+     * The page is a native `WebContentsView` composited above this document, so a floating DOM
+     * surface over it is simply not visible. H1 answered that for modals with a whole-window
+     * park; this is the per-pane half: a surface registers WHERE it is
+     * (`chrome/modal-presence.ts`) and this pane parks only when that box is over ITS hole.
+     */
+    describe('a floating surface over the page area (§N26)', () => {
+        /**
+         * Registering is a store write outside React, so it goes through `act` — and every
+         * handle is tracked, because one leaked registration would silently park the pane in
+         * every test after it.
+         */
+        const open = (rect: OverlayRect | null): OverlayHandle => {
+            let handle!: OverlayHandle;
+            act(() => {
+                handle = registerOverlay(rect);
+            });
+            live.push(handle);
+            return handle;
+        };
+        const close = (handle: OverlayHandle): void => {
+            act(() => {
+                handle.release();
+            });
+        };
+        const live: OverlayHandle[] = [];
+        afterEach(() => {
+            for (const handle of live.splice(0)) handle.release();
+        });
+
+        /** The hide re-publishes on each render while it holds; the reporter upstream dedupes. */
+        const hiddenOnce = (hidden: readonly string[]): readonly string[] => [...new Set(hidden)];
+
+        it('parks the view — the page reports itself hidden while the surface is up', () => {
+            const h = mount();
+            expect(h.reports).toHaveLength(1);
+            open({ x: 100, y: 100, w: 200, h: 200 });
+            expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+            const hole = screen.getByTestId(`web-page-${PANE}`);
+            expect(hole.dataset['visible']).toBe('false');
+            expect(hole.dataset['overlayCovered']).toBe('true');
+        });
+
+        it('hands it straight back when the surface closes, at the same rect (no flash, §N24)', () => {
+            const h = mount();
+            const overlay = open({ x: 100, y: 100, w: 200, h: 200 });
+            expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+            close(overlay);
+            expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
+            expect(h.reports.at(-1)).toEqual({
+                paneID: PANE,
+                tabID: TAB1,
+                rect: RECT,
+                visible: true,
+                devicePixelRatio: 2
+            });
+        });
+
+        it('a surface BESIDE the pane leaves it placed — the whole point of the rect', () => {
+            // RECT is x 12…912, y 40…540; this box is past its right edge — a menu in a sidebar
+            // beside a web pane, or a popover over the OTHER pane of a split.
+            const h = mount();
+            open({ x: 950, y: 100, w: 200, h: 200 });
+            expect(h.hidden).toEqual([]);
+            expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('true');
+        });
+
+        it('an UNMEASURED surface parks it, exactly as the blunt H1 count did', () => {
+            const h = mount();
+            open(null);
+            expect(hiddenOnce(h.hidden)).toEqual([PANE]);
+        });
+
+        it('is answered by a browser client too, even though it places nothing', () => {
+            // `data-visible` is one truth about the document, not a property of the transport.
+            mount({ embedded: false });
+            open({ x: 100, y: 100, w: 200, h: 200 });
+            expect(screen.getByTestId(`web-page-${PANE}`).dataset['visible']).toBe('false');
+        });
     });
 });

@@ -19,14 +19,23 @@ import { createNexRuntime, createNexStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
+const W2 = 'aaaaaaaa-0000-4000-8000-000000000002';
 const PANE_A = 'dddddddd-0000-4000-8000-000000000001';
+const PANE_B = 'dddddddd-0000-4000-8000-000000000002';
 const PANE_WEB = 'dddddddd-0000-4000-8000-000000000004';
 const WEB_TAB = 'eeeeeeee-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
 
-function snapshotState(options: { web?: boolean; agent?: boolean; solo?: boolean } = {}): JsonObject {
+function snapshotState(
+    options: { web?: boolean; agent?: boolean; solo?: boolean; second?: boolean } = {}
+): JsonObject {
     const store = createDaemonStore(emptyDaemonState('/Users/test'));
     store.dispatch({ type: 'create-workspace', id: W1, paneID: PANE_A, name: 'alpha', color: 'blue', now: NOW });
+    if (options.second === true) {
+        // The row menu's Delete is disabled while a workspace is the only one there is, so the
+        // dialog §N26 is about cannot be raised without a second workspace to keep.
+        store.dispatch({ type: 'create-workspace', id: W2, paneID: PANE_B, name: 'beta', color: 'green', now: NOW });
+    }
     if (options.web === true) {
         store.dispatch({
             type: 'open-web-pane',
@@ -55,7 +64,7 @@ interface Harness {
     commands(): Record<string, unknown>[];
 }
 
-function mount(options: { web?: boolean; agent?: boolean } = {}): Harness {
+function mount(options: { web?: boolean; agent?: boolean; second?: boolean } = {}): Harness {
     const sockets = createFakeSocketFactory();
     const store = createNexStore();
     const runtime = createNexRuntime({
@@ -173,6 +182,83 @@ describe('modals park a live web pane (§H1)', () => {
         });
         expect(screen.getByTestId('command-palette')).toBeTruthy();
         expect(pageVisible()).toBe('false');
+    });
+
+    /**
+     * §N26 — the surfaces H1's sweep never enrolled, found by the owner's 2026-08-26 frame and
+     * by the matrix in `docs/audit/n26-popup-layering`.
+     *
+     * The registry was doing its job; the enrolment was incomplete. These two are the ones no
+     * component test can see, because each is raised by the chrome and judged against a web pane
+     * in the grid — an assembly fact, exactly like H1's own.
+     */
+    describe('the popups H1 never enrolled (§N26)', () => {
+        it("the sidebar's DELETE confirmation parks it — the frame the owner photographed", () => {
+            mount({ web: true, second: true });
+            act(() => {
+                fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as Element);
+            });
+            const menu = screen.getByTestId('context-menu');
+            const remove = [...menu.querySelectorAll('[role="menuitem"]')].find(
+                (row) => (row.textContent ?? '').trim() === 'Delete'
+            );
+            expect(remove).toBeTruthy();
+            act(() => {
+                fireEvent.click(remove as Element);
+            });
+
+            // The menu is gone and the dialog is up, so the page must be parked for the DIALOG
+            // rather than for the menu that raised it. It was not: the dialog was painted under
+            // a live page with its destructive row sliced at the pane's edge.
+            expect(screen.queryByTestId('context-menu')).toBeNull();
+            expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
+            expect(pageVisible()).toBe('false');
+
+            // …and cancelling hands the page straight back (this dialog has no Escape of its
+            // own — §H18's contract is the agent gate's, not this one's).
+            const cancel = [...screen.getByTestId('confirm-dialog').querySelectorAll('button')].find(
+                (button) => (button.textContent ?? '').trim() === 'Cancel'
+            );
+            act(() => {
+                fireEvent.click(cancel as Element);
+            });
+            expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+            expect(pageVisible()).toBe('true');
+        });
+
+        it("the footer's bucket popover parks it (it rises off the bar into the grid)", () => {
+            // `agent: true` gives the running bucket a count — a zero chip is inert and opens
+            // nothing (§M22), so the popover cannot be raised without one.
+            mount({ web: true, agent: true });
+            act(() => {
+                fireEvent.click(screen.getByTestId('count-running'));
+            });
+            expect(screen.getByTestId('bucket-popover')).toBeTruthy();
+            expect(pageVisible()).toBe('false');
+
+            act(() => {
+                fireEvent.keyDown(document.body, { key: 'Escape' });
+            });
+            expect(screen.queryByTestId('bucket-popover')).toBeNull();
+            expect(pageVisible()).toBe('true');
+        });
+
+        it("the title bar's layout dropdown parks it, and closing hands it back", () => {
+            mount({ web: true });
+            act(() => {
+                fireEvent.click(screen.getByTestId('layout-menu-toggle'));
+            });
+            expect(screen.getByTestId('layout-menu')).toBeTruthy();
+            // jsdom measures nothing, so the dropdown registers as "position unknown" — which
+            // parks, by design (`overlayCovers`). Live it parks the pane it actually lands on.
+            expect(pageVisible()).toBe('false');
+
+            act(() => {
+                fireEvent.keyDown(document.body, { key: 'Escape' });
+            });
+            expect(screen.queryByTestId('layout-menu')).toBeNull();
+            expect(pageVisible()).toBe('true');
+        });
     });
 });
 

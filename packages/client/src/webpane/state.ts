@@ -145,6 +145,46 @@ export function parseNavStateMessage(message: unknown): WebNavState | null {
     };
 }
 
+// ── §N29: the click that lands in the page rather than in the DOM ───────────────────
+
+/** "The user gave this pane's page keyboard focus", as the daemon fans it out. */
+export interface WebViewFocus {
+    readonly paneID: string;
+    readonly workspaceID: string;
+    /** The shell window whose host reported it, or null when the host declared none. */
+    readonly windowID: string | null;
+}
+
+/**
+ * A `web-view-focus` broadcast, or null when the message is something else.
+ *
+ * The page is a native view composited over this document, so a click inside it produces no DOM
+ * event at all — this message IS the click, and the client answers it with the same focus path a
+ * terminal body click takes. Both ids are required: `paneID` names the pane and `workspaceID` is
+ * what makes the report actionable in a client that may be showing a different workspace.
+ */
+export function parseViewFocusMessage(message: unknown): WebViewFocus | null {
+    if (!isRecord(message) || message['type'] !== 'web-view-focus') return null;
+    const paneID = str(message, 'paneID');
+    const workspaceID = str(message, 'workspaceID');
+    if (paneID === '' || workspaceID === '') return null;
+    const windowID = str(message, 'windowID');
+    return { paneID, workspaceID, windowID: windowID === '' ? null : windowID };
+}
+
+/**
+ * Does a `web-view-focus` report belong to THIS client?
+ *
+ * The same rule `reveal-request` uses, for the same reason: two shell windows on one daemon draw
+ * their own views, and a click in one must not move the other's ring. A report with no window is
+ * nobody's — only a shell window has a native view to have been clicked, so a browser tab (which
+ * draws the "open in the app" card) never acts on one.
+ */
+export function viewFocusAppliesHere(focus: WebViewFocus, shellWindowID: string | null): boolean {
+    if (shellWindowID === null) return false;
+    return focus.windowID === null || focus.windowID === shellWindowID;
+}
+
 // ── WEB-044: the favourite match ────────────────────────────────────────────────────
 
 /**

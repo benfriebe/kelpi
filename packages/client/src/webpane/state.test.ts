@@ -17,7 +17,9 @@ import {
     parseFavourites,
     parseFavouritesMessage,
     seededDestination,
+    parseViewFocusMessage,
     truncateMiddle,
+    viewFocusAppliesHere,
     type WebFavourite
 } from './state';
 
@@ -124,5 +126,44 @@ describe('parsing', () => {
     it('drops batch items with no id, which nothing could address', () => {
         const session = parseBatchSession({ items: [{ selector: '#a' }, { id: 'ok', selector: '#b' }] });
         expect(session?.items.map((item) => item.id)).toEqual(['ok']);
+    });
+});
+
+describe('the page-click report (§N29)', () => {
+    it('reads a `web-view-focus` broadcast, window and all', () => {
+        expect(
+            parseViewFocusMessage({
+                type: 'web-view-focus',
+                paneID: 'P',
+                workspaceID: 'W',
+                windowID: 'win-1'
+            })
+        ).toEqual({ paneID: 'P', workspaceID: 'W', windowID: 'win-1' });
+    });
+
+    it('treats a missing window as "no window declared", not as an empty string', () => {
+        expect(parseViewFocusMessage({ type: 'web-view-focus', paneID: 'P', workspaceID: 'W' })).toEqual({
+            paneID: 'P',
+            workspaceID: 'W',
+            windowID: null
+        });
+    });
+
+    it('rejects anything that could not move a ring: another message, or a half-addressed one', () => {
+        expect(parseViewFocusMessage({ type: 'web-nav-state', paneID: 'P', workspaceID: 'W' })).toBeNull();
+        expect(parseViewFocusMessage({ type: 'web-view-focus', workspaceID: 'W' })).toBeNull();
+        expect(parseViewFocusMessage({ type: 'web-view-focus', paneID: 'P' })).toBeNull();
+        expect(parseViewFocusMessage(null)).toBeNull();
+    });
+
+    it('applies only in the shell window it names', () => {
+        const here = { paneID: 'P', workspaceID: 'W', windowID: 'win-1' };
+        expect(viewFocusAppliesHere(here, 'win-1')).toBe(true);
+        expect(viewFocusAppliesHere(here, 'win-2')).toBe(false);
+        // An unscoped report is any shell window's — but never a browser tab's, which has no
+        // native view to have been clicked in the first place.
+        expect(viewFocusAppliesHere({ ...here, windowID: null }, 'win-2')).toBe(true);
+        expect(viewFocusAppliesHere({ ...here, windowID: null }, null)).toBe(false);
+        expect(viewFocusAppliesHere(here, null)).toBe(false);
     });
 });

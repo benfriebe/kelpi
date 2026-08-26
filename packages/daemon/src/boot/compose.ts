@@ -122,6 +122,7 @@ import {
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
+    WEB_VIEW_FOCUS_MESSAGE,
     type GraftChannel,
     type RepoChannel,
     type WsServer
@@ -638,6 +639,21 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             ws?.broadcast({
                 type: WEB_FAVOURITES_MESSAGE,
                 favourites: favourites.map(serializeFavourite)
+            });
+        },
+        /**
+         * §N29: the user clicked into a web pane's PAGE. A native view's click reaches Chromium
+         * and nothing else, so this fan-out is the only way the client can hear about it — and
+         * the client, not the daemon, then runs the focus path (the same one a terminal body
+         * click runs, ending in the ordinary `report-focus` back here). Ephemeral like the two
+         * above: nothing is stored, because it describes a gesture rather than a state.
+         */
+        onViewFocused: (focus) => {
+            ws?.broadcast({
+                type: WEB_VIEW_FOCUS_MESSAGE,
+                paneID: focus.paneID,
+                workspaceID: focus.workspaceID,
+                ...(focus.windowID === null ? {} : { windowID: focus.windowID })
             });
         },
         ...(options.now !== undefined ? { now: options.now } : {}),

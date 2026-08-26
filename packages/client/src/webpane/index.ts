@@ -76,14 +76,17 @@ export {
     parseFavourites,
     parseFavouritesMessage,
     parseNavStateMessage,
+    parseViewFocusMessage,
     seededDestination,
     truncateMiddle,
+    viewFocusAppliesHere,
     type BatchDestination,
     type DestinationCandidate,
     type WebBatchItem,
     type WebBatchSession,
     type WebFavourite,
-    type WebNavState
+    type WebNavState,
+    type WebViewFocus
 } from './state';
 
 export {

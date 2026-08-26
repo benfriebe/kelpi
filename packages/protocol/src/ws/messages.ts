@@ -727,6 +727,26 @@ export interface WsRevealPaneMessage {
     readonly windowID?: string;
 }
 
+/**
+ * §N29: the user clicked into a web pane's PAGE, fanned out to that window's client.
+ *
+ * A web pane's page is a native `WebContentsView` composited over the client's renderer, so a
+ * pointer press inside it reaches Chromium and nobody else — the client never learns the pane was
+ * touched, and the focus ring stays wherever it was. The shell's web-pane host reports the
+ * gesture as a `host-event` (`view-focus`), and this is the daemon's fan-out of it; the client
+ * then runs the SAME focused-pane path a terminal body click runs (`focusPane` → `report-focus`),
+ * which is why the daemon does not move focus itself.
+ *
+ * `windowID` scopes it exactly as `shell-activation` does: a second window's ring must not move
+ * because this one was clicked. Absent = the reporting host declared no window.
+ */
+export interface WsWebViewFocusMessage {
+    readonly type: 'web-view-focus';
+    readonly paneID: string;
+    readonly workspaceID: string;
+    readonly windowID?: string;
+}
+
 export type WsServerMessage =
     | WsWelcomeMessage
     | WsRejectedMessage
@@ -745,6 +765,7 @@ export type WsServerMessage =
     | WsHostRpcMessage
     | WsHostNotifyMessage
     | WsWebConsoleLineMessage
+    | WsWebViewFocusMessage
     | WsRevealPaneMessage
     | WsHotkeyStatusMessage
     | WsShellActivationMessage

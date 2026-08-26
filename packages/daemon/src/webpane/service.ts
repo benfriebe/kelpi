@@ -99,6 +99,24 @@ export interface WebPaneServiceOptions {
      * active (WEB-034) instead of stranding a frozen bar from a tab left mid-load.
      */
     readonly onNavStateChanged?: ((state: WebNavState) => void) | undefined;
+    /**
+     * §N29: the user gave a pane's PAGE keyboard focus — a click inside the native view.
+     *
+     * The daemon does not move focus itself. Focus is a CLIENT fact (which window, which
+     * workspace is on screen in it), and the point of the fix is that a page click takes the
+     * same path a terminal body click takes: the client's `focusPane`, and the ordinary
+     * `report-focus` back from it. So this is a fan-out, scoped to the shell window whose host
+     * reported the click exactly as `shell-activation` is scoped.
+     */
+    readonly onViewFocused?: ((focus: WebViewFocus) => void) | undefined;
+}
+
+/** §N29: a user's click landed in a web pane's page (host → daemon → that window's client). */
+export interface WebViewFocus {
+    readonly paneID: string;
+    readonly workspaceID: string;
+    /** The shell window whose host reported it; null when that host declared no window. */
+    readonly windowID: string | null;
 }
 
 /** One tab's live loading + history state (WEB-032/WEB-033). */
@@ -423,6 +441,22 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
         });
     };
 
+    /**
+     * §N29: a page click. Resolved to a workspace here (the client's `focusPane` needs one, and
+     * the daemon is the only party that knows which workspace holds the pane) and dropped when
+     * the pane is not a live web pane — a host reporting focus for something else is confused,
+     * and a stray one would yank the user's ring.
+     */
+    const viewFocusEvent = (event: HostEventInput): void => {
+        const found = webPaneOf(event.paneID);
+        if (found === null) return;
+        options.onViewFocused?.({
+            paneID: event.paneID,
+            workspaceID: found.workspaceID,
+            windowID: host.hostWindowID
+        });
+    };
+
     const inspectEvent = (event: HostEventInput): void => {
         const arm = inspectState.armOf(event.paneID);
         if (arm === null) return;
@@ -676,6 +710,9 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
                         return;
                     case 'nav-state':
                         navStateEvent(event);
+                        return;
+                    case 'view-focus':
+                        viewFocusEvent(event);
                         return;
                     case 'inspect':
                         inspectEvent(event);

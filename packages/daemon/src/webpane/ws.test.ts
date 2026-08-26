@@ -712,6 +712,98 @@ describe('nav-state host event (WEB-032 / WEB-033)', () => {
     });
 });
 
+describe('view-focus host event (§N29)', () => {
+    /**
+     * The fixture above builds its service without a focus sink, so this one repeats it with one
+     * attached — and drives the whole hop over the real hub, because the rules that matter here
+     * are transport rules: only the registered host may report a click, and the report carries
+     * the WINDOW, so a second shell's ring cannot be moved by this one's user.
+     */
+    function focusFixture(): {
+        readonly seen: unknown[];
+        connect(): { session: SyncSession; transport: RecordedTransport };
+    } {
+        const store = createStore(emptyDaemonState(HOME));
+        store.dispatch({
+            type: 'create-workspace',
+            id: WORKSPACE,
+            paneID: SHELL_PANE,
+            name: 'w1',
+            color: 'blue',
+            now: NOW
+        });
+        store.dispatch({
+            type: 'open-web-pane',
+            workspaceID: WORKSPACE,
+            paneID: WEB_PANE,
+            tabID: WEB_TAB,
+            url: 'https://example.com',
+            now: NOW
+        });
+        const seen: unknown[] = [];
+        const service = createWebPaneService({
+            store,
+            now: () => NOW,
+            onViewFocused: (focus) => seen.push(focus)
+        });
+        const dispatcher: ControlDispatcher = (_message, reply) => {
+            reply?.send({ ok: true });
+            reply?.close();
+        };
+        const hub = createSyncHub({ store, dispatcher, daemon: DAEMON, webPanes: service });
+        return {
+            seen,
+            connect() {
+                const transport = recordingTransport();
+                return { session: hub.createSession(transport), transport };
+            }
+        };
+    }
+
+    const viewFocus = (paneID: string): string =>
+        JSON.stringify({ type: 'host-event', event: 'view-focus', paneID, tabID: WEB_TAB, payload: {} });
+
+    it('carries the pane, its workspace and the reporting shell window', () => {
+        const f = focusFixture();
+        const host = f.connect();
+        host.session.handleMessage(hello());
+        host.session.handleMessage(
+            JSON.stringify({ type: 'host-register', role: 'web-pane', windowID: 'window-1' })
+        );
+        host.session.handleMessage(viewFocus(WEB_PANE));
+        expect(f.seen).toEqual([{ paneID: WEB_PANE, workspaceID: WORKSPACE, windowID: 'window-1' }]);
+    });
+
+    it('reports a null window when the host declared none (an automation-only host)', () => {
+        const f = focusFixture();
+        const host = f.connect();
+        host.session.handleMessage(hello());
+        host.session.handleMessage(JSON.stringify({ type: 'host-register', role: 'web-pane' }));
+        host.session.handleMessage(viewFocus(WEB_PANE));
+        expect(f.seen).toEqual([{ paneID: WEB_PANE, workspaceID: WORKSPACE, windowID: null }]);
+    });
+
+    it('drops a focus report for a pane that is not a web pane', () => {
+        const f = focusFixture();
+        const host = f.connect();
+        host.session.handleMessage(hello());
+        host.session.handleMessage(JSON.stringify({ type: 'host-register', role: 'web-pane' }));
+        // A shell pane has no native view to have been clicked, and neither has a pane id that
+        // does not exist at all.
+        host.session.handleMessage(viewFocus(SHELL_PANE));
+        host.session.handleMessage(viewFocus(id('dddddddd', 9)));
+        expect(f.seen).toEqual([]);
+    });
+
+    it('ignores a focus report from a connection that is not the host — the ring is not forgeable', () => {
+        const f = focusFixture();
+        const client = f.connect();
+        client.session.handleMessage(hello({ kind: 'browser' }));
+        client.session.handleMessage(viewFocus(WEB_PANE));
+        expect(f.seen).toEqual([]);
+    });
+});
+
 describe('unknown ids', () => {
     it('ignores a reply for a call nobody made', () => {
         const f = fixture();

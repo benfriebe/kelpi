@@ -44,6 +44,17 @@ export const WEB_BATCH_MESSAGE = 'web-batch';
  * newly-active tab's live state, which a pane-keyed message could not express.
  */
 export const WEB_NAV_STATE_MESSAGE = 'web-nav-state';
+/**
+ * §N29: broadcast type for "the user clicked into this pane's PAGE".
+ *
+ * A web pane's page is a native view composited over the client's renderer, so a click inside it
+ * reaches Chromium and nobody else — the client never learns the pane was touched and the focus
+ * ring stays where it was. The host reports the gesture as a `host-event`, this is the daemon's
+ * fan-out of it, and the client in that window then runs the same focus path a terminal body
+ * click runs. Scoped by `windowID` exactly as `shell-activation` is: a second window's ring must
+ * not move because this one was clicked.
+ */
+export const WEB_VIEW_FOCUS_MESSAGE = 'web-view-focus';
 
 function failure(error: string): JsonObject {
     return { ok: false, error };

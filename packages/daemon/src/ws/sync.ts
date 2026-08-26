@@ -84,6 +84,7 @@ import {
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
+    WEB_VIEW_FOCUS_MESSAGE,
     favouritesCommand,
     webPaneGuiCommand
 } from './web-ui.js';
@@ -1001,6 +1002,7 @@ export {
     WEB_BATCH_MESSAGE,
     WEB_FAVOURITES_MESSAGE,
     WEB_NAV_STATE_MESSAGE,
+    WEB_VIEW_FOCUS_MESSAGE,
     favouritesCommand,
     webPaneGuiCommand
 };

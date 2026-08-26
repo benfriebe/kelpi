@@ -26,6 +26,7 @@ import {
     PANE_SURFACE_ATTR,
     focusPaneSurface,
     isPaneSurfaceCaret,
+    releaseFocusedPaneCaret,
     releasePaneCaret,
     shouldGrabFocus
 } from './pane-focus';
@@ -128,6 +129,29 @@ describe('releasePaneCaret', () => {
         input.focus();
         releasePaneCaret(null);
         expect(document.activeElement).toBe(input);
+    });
+});
+
+describe('releaseFocusedPaneCaret (§N29)', () => {
+    it('lets go of whichever pane surface holds the caret, without being told which', () => {
+        // The gesture that needs this cannot name the outgoing pane: a click inside a web
+        // pane's native view produces no DOM event at all, so the pane that is losing focus
+        // never hears anything and keeps `document.activeElement`.
+        const terminal = mountFakeTerminal();
+        terminal.area.focus();
+        releaseFocusedPaneCaret();
+        expect(document.activeElement).not.toBe(terminal.area);
+    });
+
+    it('leaves a CHROME text field alone — that is the caret the NSText guard protects', () => {
+        const input = mountChromeField();
+        input.focus();
+        releaseFocusedPaneCaret();
+        expect(document.activeElement).toBe(input);
+    });
+
+    it('is a no-op when nothing holds the caret', () => {
+        expect(() => releaseFocusedPaneCaret()).not.toThrow();
     });
 });
 

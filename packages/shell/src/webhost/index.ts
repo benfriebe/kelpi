@@ -182,6 +182,16 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
                     can_go_forward: payload.canGoForward
                 });
             },
+            /**
+             * §N29: the user clicked the pane's page. It rides the same `host-event` channel
+             * every other unsolicited host fact does — the daemon re-broadcasts it to the client
+             * running in THIS shell window, which then runs the focus path a terminal body click
+             * runs. No new transport, and no focus decision taken in this process: the shell
+             * reports the gesture, the client owns the ring.
+             */
+            viewFocus: (paneID, tabID) => {
+                client?.sendEvent('view-focus', paneID, tabID, {});
+            },
             inspect: (paneID, tabID, payload) => {
                 // Clamped, not reshaped: the nonce and the `cancelled` flag travel untouched (the
                 // daemon compares the nonce for equality and re-sanitises every other field before

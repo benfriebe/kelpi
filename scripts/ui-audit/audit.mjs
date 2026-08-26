@@ -5965,6 +5965,202 @@ function buildFlows(ctx) {
             }
         },
         {
+            id: 'web-page-click-focus',
+            expect:
+                'Clicking inside a web pane’s PAGE moves the focus ring to that pane — and the consequences follow: the header lights, a page-pressed zoom chord acts on THAT pane, the palette hands focus back to it, and no other pane is left holding the caret (§N29).',
+            needsEyes: true,
+            async run(recorder) {
+                const paneID = state.webPane;
+                if (paneID === null) {
+                    recorder.check('a web pane exists', false);
+                    return;
+                }
+                const shellPane = await widestShellPane(page, cli);
+                if (shellPane === null) {
+                    recorder.check('there is another pane to hold the ring first', false);
+                    return;
+                }
+
+                /*
+                 * The gesture, as honestly as a harness can give it.
+                 *
+                 * A native `WebContentsView`'s content cannot be clicked from CDP — Chromium's
+                 * `Input` domain talks to a renderer, not to the OS's view hierarchy, so a
+                 * dispatched press delivers a TRUSTED mousedown to the page but never moves
+                 * native focus. `Page.bringToFront` is the other half: it makes that view's
+                 * `webContents` take keyboard focus, which is precisely the event a real click
+                 * produces and the one the fix keys on (`shell/webhost/view-focus.ts`). The two
+                 * together reproduce both halves of the user's click at the seams that matter;
+                 * the single real pointer press is the owner's own check.
+                 */
+                /*
+                 * Which target is THIS pane's page? Several web panes can sit on the fixture's
+                 * one URL, so the pane is given a URL of its own first — the fixture serves the
+                 * same page for any query — and the target is matched on that.
+                 */
+                const marker = `${site.url}?n29-focus`;
+                await cli.run(['web', 'navigate', '--target', paneID, marker]);
+                await page.waitFor(
+                    `document.querySelector('[data-testid="web-url-${paneID}"]')?.value?.includes('n29-focus') === true`,
+                    { timeoutMs: 15_000, label: 'the marker URL in the pane’s URL bar' }
+                );
+                await sleep(600);
+                const targets = await listTargets(sandbox.debugPort);
+                const viewTarget = targets.find(
+                    (entry) => entry.type === 'page' && String(entry.url).includes('n29-focus')
+                );
+                recorder.check(
+                    'the pane’s page has its own CDP target',
+                    viewTarget !== undefined,
+                    String(viewTarget?.url ?? `${String(targets.length)} targets, none matching`)
+                );
+                if (viewTarget === undefined) return;
+                const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
+                try {
+                    const embedded = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes(`web pane ${paneID} view owner=main`)
+                    );
+                    recorder.check(
+                        'the page is a live native view inside the window',
+                        embedded.length > 0,
+                        embedded.at(-1) ?? '(never placed)'
+                    );
+
+                    // The ring starts somewhere else — that IS the defect's precondition. The
+                    // click has to be followed by a real focus handoff: CDP `Input` events reach
+                    // a renderer directly and never move NATIVE focus, so without
+                    // `Page.bringToFront` on this window's own page the view would still hold the
+                    // keyboard and the gesture below would be a no-op on an already-focused view.
+                    await focusPaneBody(page, shellPane.id);
+                    await page.send('Page.bringToFront');
+                    await sleep(350);
+                    const before = await page.eval(
+                        `(() => {
+                            const focused = document.querySelector('[data-pane-id][data-focused="true"]');
+                            return focused?.getAttribute('data-pane-id') ?? '';
+                        })()`
+                    );
+                    recorder.note(`ring before the page click: ${String(before)}`);
+                    recorder.check('the ring starts on the other pane', before === shellPane.id, String(before));
+                    await recorder.shot(page, 'ring-elsewhere');
+
+                    const reportsBefore = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes('page took focus from the user')
+                    ).length;
+                    await view.send('Page.bringToFront');
+                    await view.clickAt(40, 40);
+                    await sleep(900);
+
+                    const reports = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes('page took focus from the user')
+                    );
+                    recorder.note(`host focus reports: ${reports.slice(-1).join('') || '(none)'}`);
+                    recorder.check(
+                        'the shell reports the page taking focus from the user',
+                        reports.length > reportsBefore,
+                        `${String(reportsBefore)} → ${String(reports.length)}`
+                    );
+
+                    const after = await page.eval(
+                        `(() => {
+                            const focused = document.querySelector('[data-pane-id][data-focused="true"]');
+                            const header = document.querySelector('[data-testid="pane-header-${paneID}"]');
+                            const caret = document.activeElement;
+                            const surface = caret?.closest?.('[data-pane-surface]') ?? null;
+                            return {
+                                ring: focused?.getAttribute('data-pane-id') ?? '',
+                                header: header?.getAttribute('data-focused') ?? '',
+                                caretPane: surface === null ? '' : (surface.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? '')
+                            };
+                        })()`
+                    );
+                    recorder.note(`after the page click: ${JSON.stringify(after)}`);
+                    await recorder.shot(page, 'ring-on-web-pane');
+                    recorder.check('the focus ring moves to the web pane (§N29)', after?.ring === paneID, String(after?.ring));
+                    recorder.check('its header reads focused', after?.header === 'true', String(after?.header));
+                    // N19/N20: the DOM heard nothing, so the outgoing pane's surface would
+                    // otherwise still hold the caret and swallow the next keystroke.
+                    recorder.check(
+                        'no other pane is left holding the caret',
+                        after?.caretPane !== shellPane.id,
+                        `caret in ${String(after?.caretPane) || '(no pane surface)'}`
+                    );
+
+                    /*
+                     * Consequence 1 — pane-scoped keybindings now target the right pane.
+                     *
+                     * ⌘= is pressed INSIDE THE PAGE, where a user's hands are after clicking it:
+                     * the host lifts the chord out of the page (`webhost/keys.ts`) and replays it
+                     * into Nex's renderer, whose priority layer applies it to the FOCUSED web
+                     * pane. With the ring stuck on the terminal, `focusedWebPane()` answered null
+                     * and the chord did nothing. Zoom is visible from inside the page: Chromium
+                     * folds the zoom factor into `devicePixelRatio`.
+                     */
+                    const dprBefore = await view.eval('window.devicePixelRatio');
+                    await view.key('Equal', { modifiers: MOD.meta });
+                    await sleep(900);
+                    const dprAfter = await view.eval('window.devicePixelRatio');
+                    recorder.note(`page devicePixelRatio ${String(dprBefore)} → ${String(dprAfter)}`);
+                    recorder.check(
+                        'a zoom chord pressed in the page now acts on the web pane',
+                        Number(dprAfter) > Number(dprBefore),
+                        `${String(dprBefore)} → ${String(dprAfter)}`
+                    );
+                    await view.key('Digit0', { modifiers: MOD.meta });
+                    await sleep(600);
+                    const dprReset = await view.eval('window.devicePixelRatio');
+                    recorder.check(
+                        '…and ⌘0 puts it back',
+                        Math.abs(Number(dprReset) - Number(dprBefore)) < 0.01,
+                        `${String(dprReset)} vs ${String(dprBefore)}`
+                    );
+
+                    /*
+                     * Consequence 2 — the palette's §10.4 handoff comes back to the WEB pane.
+                     * Closing the palette hands the keyboard to the focused pane, and for a web
+                     * pane that is the host focusing the page (WEB-043's log line).
+                     */
+                    const handoffsBefore = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes('focusing the page view')
+                    ).length;
+                    await pressBoundAction(page, 'command_palette');
+                    await page.waitFor(`document.querySelector('[data-testid="command-palette"]') !== null`, {
+                        timeoutMs: 8000,
+                        label: 'the command palette'
+                    });
+                    await page.key('Escape');
+                    await sleep(800);
+                    const handoffs = (runtime.shell?.lines ?? []).filter((line) =>
+                        line.includes('focusing the page view')
+                    );
+                    recorder.check(
+                        'closing the palette hands focus back to the web pane (§10.4)',
+                        handoffs.length > handoffsBefore,
+                        `${String(handoffsBefore)} → ${String(handoffs.length)} focus-view calls`
+                    );
+
+                    /*
+                     * The reverse direction, which the DOM has always handled and must not
+                     * regress: clicking back into a terminal takes the ring away again.
+                     */
+                    await focusPaneBody(page, shellPane.id);
+                    await sleep(400);
+                    const back = await page.eval(
+                        `document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? ''`
+                    );
+                    recorder.check(
+                        'clicking back into a terminal still un-focuses the web pane',
+                        back === shellPane.id,
+                        String(back)
+                    );
+                } finally {
+                    view.close();
+                }
+                await recorder.shot(page, 'after');
+                recorder.eyes('the focus ring around the WEB pane in the "ring-on-web-pane" shot — and around the terminal in "ring-elsewhere"');
+            }
+        },
+        {
             id: 'web-favourite',
             expect:
                 'The URL-bar star saves the current page: it fills, the favourite appears in the bookmarks menu and in Settings ▸ Web, its title renames in place, a second favourite can be DRAGGED past it (and the daemon writes the new order to favourites.json), and clicking the star again removes it.',

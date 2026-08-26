@@ -261,6 +261,10 @@ async function makeSandbox(label) {
     fs.writeFileSync(configPath, '');
 
     const controlPort = await freePort();
+    // §N29: the shell is launched with a DevTools port so this smoke can reach the web pane's
+    // own page target. Ephemeral and bound to loopback by Chromium — never the 9223 a dev
+    // session might be using.
+    const debugPort = await freePort();
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
@@ -285,6 +289,7 @@ async function makeSandbox(label) {
         home,
         userData,
         controlPort,
+        debugPort,
         runDir: env.NEXD_RUN_DIR,
         socketPath,
         base: `http://127.0.0.1:${env.NEXD_HTTP_PORT}`,
@@ -362,12 +367,16 @@ function electronBinary() {
 
 function startShell(sandbox) {
     const lines = [];
-    const child = spawn(electronBinary(), ['.', `--user-data-dir=${sandbox.userData}`], {
-        cwd: shellRoot,
-        env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true
-    });
+    const child = spawn(
+        electronBinary(),
+        ['.', `--user-data-dir=${sandbox.userData}`, `--remote-debugging-port=${String(sandbox.debugPort)}`],
+        {
+            cwd: shellRoot,
+            env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true
+        }
+    );
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let pending = '';
@@ -459,6 +468,16 @@ async function connectProbe(sandbox) {
             }
         });
     });
+    // §N29: everything the daemon pushes, kept, so the smoke can assert on a BROADCAST rather
+    // than only on the shell's own log — the two ends of the same hop.
+    const received = [];
+    socket.addEventListener('message', (event) => {
+        try {
+            received.push(JSON.parse(String(event.data)));
+        } catch {
+            // Not JSON: nothing the daemon sends, and nothing to assert on.
+        }
+    });
     socket.send(
         JSON.stringify({
             type: 'hello',
@@ -468,10 +487,26 @@ async function connectProbe(sandbox) {
         })
     );
     await welcomed;
+    let commandID = 0;
     return {
         /** One `web-geometry-report`; `shellWindowID` is what makes it actionable. */
         geometry(report) {
             socket.send(JSON.stringify({ type: 'web-geometry-report', ...report }));
+        },
+        /** Every broadcast of one type, oldest first. */
+        messages(type) {
+            return received.filter((message) => message.type === type);
+        },
+        /** One ordinary client command (the GUI-only web verbs have no CLI). */
+        command(command, extra = {}) {
+            commandID += 1;
+            socket.send(
+                JSON.stringify({
+                    type: 'command',
+                    id: `probe-${String(commandID)}`,
+                    payload: { command, ...extra }
+                })
+            );
         },
         close() {
             try {
@@ -481,6 +516,101 @@ async function connectProbe(sandbox) {
             }
         }
     };
+}
+
+// ── §N29: reaching the web pane's OWN page target ───────────────────────────────────
+
+/**
+ * The page inside a web pane is a `WebContentsView` — its own CDP target, listed by the shell's
+ * DevTools port alongside the window's renderer. Attaching to it is what lets this smoke drive
+ * the one signal the fix keys on: `Page.bringToFront` makes that view's `webContents` take
+ * keyboard focus, which is the same event a user's click produces and which no shell-side
+ * bookkeeping asked for. (Measured on Electron 43: a second CDP client coexists with the tab's
+ * own `webContents.debugger.attach('1.3')` — both sessions keep working.)
+ */
+async function findPageTarget(port, match, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        try {
+            const response = await fetch(`http://127.0.0.1:${String(port)}/json/list`, {
+                signal: AbortSignal.timeout(3_000),
+                headers: { connection: 'close' }
+            });
+            if (response.ok) {
+                const targets = await response.json();
+                const found = targets.find(
+                    (target) => target.type === 'page' && typeof target.webSocketDebuggerUrl === 'string' && match(target)
+                );
+                if (found !== undefined) return found;
+            }
+        } catch {
+            // The DevTools server comes up with the app; keep polling until the deadline.
+        }
+        if (Date.now() > deadline) return null;
+        await sleep(200);
+    }
+}
+
+/**
+ * Which of a pane's page targets is the one IN the window.
+ *
+ * A pane can have several tabs on the same URL, and only the active one is embedded — so the
+ * URL cannot tell them apart. What can is the layout: an embedded view is laid out at the pane's
+ * rect, while every other view keeps the pinned 1280 px automation viewport (`tab.ts`'s
+ * `setEmbedded`). The width the shell logged when it placed the view is therefore the key.
+ */
+async function findEmbeddedTarget(port, baseURL, width, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const response = await fetch(`http://127.0.0.1:${String(port)}/json/list`, {
+            signal: AbortSignal.timeout(3_000),
+            headers: { connection: 'close' }
+        }).catch(() => null);
+        const targets = response !== null && response.ok ? await response.json() : [];
+        for (const target of targets) {
+            if (target.type !== 'page' || typeof target.webSocketDebuggerUrl !== 'string') continue;
+            if (!String(target.url).startsWith(baseURL)) continue;
+            const measured = await cdpCommand(target, 'Runtime.evaluate', {
+                expression: 'window.innerWidth',
+                returnByValue: true
+            });
+            if (measured?.result?.result?.value === width) return target;
+        }
+        if (Date.now() > deadline) return null;
+        await sleep(250);
+    }
+}
+
+/** Send one CDP command to a target and wait for its reply. */
+async function cdpCommand(target, method, params = {}) {
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+        socket.addEventListener('open', resolve, { once: true });
+        socket.addEventListener('error', () => reject(new Error(`CDP connect failed for ${target.url}`)), {
+            once: true
+        });
+    });
+    try {
+        const answered = new Promise((resolve) => {
+            socket.addEventListener('message', (event) => {
+                let message;
+                try {
+                    message = JSON.parse(String(event.data));
+                } catch {
+                    return;
+                }
+                if (message.id === 1) resolve(message);
+            });
+        });
+        socket.send(JSON.stringify({ id: 1, method, params }));
+        return await Promise.race([answered, raceTimeout(5_000)]);
+    } finally {
+        try {
+            socket.close();
+        } catch {
+            // Already gone.
+        }
+    }
 }
 
 // ── the shipped CLI, pointed at the sandbox daemon ──────────────────────────────────
@@ -849,6 +979,171 @@ async function webPhase() {
                 placed.includes('owner=main') && /bounds=\d+,\d+ \d+×\d+/.test(placed),
                 placed.trim()
             );
+
+            // ── §N29: the click that lands in the PAGE ─────────────────────────────
+            //
+            // A native view's content cannot be clicked from here — no automation surface
+            // delivers an OS mouse press to a `WebContentsView`. What CAN be driven is the
+            // signal the fix keys on, and it is the production one rather than a test hook:
+            // `Page.bringToFront` on the pane's own CDP target makes that view's `webContents`
+            // take keyboard focus, exactly as a real click does, and with nothing on the shell
+            // side having asked for it. The REAL pointer gesture is the owner's one-gesture
+            // check; everything downstream of the focus event is proved here.
+            //
+            // Finding the right target takes one extra step: the pane has several tabs on the
+            // same URL, and only the ACTIVE one is the view in the window. The embedded view is
+            // the one laid out at the pane's rect (every other view keeps the pinned 1280 px
+            // automation viewport), so the placement line the shell just logged is the key.
+            const placedWidth = Number(/bounds=\d+,\d+ (\d+)×\d+/.exec(placed)?.[1] ?? '0');
+            const viewTarget = await findEmbeddedTarget(sandbox.debugPort, fixture.base, placedWidth);
+            check(
+                'the embedded page has its own CDP target',
+                viewTarget !== null,
+                `${String(viewTarget?.url ?? 'none')} at ${String(placedWidth)}px`
+            );
+            if (viewTarget !== null) {
+                // Settle first. A focus event that arrives mid-load is held and then dropped by
+                // the commit that follows it (that is the second filter — a committing
+                // navigation takes the keyboard and fires `focus` TWICE), so the gesture below
+                // is only a gesture once the page is idle.
+                await waitFor(
+                    'the embedded page to finish loading',
+                    async () => {
+                        const state = await cdpCommand(viewTarget, 'Runtime.evaluate', {
+                            expression: 'document.readyState',
+                            returnByValue: true
+                        });
+                        return state?.result?.result?.value === 'complete';
+                    },
+                    20_000
+                );
+                const clientTarget = await findPageTarget(sandbox.debugPort, (target) =>
+                    String(target.url).includes(`shellWindow=${windowID}`)
+                );
+                check('the shell window’s own renderer has a CDP target', clientTarget !== null);
+                if (clientTarget === null) throw new Error('no client target to park focus in');
+
+                /** Park keyboard focus in the window's own renderer — "the user clicked a terminal". */
+                const parkFocusInClient = async () => {
+                    await cdpCommand(clientTarget, 'Page.bringToFront');
+                    await sleep(400);
+                };
+                const reportCount = () =>
+                    shell.lines.filter((line) => line.includes('page took focus from the user')).length;
+
+                // ── the second filter, live: a NAVIGATION must not read as a click ──────
+                //
+                // Chromium focuses the newly committed widget, so `nex web navigate` on an
+                // embedded pane fires the same event a click does. Unfiltered, every agent-driven
+                // navigation (and every pane's first load) would yank the user's focus ring.
+                await parkFocusInClient();
+                const beforeNavigation = reportCount();
+                const broadcastsBeforeNavigation = probe.messages('web-view-focus').length;
+                await cli.run(['web', 'navigate', ...at(), `${fixture.base}/second`]);
+                await waitFor(
+                    'the navigation to land',
+                    async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Second Page'),
+                    20_000
+                );
+                await sleep(800);
+                check(
+                    'a committing navigation is not reported as a click',
+                    reportCount() === beforeNavigation,
+                    `${String(beforeNavigation)} reports before and after`
+                );
+                check(
+                    '…so an agent’s `web navigate` cannot move the user’s focus ring',
+                    probe.messages('web-view-focus').length === broadcastsBeforeNavigation,
+                    `${String(broadcastsBeforeNavigation)} broadcasts before and after`
+                );
+
+                // ── the gesture ────────────────────────────────────────────────────────
+                await waitFor(
+                    'the navigated page to finish loading',
+                    async () => {
+                        const state = await cdpCommand(viewTarget, 'Runtime.evaluate', {
+                            expression: 'document.readyState',
+                            returnByValue: true
+                        });
+                        return state?.result?.result?.value === 'complete';
+                    },
+                    20_000
+                );
+                await parkFocusInClient();
+                await cdpCommand(viewTarget, 'Page.bringToFront');
+                const reported = await shell.waitForLine(
+                    new RegExp(`web pane ${paneID}: page took focus from the user`),
+                    'the host to report the page taking focus',
+                    15_000
+                );
+                check('the host reports a user-driven page focus', reported.includes('page took focus'), reported.trim());
+
+                const broadcast = await waitFor(
+                    'the daemon to fan the page focus out to clients',
+                    () => probe.messages('web-view-focus').at(-1) ?? false,
+                    15_000
+                );
+                check(
+                    'the daemon broadcasts `web-view-focus` for that pane',
+                    broadcast.paneID === paneID,
+                    JSON.stringify(broadcast)
+                );
+                check(
+                    '…carrying the workspace the client needs to move its ring',
+                    typeof broadcast.workspaceID === 'string' && broadcast.workspaceID.length > 0,
+                    String(broadcast.workspaceID)
+                );
+                check(
+                    '…and scoped to the shell window whose host saw the click',
+                    broadcast.windowID === windowID,
+                    `${String(broadcast.windowID)} vs ${windowID}`
+                );
+
+                // ── the first filter, live: the shell's OWN claim (the row's seam a) ────
+                //
+                // Focus is parked in the window's renderer first, so the view really is
+                // unfocused and WEB-043's `focus-view` really does fire a `focus` event — the
+                // proof is the re-arm check below, which produces a report from the same
+                // sequence minus the claim.
+                await parkFocusInClient();
+                const emissionsBefore = reportCount();
+                const broadcastsBefore = probe.messages('web-view-focus').length;
+                probe.command('web-focus-view', { pane_id: paneID });
+                await shell.waitForLine(
+                    new RegExp(`web pane ${paneID}: focusing the page view`),
+                    'the shell’s own focus claim',
+                    15_000
+                );
+                await sleep(600);
+                check(
+                    'the shell’s OWN focus claim is not reported as a click (seam a)',
+                    reportCount() === emissionsBefore,
+                    `${String(emissionsBefore)} reports before and after`
+                );
+                check(
+                    '…and no ring-moving broadcast follows it',
+                    probe.messages('web-view-focus').length === broadcastsBefore,
+                    `${String(broadcastsBefore)} broadcasts before and after`
+                );
+
+                // …and neither filter latches: the very next real focus is reported again.
+                await parkFocusInClient();
+                await cdpCommand(viewTarget, 'Page.bringToFront');
+                const again = await waitFor(
+                    'a second user-driven page focus to be reported',
+                    () => reportCount() > emissionsBefore,
+                    15_000
+                );
+                check('a suppressed claim does not disable the next real click', again === true);
+
+                // Put the pane back on the page the checks after this one read.
+                await cli.run(['web', 'navigate', ...at(), `${fixture.base}/`]);
+                await waitFor(
+                    'the pane to return to the smoke page',
+                    async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Nex Web Smoke'),
+                    20_000
+                );
+            }
 
             // Geometry from anyone else must not move anything: a browser on another machine
             // reporting rects would otherwise shove a desktop user's views around.

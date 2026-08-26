@@ -90,6 +90,29 @@ export function releasePaneCaret(host: HTMLElement | null): void {
 }
 
 /**
+ * §N29's caret half: let go of whichever PANE SURFACE holds the caret, wherever it is.
+ *
+ * `releasePaneCaret` above is the ordinary case — a surface that can see it lost pane focus lets
+ * go itself. A web pane's page cannot: it is a native view over this document, so when the user
+ * clicks into it nothing in the DOM changes at all. The outgoing pane's surface keeps
+ * `document.activeElement` — a terminal's hidden `<textarea>`, an editor's field — and the moment
+ * the renderer gets keyboard focus back (clicking the window chrome, ⌘-tabbing home) the next
+ * keystroke goes to a pane that no longer wears the ring. N19's caret handoff and N20's cursor
+ * rendering read the same state, so the release is what keeps all three telling one story.
+ *
+ * Only a *pane surface* is released, never chrome: a sidebar rename, the palette or the URL bar
+ * holding the caret is the same "is NSText" case the Swift guard protected, and blurring it here
+ * would cancel an edit the user is in the middle of.
+ */
+export function releaseFocusedPaneCaret(): void {
+    if (typeof document === 'undefined') return;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return;
+    if (!isPaneSurfaceCaret(active)) return;
+    active.blur();
+}
+
+/**
  * Hand the caret to a pane's surface after an overlay closes (the palette's §10.4 handoff, the
  * Settings/Help close paths, a status-popover jump, a socket-driven focus).
  *

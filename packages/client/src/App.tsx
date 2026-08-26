@@ -125,7 +125,7 @@ import {
 } from './app/file-menu';
 import { useGraft } from './app/graft';
 import { useInspectorData } from './app/inspector';
-import { focusPaneSurface } from './app/pane-focus';
+import { focusPaneSurface, releaseFocusedPaneCaret } from './app/pane-focus';
 import { createSearchNeedleScheduler, type SearchNeedleScheduler } from './app/search-needle';
 import {
     SEED_TEST_GROUP_COMMAND,
@@ -203,10 +203,12 @@ import {
     createGeometryReporter,
     createWebPaneCommands,
     parseRevealMessage,
+    parseViewFocusMessage,
     readShellWindowID,
     readTrafficLightInset,
     readWindowTransparent,
     revealAppliesHere,
+    viewFocusAppliesHere,
     type WebPaneTab
 } from './webpane';
 
@@ -968,6 +970,41 @@ function Shell(props: AppProps): ReactElement {
             }
         };
     }, [store, webCommands]);
+
+    /**
+     * The overlay-close handoff, for every pane type — including the one whose surface is not in
+     * this document (§N29, and N19's rule one pane type further on).
+     *
+     * `focusPaneSurface` resolves a pane's marked surface and focuses it: the terminal host for a
+     * shell pane, the textarea for an editor. A WEB pane has no such element — its page is a
+     * native view in the shell's process — so every handoff below (Settings, Help, the pane
+     * search bar, the palette's §10.4 close, a status-popover jump) was a silent no-op there: the
+     * ring stayed on the web pane while the keyboard sat in this renderer, and the user had to
+     * click the page again. Handing it back over the wire is the same WEB-043 verb the pane's own
+     * focus effect uses.
+     *
+     * The pane's own effect covers the case where focus MOVED to it; this covers the case it
+     * cannot see, where the pane was focused all along and only an overlay went away.
+     *
+     * Deliberately NOT under WEB-043's chrome-text exemption. That guard protects a caret the
+     * user is USING — the URL bar mid-edit, a rename — from a focus transition happening around
+     * them. Here the chrome text field holding the caret is the overlay that is closing, which is
+     * exactly what the handoff exists to take it back from: `focusPaneSurface` claims it for
+     * every other pane type without asking, and a web pane must not be the one that declines.
+     */
+    const handBackPaneCaret = useCallback(
+        (paneID: string | null): void => {
+            if (paneID === null) return;
+            focusPaneSurface(paneID);
+            const state = store.getState();
+            if (selectPane(state, paneID)?.type !== 'web') return;
+            const web = selectActiveWorkspace(state)?.webPanes[paneID];
+            const tabID = web?.activeTabID ?? web?.tabs[0]?.id ?? null;
+            if (tabID === null) return;
+            void webCommands.focusView(paneID, tabID);
+        },
+        [store, webCommands]
+    );
 
     // WEB-002: a web pane (or tab) that arrives BLANK hands the caret to the URL bar; one that
     // arrives with a URL is loading a page, so focus belongs to the page. Same token the ⌘L
@@ -2498,6 +2535,45 @@ function Shell(props: AppProps): ReactElement {
         [act]
     );
 
+    /**
+     * §N29 — a click that lands in a web pane's PAGE, arriving the long way round.
+     *
+     * Every other pane body hears its own click: the DOM delivers a `pointerdown` and the body
+     * calls `onFocusRequest`. A web pane's page cannot, because it is a native `WebContentsView`
+     * composited over this document — the press reaches Chromium and stops there, and the ring
+     * used to sit on whatever pane it was on while the user typed into the page. (The Swift app
+     * has no gap, and not by first responder: a click recogniser on the pane's container view
+     * reports the gesture itself — `PaneFocusView.swift:35-49` →
+     * `SurfaceView.paneFocusedNotification` → `ContentView`'s `.focusPane`. First responder is
+     * the TERMINAL's path there, which is why the port's weaker signal needs filtering.)
+     *
+     * So the shell reports the gesture (`webContents` `focus`, filtered against the two things
+     * that fire it and are not the user: its own focus claim, and a committing navigation —
+     * `webhost/view-focus.ts`), the daemon fans it out, and this listener runs the
+     * SAME path a terminal body click runs: `onTerminalFocus`, i.e. `act.focusPane`. One path
+     * means the consequences follow for free — pane-scoped keybindings retarget, the header
+     * badge lights, the palette's §10.4 handoff comes back here — rather than a second focus
+     * mechanism that has to be kept in step with the first.
+     *
+     * The caret release before it is the N19/N20 half: the DOM heard nothing, so the pane that
+     * is losing focus still holds `document.activeElement` (a terminal's hidden textarea, an
+     * editor's field). Left alone, the next keystroke after the renderer gets focus back would
+     * go to a pane that no longer wears the ring.
+     */
+    useEffect(() => {
+        const off = runtime.connection.on('message', (message) => {
+            const focus = parseViewFocusMessage(message);
+            if (focus === null || !viewFocusAppliesHere(focus, shellWindowID)) return;
+            // The click can only have landed on a view this window is showing, so a report for
+            // another workspace is stale (a switch raced it) — acting on it would move the ring
+            // to a pane that is not on screen.
+            if (selectActiveWorkspaceID(store.getState()) !== focus.workspaceID) return;
+            releaseFocusedPaneCaret();
+            onTerminalFocus(focus.paneID);
+        });
+        return off;
+    }, [onTerminalFocus, runtime, shellWindowID, store]);
+
     // ── settings window ─────────────────────────────────────────────────────────────
 
     /**
@@ -2545,9 +2621,8 @@ function Shell(props: AppProps): ReactElement {
      */
     const closeSettings = useCallback((): void => {
         setSettingsTab(null);
-        const paneID = selectFocusedPaneID(store.getState());
-        if (paneID !== null) focusPaneSurface(paneID);
-    }, [store]);
+        handBackPaneCaret(selectFocusedPaneID(store.getState()));
+    }, [handBackPaneCaret, store]);
 
     // ── favicon / tab badge ─────────────────────────────────────────────────────────
 
@@ -2718,8 +2793,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const closeModalOverlay = useCallback((): boolean => {
         const handOff = (): void => {
-            const paneID = selectFocusedPaneID(store.getState());
-            if (paneID !== null) focusPaneSurface(paneID);
+            handBackPaneCaret(selectFocusedPaneID(store.getState()));
         };
         // Consumed, not closed — see the two cases in the header.
         if (createSheetOpenRef.current || settingsOpenRef.current) return true;
@@ -2739,7 +2813,7 @@ function Shell(props: AppProps): ReactElement {
          */
         shellClose.noteKeyboardClose();
         return true;
-    }, [store, shellClose]);
+    }, [handBackPaneCaret, store, shellClose]);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
     // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
@@ -3102,9 +3176,9 @@ function Shell(props: AppProps): ReactElement {
              */
             const target = selectFocusedPaneID(store.getState()) ?? paneID;
             act.focusPane(target);
-            focusPaneSurface(target);
+            handBackPaneCaret(target);
         },
-        [act, store]
+        [act, handBackPaneCaret, store]
     );
 
     // ── status footer ───────────────────────────────────────────────────────────────
@@ -3134,13 +3208,13 @@ function Shell(props: AppProps): ReactElement {
             // the user clicks. Twice on purpose: now for a jump inside this workspace (the host
             // is already mounted), and again after the next frame for a jump that crosses
             // workspaces, where the destination pane does not exist yet.
-            focusPaneSurface(paneID);
+            handBackPaneCaret(paneID);
             const soon = globalThis.requestAnimationFrame;
-            const again = (): void => focusPaneSurface(paneID);
+            const again = (): void => handBackPaneCaret(paneID);
             if (typeof soon === 'function') soon(again);
             else setTimeout(again, 0);
         },
-        [activateWorkspaceAndReveal, runtime]
+        [activateWorkspaceAndReveal, handBackPaneCaret, runtime]
     );
 
     /**
@@ -3370,7 +3444,7 @@ function Shell(props: AppProps): ReactElement {
                     onPrevious={() => act.stepSearch('prev')}
                     onClose={() => {
                         act.closeSearch();
-                        focusPaneSurface(paneID);
+                        handBackPaneCaret(paneID);
                     }}
                 />
             );
@@ -4204,8 +4278,7 @@ function Shell(props: AppProps): ReactElement {
                     version={daemon.info?.version ?? 'unknown'}
                     onClose={() => {
                         setHelpOpen(false);
-                        const paneID = selectFocusedPaneID(store.getState());
-                        if (paneID !== null) focusPaneSurface(paneID);
+                        handBackPaneCaret(selectFocusedPaneID(store.getState()));
                     }}
                     onOpenKeybindings={() => {
                         setHelpOpen(false);

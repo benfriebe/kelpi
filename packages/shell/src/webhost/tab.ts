@@ -77,6 +77,7 @@ import {
     INSPECT_CHANNEL,
     injectedScriptSources
 } from './scripts.js';
+import { createViewFocusGate, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -103,6 +104,15 @@ export interface TabEventSink {
         tabID: string,
         payload: { loading: boolean; canGoBack: boolean; canGoForward: boolean }
     ): void;
+    /**
+     * §N29: the user clicked (or otherwise gave keyboard focus to) this tab's PAGE.
+     *
+     * The page is a native view over the client's renderer, so this is the only way the client
+     * can learn about a click inside it. The two focus sources that are NOT the user — the
+     * shell's own WEB-043 handoff, and a navigation committing (which takes the keyboard and
+     * fires `focus` twice) — are filtered out before this fires (`./view-focus.ts`).
+     */
+    viewFocus(paneID: string, tabID: string): void;
     inspect(paneID: string, tabID: string, payload: Record<string, unknown>): void;
     /**
      * §7.3: a batch badge was clicked, a popover comment was typed, or its Done/Remove was
@@ -134,6 +144,11 @@ export interface TabFactoryOptions {
      * its `WKWebView` sat inside the app's own window, behind an NSEvent monitor.
      */
     readonly forwardChord?: ((chord: ForwardedChord) => void) | undefined;
+    /**
+     * §N29: build the gate that tells a user's click on the page from every other way a view
+     * takes focus. One per tab (focus is a per-view fact); injectable so a test can drive it.
+     */
+    readonly focusGate?: ((options: ViewFocusGateOptions) => ViewFocusGate) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -206,6 +221,8 @@ class ElectronTab implements HostTab {
     private readonly viewport: { readonly width: number; readonly height: number };
     /** True while the view lives in the shell window, where the pane's rect is the viewport. */
     private embedded = false;
+    /** §N29: tells the shell's own `focus()` calls from the user's clicks (`./view-focus.ts`). */
+    private readonly focusGate: ViewFocusGate;
 
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
@@ -219,6 +236,16 @@ class ElectronTab implements HostTab {
         this.events = options.events;
         this.onError = options.onError;
         this.forwardChord = options.forwardChord;
+        this.focusGate = (options.focusGate ?? createViewFocusGate)({
+            report: () => {
+                if (this.disposed || this.contents.isDestroyed()) return;
+                // Logged for the same reason `focusView` is: keyboard focus lives in another
+                // renderer, so this line is the shell's only externally visible account of the
+                // gesture — the live smoke and the audit both assert on it.
+                log(`web pane ${this.paneID}: page took focus from the user (tab ${this.tabID})`);
+                this.events.viewFocus(this.paneID, this.tabID);
+            }
+        });
         this.lastAttemptedURL = input.url;
 
         const viewport = options.viewport ?? DEFAULT_VIEWPORT;
@@ -440,6 +467,30 @@ class ElectronTab implements HostTab {
             });
         }
 
+        /*
+         * §N29 — the click the client can never see.
+         *
+         * The page is a native `WebContentsView` composited over the client's renderer, so a
+         * pointer press inside it reaches Chromium and nothing else: no DOM event, no
+         * `onFocusRequest`, no ring move. What the press DOES do is give this webContents
+         * keyboard focus, and that is the only trace of it this process gets. Swift is not doing
+         * the same thing and the difference matters: there a click recogniser on the pane's
+         * container reports the GESTURE itself (`PaneFocusView.swift:35-49`), so nothing has to
+         * be filtered out of it. Here the signal is weaker, so it is filtered by
+         * `./view-focus.ts`, which holds the measurements behind both filters (the shell's own
+         * WEB-043 claim, and the focus a committing NAVIGATION takes).
+         *
+         * The embedded gate is the other half of "was this the user": a view sitting in the
+         * off-screen holder is not on anyone's screen, so a focus event there cannot be a click
+         * on it — it is an automation verb or a stray Chromium notification, and moving the
+         * user's focus ring for either would be a defect of its own.
+         */
+        contents.on('focus', () => {
+            if (this.disposed || contents.isDestroyed()) return;
+            if (!this.embedded) return;
+            this.focusGate.focusEvent({ loading: contents.isLoading() });
+        });
+
         contents.setWindowOpenHandler(() => {
             // The daemon mints tab ids, so the host cannot conjure a tab for `window.open`.
             // Denying keeps the tab set exactly what the daemon believes it is; surfacing the
@@ -460,6 +511,11 @@ class ElectronTab implements HostTab {
             this.emitNavState(false);
         });
         contents.on('did-navigate', (_event, url) => {
+            // §N29, first: a commit is what explains a focus event that arrived mid-load —
+            // Chromium focuses the newly committed widget ~1-3 ms BEFORE this fires, and that is
+            // not the user clicking. Cancelling here is what keeps `nex web navigate`, a reload
+            // and every pane's first load from yanking the focus ring into the pane.
+            this.focusGate.navigationCommitted();
             // WEB-073, and BEFORE the error-page early return below, because the error card is a
             // navigation like any other: let the tab's own frame go if auto-attach caught it.
             this.resumeIfWaiting();
@@ -768,7 +824,12 @@ class ElectronTab implements HostTab {
         // Logged because it is otherwise unobservable from outside: keyboard focus lives in
         // another renderer, so this line is what the visual audit asserts the handoff by.
         log(`web pane ${this.paneID}: focusing the page view (tab ${this.tabID})`);
-        this.contents.focus();
+        // §N29: raised across the call, so the `focus` event this fires (synchronously, before
+        // `focus()` returns) is not reported back to the client as a user's click. Without it the
+        // ring's own consequence — the client focusing the page — would echo as a new gesture.
+        this.focusGate.claim(() => {
+            this.contents.focus();
+        });
     }
 
     reload(hard: boolean): void {
@@ -892,6 +953,8 @@ class ElectronTab implements HostTab {
     dispose(reason: DestroyReason): void {
         if (this.disposed) return;
         this.disposed = true;
+        // §N29: a held focus event must not fire into a tab that no longer exists.
+        this.focusGate.dispose();
         this.frames.clear();
         try {
             if (this.attached) this.contents.debugger.detach();

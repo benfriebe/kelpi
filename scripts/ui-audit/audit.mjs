@@ -40,6 +40,32 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.mjs';
+
+/**
+ * Which CDP page target is **the client window**, as opposed to a web pane's page?
+ *
+ * `waitForPageTarget` without a `match` takes `pages[0]`, and that is fine exactly once: at cold
+ * boot the shell window is the only page target there is. It stops being fine the moment the
+ * session owns web panes, because every embedded `WebContentsView` is a page target of its own —
+ * and so is the off-screen holder window the web host creates.
+ *
+ * **This is the mechanism behind the "documented relaunch cascade"** (`run-R-attempts`,
+ * `run-W-attempts` ▸ `scoped-macchrome`, `run-Z-attempts` ▸ `attempt1`, and both of `run-AB`'s
+ * first two attempts), which nine runs had recorded as a timing flake without diagnosing.
+ * `reattach-after-relaunch` quits the shell with 15 panes alive and relaunches it; the restored
+ * web panes come back as page targets, `pages[0]` sometimes lands on one of them, and the harness
+ * then drives **the fixture page** while waiting for `[data-testid="nex-app"]` that a fixture will
+ * never have. It times out, and the next step reads a window that is not the client — which is
+ * why the cascade always shows up as a wall of `undefined`. `run-AB-attempts/attempt1`'s
+ * `116-mac-chrome-chrome.png` is a screenshot of the web fixture, taken by a step that believed it
+ * was photographing the title bar.
+ *
+ * The shell loads its window with `?…&shellWindow=<id>&…` (`shell/src/main.ts`), and nothing else
+ * in the process carries that parameter, so it is an exact discriminator. A target that has not
+ * navigated yet simply does not match, and the poll waits — which is the behaviour that was
+ * wanted all along.
+ */
+const isClientWindow = (target) => String(target?.url ?? '').includes('shellWindow=');
 import { createReport } from './lib/report.mjs';
 import {
     assertPackagedSignature,
@@ -1144,7 +1170,7 @@ async function main() {
         for (let attempt = 1; attempt <= attempts; attempt++) {
             runtime.shell = launchShell();
             try {
-                target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: attachTimeoutMs });
+                target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: attachTimeoutMs, match: isClientWindow });
                 break;
             } catch (error) {
                 if (attempt === attempts) throw error;
@@ -4309,13 +4335,25 @@ function buildFlows(ctx) {
                         const host = document.querySelector('[data-testid="web-page-${String(web?.id)}"]');
                         if (host === null) return null;
                         const r = host.getBoundingClientRect();
+                        const pane = document.querySelector('[data-pane-id="${String(web?.id)}"]');
                         return { text: (host.innerText ?? '').slice(0, 200),
                                  x: Math.round(r.x), y: Math.round(r.y),
                                  w: Math.round(r.width), h: Math.round(r.height),
+                                 focused: pane?.getAttribute('data-focused') === 'true',
                                  dpr: window.devicePixelRatio };
                     })()`
                 );
                 recorder.note(`web page hole: ${JSON.stringify(placeholder)}`);
+                /*
+                 * §N27: a FOCUSED pane's view is placed inset by the focus-ring width on left,
+                 * right and bottom, so the ring is not painted underneath it. The DOM hole stays
+                 * flush (that is what stops the client reflowing), so the page's own viewport is
+                 * expected to be exactly that much smaller — an exact quantity, not slack in the
+                 * ±2 px rounding tolerance below.
+                 */
+                const N27_RING = 2;
+                const expectedPageW = (placeholder?.w ?? 0) - (placeholder?.focused === true ? N27_RING * 2 : 0);
+                const expectedPageH = (placeholder?.h ?? 0) - (placeholder?.focused === true ? N27_RING : 0);
 
                 /**
                  * The placement, proved from BOTH ends.
@@ -4350,13 +4388,15 @@ function buildFlows(ctx) {
                     recorder.note(`embedded page viewport: ${JSON.stringify(metrics)}`);
                     recorder.check(
                         'the page is laid out at the pane\'s width, not the automation viewport',
-                        Math.abs((metrics?.iw ?? 0) - placeholder.w) <= 2,
-                        `page ${String(metrics?.iw)}px vs hole ${String(placeholder.w)}px`
+                        Math.abs((metrics?.iw ?? 0) - expectedPageW) <= 2,
+                        `page ${String(metrics?.iw)}px vs hole ${String(placeholder.w)}px` +
+                            (placeholder.focused === true ? ` − ${String(N27_RING * 2)}px focus ring (§N27) = ${String(expectedPageW)}px` : '')
                     );
                     recorder.check(
                         'the page is laid out at the pane\'s height',
-                        Math.abs((metrics?.ih ?? 0) - placeholder.h) <= 2,
-                        `page ${String(metrics?.ih)}px vs hole ${String(placeholder.h)}px`
+                        Math.abs((metrics?.ih ?? 0) - expectedPageH) <= 2,
+                        `page ${String(metrics?.ih)}px vs hole ${String(placeholder.h)}px` +
+                            (placeholder.focused === true ? ` − ${String(N27_RING)}px focus ring (§N27) = ${String(expectedPageH)}px` : '')
                     );
                     recorder.check(
                         'the page renders at the window\'s device pixel ratio',
@@ -5982,16 +6022,22 @@ function buildFlows(ctx) {
                 }
 
                 /*
-                 * The gesture, as honestly as a harness can give it.
+                 * The gesture, driven through the VIEW'S OWN INPUT PIPELINE.
                  *
-                 * A native `WebContentsView`'s content cannot be clicked from CDP — Chromium's
-                 * `Input` domain talks to a renderer, not to the OS's view hierarchy, so a
-                 * dispatched press delivers a TRUSTED mousedown to the page but never moves
-                 * native focus. `Page.bringToFront` is the other half: it makes that view's
-                 * `webContents` take keyboard focus, which is precisely the event a real click
-                 * produces and the one the fix keys on (`shell/webhost/view-focus.ts`). The two
-                 * together reproduce both halves of the user's click at the seams that matter;
-                 * the single real pointer press is the owner's own check.
+                 * This step used to pair `Page.bringToFront` on the view with a click and call
+                 * the pair "the user's press". That is exactly how §N29's first fix shipped green
+                 * and did nothing under the owner's finger: `bringToFront` is an operation whose
+                 * job is to MOVE keyboard focus, so it manufactured the very focus transition the
+                 * old signal keyed on. A real click makes no such transition — the view already
+                 * holds focus, because the pane's own load left it there — and fires no `focus`
+                 * event at all (measured 0/0 in
+                 * `docs/audit/n29-input-gesture/n29-confirm-hypothesis.mjs`).
+                 *
+                 * So the press below is a press and nothing else: `Input.dispatchMouseEvent` on
+                 * the PAGE target, which traverses the view's input pipeline the way a finger
+                 * does and raises the `input-event` the fix now keys on. The view is deliberately
+                 * left HOLDING focus first, so this drives the owner's failing case rather than
+                 * the one the harness found easy.
                  */
                 /*
                  * Which target is THIS pane's page? Several web panes can sit on the fixture's
@@ -6026,11 +6072,7 @@ function buildFlows(ctx) {
                         embedded.at(-1) ?? '(never placed)'
                     );
 
-                    // The ring starts somewhere else — that IS the defect's precondition. The
-                    // click has to be followed by a real focus handoff: CDP `Input` events reach
-                    // a renderer directly and never move NATIVE focus, so without
-                    // `Page.bringToFront` on this window's own page the view would still hold the
-                    // keyboard and the gesture below would be a no-op on an already-focused view.
+                    // The ring starts somewhere else — that IS the defect's precondition.
                     await focusPaneBody(page, shellPane.id);
                     await page.send('Page.bringToFront');
                     await sleep(350);
@@ -6044,10 +6086,36 @@ function buildFlows(ctx) {
                     recorder.check('the ring starts on the other pane', before === shellPane.id, String(before));
                     await recorder.shot(page, 'ring-elsewhere');
 
+                    /*
+                     * Put the view back in the state a real pane is in: HOLDING the keyboard.
+                     * A committing navigation leaves it there (that is what N30 is filed for), so
+                     * this is the ordinary state, not a contrived one — and it is the state in
+                     * which a click produces no focus transition whatsoever. Doing this before
+                     * the press is what makes the step drive the owner's case; it moves no ring,
+                     * which is itself asserted below.
+                     */
+                    await view.send('Page.bringToFront');
+                    await sleep(400);
+                    const ringAfterViewFocus = await page.eval(
+                        `document.querySelector('[data-pane-id][data-focused="true"]')?.getAttribute('data-pane-id') ?? ''`
+                    );
+                    recorder.check(
+                        'the view taking keyboard focus moves NO ring (focus is not a gesture)',
+                        ringAfterViewFocus === shellPane.id,
+                        String(ringAfterViewFocus)
+                    );
+                    const viewHoldsKeyboard = await view.eval('document.hasFocus()');
+                    recorder.check(
+                        'the view holds the keyboard, so the press below makes no focus transition',
+                        viewHoldsKeyboard === true,
+                        `view hasFocus=${String(viewHoldsKeyboard)}`
+                    );
+
                     const reportsBefore = (runtime.shell?.lines ?? []).filter((line) =>
                         line.includes('page took focus from the user')
                     ).length;
-                    await view.send('Page.bringToFront');
+                    // The press, and ONLY the press. No `bringToFront` here — that would be the
+                    // crutch this step was rebuilt to remove.
                     await view.clickAt(40, 40);
                     await sleep(900);
 
@@ -6795,12 +6863,27 @@ function buildFlows(ctx) {
                     page.eval(
                         `(() => [...document.querySelectorAll('[data-testid^="web-page-"]')].map((el) => {
                             const r = el.getBoundingClientRect();
-                            return { id: el.getAttribute('data-testid').slice('web-page-'.length),
+                            const id = el.getAttribute('data-testid').slice('web-page-'.length);
+                            const pane = document.querySelector('[data-pane-id="' + id + '"]');
+                            return { id,
                                      visible: el.getAttribute('data-visible'),
+                                     focused: pane?.getAttribute('data-focused') === 'true',
                                      x: Math.round(r.x), y: Math.round(r.y),
                                      w: Math.round(r.width), h: Math.round(r.height) };
                         }))()`
                     );
+                /*
+                 * §N27 — where the native view SHOULD sit for a given hole.
+                 *
+                 * A focused pane's page hole is reported inset by the focus-ring width on left,
+                 * right and bottom, so the ring is not painted underneath the native view. The
+                 * DOM hole element does not move (that is what keeps the client from reflowing),
+                 * so "same bounds" has to be computed from the hole AND the pane's focus state
+                 * rather than read off the hole alone.
+                 */
+                const RING = 2;
+                const expectedPlacement = (hole) =>
+                    hole.focused === true ? { x: hole.x + RING, y: hole.y } : { x: hole.x, y: hole.y };
                 const embedOf = (paneID) => {
                     const lines = (runtime.shell?.lines ?? []).filter((line) =>
                         line.includes(`web pane ${String(paneID)} view `)
@@ -6837,13 +6920,15 @@ function buildFlows(ctx) {
                 );
 
                 /*
-                 * Recorded, not asserted — the same class one surface over.
+                 * §N27 — the focus ring must not be painted underneath the native view.
                  *
                  * `FocusRing` is `absolute inset-0` on the PANE wrapper, and a web pane's page
-                 * hole reaches that wrapper's left, right and bottom edges, so on a focused LIVE
-                 * web pane the ring's lower three sides are inside the box the native view
-                 * occupies. It is not a popup and it was not reported, so it is not N26's; these
-                 * numbers exist so the question can be settled from data rather than a squint.
+                 * hole reaches that wrapper's left, right and bottom edges — so on a focused LIVE
+                 * web pane the ring's lower three sides used to sit inside the box the native
+                 * view occupies, leaving only the strip beside the header visible. The fix insets
+                 * the REPORTED hole by the ring width on those three edges when the pane is
+                 * focused; the DOM hole does not move, so nothing in this document reflows.
+                 * These numbers were recorded here while N27 was open; they are asserted now.
                  */
                 const ringVsHole = await page.eval(
                     `(() => {
@@ -6860,6 +6945,30 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`focus ring vs page hole: ${JSON.stringify(ringVsHole)}`);
+
+                /*
+                 * The assertion the note above could not make: compare the ring to where the
+                 * NATIVE VIEW actually is. The DOM hole is the wrong yardstick — it deliberately
+                 * stays flush — so the shell's own placement line is the only honest source.
+                 */
+                if (ringVsHole !== 'no focused pane' && ringVsHole?.hole != null) {
+                    const focusedHole = (await holes()).find((entry) => entry.focused === true) ?? null;
+                    const placement = focusedHole === null ? '(no focused web pane)' : embedOf(focusedHole.id);
+                    const bounds = /bounds=(-?\d+),(-?\d+) (\d+)×(\d+)/.exec(placement);
+                    const ring = ringVsHole.ring;
+                    if (bounds !== null && focusedHole !== null) {
+                        const v = { x: Number(bounds[1]), y: Number(bounds[2]), w: Number(bounds[3]), h: Number(bounds[4]) };
+                        recorder.note(`§N27 focused web pane: ring=${JSON.stringify(ring)} native view=${JSON.stringify(v)}`);
+                        recorder.check(
+                            '§N27: a focused web pane’s native view clears the focus ring on all four sides',
+                            v.x >= ring.x + RING &&
+                                v.x + v.w <= ring.x + ring.w - RING &&
+                                v.y + v.h <= ring.y + ring.h - RING &&
+                                v.y >= ring.y + RING,
+                            `view=${JSON.stringify(v)} ring=${JSON.stringify(ring)}`
+                        );
+                    }
+                }
 
                 /**
                  * One matrix row: open the surface, prove every page it covers is parked (and
@@ -6915,14 +7024,15 @@ function buildFlows(ctx) {
                         JSON.stringify(after.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`))
                     );
                     for (const hole of after) {
-                        const before = baseline.find((entry) => entry.id === hole.id);
                         const line = embedOf(hole.id);
+                        // Compared against where the view BELONGS now (§N27: a focused pane's
+                        // view is inset by the ring width), not against a pre-park number that a
+                        // focus change during the interaction would legitimately invalidate.
+                        const want = expectedPlacement(hole);
                         recorder.check(
-                            `${name.label}: ${hole.id.slice(0, 8)}'s view is back in the window at the same bounds`,
-                            line.includes('owner=main') &&
-                                before !== undefined &&
-                                line.includes(`${String(before.x)},${String(before.y)}`),
-                            line
+                            `${name.label}: ${hole.id.slice(0, 8)}'s view is back in the window at the right bounds`,
+                            line.includes('owner=main') && line.includes(`${String(want.x)},${String(want.y)}`),
+                            `${line} · want ${String(want.x)},${String(want.y)}${hole.focused === true ? ' (focused, ring-inset)' : ''}`
                         );
                     }
                 };
@@ -23052,7 +23162,10 @@ function buildFlows(ctx) {
                     }
                 });
                 runtime.shell = relaunched;
-                const target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: 90_000 });
+                // `isClientWindow`, and this is the call site it was written for: see its own
+                // comment — after a relaunch the restored web panes' views are page targets too,
+                // and taking the first one is what the "documented relaunch cascade" always was.
+                const target = await waitForPageTarget(sandbox.debugPort, { timeoutMs: 90_000, match: isClientWindow });
                 const nextPage = await connect(target.webSocketDebuggerUrl, { repoRoot });
                 runtime.page = nextPage;
                 await nextPage.send('Page.enable');

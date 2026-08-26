@@ -1,189 +1,144 @@
 /**
- * N29 — telling a USER's click on a web pane's page from every other way a view takes focus.
+ * N29 — reporting a USER's click on a web pane's page.
  *
  * A web pane's page is a native `WebContentsView` composited over the client's renderer, so a
  * click inside it never reaches the DOM: the client cannot learn the pane was clicked, and the
  * focus ring stays on whatever pane it was on. The Swift app has no such gap, and HOW it closes
- * the gap is the thing to get right here, because it is **not** first-responder wiring: a web
- * pane's `WKWebView` is mounted inside a `PaneFocusView`, whose `embed(_:)` hangs an
+ * the gap is the thing to copy, because it is **not** first-responder wiring: a web pane's
+ * `WKWebView` is mounted inside a `PaneFocusView`, whose `embed(_:)` hangs an
  * `NSClickGestureRecognizer` (`delaysPrimaryMouseButtonEvents = false`) on the tab container and
  * posts `SurfaceView.paneFocusedNotification` from it; `ContentView` turns that into `.focusPane`
  * (`PaneFocusView.swift:35-49`, `WebPaneView.swift:327-340`, `ContentView.swift:337-346`).
  * First responder is the TERMINAL's path — `SurfaceView.becomeFirstResponder` posts the same
  * notification (`SurfaceView.swift:267-275`) — and the two must not be confused.
  *
- * That distinction is the whole reason this file exists. Swift keys on the CLICK, which is
- * unambiguous by construction: a programmatic `makeFirstResponder(webView)` — WEB-043's own
- * handoff, `WebPaneView.swift:396-403` — moves no ring there, and neither does a navigation. The
- * only signal this port has is `webContents`'s `focus` event, which is strictly weaker: the OS
- * gives the view keyboard focus when it is clicked, but the event does not say WHO asked — and
- * two things ask that are not the user. So the port reconstructs Swift's unambiguous gesture by
- * subtracting them.
+ * ## The first fix was wrong, and how it was wrong is the whole lesson
  *
- * ## What was measured
+ * N29's first attempt keyed on `webContents`'s **focus** event and subtracted the two things
+ * that fire it and are not the user (the shell's own `focus()` claim, and a committing
+ * navigation). It passed 118 live assertions, a packaged run and a positive control — and moved
+ * nothing under the owner's finger. The reason, measured in
+ * `docs/audit/n29-input-gesture/n29-confirm-hypothesis.mjs` (10/10):
  *
- * Electron 43 / macOS 15, a `WebContentsView` moved between an off-screen `BaseWindow` holder and
- * a visible `BrowserWindow`, with the window's own renderer holding focus unless stated:
+ *   | driven on the pane's own CDP target                    | raw `focus` events |
+ *   |--------------------------------------------------------|--------------------|
+ *   | click, view did NOT hold focus                          | **0** (2 → 2)      |
+ *   | click, view ALREADY held focus (the owner's case)       | **0** (3 → 3)      |
+ *   | `Page.bringToFront` — a focus MOVE, not an input        | 1 (2 → 3)          |
  *
- *   | operation                                                        | fires `focus`? |
- *   |------------------------------------------------------------------|----------------|
- *   | `webContents.focus()`                                             | **yes**, synchronously (0.075 ms, inside the call) |
- *   | `webContents.focus()` on an already-focused view                  | no (so a mark can go unconsumed) |
- *   | `addChildView` / `removeChildView` (N26's park/restore cycle)      | no |
- *   | `setVisible(true)` / `setVisible(false)` / `setBounds(…)`          | no |
- *   | `Emulation.clearDeviceMetricsOverride` (`setEmbedded`)             | no |
- *   | attaching a second CDP session (a DevTools client)                 | no |
- *   | page JS: `window.focus()`, `element.focus()`, `<input autofocus>`  | no |
- *   | **a navigation committing in an embedded view**                    | **yes — TWICE**, ~1–3 ms *before* `did-navigate`, always with `isLoading() === true` |
- *   | CDP `Page.bringToFront` (and a real click)                         | **yes** |
+ * Two facts fall out. First, `focus` is a **transition** signal, and by the time a user clicks
+ * there is usually no transition left to make: a pane's own load leaves keyboard focus in the
+ * view (measured — the client's `document.hasFocus()` reads false once a pane finishes loading,
+ * which is also what N30 is filed for), so the user's very first click on a fresh pane is
+ * already in the "nothing changes" state. No filter can rescue a signal that never fires.
+ * Second, the old harness's "production signal" was `Page.bringToFront` — an operation whose job
+ * is to move focus. It manufactured the transition it then observed, which is exactly how a
+ * broken fix collected green assertions.
  *
- * The navigation row is the one that matters and the one that is easy to miss: it fires even
- * while the window's own renderer holds focus, it is not an artefact (the view really does take
- * the keyboard — Chromium focuses the newly committed widget), and it fires for the FIRST load of
- * every pane. Left unfiltered, opening a web pane, reloading one, or an agent's `nex web navigate`
- * would each yank the user's focus ring into that pane. It was caught by running the audit's
- * live step, not by reading the docs.
+ * ## So the signal is the INPUT, which is what Swift's gesture recogniser is
  *
- * ## The two filters, and why each is shaped the way it is
+ * Electron 43 exposes `webContents`'s `input-event`, which fires per input with a `type`. A
+ * `mouseDown` delivered to the view IS the user's press — there is no "who asked" ambiguity to
+ * discriminate, because nothing in this app synthesises input into a page (checked: the only
+ * `sendInputEvent`-adjacent site is `webhost/index.ts`'s chord forwarder, and it deliberately
+ * does NOT synthesise — it relays through the daemon). The two filters the old design needed are
+ * therefore **deleted rather than kept**, and the reasons are worth stating because both are
+ * "this cannot happen" rather than "we tolerate it":
  *
- *   1. **The shell's own claim** (`focusView()`, WEB-043's keyboard handoff) raises a re-entrancy
- *      flag across the call, because the event is delivered *inside* it. A short deadline backs
- *      the flag up in case a future build posts the event instead; it has to expire, because a
- *      redundant `focus()` fires nothing and a mark that lived forever would eventually swallow a
- *      real click.
- *   2. **A commit taking focus** is caught by the one fact that separates it from a click: it
- *      arrives while the tab is LOADING. A click on a loaded page arrives with `isLoading()`
- *      false, and — crucially — so does a click on a *link*, because the click precedes the
- *      navigation it starts. A focus that arrives mid-load is therefore held rather than dropped:
- *      the commit that follows within a few ms cancels it, and if no commit follows (the user
- *      really did click a page that happens to be loading) it is reported after the grace.
+ *   * **the shell's own `focusView()`** (WEB-043's keyboard handoff) calls `contents.focus()`,
+ *     which moves focus and produces no input. The re-entrancy flag and its 250 ms backstop are
+ *     gone — and with them the residual the previous wave measured and recorded, where a real
+ *     click landing inside that window was swallowed.
+ *   * **a committing navigation** takes the keyboard (it is why N30 exists) but presses no mouse
+ *     button, so it cannot raise a `mouseDown`. The hold-and-cancel machinery, the
+ *     `did-navigate` cancellation and the 250 ms grace are gone too.
  *
- * Everything here is pure but for the timer, which is injectable, so both filters are testable
- * without an Electron window.
+ * What survives is not a discriminator but a **placement fact**: a view parked in the off-screen
+ * holder is on nobody's screen, so an input cannot have landed on it (`embedded`, asserted in
+ * `tab.ts`). N26's park/restore stays silent for the same reason it always did.
+ *
+ * ## Click only, matching Swift exactly
+ *
+ * `NSClickGestureRecognizer` recognises a **primary-button click and nothing else** — typing
+ * into a `WKWebView` moves no ring in the shipped app. So `mouseDown` is the whole gesture set
+ * here: keyboard input is deliberately NOT presence. Adding it would be a port-only behaviour,
+ * and it would fire on an agent's `nex web` typing as readily as on a user's.
+ *
+ * ## No swallow window, deliberately
+ *
+ * Every `mouseDown` on an embedded view is reported. There is no coalescing timer, because the
+ * previous design's one measured residual was a time window that swallowed real gestures, and
+ * re-introducing one to save a handful of bytes on the wire would be trading the user's ring for
+ * nothing. Repeat reports are idempotent at the client (`act.focusPane` on the focused pane is a
+ * no-op), which is the same shape as Swift posting a notification per click.
  */
 
-/** How long after a programmatic claim a `focus` event is still assumed to be that claim's. */
-export const PROGRAMMATIC_FOCUS_WINDOW_MS = 250;
+import { log } from '../log.js';
 
 /**
- * How long a focus that arrived mid-load is held, waiting for the commit that would explain it.
+ * Env-gated trace of the RAW signals, ahead of every guard (`NEX_WEB_FOCUS_TRACE=1`).
  *
- * Measured spread between the focus event and its `did-navigate`: 0.4–2.9 ms, including a
- * navigation whose *server* took 1.5 s (the delay is before the commit, not inside it). 250 ms is
- * a ~100× margin, and it is the worst-case added latency on the rarest branch — a click landing
- * on a page that is still loading.
+ * This exists because of how the first N29 fix failed. It keyed on `focus`, passed every
+ * automated check, and still did nothing under the owner's finger — and no instrument anywhere
+ * could separate "a gate filtered the event" from "no event ever arrived". Those are opposite
+ * defects that look identical from outside, and picking the wrong one costs a whole wave. A
+ * trace ahead of the guards makes the raw arrival a fact rather than an inference.
  */
-export const NAVIGATION_COMMIT_GRACE_MS = 250;
+export function traceFocus(message: string): void {
+    if (process.env['NEX_WEB_FOCUS_TRACE'] !== '1') return;
+    // Through `log`, not `process.stdout` directly: a shell launched by a harness whose reader
+    // dies would otherwise take an uncaught EPIPE, which is the exact failure `log.ts` exists to
+    // swallow. A diagnostic must never be able to bring down the app it is diagnosing.
+    log(`web-focus-trace: ${message}`);
+}
 
-/** Cancels a scheduled callback. */
-export type CancelTimer = () => void;
+/**
+ * The Electron `InputEvent.type` values that count as the user taking this pane.
+ *
+ * `mouseDown` only — the press, not the release, so the ring moves under the finger rather than
+ * when it lifts (`delaysPrimaryMouseButtonEvents = false` is Swift saying the same thing). The
+ * set is deliberately not widened to keys: see the header.
+ */
+const GESTURE_INPUT_TYPES: ReadonlySet<string> = new Set(['mouseDown']);
+
+/** Is this input event the user's press on the page? */
+export function isGestureInput(type: string | undefined | null): boolean {
+    return type !== undefined && type !== null && GESTURE_INPUT_TYPES.has(type);
+}
 
 export interface ViewFocusGateOptions {
-    /** Called when a focus event is judged to be the user's. */
+    /** Called when an input is judged to be the user taking this pane. */
     readonly report: () => void;
-    readonly now?: (() => number) | undefined;
-    readonly windowMs?: number | undefined;
-    readonly graceMs?: number | undefined;
-    /** Defaults to `setTimeout`/`clearTimeout`; a test drives its own clock through this. */
-    readonly schedule?: ((run: () => void, ms: number) => CancelTimer) | undefined;
 }
 
 export interface ViewFocusGate {
     /**
-     * Run `claim` (the shell's own `webContents.focus()`) with the gate raised, so the `focus`
-     * event it fires — synchronously, inside the call — is not reported as a user gesture.
+     * An input event reached this view (`webContents`'s `input-event`).
+     *
+     * `embedded` is the placement fact: false means the view is parked in the off-screen holder,
+     * where nothing the user does can reach it.
      */
-    claim(run: () => void): void;
-    /**
-     * A `focus` event arrived. `loading` is `webContents.isLoading()` read at that moment: true
-     * means a navigation is in flight, and this is probably its commit taking the keyboard.
-     */
-    focusEvent(context: { readonly loading: boolean }): void;
-    /** `did-navigate` / `did-frame-navigate`: the commit that explains a held focus event. */
-    navigationCommitted(): void;
-    /** Drop any held event (the tab is going away). */
+    inputEvent(context: { readonly type?: string | undefined; readonly embedded: boolean }): void;
+    /** The tab is going away. */
     dispose(): void;
 }
 
-const defaultSchedule = (run: () => void, ms: number): CancelTimer => {
-    const timer = setTimeout(run, ms);
-    return () => {
-        clearTimeout(timer);
-    };
-};
-
 export function createViewFocusGate(options: ViewFocusGateOptions): ViewFocusGate {
-    const now = options.now ?? ((): number => Date.now());
-    const windowMs = options.windowMs ?? PROGRAMMATIC_FOCUS_WINDOW_MS;
-    const graceMs = options.graceMs ?? NAVIGATION_COMMIT_GRACE_MS;
-    const schedule = options.schedule ?? defaultSchedule;
-
-    /** True only while the shell's own `focus()` call is on the stack. */
-    let claiming = false;
-    /** When that call happened; the mark expires by time rather than by use. */
-    let markedAt: number | null = null;
-    /** A focus that arrived mid-load, waiting to see whether a commit explains it. */
-    let held: CancelTimer | null = null;
     let disposed = false;
 
-    const dropHeld = (): void => {
-        if (held === null) return;
-        held();
-        held = null;
-    };
-
-    /** Is this event attributable to the shell's own `focusView()`? */
-    const isOurs = (): boolean => {
-        if (claiming) return true;
-        if (markedAt === null) return false;
-        if (now() - markedAt > windowMs) {
-            markedAt = null;
-            return false;
-        }
-        return true;
-    };
-
     return {
-        claim(run: () => void): void {
-            claiming = true;
-            markedAt = now();
-            // A claim also invalidates anything held: the shell is moving focus itself, so an
-            // older event has nothing left to say about where the ring belongs.
-            dropHeld();
-            try {
-                run();
-            } finally {
-                claiming = false;
-            }
-        },
-
-        focusEvent(context: { loading: boolean }): void {
+        inputEvent(context: { type?: string | undefined; embedded: boolean }): void {
             if (disposed) return;
-            if (isOurs()) return;
-            if (!context.loading) {
-                // Nothing is in flight, so nothing but the user can have done this — including
-                // the click on a LINK, which precedes the navigation it is about to start.
-                dropHeld();
-                options.report();
-                return;
-            }
-            // Mid-load: hold it. The commit that is about to land cancels it; if none does,
-            // the user really did click a page that happens to be loading.
-            dropHeld();
-            held = schedule(() => {
-                held = null;
-                if (disposed) return;
-                options.report();
-            }, graceMs);
-        },
-
-        navigationCommitted(): void {
-            dropHeld();
+            if (!isGestureInput(context.type)) return;
+            // A parked view is on nobody's screen. This is not a discriminator standing in for a
+            // gesture — the gesture is already unambiguous — it is the one fact that says the
+            // press cannot have been aimed here.
+            if (!context.embedded) return;
+            options.report();
         },
 
         dispose(): void {
             disposed = true;
-            dropHeld();
         }
     };
 }

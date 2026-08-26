@@ -522,11 +522,19 @@ async function connectProbe(sandbox) {
 
 /**
  * The page inside a web pane is a `WebContentsView` — its own CDP target, listed by the shell's
- * DevTools port alongside the window's renderer. Attaching to it is what lets this smoke drive
- * the one signal the fix keys on: `Page.bringToFront` makes that view's `webContents` take
- * keyboard focus, which is the same event a user's click produces and which no shell-side
- * bookkeeping asked for. (Measured on Electron 43: a second CDP client coexists with the tab's
- * own `webContents.debugger.attach('1.3')` — both sessions keep working.)
+ * DevTools port alongside the window's renderer. Attaching to it is what lets this smoke deliver
+ * a press through the view's OWN input pipeline (`Input.dispatchMouseEvent`), which is the signal
+ * the fix keys on: Electron raises `input-event` with `type: 'mouseDown'`, exactly as it does for
+ * a finger.
+ *
+ * It is deliberately NOT `Page.bringToFront`. That was this smoke's stand-in for a click under
+ * §N29's first fix, and it is an operation whose job is to MOVE keyboard focus — so it
+ * manufactured the very focus transition that fix keyed on, and the smoke stayed green while the
+ * owner's real click did nothing. A click makes no focus transition once the view holds focus,
+ * which it does from the moment a pane finishes loading.
+ *
+ * (Measured on Electron 43: a second CDP client coexists with the tab's own
+ * `webContents.debugger.attach('1.3')` — both sessions keep working.)
  */
 async function findPageTarget(port, match, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs;
@@ -1028,14 +1036,42 @@ async function webPhase() {
                     await cdpCommand(clientTarget, 'Page.bringToFront');
                     await sleep(400);
                 };
+                /**
+                 * A press inside the page, through the view's own input pipeline — the gesture.
+                 *
+                 * `mouseDown` is what Electron surfaces as `input-event`, and it is the whole
+                 * signal; the release is sent so the page is left in a sane state, not because
+                 * anything keys on it.
+                 */
+                const pressPage = async (x = 40, y = 40) => {
+                    await cdpCommand(viewTarget, 'Input.dispatchMouseEvent', {
+                        type: 'mousePressed',
+                        x,
+                        y,
+                        button: 'left',
+                        buttons: 1,
+                        clickCount: 1
+                    });
+                    await sleep(40);
+                    await cdpCommand(viewTarget, 'Input.dispatchMouseEvent', {
+                        type: 'mouseReleased',
+                        x,
+                        y,
+                        button: 'left',
+                        buttons: 0,
+                        clickCount: 1
+                    });
+                };
                 const reportCount = () =>
                     shell.lines.filter((line) => line.includes('page took focus from the user')).length;
 
-                // ── the second filter, live: a NAVIGATION must not read as a click ──────
+                // ── a NAVIGATION must not read as a click, live ────────────────────────
                 //
                 // Chromium focuses the newly committed widget, so `nex web navigate` on an
-                // embedded pane fires the same event a click does. Unfiltered, every agent-driven
-                // navigation (and every pane's first load) would yank the user's focus ring.
+                // embedded pane DOES take the keyboard (that is what N30 is filed for). Under the
+                // old focus-edge signal this needed a hold-and-cancel filter to stay quiet. It now
+                // needs nothing at all: a commit presses no mouse button. The assertion is kept
+                // because the guarantee is what matters to a user, not the mechanism behind it.
                 await parkFocusInClient();
                 const beforeNavigation = reportCount();
                 const broadcastsBeforeNavigation = probe.messages('web-view-focus').length;
@@ -1069,14 +1105,39 @@ async function webPhase() {
                     },
                     20_000
                 );
+                /*
+                 * Drive the OWNER'S case, not the easy one.
+                 *
+                 * The ring is parked on the client, but the view is left HOLDING the keyboard —
+                 * the ordinary state after a load, and the state in which a click produces no
+                 * focus transition at all. §N29's first fix could not see this case; the input
+                 * signal does not care, because a press is a press.
+                 */
                 await parkFocusInClient();
+                // Captured BEFORE the focus move, or the check below is a tautology: comparing a
+                // count to itself across no elapsed time can never fail, and a gate that cannot
+                // fail is the exact kind of green this wave exists to stop trusting. (Verifier
+                // fix — the assertion as first written was vacuous.)
+                const beforeGesture = reportCount();
                 await cdpCommand(viewTarget, 'Page.bringToFront');
+                await sleep(400);
+                check(
+                    'the view taking keyboard focus reports nothing (focus is not the gesture)',
+                    reportCount() === beforeGesture,
+                    `${String(beforeGesture)} → ${String(reportCount())} reports across the focus move`
+                );
+                await pressPage();
                 const reported = await shell.waitForLine(
                     new RegExp(`web pane ${paneID}: page took focus from the user`),
                     'the host to report the page taking focus',
                     15_000
                 );
                 check('the host reports a user-driven page focus', reported.includes('page took focus'), reported.trim());
+                check(
+                    '…from the PRESS, on a view that already held focus (the owner’s case)',
+                    reportCount() > beforeGesture,
+                    `${String(beforeGesture)} → ${String(reportCount())}`
+                );
 
                 const broadcast = await waitFor(
                     'the daemon to fan the page focus out to clients',
@@ -1099,12 +1160,13 @@ async function webPhase() {
                     `${String(broadcast.windowID)} vs ${windowID}`
                 );
 
-                // ── the first filter, live: the shell's OWN claim (the row's seam a) ────
+                // ── the shell's OWN focus claim must not read as a click, live ──────────
                 //
-                // Focus is parked in the window's renderer first, so the view really is
-                // unfocused and WEB-043's `focus-view` really does fire a `focus` event — the
-                // proof is the re-arm check below, which produces a report from the same
-                // sequence minus the claim.
+                // Focus is parked in the window's renderer first, so WEB-043's `focus-view`
+                // really does move focus into the view. Under the old signal that fired a `focus`
+                // event which a re-entrancy claim had to swallow — and the 250 ms backstop it
+                // needed could swallow a real click with it. There is nothing to swallow now:
+                // moving focus presses no button. The guarantee is kept, the machinery is gone.
                 await parkFocusInClient();
                 const emissionsBefore = reportCount();
                 const broadcastsBefore = probe.messages('web-view-focus').length;
@@ -1126,15 +1188,15 @@ async function webPhase() {
                     `${String(broadcastsBefore)} broadcasts before and after`
                 );
 
-                // …and neither filter latches: the very next real focus is reported again.
+                // …and nothing latches: the very next real press is reported again.
                 await parkFocusInClient();
-                await cdpCommand(viewTarget, 'Page.bringToFront');
+                await pressPage(60, 60);
                 const again = await waitFor(
                     'a second user-driven page focus to be reported',
                     () => reportCount() > emissionsBefore,
                     15_000
                 );
-                check('a suppressed claim does not disable the next real click', again === true);
+                check('the shell’s own focus claim does not disable the next real click', again === true);
 
                 // Put the pane back on the page the checks after this one read.
                 await cli.run(['web', 'navigate', ...at(), `${fixture.base}/`]);

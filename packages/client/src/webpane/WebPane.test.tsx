@@ -12,7 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerOverlay, type OverlayHandle, type OverlayRect } from '../chrome/modal-presence';
 import type { CommandReply } from '../connection';
-import { WebPane, type WebPaneTab } from './WebPane';
+import { FOCUS_RING_WIDTH } from '../grid/FocusRing';
+import { insetHoleForFocusRing, WebPane, type WebPaneTab } from './WebPane';
 import type { WebPaneCommands } from './commands';
 import type { GeometryRect, GeometryReport } from './geometry';
 
@@ -43,7 +44,10 @@ function fakeCommands(): { commands: WebPaneCommands; sent: Recorded[] } {
             newTab: record('newTab'),
             selectTab: record('selectTab'),
             closeTab: record('closeTab'),
-            toggleDevTools: record('toggleDevTools')
+            toggleDevTools: record('toggleDevTools'),
+            // WEB-043's keyboard handoff fires on the unfocused→focused transition, so any test
+            // that focuses a pane goes through it.
+            focusView: record('focusView')
         } as unknown as WebPaneCommands
     };
 }
@@ -278,6 +282,7 @@ describe('geometry reporting', () => {
             rect?: GeometryRect;
             tabs?: readonly WebPaneTab[];
             activeTabID?: string | null;
+            focused?: boolean;
         } = {}
     ) {
         const { commands } = fakeCommands();
@@ -291,6 +296,7 @@ describe('geometry reporting', () => {
                 commands={commands}
                 embedded={props.embedded ?? true}
                 visible={props.visible ?? true}
+                focused={props.focused ?? false}
                 measure={fixedRect(props.rect ?? RECT)}
                 devicePixelRatio={2}
                 onGeometry={(report) => reports.push(report)}
@@ -306,6 +312,75 @@ describe('geometry reporting', () => {
         expect(h.reports).toEqual([
             { paneID: PANE, tabID: TAB1, rect: RECT, visible: true, devicePixelRatio: 2 }
         ]);
+    });
+
+    describe('§N27 — the focus ring needs the three edges the hole shares with it', () => {
+        it('insets a FOCUSED pane’s hole on left, right and bottom, never the top', () => {
+            const h = mount({ focused: true });
+            // The header already holds the top clear, so `y` must not move — shifting it down
+            // would put a 2 px band of pane background between the chrome and the page.
+            expect(h.reports.at(-1)?.rect).toEqual({
+                x: RECT.x + FOCUS_RING_WIDTH,
+                y: RECT.y,
+                w: RECT.w - FOCUS_RING_WIDTH * 2,
+                h: RECT.h - FOCUS_RING_WIDTH
+            });
+        });
+
+        it('leaves an UNFOCUSED pane’s hole flush, so the cost is paid only where the ring is', () => {
+            const h = mount({ focused: false });
+            expect(h.reports.at(-1)?.rect).toEqual(RECT);
+        });
+
+        it('re-reports on a focus change, so the ring appears without waiting for a resize', () => {
+            const h = mount({ focused: false });
+            expect(h.reports.at(-1)?.rect).toEqual(RECT);
+            act(() => {
+                h.view.rerender(
+                    <WebPane
+                        paneID={PANE}
+                        tabs={TABS}
+                        activeTabID={TAB1}
+                        commands={h.commands}
+                        embedded={true}
+                        visible={true}
+                        focused={true}
+                        measure={fixedRect(RECT)}
+                        devicePixelRatio={2}
+                        onGeometry={(report) => h.reports.push(report)}
+                        onHidden={(paneID) => h.hidden.push(paneID)}
+                    />
+                );
+            });
+            expect(h.reports.at(-1)?.rect).toEqual({
+                x: RECT.x + FOCUS_RING_WIDTH,
+                y: RECT.y,
+                w: RECT.w - FOCUS_RING_WIDTH * 2,
+                h: RECT.h - FOCUS_RING_WIDTH
+            });
+        });
+
+        it('shrinks the hole by exactly the ring width — the ring is 2 px of a 2 px strip', () => {
+            const ringed = insetHoleForFocusRing(RECT, true);
+            // Left/right/bottom each give up exactly `FOCUS_RING_WIDTH`; nothing else moves.
+            expect(ringed.x - RECT.x).toBe(FOCUS_RING_WIDTH);
+            expect(RECT.x + RECT.w - (ringed.x + ringed.w)).toBe(FOCUS_RING_WIDTH);
+            expect(RECT.y + RECT.h - (ringed.y + ringed.h)).toBe(FOCUS_RING_WIDTH);
+            expect(ringed.y).toBe(RECT.y);
+        });
+
+        it('refuses to inset a hole too small to give the strips up', () => {
+            // A zero- or negative-sized native view is a worse defect than a clipped ring.
+            const tiny: GeometryRect = { x: 0, y: 0, w: FOCUS_RING_WIDTH * 2, h: FOCUS_RING_WIDTH };
+            expect(insetHoleForFocusRing(tiny, true)).toEqual(tiny);
+            const thin: GeometryRect = { x: 0, y: 0, w: 3, h: 100 };
+            expect(insetHoleForFocusRing(thin, true).w).toBe(3);
+        });
+
+        it('is the identity when the pane is not focused, whatever the rect', () => {
+            expect(insetHoleForFocusRing(RECT, false)).toBe(RECT);
+            expect(insetHoleForFocusRing(RECT, true, 0)).toBe(RECT);
+        });
     });
 
     it('re-reports when the pane moves', () => {

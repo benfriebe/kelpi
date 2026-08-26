@@ -77,7 +77,7 @@ import {
     INSPECT_CHANNEL,
     injectedScriptSources
 } from './scripts.js';
-import { createViewFocusGate, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
+import { createViewFocusGate, traceFocus, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
@@ -472,23 +472,38 @@ class ElectronTab implements HostTab {
          *
          * The page is a native `WebContentsView` composited over the client's renderer, so a
          * pointer press inside it reaches Chromium and nothing else: no DOM event, no
-         * `onFocusRequest`, no ring move. What the press DOES do is give this webContents
-         * keyboard focus, and that is the only trace of it this process gets. Swift is not doing
-         * the same thing and the difference matters: there a click recogniser on the pane's
-         * container reports the GESTURE itself (`PaneFocusView.swift:35-49`), so nothing has to
-         * be filtered out of it. Here the signal is weaker, so it is filtered by
-         * `./view-focus.ts`, which holds the measurements behind both filters (the shell's own
-         * WEB-043 claim, and the focus a committing NAVIGATION takes).
+         * `onFocusRequest`, no ring move. Swift reports the GESTURE — an `NSClickGestureRecognizer`
+         * on the pane's container (`PaneFocusView.swift:35-49`) — and this is the port's
+         * equivalent: `input-event` carries the press itself, so there is no "who asked" to
+         * discriminate.
          *
-         * The embedded gate is the other half of "was this the user": a view sitting in the
-         * off-screen holder is not on anyone's screen, so a focus event there cannot be a click
-         * on it — it is an automation verb or a stray Chromium notification, and moving the
-         * user's focus ring for either would be a defect of its own.
+         * It is NOT the `focus` event, and that distinction cost a wave. `focus` is a TRANSITION
+         * signal; a pane's own load leaves the view holding the keyboard, so a user's click makes
+         * no transition and fires nothing at all — measured 0/0 in
+         * `docs/audit/n29-input-gesture/n29-confirm-hypothesis.mjs`. The filters that hung off it
+         * are deleted with it; see `./view-focus.ts` for why each one cannot fire on an input.
+         *
+         * The `focus` listener stays for its trace only, because "the view took the keyboard"
+         * remains the thing N30 is about and losing sight of it again would be expensive.
          */
+        contents.on('input-event', (_event, input) => {
+            if (this.disposed || contents.isDestroyed()) return;
+            const type = (input as { type?: string } | undefined)?.type;
+            // Traced BEFORE the gates so "filtered" and "never fired" stay distinguishable — the
+            // exact blindness that let the first fix ship green and do nothing. Mouse MOVES are
+            // excluded from the trace, not from correctness: they arrive at pointer rate and
+            // would bury the presses in noise.
+            if (type !== 'mouseMove' && type !== 'mouseEnter' && type !== 'mouseLeave') {
+                traceFocus(`raw input event: pane ${this.paneID} tab ${this.tabID} type=${String(type)} embedded=${String(this.embedded)}`);
+            }
+            this.focusGate.inputEvent({ type, embedded: this.embedded });
+        });
+
         contents.on('focus', () => {
             if (this.disposed || contents.isDestroyed()) return;
-            if (!this.embedded) return;
-            this.focusGate.focusEvent({ loading: contents.isLoading() });
+            // No longer a gesture source — only an observation. A view taking the keyboard is
+            // what N30 is filed for, and it is worth being able to see it happen.
+            traceFocus(`raw focus event (NOT a gesture): pane ${this.paneID} tab ${this.tabID} embedded=${String(this.embedded)} loading=${String(contents.isLoading())}`);
         });
 
         contents.setWindowOpenHandler(() => {
@@ -511,11 +526,9 @@ class ElectronTab implements HostTab {
             this.emitNavState(false);
         });
         contents.on('did-navigate', (_event, url) => {
-            // §N29, first: a commit is what explains a focus event that arrived mid-load —
-            // Chromium focuses the newly committed widget ~1-3 ms BEFORE this fires, and that is
-            // not the user clicking. Cancelling here is what keeps `nex web navigate`, a reload
-            // and every pane's first load from yanking the focus ring into the pane.
-            this.focusGate.navigationCommitted();
+            // §N29 used to cancel a held focus event here, because a commit takes the keyboard
+            // ~1-3 ms before this fires. The gesture is the INPUT now and a commit presses no
+            // mouse button, so there is nothing left to cancel.
             // WEB-073, and BEFORE the error-page early return below, because the error card is a
             // navigation like any other: let the tab's own frame go if auto-attach caught it.
             this.resumeIfWaiting();
@@ -824,12 +837,11 @@ class ElectronTab implements HostTab {
         // Logged because it is otherwise unobservable from outside: keyboard focus lives in
         // another renderer, so this line is what the visual audit asserts the handoff by.
         log(`web pane ${this.paneID}: focusing the page view (tab ${this.tabID})`);
-        // §N29: raised across the call, so the `focus` event this fires (synchronously, before
-        // `focus()` returns) is not reported back to the client as a user's click. Without it the
-        // ring's own consequence — the client focusing the page — would echo as a new gesture.
-        this.focusGate.claim(() => {
-            this.contents.focus();
-        });
+        // §N29 used to wrap this in a re-entrancy claim, because `focus()` fires its own `focus`
+        // event synchronously and the old gesture signal would have echoed it back as a click.
+        // The gesture is the INPUT now: moving focus presses no mouse button, so the claim (and
+        // the 250 ms backstop that could swallow a real click) is gone.
+        this.contents.focus();
     }
 
     reload(hard: boolean): void {

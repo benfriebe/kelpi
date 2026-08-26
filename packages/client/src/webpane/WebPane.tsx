@@ -32,6 +32,7 @@ import {
 } from 'react';
 
 import { overlayCovers, useOverlayRects } from '../chrome/modal-presence';
+import { FOCUS_RING_WIDTH } from '../grid/FocusRing';
 import { Icon } from '../grid/icons';
 import { pill, tokens } from '../grid/tokens';
 import { BatchPanel } from './BatchPanel';
@@ -144,6 +145,42 @@ const EMPTY_DESTINATIONS: readonly BatchDestination[] = [];
 function measureElement(element: HTMLElement): GeometryRect {
     const rect = element.getBoundingClientRect();
     return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+}
+
+/**
+ * §N27 — make room for the focus ring on the three edges the page hole shares with it.
+ *
+ * `FocusRing` is `absolute inset-0` on the pane WRAPPER: a 2 px inner border around the whole
+ * pane, header included (shell-ui.md §4.1). A web pane's page hole reaches that wrapper's left,
+ * right and bottom edges exactly — measured live at ring `220,32 529×764` against hole
+ * `220,91 529×705` — so on a focused LIVE web pane the ring's left, right and bottom strips are
+ * underneath the native `WebContentsView` and only the top edge (beside the pane header) shows.
+ *
+ * Nothing in the DOM can cover a native view, so the ring cannot simply be drawn over it: the
+ * hole has to shrink. This is the `BatchPanel` shape one step smaller — that panel already
+ * shrinks the hole by being a sibling row rather than an overlay, for exactly this reason.
+ *
+ * Only the FOCUSED pane insets, so an unfocused pane's page stays flush to its edges and the
+ * cost is paid only where the ring is actually drawn. The top is left alone because the header
+ * already holds it clear.
+ *
+ * Measured cost: the view resizes by 2·`ring` wide and `ring` tall on a focus change. The page's
+ * own layout viewport is unaffected in the ordinary case — Chromium keeps `window.innerWidth`
+ * at the pinned automation viewport — so there is no visible reflow; the live probe asserts the
+ * delta is bounded by the ring width rather than assuming it.
+ */
+export function insetHoleForFocusRing(
+    rect: GeometryRect,
+    focused: boolean,
+    ring: number = FOCUS_RING_WIDTH
+): GeometryRect {
+    if (!focused || ring <= 0) return rect;
+    // A hole too small to give up the strips keeps them: a zero- or negative-sized view would
+    // be a worse defect than a clipped ring, and panes this small do not exist in practice.
+    const horizontal = rect.w > ring * 2 ? ring : 0;
+    const vertical = rect.h > ring ? ring : 0;
+    if (horizontal === 0 && vertical === 0) return rect;
+    return { x: rect.x + horizontal, y: rect.y, w: rect.w - horizontal * 2, h: rect.h - vertical };
 }
 
 // ── chrome glyphs ───────────────────────────────────────────────────────────────────
@@ -449,12 +486,15 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         onGeometry?.({
             paneID,
             tabID: active?.id ?? null,
-            rect,
+            // §N27: the REPORTED rect shrinks for the focus ring; the DOM box does not move.
+            // The hole element still fills the pane, so nothing in this document reflows — only
+            // the native view is placed 2 px inside on the three edges it shares with the ring.
+            rect: insetHoleForFocusRing(rect, focused),
             visible: true,
             devicePixelRatio:
                 dpr ?? (globalThis as { devicePixelRatio?: number }).devicePixelRatio ?? 1
         });
-    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays]);
+    }, [embedded, visible, paneID, active?.id, measure, onGeometry, onHidden, dpr, overlays, focused]);
 
     // Layout effect, and deliberately with no dependency list: the grid re-renders a pane
     // whenever anything about the layout moves, so "after every render" IS the change signal.

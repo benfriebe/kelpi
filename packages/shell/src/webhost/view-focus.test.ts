@@ -1,172 +1,164 @@
 /**
- * §N29's discriminator: is this `focus` event the user's click, or something else?
+ * §N29's gesture signal: which inputs on a web pane's page mean "the user took this pane"?
  *
- * The gate is the whole correctness argument of the fix. Admit too much and the ring is yanked
- * around by machinery — a navigation committing (which fires `focus` TWICE, and fires on every
- * pane's first load), or WEB-043's own keyboard handoff. Admit too little and the defect stands.
- * The measured facts behind each rule are in the module header; this pins the behaviour.
+ * The suite this replaces pinned a DISCRIMINATOR over `webContents`'s `focus` event — a claim
+ * window, a navigation hold-and-cancel, two timers. Every one of those tests passed against a
+ * fix that moved nothing under the owner's finger, because they asserted that the right events
+ * were *filtered out* while the event that mattered never arrived at all
+ * (`docs/audit/n29-input-gesture/n29-confirm-hypothesis.mjs`: a click on the pane's own CDP
+ * target fires **0** focus events whether or not the view already holds focus). Tests cannot
+ * catch a missing signal by checking a filter, so the filter is gone and so are its tests.
+ *
+ * What is pinned now is the gesture itself, and the two properties that keep it honest: only a
+ * press counts (matching `NSClickGestureRecognizer`, which is click-only — typing moves no ring
+ * in the shipped app), and a parked view cannot be clicked.
  */
 
 import { describe, expect, it } from 'vitest';
 
-import {
-    NAVIGATION_COMMIT_GRACE_MS,
-    PROGRAMMATIC_FOCUS_WINDOW_MS,
-    createViewFocusGate,
-    type ViewFocusGate
-} from './view-focus.js';
+import { createViewFocusGate, isGestureInput, type ViewFocusGate } from './view-focus.js';
 
-/** A fake clock + timer queue, so the two windows are exercised without waiting for them. */
-function harness(): {
-    readonly gate: ViewFocusGate;
-    readonly reports: number[];
-    advance: (ms: number) => void;
-} {
-    let clock = 1_000;
+function harness(): { readonly gate: ViewFocusGate; readonly reports: number[] } {
     const reports: number[] = [];
-    const timers: { at: number; run: () => void; cancelled: boolean }[] = [];
-    const gate = createViewFocusGate({
-        report: () => reports.push(clock),
-        now: () => clock,
-        schedule: (run, ms) => {
-            const entry = { at: clock + ms, run, cancelled: false };
-            timers.push(entry);
-            return () => {
-                entry.cancelled = true;
-            };
-        }
-    });
-    return {
-        gate,
-        reports,
-        advance(ms) {
-            clock += ms;
-            for (const timer of [...timers]) {
-                if (timer.cancelled || timer.at > clock) continue;
-                timer.cancelled = true;
-                timer.run();
-            }
-        }
-    };
+    const gate = createViewFocusGate({ report: () => reports.push(reports.length) });
+    return { gate, reports };
 }
 
-describe('view focus gate', () => {
-    it('reports a focus event on an idle page: nothing else could have done it', () => {
+/** Every `InputEvent.type` Electron 43 documents, so a widened set has to be deliberate. */
+const ALL_INPUT_TYPES = [
+    'mouseDown',
+    'mouseUp',
+    'mouseMove',
+    'mouseEnter',
+    'mouseLeave',
+    'contextMenu',
+    'mouseWheel',
+    'rawKeyDown',
+    'keyDown',
+    'keyUp',
+    'char',
+    'gestureScrollBegin',
+    'gestureScrollEnd',
+    'gestureScrollUpdate',
+    'gestureTap',
+    'gestureTapDown',
+    'gestureLongPress',
+    'touchStart',
+    'touchMove',
+    'touchEnd',
+    'touchCancel',
+    'pointerDown',
+    'pointerUp',
+    'pointerMove'
+] as const;
+
+describe('the page-click gesture', () => {
+    it('reports a mouseDown on an embedded view — this is the whole signal', () => {
         const h = harness();
-        h.gate.focusEvent({ loading: false });
+        h.gate.inputEvent({ type: 'mouseDown', embedded: true });
         expect(h.reports).toHaveLength(1);
     });
 
-    it('suppresses the event its own claim fires synchronously (WEB-043 must not echo)', () => {
+    it('reports on the PRESS, not the release, so the ring moves under the finger', () => {
         const h = harness();
-        h.gate.claim(() => {
-            // Electron delivers `focus` INSIDE `contents.focus()` — measured at 0.075 ms.
-            h.gate.focusEvent({ loading: false });
-        });
-        expect(h.reports).toEqual([]);
-    });
-
-    it('suppresses a claim delivered LATE, in case a future build posts the event', () => {
-        const h = harness();
-        h.gate.claim(() => undefined);
-        h.advance(PROGRAMMATIC_FOCUS_WINDOW_MS - 1);
-        h.gate.focusEvent({ loading: false });
-        expect(h.reports).toEqual([]);
-    });
-
-    it('lets the claim window expire: a redundant focus() fires nothing, so it must not linger', () => {
-        const h = harness();
-        h.gate.claim(() => undefined);
-        h.advance(PROGRAMMATIC_FOCUS_WINDOW_MS + 1);
-        h.gate.focusEvent({ loading: false });
+        h.gate.inputEvent({ type: 'mouseDown', embedded: true });
+        h.gate.inputEvent({ type: 'mouseUp', embedded: true });
+        // Swift says the same thing with `delaysPrimaryMouseButtonEvents = false`.
         expect(h.reports).toHaveLength(1);
     });
 
-    it('rearms after the claim throws — a failed focus must not disable the gate for good', () => {
-        const h = harness();
-        expect(() =>
-            h.gate.claim(() => {
-                throw new Error('the view is gone');
-            })
-        ).toThrow('the view is gone');
-        h.advance(PROGRAMMATIC_FOCUS_WINDOW_MS + 1);
-        h.gate.focusEvent({ loading: false });
-        expect(h.reports).toHaveLength(1);
+    it('matches Swift exactly: mouseDown is the ONLY input that counts', () => {
+        const accepted = ALL_INPUT_TYPES.filter((type) => isGestureInput(type));
+        // `NSClickGestureRecognizer` recognises a primary-button click and nothing else. If this
+        // set ever grows, it is a port-only behaviour and needs its own parity argument.
+        expect(accepted).toEqual(['mouseDown']);
     });
 
-    describe('a navigation taking the keyboard (the two events every commit fires)', () => {
-        it('is dropped: the commit lands within a few ms and cancels it', () => {
-            const h = harness();
-            // Measured: two `focus` events, ~1-3 ms before `did-navigate`, `isLoading()` true.
-            h.gate.focusEvent({ loading: true });
-            h.gate.focusEvent({ loading: true });
-            h.advance(3);
-            h.gate.navigationCommitted();
-            h.advance(NAVIGATION_COMMIT_GRACE_MS * 2);
-            expect(h.reports).toEqual([]);
-        });
-
-        it('does not swallow the click that STARTS a navigation (a link click)', () => {
-            const h = harness();
-            // The press precedes the navigation it triggers, so the page is not loading yet —
-            // this is the ordinary path and it reports at once.
-            h.gate.focusEvent({ loading: false });
-            h.gate.navigationCommitted();
-            expect(h.reports).toHaveLength(1);
-        });
-
-        it('still reports a click that lands on a page which happens to be loading', () => {
-            const h = harness();
-            h.gate.focusEvent({ loading: true });
-            expect(h.reports).toEqual([]);
-            // No commit explains it, so after the grace it is what it looked like: the user.
-            h.advance(NAVIGATION_COMMIT_GRACE_MS + 1);
-            expect(h.reports).toHaveLength(1);
-        });
-
-        it('holds only the newest event, so a burst cannot report twice', () => {
-            const h = harness();
-            h.gate.focusEvent({ loading: true });
-            h.advance(2);
-            h.gate.focusEvent({ loading: true });
-            h.advance(NAVIGATION_COMMIT_GRACE_MS + 1);
-            expect(h.reports).toHaveLength(1);
-        });
-
-        it('drops a held event when the shell then claims focus itself', () => {
-            const h = harness();
-            h.gate.focusEvent({ loading: true });
-            h.gate.claim(() => undefined);
-            h.advance(NAVIGATION_COMMIT_GRACE_MS + 1);
-            expect(h.reports).toEqual([]);
-        });
-
-        it('ignores a commit with nothing held', () => {
-            const h = harness();
-            expect(() => h.gate.navigationCommitted()).not.toThrow();
-            expect(h.reports).toEqual([]);
-        });
-    });
-
-    it('reports nothing once disposed — a held event must not fire into a dead tab', () => {
+    it('does NOT treat typing as presence (the deliberate Swift-parity choice)', () => {
         const h = harness();
-        h.gate.focusEvent({ loading: true });
-        h.gate.dispose();
-        h.advance(NAVIGATION_COMMIT_GRACE_MS + 1);
-        h.gate.focusEvent({ loading: false });
+        for (const type of ['rawKeyDown', 'keyDown', 'keyUp', 'char']) {
+            h.gate.inputEvent({ type, embedded: true });
+        }
+        // A keystroke moving the ring would also fire on an agent's `nex web` typing.
         expect(h.reports).toEqual([]);
     });
 
-    it('re-arms on every claim, so a run of programmatic focuses is all suppressed', () => {
+    it('ignores hover, scroll and wheel — a pointer crossing a page is not a claim on it', () => {
         const h = harness();
-        for (let index = 0; index < 5; index += 1) {
-            h.gate.claim(() => {
-                h.gate.focusEvent({ loading: false });
-            });
-            h.advance(1_000);
+        for (const type of ['mouseMove', 'mouseEnter', 'mouseLeave', 'mouseWheel', 'gestureScrollUpdate']) {
+            h.gate.inputEvent({ type, embedded: true });
         }
         expect(h.reports).toEqual([]);
-        h.gate.focusEvent({ loading: false });
+    });
+
+    it('ignores an input on a PARKED view: nothing on screen could have been pressed', () => {
+        const h = harness();
+        // N26 parks a view into the off-screen holder for any floating surface. It stays alive
+        // there, so it can still receive input — but not from a user, who cannot see it.
+        h.gate.inputEvent({ type: 'mouseDown', embedded: false });
+        expect(h.reports).toEqual([]);
+    });
+
+    it('reports again once the view is placed back, so parking latches nothing', () => {
+        const h = harness();
+        h.gate.inputEvent({ type: 'mouseDown', embedded: false });
+        h.gate.inputEvent({ type: 'mouseDown', embedded: true });
         expect(h.reports).toHaveLength(1);
+    });
+
+    it('reports EVERY press: no coalescing window can swallow a real gesture', () => {
+        const h = harness();
+        for (let index = 0; index < 5; index += 1) {
+            h.gate.inputEvent({ type: 'mouseDown', embedded: true });
+        }
+        // The previous design's one measured residual was a time window that swallowed real
+        // clicks. Repeat reports are idempotent at the client; a swallowed one is not.
+        expect(h.reports).toHaveLength(5);
+    });
+
+    it('tolerates an input event with no type at all', () => {
+        const h = harness();
+        expect(() => h.gate.inputEvent({ type: undefined, embedded: true })).not.toThrow();
+        expect(h.reports).toEqual([]);
+        expect(isGestureInput(undefined)).toBe(false);
+        expect(isGestureInput(null)).toBe(false);
+    });
+
+    it('reports nothing once disposed — a dead tab must not move the ring', () => {
+        const h = harness();
+        h.gate.dispose();
+        h.gate.inputEvent({ type: 'mouseDown', embedded: true });
+        expect(h.reports).toEqual([]);
+    });
+
+    it('is idempotent on dispose', () => {
+        const h = harness();
+        h.gate.dispose();
+        expect(() => h.gate.dispose()).not.toThrow();
+        expect(h.reports).toEqual([]);
+    });
+
+    describe('the machinery the old design needed, and why none of it survives', () => {
+        it('exposes no claim window and no navigation hold — both are deleted, not disabled', () => {
+            const h = harness();
+            const gate = h.gate as unknown as Record<string, unknown>;
+            // Pinned as an API fact so the filters cannot creep back in behind the gesture. A
+            // programmatic `focus()` presses no button and a committing navigation presses no
+            // button, so neither can raise a `mouseDown` — there is nothing left to subtract.
+            expect(gate['claim']).toBeUndefined();
+            expect(gate['navigationCommitted']).toBeUndefined();
+            expect(gate['focusEvent']).toBeUndefined();
+            expect(Object.keys(gate).sort()).toEqual(['dispose', 'inputEvent']);
+        });
+
+        it('needs no clock, so no window exists that could swallow a click by timing out', () => {
+            // The old gate took `now`/`schedule`/`windowMs`/`graceMs`. Its one measured residual
+            // was a real click landing inside the 250 ms claim window and being dropped. A gate
+            // with no timer cannot have that class of defect at all.
+            const gate = createViewFocusGate({ report: () => undefined });
+            gate.inputEvent({ type: 'mouseDown', embedded: true });
+            expect(createViewFocusGate.length).toBe(1);
+            expect(gate).toBeDefined();
+        });
     });
 });

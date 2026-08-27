@@ -53,7 +53,7 @@
  *     any name and type.
  */
 
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
 import {
     WORKSPACE_COLORS,
@@ -150,6 +150,42 @@ const LABEL_GRID_GAP = '10px';
 const LABEL_ROW_STRIPE = { base: 'transparent', alternate: withAlpha('#808080', 0.06) } as const;
 
 /**
+ * N32(b) — the composer has to READ as a composer, and the shipped 7 % tint did not.
+ *
+ * The Swift separates its add row STRUCTURALLY: `LabelPresetsSettingsView.swift:27-35` puts it
+ * outside the `List` entirely, above a `Divider()`, on the plain `chromeTheme.surfaceBackground`,
+ * while every preset row is a band inside a `.listStyle(.inset(alternatesRowBackgrounds: true))`
+ * with the list's own inset and stripe. A browser has no AppKit `List`, so "outside the list" is
+ * not a thing this port can paint — H26 requires the composer to sit on the SAME grid as the rows
+ * so the wells, the "Aa" sample and the chip line up, which is exactly what makes the two look
+ * alike. The separation has to come from somewhere else.
+ *
+ * **Two signals, chosen off photographs of six candidates** (`docs/audit/n32-composer/`):
+ *
+ *   - a NAME. `label-add-heading` is the port's stand-in for the Swift's "this is not a list row"
+ *     structure: the one thing a tint cannot say is *what the region is for*, and the tab already
+ *     proves a weight difference alone is not enough — the preset rows carry a 6 % stripe of
+ *     their own, so a slightly heavier band just reads as another stripe.
+ *   - that tint, at a weight the eye actually resolves: 12 % rather than 7 %.
+ *
+ * The candidates that were REJECTED were rejected on measurements, not taste. Two of them move
+ * the very grid H26 exists to hold:
+ *
+ *   - a **framed inset** (1 px border + radius) eats 2 px off the row's width, and the name
+ *     track is the only flexible one, so the field narrows and the placeholder truncates
+ *     ("New label nam…" in the candidate frame);
+ *   - a **leading accent rail** shifts every cell in the add row 2 px right of the preset rows'
+ *     cells, which is precisely the `addLefts === rowLefts` alignment `labels-design` asserts.
+ *
+ * The third fails for the other reason: a **neutral (gray) ground** is the same hue as
+ * `LABEL_ROW_STRIPE.alternate`, so at any weight that reads, it reads as a stripe.
+ *
+ * Nothing here touches a settled row: no padding change (S64's 10 × 8 stands), no column change
+ * (H26/S57/S60's template stands), and no card (L79 — this tab has none).
+ */
+const LABEL_COMPOSER_GROUND = withAlpha(tokens.accent, 0.12);
+
+/**
  * `Image(systemName: "trash")` at this file's own scale.
  *
  * Hand-rolled rather than imported: no icon dependency may be added to the client, and the
@@ -183,6 +219,9 @@ export interface LabelsTabProps {
     readonly actions: SettingsActions;
     readonly bucket?: ChromeBucket | undefined;
 }
+
+/** Which of a preset row's two reorder arrows a gesture came from (N33). */
+type ArrowControl = 'up' | 'down';
 
 /** A preset's colour, in whichever of §6.2's two shapes it is stored as. */
 type LabelColorValue = ChromeLabelPreset['color'];
@@ -577,6 +616,80 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     const trimmedDraft = draftName.trim();
     const draftStyle = previewStyle(draftColor, draftTextColor, bucket);
 
+    /*
+     * N33 — the reorder arrows' focus, made explicit rather than left to the browser.
+     *
+     * Measured on the real stack (Electron/Chromium over CDP, `docs/audit/n33-reorder-focus/`),
+     * because jsdom cannot see any of it: jsdom neither blurs a node that is MOVED in the tree
+     * nor blurs a focused element that becomes `disabled`, so every reorder "kept focus" there
+     * while the shipped app did three different things:
+     *
+     *   - **↓ mid-list**: React's keyed reconciliation moves the minimum number of nodes, and
+     *     for an adjacent swap that is always the row that was EARLIER — i.e. the row you
+     *     pressed ↓ on. Chromium fires `focusout` + `focusin` on it as it is re-inserted (the
+     *     probe caught the pair in the same millisecond), which is the flicker.
+     *   - **↑ mid-list**: the pressed row is the LATER one, so its node is not moved at all and
+     *     focus is never interrupted. Same gesture, opposite mechanics — that asymmetry is the
+     *     whole of the report.
+     *   - **either direction into an END**: the pressed arrow becomes `disabled` in the same
+     *     commit, Chromium blurs it, and `document.activeElement` falls to `<body>` — measured,
+     *     both ends. Keyboard-only reordering dead-ends there: the next Tab restarts from the
+     *     top of the dialog rather than from the row you were moving.
+     *
+     * So the reorder now carries an INTENT — which preset, and which of its two arrows — set on
+     * the press and consumed by the first commit in which the order actually changes. A layout
+     * effect (before paint, so nothing flashes) puts focus back on that arrow, or on the row's
+     * OTHER arrow when the pressed one has just disabled itself. A row can only be at one end at
+     * a time, so with two or more presets the fallback is always enabled, and walking a row to
+     * the bottom leaves you on its ↑ ready to walk it back.
+     *
+     * Keyed by the ORDER, not by the array's identity: the mirror hands this tab a fresh
+     * `labelPresets` array on every `label-presets-changed` delta, including the ones a recolour
+     * raises, and consuming the intent on one of those would restore focus a commit too early —
+     * before the move it was recorded for.
+     */
+    const arrows = useRef(new Map<string, { up: HTMLButtonElement | null; down: HTMLButtonElement | null }>());
+    const pendingArrowFocus = useRef<{ name: string; control: ArrowControl } | null>(null);
+
+    const registerArrow = useCallback(
+        (name: string, control: ArrowControl, node: HTMLButtonElement | null): void => {
+            const entry = arrows.current.get(name) ?? { up: null, down: null };
+            entry[control] = node;
+            if (entry.up === null && entry.down === null) arrows.current.delete(name);
+            else arrows.current.set(name, entry);
+        },
+        []
+    );
+
+    const reorder = useCallback(
+        (name: string, control: ArrowControl, index: number): void => {
+            pendingArrowFocus.current = { name, control };
+            props.actions.moveLabelPreset?.({ id: name, index });
+        },
+        [props.actions]
+    );
+
+    const order = props.presets.map((preset) => preset.name).join(' ');
+    useLayoutEffect(() => {
+        const pending = pendingArrowFocus.current;
+        if (pending === null) return;
+        pendingArrowFocus.current = null;
+        const entry = arrows.current.get(pending.name);
+        if (entry === undefined) return;
+        const pressed = entry[pending.control];
+        const sibling = entry[pending.control === 'up' ? 'down' : 'up'];
+        // The arrow that was pressed, unless the move disabled it — then the row's other one,
+        // which the move necessarily enabled. Never `<body>`.
+        const target =
+            pressed !== null && !pressed.disabled ? pressed : sibling !== null && !sibling.disabled ? sibling : null;
+        if (target === null) return;
+        target.focus({ preventScroll: true });
+        // `nearest` and not the default: the row moved ONE slot and was on screen when it was
+        // pressed, so a centring scroll would be a jump of its own. Guarded because jsdom does
+        // not implement `scrollIntoView` at all.
+        if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+    }, [order]);
+
     const create = (): void => {
         const name = trimmedDraft;
         if (name === '') return;
@@ -607,10 +720,117 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 testID="label-presets"
             >
                 {/*
-                 * M45: `LabelPresetsSettingsView.swift:85-87`'s `Image(systemName: "tag")` at
+                 * H25 + N32(a): the composer is FIRST, above a divider, then the list OR the
+                 * empty state — `LabelPresetsSettingsView.swift:27-35`'s
+                 * `VStack(spacing: 0) { addRow; Divider(); if isEmpty { emptyState } else { List } }`.
+                 *
+                 * H25 had already moved it above the *list*; what it did not move was the EMPTY
+                 * state, which still rendered before it. So the one row on the tab that never
+                 * goes away had two positions — under the empty-state art on a fresh install,
+                 * then jumping to the top the moment the first preset existed. The Swift has one
+                 * position for it in both states, and so does this: the empty state is a sibling
+                 * of the list below the divider, not a header above the composer.
+                 */}
+                <div className="flex flex-col gap-1">
+                    {/*
+                     * N32(b): the composer's NAME. See `LABEL_COMPOSER_GROUND` — the tint alone
+                     * cannot say what the region is for, and the preset rows carry a stripe of
+                     * their own, so weight alone reads as another stripe.
+                     */}
+                    <h4
+                        data-testid="label-add-heading"
+                        className="px-2.5 text-[11px] font-semibold"
+                        style={{ color: tokens.textSecondary }}
+                    >
+                        New preset
+                    </h4>
+                    <div
+                        data-testid="label-add-row"
+                        // S64: `px-2.5` — one horizontal row inset for the whole window.
+                        // `SETTINGS_ROW_PADDING` is 10 px on every carded tab (General, Workspaces,
+                        // Appearance, Keybindings-Global); the four `plain` tabs' own rows were at 8,
+                        // so the eye read a 2 px step moving from General to Labels. The 6/8 px
+                        // VERTICAL values stay — §L79 measured those off the shipped dialog.
+                        className="grid items-center rounded px-2.5 py-2"
+                        style={{
+                            display: 'grid',
+                            gridTemplateColumns: LABEL_GRID,
+                            columnGap: LABEL_GRID_GAP,
+                            rowGap: '6px',
+                            background: LABEL_COMPOSER_GROUND
+                        }}
+                    >
+                        <LabelColorField
+                            idPrefix="label-new-color"
+                            label="new preset color"
+                            value={draftColor}
+                            bucket={bucket}
+                            onChange={setDraftColor}
+                        />
+                        <input
+                            aria-label="New preset name"
+                            placeholder="New label name"
+                            data-testid="label-new-name"
+                            className="min-w-0 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
+                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
+                            value={draftName}
+                            onChange={(event) => {
+                                setDraftName(event.target.value);
+                            }}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape') {
+                                    event.stopPropagation();
+                                    setDraftName('');
+                                    return;
+                                }
+                                if (event.key === 'Enter') create();
+                            }}
+                        />
+                        <LabelTextColorField
+                            idPrefix="label-new-text"
+                            label="new preset text color"
+                            value={draftTextColor}
+                            background={hexOf(draftColor, bucket)}
+                            bucket={bucket}
+                            onChange={setDraftTextColor}
+                        />
+                        <span className="flex min-w-0 justify-start">
+                            <ChipPreview
+                                testID="label-new-preview"
+                                colorToken={tokenOf(draftColor)}
+                                text={trimmedDraft === '' ? 'label' : trimmedDraft}
+                                placeholder={trimmedDraft === ''}
+                                style={draftStyle}
+                            />
+                        </span>
+                        {/*
+                         * The Swift add row lets "Add" size to its own text and only pins the column
+                         * to `LabelCol.action` as a MINIMUM, because a bordered text button clipped
+                         * to 40 px reads as "A…" (`:122-128`). Here it spans the reorder and action
+                         * columns for the same reason, right-aligned so its trailing edge still
+                         * lands on the trash buttons below it.
+                         */}
+                        <span className="flex justify-end" style={{ gridColumn: 'span 2' }}>
+                            <SettingsButton testID="label-add" disabled={trimmedDraft === ''} onClick={create}>
+                                Add
+                            </SettingsButton>
+                        </span>
+                    </div>
+                </div>
+
+                {/* `Divider()` — the add row is a header for the list, not the last row of it. */}
+                <div
+                    data-testid="label-add-divider"
+                    className="h-px"
+                    style={{ background: tokens.divider }}
+                />
+
+                {/*
+                 * M45: `LabelPresetsSettingsView.swift:85-97`'s `Image(systemName: "tag")` at
                  * 28 pt over a `.secondary` headline and a `.caption`/`.tertiary` explanation,
                  * centred in the space. The port had an inline `🏷` at body size on one wrapped
-                 * paragraph.
+                 * paragraph. It stands BELOW the divider, where the Swift's `if` puts it — it is
+                 * the list's empty state, not the tab's (N32(a)).
                  */}
                 {props.presets.length === 0 ? (
                     <SettingsEmptyState
@@ -620,93 +840,6 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                         detail="Define reusable labels with colours, then assign them from a workspace's right-click menu — or apply a label from the CLI and adopt it here."
                     />
                 ) : null}
-
-                {/*
-                 * H25: the add row is FIRST, above a divider, then the list —
-                 * `LabelPresetsSettingsView.swift:27-31`'s `VStack(spacing: 0) { addRow;
-                 * Divider(); List }`. It had drifted to the bottom of the presets, which on a
-                 * tab with more than a screen of them puts the only way to add one below the
-                 * fold.
-                 */}
-                <div
-                    data-testid="label-add-row"
-                    // S64: `px-2.5` — one horizontal row inset for the whole window.
-                    // `SETTINGS_ROW_PADDING` is 10 px on every carded tab (General, Workspaces,
-                    // Appearance, Keybindings-Global); the four `plain` tabs' own rows were at 8,
-                    // so the eye read a 2 px step moving from General to Labels. The 6/8 px
-                    // VERTICAL values stay — §L79 measured those off the shipped dialog.
-                    className="grid items-center rounded px-2.5 py-2"
-                    style={{
-                        display: 'grid',
-                        gridTemplateColumns: LABEL_GRID,
-                        columnGap: LABEL_GRID_GAP,
-                        rowGap: '6px',
-                        background: withAlpha(tokens.accent, 0.07)
-                    }}
-                >
-                    <LabelColorField
-                        idPrefix="label-new-color"
-                        label="new preset color"
-                        value={draftColor}
-                        bucket={bucket}
-                        onChange={setDraftColor}
-                    />
-                    <input
-                        aria-label="New preset name"
-                        placeholder="New label name"
-                        data-testid="label-new-name"
-                        className="min-w-0 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                        style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                        value={draftName}
-                        onChange={(event) => {
-                            setDraftName(event.target.value);
-                        }}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Escape') {
-                                event.stopPropagation();
-                                setDraftName('');
-                                return;
-                            }
-                            if (event.key === 'Enter') create();
-                        }}
-                    />
-                    <LabelTextColorField
-                        idPrefix="label-new-text"
-                        label="new preset text color"
-                        value={draftTextColor}
-                        background={hexOf(draftColor, bucket)}
-                        bucket={bucket}
-                        onChange={setDraftTextColor}
-                    />
-                    <span className="flex min-w-0 justify-start">
-                        <ChipPreview
-                            testID="label-new-preview"
-                            colorToken={tokenOf(draftColor)}
-                            text={trimmedDraft === '' ? 'label' : trimmedDraft}
-                            placeholder={trimmedDraft === ''}
-                            style={draftStyle}
-                        />
-                    </span>
-                    {/*
-                     * The Swift add row lets "Add" size to its own text and only pins the column
-                     * to `LabelCol.action` as a MINIMUM, because a bordered text button clipped
-                     * to 40 px reads as "A…" (`:122-128`). Here it spans the reorder and action
-                     * columns for the same reason, right-aligned so its trailing edge still
-                     * lands on the trash buttons below it.
-                     */}
-                    <span className="flex justify-end" style={{ gridColumn: 'span 2' }}>
-                        <SettingsButton testID="label-add" disabled={trimmedDraft === ''} onClick={create}>
-                            Add
-                        </SettingsButton>
-                    </span>
-                </div>
-
-                {/* `Divider()` — the add row is a header for the list, not the last row of it. */}
-                <div
-                    data-testid="label-add-divider"
-                    className="h-px"
-                    style={{ background: tokens.divider }}
-                />
 
                 {props.presets.map((preset, index) => (
                     <PresetRow
@@ -719,6 +852,8 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                         actions={props.actions}
                         error={renameError?.id === preset.name ? renameError.message : null}
                         confirming={confirming === preset.name}
+                        onReorder={reorder}
+                        registerArrow={registerArrow}
                         onConfirmChange={(open) => {
                             setConfirming(open ? preset.name : null);
                         }}
@@ -765,6 +900,10 @@ interface PresetRowProps {
     /** A refused rename's message, owned by the tab so it survives this row re-rendering. */
     readonly error: string | null;
     readonly confirming: boolean;
+    /** N33: dispatch the move AND record which arrow should hold focus once it lands. */
+    readonly onReorder: (name: string, control: ArrowControl, index: number) => void;
+    /** N33: hand the tab this row's two arrow nodes, so it can put focus back on one of them. */
+    readonly registerArrow: (name: string, control: ArrowControl, node: HTMLButtonElement | null) => void;
     readonly onConfirmChange: (open: boolean) => void;
     readonly onRenameRefused: (message: string | null) => void;
 }
@@ -806,6 +945,30 @@ function PresetRow(props: PresetRowProps): ReactElement {
         // input: re-running when focus changes is exactly what must not happen (it would
         // overwrite the draft on blur, before the commit has been read).
     }, [preset.name]);
+
+    /*
+     * N33: STABLE ref callbacks, one per arrow.
+     *
+     * Stability is the point, not tidiness. A fresh closure each render makes React detach the
+     * old ref (`node = null`) and attach the new one on every commit — including the reorder
+     * commit, whose layout effect reads this map immediately afterwards. Keyed on the preset's
+     * name and on `registerArrow` (itself a `useCallback` in the tab), these are called exactly
+     * twice per row in its lifetime: once with the node, once with `null` when the row unmounts,
+     * which is what evicts a deleted preset from the map.
+     */
+    const registerArrow = props.registerArrow;
+    const upRef = useCallback(
+        (node: HTMLButtonElement | null) => {
+            registerArrow(preset.name, 'up', node);
+        },
+        [registerArrow, preset.name]
+    );
+    const downRef = useCallback(
+        (node: HTMLButtonElement | null) => {
+            registerArrow(preset.name, 'down', node);
+        },
+        [registerArrow, preset.name]
+    );
 
     /** Swift `previewText`: the chip follows what is typed, falling back to the stored name. */
     const previewText = draft.trim() === '' ? preset.name : draft.trim();
@@ -938,12 +1101,19 @@ function PresetRow(props: PresetRowProps): ReactElement {
             <span className="flex items-center justify-end gap-1">
                 {props.actions.moveLabelPreset === undefined ? null : (
                     <>
+                        {/*
+                         * N33: both arrows hand their node up to the tab and route the move
+                         * through `onReorder`, which records the focus intent alongside the
+                         * dispatch, so focus can follow the MOVED row rather than being left
+                         * wherever Chromium's own bookkeeping drops it.
+                         */}
                         <SettingsIconButton
                             testID={`label-move-up-${preset.name}`}
                             ariaLabel={`Move ${preset.name} up`}
+                            buttonRef={upRef}
                             disabled={props.index === 0}
                             onClick={() => {
-                                props.actions.moveLabelPreset?.({ id: preset.name, index: props.index - 1 });
+                                props.onReorder(preset.name, 'up', props.index - 1);
                             }}
                         >
                             ↑
@@ -951,9 +1121,10 @@ function PresetRow(props: PresetRowProps): ReactElement {
                         <SettingsIconButton
                             testID={`label-move-down-${preset.name}`}
                             ariaLabel={`Move ${preset.name} down`}
+                            buttonRef={downRef}
                             disabled={props.index === presets.length - 1}
                             onClick={() => {
-                                props.actions.moveLabelPreset?.({ id: preset.name, index: props.index + 1 });
+                                props.onReorder(preset.name, 'down', props.index + 1);
                             }}
                         >
                             ↓

@@ -20997,7 +20997,7 @@ function buildFlows(ctx) {
         {
             id: 'panel-slide-flash',
             expect:
-                'Every frame of a side panel’s slide shows the PANEL’s own colour across the whole strip the reveal has opened — the sidebar’s and the inspector’s alike, opening and closing. No frame composites the reveal onto the window ground (which is `transparent`, i.e. the desktop, under a window created at `background-opacity < 1`), and no frame leaves part of the reveal with no panel in it at all (§N31).',
+                'Every frame of a side panel’s slide shows the PANEL’s own colour across the whole strip the reveal has opened — the sidebar’s and the inspector’s alike, opening and closing. No frame composites the reveal onto the window ground (which is `transparent`, i.e. the desktop, under a window created at `background-opacity < 1`), and no frame leaves part of the reveal with no panel in it at all (§N31). And on the other side of the moving edge: the pane grid the panel pushes is covered by its panes at every observation, so a slide never opens a strip of unpainted window there either (§N31 reopened).',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -21088,6 +21088,74 @@ function buildFlows(ctx) {
                     );
                 };
 
+                /*
+                 * §N31's REOPENED half — the strip is not always the clip.
+                 *
+                 * Everything above is about the panel and the container it slides inside. The
+                 * owner still saw white on the inspector after all of it went green, and the
+                 * residual was on the OTHER side of the moving edge: the pane grid the panel
+                 * pushes lays every pane out as an absolutely-positioned pixel rect derived from
+                 * a `ResizeObserver` measurement, and the grid itself paints nothing (§N17 — the
+                 * window fill is `transparent` below `background-opacity` 1). While that
+                 * measurement trails the container, the difference is a strip of window NOTHING
+                 * painted: the desktop, i.e. white on a light wallpaper. Measured at 21.2 CSS px
+                 * on the inspector's close and 16.7 px on the sidebar's, and photographed at
+                 * alpha 0 (`docs/audit/n31-grid-lag/`).
+                 *
+                 * It has to be read in a `ResizeObserver`, not a rAF. Observer callbacks are
+                 * delivered after layout, before paint, in creation order — so an observer
+                 * created here runs after the grid's own and sees whether the panes have been
+                 * re-laid-out for the size the container has THIS frame. A rAF runs before the
+                 * observer step entirely: it sees a gap on every frame of every slide whether or
+                 * not one paints, which is why this could not be folded into the sampler above.
+                 */
+                const startGridCoverage = async () =>
+                    await page.eval(
+                        `(() => {
+                            const grid = document.querySelector('[data-testid="pane-grid"]');
+                            if (grid === null || typeof ResizeObserver === 'undefined') return false;
+                            const box = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+                            const observations = [];
+                            let running = true;
+                            const observer = new ResizeObserver(() => {
+                                if (!running) return;
+                                const g = box(grid);
+                                const wrappers = [...grid.querySelectorAll('[data-testid]')].filter((el) =>
+                                    /^pane-[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(el.getAttribute('data-testid') ?? '') &&
+                                    getComputedStyle(el).visibility !== 'hidden'
+                                );
+                                let u = null;
+                                for (const w of wrappers) {
+                                    const b = box(w);
+                                    u = u === null ? { ...b } : { l: Math.min(u.l, b.l), r: Math.max(u.r, b.r), t: Math.min(u.t, b.t), b: Math.max(u.b, b.b) };
+                                }
+                                if (u === null) { observations.push({ wrappers: 0, uncovered: 0 }); return; }
+                                observations.push({
+                                    wrappers: wrappers.length,
+                                    width: Math.round((g.r - g.l) * 100) / 100,
+                                    uncovered: Math.round(Math.max(g.r - u.r, u.l - g.l, u.t - g.t, g.b - u.b) * 100) / 100
+                                });
+                            });
+                            observer.observe(grid);
+                            window.__nexGridNet = { observations, stop: () => { running = false; observer.disconnect(); } };
+                            return true;
+                        })()`
+                    );
+                const readGridCoverage = async () => {
+                    await page.eval(`(() => { window.__nexGridNet?.stop?.(); return true; })()`);
+                    const observations = JSON.parse(
+                        String(await page.eval(`JSON.stringify(window.__nexGridNet?.observations ?? [])`))
+                    );
+                    const measured = observations.filter((entry) => entry.wrappers > 0);
+                    return {
+                        observations: measured.length,
+                        // half a pixel of slack: a device-pixel rounding at the container's edge
+                        // is not a strip, and the fix's own arithmetic is exact well inside it
+                        uncovered: measured.filter((entry) => entry.uncovered > 0.51).length,
+                        worstPx: measured.reduce((high, entry) => Math.max(high, entry.uncovered), 0)
+                    };
+                };
+
                 /**
                  * Classify one panel's frames. A frame counts as "mid-slide" when the slot has
                  * opened at all and is not yet at rest — that is the window in which a reveal
@@ -21128,6 +21196,7 @@ function buildFlows(ctx) {
                     await sleep(700);
                 }
                 await startSampler();
+                const sidebarCoverageStarted = await startGridCoverage();
                 await page.click('button[aria-label="Toggle sidebar"]');
                 await sleep(400);
                 await recorder.shot(page, 'sidebar-mid-slide');
@@ -21135,7 +21204,9 @@ function buildFlows(ctx) {
                 await page.click('button[aria-label="Toggle sidebar"]');
                 await sleep(700);
                 const sidebar = classify(await readSamples(), 'sidebar', 220);
+                const sidebarGrid = await readGridCoverage();
                 recorder.note(`sidebar slide: ${JSON.stringify(sidebar)}`);
+                recorder.note(`sidebar slide, grid coverage: ${JSON.stringify(sidebarGrid)}`);
                 recorder.check(
                     'the sidebar’s slide really produced frames to classify',
                     sidebar.midSlide >= 8,
@@ -21166,6 +21237,11 @@ function buildFlows(ctx) {
                     sidebar.minOpacity < 0.9,
                     `minimum panel opacity ${String(Math.round(sidebar.minOpacity * 100) / 100)}`
                 );
+                recorder.check(
+                    '§N31 (reopened): the panes cover the grid the sidebar’s slide is resizing, at every observation',
+                    sidebarCoverageStarted === true && sidebarGrid.observations >= 8 && sidebarGrid.uncovered === 0,
+                    `${String(sidebarGrid.uncovered)} uncovered of ${String(sidebarGrid.observations)} observations, worst strip ${String(sidebarGrid.worstPx)} CSS px`
+                );
 
                 // ── the inspector: open, then close ─────────────────────────────────
                 //
@@ -21178,6 +21254,7 @@ function buildFlows(ctx) {
                     await sleep(700);
                 }
                 await startSampler();
+                const inspectorCoverageStarted = await startGridCoverage();
                 await page.click('[data-testid="toggle-inspector"]');
                 await sleep(400);
                 await recorder.shot(page, 'inspector-mid-slide');
@@ -21185,7 +21262,9 @@ function buildFlows(ctx) {
                 await page.click('[data-testid="toggle-inspector"]');
                 await sleep(700);
                 const inspector = classify(await readSamples(), 'inspector', 280);
+                const inspectorGrid = await readGridCoverage();
                 recorder.note(`inspector slide: ${JSON.stringify(inspector)}`);
+                recorder.note(`inspector slide, grid coverage: ${JSON.stringify(inspectorGrid)}`);
                 recorder.check(
                     'the inspector’s slide really produced frames to classify',
                     inspector.midSlide >= 8,
@@ -21205,6 +21284,19 @@ function buildFlows(ctx) {
                     '§N31: ZERO window-default frames across the inspector’s open+close cycle',
                     inspector.midSlide > 0 && inspector.windowDefault === 0,
                     `${String(inspector.windowDefault)} window-default frames of ${String(inspector.midSlide)}`
+                );
+                /*
+                 * The residual the owner kept seeing, and the one this whole file was blind to:
+                 * the inspector's CLOSE grows the grid by 280 px, and every frame the panes are
+                 * measured a frame late is a transparent strip that wide right where the panel
+                 * just was. The open direction never showed it — a shrinking container makes the
+                 * stale panes too BIG, and `overflow: hidden` eats the difference — which is
+                 * exactly why the defect survived a review that watched panels open.
+                 */
+                recorder.check(
+                    '§N31 (reopened): and the panes cover the grid the INSPECTOR resizes — the close direction included',
+                    inspectorCoverageStarted === true && inspectorGrid.observations >= 8 && inspectorGrid.uncovered === 0,
+                    `${String(inspectorGrid.uncovered)} uncovered of ${String(inspectorGrid.observations)} observations, worst strip ${String(inspectorGrid.worstPx)} CSS px`
                 );
 
                 // ── the window's own ground, the third suspect ──────────────────────
@@ -21697,6 +21789,73 @@ function buildFlows(ctx) {
                     (shape?.order ?? [])[0] === 'label-add-row' && (shape?.order ?? [])[1] === 'label-add-divider',
                     JSON.stringify(shape?.order)
                 );
+
+                /*
+                 * §N32(a) — the composer has ONE position, in BOTH states.
+                 *
+                 * `LabelPresetsSettingsView.swift:27-35` is
+                 * `VStack(spacing: 0) { addRow; Divider(); if isEmpty { emptyState } else { List } }`,
+                 * so the add row's place does not depend on whether a preset exists. §H25 moved it
+                 * above the LIST and left the EMPTY-state art above IT, which is why the owner saw
+                 * the one always-present control sit at the bottom of a fresh tab and jump to the
+                 * top on the first Add.
+                 *
+                 * Written as ONE check that is true in either state rather than as a check that
+                 * only fires when the tab happens to be empty: the composer's three parts lead the
+                 * tab, and the art — if it is on screen at all — is below the divider. Under
+                 * `--only` the tab really is empty here, so the second clause has teeth; in a full
+                 * run the first three still do.
+                 */
+                // `rowBgs` is EVERY preset row's ground, not just the first: the two
+                // `alternatesRowBackgrounds` tones are different colours, so the composer has to
+                // be unlike both of them rather than unlike one.
+                const readPlacement = () => page.eval(
+                    `(() => {
+                        const section = document.querySelector('[data-testid="label-presets"]');
+                        if (section === null) return null;
+                        const ids = Array.from(section.querySelectorAll('[data-testid]'))
+                            .map((el) => el.getAttribute('data-testid') ?? '')
+                            .filter((id) => id === 'label-add-heading' || id === 'label-add-row'
+                                || id === 'label-add-divider' || id === 'labels-empty' || id.startsWith('label-preset-'));
+                        const add = document.querySelector('[data-testid="label-add-row"]');
+                        const heading = document.querySelector('[data-testid="label-add-heading"]');
+                        const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'));
+                        const row = rows[0] ?? null;
+                        const bg = (el) => el === null ? null : getComputedStyle(el).backgroundColor;
+                        return {
+                            ids,
+                            heading: heading === null ? null : (heading.innerText ?? '').trim(),
+                            headingLeadsTheRow: heading !== null && heading.nextElementSibling === add,
+                            addBg: bg(add),
+                            rowBgs: rows.map((el) => bg(el)),
+                            addLeft: add === null ? null : Math.round(add.getBoundingClientRect().left),
+                            rowLeft: row === null ? null : Math.round(row.getBoundingClientRect().left)
+                        };
+                    })()`
+                );
+                const placement = await readPlacement();
+                recorder.note(`labels composer placement: ${JSON.stringify(placement)}`);
+                const placementIDs = placement?.ids ?? [];
+                const dividerAt = placementIDs.indexOf('label-add-divider');
+                const emptyAt = placementIDs.indexOf('labels-empty');
+                recorder.check(
+                    'the composer leads the tab in BOTH states — heading, row, divider, and the empty-state art BELOW it (§N32a)',
+                    placementIDs[0] === 'label-add-heading' &&
+                        placementIDs[1] === 'label-add-row' &&
+                        placementIDs[2] === 'label-add-divider' &&
+                        (emptyAt === -1 || emptyAt > dividerAt),
+                    JSON.stringify(placementIDs)
+                );
+                /*
+                 * §N32(b) — and it READS as a composer rather than as another preset row. Two
+                 * signals, because H26 forbids the third: every row on this tab is one grid line
+                 * on `LabelCol`'s widths, so the composer cannot be told apart by its shape.
+                 */
+                recorder.check(
+                    'the composer is NAMED, and the name introduces the row it belongs to (§N32b)',
+                    placement?.heading === 'New preset' && placement?.headingLeadsTheRow === true,
+                    JSON.stringify({ heading: placement?.heading, leads: placement?.headingLeadsTheRow })
+                );
                 /*
                  * §H26 / §H27 need ROWS, and under `--only` the tab starts empty — so the
                  * geometry is measured a second time at the end of the step, once this step's
@@ -21874,7 +22033,170 @@ function buildFlows(ctx) {
                     collision?.field === 'audit-design',
                     String(collision?.field)
                 );
-                recorder.eyes('the Labels tab as a TABLE and a design surface: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND with the add row above the divider (§H26) — swatch row, Auto/Black/White triple, and whether the preview chip reads like the chip a workspace will wear');
+                /*
+                 * §N32(b), second half: the composer's own GROUND, read once real preset rows
+                 * exist to compare it against. A tint that resolves to the same pixel as a list
+                 * row is not a distinction, and the shipped 7 % accent did exactly that.
+                 */
+                // Park the pointer off the list first: a hovered row paints `SETTINGS_HOVER_FILL`
+                // over its stripe (H11), and comparing the composer against a HOVER is comparing
+                // it against a state no row is in at rest.
+                await page.mouse('mouseMoved', 20, 20, { button: 'none', buttons: 0 });
+                await sleep(250);
+                const grounds = await readPlacement();
+                recorder.note(`labels composer ground: ${JSON.stringify({ add: grounds?.addBg, rows: grounds?.rowBgs })}`);
+                // `backgroundColor` is whatever Chromium serialises the computed value as — a
+                // `color-mix()` comes back as `color(srgb …)`, not `rgb…`, so the test for "it
+                // paints something" is that it is not the fully transparent value.
+                const CLEAR = 'rgba(0, 0, 0, 0)';
+                recorder.check(
+                    'the composer carries a ground no preset row wears, and still starts on the same x (§N32b / §H26)',
+                    typeof grounds?.addBg === 'string' &&
+                        grounds.addBg !== CLEAR &&
+                        (grounds.rowBgs ?? []).every((value) => value !== grounds.addBg) &&
+                        grounds?.addLeft === grounds?.rowLeft,
+                    JSON.stringify({ add: grounds?.addBg, rows: grounds?.rowBgs, addLeft: grounds?.addLeft, rowLeft: grounds?.rowLeft })
+                );
+
+                /*
+                 * §N33 — where focus goes when a row is REORDERED, driven the way a person
+                 * drives it: one real mouse click on an arrow, then Enter on whatever holds focus.
+                 *
+                 * This is the assertion that could only ever live here. jsdom implements neither
+                 * of the two browser behaviours the defect is made of — it does not blur a node
+                 * that is MOVED in the tree (React's keyed reconciliation moves the pressed row's
+                 * node on ↓ and the OTHER row's on ↑, which is the report's asymmetry), and it
+                 * does not blur a focused element that becomes `disabled`. Measured on this stack
+                 * before the fix: mid-list ↓ fired `focusout`+`focusin` on the pressed arrow,
+                 * mid-list ↑ fired neither, and BOTH ends dropped `document.activeElement` to
+                 * `<body>`, which is a keyboard dead end — the next Tab restarts from the top of
+                 * the dialog rather than from the row being moved.
+                 *
+                 * Three presets, so the walk passes through a middle slot AND both ends, and it
+                 * returns the list to the order it started in: click ↓ (0→1, mid-list), Enter
+                 * (1→2, ↓ disables), Enter (2→1, mid-list ↑), Enter (1→0, ↑ disables).
+                 */
+                await page.click('[data-testid="label-add"]');
+                await sleep(200);
+                await page.click('[data-testid="label-new-name"]');
+                await page.insertText('audit-third');
+                await sleep(200);
+                await page.click('[data-testid="label-add"]');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-third"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the third preset'
+                });
+                await sleep(400);
+
+                const focusTrace = `(() => {
+                    if (window.__nexLabelFocus !== undefined) { window.__nexLabelFocus.length = 0; return 'reset'; }
+                    window.__nexLabelFocus = [];
+                    const name = (el) => el === null || el === undefined ? 'null'
+                        : el === document.body ? 'BODY' : (el.getAttribute('data-testid') ?? el.tagName);
+                    document.addEventListener('focusin', (e) => window.__nexLabelFocus.push('in:' + name(e.target)), true);
+                    document.addEventListener('focusout', (e) => window.__nexLabelFocus.push('out:' + name(e.target)), true);
+                    return 'installed';
+                })()`;
+                await page.eval(focusTrace);
+                const presetOrder = `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((el) => (el.getAttribute('data-testid') ?? '').replace('label-preset-','')))`;
+                const activeID = `(() => { const el = document.activeElement;
+                    return el === null ? 'null' : el === document.body ? 'BODY' : (el.getAttribute('data-testid') ?? el.tagName); })()`;
+                const before = String(await page.eval(presetOrder));
+                recorder.note(`labels reorder — order before the walk: ${before}`);
+
+                /** One settle point of the walk: what moved, and what holds focus afterwards. */
+                const walkStep = async (label, expectFocus) => {
+                    await sleep(700);
+                    const state = {
+                        order: JSON.parse(String(await page.eval(presetOrder))),
+                        active: String(await page.eval(activeID)),
+                        trace: await page.eval(`JSON.stringify(window.__nexLabelFocus ?? [])`)
+                    };
+                    recorder.note(`labels reorder — ${label}: ${JSON.stringify(state)}`);
+                    recorder.check(
+                        `focus follows the moved row ${label} (§N33)`,
+                        state.active === expectFocus,
+                        `${state.active} (wanted ${expectFocus}); order ${state.order.join(' ')}`
+                    );
+                    return state;
+                };
+
+                /*
+                 * The walk is driven from the row's REAL position, not from an assumed list
+                 * length — which is the defect `run-AG`'s first attempt found in this net. Written
+                 * for the three presets a scoped run leaves behind, it met a FOURTH in a full run
+                 * (`audit-label`, created twenty steps earlier and never removed), so its last two
+                 * presses were labelled "into the FIRST slot" while the row was still landing
+                 * mid-list. The product was right at every one of the four settle points and the
+                 * check was wrong at the last two: the same class of miss as §N31's own instrument,
+                 * one level up — an assertion true of the case its author had in front of them.
+                 *
+                 * So the expectation is now the RULE rather than four instances of it: after a
+                 * press, focus is the arrow that was pressed, unless that press took the row to an
+                 * end and disabled it, in which case it is the row's OTHER arrow. That is decidable
+                 * from the index the row lands on, and it holds for any list length.
+                 */
+                const TARGET = 'audit-design';
+                const startNames = JSON.parse(before);
+                const total = startNames.length;
+                const startIndex = startNames.indexOf(TARGET);
+                recorder.check(
+                    'the reorder walk has a list to walk: 3+ presets, and the row is not already last',
+                    total >= 3 && startIndex >= 0 && startIndex < total - 1,
+                    `${String(total)} presets, ${TARGET} at index ${String(startIndex)}`
+                );
+                /** The arrow that must hold focus after a press of `control` landing the row at `index`. */
+                const expectAfter = (control, index) =>
+                    (control === 'down' && index === total - 1) || (control === 'up' && index === 0)
+                        ? `label-move-${control === 'down' ? 'up' : 'down'}-${TARGET}`
+                        : `label-move-${control}-${TARGET}`;
+                const disables = (control, index) =>
+                    (control === 'down' && index === total - 1) || (control === 'up' && index === 0);
+
+                // A real mouse click starts the walk…
+                await page.click(`[data-testid="label-move-down-${TARGET}"]`);
+                await walkStep(
+                    `after a mouse ↓ (${String(startIndex)} → ${String(startIndex + 1)} of ${String(total)})`,
+                    expectAfter('down', startIndex + 1)
+                );
+                /*
+                 * …and everything after it is the keyboard alone, pressed blind on whatever holds
+                 * focus — which IS the acceptance criterion: if focus were lost there would be
+                 * nothing to press, and the walk would stall where the pre-fix bundle's does.
+                 * Down to the last slot, up to the first, then back to where the row started, so
+                 * the list ends in the order it began in.
+                 */
+                const legs = [];
+                for (let index = startIndex + 2; index <= total - 1; index++) legs.push(['down', index]);
+                for (let index = total - 2; index >= 0; index--) legs.push(['up', index]);
+                for (let index = 1; index <= startIndex; index++) legs.push(['down', index]);
+                let settled = null;
+                for (const [control, index] of legs) {
+                    await page.key('Enter');
+                    settled = await walkStep(
+                        `after Enter ${control === 'down' ? '↓' : '↑'} into slot ${String(index)} of ${String(total)}${disables(control, index) ? ' (that arrow disables under the finger)' : ''}`,
+                        expectAfter(control, index)
+                    );
+                }
+                settled = settled ?? { order: JSON.parse(String(await page.eval(presetOrder))) };
+                await recorder.shot(page, 'reorder-focus');
+                recorder.check(
+                    'the keyboard walk returned the list to the order it started in',
+                    JSON.stringify(settled.order) === before,
+                    `${JSON.stringify(settled.order)} vs ${before}`
+                );
+                // Reachability: the arrows sit in the row's natural tab order rather than being
+                // skipped or trapped, so a keyboard user can get to them without a mouse at all.
+                await page.key('Tab');
+                await sleep(300);
+                const afterTab = String(await page.eval(activeID));
+                recorder.check(
+                    'and Tab moves on from the arrows to the row\u2019s own delete button (§N33)',
+                    afterTab === 'label-delete-audit-design',
+                    afterTab
+                );
+
+                recorder.eyes('the Labels tab as a TABLE and a design surface: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND with the add row above the divider (§H26) — swatch row, Auto/Black/White triple, and whether the preview chip reads like the chip a workspace will wear. And §N32(b), which only an eye can settle: does the first row READ as the composer rather than as a fourth preset with an empty name — its "New preset" heading and its own ground against the list\u2019s stripes?');
             }
         },
         {

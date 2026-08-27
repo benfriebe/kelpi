@@ -35,6 +35,7 @@ import {
     type ReactElement,
     type ReactNode
 } from 'react';
+import { flushSync } from 'react-dom';
 
 import {
     DIVIDER_HIT_INSET,
@@ -244,18 +245,62 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
         const element = containerRef.current;
         if (element === null) return;
         const read = (): void => {
-            const width = element.clientWidth;
-            const height = element.clientHeight;
+            /*
+             * §N31 — FRACTIONAL. `clientWidth` is rounded to an integer, and the container is
+             * fractional for every frame of a slide (its width is an eased 280 px). Laying the
+             * panes out at the rounded-down width leaves the remainder — up to a pixel at the
+             * trailing edge — painted by nothing, which is the same transparent hairline as the
+             * lag below, just one pixel wide. The border box minus the border/scrollbar frame is
+             * `clientWidth`'s own definition, in the precision the layout actually has.
+             */
+            const rect = element.getBoundingClientRect();
+            /*
+             * The border/scrollbar frame, clamped at zero. In a browser `offsetWidth` is never
+             * below `clientWidth`, so the difference is exactly what the border box holds beyond
+             * the content box; in jsdom `offsetWidth` is always 0 while a test may pin
+             * `clientWidth`, and an unclamped subtraction would then ADD the content width back
+             * (`App.layout-divider`'s 800 px grid measured 1600).
+             */
+            const frameX = Math.max(0, element.offsetWidth - element.clientWidth);
+            const frameY = Math.max(0, element.offsetHeight - element.clientHeight);
+            const width = Math.max(0, rect.width - frameX);
+            const height = Math.max(0, rect.height - frameY);
             setMeasured((current) =>
                 current.width === width && current.height === height ? current : { width, height }
             );
         };
+        /*
+         * §N31 — the measurement has to land in the SAME frame the container resized in.
+         *
+         * Every pane is `position: absolute` at a pixel rect derived from `measured`, and the
+         * grid itself paints nothing (`--nex-window-fill` is `transparent` below
+         * `background-opacity` 1, §N17). So for as long as `measured` disagrees with the
+         * container, the difference is not "slightly stale panes" — it is a strip of window
+         * that NOTHING has painted, i.e. the desktop.
+         *
+         * A `ResizeObserver` notification is delivered after layout and before paint, but a
+         * plain `setState` there is scheduled: React re-renders in a later task and the browser
+         * paints the frame in between with the panes still at their old rects. During a 250 ms
+         * side-panel slide the container moves ~18 px per frame, so that one-frame debt is a
+         * transparent band travelling with the panel — measured at 21.2 px on the inspector's
+         * close, 16.7 px on the sidebar's and 38.2 px on a slide reversed mid-flight, and
+         * photographed at alpha 0 (§N31's reopened half: the owner's light wallpaper showing
+         * through as "white", which is exactly what he reported after the clip fill closed the
+         * reveal itself — see `docs/audit/n31-grid-lag/`).
+         *
+         * `flushSync` inside the callback re-renders and re-writes the pane rects while the
+         * browser is still in its rendering steps, so the observation loop re-runs layout and
+         * paints the corrected geometry in that same frame. It is deliberately NOT used for the
+         * first read below: that one runs inside an effect, where React is already rendering.
+         */
         read();
         if (typeof ResizeObserver === 'undefined') {
             window.addEventListener('resize', read);
             return () => window.removeEventListener('resize', read);
         }
-        const observer = new ResizeObserver(read);
+        const observer = new ResizeObserver(() => {
+            flushSync(read);
+        });
         observer.observe(element);
         return () => observer.disconnect();
     }, [measuring]);

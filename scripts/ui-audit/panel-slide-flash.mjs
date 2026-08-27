@@ -35,13 +35,26 @@
  *                 the resolved palette rather than against literal white is what makes the run
  *                 meaningful in a LIGHT appearance, where a white flash hides.
  *
+ * **And two more, added when §N31 was REOPENED** — because the first pass answered its question
+ * correctly and the owner still saw white. All three of its framings (the panel's own 280 px
+ * column; a region inset from the moving edge; the MODAL colour of a 40-row grid) were blind to
+ * a residual that was outside the clip altogether, in the pane grid the panel pushes:
+ *
+ *   - `grid`  — the union of the pane wrappers against the container they are inside, read in a
+ *               `ResizeObserver` created after the grid's own, i.e. at the moment the frame is
+ *               about to paint. The panes are absolutely positioned from a measurement; while it
+ *               trails the container, the difference is unpainted window.
+ *   - `alpha` — real screenshots with the renderer's base at alpha 0, so an unpainted pixel is
+ *               alpha 0 in the file. No colour reasoning, no tolerance, nothing to argue with.
+ *
  * Usage:
  *
  *     node scripts/ui-audit/panel-slide-flash.mjs [--cycles N] [--opacity 1|0.85]
  *          [--appearance dark|light|system] [--probe] [--panels sidebar,inspector]
- *          [--out DIR] [--keep] [--verbose] [--build]
+ *          [--split N] [--no-alpha] [--out DIR] [--keep] [--verbose] [--build]
  *
- * Exit code 0 = no probe pixel and no foreign pixel in any frame of any slide.
+ * Exit code 0 = no probe pixel, no foreign pixel, no uncovered grid observation and no
+ * unpainted (alpha 0) pixel in any frame of any slide.
  */
 
 import fs from 'node:fs';
@@ -76,11 +89,15 @@ const options = {
     out: flag('--out', null),
     /** `strip` (the region the panel sweeps) or `full` (the whole window — where else is it?). */
     region: flag('--region', 'strip'),
+    /** Extra panes to create before the cycles, so the slides run against a SPLIT grid. */
+    split: Number(flag('--split', '0')),
     /** Photograph the WINDOW (`fromSurface: false`) rather than the renderer's own surface. */
     window: argv.includes('--window'),
     /** Multiply every slide transition by this, so a slow instrument still resolves the motion. */
     slow: Number(flag('--slow', '1')),
     dump: argv.includes('--dump'),
+    /** Skip the alpha sweep (the unpainted-pixel pass) — it adds a cycle per panel. */
+    noAlpha: argv.includes('--no-alpha'),
     keep: argv.includes('--keep'),
     verbose: argv.includes('--verbose'),
     build: argv.includes('--build')
@@ -311,6 +328,38 @@ async function main() {
         log(`shell: ${windowLine}`);
         if (groundLine !== '(none)') log(`shell: ${groundLine}`);
 
+        /*
+         * ── the geometry variant: more than one pane ────────────────────────────────
+         *
+         * §N31's reopened half is about the pane GRID keeping up with the container, and the
+         * grid's arithmetic is a tree: one pane is a single rect pinned to the bounds, several
+         * are ratios of ratios with a divider gutter between them. A one-pane workspace can
+         * therefore be right for reasons that say nothing about a split one, so the cycle can be
+         * driven with a split layout (`--split N` adds N panes before the slides start).
+         */
+        if (options.split > 0) {
+            // The daemon's own list, not the sidebar's text: a row renders a colour chip and a
+            // shortcut badge around the name, and `innerText` picks up whichever comes first.
+            const workspaces = await cli.json(['workspace', 'list', '--json']);
+            const active = workspaces.find((workspace) => workspace.is_active === true) ?? workspaces[0];
+            if (active === undefined) throw new Error('no workspace to split');
+            for (let extra = 0; extra < options.split; extra++) {
+                const result = await cli.run(['pane', 'create', '--workspace', String(active.id)]);
+                log(`split ${String(extra + 1)}/${String(options.split)} in "${String(active.name)}": exit ${String(result.code)} ${String(result.stdout ?? '').trim()}${String(result.stderr ?? '').trim()}`);
+                await sleep(2000);
+            }
+        }
+        if (options.split > 0) {
+            const paneCount = Number(
+                await page.eval(
+                    `document.querySelectorAll('[data-testid="pane-grid"] [data-testid^="pane-header-"]').length`
+                )
+            );
+            report.paneCount = paneCount;
+            log(`grid now has ${String(paneCount)} panes`);
+            if (paneCount < options.split + 1) throw new Error(`the split variant did not take: ${String(paneCount)} panes`);
+        }
+
         // ── the page's own palette, read from the live document ─────────────────────
         const palette = JSON.parse(
             String(
@@ -401,6 +450,77 @@ async function main() {
         const sidebarWidth = geometry.sidebarSlot === null ? 220 : Math.round(geometry.sidebarSlot.width);
         const INSPECTOR_WIDTH = 280;
 
+        /*
+         * ── §N31's REOPENED half: the strip is not always the clip ──────────────────
+         *
+         * The first pass of this instrument asked one question — "is the reveal the panel's
+         * colour?" — and answered it over the panel's own 280 px column, inside a region inset
+         * from the moving edge by a frame's travel, judging by the MODAL colour of a 40-row
+         * grid. All three of those framings are why it stayed green while the owner kept seeing
+         * white on the inspector: the residual was **outside the clip entirely**, in the pane
+         * grid the panel pushes.
+         *
+         * The grid paints every pane as an absolutely-positioned pixel rect derived from a
+         * `ResizeObserver` measurement, and the grid itself paints nothing (§N17: the window
+         * fill is `transparent` below `background-opacity` 1). So for as long as that
+         * measurement trails the container — one frame, ~18 px at a slide's speed — the
+         * difference is a strip of window that NOTHING painted: the desktop, i.e. white on a
+         * light wallpaper. Measured at 21.2 px on the inspector's close, 16.7 px on the
+         * sidebar's, and photographed at alpha 0.
+         *
+         * Two nets, because they fail independently:
+         *
+         *   1. `coverage` — the union of the pane wrappers against the container, read inside a
+         *      `ResizeObserver` created HERE. Observers are delivered in creation order, so this
+         *      one runs after the grid's own and sees whether the panes have been re-laid-out
+         *      for the size the container has THIS frame, before the frame paints. A rAF cannot
+         *      answer this: it runs before the observer step, so it sees a gap every frame
+         *      whether or not one paints.
+         *   2. `alpha` — `Emulation.setDefaultBackgroundColorOverride` at alpha 0 plus real
+         *      screenshots, so an unpainted pixel comes back with alpha 0 and no colour
+         *      classifier can explain it away.
+         */
+        const startCoverage = async () =>
+            await page.eval(
+                `(() => {
+                    const grid = document.querySelector('[data-testid="pane-grid"]');
+                    if (grid === null || typeof ResizeObserver === 'undefined') return false;
+                    const box = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; };
+                    const observations = [];
+                    let running = true;
+                    const observer = new ResizeObserver(() => {
+                        if (!running) return;
+                        const g = box(grid);
+                        const wrappers = [...grid.querySelectorAll('[data-testid]')].filter((el) =>
+                            /^pane-[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(el.getAttribute('data-testid') ?? '') &&
+                            getComputedStyle(el).visibility !== 'hidden'
+                        );
+                        let u = null;
+                        for (const w of wrappers) {
+                            const b = box(w);
+                            u = u === null ? { ...b } : { l: Math.min(u.l, b.l), r: Math.max(u.r, b.r), t: Math.min(u.t, b.t), b: Math.max(u.b, b.b) };
+                        }
+                        const r2 = (value) => Math.round(value * 100) / 100;
+                        observations.push(
+                            u === null
+                                ? { wrappers: 0, uncovered: 0 }
+                                : {
+                                      wrappers: wrappers.length,
+                                      width: r2(g.r - g.l),
+                                      uncovered: r2(Math.max(g.r - u.r, u.l - g.l, u.t - g.t, g.b - u.b))
+                                  }
+                        );
+                    });
+                    observer.observe(grid);
+                    window.__nexGridCoverage = { observations, stop: () => { running = false; observer.disconnect(); } };
+                    return true;
+                })()`
+            );
+        const readCoverage = async () => {
+            await page.eval(`(() => { window.__nexGridCoverage?.stop?.(); return true; })()`);
+            return JSON.parse(String(await page.eval(`JSON.stringify(window.__nexGridCoverage?.observations ?? [])`)));
+        };
+
         // ── screencast plumbing ─────────────────────────────────────────────────────
         let frames = [];
         let collecting = false;
@@ -488,6 +608,8 @@ async function main() {
             frames = [];
             const samplerStarted = await startSampler();
             if (samplerStarted !== true) throw new Error('the rAF sampler did not start');
+            const coverageStarted = await startCoverage();
+            if (coverageStarted !== true) throw new Error('the grid-coverage observer did not start');
             let t0 = Date.now();
             let samples = [];
             if (options.window) {
@@ -535,6 +657,7 @@ async function main() {
                 await page.send('Page.stopScreencast').catch(() => {});
                 samples = await stopSampler();
             }
+            const coverage = await readCoverage();
 
             const slotKey = panel.slot === 'sidebar-slot' ? 'sidebar' : 'inspector';
             /** The rAF sample nearest a photographed frame's clock, and its index. */
@@ -696,6 +819,15 @@ async function main() {
             const wrong = inFlight.filter((frame) => frame.modalIsPanel !== true);
             const uncovered = inFlight.filter((frame) => (frame.coverage ?? 1) < 0.999);
             const minCoverage = inFlight.reduce((low, frame) => Math.min(low, frame.coverage ?? 1), 1);
+            /*
+             * §N31's reopened half — the GRID, not the clip. `uncovered` above is the panel
+             * against its own reveal; this is the panes against the container the slide is
+             * resizing, at the moment the frame is about to paint. Anything above zero is a
+             * strip of unpainted window travelling with the panel.
+             */
+            const gridObservations = coverage.filter((entry) => entry.wrappers > 0);
+            const gridUncovered = gridObservations.filter((entry) => entry.uncovered > 0.51);
+            const worstGridUncovered = gridObservations.reduce((high, entry) => Math.max(high, entry.uncovered), 0);
             const slide = {
                 label,
                 strip,
@@ -703,6 +835,9 @@ async function main() {
                 frames: classified.length,
                 spanMs: classified.length === 0 ? 0 : (classified.at(-1)?.ms ?? 0) - (classified[0]?.ms ?? 0),
                 rafSamples: samples.length,
+                gridObservations: gridObservations.length,
+                gridUncoveredFrames: gridUncovered.length,
+                worstGridUncoveredPx: Math.round(worstGridUncovered * 100) / 100,
                 inFlightFrames: inFlight.length,
                 wrongColourFrames: wrong.length,
                 uncoveredFrames: uncovered.length,
@@ -734,7 +869,9 @@ async function main() {
                     `(${String(samples.length)} rAF) — ${String(inFlight.length)} mid-slide, ` +
                     `WRONG COLOUR ${String(wrong.length)}, uncovered ${String(uncovered.length)} ` +
                     `(min coverage ${String(Math.round(minCoverage * 1000) / 10)}%), clear ${String(slide.clearFrames)}, ` +
-                    `probe ${String(slide.probeFrames)}, foreign ${String(slide.foreignFrames)}`
+                    `probe ${String(slide.probeFrames)}, foreign ${String(slide.foreignFrames)} · ` +
+                    `GRID uncovered ${String(slide.gridUncoveredFrames)}/${String(slide.gridObservations)} ` +
+                    `(worst ${String(slide.worstGridUncoveredPx)}px)`
             );
             for (const frame of inFlight.slice(0, 8)) {
                 log(
@@ -864,17 +1001,108 @@ async function main() {
             }
         }
 
+        // ── the alpha sweep: is any pixel of the row UNPAINTED mid-slide? ───────────
+        //
+        // The screencast cannot answer this. It composites a transparent pixel to black, and the
+        // dark theme's own ground is 4 units from black — so the classifier above has to reason
+        // about colour, and a colour argument is exactly what a 20 px strip of wallpaper slipped
+        // through. `setDefaultBackgroundColorOverride` at alpha 0 plus real screenshots puts the
+        // question in the alpha channel instead: alpha 0 means no layer painted here, full stop.
+        //
+        // It is a separate pass because a screenshot loop and a screencast perturb each other's
+        // timing, and because it runs at whatever rate the capture can manage (~8-14 frames per
+        // slide) rather than the compositor's.
+        if (!options.noAlpha) {
+            const alphaOut = { slides: [] };
+            await page.send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
+            const alphaSlide = async (label, act) => {
+                const shots = [];
+                const grabbing = (async () => {
+                    for (let i = 0; i < 14; i++) {
+                        try {
+                            const shot = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+                            shots.push(shot.data);
+                        } catch {
+                            break;
+                        }
+                    }
+                })();
+                await sleep(40);
+                await act();
+                await grabbing;
+                await settle();
+                let worstRun = 0;
+                let framesWithHole = 0;
+                let worstAt = null;
+                for (const data of shots) {
+                    const image = decodePng(Buffer.from(data, 'base64'));
+                    if (image.channels !== 4) continue;
+                    const scale = image.width / geometry.innerWidth;
+                    let holeInFrame = 0;
+                    for (let r = 0; r < 24; r++) {
+                        const y = Math.round((rowTop + 4) * scale) + Math.round(((rowBottom - rowTop - 8) * scale * r) / 23);
+                        if (y < 0 || y >= image.height) continue;
+                        let run = 0;
+                        for (let x = 0; x < image.width; x++) {
+                            const alpha = image.data[(y * image.width + x) * 4 + 3];
+                            if (alpha === 0) {
+                                run += 1;
+                                if (run > holeInFrame) holeInFrame = run;
+                            } else run = 0;
+                        }
+                    }
+                    if (holeInFrame > 0) framesWithHole += 1;
+                    if (holeInFrame > worstRun) {
+                        worstRun = holeInFrame;
+                        worstAt = Math.round((holeInFrame / scale) * 10) / 10;
+                    }
+                }
+                const entry = { label, shots: shots.length, framesWithHole, worstHolePx: worstAt ?? 0 };
+                alphaOut.slides.push(entry);
+                log(`  alpha ${label}: ${String(shots.length)} captures · ${String(framesWithHole)} with an UNPAINTED run (worst ${String(entry.worstHolePx)} CSS px)`);
+                return entry;
+            };
+            if (options.panels.includes('inspector')) {
+                await page.click('[data-testid="toggle-inspector"]');
+                await settle();
+                await alphaSlide('inspector-close', async () => { await page.click('[data-testid="toggle-inspector"]'); });
+                await alphaSlide('inspector-open', async () => { await page.click('[data-testid="toggle-inspector"]'); });
+                await page.click('[data-testid="toggle-inspector"]');
+                await settle();
+            }
+            if (options.panels.includes('sidebar')) {
+                await alphaSlide('sidebar-close', async () => { await page.click('button[aria-label="Toggle sidebar"]'); });
+                await alphaSlide('sidebar-open', async () => { await page.click('button[aria-label="Toggle sidebar"]'); });
+            }
+            // Back to whatever the run asked for: magenta under `--probe`, and otherwise CLEARED
+            // (an omitted `color` removes the override) rather than left transparent, so the
+            // sweep cannot change what a later pass photographs.
+            await page.send(
+                'Emulation.setDefaultBackgroundColorOverride',
+                options.probe ? { color: { r: PROBE_RGB[0], g: PROBE_RGB[1], b: PROBE_RGB[2], a: 1 } } : {}
+            );
+            report.alpha = alphaOut;
+        }
+
         const wrongTotal = report.slides.reduce((total, slide) => total + slide.wrongColourFrames, 0);
         const inFlightTotal = report.slides.reduce((total, slide) => total + slide.inFlightFrames, 0);
         const clearTotal = report.slides.reduce((total, slide) => total + slide.clearFrames, 0);
         const uncoveredTotal = report.slides.reduce((total, slide) => total + slide.uncoveredFrames, 0);
         const worstCoverage = report.slides.reduce((low, slide) => Math.min(low, slide.minCoverage), 1);
+        const gridUncoveredTotal = report.slides.reduce((total, slide) => total + slide.gridUncoveredFrames, 0);
+        const worstGridPx = report.slides.reduce((high, slide) => Math.max(high, slide.worstGridUncoveredPx), 0);
+        const alphaHoleFrames = (report.alpha?.slides ?? []).reduce((total, slide) => total + slide.framesWithHole, 0);
+        const worstAlphaPx = (report.alpha?.slides ?? []).reduce((high, slide) => Math.max(high, slide.worstHolePx), 0);
         report.totals = {
             inFlight: inFlightTotal,
             wrongColour: wrongTotal,
             clear: clearTotal,
             uncovered: uncoveredTotal,
-            worstCoverage
+            worstCoverage,
+            gridUncovered: gridUncoveredTotal,
+            worstGridUncoveredPx: Math.round(worstGridPx * 100) / 100,
+            alphaHoleFrames,
+            worstAlphaHolePx: worstAlphaPx
         };
         report.shellLog = shell.lines.slice(-60);
         // The per-rAF geometry is the instrument, not the finding: it is a few hundred samples
@@ -889,8 +1117,18 @@ async function main() {
                 `${String(uncoveredTotal)} with the panel not covering the reveal ` +
                 `(worst ${String(Math.round(worstCoverage * 1000) / 10)}%), ${String(clearTotal)} with cleared pixels`
         );
+        log(
+            `GRID over the same slides: ${String(gridUncoveredTotal)} observations where the panes did not cover the ` +
+                `container they are inside (worst ${String(report.totals.worstGridUncoveredPx)} CSS px) · ` +
+                `alpha sweep: ${String(alphaHoleFrames)} captures with an unpainted run (worst ${String(worstAlphaPx)} CSS px)`
+        );
         log(`report: ${path.join(outDir, 'report.json')}`);
-        return wrongTotal === 0 ? 0 : 1;
+        /*
+         * Three independent verdicts, because §N31 had three independent faults: the reveal's
+         * colour (the clip), the panes' coverage of the grid (the lag), and whether ANY pixel of
+         * the row went unpainted (the alpha sweep, which needs no colour argument at all).
+         */
+        return wrongTotal === 0 && gridUncoveredTotal === 0 && alphaHoleFrames === 0 ? 0 : 1;
     } finally {
         try {
             page?.close();

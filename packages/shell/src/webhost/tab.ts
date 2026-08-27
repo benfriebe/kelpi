@@ -77,6 +77,12 @@ import {
     INSPECT_CHANNEL,
     injectedScriptSources
 } from './scripts.js';
+import {
+    createNavFocusGuard,
+    describeKeyboardOwner,
+    type KeyboardOwner,
+    type NavFocusGuard
+} from './nav-focus.js';
 import { createViewFocusGate, traceFocus, type ViewFocusGate, type ViewFocusGateOptions } from './view-focus.js';
 
 /** The viewport every tab is laid out at, so captures do not depend on the holder window. */
@@ -149,6 +155,16 @@ export interface TabFactoryOptions {
      * takes focus. One per tab (focus is a per-view fact); injectable so a test can drive it.
      */
     readonly focusGate?: ((options: ViewFocusGateOptions) => ViewFocusGate) | undefined;
+    /**
+     * §N30: who holds the keyboard inside the shell window right now (`./nav-focus.ts`).
+     *
+     * Asked at the *start* of every main-frame navigation, because a commit can move the answer
+     * and the pre-navigation owner is the only one worth preserving. The host answers it — it is
+     * the module that knows about the window and about every other pane's view.
+     */
+    readonly keyboardOwner?: (() => KeyboardOwner) | undefined;
+    /** §N30: give the keyboard back to whoever a commit displaced. */
+    readonly restoreKeyboard?: ((owner: KeyboardOwner) => boolean) | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly viewport?: { readonly width: number; readonly height: number } | undefined;
 }
@@ -170,6 +186,20 @@ export interface HostTab extends TabController {
      * real size and the window's real scale factor) and re-applied the moment it goes back.
      */
     setEmbedded(embedded: boolean): void;
+    /**
+     * §N30: does this view hold the shell window's keyboard focus right now?
+     *
+     * `webContents.isFocused()` is `RenderWidgetHostViewMac::HasFocus()` on macOS — the window's
+     * **first responder**, which is the bit that decides where a keystroke goes. That makes it
+     * the right question for a keyboard-owner census, and a strictly different question from
+     * `document.hasFocus()` in a renderer (Blink's page-focus bit, which `webContents.focus()`
+     * and `focusOnWebView()` both set directly and which can read true in two documents at once).
+     *
+     * It is NOT app-scoped-immune, and the wave that wrote this line claimed it was: with the
+     * shell window inactive, every entry in the census reads false — measured, and the reason a
+     * commit cannot steal the keyboard in that state at all.
+     */
+    hasKeyboardFocus(): boolean;
     dispose(reason: DestroyReason): void;
     /**
      * The Electron view, for whoever owns the window layout: the holder by default, the shell
@@ -223,6 +253,11 @@ class ElectronTab implements HostTab {
     private embedded = false;
     /** §N29: tells the shell's own `focus()` calls from the user's clicks (`./view-focus.ts`). */
     private readonly focusGate: ViewFocusGate;
+    /** §N30: keeps a committing navigation from moving the keyboard (`./nav-focus.ts`). */
+    private readonly navFocus: NavFocusGuard;
+    /** §N30: the host's keyboard census, and how to give the keyboard back. */
+    private readonly keyboardOwner: (() => KeyboardOwner) | undefined;
+    private readonly restoreKeyboard: ((owner: KeyboardOwner) => boolean) | undefined;
 
     private mainFrameId: string | null = null;
     private readonly contexts = new Map<number, CdpContext>();
@@ -236,9 +271,15 @@ class ElectronTab implements HostTab {
         this.events = options.events;
         this.onError = options.onError;
         this.forwardChord = options.forwardChord;
+        this.navFocus = createNavFocusGuard({ tabID: input.tabID });
+        this.keyboardOwner = options.keyboardOwner;
+        this.restoreKeyboard = options.restoreKeyboard;
         this.focusGate = (options.focusGate ?? createViewFocusGate)({
             report: () => {
                 if (this.disposed || this.contents.isDestroyed()) return;
+                // §N30: the user pressed into this page, so the page is meant to have the
+                // keyboard — a commit landing mid-load must not take it back off them.
+                this.navFocus.pageClaimedKeyboard();
                 // Logged for the same reason `focusView` is: keyboard focus lives in another
                 // renderer, so this line is the shell's only externally visible account of the
                 // gesture — the live smoke and the audit both assert on it.
@@ -525,10 +566,39 @@ class ElectronTab implements HostTab {
         contents.on('did-stop-loading', () => {
             this.emitNavState(false);
         });
+        /*
+         * §N30 — the navigation's keyboard snapshot.
+         *
+         * Taken here, and nowhere later, because this is the last moment at which "who had the
+         * keyboard" is still the answer from *before* the commit. Same-document navigations
+         * (`pushState`, a fragment) create no widget and move no focus, so they are left alone;
+         * subframes cannot take the window's keyboard on their own account either.
+         */
+        contents.on('did-start-navigation', (details) => {
+            if (this.disposed || contents.isDestroyed()) return;
+            if (!details.isMainFrame || details.isSameDocument) return;
+            let owner: KeyboardOwner = { kind: 'none' };
+            try {
+                owner = this.keyboardOwner?.() ?? owner;
+            } catch (error) {
+                // A census that throws (a window torn down between the two lines) must not take
+                // an Electron event handler with it: "nobody had it" is the safe answer, and it
+                // decides nothing.
+                this.report(error, 'keyboard-census');
+            }
+            this.navFocus.navigationStarted(owner);
+            traceFocus(
+                `did-start-navigation: pane ${this.paneID} tab ${this.tabID} embedded=${String(this.embedded)} ` +
+                    `viewFocused=${String(contents.isFocused())} keyboard=${describeKeyboardOwner(owner)}`
+            );
+        });
         contents.on('did-navigate', (_event, url) => {
             // §N29 used to cancel a held focus event here, because a commit takes the keyboard
             // ~1-3 ms before this fires. The gesture is the INPUT now and a commit presses no
             // mouse button, so there is nothing left to cancel.
+            // §N30 uses the same moment for the opposite question: the commit may have MOVED the
+            // keyboard into this view, and if it displaced somebody it has to give it back.
+            this.settleNavigationFocus();
             // WEB-073, and BEFORE the error-page early return below, because the error card is a
             // navigation like any other: let the tab's own frame go if auto-attach caught it.
             this.resumeIfWaiting();
@@ -792,6 +862,9 @@ class ElectronTab implements HostTab {
         this.navigated = true;
         void this.ready.then(() => {
             if (this.disposed || this.contents.isDestroyed()) return;
+            traceFocus(
+                `navigate(): pane ${this.paneID} tab ${this.tabID} embedded=${String(this.embedded)} viewFocused=${String(this.contents.isFocused())}`
+            );
             // §4.2: a `file://` load gets read access to the file's own directory so sibling
             // assets resolve. `loadFile` would re-encode the path; `loadURL` keeps the exact
             // URL the daemon normalized.
@@ -824,6 +897,37 @@ class ElectronTab implements HostTab {
     }
 
     /**
+     * §N30: hand the keyboard back if this commit took it from somebody.
+     *
+     * Runs on every main-frame commit, decides nothing itself (`./nav-focus.ts` holds the rule)
+     * and moves nothing unless the commit actually displaced an owner — so the overwhelmingly
+     * common case, a load that touched no focus at all, is one boolean read and a return.
+     */
+    private settleNavigationFocus(): void {
+        if (this.disposed || this.contents.isDestroyed()) return;
+        const viewHasKeyboard = this.contents.isFocused();
+        const owner = this.navFocus.navigationCommitted({ viewHasKeyboard, embedded: this.embedded });
+        traceFocus(
+            `did-navigate: pane ${this.paneID} tab ${this.tabID} embedded=${String(this.embedded)} ` +
+                `viewFocused=${String(viewHasKeyboard)} restore=${owner === null ? 'none' : describeKeyboardOwner(owner)}`
+        );
+        if (owner === null) return;
+        // Logged unconditionally (not behind the trace flag) for the same reason `focusView` is:
+        // keyboard focus lives in another process, so this line is the only externally visible
+        // account of a handoff — the live probe and the audit both assert on it.
+        log(
+            `web pane ${this.paneID}: navigation took the keyboard; handing it back to ` +
+                `${describeKeyboardOwner(owner)} (tab ${this.tabID})`
+        );
+        const restored = this.restoreKeyboard?.(owner) ?? false;
+        if (!restored) {
+            // Not fatal, and worth saying out loud: the owner went away between the snapshot and
+            // the commit (a pane closed mid-load), so the keyboard stays where Chromium put it.
+            warn(`web pane ${this.paneID}: could not hand the keyboard back to ${describeKeyboardOwner(owner)}`);
+        }
+    }
+
+    /**
      * WEB-043: give the page keyboard focus.
      *
      * The pane's page is a separate renderer, so focus does not follow the Nex window's own
@@ -834,6 +938,9 @@ class ElectronTab implements HostTab {
      */
     focusView(): void {
         if (this.disposed || this.contents.isDestroyed()) return;
+        // §N30: this is the client saying the page should have the keyboard. A navigation that
+        // is mid-flight must not undo it when it commits.
+        this.navFocus.pageClaimedKeyboard();
         // Logged because it is otherwise unobservable from outside: keyboard focus lives in
         // another renderer, so this line is what the visual audit asserts the handoff by.
         log(`web pane ${this.paneID}: focusing the page view (tab ${this.tabID})`);
@@ -933,6 +1040,11 @@ class ElectronTab implements HostTab {
         this.view.setVisible(visible);
     }
 
+    hasKeyboardFocus(): boolean {
+        if (this.disposed || this.contents.isDestroyed()) return false;
+        return this.contents.isFocused();
+    }
+
     setEmbedded(embedded: boolean): void {
         if (this.disposed || this.embedded === embedded) return;
         this.embedded = embedded;
@@ -967,6 +1079,8 @@ class ElectronTab implements HostTab {
         this.disposed = true;
         // §N29: a held focus event must not fire into a tab that no longer exists.
         this.focusGate.dispose();
+        // §N30: and a commit racing the teardown must not move anyone's keyboard.
+        this.navFocus.dispose();
         this.frames.clear();
         try {
             if (this.attached) this.contents.debugger.detach();

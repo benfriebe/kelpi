@@ -441,15 +441,43 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * yank the caret back out of the URL bar mid-type.
      */
     const focused = props.focused === true;
-    const wasFocused = useRef(focused);
+    /**
+     * **Seeded `false`, so a pane that is BORN focused counts as having gained focus** (§N30).
+     *
+     * Swift claims first responder in `makeNSView` — `if let activeTab, isFocused { … }`
+     * (`WebPaneView.swift:335-340`) — so a web pane created focused has the keyboard in its page
+     * from the first frame, with nobody clicking anything. Seeding this ref from the mount value
+     * made `gained` false in exactly that case, and the port only *looked* right because the
+     * page's own load then stole the keyboard for itself (§N30's steal). With that steal handed
+     * back, the miss became visible: `nex web open` left the ring on the new pane and the
+     * keyboard in this renderer — §N19/§N20's divergence, one pane type further on.
+     */
+    const wasFocused = useRef(false);
     const liveTabID = active?.id ?? null;
+    /**
+     * WEB-002's half of the rule, and the reason a mount is not simply "always claim": a pane
+     * (or tab) that arrives BLANK hands the caret to the URL bar so the user can type an
+     * address, and `useBlankWebPaneURLFocus` is what does that. Claiming the page view for a
+     * blank pane would put the window's keyboard in an `about:blank` page while the URL field
+     * showed a caret that could never receive a keystroke — they are different processes, so
+     * DOM focus alone cannot win that argument.
+     */
+    const blankTab = liveURL.trim() === '';
     useEffect(() => {
         const gained = focused && !wasFocused.current;
-        wasFocused.current = focused;
+        if (!focused) {
+            wasFocused.current = false;
+            return;
+        }
+        // The gain is CONSUMED only once the pane can act on it. A pane that mounts focused
+        // before its tab set has arrived would otherwise eat its own claim and never make
+        // another, because a tab landing is not a focus change.
         if (!gained || !embedded || liveTabID === null) return;
+        wasFocused.current = true;
+        if (blankTab) return;
         if (chromeTextIsFocused(typeof document === 'undefined' ? null : document.activeElement)) return;
         void commands.focusView(paneID, liveTabID);
-    }, [focused, embedded, liveTabID, commands, paneID]);
+    }, [focused, embedded, liveTabID, blankTab, commands, paneID]);
 
     // ── geometry ────────────────────────────────────────────────────────────────────
 

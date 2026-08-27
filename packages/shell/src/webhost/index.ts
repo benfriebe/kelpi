@@ -50,7 +50,9 @@ import { chordCommand } from './keys.js';
 import { SCREENSHOT_WRITE_ERROR, createVerbDispatcher } from './dispatch.js';
 import { createEmbedController, type EmbedController } from './embed.js';
 import { GEOMETRY_NOTIFY_VERB, parsePaneGeometry, type WindowMetrics } from './geometry.js';
+import type { KeyboardOwner } from './nav-focus.js';
 import { createTabRegistry, type TabRegistry } from './registry.js';
+import { traceFocus } from './view-focus.js';
 import { createPaneSessions } from './sessions.js';
 import { DEFAULT_VIEWPORT, createTabHooks, type HostTab } from './tab.js';
 
@@ -133,7 +135,113 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     const sessions = createPaneSessions({ onError });
 
+    /**
+     * §N30 — the keyboard census: which widget inside the shell window is the one being typed
+     * into right now.
+     *
+     * Only this module can answer it, because only this module knows about the window and about
+     * every other pane's view. `isFocused()` is `RenderWidgetHostViewMac::HasFocus()` on macOS —
+     * the window's **first responder**, i.e. where a keystroke would actually go — which is why
+     * this and not `document.hasFocus()` is what the guard decides from.
+     *
+     * With the window INACTIVE every entry reads false (measured; an earlier version of this
+     * comment claimed the opposite). That is not a gap: a commit cannot take the keyboard in that
+     * state either, so `viewHasKeyboard` is false too and the guard decides nothing.
+     *
+     * The client's own renderer is checked FIRST and the views second: they are mutually
+     * exclusive in practice, and asking the cheap question first keeps the common case to one
+     * call.
+     */
+    const keyboardOwner = (): KeyboardOwner => {
+        const window = options.window?.() ?? null;
+        const live = window !== null && !window.isDestroyed() && !window.webContents.isDestroyed();
+        const clientHasKeyboard = live && window.webContents.isFocused();
+        const views: string[] = [];
+        let focusedView: string | null = null;
+        for (const paneID of registry.paneIDs()) {
+            for (const tab of registry.pane(paneID)?.tabs ?? []) {
+                const focused = tab.view.hasKeyboardFocus();
+                views.push(`${tab.id.slice(0, 8)}=${String(focused)}`);
+                if (focused && focusedView === null) focusedView = tab.id;
+            }
+        }
+        // The ingredients, not just the verdict: "nobody has it" and "the client has it" are
+        // opposite states that produce the same decision here, and telling them apart from
+        // outside the process is otherwise impossible (§N29's lesson about instruments).
+        traceFocus(
+            `keyboard census: window=${live ? String(window.isFocused()) : 'gone'} ` +
+                `client=${String(clientHasKeyboard)} views=[${views.join(' ')}]`
+        );
+        if (clientHasKeyboard) return { kind: 'client' };
+        if (focusedView !== null) return { kind: 'view', tabID: focusedView };
+        return { kind: 'none' };
+    };
+
+    /**
+     * §N30 — give the keyboard back to the owner a commit displaced.
+     *
+     * **`webContents.focus()`, and NOT `focusOnWebView()`** — the opposite of what this function
+     * did when it was written, and the correction matters more than the call:
+     * `BrowserWindow.focusOnWebView()` does not move the window's first responder at all. It
+     * reaches `RenderWidgetHostImpl::Focus()`, which sets Blink's **page focus** bit and nothing
+     * else, so the client's `document.hasFocus()` flips to true while the web view keeps the
+     * first responder — and the first responder is where a keystroke actually goes. The handoff
+     * would then be invisible to the user's fingers and perfectly visible to any probe that reads
+     * `document.hasFocus()`, which is the shape of mistake §N29's post-mortem is about.
+     *
+     * Measured on this app's own Electron (43.4.0 / Chromium 150) with a plain window and a plain
+     * `WebContentsView`, in `docs/audit/n30-verify/electron-focus-api.cjs`:
+     *
+     *   after view.webContents.focus()  client.isFocused=false view.isFocused=true  client.hasFocus=false page.hasFocus=true
+     *   after win.focusOnWebView()      client.isFocused=false view.isFocused=true  client.hasFocus=TRUE  page.hasFocus=true
+     *   after win.webContents.focus()   client.isFocused=TRUE  view.isFocused=FALSE client.hasFocus=true  page.hasFocus=FALSE
+     *
+     * (`webContents.isFocused()` on macOS is `RenderWidgetHostViewMac::HasFocus()` — the first
+     * responder. Only the last line is a handoff; the middle one is a bit being set.)
+     *
+     * The reason `focusOnWebView` was chosen is real but cannot apply here: `WebContents::Focus()`
+     * asks its owner window to activate on macOS, which would turn an agent's background
+     * navigation into the app taking the user's screen. This runs **only** when the commit
+     * actually took the keyboard, and a commit can only take the keyboard while the window is
+     * already the key window (measured: with the window inactive every `isFocused()` in the
+     * census reads false and no commit ever reports a steal). The `isFocused()` guard below makes
+     * that structural fact explicit rather than assumed — a restore that would have to activate
+     * the app is refused, and says so in the log.
+     */
+    const restoreKeyboard = (owner: KeyboardOwner): boolean => {
+        if (owner.kind === 'client') {
+            const window = options.window?.() ?? null;
+            if (window === null || window.isDestroyed() || window.webContents.isDestroyed()) return false;
+            try {
+                // Never at the cost of an app activation: if this window is not already the one
+                // being typed into, there is no keyboard here to give back.
+                if (!window.isFocused()) return false;
+                window.webContents.focus();
+                return true;
+            } catch (error) {
+                // A window mid-teardown. The keyboard stays where Chromium put it, which is the
+                // pre-§N30 behaviour rather than a crash in a focus handler.
+                onError(error instanceof Error ? error : new Error(String(error)), 'restore-keyboard');
+                return false;
+            }
+        }
+        if (owner.kind === 'view') {
+            for (const paneID of registry.paneIDs()) {
+                for (const tab of registry.pane(paneID)?.tabs ?? []) {
+                    if (tab.id !== owner.tabID) continue;
+                    // Through the tab's own WEB-043 verb, so the page it goes back to marks the
+                    // handoff as deliberate and its own in-flight load cannot undo it.
+                    tab.view.focusView?.();
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
     const hooks = createTabHooks({
+        keyboardOwner,
+        restoreKeyboard,
         holder: holderWindow,
         sessionFor: (paneID, isPrivate) => sessions.sessionFor(paneID, isPrivate),
         viewport,

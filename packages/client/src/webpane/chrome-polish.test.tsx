@@ -446,6 +446,90 @@ describe('focus handoff (WEB-043)', () => {
         );
         expect(sent).toEqual([]);
     });
+
+    /*
+     * §N30 — a pane that is BORN focused.
+     *
+     * Swift claims first responder from `makeNSView` (`WebPaneView.swift:335-340`), so a web
+     * pane created focused types into its page from the first frame. The port seeded its
+     * "was focused" ref from the mount value, so `nex web open` / ⌘⇧O produced no claim at all
+     * — and looked right only because the page's own load stole the keyboard (§N30's steal).
+     * With that steal handed back, this claim has to be real.
+     */
+    it('claims the page view when the pane MOUNTS focused (§N30)', () => {
+        const { commands, sent } = fakeCommands();
+        render(
+            <WebPane
+                paneID={PANE}
+                tabs={TABS}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([
+            { verb: 'focusView', args: [PANE, TAB1] }
+        ]);
+    });
+
+    it('claims only ONCE when a pane that mounted focused re-renders', () => {
+        const { commands, sent } = fakeCommands();
+        const pane = (title: string): ReactElement => (
+            <WebPane
+                paneID={PANE}
+                tabs={[{ id: TAB1, url: 'https://example.com/', title }]}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        const view = render(pane('Example'));
+        view.rerender(pane('Example — updated'));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toHaveLength(1);
+    });
+
+    it('leaves a BLANK pane’s caret to the URL bar, mounted focused (WEB-002)', () => {
+        const { commands, sent } = fakeCommands();
+        render(
+            <WebPane
+                paneID={PANE}
+                tabs={[{ id: TAB1, url: '', title: '' }]}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        // The two live in different processes: had the page taken the window's keyboard here,
+        // the URL field's caret would be one that can never receive a keystroke.
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([]);
+    });
+
+    it('claims when the tab set arrives late, rather than eating the mount gain', () => {
+        const { commands, sent } = fakeCommands();
+        const pane = (tabs: readonly WebPaneTab[], activeTabID: string | null): ReactElement => (
+            <WebPane
+                paneID={PANE}
+                tabs={tabs}
+                activeTabID={activeTabID}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        const view = render(pane([], null));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([]);
+        view.rerender(pane(TABS, TAB1));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([
+            { verb: 'focusView', args: [PANE, TAB1] }
+        ]);
+    });
 });
 
 // ── WEB-002 ─────────────────────────────────────────────────────────────────────────

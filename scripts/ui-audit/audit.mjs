@@ -16523,6 +16523,96 @@ function buildFlows(ctx) {
                     'utf8'
                 );
 
+                /*
+                 * ── §N25: ONE pane, addressed by id, and wide enough to be a measurement ────
+                 *
+                 * The pixel half below drives a pane over the CLI and reads a canvas back out
+                 * of the DOM, and those were two separate reads: the screen-clearing write went
+                 * to `state.firstPane` while every sample took
+                 * `document.querySelector('[data-pane-id][data-terminal-status]')` — the DOM's
+                 * FIRST terminal pane, which `PaneGrid` orders by UUID on purpose
+                 * ("layout-independent DOM order", the property §N9 turned on). Scoped, the
+                 * active workspace holds one terminal and the two coincide, which is why every
+                 * scoped run passed; in a full run they need not, and the pane that answered in
+                 * `run-Y` was **16 CSS pixels wide** — a two-column terminal whose canvas is
+                 * mostly the wrapped, explicitly-coloured prompt such a width produces. Neither
+                 * half of the §N18 predicate can hold on a sample like that however perfectly
+                 * the engine repainted: an explicitly-coloured cell keeps its own colour BY
+                 * DESIGN (`vendor/ghostty-web-patched/PROVENANCE.md`, the palette limitation),
+                 * so the theme's background is neither the most-painted colour nor a
+                 * majority-cleared field.
+                 *
+                 * So the step picks ONE pane, by id, drives THAT pane and samples THAT pane's
+                 * own canvas — and it says out loud whether the pane it picked can carry the
+                 * measurement at all. A sliver is a failed PRECONDITION, asserted like every
+                 * other precondition in this file: never silently sampled, and never a skip.
+                 */
+                /*
+                 * Wide enough that the CELL AREA decides the histogram rather than the margin
+                 * or a wrapped prompt: 200 CSS px is ~25 columns at the audit's font, against
+                 * the 16 px `run-Y` sampled. The scoped recipe's single pane is 520 px and
+                 * needs nothing done to it; a full run's grid can be far narrower, which is
+                 * what the zoom below is for.
+                 */
+                const PROBE_MIN_WIDTH = 200;
+                const probeWidthOf = async (paneID) =>
+                    Math.round((await page.box(`[data-testid="pane-body-${paneID}"]`))?.width ?? 0);
+                const probePaneID = String(
+                    (await widestShellPane(page, cli))?.id ?? state.firstPane ?? (await domPaneIDs(page))[0] ?? ''
+                );
+                let probeWidth = probePaneID === '' ? 0 : await probeWidthOf(probePaneID);
+                let probeZoomed = false;
+                recorder.note(
+                    `the pane this half drives and samples: ${probePaneID || '(none on screen)'} (${String(probeWidth)}px wide)`
+                );
+                /*
+                 * Too narrow to sample? ZOOM it — the app's own gesture for "make this pane the
+                 * grid" (§TERM-090's verb, taken the way a person takes it: a double-click on
+                 * the pane header), and handed back at the end of the step. This is the
+                 * precondition being MET, not the measurement being helped: what is asserted
+                 * below is still the engine's own pixels on a pane that was already on screen,
+                 * already painted in the old palette, when the theme changed.
+                 */
+                if (probePaneID !== '' && probeWidth < PROBE_MIN_WIDTH) {
+                    // The overlay's backdrop is `absolute inset-0` and owns every click, so it
+                    // comes down first; `openSettingsTab` below puts it back up. A missed close
+                    // is a failed precondition below, never a step error.
+                    if (await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`)) {
+                        try {
+                            await page.click('[data-testid="settings-close"]');
+                        } catch {
+                            await page.key('Escape');
+                        }
+                        await sleep(500);
+                    }
+                    const header = await page.box(`[data-testid="pane-header-${probePaneID}"]`);
+                    if (header !== null) {
+                        await page.clickAt(header.cx, header.cy);
+                        await page.clickAt(header.cx, header.cy, { clickCount: 2 });
+                        try {
+                            await page.waitFor(
+                                `document.querySelector('[data-pane-id="${probePaneID}"][data-zoomed="true"]') !== null`,
+                                { timeoutMs: 8000, label: 'the sampled pane to zoom' }
+                            );
+                            probeZoomed = true;
+                        } catch {
+                            probeZoomed = false;
+                        }
+                        // The engine is resized by the zoom; let it repaint before it is measured.
+                        await sleep(900);
+                        probeWidth = await probeWidthOf(probePaneID);
+                    }
+                    recorder.note(
+                        `no terminal on screen was wide enough, so the step zoomed ${probePaneID} ` +
+                            `(${probeZoomed ? 'zoomed' : 'the zoom never landed'}) → ${String(probeWidth)}px`
+                    );
+                }
+                recorder.check(
+                    'the pane this half drives is wide enough for its canvas to be a measurement, not a sliver (§N25)',
+                    probePaneID !== '' && probeWidth >= PROBE_MIN_WIDTH,
+                    `${probePaneID || '(no terminal pane on screen)'} · ${String(probeWidth)}px wide, floor ${String(PROBE_MIN_WIDTH)}px`
+                );
+
                 const termToken = async (name) =>
                     String(
                         await page.eval(
@@ -16546,7 +16636,9 @@ function buildFlows(ctx) {
                                 // \`data-pane-id\`, and the outer one is painted with the window
                                 // fill (\`tokens.windowBackground\`), which no theme touches.
                                 // \`data-terminal-status\` is unique to the host.
-                                const pane = document.querySelector('[data-pane-id][data-terminal-status]');
+                                // §N25 — and the host of the pane the step DRIVES, by id, not
+                                // whichever pane happens to sort first by UUID.
+                                const pane = document.querySelector('[data-pane-id="${probePaneID}"][data-terminal-status]');
                                 if (pane === null) return '(no terminal pane)';
                                 return getComputedStyle(pane).backgroundColor;
                             })()`
@@ -16643,7 +16735,11 @@ function buildFlows(ctx) {
                 const sampleCanvas = async () =>
                     page.eval(
                     `(() => {
-                        const host = document.querySelector('[data-pane-id][data-terminal-status]');
+                        // §N25 — the canvas inside the BODY of the pane the step drives, found
+                        // by id. \`pane-body-<id>\` is the grid's own wrapper for that pane, so
+                        // there is no way for this to answer with a neighbour's engine.
+                        const body = document.querySelector('[data-testid="pane-body-${probePaneID}"]');
+                        const host = body === null ? null : body.querySelector('[data-pane-id][data-terminal-status]');
                         if (host === null) return { error: 'no terminal pane' };
                         const canvases = Array.from(host.querySelectorAll('canvas'));
                         const canvas = canvases[canvases.length - 1];
@@ -16672,6 +16768,10 @@ function buildFlows(ctx) {
                             topOpaque,
                             cleared,
                             total,
+                            // §N25 — which pane this canvas actually belongs to, so "the sample
+                            // is of the pane the step drove" is a fact in the record rather
+                            // than an assumption about DOM order.
+                            paneID: host.getAttribute('data-pane-id'),
                             // What the LIVE engine was BUILT with (§N17), not what a prop says.
                             engineTransparent: host.dataset.terminalTransparent === 'true',
                             canvases: canvases.length,
@@ -16719,7 +16819,8 @@ function buildFlows(ctx) {
                 const engineTheme = String(
                     await page.eval(
                         `(() => {
-                            const host = document.querySelector('[data-pane-id][data-terminal-status]');
+                            // §N25 — the same pane the samples are of, by id.
+                            const host = document.querySelector('[data-pane-id="${probePaneID}"][data-terminal-status]');
                             if (host === null) return '(no terminal pane)';
                             return (host.dataset.terminalThemeBg ?? '') + ' / ' + (host.dataset.terminalThemeFg ?? '');
                         })()`
@@ -16738,15 +16839,24 @@ function buildFlows(ctx) {
                     arrivalVerdict.ok,
                     `${arrivalVerdict.why} — ${JSON.stringify((paintedOnArrival?.top ?? []).map((entry) => entry?.[0]))}`
                 );
+                recorder.check(
+                    'and it is the canvas of the pane this half drives — one pane, addressed by id (§N25)',
+                    probePaneID !== '' && String(paintedOnArrival?.paneID ?? '') === probePaneID,
+                    `sampled ${String(paintedOnArrival?.paneID ?? '(none)')} · driven ${probePaneID || '(none)'}`
+                );
                 /*
                  * One screen-clearing write, sent over the CLI so nothing here depends on where
                  * focus is (the Settings overlay is open, and its backdrop owns the clicks).
                  * `clear` marks every row dirty, so the redraw that follows is the whole
                  * viewport — and the colour it comes back in is the engine's own answer to
                  * "which palette am I running".
+                 *
+                 * §N25 — sent to the pane the samples either side of it are OF. It used to go
+                 * to `state.firstPane`, which in a full run is not necessarily the pane the DOM
+                 * query answered with (and may not even be in the workspace on screen), so the
+                 * "after a redraw" sample could be of a canvas nothing had redrawn.
                  */
-                const paneID = String(state.firstPane ?? '');
-                if (paneID !== '') await cli.run(['pane', 'send', '--target', paneID, 'clear']);
+                if (probePaneID !== '') await cli.run(['pane', 'send', '--target', probePaneID, 'clear']);
                 let paintedAfterRedraw = paintedOnArrival;
                 let redrawVerdict = arrivalVerdict;
                 // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep.
@@ -16869,6 +16979,28 @@ function buildFlows(ctx) {
                     'the step leaves the window bare for the flows after it',
                     (await page.eval(`document.querySelector('${PAGE.settingsPanel}') === null`)) === true,
                     'settings overlay closed'
+                );
+                /*
+                 * §N25 — and give the GRID back the way the step found it. The zoom above was a
+                 * precondition for the measurement, not a state this step is entitled to leave
+                 * behind: §TERM-090's own flow is the evidence that an inherited zoom is a
+                 * hazard for the steps downstream (it un-zooms before it opens a pane, and the
+                 * pane-UX flow ends by putting every pane mode back).
+                 */
+                if (probeZoomed) {
+                    const zoomedHeader = await page.box(`[data-testid="pane-header-${probePaneID}"]`);
+                    if (zoomedHeader !== null) {
+                        await page.clickAt(zoomedHeader.cx, zoomedHeader.cy);
+                        await page.clickAt(zoomedHeader.cx, zoomedHeader.cy, { clickCount: 2 });
+                        await sleep(800);
+                    }
+                }
+                recorder.check(
+                    'and the pane it measured is handed back un-zoomed (§N25)',
+                    (await page.eval(
+                        `document.querySelector('[data-pane-id="${probePaneID}"][data-zoomed="true"]') === null`
+                    )) === true,
+                    probeZoomed ? 'zoomed for the sample, then given back' : 'nothing needed zooming'
                 );
                 if (cameFrom !== '') {
                     for (let attempt = 0; attempt < 6; attempt++) {

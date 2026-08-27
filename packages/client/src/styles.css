@@ -249,20 +249,55 @@ body {
   overscroll-behavior: none;
 }
 
-/* Every chrome surface styles its own controls; make sure none of them inherit a text cursor,
-   a user-agent border, or a focus ring the design does not use. */
+/*
+ * Every chrome surface styles its own controls; make sure none of them inherit a text cursor,
+ * a user-agent border, or a focus ring the design does not use.
+ *
+ * SPACING-REVIEW S1 / S17 — the BOX half of this reset is layered; the rest is not.
+ *
+ * The whole rule used to be unlayered, and unlayered CSS outranks every utility Tailwind emits
+ * (they all live in `@layer utilities`). So on a `<button>`, `padding: 0` beat `px-3`, `border:
+ * none` beat `border`, and `font: inherit` beat `text-[11px]` / `font-mono`; on an `<input>`,
+ * `font: inherit` beat the same type classes (its padding always applied — only the font was
+ * dead). Twenty-one rows of the density register were one defect: a control that DECLARED its
+ * padding, border and type in a class list and rendered with none of them.
+ *
+ * Moving those three properties into `@layer base` is exactly L96's move on `:focus-visible`
+ * below, for exactly L96's reason, and it does not weaken the reset:
+ *
+ *   - a BARE `<button>` — no utility classes — still gets `font: inherit`, no border and no
+ *     padding, because base still outranks the user-agent sheet and still outranks Tailwind's
+ *     own preflight (same layer, later rule, and a `button` selector over preflight's `*`);
+ *   - a `<button>` that ASKS for a box in a class now gets it, which is the entire point;
+ *   - the per-control inline escape §M21 and §H29 established is untouched — an inline style
+ *     beats every layer, so components that already write `padding` / `fontSize` / `border`
+ *     inline keep rendering byte-identically. Nothing had to be un-escaped for this to land.
+ *
+ * `cursor`, `color` and `background` stay UNLAYERED on purpose, because layering them would
+ * change pixels no register row asked for: `cursor-pointer` (16 call sites) would start
+ * overriding the AppKit arrow the shipped app uses on every control, and a `bg-*` class on a
+ * button would start painting a fill behind chrome that has always drawn its own.
+ */
 button {
   cursor: default;
-  font: inherit;
   color: inherit;
   background: none;
-  border: none;
-  padding: 0;
 }
 
 input {
-  font: inherit;
   color: inherit;
+}
+
+@layer base {
+  button {
+    font: inherit;
+    border: none;
+    padding: 0;
+  }
+
+  input {
+    font: inherit;
+  }
 }
 
 ::selection {
@@ -281,9 +316,9 @@ input {
  *
  * In `@layer base` it keeps its job — a `Tab`-focused button, menu row or link still gets the
  * ring, because those declare no outline of their own — while `outline-none` on a control that
- * has designed its own focus treatment finally wins. The `button` / `input` resets above are
- * deliberately left unlayered: they are load-bearing elsewhere (§M21 and §H29 both record
- * components that work around them), and re-layering them is a change of a different size.
+ * has designed its own focus treatment finally wins. The `button` / `input` resets above took
+ * the same move for the same reason under S1/S17 (their box half only); see the comment there
+ * for what stayed unlayered and why.
  */
 @layer base {
   :focus-visible {
@@ -326,6 +361,38 @@ input {
 
 [data-nex-web-tabstrip]::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * S21 — the built-in editors reserve NO layout width for a scroller.
+ *
+ * `MarkdownEditorView.swift:44-48` and `ScratchpadEditorView.swift:52-56` set
+ * `scrollView.scrollerStyle = .overlay` in as many words ("Thin overlay scroller, matching the
+ * sidebar"): the bar floats over the text while you scroll and takes zero layout width, and the
+ * horizontal scroller is off entirely. The global 9 px `::-webkit-scrollbar` above turns
+ * Chromium's own overlay scroller into a classic space-taking one, so the markdown editor's
+ * textarea measured `offsetWidth 493 / clientWidth 482` — **11 px permanently reserved on the
+ * right only**, which on top of the field's own 8 px `p-2` made the right gutter 19 px against
+ * 8 px on the left, and cost the text column 11 px of every line. The scratchpad's `wrap="off"`
+ * took the same 11 px as a horizontal rail across its bottom.
+ *
+ * Scoped off the editor the same way `[data-nex-web-tabstrip]` above is scoped, and for the
+ * same reason: every other scroller in the app still wants the themed 9 px bar.
+ *
+ * The one thing CSS cannot give back is the PAINT. Chromium picks its overlay scroller only
+ * when no author rule styles `::-webkit-scrollbar` for the element, and there is no way to opt
+ * back in once one has matched — so this restores the Swift's layout (0 px reserved in both
+ * axes) and not its thin fading indicator. That trade is the register's own suggestion; the
+ * alternative it names, `scrollbar-gutter: stable both-edges`, keeps a visible rail but spends
+ * 11 px on BOTH sides of a text column the Swift spends none on.
+ */
+[data-testid^='content-textarea-'] {
+  scrollbar-width: none;
+}
+
+[data-testid^='content-textarea-']::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /*

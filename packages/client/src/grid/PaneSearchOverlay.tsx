@@ -57,6 +57,20 @@ export interface PaneSearchOverlayProps {
      * two backends — see `content/ContentFrame.tsx`.
      */
     readonly testIDPrefix?: string | undefined;
+    /**
+     * §S9 / §S63 — where the bar floats, for a surface whose mount point is not the pane
+     * wrapper's own top-trailing corner.
+     *
+     * The grid mounts this over a terminal at the wrapper's corner, which is `right-2 top-2`
+     * and needs no override. A content pane mounts it from INSIDE the pane body (the frame owns
+     * the find, because only the sandboxed document can count its own matches), so it passes a
+     * negative `top` to reach back over the 24 px header the way
+     * `PaneGridView.swift:356,367-368`'s single pane-level `.overlay(alignment: .topTrailing)`
+     * does, and the content overlays' 14 px inset so it lines up with the Copy menu that opens
+     * in the same corner.
+     */
+    readonly top?: number | undefined;
+    readonly right?: number | undefined;
 }
 
 /** `selected+1/total`, `-/total`, or nothing at all (Swift `matchCountLabel`). */
@@ -195,7 +209,11 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                 // `.shadow(color: .black.opacity(0.2), radius: 4, y: 2)` on the same conversion
                 // `ResizeBadge` uses (a SwiftUI shadow radius is ~half a CSS blur radius), not
                 // the heavier 0.35/12 px drop that was here.
-                boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                // §S9/§S63: the mount's own offsets, when it has any. `right-2 top-2` above is
+                // the default (and the terminal's), so a bar with no override is byte-identical.
+                ...(props.top === undefined ? {} : { top: props.top }),
+                ...(props.right === undefined ? {} : { right: props.right })
             }}
             // A click in the bar is not a click in the terminal: without this the grid's
             // focus-on-press would pull the caret straight back out of the field.
@@ -208,8 +226,32 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                     aria-label="Search"
                     placeholder="Search"
                     value={draft}
-                    className="w-[160px] px-2 font-mono text-[12px] leading-none outline-none"
+                    /*
+                     * No `leading-none`. It was inert while `input { font: inherit }` was
+                     * unlayered — the line box was the body's 1.4 (16.8 px at 12), and the 5 px
+                     * insets below put the field at the 26.8 px L22/TERM-114 measured off this
+                     * bar. S1/S17 layered the reset's font half, which would have let this class
+                     * finally collapse the line box to 12 px and shrink a settled field to 25.5
+                     * for nothing. `PaneSearchOverlay.swift:22`'s `TextField` has no collapsed
+                     * leading either, so the class went rather than the measurement.
+                     */
+                    className="w-[160px] px-2 font-mono text-[12px] outline-none"
                     style={{
+                        /*
+                         * §S16 — 160 is the TEXT column, not the box.
+                         *
+                         * `PaneSearchOverlay.swift:20-33` puts `.frame(width: 160)` on the
+                         * `TextField` itself and applies `.padding(.leading, 8)`, the counter's
+                         * trailing reserve and `.padding(.vertical, 5)` OUTSIDE it — the
+                         * background paints the padded box, so the needle you can see is a flat
+                         * 160 pt in every state and the BAR grows to hold the counter. Under
+                         * Tailwind's global `border-box` the same 160 was the outer box, so both
+                         * paddings came out of it: 8/8 left 144 px of text empty, and a live
+                         * `1/3` counter reserved 33 px on the right and left **119** — a field
+                         * that shrinks as you find more matches. `content-box` restores the
+                         * Swift's arithmetic without moving a single declared value.
+                         */
+                        boxSizing: 'content-box',
                         // L22/L40: `Color.primary.opacity(0.08)` (`PaneSearchOverlay.swift:27`) —
                         // an inset well tinted with the LABEL colour, so it is lighter than the
                         // header bar on dark and darker than it on light. `surfaceBackground`
@@ -224,11 +266,11 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                         paddingTop: 5,
                         paddingBottom: 5,
                         color: tokens.textPrimary,
-                        // The face and size are set INLINE, not left to `font-mono text-[12px]`:
-                        // `styles.css`'s `input { font: inherit }` is unlayered, and unlayered
-                        // CSS beats every Tailwind utility regardless of specificity — so the
-                        // classes alone rendered this as the 13 px UI sans, where the Swift is
-                        // `.font(.system(size: 12, design: .monospaced))` (`:22`).
+                        // The face and size stay INLINE even though S1/S17 moved `input { font:
+                        // inherit }` into `@layer base` and `font-mono text-[12px]` would now
+                        // reach the screen on its own. Inline is the authority for the value the
+                        // Swift states — `.font(.system(size: 12, design: .monospaced))` (`:22`) —
+                        // and the test below asserts it there; the classes are kept in step.
                         fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
                         fontSize: 12,
                         // Room for the counter, which floats over the field's trailing edge.

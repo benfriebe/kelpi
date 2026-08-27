@@ -42,6 +42,95 @@ export const PANE_HEADER_HEIGHT = 24;
  */
 export const TITLE_SHRINK = 100;
 
+/**
+ * §S8 — the floor under a shrinkable badge's text, so a squeezed chip draws an ELLIPSIS and
+ * never a colour stub.
+ *
+ * `2.5ch` is ~15 px at the badges' 10 px monospace: one glyph plus the ellipsis `truncate`
+ * draws. Without it the inner `min-w-0 truncate` span is free to reach 0, and it does — at a
+ * 130.75 px pane the label chip, the agent badge and the branch chip each measured **8.00 px
+ * wide with 0.00 px of text**: three bare colour rectangles carrying no glyph and not even an
+ * ellipsis, a state `PaneHeaderView.swift:80-92` cannot produce (SwiftUI overflows the header
+ * and lets `PaneGridView.swift:354-355`'s `.clipped()` cut it, rather than compressing a chip).
+ */
+export const BADGE_TEXT_FLOOR = '2.5ch';
+
+/** Which of the three user-data badges a header this wide can afford (`badgeFit`). */
+export interface BadgeFit {
+    readonly label: boolean;
+    readonly agent: boolean;
+    readonly branch: boolean;
+}
+
+/** What `badgeFit` needs: the width, what the pane WANTS to show, and the row's button count. */
+export interface BadgeFitInput extends BadgeFit {
+    readonly paneWidth: number | undefined;
+    /** Trailing `HeaderButton`s this header renders — 4 shared, plus the per-type ones. */
+    readonly buttons: number;
+}
+
+/**
+ * §S8 — the header's fixed cost, in px, before a badge or a character of path is drawn.
+ *
+ * Measured on the running app and then written as its parts, so a change to any of them keeps
+ * the ladder honest: `px-2`'s 16 px, the 10 px status dot / type glyph, one 20 px box per
+ * trailing button, and a 4 px `gap-1` between every adjacent pair of the children that are
+ * always there (dot, title, spacer, buttons). A shell pane's four buttons come out at **130**,
+ * a markdown pane's six (copy + edit) at **178**.
+ */
+export function headerChrome(buttons: number): number {
+    return 16 + 10 + buttons * 20 + (2 + buttons) * 4;
+}
+
+/**
+ * §S8 — what a badge costs at its floor: its own box, plus the one extra `gap-1` it adds.
+ *
+ * 8 px of `px-1`, the glyph and its 2 px inner gap where there is one (8 for the tag, 9 for the
+ * branch), and `BADGE_TEXT_FLOOR`'s ~15 px of text.
+ */
+export const BADGE_COST = { label: 37, agent: 27, branch: 38 } as const;
+
+/**
+ * §S8 — the badge fit ladder.
+ *
+ * The floor is only half the fix: flooring a badge that has no room pushes the trailing buttons
+ * further past the pane edge (at 130.75 px the ✕ already overhung by 27.25 px), and a header
+ * that drops its close button before a git branch is the wrong trade. So a badge that cannot be
+ * seated at its floor is not drawn at all — hiding beats a stub, and it beats an ellipsis whose
+ * chip costs more than the ✕ it displaces.
+ *
+ * It is arithmetic rather than a table of widths on purpose: the answer depends on how many
+ * badges the pane actually wants and how many buttons its type draws, so a markdown pane whose
+ * only badge is a branch keeps it far longer than a shell pane carrying all three. Measured
+ * examples: a shell pane with label + agent + branch seats all three from 232 px, the label and
+ * agent alone from 194, the label alone from 167; a markdown pane's lone branch chip survives
+ * to 216 px, where a fixed ladder would have dropped it at 250 with 60 px of room to spare.
+ *
+ * The drop order is by what else carries the same fact. The branch goes first: the status
+ * footer and the inspector both show it. The agent badge goes next: the 10 px status dot beside
+ * the path is already painted from `pane.status`, so "an agent is running here" survives it.
+ * The label chip goes last, because nothing else in a narrow header names the pane.
+ */
+export function badgeFit(input: BadgeFitInput): BadgeFit {
+    const fit = { label: input.label, agent: input.agent, branch: input.branch };
+    // No width to reason about (a standalone render, a test that does not care about the
+    // ladder) draws everything the pane asked for, which is the pre-S8 behaviour.
+    if (input.paneWidth === undefined || !Number.isFinite(input.paneWidth)) return fit;
+
+    const budget = input.paneWidth - headerChrome(input.buttons);
+    let cost =
+        (fit.label ? BADGE_COST.label : 0) +
+        (fit.agent ? BADGE_COST.agent : 0) +
+        (fit.branch ? BADGE_COST.branch : 0);
+    for (const key of ['branch', 'agent', 'label'] as const) {
+        if (cost <= budget) break;
+        if (!fit[key]) continue;
+        fit[key] = false;
+        cost -= BADGE_COST[key];
+    }
+    return fit;
+}
+
 // ── display strings ─────────────────────────────────────────────────────────────────
 
 /** `/Users/x` → `~`, `/Users/x/a` → `~/a`; unrelated paths pass through (shell-ui.md §2). */
@@ -234,8 +323,18 @@ function Badge({
 }: BadgeProps): ReactElement {
     const content = (
         <>
-            {icon === undefined ? null : <Icon name={icon} size={iconSize} />}
-            <span className={shrinkable === true ? 'min-w-0 truncate' : undefined}>{text}</span>
+            {/* §S8: `shrink-0`. Under the squeeze the glyph went to 0 px too, so what was left
+                of a "chip" was its 4 px of side padding and nothing else. */}
+            {icon === undefined ? null : <Icon name={icon} size={iconSize} className="shrink-0" />}
+            <span
+                className={shrinkable === true ? 'min-w-0 truncate' : undefined}
+                // §S8: the floor. A shrinkable badge stops at one glyph plus the ellipsis
+                // instead of collapsing to a colour stub; `badgeFit` decides whether it is
+                // drawn at all, so the floor never costs the header a button.
+                {...(shrinkable === true ? { style: { minWidth: BADGE_TEXT_FLOOR } } : {})}
+            >
+                {text}
+            </span>
         </>
     );
     const style = {
@@ -252,7 +351,19 @@ function Badge({
     // L28: `HStack(spacing: 2)` inside every badge (`PaneHeaderView.swift:81`, `:102`, `:127`,
     // `:143`, `:164`) — `gap-1` was 4 px, double the gap, which pushed each glyph off its text
     // far enough that the pill read as two things rather than one chip.
-    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-[2px] px-1 py-px font-mono ${sizeClass}${weightClass} leading-none`;
+    // §S20: `leading-[1.2]`, not `leading-none`.
+    //
+    // `PaneHeaderView.swift:89-91` puts its 1 pt of vertical padding around a `Text` whose line
+    // box already carries the ascender AND the descender, so the padding sits OUTSIDE the glyph
+    // box. `leading-none` collapsed the line box to exactly the font size, which put the 1 px
+    // inside it: the pill measured **12.00 px**, and on a real branch string (`gypsy/pg`) the
+    // inner `truncate` span clipped the last pixel of the descender (`scrollHeight` 11 in a
+    // 10 px content box). The register asks for `leading-none` to simply go, on the reading
+    // that `normal` is ~12 px at 10 px — measured on the running app it is **14 px** for this
+    // face, which would make the pill 16. `1.2` is the smallest line box that clears the
+    // measured ink (ascent 7.29 + descent 2.15 = 9.44 px at 10 px) and it lands the pill on the
+    // 14 px the row asks for, with SYNC OFF's deliberate 9 pt still a point shorter (12.8).
+    const className = `flex ${shrinkable === true ? 'shrink' : 'shrink-0'} items-center gap-[2px] px-1 py-px font-mono ${sizeClass}${weightClass} leading-[1.2]`;
     if (onClick === undefined) {
         return (
             <span data-testid={testID} className={className} style={style} {...(title === undefined ? {} : { title })}>
@@ -363,6 +474,13 @@ export interface PaneHeaderProps extends PaneActions {
     readonly nowSeconds?: number | undefined;
     readonly height?: number | undefined;
     /**
+     * §S8 — the pane's own width, which is the header's width (`w-full`). The grid already has
+     * it as the pane's frame, so the header reads it rather than measuring itself: it is what
+     * `badgeFit` uses to decide whether a user-data badge has room to be drawn at all. Omitted
+     * (a standalone render) means "no ladder".
+     */
+    readonly paneWidth?: number | undefined;
+    /**
      * Bumped to open the inline rename field from OUTSIDE the header — the context menu's
      * "Rename…" (TERM-106), which in the Swift app raised a sheet and here reuses the field
      * that is already the port's rename affordance (TERM-112's accepted divergence).
@@ -386,6 +504,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
         homeDirectory = '',
         nowSeconds,
         height = PANE_HEADER_HEIGHT,
+        paneWidth,
         renameToken = 0,
         onHeaderPointerDown,
         onFocusPane,
@@ -445,6 +564,26 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const title = paneDisplayTitle(pane, homeDirectory);
     const titleParts = splitHeaderTitle(title);
 
+    /*
+     * §S8 — what this header wants, and what its width can seat.
+     *
+     * `showCopyButton` is read twice on purpose: once here, once by the JSX below, so the
+     * button count the ladder reserves for can never drift from the row it is reserving for.
+     * The other five trailing buttons are the two type ones and the four shared ones.
+     */
+    const showCopyButton = pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined;
+    const fit = badgeFit({
+        paneWidth,
+        label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
+        agent: badge !== null,
+        branch: pane.gitBranch !== null && pane.gitBranch.length > 0,
+        buttons:
+            4 +
+            (showCopyButton ? 1 : 0) +
+            (pane.type === 'markdown' ? 1 : 0) +
+            (pane.type === 'diff' ? 1 : 0)
+    });
+
     return (
         <div
             data-testid={`pane-header-${pane.id}`}
@@ -456,7 +595,18 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             style={{
                 height,
                 background: tokens.headerBackground,
-                borderBottom: `1px solid ${tokens.divider}`,
+                /*
+                 * §S30 — the hairline is PAINTED, not laid out.
+                 *
+                 * `PaneHeaderView.swift:274-275` is `.padding(.vertical, 2)` → a 24 pt box, and
+                 * `:297-299` draws the rule as an `.overlay(alignment: .bottom)`, which consumes
+                 * no layout height. A `borderBottom` on a `border-box` element of `height: 24`
+                 * does: the content band measured **23 px**, so the 20 px buttons sat 1.5 px
+                 * above centre and 2.5 px below where the Swift's sit on 2 pt either side. An
+                 * inset shadow paints the same 1 px on the same edge and costs the band nothing
+                 * — measured 24.00 / 24.00 after, with the buttons at 2.0 / 2.0.
+                 */
+                boxShadow: `inset 0 -1px 0 ${tokens.divider}`,
                 cursor: renaming ? 'text' : 'default'
             }}
             onPointerDown={(event) => {
@@ -493,8 +643,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 </span>
             )}
 
-            {/* 2 — label chip */}
-            {pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown' ? (
+            {/* 2 — label chip (§S8: last of the three to go) */}
+            {fit.label && pane.label !== null ? (
                 <Badge
                     testID={`pane-label-${pane.id}`}
                     // M13: `PaneHeaderView.swift:88,91` is `Color.accentColor` — the macOS system
@@ -610,8 +760,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 read as a second pane in every one of them. */}
             {renaming ? null : <div data-testid={`pane-spacer-${pane.id}`} aria-hidden="true" className="flex-1" />}
 
-            {/* 7 — agent badge */}
-            {badge === null ? null : (
+            {/* 7 — agent badge (§S8: dropped before the label; the status dot keeps the state) */}
+            {badge === null || !fit.agent ? null : (
                 <Badge
                     testID={`pane-agent-badge-${pane.id}`}
                     color={badge.tone === 'running' ? tokens.activeAgent : tokens.statusWaiting}
@@ -621,8 +771,8 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 />
             )}
 
-            {/* 8 — git branch */}
-            {pane.gitBranch === null || pane.gitBranch.length === 0 ? null : (
+            {/* 8 — git branch (§S8: first to go; the footer and the inspector both show it) */}
+            {!fit.branch || pane.gitBranch === null ? null : (
                 <Badge
                     testID={`pane-branch-${pane.id}`}
                     color={tokens.textSecondary}
@@ -650,7 +800,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {/* §TERM-103: the Swift's header copy menu — markdown, preview mode only (there is
                 no rendered document to copy while the editor is up). The menu is drawn by the
                 content frame; this asks it to open. */}
-            {pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined ? (
+            {showCopyButton ? (
                 <HeaderButton
                     testID={`pane-copy-${pane.id}`}
                     // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim. It

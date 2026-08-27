@@ -209,12 +209,20 @@ export function GraftOrphanBanner(props: GraftOrphanBannerProps): ReactElement {
                   * inventing a hierarchy — and an emphasis on the destructive-adjacent answer at
                   * that (Restore replays a stop sequence over the parent checkout). Same recipe
                   * for both now, and the shipped 6 px gap.
+                  *
+                  * SPACING-REVIEW S5 — `px-2 py-0.5`, i.e. the row's own `padding: '2px 8px'`.
+                  * S1's keystone gave the pair back the border and the 11 px type their class
+                  * list had always declared (they had measured 46.44 × 18.2 with `padding: 0px`
+                  * and `border-top-width: 0px` — two bare words 6 px apart), but it left the
+                  * box at the class list's own `px-1.5 py-[1px]`: 1 px of vertical inset on a
+                  * control the Swift draws as a `.controlSize(.small)` bordered `Button`, which
+                  * is ~20 pt tall with a 7–10 pt side inset. 2/8 lands it at 21.4 px.
                   */}
                 <div className="flex gap-1.5 pt-0.5">
                     <button
                         type="button"
                         data-testid={`graft-orphan-restore-${props.orphan.associationID}`}
-                        className="cursor-pointer rounded border px-1.5 py-[1px] text-[11px]"
+                        className="cursor-pointer rounded border px-2 py-0.5 text-[11px]"
                         style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                         onClick={props.onRestore}
                     >
@@ -223,7 +231,7 @@ export function GraftOrphanBanner(props: GraftOrphanBannerProps): ReactElement {
                     <button
                         type="button"
                         data-testid={`graft-orphan-dismiss-${props.orphan.associationID}`}
-                        className="cursor-pointer rounded border px-1.5 py-[1px] text-[11px]"
+                        className="cursor-pointer rounded border px-2 py-0.5 text-[11px]"
                         style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                         onClick={props.onDismiss}
                     >
@@ -328,9 +336,10 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
                         `Only one graft per parent repo is allowed. Swap to mirror ${prompt.newBranch} ` +
                         `(${newWorktree}) instead, or keep the existing graft and resolve manually.`}
                 </div>
-                {/* M57: the quit dialog's button recipe — `rounded px-2 py-1`, the default
-                    ringed in the accent and holding focus, the destructive one in the shared
-                    red. `data-default` / `data-destructive` are read the same way there. */}
+                {/* M57: the quit dialog's button recipe — `min-w-[68px] rounded px-3 py-1` since
+                    SPACING-REVIEW S53 (AppKit's ~10 pt gutter and its ~68 pt minimum width), the
+                    default ringed in the accent and holding focus, the destructive one in the
+                    shared red. `data-default` / `data-destructive` are read the same way there. */}
                 <div className="flex justify-end gap-2">
                     <button
                         type="button"
@@ -338,7 +347,7 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
                         data-testid="graft-swap-keep"
                         data-default="true"
                         data-destructive="false"
-                        className="cursor-pointer rounded px-2 py-1"
+                        className="min-w-[68px] cursor-pointer rounded px-3 py-1"
                         style={{
                             color: tokens.textPrimary,
                             border: `1px solid ${tokens.accent}`,
@@ -353,7 +362,7 @@ export function GraftSwapDialog(props: GraftSwapDialogProps): ReactElement | nul
                         data-testid="graft-swap-confirm"
                         data-default="false"
                         data-destructive="true"
-                        className="cursor-pointer rounded px-2 py-1"
+                        className="min-w-[68px] cursor-pointer rounded px-3 py-1"
                         style={{ color: '#E0655C', border: '1px solid transparent' }}
                         onClick={props.onConfirm}
                     >

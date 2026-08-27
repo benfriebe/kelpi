@@ -118,18 +118,22 @@ describe('anchoring (§M20)', () => {
     it('centres the panel on the chip that opened it', () => {
         const placement = bucketPopoverPlacement({ left: 700, width: 60 }, row);
         expect(placement).not.toBeNull();
-        // Chip centre 730 − half the 252 px panel = 604.
-        expect(placement?.left).toBe(604);
-        // …and the arrow points back at the centre: 730 − 604 − half the 8 px beak.
-        expect(placement?.arrowLeft).toBe(122);
+        /*
+         * Chip centre 730 − half the panel = 603. The panel is 254 rather than the Swift's flat
+         * 252 because it is a `border-box` div: SPACING-REVIEW S31 added the two 1 px edges so
+         * the CONTENT box is the shipped 228, the way §L49 already settled the stat popover.
+         */
+        expect(placement?.left).toBe(603);
+        // …and the arrow points back at the centre: 730 − 603 − half the 8 px beak.
+        expect(placement?.arrowLeft).toBe(123);
     });
 
     it('clamps to the row rather than hanging off the trailing edge', () => {
         const placement = bucketPopoverPlacement({ left: 1400, width: 30 }, row);
         expect(placement?.left).toBe(1440 - BUCKET_POPOVER_WIDTH_PX - 8);
         // …and the arrow follows the chip inside the clamped panel rather than staying centred:
-        // chip centre 1415, panel at 1180, minus half the 8 px beak.
-        expect(placement?.arrowLeft).toBe(231);
+        // chip centre 1415, panel at 1178, minus half the 8 px beak (S31: 254, not 252).
+        expect(placement?.arrowLeft).toBe(233);
         expect(placement?.arrowLeft).toBeLessThanOrEqual(BUCKET_POPOVER_WIDTH_PX - 16);
     });
 
@@ -141,8 +145,8 @@ describe('anchoring (§M20)', () => {
 
     it('measures relative to the ROW, not the window — the footer now spans it (§H2)', () => {
         const placement = bucketPopoverPlacement({ left: 900, width: 60 }, { left: 220, width: 1000 });
-        // Chip centre 930, row-relative 710, minus half the panel.
-        expect(placement?.left).toBe(584);
+        // Chip centre 930, row-relative 710, minus half the 254 px panel (S31).
+        expect(placement?.left).toBe(583);
     });
 
     it('returns null when there is nothing to measure, so the caller keeps its old placement', () => {
@@ -182,9 +186,9 @@ describe('anchoring (§M20)', () => {
             const popover = screen.getByTestId('bucket-popover');
             expect(popover.dataset['anchored']).toBe('true');
             expect(popover.className).not.toContain('right-3');
-            // Chip centre 1030 − half the panel = 904.
-            expect(popover.style.left).toBe('904px');
-            expect(screen.getByTestId('bucket-popover-arrow').style.left).toBe('122px');
+            // Chip centre 1030 − half the 254 px panel (S31) = 903.
+            expect(popover.style.left).toBe('903px');
+            expect(screen.getByTestId('bucket-popover-arrow').style.left).toBe('123px');
         } finally {
             HTMLElement.prototype.getBoundingClientRect = original;
         }
@@ -248,10 +252,12 @@ describe('popover typography (§M21)', () => {
         expect(rows.children).toHaveLength(3);
         const row = screen.getAllByTestId('bucket-row')[0];
         /*
-         * Inline rather than `px-1 py-[3px]`: `styles.css`'s unlayered `button { padding: 0 }`
-         * beats Tailwind's layered utilities, so the classes the row used to carry painted
-         * nothing at all (the audit read `padding-top: 0px` through a `py-1`). Asserted on the
-         * style, which is the thing that actually reaches the screen.
+         * Inline rather than `px-1 py-[3px]`. It had to be: `styles.css`'s `button { padding: 0 }`
+         * was UNLAYERED and beat Tailwind's layered utilities, so the classes the row used to
+         * carry painted nothing at all (the audit read `padding-top: 0px` through a `py-1`).
+         * S1/S17 moved that reset into `@layer base`, so a class would land now — the assertion
+         * is unchanged, only its reason is: 3/4 is §M21's stated number and the style is where
+         * it lives.
          */
         expect(row?.style.padding).toBe('3px 4px');
         const dot = row?.querySelector('span[aria-hidden]');

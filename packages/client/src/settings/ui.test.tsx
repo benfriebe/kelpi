@@ -36,8 +36,13 @@ describe('the Settings switch (H14)', () => {
     it('is an appearance-reset track, not a user-agent checkbox', () => {
         const { input } = renderToggle(false);
         expect(input.style.appearance || input.style.getPropertyValue('-webkit-appearance')).toBe('none');
-        expect(input.style.width).toBe('26px');
-        expect(input.style.height).toBe('15px');
+        // S24: the REGULAR control size, 38 × 22. This assertion used to pin 26 × 15 — the
+        // `.controlSize(.small)` track the component's comment claimed — but `grep -rn
+        // controlSize SettingsView.swift` returns nothing, so every one of these rows is a plain
+        // `Toggle` in a grouped `Form` and AppKit draws it at regular size. 15 px was also the
+        // shortest hit target in Settings after the colour wells.
+        expect(input.style.width).toBe('38px');
+        expect(input.style.height).toBe('22px');
         expect(input.style.borderRadius === '' ? input.className : input.style.borderRadius).toContain(
             'rounded-full'
         );
@@ -67,8 +72,8 @@ describe('the Settings switch (H14)', () => {
         expect(off.input.style.transition).toContain('background-color');
         cleanup();
         const on = renderToggle(true);
-        // 26 (track) − 11 (thumb) − 2 (inset) = 13.
-        expect(on.thumb.style.left).toBe('13px');
+        // S24: 38 (track) − 18 (thumb) − 2 (inset) = 18. Was 13 against the old 26 × 15 track.
+        expect(on.thumb.style.left).toBe('18px');
     });
 
     it('still toggles on click, and reports the new value', () => {

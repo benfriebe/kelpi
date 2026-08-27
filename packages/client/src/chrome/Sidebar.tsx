@@ -34,7 +34,8 @@ import {
     useRef,
     useState,
     type CSSProperties,
-    type ReactElement
+    type ReactElement,
+    type RefObject
 } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -115,15 +116,23 @@ const FOOTER_GAP_PX = 6;
  * TOP edge, and this menu drops UPWARD from a bar that sits against the bottom of the window,
  * so the height has to be supplied rather than read back.
  *
- * Derived rather than guessed, and then MEASURED: one `MenuRow` is `py-1` around the panel's
- * `text-[12px]`, which lays out at 18px, and the panel adds its own `p-1` top and bottom. The
- * 44 that falls out matches the 43px the rendered menu actually reports
- * (docs/audit/ws004-footer), so the menu hangs ~5px above the chevron rather than the ~17px a
- * round-number guess of 56 left it at.
+ * Derived rather than guessed, and then MEASURED — and it has to be RE-derived whenever the
+ * shared `MenuRow` changes shape, because a stale estimate here does not look stale: it drops
+ * the menu ONTO the bar it hangs off. That is exactly what happened when SPACING-REVIEW S1/S3
+ * gave `MenuRow` the `px-2.5 py-1` its class list had always declared: the row went 16.8 → 24.8
+ * px, the two-row panel went 43 → 60, and this constant still said 44, so the audit's own
+ * "it drops UPWARD, clear of the bar it hangs off" turned red (docs/audit/density-sidebar-dialogs,
+ * step 05). The panel's 1 px border and S54/S55's 2 px inter-row gap are counted for the same
+ * reason.
  */
-const FOOTER_MENU_ROW_HEIGHT = 18;
+export const FOOTER_MENU_ROW_HEIGHT = 24.8;
 const FOOTER_MENU_PANEL_PADDING = 4;
-const FOOTER_MENU_ESTIMATED_HEIGHT = FOOTER_MENU_ROW_HEIGHT * 2 + FOOTER_MENU_PANEL_PADDING * 2;
+const FOOTER_MENU_PANEL_BORDER = 1;
+/** `gap-0.5` on the panel — SPACING-REVIEW S54/S55's menu-row separation. */
+const FOOTER_MENU_ROW_GAP = 2;
+export const FOOTER_MENU_ESTIMATED_HEIGHT = Math.ceil(
+    FOOTER_MENU_ROW_HEIGHT * 2 + FOOTER_MENU_ROW_GAP + (FOOTER_MENU_PANEL_PADDING + FOOTER_MENU_PANEL_BORDER) * 2
+);
 /** The gap the menu leaves above the chevron, matching `TopBar`'s 4px drop below its •••. */
 const FOOTER_MENU_GAP = 4;
 
@@ -258,6 +267,14 @@ export const ROW_ACTIVE_RING_PX = 1.5;
 export const ROW_SELECTION_RING_PX = 1;
 /** Each item's own outer vertical padding; two adjacent items are twice this apart. */
 export const ROW_OUTER_GAP_PX = 2;
+/**
+ * SPACING-REVIEW S18: what the name column owes the trailing ⌘N badge / collapse chevron.
+ *
+ * The Swift's floor is 9 (the `HStack` spacing) + 4 (`Spacer(minLength: 4)`) + 9 (the spacing
+ * again, because the `Spacer` is a stack member) = **22 pt**. The port's row already carries the
+ * outer 9 px as `gap-[9px]`, so this is the 13 the untranscribed `Spacer` was worth.
+ */
+export const NAME_TRAILING_RESERVE_PX = 13;
 /**
  * M7: the 8pt a workspace row gives up on its TRAILING edge, which a group band does not.
  *
@@ -550,6 +567,108 @@ interface LabelChipsProps {
     readonly bucket: ChromeBucket;
 }
 
+/** `maxInlineLabels` — `WorkspaceRowView.swift:66`. Three is the ceiling, never the promise. */
+const MAX_INLINE_LABELS = 3;
+/** `HStack(spacing: 4)` — `WorkspaceRowView.swift:65`. */
+const LABEL_CHIP_GAP_PX = 4;
+/** What the `+N` indicator needs beside the chips (measured: 10.45 px at 9 px medium). */
+const LABEL_OVERFLOW_RESERVE_PX = 11;
+/**
+ * How much of a chip's own ink it may lose before it is dropped instead of clipped.
+ *
+ * At the 180 px sidebar minimum the three chips of a labelled row rendered at 27.09 / 16.41 /
+ * 22.00 px against the 39 / 24 / 31 px they wanted — 69 %, 68 %, 71 % — i.e. one glyph and an
+ * ellipsis each. A little clipping is the Swift's own behaviour (`.lineLimit(1)`); THIS is not.
+ */
+const LABEL_CHIP_MIN_INK = 0.8;
+
+/**
+ * SPACING-REVIEW S39 (owner-directed) — how many chips the row can show at their own width.
+ *
+ * A deliberate, owner-directed divergence from `WorkspaceRowView.swift:65-76`, which always
+ * draws `min(3, labels.count)` chips and lets each one clip as far as it must. The count falls
+ * to 2, 1 or 0 before a chip is squeezed under `LABEL_CHIP_MIN_INK` of its ink, and everything
+ * dropped is folded into the `+N` the Swift already has — so a narrow sidebar shows fewer, whole
+ * labels instead of three unreadable stubs. `maxInlineLabels = 3` is still the ceiling and
+ * §L4's `flex-nowrap` / `truncate` / `min-w-0` recipe is untouched.
+ *
+ * Widths are intrinsic (the chips' unshrunk boxes); `available` is the chip row's own width.
+ */
+export function fitLabelChips(
+    widths: readonly number[],
+    available: number,
+    options: { readonly gap?: number; readonly overflowReserve?: number; readonly minInk?: number } = {}
+): number {
+    const gap = options.gap ?? LABEL_CHIP_GAP_PX;
+    const overflowReserve = options.overflowReserve ?? LABEL_OVERFLOW_RESERVE_PX;
+    const minInk = options.minInk ?? LABEL_CHIP_MIN_INK;
+    // No measurement (jsdom, a hidden row, a zero-width sidebar): keep the Swift's own answer.
+    if (!Number.isFinite(available) || available <= 0 || widths.some((width) => width <= 0)) return widths.length;
+    for (let count = widths.length; count > 0; count--) {
+        let need = 0;
+        for (let index = 0; index < count; index++) need += widths[index] ?? 0;
+        need += gap * (count - 1);
+        if (count < widths.length) need += gap + overflowReserve;
+        /*
+         * The allowance is written against the last chip, and it bounds ALL of them: flexbox
+         * spreads a shortfall `S` in proportion to each item's own width, so chip `i` keeps
+         * `1 − S/Σw` of its ink, and `S ≤ w_last × (1 − minInk) ≤ Σw × (1 − minInk)`. Measured:
+         * at the 180 px sidebar the two surviving chips render at 91 % and 93 %.
+         */
+        const give = (widths[count - 1] ?? 0) * (1 - minInk);
+        if (need - give <= available + 0.5) return count;
+    }
+    return 0;
+}
+
+/**
+ * `fitLabelChips` over the live boxes.
+ *
+ * Two passes, because a shrunk chip cannot report the width it wanted: while the count is
+ * `null` the row renders every capped chip UNSHRUNK (`flexShrink: 0`) and this reads their
+ * intrinsic boxes into a per-label cache; from then on the cache answers, so a sidebar resize
+ * re-decides without a second render. `useLayoutEffect` runs before paint, so the measuring
+ * pass is never seen. Same shape as the footer's `useFooterGaugeBudget` (§N7).
+ */
+function useLabelChipFit(rowRef: RefObject<HTMLSpanElement | null>, labels: readonly string[]): number | null {
+    const key = labels.join('\n');
+    const [count, setCount] = useState<number | null>(null);
+    const widths = useRef<Map<string, number>>(new Map());
+    useLayoutEffect(() => {
+        widths.current = new Map();
+        setCount(null);
+    }, [key]);
+    useLayoutEffect(() => {
+        const row = rowRef.current;
+        if (row === null || labels.length === 0) return undefined;
+        const measure = (): void => {
+            const available = row.getBoundingClientRect().width;
+            if (available <= 0) return;
+            if (count === null) {
+                const chips = [...row.querySelectorAll('[data-testid="label-chip"]')];
+                if (chips.length < labels.length) return;
+                labels.forEach((label, index) => {
+                    const box = chips[index]?.getBoundingClientRect();
+                    if (box !== undefined && box.width > 0) widths.current.set(label, box.width);
+                });
+            }
+            const measured = labels.map((label) => widths.current.get(label) ?? 0);
+            if (measured.some((width) => width <= 0)) return;
+            const next = fitLabelChips(measured, available);
+            setCount((current) => (current === next ? current : next));
+        };
+        measure();
+        if (typeof ResizeObserver === 'undefined') return undefined;
+        const observer = new ResizeObserver(measure);
+        observer.observe(row);
+        return () => {
+            observer.disconnect();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [key, count, rowRef]);
+    return count;
+}
+
 /**
  * §5.3: up to 3 chips + a `+N` overflow indicator.
  *
@@ -568,11 +687,20 @@ interface LabelChipsProps {
  * the one thing the port's copy of it dropped.
  */
 function LabelChips(props: LabelChipsProps): ReactElement | null {
+    const rowRef = useRef<HTMLSpanElement | null>(null);
+    const capped = props.labels.slice(0, MAX_INLINE_LABELS);
+    const fitted = useLabelChipFit(rowRef, capped);
     if (props.labels.length === 0) return null;
-    const shown = props.labels.slice(0, 3);
+    // S39: `null` is the measuring pass (and the un-measurable case) — show the capped set.
+    const measuring = fitted === null;
+    const shown = measuring ? capped : capped.slice(0, fitted);
     const overflow = props.labels.length - shown.length;
     return (
-        <span className="mt-[3px] flex min-w-0 flex-nowrap items-center gap-1">
+        <span
+            ref={rowRef}
+            data-chip-fit={measuring ? undefined : String(fitted)}
+            className="mt-[3px] flex min-w-0 flex-nowrap items-center gap-1"
+        >
             {shown.map((label) => {
                 const style = resolveLabelStyle(label, props.presets, props.bucket);
                 return (
@@ -580,14 +708,24 @@ function LabelChips(props: LabelChipsProps): ReactElement | null {
                         key={label}
                         data-testid="label-chip"
                         className="min-w-0 truncate rounded-full px-[5px] py-px text-[9px] font-medium"
-                        style={{ background: style.background, color: style.text }}
+                        style={{
+                            background: style.background,
+                            color: style.text,
+                            // The measuring pass reads intrinsic widths, which a shrinking box
+                            // cannot report. Pre-paint, so it is never on screen.
+                            ...(measuring ? { flexShrink: 0 } : {})
+                        }}
                     >
                         {label}
                     </span>
                 );
             })}
             {overflow > 0 ? (
-                <span className="shrink-0 text-[9px] font-medium" style={{ color: tokens.textTertiary }}>
+                <span
+                    data-testid="label-overflow"
+                    className="shrink-0 text-[9px] font-medium"
+                    style={{ color: tokens.textTertiary }}
+                >
                     +{overflow}
                 </span>
             ) : null}
@@ -989,7 +1127,17 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
                 bucket={props.bucket}
                 counts={counts}
             />
-            <span className="flex min-w-0 flex-1 flex-col">
+            {/*
+             * SPACING-REVIEW S18 — `WorkspaceRowView.swift:51,79,84-88` is
+             * `HStack(spacing: 9) { avatar; VStack; Spacer(minLength: 4); Text("⌘n") }`, and
+             * SwiftUI spends an `HStack`'s spacing on EVERY adjacent pair, the `Spacer`
+             * included: 9 + 4 + 9 = **22 pt** between a truncated name and the ⌘N badge (§L50's
+             * arithmetic, used again in §L9). The reserved `Spacer` has no transcription here —
+             * the name column IS the flex filler — so the only clearance left was the single
+             * 9 px gap, on every row, ellipsis or not. The reserve comes out of the name column,
+             * which is exactly what the Swift also spends.
+             */}
+            <span className="flex min-w-0 flex-1 flex-col" style={{ marginRight: NAME_TRAILING_RESERVE_PX }}>
                 {props.renaming ? (
                     <InlineEditor
                         label={`Rename ${workspace.name}`}
@@ -1234,7 +1382,10 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
               * because COLUMN also keeps the rename `<input className="w-full">` stretched to
               * the wrapper instead of being sized against its intrinsic `size` in a row axis.
               */}
-            <span className="flex min-w-0 flex-1 flex-col">
+            {/* S18 again: `GroupHeaderRow.swift:38,83,85-89` is the same
+                `HStack(spacing: 9) … Spacer(minLength: 4) … chevron` chain, so the band owes the
+                truncated group name the same 22 pt before its collapse chevron. */}
+            <span className="flex min-w-0 flex-1 flex-col" style={{ marginRight: NAME_TRAILING_RESERVE_PX }}>
                 {props.renaming ? (
                     <InlineEditor
                         label={`Rename ${group.name}`}
@@ -4583,7 +4734,10 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
             data-testid="emoji-sheet"
             role="dialog"
             aria-label={title}
-            className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+            /* SPACING-REVIEW S38: `.padding(20)` and `.frame(width: 340)`
+               (`GroupCustomEmojiSheet.swift:75-76`) — `p-4` was 16, and the sibling New Workspace
+               sheet in the same session already measures the correct 20. */
+            className="fixed left-1/2 top-1/3 z-50 w-[340px] -translate-x-1/2 rounded-lg p-5 text-[12px]"
             style={{
                 background: tokens.surfaceBackground,
                 border: `1px solid ${tokens.divider}`,
@@ -4591,14 +4745,19 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                 boxShadow: '0 16px 48px rgba(0,0,0,0.45)'
             }}
         >
+            {/* S38: `VStack(alignment: .leading, spacing: 12)` (`GroupCustomEmojiSheet.swift:24`)
+                — ONE spacing between every row. The port carried five different `mb-*` values
+                (8 / 8 / 4 / 8 / 12), so the field sat closer to its hint than the hint to the
+                grid, and nothing in the sheet shared a rhythm with anything else. */}
             <form
+                className="flex flex-col gap-3"
                 onSubmit={(event) => {
                     event.preventDefault();
                     if (normalized !== null) props.onSubmit(normalized);
                 }}
             >
                 {/* `Text("Custom Emoji for \"…\"").font(.headline)` — the sheet's first row. */}
-                <div data-testid="emoji-sheet-title" className="mb-2 text-[13px] font-semibold">
+                <div data-testid="emoji-sheet-title" className="text-[13px] font-semibold">
                     {title}
                 </div>
                 {/*
@@ -4611,7 +4770,7 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                  */}
                 <div
                     data-testid="emoji-sheet-caption"
-                    className="mb-2 text-[11px]"
+                    className="text-[11px]"
                     style={{ color: tokens.textSecondary }}
                 >
                     Type or paste a single emoji or symbol. Use the grid below to browse. Letters,
@@ -4627,7 +4786,7 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                     aria-label="Custom emoji"
                     data-testid="emoji-input"
                     placeholder="🔥"
-                    className="mb-1 w-full rounded border bg-transparent px-2 py-1 text-center text-[20px] outline-none"
+                    className="w-full rounded border bg-transparent px-2 py-1 text-center text-[20px] outline-none"
                     style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
                     value={value}
                     onChange={(event) => {
@@ -4641,7 +4800,7 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                 />
                 <div
                     data-testid="emoji-hint"
-                    className="mb-2 h-4 text-[10px]"
+                    className="h-4 text-[10px]"
                     style={{ color: value.length > 0 && normalized === null ? '#E0655C' : tokens.textTertiary }}
                 >
                     {value.length > 0 && normalized === null
@@ -4651,7 +4810,9 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                 {/* The OS character palette's stand-in: one click fills the field (§WS-072). */}
                 <div
                     data-testid="emoji-browse"
-                    className="mb-3 grid grid-cols-6 gap-1"
+                    /* S61: `gap-1.5` — two rows of 26.4 px cells only 4 px apart read as two
+                       squashed strips; 6 px is the same step the sheet's own 12 px rhythm implies. */
+                    className="grid grid-cols-6 gap-1.5"
                     role="group"
                     aria-label="Browse emoji"
                 >
@@ -4695,6 +4856,14 @@ interface ConfirmDialogProps {
     readonly onCancel: (suppress: boolean) => void;
     readonly onConfirm: (cascade: boolean, suppress: boolean) => void;
 }
+
+/**
+ * SPACING-REVIEW S52/S53 — the destructive-alert button recipe, shared with the quit dialog
+ * (`QuitConfirmDialog.tsx:315`) and the graft swap prompt: AppKit's ~10 pt side gutter and its
+ * ~68 pt minimum push-button width. Each caller supplies the border (a ring for the default,
+ * `transparent` for the rest) and the label colour.
+ */
+const CONFIRM_ACTION_CLASS = 'min-w-[68px] rounded px-3 py-1';
 
 function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     // Hooks before the container guard: a conditional early return above `useState` would make
@@ -4793,11 +4962,32 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     Don&apos;t ask again
                 </label>
             ) : null}
-            <div className="flex justify-end gap-2">
+            {/*
+             * SPACING-REVIEW S52 — three bare `<button>`s whose only styling was a colour read as
+             * one paragraph of red text, not as two mutually exclusive destructive choices: all
+             * three measured `padding: 0px`, both destructive labels wrapped to two lines, and
+             * `WorkspaceListView.swift:170-195` puts them in a `.confirmationDialog`, i.e. AppKit
+             * push buttons in an alert panel. `CONFIRM_ACTION_CLASS` is the quit dialog's own
+             * recipe (S53), so the app's two destructive alerts are one family.
+             *
+             * `flex-col-reverse` when all three are up: at 320 px neither long label fits on a
+             * shared row, and stacking is exactly what an `NSAlert` does with labels this long —
+             * default at the top, Cancel at the bottom, which reversing the DOM order gives while
+             * leaving the tab order (Cancel first) alone.
+             */}
+            <div
+                data-testid="confirm-actions"
+                className={
+                    isGroup && members > 0
+                        ? 'flex flex-col-reverse gap-3'
+                        : 'flex flex-wrap justify-end gap-3'
+                }
+            >
                 <button
                     type="button"
                     data-testid="confirm-cancel"
-                    style={{ color: tokens.textSecondary }}
+                    className={CONFIRM_ACTION_CLASS}
+                    style={{ color: tokens.textSecondary, border: '1px solid transparent' }}
                     onClick={() => props.onCancel(suppress)}
                 >
                     Cancel
@@ -4812,7 +5002,8 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     <button
                         type="button"
                         data-testid="confirm-delete-cascade"
-                        style={{ color: '#E0655C' }}
+                        className={CONFIRM_ACTION_CLASS}
+                        style={{ color: '#E0655C', border: `1px solid ${tokens.divider}` }}
                         onClick={() => {
                             props.onConfirm(true, suppress);
                         }}
@@ -4823,7 +5014,8 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                 <button
                     type="button"
                     data-testid="confirm-delete"
-                    style={{ color: '#E0655C' }}
+                    className={CONFIRM_ACTION_CLASS}
+                    style={{ color: '#E0655C', border: `1px solid ${tokens.divider}` }}
                     onClick={() => {
                         props.onConfirm(false, suppress);
                     }}

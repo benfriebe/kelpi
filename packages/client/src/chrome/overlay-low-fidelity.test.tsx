@@ -229,8 +229,13 @@ describe('the global focus ring (L96)', () => {
     });
 
     it('still paints a ring — this removes the leak, not the affordance', () => {
-        const start = stylesheet.indexOf('@layer base {');
-        const block = stylesheet.slice(start, stylesheet.indexOf('}', stylesheet.indexOf(':focus-visible', start)));
+        // Anchored on the ring's OWN layer block. There are two `@layer base` blocks in the file
+        // since S1/S17 layered the control reset, and `indexOf('@layer base {')` now finds that
+        // one first — the slice below has to start at the ring or it is asserting on a span that
+        // happens to contain it.
+        const start = stylesheet.indexOf('@layer base {\n  :focus-visible {');
+        expect(start).toBeGreaterThan(-1);
+        const block = stylesheet.slice(start, stylesheet.indexOf('}', start));
         expect(block).toContain('outline: 1px solid var(--nex-accent)');
         expect(block).toContain('outline-offset: 1px');
     });
@@ -238,5 +243,69 @@ describe('the global focus ring (L96)', () => {
     it('and the palette field is one of the controls that declines it', () => {
         render(<CommandPalette {...paletteProps()} />);
         expect(screen.getByLabelText('Jump to workspace or pane').className).toContain('outline-none');
+    });
+});
+
+/**
+ * SPACING-REVIEW S1 / S17 — the control reset's BOX half is layered too.
+ *
+ * The same mechanism L96 fixed above, one rule further up the file and twenty-five register rows
+ * wide: `button { padding: 0; border: none; font: inherit }` and `input { font: inherit }` were
+ * emitted UNLAYERED, so every `px-*`, every `border` and every `text-[Npx]` written as a class on
+ * a control in this client painted nothing. The shipped bundle put the reset at brace depth 0
+ * while `.px-3` sat inside `theme`→`base`→`utilities`; a live probe read `padding: 0px,
+ * border-width: 0px, font-size: 13px` off a `<button>` carrying `px-2.5 py-1 rounded border
+ * text-[11px]` and `4px 10px / 1px / 11px` off a `<div>` carrying the identical list.
+ *
+ * This is the guard against a silent revert, and it is deliberately three claims rather than one:
+ * the box half must be layered; the reset must still HAPPEN (a bare `<button>` still gets no
+ * padding, no border and the inherited face, because base still outranks the user agent and
+ * Tailwind's own preflight); and `cursor` / `background` must stay UNLAYERED, because layering
+ * those would hand `cursor-pointer` and `bg-*` classes an override no register row asked for.
+ */
+describe('the global control reset (SPACING-REVIEW S1/S17)', () => {
+    const stylesheet = readFileSync(
+        path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+        'utf8'
+    );
+
+    /** The `@layer base { … }` block that carries the control reset, brace-matched. */
+    const resetLayer = (): string => {
+        const marker = stylesheet.indexOf('@layer base {\n  button {');
+        expect(marker).toBeGreaterThan(-1);
+        let depth = 0;
+        for (let i = stylesheet.indexOf('{', marker); i < stylesheet.length; i++) {
+            if (stylesheet[i] === '{') depth++;
+            else if (stylesheet[i] === '}' && --depth === 0) return stylesheet.slice(marker, i + 1);
+        }
+        throw new Error('unterminated @layer base block');
+    };
+
+    /** The top-level (unlayered) `button { … }` rule. */
+    const unlayeredButton = (): string => {
+        const marker = stylesheet.indexOf('\nbutton {');
+        expect(marker).toBeGreaterThan(-1);
+        return stylesheet.slice(marker, stylesheet.indexOf('}', marker) + 1);
+    };
+
+    it('puts padding, border and font in @layer base, so a utility can win', () => {
+        const layer = resetLayer();
+        expect(layer).toMatch(/button \{[^}]*padding: 0/);
+        expect(layer).toMatch(/button \{[^}]*border: none/);
+        expect(layer).toMatch(/button \{[^}]*font: inherit/);
+        expect(layer).toMatch(/input \{[^}]*font: inherit/);
+    });
+
+    it('leaves nothing box-shaped in the unlayered rule, where it would outrank every utility', () => {
+        const bare = unlayeredButton();
+        expect(bare).not.toContain('padding');
+        expect(bare).not.toContain('border');
+        expect(bare).not.toContain('font:');
+    });
+
+    it('keeps cursor and background unlayered — those overrides were never asked for', () => {
+        const bare = unlayeredButton();
+        expect(bare).toContain('cursor: default');
+        expect(bare).toContain('background: none');
     });
 });

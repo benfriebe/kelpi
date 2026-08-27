@@ -660,6 +660,11 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
                             syncExcluded={excluded.has(pane.id)}
                             homeDirectory={homeDirectory}
                             height={headerHeight}
+                            // §S8: the header's own width, which the grid already holds as the
+                            // pane's frame. `badgeFit` reads it to decide whether a user-data
+                            // badge has room to be drawn at all, rather than letting the flex
+                            // squeeze collapse one to a colour stub.
+                            paneWidth={rect.width}
                             renameToken={props.renameRequest?.paneID === pane.id ? props.renameRequest.seq : 0}
                             onHeaderPointerDown={startPaneDrag}
                             onClosePane={props.onClosePane}
@@ -847,7 +852,15 @@ function ResizeBadge({ paneID, text }: ResizeBadgeProps): ReactElement {
             // M18: `ResizeDimensionsOverlay.swift:15-16` is `.padding(.horizontal, 12)` /
             // `.padding(.vertical, 6)`; the port's `px-2 py-1` drew the chip a third smaller than
             // the shipped one. `rounded-md` is already the Swift's `cornerRadius: 6`.
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md px-3 py-1.5 font-mono text-[13px] font-medium"
+            //
+            // §S19: `whitespace-nowrap`. `PaneGridView.swift:387-391` mounts this in an
+            // `.overlay { }` over the whole pane rect, so SwiftUI proposes the pane's FULL width
+            // and the chip stays one line however narrow the pane is. A shrink-to-fit absolute
+            // box with only `left: 50%` gets (containing block − left) as its available width —
+            // half the pane — so `16 x 49` wrapped to two lines at a 132.25 px pane (66.13 ×
+            // 48.39 measured) and three below ~84. The chip now keeps its natural one-line box
+            // and overhangs a very narrow pane exactly as the SwiftUI overlay does.
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-md px-3 py-1.5 font-mono text-[13px] font-medium"
             style={{
                 background: tokens.headerBackground,
                 color: tokens.textPrimary,

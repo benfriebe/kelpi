@@ -383,6 +383,34 @@ describe('renderMarkdownDocument', () => {
     });
 });
 
+/**
+ * SPACING-REVIEW S42 — **owner-directed divergence**, and the only one in this stylesheet.
+ *
+ * `MarkdownHTMLRenderer.swift:300` is a flat `padding: 20px 28px` and the port transcribed it
+ * byte for byte, so the row is parity rather than drift. It is also the wrong metric for a
+ * multiplexer: measured live, a 130.75 px pane gives the document a 123 px client width, so
+ * 28 + 28 leaves a **67 px** text column — four or five characters a line, 35 inside a fenced
+ * block, where a 529 px pane gets a comfortable 465. The clamp is identical to the Swift above
+ * ~470 px of pane (28 is its ceiling, and 6% has reached it by then) and gives the column back
+ * in a narrow split; the 20 px vertical is untouched.
+ *
+ * This test exists so that a later parity sweep re-reporting `20px 28px` fails here first.
+ */
+describe('markdownStylesheet — the document inset (S42, owner-directed)', () => {
+    it('clamps the SIDE padding between 12 px and the Swift’s 28', () => {
+        expect(markdownStylesheet(14)).toContain('padding: 20px clamp(12px, 6%, 28px);');
+        expect(markdownStylesheet(14)).not.toContain('padding: 20px 28px;');
+    });
+
+    it('leaves the rest of the body rule exactly where §3.9 put it', () => {
+        const sheet = markdownStylesheet(16);
+        expect(sheet).toContain('font-size: 16px;');
+        expect(sheet).toContain('line-height: 1.6;');
+        expect(sheet).toContain('margin: 0;');
+        expect(sheet).toContain('background-color: transparent;');
+    });
+});
+
 describe('fileLoadErrorMarkdown', () => {
     it('renders a read failure as a markdown blockquote (§3.11)', () => {
         const html = renderMarkdownBody(fileLoadErrorMarkdown('/tmp/x.md', 'ENOENT'));

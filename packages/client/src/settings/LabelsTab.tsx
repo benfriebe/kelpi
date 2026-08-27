@@ -90,11 +90,55 @@ import {
  * stands in for the Swift `List`'s drag (SET-065's stated divergence). It sits between the
  * preview and the action column so the Swift four keep both their widths and their order.
  */
-const LABEL_COL = { bgColor: 150, textColor: 124, preview: 80, reorder: 44, action: 40 } as const;
+const LABEL_COL = { bgColor: 150, textColor: 184, preview: 80, reorder: 44, action: 40 } as const;
 
-const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(0,1fr) ${String(
+/**
+ * S60 — `textColor` is **184**, not the Swift's 124.
+ *
+ * `LabelPresetsSettingsView.swift:9`'s 124 pt was sized for what the Swift puts in that column:
+ * ONE compact `Menu` ("Aa <mode> ⌄") plus a `ColorPicker` well (`:224-233`, `:356-399`). This
+ * port draws the mode as three explicit choices instead (§H26/§L93's shape, so the current mode
+ * is readable without opening anything), which is five controls: 21.07 (Aa) + 36.27 (Auto) +
+ * 40.23 (Black) + 41.89 (White) + 24 (the S25 well) + 4 gaps × 4 px = **179.5 px**. In a 124 px
+ * track that wrapped on EVERY row at EVERY window width — a 44.4 px two-line group where a
+ * single-line control is 20 px — and the wrapped line drew over the row's usage caption. A track
+ * inherited from a control the port no longer draws.
+ *
+ * The register suggested 176, which was arithmetic on the pre-S1 chip widths; 176 still wraps.
+ * The width comes out of the name column, which is where the register put it ("the grid
+ * currently leaves the name column 166 px of slack"): at the 880 px dialog that track is 102 px
+ * rather than 166.
+ *
+ * **The residual, measured and stated rather than hidden.** A PRESET row's name cell holds the
+ * rename field *and* the port-only usage caption ("unused" / "N workspaces", `shrink-0`), so at
+ * 102 px the field itself renders 49.6 px where it used to render ~114. The add row's field
+ * keeps the whole 102. Nothing here can give it back without taking width from a Swift column:
+ * the way to recover it is the register's own second option for this row — collapse Auto /
+ * Black / White into ONE control, the way `LabelPresetsSettingsView.swift:365-394` collapses
+ * them into a `Menu`, which would return ~24 px to the name track. That is a shape change, so
+ * it is the owner's to take.
+ */
+const LABEL_NAME_MIN = 100;
+
+/**
+ * S57 — the name track has a FLOOR (`minmax(100px,1fr)`), not `minmax(0,1fr)`.
+ *
+ * It is the only flexible track and every other one is a hard px, so a narrowing window took it
+ * all: at a 760 × 700 window the field measured **14 × 28.2 px** — no room for one character —
+ * while `bgColor`, `textColor`, `preview`, `reorder` and `action` each held their width. A track
+ * with a floor gives the row a min-content width instead, so a too-narrow panel scrolls sideways
+ * rather than emptying the one field you type into (`settings-panel` is `overflow-y-auto`, and
+ * CSS resolves a scroll container's other axis to `auto` with it). 96 px is exactly what the
+ * track gets at the dialog's own full width, so the default window is unchanged and nothing
+ * overflows there.
+ */
+const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(${String(LABEL_NAME_MIN)}px,1fr) ${String(
     LABEL_COL.textColor
 )}px ${String(LABEL_COL.preview)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
+
+/** The width the tracks + gaps need; below it the list scrolls rather than the name collapsing. */
+export const LABEL_GRID_MIN_WIDTH =
+    LABEL_COL.bgColor + LABEL_NAME_MIN + LABEL_COL.textColor + LABEL_COL.preview + LABEL_COL.reorder + LABEL_COL.action + 5 * 10;
 
 /** `HStack(spacing: 10)` — the gap between those columns. */
 const LABEL_GRID_GAP = '10px';
@@ -301,7 +345,8 @@ function LabelColorField(props: ColorFieldProps): ReactElement {
              * white rectangle in Chromium), the transparent input on top opens the OS picker.
              */}
             <span
-                className="relative ml-1 inline-flex h-4 items-center gap-1 rounded px-1"
+                // S25: `h-[22px]`, because the well inside it is now 20 px tall.
+                className="relative ml-1 inline-flex h-[22px] items-center gap-1 rounded px-1"
                 style={{
                     background: custom ? withAlpha(tokens.accent, 0.16) : 'transparent',
                     outline: custom ? `2px solid ${tokens.accent}` : 'none',
@@ -312,7 +357,26 @@ function LabelColorField(props: ColorFieldProps): ReactElement {
                     Custom…
                 </span>
                 <span
-                    className="relative inline-block h-3.5 w-5 overflow-hidden rounded"
+                    /*
+                     * S25: `h-5 w-6` — 24 × 20. `LabelPresetsSettingsView.swift:289` (the
+                     * background well) and `:361` (the text one) are both `ColorPicker`s, i.e.
+                     * `NSColorWell`s with their own bezel at ~22-24 pt square minimum. At
+                     * `h-3.5 w-5` the painted well was 20 × 14 over an 18 × 12 `<input
+                     * type="color">` — the smallest hit target anywhere in Settings, while the
+                     * SAME control one tab away (Appearance's `ColorField`, `controls.tsx:119`
+                     * `h-6 w-10`) measures 38 × 22.
+                     *
+                     * **Deviation from the register, measured.** It asks for `h-5 w-8` (20 × 32)
+                     * "at minimum", which is a reading of the 20 px pointer floor rather than of
+                     * this column: at 32 px the `Custom…` chip measures 89.22 px and, with its
+                     * `ml-1`, needs 153.2 px beside the last three swatches — 3.2 px more than
+                     * `LabelCol.bgColor`, which is a SWIFT width (`:8`). The palette therefore
+                     * wrapped to a THIRD line and every row on the tab grew 18 px (add row 60 →
+                     * 78, preset row → 74), which is the opposite of what a density fix is for.
+                     * At 24 px the chip is 85.22, the line lands at 145.2 ≤ 150, and the well
+                     * still clears 20 px in both axes.
+                     */
+                    className="relative inline-block h-5 w-6 overflow-hidden rounded"
                     style={{ background: hex, border: `1px solid ${tokens.divider}` }}
                 >
                     {/*
@@ -429,7 +493,9 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
             {choice('black', 'Black', { kind: 'custom', hex: BLACK })}
             {choice('white', 'White', { kind: 'custom', hex: WHITE })}
             <span
-                className="relative inline-block h-3.5 w-5 shrink-0 overflow-hidden rounded"
+                // S25: the text well takes the same 24 × 20 box as the background well above
+                // it, so one row does not draw two sizes of the same control.
+                className="relative inline-block h-5 w-6 shrink-0 overflow-hidden rounded"
                 style={{
                     background: resolved,
                     border: `1px solid ${mode === 'custom' ? tokens.accent : tokens.divider}`
@@ -564,7 +630,12 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                  */}
                 <div
                     data-testid="label-add-row"
-                    className="grid items-center rounded px-2 py-2"
+                    // S64: `px-2.5` — one horizontal row inset for the whole window.
+                    // `SETTINGS_ROW_PADDING` is 10 px on every carded tab (General, Workspaces,
+                    // Appearance, Keybindings-Global); the four `plain` tabs' own rows were at 8,
+                    // so the eye read a 2 px step moving from General to Labels. The 6/8 px
+                    // VERTICAL values stay — §L79 measured those off the shipped dialog.
+                    className="grid items-center rounded px-2.5 py-2"
                     style={{
                         display: 'grid',
                         gridTemplateColumns: LABEL_GRID,
@@ -763,7 +834,8 @@ function PresetRow(props: PresetRowProps): ReactElement {
         <div
             data-testid={`label-preset-${preset.name}`}
             data-stripe={props.index % 2 === 1 ? 'alternate' : 'base'}
-            className="grid items-center rounded px-2 py-1.5 transition-colors duration-100"
+            // S64: `px-2.5`, matching `SETTINGS_ROW_PADDING`'s 10 px. Vertical untouched.
+            className="grid items-center rounded px-2.5 py-1.5 transition-colors duration-100"
             style={{
                 display: 'grid',
                 gridTemplateColumns: LABEL_GRID,

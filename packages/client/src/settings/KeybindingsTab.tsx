@@ -213,7 +213,9 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
                                         if (element === null) rowsRef.current.delete(row.action);
                                         else rowsRef.current.set(row.action, element);
                                     }}
-                                    className="flex items-center gap-2 border-b px-2 py-1.5 last:border-b-0"
+                                    // S64: `px-2.5`, matching `SETTINGS_ROW_PADDING`'s 10 px
+                                    // on the carded tabs. Vertical untouched (§L79's 6 px).
+                                    className="flex items-center gap-2 border-b px-2.5 py-1.5 last:border-b-0"
                                     style={{
                                         borderColor: tokens.divider,
                                         // M41: `.listStyle(.inset(alternatesRowBackgrounds: true))`

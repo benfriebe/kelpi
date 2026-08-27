@@ -351,8 +351,16 @@ function CountItem(props: CountItemProps): ReactElement {
     );
 }
 
-/** The bucket popover's own box: `AgentStatusDetailPopover`'s `.frame(width: 252)`. */
-export const BUCKET_POPOVER_WIDTH_PX = 252;
+/**
+ * The bucket popover's own box.
+ *
+ * `AgentStatusDetailPopover` is `.padding(12).frame(width: 252)` (`StatusBarView.swift:367-368`),
+ * i.e. a **228 pt content box** with the `NSPopover`'s chrome outside that frame. This panel is a
+ * `border-box` div with a 1 px border, so 252 here would spend 13 px a side and leave a 226 px
+ * row — 2 px narrower than the shipped one on every bucket row. SPACING-REVIEW S31: carry the
+ * two edges, exactly as §L49 already settled for the stat popover's `w-[222px]` (220 + the edge).
+ */
+export const BUCKET_POPOVER_WIDTH_PX = 254;
 /** The little arrow that points back at the chip (`arrowEdge: .top`), as a rotated square. */
 const BUCKET_POPOVER_ARROW_PX = 8;
 /** How close the panel (and the arrow inside it) may come to an edge. */
@@ -905,7 +913,7 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                      * port padded 8 px and let everything inherit, which flattened the title
                      * into the rows and the rows into the chips behind them.
                      */
-                    className={`absolute bottom-7 z-40 flex w-[252px] flex-col gap-1.5 rounded-lg p-3 text-[12px] ${
+                    className={`absolute bottom-7 z-40 flex w-[254px] flex-col gap-1.5 rounded-lg p-3 text-[12px] ${
                         placement === null ? 'right-3' : ''
                     }`}
                     style={{
@@ -968,12 +976,14 @@ export function StatusFooter(props: StatusFooterProps): ReactElement {
                                          * §M21: `rowContent`'s `.padding(.vertical, 3)
                                          * .padding(.horizontal, 4)`.
                                          *
-                                         * Inline, not `px-1 py-[3px]`: `styles.css`'s unlayered
-                                         * `button { padding: 0 }` outranks Tailwind's layered
-                                         * utilities, so the classes this row already carried had
-                                         * been drawing NOTHING — the audit measured `padding-top:
-                                         * 0px` through a `py-1`. Same trap H29 recorded for
-                                         * `input { font: inherit }` and the find field's face.
+                                         * Inline, not `px-1 py-[3px]`. It had to be: `styles.css`'s
+                                         * `button { padding: 0 }` was UNLAYERED and outranked
+                                         * Tailwind's layered utilities, so the classes this row
+                                         * carried drew NOTHING — the audit measured `padding-top:
+                                         * 0px` through a `py-1`. S1/S17 has since moved that reset
+                                         * into `@layer base`, so a class would land now; 3/4 stays
+                                         * inline because it is §M21's stated number, asserted on
+                                         * the style in `footer-popover.test.tsx`.
                                          */
                                         padding: '3px 4px'
                                     }}

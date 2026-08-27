@@ -312,7 +312,15 @@ export function QuitConfirmDialog(props: QuitConfirmDialogProps): ReactElement |
                                 data-testid={isCancel ? 'quit-cancel' : 'quit-confirm'}
                                 data-default={isDefault ? 'true' : 'false'}
                                 data-destructive={isCancel ? 'false' : 'true'}
-                                className="rounded px-2 py-1"
+                                /*
+                                 * SPACING-REVIEW S53 — `QuitGate.swift:81-105` is an `NSAlert`,
+                                 * and the macOS push button it stands in for has ~10 pt of side
+                                 * padding and a ~68 pt MINIMUM width. `px-2` left the default
+                                 * button's accent ring drawn hard against the "C" and the "l" of
+                                 * Cancel, and both buttons narrower than any AppKit alert draws
+                                 * them — in the most consequential dialog in the app.
+                                 */
+                                className="min-w-[68px] rounded px-3 py-1"
                                 style={{
                                     // Destructive is a COLOUR, which is the whole gap this
                                     // closes: `showMessageBox` has no way to say it.

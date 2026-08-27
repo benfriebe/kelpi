@@ -186,21 +186,40 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
                                 }}
                             />
                         ))}
-                        {/* L80: `.help("Add profile")` (`ProfilesSettingsView.swift:101`). */}
-                        <SettingsButton
-                            testID="profile-add"
-                            title="Add profile"
-                            onClick={() => {
-                                const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
-                                setSelected(next.length - 1);
-                                // A brand-new profile has no vars, so §9.5's writer would drop
-                                // it — the marker var is what gives it a line. `profilesForWrite`
-                                // adds it, so this commit really does create the profile.
-                                commit(next);
-                            }}
+                        {/*
+                         * S26 — the add affordance is a STRIP under a rule, not the next row.
+                         *
+                         * `ProfilesSettingsView.swift:78-115` is `VStack(spacing: 0) { List;
+                         * Divider(); addRemoveStrip }` — the standard macOS list-with-strip, and
+                         * the `Divider()` is what says "this is not another profile". The port
+                         * rendered `+ Add Profile` as the immediate sibling of the last rail row
+                         * with a 2 px gap and no rule, so the last profile and the add control
+                         * read as one continuous block of text. The rule runs the full width of
+                         * the rail (`-mx-1 px-1` cancels the rail's own `p-1`, the way the Swift
+                         * `Divider()` spans the `List`), and the strip clears the ≥22 px the
+                         * Swift's `.frame(width: 24, height: 22)` buttons give it.
+                         */}
+                        <div
+                            data-testid="profile-add-strip"
+                            className="-mx-1 mt-1 flex items-center px-1 pt-1"
+                            style={{ borderTop: `1px solid ${tokens.divider}` }}
                         >
-                            + Add Profile
-                        </SettingsButton>
+                            {/* L80: `.help("Add profile")` (`ProfilesSettingsView.swift:101`). */}
+                            <SettingsButton
+                                testID="profile-add"
+                                title="Add profile"
+                                onClick={() => {
+                                    const next = [...drafts, { name: nextProfileName(drafts), vars: [] }];
+                                    setSelected(next.length - 1);
+                                    // A brand-new profile has no vars, so §9.5's writer would drop
+                                    // it — the marker var is what gives it a line. `profilesForWrite`
+                                    // adds it, so this commit really does create the profile.
+                                    commit(next);
+                                }}
+                            >
+                                + Add Profile
+                            </SettingsButton>
+                        </div>
                     </div>
 
                     {/*

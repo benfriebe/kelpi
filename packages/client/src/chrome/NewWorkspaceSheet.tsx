@@ -805,7 +805,13 @@ export function NewEntrySheet(props: NewEntrySheetProps): ReactElement | null {
                             }}
                             type="button"
                             data-testid={`new-${props.kind}-cancel`}
-                            className="rounded border px-2 py-1 text-[12px]"
+                            /* SPACING-REVIEW S10: `px-2.5` — the 10 px gutter the default action
+                               beside it already carries, so the sheet's two answers are one
+                               control drawn twice. S1's keystone woke both class lists (both had
+                               measured `padding: 0px`, and Cancel had no border at all); this is
+                               the side inset the row's `padding: '4px 10px'` asks for and `px-2`
+                               was 2 px short of. */
+                            className="rounded border px-2.5 py-1 text-[12px]"
                             style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                             onClick={props.onCancel}
                         >

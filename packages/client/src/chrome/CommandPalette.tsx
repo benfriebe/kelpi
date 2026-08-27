@@ -420,7 +420,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                         {iconGlyph({ kind: 'system', name: item.icon })}
                                     </span>
                                     {/* L99: `VStack(alignment: .leading, spacing: 1)`. */}
-                                    <span className="flex min-w-0 flex-1 flex-col gap-px">
+                                    <span className="flex min-w-0 flex-col gap-px">
                                         <span className="truncate text-[13px]">{item.title}</span>
                                         {item.subtitle.length === 0 ? null : (
                                             <span
@@ -431,6 +431,16 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                             </span>
                                         )}
                                     </span>
+                                    {/*
+                                     * SPACING-REVIEW S23 — `CommandPaletteRow`'s `Spacer()` is a
+                                     * MEMBER of the `HStack(spacing: 10)`, so the stack spends 10
+                                     * pt on both sides of it and the title can never come closer
+                                     * than ~20 pt to the trailing badge (§L50's arithmetic). The
+                                     * port made the title column the flex filler instead, which
+                                     * left a truncating title 10 px from the pill. This is the
+                                     * spacer §L56 already uses in the footer's bucket rows.
+                                     */}
+                                    <span aria-hidden data-testid="palette-spacer" className="min-w-[10px] flex-1" />
                                     {item.shortcut === undefined ? null : (
                                         <span
                                             data-testid="palette-shortcut"
@@ -445,7 +455,10 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                         (`CommandPaletteRow.swift:139-155`). */}
                                     {item.kind === 'workspace' ? (
                                         <span
-                                            className="shrink-0 rounded px-1.5 py-px text-[10px]"
+                                            /* S32: `.padding(.vertical, 2)`
+                                               (`CommandPaletteView.swift:144,152`) — the port
+                                               had half of it. */
+                                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
                                             style={{
                                                 background: withAlpha('#E6E6EA', 0.08),
                                                 color: tokens.textTertiary
@@ -455,7 +468,10 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                                         </span>
                                     ) : item.kind === 'pane' && item.workspaceColor !== null ? (
                                         <span
-                                            className="shrink-0 rounded px-1.5 py-px text-[10px]"
+                                            /* S32: `.padding(.vertical, 2)`
+                                               (`CommandPaletteView.swift:144,152`) — the port
+                                               had half of it. */
+                                            className="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
                                             style={{
                                                 color: 'rgba(255,255,255,0.9)',
                                                 background: withAlpha(

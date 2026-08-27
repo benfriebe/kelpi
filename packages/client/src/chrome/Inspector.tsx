@@ -37,7 +37,7 @@ import { GraftOrphanBanner, GraftSwapDialog, GraftToggleButton } from './GraftCo
 import { ChromeIcon, iconGlyph, type ChromeIconName } from './icons';
 import { useModalPresence } from './modal-presence';
 import { RepoPicker, type RepoPickerEntry } from './RepoPicker';
-import { resolveLabelStyle, workspaceColorHex, type ChromeBucket } from './theme';
+import { resolveLabelStyle, withAlpha, workspaceColorHex, type ChromeBucket } from './theme';
 import { tokens } from './tokens';
 import {
     DEFAULT_PROFILE_NAME,
@@ -910,6 +910,13 @@ function Sheet(props: {
     readonly label: string;
     readonly onDismiss: () => void;
     readonly children: ReactNode;
+    /**
+     * S15: the sheets are not all one width in the shipped app — the two that host the repo
+     * picker are `RepoPickerView.swift:101`'s `.frame(width: 360, ...)`, while the worktree
+     * sheet is `WorkspaceInspectorView.swift:569`'s `.frame(width: 320)`. 340 stays the default
+     * so nothing that was not measured moves.
+     */
+    readonly width?: number | undefined;
 }): ReactElement | null {
     useModalPresence();
     const container = globalThis.document?.body;
@@ -929,8 +936,9 @@ function Sheet(props: {
                 role="dialog"
                 aria-modal="true"
                 aria-label={props.label}
-                className="fixed left-1/2 top-1/4 z-50 w-[340px] -translate-x-1/2 rounded-lg p-4 text-[12px]"
+                className="fixed left-1/2 top-1/4 z-50 -translate-x-1/2 rounded-lg p-4 text-[12px]"
                 style={{
+                    width: `${String(props.width ?? 340)}px`,
                     background: tokens.surfaceBackground,
                     border: `1px solid ${tokens.divider}`,
                     color: tokens.textPrimary,
@@ -985,7 +993,9 @@ function AddRepositorySheet(props: {
         if (failure !== null) setError(failure);
     };
     return (
-        <Sheet testID="add-repo-sheet" label="Add repository" onDismiss={props.onCancel}>
+        // S15: `width={360}` — `RepoPickerView.swift:101`'s `.frame(width: 360, height: 340)`.
+        // The port's 340 was that frame's HEIGHT read as a width.
+        <Sheet testID="add-repo-sheet" label="Add repository" width={360} onDismiss={props.onCancel}>
             <div className="mb-3 text-[13px] font-semibold">Add Repository</div>
             <div className="mb-1 text-[11px]" style={{ color: tokens.textSecondary }}>
                 Path to a repository or worktree
@@ -1048,15 +1058,51 @@ function AddRepositorySheet(props: {
                 </>
             )}
             <SheetError message={error} />
-            <div className="flex justify-end gap-2">
-                <button type="button" style={{ color: tokens.textSecondary }} onClick={props.onCancel}>
+            {/*
+             * S15 — the action row is `RepoPickerView.swift:87-98`: `HStack { Button("Cancel")
+             * .keyboardShortcut(.cancelAction); Spacer(); Button(confirm)
+             * .keyboardShortcut(.defaultAction) }`. Three things came from that and none of them
+             * were here: the confirm is AppKit's DEFAULT push button (filled accent, ≈22 pt,
+             * ~64 pt minimum width), both buttons are real push buttons with a bezel, and the
+             * `Spacer()` puts Cancel at the LEADING edge. The port drew two bare `<button>`s
+             * with nothing but a colour — a 22 × 17 px "Add" 8 px from Cancel in the corner of a
+             * 340 px sheet, the only under-scale thing in an otherwise healthy dialog.
+             */}
+            <div className="flex items-center gap-2">
+                <button
+                    type="button"
+                    data-testid="add-repo-cancel"
+                    className="rounded"
+                    style={{
+                        padding: '4px 12px',
+                        minWidth: 64,
+                        border: `1px solid ${tokens.divider}`,
+                        color: tokens.textSecondary
+                    }}
+                    onClick={props.onCancel}
+                >
                     Cancel
                 </button>
                 <button
                     type="button"
                     data-testid="add-repo-submit"
                     disabled={paths.length === 0 || busy}
-                    style={{ color: paths.length === 0 || busy ? tokens.textTertiary : tokens.accent }}
+                    // `ml-auto` is the `Spacer()`: Cancel holds the leading edge, the default
+                    // action holds the trailing one.
+                    className="ml-auto rounded"
+                    // The filled-accent recipe §M9 already settled for the other sheet's default
+                    // action (`NewWorkspaceSheet.tsx:823-836`), so the two dialogs draw the same
+                    // button: filled when it can run, greyed but still filled when it cannot —
+                    // a default button that changes SHAPE when unavailable reads as a different
+                    // control.
+                    style={{
+                        padding: '4px 12px',
+                        minWidth: 64,
+                        border: `1px solid ${paths.length === 0 || busy ? 'transparent' : tokens.accent}`,
+                        background:
+                            paths.length === 0 || busy ? withAlpha(tokens.textPrimary, 0.08) : tokens.accent,
+                        color: paths.length === 0 || busy ? tokens.textTertiary : '#fff'
+                    }}
                     onClick={() => void submit()}
                 >
                     {paths.length > 1 ? `Add ${String(paths.length)}` : 'Add'}
@@ -1077,7 +1123,8 @@ function RepoPickerSheet(props: {
     readonly onCancel: () => void;
 }): ReactElement | null {
     return (
-        <Sheet testID="repo-picker-sheet" label="Choose repository" onDismiss={props.onCancel}>
+        // S15: the same picker, so the same 360 (`RepoPickerView.swift:101`).
+        <Sheet testID="repo-picker-sheet" label="Choose repository" width={360} onDismiss={props.onCancel}>
             {/* M50: no headline here — `RepoPickerView.swift:62-63` draws the picker's own
                 ("Add Repository"), so a host that named it a third thing names nothing now. */}
             <RepoPicker

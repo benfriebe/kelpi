@@ -188,7 +188,15 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                 role="dialog"
                 aria-modal="true"
                 aria-label="Settings"
-                className="flex h-[min(620px,90%)] w-[min(880px,92%)] flex-col overflow-hidden rounded-[10px]"
+                /*
+                 * S57: the width has a FLOOR. `SettingsView.swift:61-64` opens the preferences
+                 * scene at `minWidth: 500, idealWidth: 600`; `w-[min(880px,92%)]` had no floor
+                 * at all, so a 760 px window drove the dialog to 699 px and the Labels tab's
+                 * only flexible track — the preset name field — collapsed to 14 px while every
+                 * fixed track held its width. 560 px is `minWidth: 500` plus this dialog's own
+                 * rail (176) less the Swift's tab strip, i.e. the same content floor.
+                 */
+                className="flex h-[min(620px,90%)] w-[clamp(560px,92%,880px)] flex-col overflow-hidden rounded-[10px]"
                 style={{
                     background: tokens.surfaceBackground,
                     border: `1px solid ${tokens.divider}`,
@@ -228,7 +236,14 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                     aria-label="Settings sections"
                     aria-orientation="vertical"
                     data-testid="settings-tabs"
-                    className="flex w-44 shrink-0 flex-col gap-0.5 border-r p-2"
+                    /*
+                     * S59: `gap-1`. The rail rows are the port's intended 28.8 px now that S1
+                     * layered the reset, but `gap-0.5` left a 2 px row gap — a 30.8 px pitch,
+                     * eight rows reading as a paragraph of lines rather than a list of tabs.
+                     * 4 px puts the pitch at 32.8, still far denser than the Swift's
+                     * icon-over-title `.tabItem`s (~50 × 40 pt).
+                     */
+                    className="flex w-44 shrink-0 flex-col gap-1 border-r p-2"
                     style={{ borderColor: tokens.divider, background: tokens.sidebarBackground }}
                     onKeyDown={(event) => {
                         if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {

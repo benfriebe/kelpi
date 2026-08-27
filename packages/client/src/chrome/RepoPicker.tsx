@@ -300,7 +300,11 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
         };
 
     return (
-        <div className="flex flex-col gap-2" data-testid="repo-picker">
+        /*
+         * S15: `gap-3`. `RepoPickerView.swift:61` is `VStack(spacing: 12)` — the headline, the
+         * search field, the list and the action row are 12 pt apart, not 8.
+         */
+        <div className="flex flex-col gap-3" data-testid="repo-picker">
             {/*
              * M50: the picker owns its headline. `RepoPickerView.swift:62-63` opens the sheet
              * with `Text(selectionMode == .multiple ? "Add Repositories" : "Add Repository")
@@ -520,8 +524,14 @@ export function RepoPicker(props: RepoPickerProps): ReactElement {
                         type="button"
                         data-testid="repo-picker-scan"
                         disabled={scanPath.trim() === '' || props.scanning === true}
-                        className="shrink-0 text-[11px]"
+                        /*
+                         * S15: a bordered chip, not a bare word. It sits immediately right of a
+                         * 26.8 px bordered input and was a 28 × 17 px run of accent text with no
+                         * box — the same defect as the sheet's own Cancel/Add pair below it.
+                         */
+                        className="shrink-0 rounded border px-2 py-1 text-[11px]"
                         style={{
+                            borderColor: tokens.divider,
                             color: scanPath.trim() === '' ? tokens.textTertiary : tokens.accent
                         }}
                         onClick={() => {

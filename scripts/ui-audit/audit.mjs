@@ -682,6 +682,39 @@ async function widestShellPane(page, cli) {
 }
 
 /**
+ * Make room in a pane's header for the badge a step is about to assert on.
+ *
+ * SPACING-REVIEW `S8` gave the header a **fit ladder**: a user-data badge that cannot be seated at
+ * its `2.5ch` text floor is not drawn at all, rather than rendered as an empty colour stub that
+ * pushes the close ✕ off the pane (which is what a 130.75 px pane used to do to all three at
+ * once). The thresholds are arithmetic — `headerChrome(buttons)` plus a per-badge cost — so a
+ * shell pane carrying label + agent + branch seats all three from ~232 px and a markdown pane's
+ * lone branch chip survives to ~216 px.
+ *
+ * That is a **product** rule, and steps that assert *whether a chip resolved* are not about it: in
+ * a full run the grid is busy by step 90 and the widest shell pane can be under 200 px, where the
+ * ladder legitimately drops the chip and a `waitFor` on it can only time out. So a step that needs
+ * the badge widens the pane first, exactly as `pane-header-details` widens before its "wide" read.
+ * This adds no assertion and removes none — the check still requires the chip to appear.
+ *
+ * Best-effort by construction: `pane resize` refuses a pane with no split sibling, and a lone pane
+ * is already full width, so a refusal is the case that needed no help.
+ */
+async function widenForBadges(page, cli, recorder, paneID, minWidth) {
+    const measure = async () => (await page.box(`[data-testid="pane-body-${paneID}"]`))?.width ?? 0;
+    let width = await measure();
+    if (width >= minWidth) return width;
+    for (const ratio of ['0.7', '0.9']) {
+        recorder.note(`pane ${paneID} is ${String(Math.round(width))}px — under S8's badge floor; widening to ${ratio}`);
+        await cli.run(['pane', 'resize', '--target', paneID, '--ratio', ratio, '--json']);
+        await sleep(1200);
+        width = await measure();
+        if (width >= minWidth) break;
+    }
+    return width;
+}
+
+/**
  * How much ink a pane's canvas is actually painting.
  *
  * "Ink" is every pixel that is not the most-common colour on the canvas — which, on a terminal,
@@ -3013,6 +3046,32 @@ function buildFlows(ctx) {
                     (midDrag.badges ?? []).length > 0 && /\d+\s*[x×]\s*\d+/.test(String(midDrag.badges[0])),
                     JSON.stringify(midDrag.badges)
                 );
+                /*
+                 * SPACING-REVIEW S19 — and it is ONE line, in every pane.
+                 *
+                 * `ResizeDimensionsOverlay.swift:10-21` is mounted by `PaneGridView.swift:387-391`'s
+                 * `.overlay { }` against the whole pane rect, so SwiftUI proposes the pane's full
+                 * width and the chip never wraps. A shrink-to-fit absolute box with only
+                 * `left: 50%` gets (containing block − left) — half the pane — so `16 x 49` came
+                 * out 66.13 × 48.39 (two lines) at a 132.25 px pane and three lines below ~84.
+                 */
+                const chipShapes = await page.eval(
+                    `(() => [...document.querySelectorAll('[data-testid^="pane-size-"]')].map((el) => {
+                        const r = el.getBoundingClientRect();
+                        const cs = getComputedStyle(el);
+                        const pane = el.closest('[data-pane-id]');
+                        return { id: el.getAttribute('data-testid'),
+                                 h: Math.round(r.height * 100) / 100,
+                                 whiteSpace: cs.whiteSpace,
+                                 paneW: pane === null ? null : Math.round(pane.getBoundingClientRect().width) };
+                    }))()`
+                );
+                recorder.note(`resize chips: ${JSON.stringify(chipShapes)}`);
+                recorder.check(
+                    'the cols × rows chip stays on one line however narrow the pane is (S19)',
+                    chipShapes.length > 0 && chipShapes.every((chip) => chip.h <= 31 && chip.whiteSpace === 'nowrap'),
+                    JSON.stringify(chipShapes.map((chip) => `${String(chip.paneW)}px → ${String(chip.h)}px tall`))
+                );
                 await recorder.shot(page, 'mid-drag');
                 for (let step = 11; step <= 14; step++) {
                     await page.mouse('mouseMoved', vertical.x + step * 14, grabY, { button: 'left', buttons: 1 });
@@ -3646,6 +3705,33 @@ function buildFlows(ctx) {
                 } else {
                     recorder.check('the markdown pane body is in the DOM', false, 'no pane body element');
                 }
+                /*
+                 * SPACING-REVIEW S42 — OWNER-DIRECTED divergence from
+                 * `MarkdownHTMLRenderer.swift:300`'s flat `padding: 20px 28px`.
+                 *
+                 * The port transcribed that byte for byte and it is correct against the shipped
+                 * app; it is also the wrong metric for a multiplexer. Measured: a 130.75 px pane
+                 * gives the document a 123 px client width, and 28 + 28 left a **67 px** text
+                 * column — four or five characters a line. `clamp(12px, 6%, 28px)` is identical
+                 * to the Swift above ~470 px of pane and gives the column back in a split.
+                 */
+                const inset = await page.evalInFrame(
+                    `[data-testid="content-iframe-${md.id}"]`,
+                    `(() => { const cs = getComputedStyle(document.body);
+                              return { left: cs.paddingLeft, right: cs.paddingRight, top: cs.paddingTop,
+                                       clientWidth: document.body.clientWidth,
+                                       column: document.body.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) }; })()`
+                );
+                recorder.note(`document inset: ${JSON.stringify(inset)}`);
+                recorder.check(
+                    'the preview\u2019s side inset scales with the pane and never falls under 12 px (S42, owner-directed)',
+                    inset !== null &&
+                        parseFloat(inset.left) >= 12 &&
+                        parseFloat(inset.left) <= 28 &&
+                        inset.left === inset.right &&
+                        inset.top === '20px',
+                    `${String(inset?.left)} / ${String(inset?.right)} at a ${String(inset?.clientWidth)}px document \u2192 a ${String(inset?.column)}px column`
+                );
                 recorder.eyes('typography, code-block styling, table borders, front-matter presentation, and NO floating Copy chip over the first line (§M28 — the copy button is the pane header’s)');
             }
         },
@@ -3678,6 +3764,28 @@ function buildFlows(ctx) {
                 recorder.note(`edit-mode DOM: ${JSON.stringify({ textareas: editing?.textareas, gutter: editing?.gutter, previewFrame: editing?.previewFrame, font: editing?.font })}`);
                 recorder.check('an editor surface appeared', (editing?.textareas ?? 0) >= 1, `${String(editing?.textareas)} textarea`);
                 recorder.check('the preview frame was replaced, not stacked', (editing?.previewFrame ?? 1) === 0, `previewFrame=${String(editing?.previewFrame)}`);
+                /*
+                 * SPACING-REVIEW S21 — `MarkdownEditorView.swift:44-48` and
+                 * `ScratchpadEditorView.swift:52-56` set `scrollView.scrollerStyle = .overlay`
+                 * and leave the horizontal scroller off: **0 px** of layout width in both axes.
+                 * The global `*::-webkit-scrollbar { width: 9px }` made Chromium draw a classic
+                 * space-taking bar instead — `offsetWidth 493 / clientWidth 482`, 11 px reserved
+                 * on the right ONLY, so the gutters read 8 px left against 19 px right and the
+                 * text column lost 11 px of every line.
+                 */
+                const reserved = await page.eval(
+                    `(() => { const el = document.querySelector('[data-testid="content-textarea-${state.mdPane}"]');
+                              if (el === null) return null;
+                              return { x: el.offsetWidth - el.clientWidth, y: el.offsetHeight - el.clientHeight,
+                                       scrollbarWidth: getComputedStyle(el).scrollbarWidth,
+                                       scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }; })()`
+                );
+                recorder.note(`editor scroller reserve: ${JSON.stringify(reserved)}`);
+                recorder.check(
+                    'the editor reserves no layout width for a scroller, as the Swift does not (S21)',
+                    reserved !== null && reserved.x === 0 && reserved.y === 0,
+                    `${String(reserved?.x)}px horizontal, ${String(reserved?.y)}px vertical (content ${String(reserved?.scrollHeight)}px in ${String(reserved?.clientHeight)}px)`
+                );
 
                 /*
                  * N19's sweep, on the entry point the row names next.
@@ -4143,6 +4251,40 @@ function buildFlows(ctx) {
                     JSON.stringify(opened.items)
                 );
                 recorder.check('and it is actually on screen', opened.visible === true, JSON.stringify(opened));
+                /*
+                 * SPACING-REVIEW S54 — and the two rows are two objects.
+                 *
+                 * `MarkdownPaneView.swift:468-484` splices these into WebKit's own `NSMenu`,
+                 * where AppKit gives each item a ~22 pt row, a ~20 pt leading inset and space
+                 * between adjacent items. The port's rows measured 150 × 24.8 with `itemGaps:
+                 * [0]` and an 8 px inset: the two hover rectangles touched, so a pointer crossing
+                 * the boundary saw one continuous fill.
+                 */
+                const menuRows = await page.eval(
+                    `(() => {
+                        const menu = document.querySelector('[data-testid="content-copy-menu-${state.mdPane}"]');
+                        if (menu === null) return null;
+                        const mr = menu.getBoundingClientRect();
+                        const rows = [...menu.querySelectorAll('[role="menuitem"]')].map((el) => {
+                            const r = el.getBoundingClientRect();
+                            return { x: r.x, y: r.y, h: r.height, pad: getComputedStyle(el).padding };
+                        });
+                        const gaps = [];
+                        for (let i = 1; i < rows.length; i++) gaps.push(Math.round((rows[i].y - (rows[i - 1].y + rows[i - 1].h)) * 100) / 100);
+                        return { gaps, pad: rows[0]?.pad ?? '', inkInset: rows.length === 0 ? null : Math.round((rows[0].x - mr.x) * 100) / 100 + parseFloat(getComputedStyle(menu.querySelector('[role="menuitem"]')).paddingLeft) };
+                    })()`
+                );
+                recorder.note(`copy menu rows: ${JSON.stringify(menuRows)}`);
+                recorder.check(
+                    'adjacent rows do not share an edge (S54)',
+                    menuRows !== null && menuRows.gaps.length > 0 && menuRows.gaps.every((gap) => gap >= 2),
+                    `gaps ${JSON.stringify(menuRows?.gaps)}`
+                );
+                recorder.check(
+                    'and each label clears the panel wall by 15 px (S54)',
+                    menuRows?.pad === '4px 10px' && menuRows?.inkInset === 15,
+                    `padding ${String(menuRows?.pad)}, ink ${String(menuRows?.inkInset)}px from the menu edge`
+                );
 
                 // Dismiss it again: the same scrim the preview's right-click menu uses.
                 await page.click(`[data-testid="content-copy-scrim-${state.mdPane}"]`);
@@ -14062,25 +14204,81 @@ function buildFlows(ctx) {
                                 const el = header.querySelector('[data-testid="' + testid + '"]');
                                 if (el === null) return null;
                                 const r = el.getBoundingClientRect();
-                                return { w: Math.round(r.width), right: Math.round(r.right) };
+                                // SPACING-REVIEW S8: ink is the INNER truncating span's width.
+                                // A badge can be present, be 8 px wide, and carry nothing at all
+                                // — a state the box width alone cannot see, and it is the defect.
+                                const inner = el.querySelector('span');
+                                const ir = inner === null ? null : inner.getBoundingClientRect();
+                                return {
+                                    w: Math.round(r.width),
+                                    h: Math.round(r.height * 100) / 100,
+                                    right: Math.round(r.right),
+                                    ink: ir === null ? null : Math.round(ir.width * 100) / 100
+                                };
                             };
                             const r = header.getBoundingClientRect();
+                            const cs = getComputedStyle(header);
                             return {
                                 header: Math.round(r.width),
                                 headerRight: Math.round(r.right),
+                                // S30: the band the 20 px buttons actually get to sit in.
+                                contentBand: header.clientHeight,
+                                borderBottom: cs.borderBottomWidth,
                                 title: box('pane-title-${paneID}'),
                                 label: box('pane-label-${paneID}'),
                                 badge: box('pane-agent-badge-${paneID}'),
+                                branch: box('pane-branch-${paneID}'),
                                 close: box('pane-close-${paneID}'),
                                 split: box('pane-split-right-${paneID}')
                             };
                         })()`
                     );
 
-                const wide = await measure();
+                let wide = await measure();
+                /*
+                 * The "wide" reading has to actually BE wide.
+                 *
+                 * SPACING-REVIEW S8 gave the header a fit ladder: a shell pane carrying all
+                 * three user-data badges seats them from ~232 px, and below that it drops one
+                 * rather than drawing an empty 8 px colour stub. `widestShellPane` returns the
+                 * widest pane this run happens to have built, which in a busy grid can be under
+                 * that — so widen against a sibling first when it is. (`cli.run` rather than
+                 * `ok`: a lone pane has nothing to resize against, and the borrowed-sibling
+                 * branch below handles that case a few lines later.)
+                 */
+                if ((wide?.header ?? 0) < 232) {
+                    recorder.note(`the widest shell pane is ${String(wide?.header)}px — widening before the wide read`);
+                    await cli.run(['pane', 'resize', '--target', paneID, '--ratio', '0.9', '--json']);
+                    await sleep(1200);
+                    wide = await measure();
+                }
                 recorder.note(`wide header: ${JSON.stringify(wide)}`);
                 await recorder.shot(page, 'wide');
                 recorder.check('the header renders its label, path and agent badge', wide?.title !== null && wide?.label !== null && wide?.badge !== null);
+                /*
+                 * SPACING-REVIEW S30 — `PaneHeaderView.swift:274-275` is a 24 pt box and
+                 * `:297-299` draws its hairline as an `.overlay(alignment: .bottom)`, which
+                 * consumes no layout height. A `borderBottom` on a `border-box` element of
+                 * `height: 24` does: the band measured 23 px and the 20 px buttons sat 1.5 px
+                 * above centre / 2.5 px below. The rule is painted with an inset shadow now.
+                 */
+                recorder.check(
+                    'the header keeps all 24 px of its content band (S30)',
+                    wide?.contentBand === 24 && wide?.borderBottom === '0px',
+                    `band ${String(wide?.contentBand)}px, border-bottom ${String(wide?.borderBottom)}`
+                );
+                /*
+                 * SPACING-REVIEW S20 — `.padding(.vertical, 1)` around a `Text` whose line box
+                 * already carries the ascender and descender (`PaneHeaderView.swift:89-91`).
+                 * `leading-none` collapsed the line box onto the font size and put the padding
+                 * INSIDE it: a 12.00 px pill that clipped the last pixel of a `gypsy/pg`
+                 * descender. A 1.2 line box lands the 14 px the register asks for.
+                 */
+                recorder.check(
+                    'a badge pill is 14 px, so the descender stays inside it (S20)',
+                    wide?.label?.h === 14 && wide?.badge?.h === 14,
+                    `label ${String(wide?.label?.h)}px, agent ${String(wide?.badge?.h)}px`
+                );
 
                 // `pane resize` works against a pane's SIBLING, so a lone pane cannot narrow at
                 // all (the verb refuses it). Under `--only` there may be exactly one, so make
@@ -14127,20 +14325,100 @@ function buildFlows(ctx) {
                 );
 
                 // Squeeze harder: now the user-data badges give too, which is the second rank of
-                // the priority. (Everything is still readable because each one truncates.)
+                // the priority.
                 await cli.run(['pane', 'resize', '--target', paneID, '--ratio', '0.12', '--json']);
                 await sleep(1200);
                 const tiny = await measure();
                 recorder.note(`tiny header: ${JSON.stringify(tiny)}`);
                 await recorder.shot(page, 'tiny');
+                /*
+                 * TERM-102's priority, with its vacuity closed (verifier, SPACING-REVIEW gate).
+                 *
+                 * `(tiny.label.w ?? 0) <= (narrow.label.w ?? 0)` is satisfied by a label that is
+                 * not drawn at all — and since S8 gave the header a fit ladder, that is a state
+                 * this very step now reaches. What TERM-102 claims is the ORDER in which things
+                 * give way, so the path has to have given way FIRST: either it is gone, or it is
+                 * narrower than it was one squeeze ago. Without this the check would pass on a
+                 * header that dropped its badges while the path sat at full width — the exact
+                 * inversion of the priority it names.
+                 */
+                const titleGaveWayFirst =
+                    tiny?.title === null ||
+                    tiny?.title === undefined ||
+                    // "The path has run out" is the state, not the transition: by the tiny read
+                    // the title is frequently ALREADY at 0 px (it was 0 at `narrow` in run-AE),
+                    // and 0 < 0 is false. Gone, or narrower than it was — either satisfies the
+                    // priority TERM-102 names.
+                    (tiny?.title?.w ?? 0) === 0 ||
+                    (tiny?.title?.w ?? 0) < (narrow?.title?.w ?? Number.POSITIVE_INFINITY);
                 recorder.check(
                     'the badges only start truncating once the path has run out (TERM-102)',
-                    (tiny?.label?.w ?? 0) <= (narrow?.label?.w ?? 0) && (tiny?.close?.w ?? 0) === (wide?.close?.w ?? 0),
-                    `label ${String(narrow?.label?.w)}px → ${String(tiny?.label?.w)}px, close still ${String(tiny?.close?.w)}px`
+                    titleGaveWayFirst &&
+                        (tiny?.label?.w ?? 0) <= (narrow?.label?.w ?? 0) &&
+                        (tiny?.close?.w ?? 0) === (wide?.close?.w ?? 0),
+                    `title ${String(narrow?.title?.w)}px → ${String(tiny?.title?.w)}px, label ${String(narrow?.label?.w)}px → ${String(tiny?.label?.w)}px, close still ${String(tiny?.close?.w)}px`
+                );
+                /*
+                 * SPACING-REVIEW S8 — and "truncating" has to MEAN something.
+                 *
+                 * This step used to stop at "the label got narrower", on the stated reading that
+                 * "everything is still readable because each one truncates". It was not: with no
+                 * `minWidth` under the inner span, at a 130.75 px pane the label chip, the agent
+                 * badge and the branch chip each measured **8.00 px wide with 0.00 px of text** —
+                 * three colour rectangles with no glyph and not even an ellipsis, a state the
+                 * Swift's overflow-and-clip cannot produce — and the close ✕ still landed 27.25 px
+                 * past the pane edge. So the assertion is now about the INK: a badge that is drawn
+                 * carries at least one glyph plus the ellipsis (`BADGE_TEXT_FLOOR`, 2.5ch ≈ 15 px),
+                 * and one that cannot be seated at that floor is not drawn at all.
+                 */
+                for (const [name, chip] of [
+                    ['label', tiny?.label],
+                    ['agent badge', tiny?.badge],
+                    ['branch chip', tiny?.branch]
+                ]) {
+                    recorder.check(
+                        `the ${String(name)} is an ellipsis or absent, never an empty colour stub (S8)`,
+                        chip === null || chip === undefined || (chip.ink ?? 0) >= 15,
+                        chip === null || chip === undefined
+                            ? 'not drawn at this width'
+                            : `${String(chip.w)}px box, ${String(chip.ink)}px of ink`
+                    );
+                }
+                /*
+                 * …and dropping them is what keeps the ✕ on screen for as long as it can be.
+                 *
+                 * The claim is deliberately about the CAUSE rather than about the pixel: below
+                 * about 130 px of pane the four 20 px buttons plus the row's own 16 px of
+                 * padding do not fit at any badge count, and that residue is S40 — a
+                 * parity-but-cramped row the owner has not called. What S8 owns is that a BADGE
+                 * never contributes to it: at 130.75 px three empty 8 px stubs and their gaps
+                 * were pushing the ✕ 27.25 px past the pane edge, and now the same pane fits it
+                 * with 8 px to spare.
+                 */
+                const badgesDrawn = [tiny?.label, tiny?.badge, tiny?.branch].filter(
+                    (chip) => chip !== null && chip !== undefined
+                ).length;
+                recorder.check(
+                    'no badge is pushing the close ✕ off the pane (S8; the button row itself is S40)',
+                    (tiny?.close?.right ?? 0) <= (tiny?.headerRight ?? 0) + 1 || badgesDrawn === 0,
+                    `close right ${String(tiny?.close?.right)} vs header right ${String(tiny?.headerRight)}, ${String(badgesDrawn)} badges drawn at ${String(tiny?.header)}px`
                 );
 
                 await cli.run(['pane', 'resize', '--target', paneID, '--ratio', '0.5', '--json']);
                 await sleep(1000);
+                /*
+                 * Widen until the agent badge is back, rather than assuming 0.5 is enough.
+                 * SPACING-REVIEW S8 gave the header a fit ladder — a badge that cannot be seated
+                 * at its floor is not drawn — so how much 0.5 of the enclosing split buys depends
+                 * on how many panes this run has built. The transition assertions below are about
+                 * the badge's TEXT and COLOUR, so they need it on screen.
+                 */
+                for (const wider of [0.7, 0.9]) {
+                    if ((await measure())?.badge != null) break;
+                    recorder.note(`the agent badge is below S8's floor here; widening to ${String(wider)}`);
+                    await cli.run(['pane', 'resize', '--target', paneID, '--ratio', String(wider), '--json']);
+                    await sleep(1000);
+                }
 
                 // ── the agent badge's transition (TERM-104) ──────────────────────────
                 const runningBadge = await page.eval(
@@ -14362,6 +14640,34 @@ function buildFlows(ctx) {
                     'Return selects a match and the counter becomes 1-based',
                     stepped.text === `1/${String(counted.total)}`,
                     stepped.text
+                );
+                /*
+                 * SPACING-REVIEW S16 — with a live counter up, the needle is still 160 pt wide.
+                 *
+                 * `PaneSearchOverlay.swift:20-33` frames the TextField at 160 and applies the
+                 * leading 8, the counter's trailing reserve and the vertical 5 OUTSIDE it, so
+                 * the text column never moves and the BAR grows to hold the counter. Under
+                 * Tailwind's global border-box the 160 was the outer box instead: empty it left
+                 * 144 px of text, and a live counter took it to 119.
+                 */
+                const field = await page.eval(
+                    `(() => {
+                        const input = document.querySelector('[data-testid="pane-search-input-${paneID}"]');
+                        const bar = document.querySelector('[data-testid="pane-search-${paneID}"]');
+                        if (input === null || bar === null) return null;
+                        const cs = getComputedStyle(input);
+                        return { boxSizing: cs.boxSizing,
+                                 text: Math.round(parseFloat(cs.width) * 100) / 100,
+                                 outer: Math.round(input.getBoundingClientRect().width * 100) / 100,
+                                 reserve: cs.paddingRight,
+                                 bar: Math.round(bar.getBoundingClientRect().width * 100) / 100 };
+                    })()`
+                );
+                recorder.note(`search field: ${JSON.stringify(field)}`);
+                recorder.check(
+                    'the terminal needle keeps its 160 pt of text with the counter up (S16)',
+                    field?.boxSizing === 'content-box' && field?.text === 160,
+                    `${String(field?.text)}px of text in a ${String(field?.outer)}px field, bar ${String(field?.bar)}px, counter reserving ${String(field?.reserve)}`
                 );
 
                 await page.key('Escape');
@@ -15802,6 +16108,15 @@ function buildFlows(ctx) {
                 // Earlier steps deliberately leave half-typed lines in panes; `pane send` appends.
                 await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
                 await sleep(400);
+                /*
+                 * This step is about whether the branch RESOLVES, not about SPACING-REVIEW `S8`'s
+                 * fit ladder — and by step 94 of a full run the widest shell pane can be under
+                 * 200 px, where a shell pane carrying a label and an agent badge has no room to
+                 * seat a branch chip at its floor and the ladder deliberately does not draw one.
+                 * 232 px is the ladder's own three-badge threshold for a four-button header.
+                 */
+                recorder.note(`widest shell pane: ${paneID} at ${String(Math.round(shellPane.width))}px`);
+                await widenForBadges(page, cli, recorder, paneID, 232);
 
                 const branchChip = `[data-testid="pane-branch-${paneID}"]`;
                 const before = await page.eval(`document.querySelector('${branchChip}')?.innerText ?? null`);
@@ -15870,6 +16185,10 @@ function buildFlows(ctx) {
                     String(contentPane?.working_directory ?? contentPane?.cwd)
                 );
                 if (contentPane !== undefined) {
+                    // Same reason as above, and a markdown pane's header carries SIX buttons
+                    // (copy + edit on top of the shared four), so its lone branch chip needs
+                    // ~216 px rather than the shell pane's 168.
+                    await widenForBadges(page, cli, recorder, contentPane.id, 216);
                     await page.waitFor(
                         `(document.querySelector('[data-testid="pane-branch-${contentPane.id}"]')?.innerText ?? '').includes('feature/branch-chip')`,
                         { timeoutMs: 20_000, label: 'the markdown pane\u2019s branch chip' }
@@ -15884,7 +16203,19 @@ function buildFlows(ctx) {
                         String(contentChip).includes('feature/branch-chip'),
                         String(contentChip)
                     );
+                    /*
+                     * Hand the split back. `nex md` splits the FOCUSED pane, so the markdown pane
+                     * and the shell pane above are siblings, and widening one squeezes the other \u2014
+                     * which is not this step's business to leave behind. It costs two steps if it
+                     * is left: the detached-HEAD reads below lose the shell pane's chip again, and
+                     * \u00a7N25's `settings-live-apply` (which drives whatever pane it finds) fails its
+                     * own 200 px canvas floor on the sliver.
+                     */
+                    await cli.run(['pane', 'resize', '--target', contentPane.id, '--ratio', '0.5', '--json']);
+                    await sleep(1200);
                 }
+                // \u2026and make room again for the reads below, which are on the SHELL pane's chip.
+                await widenForBadges(page, cli, recorder, paneID, 232);
 
                 // §GIT-091's detached rule, driven from OUTSIDE the app: no pwd changes, so the
                 // only thing that can move the chip is the HEAD watcher behind the association.
@@ -15912,6 +16243,10 @@ function buildFlows(ctx) {
                 // Put the fixture back on its branch so a re-run starts where it started.
                 gitIn(['checkout', '-q', 'feature/branch-chip']);
                 await sleep(1200);
+                // \u2026and the grid too: every widen this step took is handed back, so the steps after
+                // it read the layout they would have read without it.
+                await cli.run(['pane', 'resize', '--target', paneID, '--ratio', '0.5', '--json']);
+                await sleep(1000);
                 recorder.eyes('does the branch chip read as metadata rather than a control \u2014 same weight as the cwd, not competing with the pane title?');
             }
         },
@@ -21422,9 +21757,91 @@ function buildFlows(ctx) {
                     String(marks?.current) === 'rgb(255, 0, 170)',
                     String(marks?.current)
                 );
+
+                /*
+                 * SPACING-REVIEW S9 / S63 / S16 — the bar is open over a real document with a
+                 * live counter, which is the one state all three rows need.
+                 *
+                 *   S9   `PaneGridView.swift:356, 367-368` mounts ONE `PaneSearchOverlay` on the
+                 *        whole pane cell, so the bar floats over the 24 pt header and never over
+                 *        the document. Mounted inside `content-frame-…` it sat a header lower:
+                 *        measured y 64 → 98.8 against the document's first block at y 76, so
+                 *        22.8 px of what the reader is reading was under an opaque bar.
+                 *   S63  the Copy menu in the SAME corner already used a 14 px inset to clear the
+                 *        document's 8 px scroller; the bar used `right-2` and sat on it.
+                 *   S16  `PaneSearchOverlay.swift:20-33` frames the TextField at 160 and applies
+                 *        the insets outside it, so the needle is 160 pt in every state and the
+                 *        BAR grows to hold the counter. Border-box made 160 the outer box: a
+                 *        live `1/3` counter left 119 px of field.
+                 */
+                const barGeometry = await page.eval(
+                    `(() => {
+                        const bar = document.querySelector('[data-testid="content-find-${mdPane}"]');
+                        const input = document.querySelector('[data-testid="content-find-input-${mdPane}"]');
+                        const frame = document.querySelector('[data-testid="content-frame-${mdPane}"]');
+                        const pane = document.querySelector('[data-pane-id="${mdPane}"]');
+                        const header = document.querySelector('[data-testid="pane-header-${mdPane}"]');
+                        if (bar === null || input === null || frame === null || pane === null) return null;
+                        const br = bar.getBoundingClientRect();
+                        const fr = frame.getBoundingClientRect();
+                        const pr = pane.getBoundingClientRect();
+                        const hr = header === null ? null : header.getBoundingClientRect();
+                        const cs = getComputedStyle(input);
+                        return {
+                            barTop: Math.round(br.top * 100) / 100,
+                            barBottom: Math.round(br.bottom * 100) / 100,
+                            paneTop: Math.round(pr.top * 100) / 100,
+                            frameTop: Math.round(fr.top * 100) / 100,
+                            headerBottom: hr === null ? null : Math.round(hr.bottom * 100) / 100,
+                            insetFromPaneRight: Math.round((pr.right - br.right) * 100) / 100,
+                            insideFrame: frame.contains(bar),
+                            inputBoxSizing: cs.boxSizing,
+                            // The CONTENT column, which is what S16 is about: getComputedStyle
+                            // reports width as the content box under content-box, while the
+                            // client rect is the padded box the counter's reserve grows.
+                            inputWidth: Math.round(parseFloat(cs.width) * 100) / 100,
+                            inputOuter: Math.round(input.getBoundingClientRect().width * 100) / 100,
+                            inputPaddingLeft: cs.paddingLeft,
+                            inputPaddingRight: cs.paddingRight,
+                            count: document.querySelector('[data-testid="content-find-count-${mdPane}"]')?.innerText ?? ''
+                        };
+                    })()`
+                );
+                recorder.note(`content find bar: ${JSON.stringify(barGeometry)}`);
+                recorder.check(
+                    'the content find bar is anchored to the PANE, over the header (S9)',
+                    barGeometry !== null &&
+                        barGeometry.insideFrame === false &&
+                        Math.abs(barGeometry.barTop - (barGeometry.paneTop + 8)) < 1.5,
+                    `bar top ${String(barGeometry?.barTop)} vs pane top ${String(barGeometry?.paneTop)} (frame top ${String(barGeometry?.frameTop)})`
+                );
+                recorder.check(
+                    'so it covers the header rather than the first line of the document (S9)',
+                    barGeometry !== null && barGeometry.barBottom <= (barGeometry.frameTop ?? 0) + 44,
+                    `bar bottom ${String(barGeometry?.barBottom)}, document starts at ${String(barGeometry?.frameTop)}`
+                );
+                const copyInset = await page.eval(
+                    `(() => {
+                        const el = document.querySelector('[data-testid="content-copy-menu-${mdPane}"]');
+                        const pane = document.querySelector('[data-pane-id="${mdPane}"]');
+                        if (el === null || pane === null) return null;
+                        return Math.round((pane.getBoundingClientRect().right - el.getBoundingClientRect().right) * 100) / 100;
+                    })()`
+                );
+                recorder.check(
+                    'and takes the SAME right inset the Copy menu opens at (S63)',
+                    barGeometry?.insetFromPaneRight === 14 && (copyInset === null || copyInset === 14),
+                    `find bar ${String(barGeometry?.insetFromPaneRight)}px, copy menu ${copyInset === null ? 'not open' : `${String(copyInset)}px`}`
+                );
+                recorder.check(
+                    'the needle keeps its 160 px however long the counter gets (S16)',
+                    barGeometry?.inputBoxSizing === 'content-box' && barGeometry?.inputWidth === 160,
+                    `${String(barGeometry?.inputWidth)}px of text in a ${String(barGeometry?.inputOuter)}px box, counter "${String(barGeometry?.count)}" reserving ${String(barGeometry?.inputPaddingRight)}`
+                );
+
                 await page.key('Escape');
                 await sleep(400);
-                recorder.eyes('do the overridden highlights read as highlights \u2014 contrast against the document, and against the current-match colour?');
+                recorder.eyes('do the overridden highlights read as highlights \u2014 contrast against the document, and against the current-match colour? And does the find bar sit over the pane HEADER rather than over the first line of the document?');
             }
         },
         {

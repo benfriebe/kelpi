@@ -15,7 +15,7 @@
 
 import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@nex/core/layout';
 import type { PredefinedLayoutKind, WorkspaceColor } from '@nex/daemon/store';
-import { useCallback, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
 import type { ConnectionStatus } from '../connection';
 import { ContextMenu, type MenuItemSpec } from './ContextMenu';
@@ -92,6 +92,87 @@ function connectionColor(status: ConnectionStatus): string {
     return tokens.statusInactive;
 }
 
+/**
+ * SPACING-REVIEW S22 — the inset each leading glyph button takes around its 13 px icon.
+ *
+ * The glyph does not move: the padding grows the BOX (13 → 19 px), which is what a pointer
+ * has to hit. AppKit gives the shipped pair the same courtesy through the borderless menu /
+ * plain button cell that wraps their 13 pt images (`WindowTitleBar.swift:243-268`).
+ */
+const GLYPH_BUTTON_PAD_PX = 3;
+
+/**
+ * SPACING-REVIEW S4 — the gutter the identity keeps between itself and each side cluster.
+ *
+ * The Swift's own number is `.padding(.trailing, 86)` over a ~52 pt cluster, i.e. the cluster
+ * plus room to breathe; 12 is this bar's own `pr-3`, so the identity stops exactly where the
+ * bar's trailing padding starts.
+ */
+const IDENTITY_GUTTER_PX = 12;
+
+/** The reserve used before the first measurement (and wherever `ResizeObserver` is absent). */
+const IDENTITY_FALLBACK_RESERVE_PX = 256;
+
+/**
+ * SPACING-REVIEW S4 — how much room the identity must leave on EACH side.
+ *
+ * `WindowTitleBar.swift:89-90` pads the identity cluster 80 leading / 86 trailing and then
+ * centres it, so those insets are not an offset — they are a *minimum clearance* that makes a
+ * long name truncate instead of running under the traffic lights or the trailing controls. A
+ * centred box is bound by the LARGER of the two clearances, which is why this is one number
+ * rather than two: reserving 80 on the left and 256 on the right would centre the name 88 px
+ * left of the window centre, which no version of this bar has ever done.
+ *
+ * The port's clusters are not the Swift's (this bar carries the sidebar / inspector / ••• trio
+ * on the LEADING side, where the shipped app hangs them off a trailing accessory), and both
+ * sides change width with the traffic-light inset, the layout name and the sync label — so the
+ * number is measured rather than declared.
+ */
+export function identityReserve(
+    bar: { readonly left: number; readonly right: number },
+    leading: { readonly right: number } | null,
+    trailing: { readonly left: number } | null,
+    gutter = IDENTITY_GUTTER_PX
+): number {
+    const leadingSide = leading === null ? 0 : leading.right - bar.left;
+    const trailingSide = trailing === null ? 0 : bar.right - trailing.left;
+    return Math.ceil(Math.max(leadingSide, trailingSide, 0)) + gutter;
+}
+
+/** `identityReserve` over the live boxes, kept fresh while the window (or a label) changes. */
+function useIdentityReserve(
+    barRef: RefObject<HTMLDivElement | null>,
+    leadingRef: RefObject<HTMLDivElement | null>,
+    trailingRef: RefObject<HTMLDivElement | null>,
+    key: string
+): number | null {
+    const [reserve, setReserve] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const bar = barRef.current;
+        if (bar === null || typeof ResizeObserver === 'undefined') return undefined;
+        const measure = (): void => {
+            const box = bar.getBoundingClientRect();
+            if (box.width <= 0) return;
+            const next = identityReserve(
+                box,
+                leadingRef.current?.getBoundingClientRect() ?? null,
+                trailingRef.current?.getBoundingClientRect() ?? null
+            );
+            setReserve((current) => (current === next ? current : next));
+        };
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(bar);
+        if (trailingRef.current !== null) observer.observe(trailingRef.current);
+        if (leadingRef.current !== null) observer.observe(leadingRef.current);
+        return () => {
+            observer.disconnect();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [key, barRef, leadingRef, trailingRef]);
+    return reserve;
+}
+
 /** §3: waiting beats running beats the workspace color; no workspace → tertiary. */
 export function identityDotColor(
     panes: readonly ChromePane[],
@@ -112,6 +193,10 @@ export function TopBar(props: TopBarProps): ReactElement {
     /** §H15: the dropdown panel and the chevron that opens it — the two boxes a click may land in. */
     const layoutMenuRef = useRef<HTMLDivElement | null>(null);
     const layoutToggleRef = useRef<HTMLButtonElement | null>(null);
+    /** S4: the three boxes the identity's truncation gutter is measured from. */
+    const barRef = useRef<HTMLDivElement | null>(null);
+    const leadingRef = useRef<HTMLDivElement | null>(null);
+    const trailingRef = useRef<HTMLDivElement | null>(null);
     /** §H11: one hover slot for the whole bar (see `hover.ts`). */
     const [hovered, hover] = useHoverKey();
     const closeLayoutMenu = useCallback(() => {
@@ -136,9 +221,26 @@ export function TopBar(props: TopBarProps): ReactElement {
     const overflowItems = props.overflowItems ?? [];
 
     const trafficLightInset = Math.max(0, props.trafficLightInset ?? 0);
+    /*
+     * S4 — remeasure whenever anything that changes a cluster's width changes: the traffic-light
+     * inset, the ••• button appearing, the layout name, and the sync chip's `sync N` label.
+     */
+    const identityReservePx = useIdentityReserve(
+        barRef,
+        leadingRef,
+        trailingRef,
+        [
+            String(trafficLightInset),
+            String((props.overflowItems ?? []).length),
+            String(props.currentLayout ?? 'custom'),
+            String(props.syncInputActive === true ? (props.syncedPaneCount ?? 0) : -1),
+            props.connection
+        ].join('|')
+    );
 
     return (
         <div
+            ref={barRef}
             data-testid="top-bar"
             /* §APP-046: the audit reads both of these off the DOM — the gutter it must find the
                first control beyond, and whether this strip claims the drag region. */
@@ -155,7 +257,13 @@ export function TopBar(props: TopBarProps): ReactElement {
                 paddingLeft: Math.max(12, trafficLightInset)
             }}
         >
-            <div className="flex items-center gap-2">
+            {/*
+             * S22 — `TitlebarTrailingControls` is `HStack(spacing: 14)` (`WindowTitleBar.swift:
+             * 243`), so the shipped glyphs sit FOURTEEN points apart; three of them 8 px apart
+             * read as one blob. The per-button inset is `GLYPH_BUTTON_PAD_PX` — the glyph does
+             * not move, the target grows 13 → 19 px.
+             */}
+            <div ref={leadingRef} className="flex items-center gap-3.5">
                 {props.onToggleSidebar === undefined ? null : (
                     <button
                         type="button"
@@ -163,7 +271,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-pressed={props.sidebarVisible ?? true}
                         title="Toggle sidebar"
                         data-hovered={hovered === 'sidebar' ? 'true' : 'false'}
-                        style={{ color: hoverText(hovered === 'sidebar', tokens.textSecondary) }}
+                        style={{ padding: GLYPH_BUTTON_PAD_PX, color: hoverText(hovered === 'sidebar', tokens.textSecondary) }}
                         {...hover('sidebar')}
                         onClick={props.onToggleSidebar}
                     >
@@ -179,6 +287,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                         title="Toggle inspector (⌘I)"
                         data-hovered={hovered === 'inspector' ? 'true' : 'false'}
                         style={{
+                            padding: GLYPH_BUTTON_PAD_PX,
                             color: hoverText(
                                 hovered === 'inspector',
                                 props.inspectorVisible === true ? tokens.textPrimary : tokens.textSecondary
@@ -200,7 +309,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                         aria-expanded={overflowAt !== null}
                         title="More actions"
                         data-hovered={hovered === 'overflow' ? 'true' : 'false'}
-                        style={{ color: hoverText(hovered === 'overflow', tokens.textSecondary) }}
+                        style={{ padding: GLYPH_BUTTON_PAD_PX, color: hoverText(hovered === 'overflow', tokens.textSecondary) }}
                         {...hover('overflow')}
                         onClick={() => {
                             if (overflowAt !== null) {
@@ -236,33 +345,47 @@ export function TopBar(props: TopBarProps): ReactElement {
 
             <div
                 data-testid="top-bar-identity"
+                data-identity-reserve={identityReservePx === null ? undefined : String(identityReservePx)}
                 /* UI-FIDELITY L55: `identityCluster` is `HStack(spacing: 7)` — 7 pt between every
                    member, the `·` included, because the separator is its own `Text`. */
                 className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 items-center gap-[7px] text-[12px]"
+                /*
+                 * S4 — the truncation gutter. `.padding(.leading, 80).padding(.trailing, 86)` on a
+                 * CENTRED cluster is a minimum clearance, not an offset ("so a long name truncates
+                 * instead of overlapping the menu / sidebar buttons on a narrow window"), and a
+                 * centred box is bound by the larger of the two — hence one reserve on both sides.
+                 * Without it the port reserved nothing at all: at the shell's own 600 px minimum
+                 * (`shell/src/window-state.ts:32`) the 280 px-capped name ran straight under the
+                 * trailing cluster.
+                 */
+                style={{ maxWidth: `calc(100% - ${String(2 * (identityReservePx ?? IDENTITY_FALLBACK_RESERVE_PX))}px)` }}
             >
                 <span
                     data-testid="identity-dot"
                     aria-hidden
-                    className="h-[7px] w-[7px] rounded-full"
+                    className="h-[7px] w-[7px] shrink-0 rounded-full"
                     style={{ background: identityDotColor(props.panes, props.workspaceColor, bucket) }}
                 />
-                <span className="max-w-[280px] truncate font-semibold">{props.workspaceName ?? 'Nex'}</span>
+                {/* `min-w-0` is what makes `.truncationMode(.tail)` real: a flex item's automatic
+                    minimum is its min-content width, so a nowrap name would otherwise refuse to
+                    shrink and simply overflow the reserve above. */}
+                <span className="min-w-0 max-w-[280px] truncate font-semibold">{props.workspaceName ?? 'Nex'}</span>
                 {hasWorkspace ? (
                     <>
                         {/* L55: the separator is a member of the stack, so it gets the full 7 px
                             on BOTH sides. As one span the port had 6 px before it and a literal
                             space (~3-4 px) after, which pulled the count in toward the dot. */}
-                        <span aria-hidden style={{ color: tokens.textTertiary }}>
+                        <span aria-hidden className="shrink-0" style={{ color: tokens.textTertiary }}>
                             ·
                         </span>
-                        <span style={{ color: tokens.textTertiary }}>
+                        <span className="shrink-0" style={{ color: tokens.textTertiary }}>
                             {paneCount} {paneCount === 1 ? 'pane' : 'panes'}
                         </span>
                     </>
                 ) : null}
             </div>
 
-            <div className="ml-auto flex items-center gap-2 text-[11px]">
+            <div ref={trailingRef} className="ml-auto flex items-center gap-2 text-[11px]">
                 <div className="relative flex items-center">
                     <button
                         type="button"
@@ -291,7 +414,9 @@ export function TopBar(props: TopBarProps): ReactElement {
                         data-testid="layout-menu-toggle"
                         aria-label="Select layout"
                         aria-expanded={layoutMenuOpen}
-                        className="px-1"
+                        /* S58: `px-1` alone left a 10 px-tall caret beside two 19.4 px chips —
+                           the vertical is what makes it a target rather than a glyph. */
+                        className="px-1 py-[3px]"
                         data-hovered={hovered === 'layout-menu' ? 'true' : 'false'}
                         style={{ color: hoverText(hovered === 'layout-menu', tokens.textTertiary) }}
                         {...hover('layout-menu')}
@@ -306,7 +431,11 @@ export function TopBar(props: TopBarProps): ReactElement {
                             ref={layoutMenuRef}
                             data-testid="layout-menu"
                             role="menu"
-                            className="absolute right-0 top-7 z-40 min-w-[160px] rounded-lg p-1"
+                            /* S54/S55: `MENU_ITEM_GAP` between rows so two adjacent hover
+                               rectangles cannot touch — the same `flex flex-col gap-0.5` the
+                               shared `ContextMenu` panel and the preview's copy menu carry, so
+                               the three menus in this client stay one family. */
+                            className="absolute right-0 top-7 z-40 flex min-w-[160px] flex-col gap-0.5 rounded-lg p-1"
                             style={{
                                 background: tokens.surfaceBackground,
                                 border: `1px solid ${tokens.divider}`,
@@ -318,7 +447,10 @@ export function TopBar(props: TopBarProps): ReactElement {
                                     key={layout}
                                     type="button"
                                     role="menuitem"
-                                    className="block w-full rounded px-2 py-1 text-left text-[12px]"
+                                    /* S55: `px-2.5` is `MenuRow`'s own leading inset, so the
+                                       label clears the panel wall by 4 (the `p-1`) + 10 rather
+                                       than sitting on it. */
+                                    className="block w-full rounded px-2.5 py-1 text-left text-[12px]"
                                     data-hovered={hovered === `layout:${layout}` ? 'true' : 'false'}
                                     style={{
                                         color: hoverText(

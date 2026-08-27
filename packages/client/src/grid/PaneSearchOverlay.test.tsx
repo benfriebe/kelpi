@@ -157,17 +157,26 @@ describe('PaneSearchOverlay', () => {
     });
 
     /**
-     * `PaneSearchOverlay.swift:22` is `.font(.system(size: 12, design: .monospaced))`, and the
-     * classes alone cannot deliver it: `styles.css`'s `input { font: inherit }` is UNLAYERED,
-     * and unlayered CSS outranks every Tailwind utility no matter its specificity — which is
-     * why the built app measured this field at 13 px UI sans with `font-mono text-[12px]`
-     * sitting right there on it. The face therefore has to be inline, and stay inline.
+     * `PaneSearchOverlay.swift:22` is `.font(.system(size: 12, design: .monospaced))`.
+     *
+     * The face was inline because it HAD to be: `styles.css`'s `input { font: inherit }` was
+     * unlayered, and unlayered CSS outranks every Tailwind utility no matter its specificity,
+     * which is why the built app measured this field at 13 px UI sans with `font-mono
+     * text-[12px]` sitting right there on it. S1/S17 moved that reset into `@layer base`, so
+     * the classes land too now — the assertion is unchanged, only its reason is: inline is
+     * where this field's stated value lives, and it stays there.
+     *
+     * The second half is the fallout guard. `leading-none` rode along on the same class list
+     * and was inert for exactly the same reason; once the reset was layered it would have
+     * collapsed the line box from the body's 1.4 (16.8 px) to 12 and taken the bar off the
+     * 26.8 px L22/TERM-114 measured. The class is gone, and must stay gone.
      */
-    it('draws the field in 12 px monospace, past the global input reset', () => {
+    it('draws the field in 12 px monospace, with the body’s leading, past the global input reset', () => {
         setup();
         const input = screen.getByTestId(`pane-search-input-${PANE}`) as HTMLInputElement;
         expect(input.style.fontFamily).toContain('--nex-font-mono');
         expect(input.style.fontSize).toBe('12px');
+        expect(input.className).not.toContain('leading-none');
     });
 
     it('renders the terminal bar’s own chrome — radius 8, header fill, drop shadow', () => {

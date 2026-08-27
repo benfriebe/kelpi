@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
+import { PANE_HEADER_HEIGHT } from '../grid/PaneHeader';
 import { PaneSearchOverlay } from '../grid/PaneSearchOverlay';
 import {
     CONTENT_HOST_SOURCE,
@@ -469,6 +470,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     const visible = props.visible !== false;
 
     return (
+        <>
         <div
             data-testid={props.testID ?? `content-frame-${paneID}`}
             data-pane-id={paneID}
@@ -515,7 +517,18 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                         role="menu"
                         aria-label="Copy document"
                         data-testid={`content-copy-menu-${paneID}`}
-                        className="absolute z-10 min-w-[160px] rounded-md p-1 text-[12px]"
+                        /*
+                         * §S54 — `flex flex-col gap-0.5`.
+                         *
+                         * `MarkdownPaneView.swift:468-484` splices its rows into WebKit's own
+                         * `NSMenu`, where AppKit puts space between adjacent items. Stacked as
+                         * plain blocks the two rows' hover rectangles touched edge to edge
+                         * (`itemGaps: [0]` measured), so a pointer crossing the boundary saw one
+                         * continuous fill. 2 px is the gap `webpane/FavouritesMenu.tsx:128`
+                         * already uses for the same job, so the app's popup menus stay one
+                         * family.
+                         */
+                        className="absolute z-10 flex min-w-[160px] flex-col gap-0.5 rounded-md p-1 text-[12px]"
                         style={{
                             ...OVERLAY_STYLE,
                             ...('anchor' in menu
@@ -527,7 +540,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                             type="button"
                             role="menuitem"
                             data-testid={`content-copy-markdown-${paneID}`}
-                            className="block w-full rounded px-2 py-1 text-left"
+                            // §S54: `px-2.5` — a 10 px leading inset, so the label clears the
+                            // menu's own 4 px `p-1` wall by the same margin the sidebar and
+                            // title-bar menus are settling on.
+                            className="block w-full rounded px-2.5 py-1 text-left"
                             onClick={copyMarkdown}
                         >
                             Copy as Markdown
@@ -536,7 +552,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                             type="button"
                             role="menuitem"
                             data-testid={`content-copy-rich-${paneID}`}
-                            className="block w-full rounded px-2 py-1 text-left"
+                            // §S54: `px-2.5` — a 10 px leading inset, so the label clears the
+                            // menu's own 4 px `p-1` wall by the same margin the sidebar and
+                            // title-bar menus are settling on.
+                            className="block w-full rounded px-2.5 py-1 text-left"
                             onClick={copyRichText}
                         >
                             Copy as Rich Text
@@ -560,7 +579,10 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                                     type="button"
                                     role="menuitem"
                                     data-testid={`content-copy-selection-${paneID}`}
-                                    className="block w-full rounded px-2 py-1 text-left"
+                                    // §S54: `px-2.5` — a 10 px leading inset, so the label
+                                    // clears the menu's own 4 px `p-1` wall by the same margin
+                                    // the sidebar and title-bar menus are settling on.
+                                    className="block w-full rounded px-2.5 py-1 text-left"
                                     onClick={copySelection}
                                 >
                                     Copy
@@ -570,37 +592,64 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                     </div>
                 </>
             )}
-
-            {/*
-              * §3.13's bar IS the terminal's bar. `PaneGridView.swift:356-370` mounts one
-              * `PaneSearchOverlay` over every pane type with no type test, so a preview's find
-              * is the same 160 pt monospace field, the same 22×22 chevrons dimmed and inert
-              * while the needle is empty, the same ✕ and the same counter rule (nothing at all
-              * until something is typed — never a standing `0/0`) as a terminal's. What differs
-              * is only what it drives: the daemon counts a terminal's scrollback, and here the
-              * sandboxed frame's own `__nexFind` counts, because nothing else can see inside it.
-              */}
-            {findOpen ? (
-                <PaneSearchOverlay
-                    key={findSeq}
-                    paneID={paneID}
-                    testIDPrefix="content-find"
-                    // §L46: the frame's own accessible name, which no longer carries a raw pane
-                    // UUID — "Find in markdown preview NOTES.md 0002", not the 36-character hex
-                    // string this expression used to have to strip back out.
-                    label={`Find in ${title}`}
-                    needle={needle}
-                    total={matches.total}
-                    // The same guard the daemon applies to a terminal's counts (§TERM-118): a
-                    // total of 0 drops any selection, so the bar can never read `3/0`.
-                    selected={matches.total > 0 && matches.current >= 0 ? matches.current : null}
-                    onNeedleChange={setNeedle}
-                    onNext={() => sendFind('next')}
-                    onPrevious={() => sendFind('prev')}
-                    onClose={closeFind}
-                />
-            ) : null}
         </div>
+
+        {/*
+          * §3.13's bar IS the terminal's bar. `PaneGridView.swift:356-370` mounts one
+          * `PaneSearchOverlay` over every pane type with no type test, so a preview's find
+          * is the same 160 pt monospace field, the same 22×22 chevrons dimmed and inert
+          * while the needle is empty, the same ✕ and the same counter rule (nothing at all
+          * until something is typed — never a standing `0/0`) as a terminal's. What differs
+          * is only what it drives: the daemon counts a terminal's scrollback, and here the
+          * sandboxed frame's own `__nexFind` counts, because nothing else can see inside it.
+          *
+          * §S9 — and it hangs OUTSIDE the frame, as a sibling in the pane body.
+          *
+          * `PaneGridView.swift:356,367-368` attaches the one bar to the whole pane cell with
+          * `.overlay(alignment: .topTrailing)`, so it floats over the 24 pt header and never
+          * over the document. Mounted inside `content-frame-…` — which is the pane BODY, and
+          * is `overflow-hidden` — `top-2` put it 8 px below the header instead, and 22.8 px
+          * of the document's first block sat under an opaque bar (measured at a 529 px
+          * markdown pane: bar y 64→98.8, the front-matter table's first row at y 76). It
+          * cannot escape upward from inside the frame, so it is rendered beside it and
+          * pulled back over the header by the header's own height.
+          *
+          * `visible` is now read here explicitly: the frame's own `visibility: hidden` used
+          * to hide a parked pane's bar for free, and a sibling does not inherit it.
+          */}
+        {findOpen && visible ? (
+            <PaneSearchOverlay
+                key={findSeq}
+                paneID={paneID}
+                testIDPrefix="content-find"
+                // §L46: the frame's own accessible name, which no longer carries a raw pane
+                // UUID — "Find in markdown preview NOTES.md 0002", not the 36-character hex
+                // string this expression used to have to strip back out.
+                label={`Find in ${title}`}
+                needle={needle}
+                total={matches.total}
+                // The same guard the daemon applies to a terminal's counts (§TERM-118): a
+                // total of 0 drops any selection, so the bar can never read `3/0`.
+                selected={matches.total > 0 && matches.current >= 0 ? matches.current : null}
+                // §S9: back over the header. `-(PANE_HEADER_HEIGHT - 8)` puts the bar's top
+                // edge 8 px below the PANE's top — the same 8 px the grid's own mount spends
+                // on a terminal, so one bar has one anchor in one app again. (The register
+                // suggests −20, i.e. the Swift's own `.padding(.top, 4)`; measured live, the
+                // terminal's bar sits at pane-top + 8 — §M12's ledgered `top-2` residue — so
+                // −20 would have left the two mounts 4 px apart, which is the defect this
+                // row is about. Stated as a deviation in the lane's notes.)
+                top={-(PANE_HEADER_HEIGHT - 8)}
+                // §S63: the SAME inset the Copy menu uses. Both overlays open in this
+                // corner; at `right-2` the bar's right edge sat on the document's own 8 px
+                // scroller while the menu 6 px away cleared it.
+                right={OVERLAY_INSET}
+                onNeedleChange={setNeedle}
+                onNext={() => sendFind('next')}
+                onPrevious={() => sendFind('prev')}
+                onClose={closeFind}
+            />
+        ) : null}
+        </>
     );
 }
 

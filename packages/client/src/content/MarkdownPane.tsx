@@ -149,8 +149,9 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                 className="absolute right-2 bottom-2 z-10 rounded text-[11px]"
                 style={{
                     padding: '3px 8px',
-                    // Inline, like the terminal retry chip: `styles.css` resets `button` outside
-                    // any cascade layer, so an unlayered `padding: 0` would beat Tailwind's.
+                    // Inline, like the terminal retry chip. It had to be until S1/S17 moved
+                    // `button { padding: 0 }` into `@layer base`; it stays inline because 3/8 is
+                    // this chip's own value rather than a utility step.
                     border: '1px solid var(--nex-border, #24242B)',
                     color: 'var(--nex-fg-secondary, #9A9AA0)',
                     backgroundColor: 'var(--nex-header-bg, #13131A)'

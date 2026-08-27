@@ -201,7 +201,13 @@ export function SliderField(props: SliderFieldProps): ReactElement {
                 // `accentColor` is the one line that makes a native range follow the chrome
                 // palette. Without it a Gruvbox-orange window renders a system-blue slider,
                 // which the audit photographed as the only blue thing on the page.
-                style={{ accentColor: tokens.accent }}
+                //
+                // S33: `height` is the drag target. `SettingsView.swift:506-515` is a macOS
+                // `Slider`, ~20 pt tall with a 20 pt knob; Chromium's default range box is 16,
+                // which made the seven Appearance sliders the one control on the tab under the
+                // 20 px line. §L82's row metrics (columnGap 10, 140 px label track, 44 px
+                // readout) are untouched — only the input's own box grows.
+                style={{ accentColor: tokens.accent, height: 20 }}
                 onChange={(event) => {
                     setShown(Number.parseFloat(event.target.value));
                 }}

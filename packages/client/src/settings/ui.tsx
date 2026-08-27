@@ -379,8 +379,17 @@ export interface ToggleProps {
     readonly disabled?: boolean | undefined;
 }
 
-/** The macOS switch metrics at `.controlSize(.small)`: a 26×15 track with an 11 px thumb. */
-const SWITCH = { width: 26, height: 15, thumb: 11, inset: 2 } as const;
+/**
+ * The macOS switch metrics at the **regular** control size: a 38×22 track with an 18 px thumb.
+ *
+ * S24 — this comment used to name `.controlSize(.small)` (a 26×15 track), and the Swift never
+ * sets one: `grep -rn controlSize SettingsView.swift` returns nothing, so every one of these
+ * rows (`SettingsView.swift:141, 151, 159, 189, 199, 226, 236, 435, 440-441`) is a plain
+ * `Toggle` inside `.formStyle(.grouped)` — AppKit's regular-size switch. At 26×15 the port
+ * shipped a 15 px hit target on 19 rows: the shortest interactive control in Settings after the
+ * colour wells, and 10 px shorter than the `<select>` stacked directly under it in the same card.
+ */
+const SWITCH = { width: 38, height: 22, thumb: 18, inset: 2 } as const;
 
 /**
  * A macOS **switch**, not a checkbox (H14).

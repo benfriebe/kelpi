@@ -63,7 +63,8 @@ function RepoRow(props: {
         <li
             data-testid={`repo-row-${props.id}`}
             data-origin={props.auto ? 'auto' : 'manual'}
-            className="flex items-center gap-2 rounded px-2 py-1.5 transition-colors duration-100"
+            // S64: `px-2.5`, matching `SETTINGS_ROW_PADDING`'s 10 px. Vertical untouched.
+            className="flex items-center gap-2 rounded px-2.5 py-1.5 transition-colors duration-100"
             style={{ background: hoverBackground(hovered, 'transparent') }}
             {...hoverProps}
         >

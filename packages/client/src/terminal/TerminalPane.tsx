@@ -1118,9 +1118,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                         title="Build a fresh terminal engine for this pane"
                         className="cursor-pointer rounded text-xs font-medium whitespace-nowrap"
                         style={{
-                            // Padding inline, not as a utility: `styles.css` resets `button`
-                            // outside any cascade layer, so an unlayered `padding: 0` beats
-                            // Tailwind's layered `px-3` and the chip would hug its own text.
+                            // Padding inline rather than as a `px-3 py-*` pair. It had to be,
+                            // before S1/S17 moved `button { padding: 0 }` into `@layer base` —
+                            // unlayered, it beat every Tailwind utility and the chip hugged its
+                            // own text. It stays inline because 5/12 is this chip's stated value,
+                            // not a utility step, and inline is where the value is asserted.
                             padding: '5px 12px',
                             border: '1px solid var(--nex-border, #24242B)',
                             color: 'var(--nex-accent, #6F9BD8)',

@@ -454,7 +454,10 @@ export function ContextMenu(props: ContextMenuProps): ReactElement | null {
             role="menu"
             aria-label={props.label ?? 'Context menu'}
             data-testid="context-menu"
-            className="fixed z-50 min-w-[190px] rounded-lg p-1 text-[12px]"
+            /* SPACING-REVIEW S54/S55: 2 px between rows, so two adjacent hover rectangles never
+               touch. The title bar's layout dropdown and the preview's copy menu carry the same
+               `flex flex-col gap-0.5`, which is what keeps the three menus one family. */
+            className="fixed z-50 flex min-w-[190px] flex-col gap-0.5 rounded-lg p-1 text-[12px]"
             style={{ ...PANEL_STYLE, left: props.x, top: props.y }}
             onContextMenu={(event) => {
                 event.preventDefault();

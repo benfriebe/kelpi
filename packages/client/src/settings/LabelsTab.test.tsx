@@ -132,9 +132,20 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         for (const row of ['label-add-row', 'label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
             expect(node.style.display).toBe('grid');
-            // bgColor 150 / name flexes / textColor 124 / preview 80 / (port-only reorder) /
-            // action 40 — `LabelPresetsSettingsView.swift:7-12`.
-            expect(node.style.gridTemplateColumns).toBe('150px minmax(0,1fr) 124px 80px 44px 40px');
+            /*
+             * bgColor 150 / name flexes / textColor / preview 80 / (port-only reorder) /
+             * action 40 — `LabelPresetsSettingsView.swift:7-12`.
+             *
+             * Two of those numbers moved, and the old assertion pinned both of the defects:
+             *
+             *   · S60 — `textColor` is 184, not the Swift's 124. 124 pt holds what the SWIFT
+             *     draws there (one compact `Menu` + a well); this port draws the mode as three
+             *     explicit choices, which need 179.5 px, so the group wrapped to two lines on
+             *     every row at every width and the wrapped line drew over the usage caption.
+             *   · S57 — the name track has a floor. As `minmax(0,1fr)` it was the only flexible
+             *     track among five hard px ones, so a 760 px window took it to 14 px.
+             */
+            expect(node.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
     });

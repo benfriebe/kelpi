@@ -249,8 +249,16 @@ describe('the swap dialog (§GIT-050 / §WS-144)', () => {
             const swap = screen.getByTestId('graft-swap-confirm');
             for (const button of [keep, swap]) {
                 expect(button.className).toContain('rounded');
-                expect(button.className).toContain('px-2');
+                /*
+                 * SPACING-REVIEW S53 — the quit dialog's recipe, and it moved: `px-2` left the
+                 * default's accent ring drawn hard against its own label, and both answers under
+                 * the ~68 pt minimum width AppKit gives an alert's push buttons. Asserting the
+                 * new gutter rather than the old one, so the pair cannot slide back.
+                 */
+                expect(button.className).toContain('px-3');
                 expect(button.className).toContain('py-1');
+                expect(button.className).toContain('min-w-[68px]');
+                expect(button.className).not.toContain('px-2 ');
                 expect(button.style.border).not.toBe('');
             }
             expect(keep.dataset['destructive']).toBe('false');

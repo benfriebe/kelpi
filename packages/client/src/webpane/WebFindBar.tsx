@@ -149,13 +149,33 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
                     data-testid={`web-find-input-${paneID}`}
                     // The priority layer defers ⌘←/⌘→ and tab cycling while this has the caret.
                     {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                    className="w-[160px] rounded px-2 py-1 leading-none outline-none"
+                    // No `leading-none`, for the reason the terminal bar states: the class was
+                    // inert under the unlayered `input { font: inherit }`, and S1/S17's layering
+                    // would have let it collapse this field's line box (24.8 → 23.5 px) with
+                    // nothing in the Swift asking for it.
+                    className="w-[160px] px-2 outline-none"
                     style={{
-                        background: tokens.surfaceBackground,
+                        /*
+                         * S36 — the three values L22 already settled on the terminal/content bar
+                         * (`grid/PaneSearchOverlay.tsx`), which this bar had a pre-L22 copy of,
+                         * so the app carried two find-field recipes.
+                         *
+                         * `PaneSearchOverlay.swift:27` is `Color.primary.opacity(0.08)` — the
+                         * LABEL colour at 8 %, so the well is lighter than the bar on dark and
+                         * darker on light. `surfaceBackground` (#101013) is darker than the
+                         * #13131A header bar in BOTH, which inverted the contrast: the field read
+                         * as a hole punched in the bar rather than a well set into it.
+                         */
+                        background: `color-mix(in srgb, ${tokens.textPrimary} 8%, transparent)`,
+                        // `.cornerRadius(5)` (`:28`), not Tailwind's 4 px `rounded`.
+                        borderRadius: 5,
+                        // `.padding(.vertical, 5)` (`:26`), not `py-1`'s 4 px.
+                        paddingTop: 5,
+                        paddingBottom: 5,
                         color: tokens.textPrimary,
-                        // Face and size INLINE, for the reason the terminal bar states: the
-                        // unlayered `input { font: inherit }` in `styles.css` outranks every
-                        // Tailwind utility, so the classes alone render this as 13 px UI sans.
+                        // Face and size INLINE, for the reason the terminal bar states: inline is
+                        // the authority for the value, and it stays so now that S1/S17 has moved
+                        // `input { font: inherit }` into `@layer base` and the classes also land.
                         fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
                         fontSize: 12,
                         paddingRight: count === null ? undefined : `${String(count.length * 7 + 12)}px`

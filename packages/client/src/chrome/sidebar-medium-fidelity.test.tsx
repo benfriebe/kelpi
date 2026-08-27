@@ -386,6 +386,16 @@ describe('M9 — Create is the sheet’s default action', () => {
         // Cancel stays the plain bordered button it always was — the two must not read alike.
         expect(cancel.style.background).toBe('');
         expect(submit.style.background).not.toBe(cancel.style.background);
+        /*
+         * SPACING-REVIEW S10 — and they are the same BOX, which is a different claim from
+         * reading differently. Both class lists were dead until S1 was layered (live, before:
+         * Create 37.59 × 16.80 at `padding: 0px`, its accent fill painted on the ink of the
+         * word; Cancel 38.82 × 16.80 with no border at all). The row asks for
+         * `padding: '4px 10px'` on both, and Cancel was still 2 px short of it.
+         */
+        expect(cancel.className).toContain('px-2.5');
+        expect(submit.className).toContain('px-2.5');
+        expect(cancel.className).not.toContain('px-2 ');
     });
 
     it('stays a filled push button when disabled rather than turning into an outline', () => {

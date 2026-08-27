@@ -496,7 +496,20 @@ export function renderMarkdownBody(source: string): string {
 // Stylesheet (§3.9) + document
 // ---------------------------------------------------------------------------
 
-/** §3.9 verbatim, with `BASE` = base font size and `CODE = max(BASE - 1, 6)`. */
+/**
+ * §3.9 verbatim, with `BASE` = base font size and `CODE = max(BASE - 1, 6)`.
+ *
+ * S42 — one OWNER-DIRECTED divergence from `MarkdownHTMLRenderer.swift:300`, which is a flat
+ * `padding: 20px 28px`. The port transcribed it byte for byte and it is correct against the
+ * shipped app; it is also the wrong metric for a multiplexer, where a preview usually lives in
+ * a split. Measured: a 130.75 px pane gives the document a 123 px client width, and 28 + 28
+ * leaves a **67 px** text column — four or five characters a line, with a fenced block's own
+ * 16 px each side taking it to 35. `clamp(12px, 6%, 28px)` is identical to the Swift above
+ * ~470 px of pane (28 px is the clamp's own ceiling and 6% reaches it there) and gives the
+ * column back in a narrow split. The 20 px vertical is untouched.
+ *
+ * Owner-directed: do not re-report this as a divergence. The parity value is `20px 28px`.
+ */
 export function markdownStylesheet(baseFontSize: number): string {
     const base = baseFontSize;
     const code = Math.max(baseFontSize - 1, 6);
@@ -504,7 +517,7 @@ export function markdownStylesheet(baseFontSize: number): string {
     font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
     font-size: ${base}px;
     line-height: 1.6;
-    padding: 20px 28px;
+    padding: 20px clamp(12px, 6%, 28px);
     margin: 0;
     color: #1f2328;
     background-color: transparent;

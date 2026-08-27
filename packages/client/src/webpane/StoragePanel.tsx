@@ -260,7 +260,13 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
     return (
         <div
             data-testid={`web-storage-${paneID}`}
-            className="flex max-h-[70%] shrink-0 flex-col gap-2 overflow-y-auto p-2 text-[11px]"
+            /*
+             * S34: `StoragePanel.swift:52-53` is `.padding(.horizontal, 10).padding(.vertical,
+             * 8)`. `p-2` started every row 8 px from the pane's edge where the shipped panel
+             * starts at 10 (and ended the trailing ✕ 8 px from it). The vertical 8 and the
+             * `gap-2` band spacing already matched; only the horizontal was short.
+             */
+            className="flex max-h-[70%] shrink-0 flex-col gap-2 overflow-y-auto px-2.5 py-2 text-[11px]"
             style={{
                 background: tokens.surfaceBackground,
                 borderBottom: `1px solid ${tokens.divider}`,
@@ -288,7 +294,14 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     // L73: `.help("Refresh cookie list")` (`StoragePanel.swift:158`).
                     aria-label="Refresh cookie list"
                     title="Refresh cookie list"
-                    className="ml-auto rounded border px-1.5 py-[1px] text-[10px]"
+                    /*
+                     * S12: the eighth chip. The other seven in this panel carry `px-2 py-[3px]`
+                     * and land at 23.4 px now that S1 layered the reset; Refresh kept
+                     * `py-[1px]`/`px-1.5` and stayed at 18.0 px — still under the 20 px pointer
+                     * line and the only chip in the panel with a 6 px side inset. Same 3/8 box
+                     * as its siblings; the declared 10 px type stays (22.0 px tall).
+                     */
+                    className="ml-auto rounded border px-2 py-[3px] text-[10px]"
                     style={{ borderColor: tokens.divider, color: tokens.textSecondary }}
                     onClick={refresh}
                 >
@@ -300,6 +313,14 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                     // L73: `.help("Close storage panel")` (`StoragePanel.swift:101`).
                     aria-label="Close storage panel"
                     title="Close storage panel"
+                    /*
+                     * S28: `StoragePanel.swift:96-99` frames this glyph at 16 × 16 with a
+                     * `.contentShape(Rectangle())` — an explicit box, not the ✕'s own ink. The
+                     * port drew the character alone (8.39 × 15.4), half the shipped footprint
+                     * and under the 20 px line. Width/height utilities are safe here: S1's
+                     * reset only ever killed padding, border and font.
+                     */
+                    className="flex h-4 w-4 shrink-0 items-center justify-center"
                     style={{ color: tokens.textTertiary }}
                     onClick={props.onClose}
                 >
@@ -391,6 +412,9 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                         aria-label={`Add cookie for ${group.domain}`}
                                         title={`Add cookie for ${group.domain}`}
                                         data-testid={`web-cookie-add-${group.domain}`}
+                                        // S28: `StoragePanel.swift:232-236`'s `.frame(width: 16,
+                                        // height: 16)` + `.contentShape(Rectangle())`.
+                                        className="flex h-4 w-4 shrink-0 items-center justify-center"
                                         style={{ color: tokens.textSecondary }}
                                         onClick={() => setForm(blankForm(group.domain, now()))}
                                     >
@@ -402,6 +426,8 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                         aria-label={`Delete all cookies for ${group.domain}`}
                                         title={`Delete all cookies for ${group.domain}`}
                                         data-testid={`web-cookie-clear-${group.domain}`}
+                                        // S28: `StoragePanel.swift:242-246`'s 16 × 16 trash.
+                                        className="flex h-4 w-4 shrink-0 items-center justify-center"
                                         style={{ color: '#E0685F' }}
                                         onClick={() => {
                                             void commands
@@ -481,7 +507,12 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                                                       aria-label={`Delete cookie ${cookie.name}`}
                                                       title={`Delete cookie ${cookie.name}`}
                                                       data-testid={`web-cookie-delete-${cookie.name}`}
-                                                      className="shrink-0 self-start"
+                                                      // S28: the ROW delete is the smaller of
+                                                      // the two sizes the Swift uses —
+                                                      // `StoragePanel.swift:298-301` frames it
+                                                      // at 14 × 14, against 16 for the three
+                                                      // panel-level glyphs.
+                                                      className="flex h-[14px] w-[14px] shrink-0 items-center justify-center self-start"
                                                       style={{ color: tokens.textSecondary }}
                                                       onClick={() => {
                                                           void commands
@@ -535,7 +566,13 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
             ) : (
                 <div
                     data-testid={`web-cookie-form-${paneID}`}
-                    className="flex flex-col gap-1 rounded p-1.5"
+                    /*
+                     * S37: `StoragePanel.swift:610-611` insets the form 8 horizontal / 6
+                     * vertical, and its `strokeBorder` draws INSIDE its bounds. At `p-1.5` the
+                     * form's own 1 px border sat 6 px from each field's 1 px border — two
+                     * nested rules with almost nothing between them.
+                     */
+                    className="flex flex-col gap-1 rounded p-2"
                     style={{ border: `1px solid ${tokens.divider}` }}
                 >
                     <div className="flex gap-1">
@@ -544,7 +581,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             data-testid={`web-cookie-form-name-${paneID}`}
                             placeholder="name"
                             {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                            className="min-w-0 flex-1 rounded px-1.5 py-[2px] font-mono outline-none"
+                            className="min-w-0 flex-1 rounded px-1.5 py-[3px] font-mono outline-none"
                             style={{ background: tokens.windowBackground, border: `1px solid ${tokens.divider}`, color: tokens.textPrimary }}
                             value={form.name}
                             onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -554,7 +591,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             data-testid={`web-cookie-form-value-${paneID}`}
                             placeholder="value"
                             {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                            className="min-w-0 flex-1 rounded px-1.5 py-[2px] font-mono outline-none"
+                            className="min-w-0 flex-1 rounded px-1.5 py-[3px] font-mono outline-none"
                             style={{ background: tokens.windowBackground, border: `1px solid ${tokens.divider}`, color: tokens.textPrimary }}
                             value={form.value}
                             onChange={(event) => setForm({ ...form, value: event.target.value })}
@@ -567,7 +604,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             placeholder="domain"
                             readOnly={form.domainLocked}
                             {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                            className="min-w-0 flex-1 rounded px-1.5 py-[2px] font-mono outline-none"
+                            className="min-w-0 flex-1 rounded px-1.5 py-[3px] font-mono outline-none"
                             style={{
                                 background: tokens.windowBackground,
                                 border: `1px solid ${tokens.divider}`,
@@ -580,7 +617,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                             aria-label="Cookie path"
                             data-testid={`web-cookie-form-path-${paneID}`}
                             {...{ [WEB_CHROME_TEXT_ATTRIBUTE]: 'true' }}
-                            className="w-20 rounded px-1.5 py-[2px] font-mono outline-none"
+                            className="w-20 rounded px-1.5 py-[3px] font-mono outline-none"
                             style={{ background: tokens.windowBackground, border: `1px solid ${tokens.divider}`, color: tokens.textPrimary }}
                             value={form.path}
                             onChange={(event) => setForm({ ...form, path: event.target.value })}

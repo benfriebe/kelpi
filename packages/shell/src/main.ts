@@ -31,6 +31,7 @@ import {
     clipboard,
     dialog,
     globalShortcut,
+    nativeTheme,
     screen,
     session,
     shell
@@ -55,6 +56,7 @@ import {
 } from './launch.js';
 import {
     readSearchPalette,
+    readWindowGround,
     transparencyNeedsRelaunch,
     windowTransparency
 } from './appearance.js';
@@ -139,6 +141,11 @@ let lastHotkeyReport: HotkeyStatusReport | null = null;
 let windowIsTransparent = false;
 /** True once the user has been told that a transparency change needs a relaunch (once per run). */
 let relaunchNoticeShown = false;
+/**
+ * §N31 — the ground currently on the window, so a re-read that resolves to the same colour does
+ * not touch the compositor. `null` until `createWindow` has set one.
+ */
+let lastWindowGround: string | null = null;
 let hotkeyHideOnRepress = true;
 let saveTimer: NodeJS.Timeout | null = null;
 let loadRetries = 0;
@@ -344,15 +351,28 @@ function createWindow(): BrowserWindow {
      * publishes `--nex-bg` at the same alpha), so the desktop shows through the window fill and
      * the terminal panes while the sidebar and header stay opaque.
      *
-     * At opacity 1 nothing changes: an opaque window with the same `#16161a` flash colour it
-     * has always had. A transparent window has no drop shadow on macOS and cannot show one, so
+     * At opacity 1 the window is opaque and paints the theme's own ground behind the page (see
+     * §N31 below). A transparent window has no drop shadow on macOS and cannot show one, so
      * this is opt-in by configuration rather than the default.
+     *
+     * §N31 — the opaque window's `backgroundColor` is the THEME's ground, not a constant.
+     *
+     * It was a hardcoded `#16161a`: a value in neither appearance's palette, so every pixel
+     * Chromium fills with it — a resize's newly-exposed edge, a frame produced before the page
+     * has painted at the new size, the instant before first paint — was the wrong colour, and
+     * in a light chrome it was near-black. `readWindowGround` resolves the same
+     * `windowBackground` token the page paints, and `applyWindowGround` keeps it there for the
+     * life of the window (a `chrome-appearance` write, or the OS flipping schemes under
+     * `system`). The transparent path is untouched: it must stay `#00000000` so the desktop
+     * shows through, which is §N17's whole point.
      */
     const transparency = windowTransparency();
     windowIsTransparent = transparency.transparent;
+    const ground = windowIsTransparent ? '#00000000' : readWindowGround(nativeTheme.shouldUseDarkColors === true);
+    lastWindowGround = ground;
     log(
         `window: ${windowIsTransparent ? 'transparent' : 'opaque'} ` +
-            `(background-opacity ${transparency.opacity.toFixed(2)})`
+            `(background-opacity ${transparency.opacity.toFixed(2)}) ground ${ground}`
     );
     const window = new BrowserWindow({
         ...bounds,
@@ -361,7 +381,7 @@ function createWindow(): BrowserWindow {
         show: false,
         title: 'Nex',
         ...(windowIsTransparent ? { transparent: true } : {}),
-        backgroundColor: windowIsTransparent ? '#00000000' : '#16161a',
+        backgroundColor: ground,
         /*
          * APP-046 — the hidden title bar, at last.
          *
@@ -607,8 +627,31 @@ function registerGlobalHotkey(source: 'launch' | 'settings'): void {
  * window under the user would tear down every embedded web view and the renderer's whole state
  * for a preference change, which is a worse trade than a sentence.
  */
+/**
+ * §N31 — put the theme's ground on the live window.
+ *
+ * `setBackgroundColor` is one of the few window properties Electron *will* change after
+ * construction, so unlike `transparent` this needs no relaunch notice: a `chrome-appearance`
+ * write (or the OS flipping schemes while the preference is `system`) moves it immediately, and
+ * the next unpainted pixel is already the new theme's. Called on the same two signals the tray's
+ * own palette follows, and a no-op on the transparent path, whose `#00000000` is load-bearing.
+ */
+function applyWindowGround(reason: string): void {
+    if (windowIsTransparent || mainWindow === null) return;
+    const ground = readWindowGround(nativeTheme.shouldUseDarkColors === true);
+    if (ground === lastWindowGround) return;
+    lastWindowGround = ground;
+    try {
+        mainWindow.setBackgroundColor(ground);
+        log(`window ground ${ground} (${reason})`);
+    } catch (error) {
+        warn(`window ground update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
 function applyAppearanceSettings(): void {
     setWebFindPalette(readSearchPalette());
+    applyWindowGround('settings');
     const { opacity } = windowTransparency();
     if (!transparencyNeedsRelaunch(windowIsTransparent, opacity)) return;
     const wanted = opacity < 1 ? 'transparent' : 'opaque';
@@ -1211,6 +1254,15 @@ async function boot(): Promise<void> {
         },
         createWindow: () => {
             mainWindow = createWindow();
+            /*
+             * §N31: the OS half of "keep the ground live". A `chrome-appearance` write arrives as
+             * `settingsChanged`; the OS flipping schemes while the preference is `system` arrives
+             * here. Registered once, after the window exists, and defensive about the host — the
+             * tray takes the same signal the same way (`./status.ts`).
+             */
+            if (typeof nativeTheme?.on === 'function') {
+                nativeTheme.on('updated', () => applyWindowGround('system-appearance'));
+            }
         },
         // §SET-201: the config-LOAD path. A failure here keeps the configured value (the file
         // is never rewritten) and reports the reason, so Settings can show the user what their

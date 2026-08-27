@@ -195,7 +195,10 @@ export {
 // §WS-001 / §APP-066: the show/hide slide's phase machine, shared by the sidebar and the
 // inspector. A conditional mount cannot transition, so the phases keep the panel in the tree for
 // the length of a close; `SidebarEdge` is the only thing that differs between the two panels.
+// §N31 adds `SIDEBAR_PANEL_GROUND`: the colour the reveal itself is made of, so the strip a
+// slide sweeps is never the window's ground (or, under a transparent window, the desktop).
 export {
+    SIDEBAR_PANEL_GROUND,
     SIDEBAR_SLIDE_EASING,
     SIDEBAR_SLIDE_MS,
     isSidebarMounted,

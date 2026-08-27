@@ -115,6 +115,76 @@ export function transparencyNeedsRelaunch(createdTransparent: boolean, opacity: 
     return createdTransparent !== opacity < 1;
 }
 
+// ── §N31: the window's own background ───────────────────────────────────────────────
+
+/**
+ * `windowBackground` from shell-ui.md §2's preset table, both columns.
+ *
+ * Copied rather than imported, exactly as `./icon.ts` copies the status column and for the same
+ * stated reason: the main process does not (and must not) load the renderer bundle. If the
+ * preset table changes, both copies change with it — which is why each is named after its key.
+ */
+export const LIGHT_WINDOW_GROUND = '#EAE8E2';
+export const DARK_WINDOW_GROUND = '#0A0A0C';
+
+/**
+ * What the window paints where nothing else has (§N31).
+ *
+ * `new BrowserWindow({ backgroundColor })` is the base colour Chromium's compositor uses for
+ * every pixel no layer covers — a resize's newly-exposed edge, a frame produced before the page
+ * has painted at the new size, a cold start before first paint. It was a hardcoded `#16161a`,
+ * a value in NEITHER theme: 12 units off the dark ground, and a whole appearance away from the
+ * light one, so every unpainted pixel of a light-chrome window flashed near-black. The ground
+ * is a resolved value now, and it follows the theme for the life of the window.
+ *
+ * Deliberately NOT applied on the transparent path: below `background-opacity` 1 the window is
+ * created with a fully transparent `backgroundColor` on purpose (§N17 / APP-012 — the desktop
+ * must show through), and painting a ground there would make the window opaque again.
+ */
+export interface WindowGroundInput {
+    /** `chrome-appearance`. Anything else (including undefined) reads as `system`. */
+    readonly appearance?: string | undefined;
+    /** The OS colour scheme, for the `system` case. */
+    readonly systemDark?: boolean | undefined;
+    /** `chrome-colors`: `"<light|dark>:<key>" → "RRGGBB"`. */
+    readonly overrides?: Readonly<Record<string, string>> | undefined;
+}
+
+const HEX6_GROUND = /^#?[0-9a-fA-F]{6}$/;
+
+/** `resolveChromeTheme`'s `windowBackground`, for the window frame. Always `#RRGGBB`. */
+export function resolveWindowGround(input: WindowGroundInput = {}): string {
+    const appearance = input.appearance;
+    const bucket =
+        appearance === 'light' || appearance === 'dark'
+            ? appearance
+            : input.systemDark === true
+              ? 'dark'
+              : 'light';
+    const base = bucket === 'dark' ? DARK_WINDOW_GROUND : LIGHT_WINDOW_GROUND;
+    const raw = input.overrides?.[`${bucket}:windowBackground`];
+    // An unparseable override is ignored rather than painted — a mistyped hex must not blank
+    // the window, the same rule `resolveTrayStatusPalette` follows for the tray dot.
+    if (typeof raw !== 'string' || !HEX6_GROUND.test(raw.trim())) return base;
+    const hex = raw.trim();
+    return (hex.startsWith('#') ? hex : `#${hex}`).toUpperCase();
+}
+
+/** The same answer, read from the nex config file this process already owns. */
+export function readWindowGround(
+    systemDark: boolean,
+    env: NodeJS.ProcessEnv = process.env,
+    home: string = homedir()
+): string {
+    const contents = readFile(resolveConfigPath(env, home));
+    const chrome = contents === '' ? DEFAULT_CHROME_SETTINGS : parseChromeSettings(contents);
+    return resolveWindowGround({
+        appearance: chrome.appearance,
+        systemDark,
+        overrides: chrome.colors
+    });
+}
+
 export interface ShellSearchPalette {
     readonly match: string;
     readonly matchText: string;

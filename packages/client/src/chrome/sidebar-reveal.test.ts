@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    SIDEBAR_PANEL_GROUND,
     SIDEBAR_SLIDE_EASING,
     SIDEBAR_SLIDE_MS,
     isSidebarMounted,
@@ -145,10 +146,16 @@ describe('the trailing edge (§APP-066, the inspector)', () => {
     it('shares the curve, the duration and every other geometry with the sidebar', () => {
         const inspector = sidebarSlideStyle('open', 280, true, 'trailing');
         const sidebar = sidebarSlideStyle('open', 280, true, 'leading');
-        expect(inspector).toEqual(sidebar);
+        // Everything but the EDGE ANCHOR is identical at rest. The anchor is §N31's: a panel is
+        // pinned to the edge it travels from for the whole of its life, not only while moving,
+        // because that is what makes the two directions one arithmetic (see the anchor block
+        // below) — so it is the one field that legitimately differs here.
+        const { left: _il, right: _ir, ...inspectorRest } = inspector.panel;
+        const { left: _sl, right: _sr, ...sidebarRest } = sidebar.panel;
+        expect(inspectorRest).toEqual(sidebarRest);
+        expect(inspector.slot).toEqual(sidebar.slot);
+        expect(inspector.clip).toEqual(sidebar.clip);
         expect(inspector.slot.transition).toBe(`width ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}`);
-        // Open is open: a panel at rest has no direction, so the two are identical there. The
-        // mirror only shows in the collapsed geometry above.
     });
 
     it('collapses the slot the same way, so the grid takes the space back', () => {
@@ -159,6 +166,17 @@ describe('the trailing edge (§APP-066, the inspector)', () => {
         }
     });
 
+    it('anchors the panel to the edge it travels from, both ways', () => {
+        const inspector = sidebarSlideStyle('open', 280, true, 'trailing').panel;
+        const sidebar = sidebarSlideStyle('open', 220, true, 'leading').panel;
+        expect(inspector.position).toBe('absolute');
+        expect([inspector.left, inspector.right]).toEqual(['auto', 0]);
+        expect([sidebar.left, sidebar.right]).toEqual([0, 'auto']);
+        // Full height either way: the clip is the containing block and the panel spans it.
+        expect([sidebar.top, sidebar.bottom]).toEqual([0, 0]);
+        expect([inspector.top, inspector.bottom]).toEqual([0, 0]);
+    });
+
     it('still has the drag opt-out available, unused though the inspector leaves it', () => {
         // The inspector is a fixed 280px with no edge handle, so it passes `animate: true`. The
         // parameter is kept on the shared function rather than special-cased away, so the day
@@ -166,5 +184,75 @@ describe('the trailing edge (§APP-066, the inspector)', () => {
         const dragging = sidebarSlideStyle('open', 280, false, 'trailing');
         expect(dragging.slot.transition).toBe('none');
         expect(dragging.panel.transition).toBe('none');
+    });
+});
+
+/**
+ * §N31 — the reveal is the panel's own colour, at every point of the slide.
+ *
+ * The defect this closes was two faults with one symptom. The container between the slot and the
+ * panel painted NOTHING, so anything the panel failed to cover was `<body>`'s ground — and under
+ * a window created transparent (§N17) that ground is `transparent`, i.e. the desktop, which on a
+ * light wallpaper is a white flash in a dark app. And the inspector's panel, travelling off the
+ * TRAILING edge while flow laid it out at its container's LEADING one, failed to cover most of
+ * its own slide: the frame harness measured 0 % coverage for the first half of every inspector
+ * slide and 100 % of the revealed strip fully cleared mid-flight.
+ *
+ * Both halves are arithmetic, so both are checkable here rather than only in a screenshot.
+ */
+describe('the reveal shows the panel’s own colour (§N31)', () => {
+    it('the clip carries the panel ground for the full animated width, in every phase', () => {
+        for (const phase of ['hidden', 'opening', 'open', 'closing'] as const) {
+            for (const edge of ['leading', 'trailing'] as const) {
+                expect(sidebarSlideStyle(phase, 240, true, edge).clip.background).toBe(SIDEBAR_PANEL_GROUND);
+            }
+        }
+        // The token, not a hex: the sidebar and the inspector both paint `sidebarBackground`, so
+        // a recoloured chrome moves the reveal with them.
+        expect(SIDEBAR_PANEL_GROUND).toContain('--nex-sidebar-bg');
+    });
+
+    it('the clip is the panel’s containing block, or the anchor anchors to the window', () => {
+        expect(sidebarSlideStyle('open', 240).clip.position).toBe('relative');
+    });
+
+    /**
+     * The invariant the flash was a violation of, stated as the geometry it is.
+     *
+     * At slide progress `p` the slot is `width·p` wide and the panel is translated by
+     * `±width·(1−p)`. With the panel anchored to the edge it travels from, the panel's box in
+     * clip space is `[0, width]` at EVERY `p` — so it covers `[0, width·p]`, which is the whole
+     * clip, from the first frame to the last. In flow (the pre-fix arrangement) a trailing panel
+     * sat at `[width−width·p, 2·width−width·p]`, which does not even intersect `[0, width·p]`
+     * until `p > 0.5`.
+     */
+    it('covers the whole slot at every point of the slide, on both edges', () => {
+        for (const edge of ['leading', 'trailing'] as const) {
+            const width = edge === 'trailing' ? 280 : 220;
+            const style = sidebarSlideStyle('open', width, true, edge);
+            for (let p = 0; p <= 1.0001; p += 0.05) {
+                const slot = width * p;
+                // Where the anchor puts the panel's leading corner inside the clip, before the
+                // transform: `left: 0`, or `right: 0` (i.e. `clipWidth − width`).
+                const anchored = style.panel.left === 0 ? 0 : slot - width;
+                const translated = anchored + (edge === 'trailing' ? width * (1 - p) : -(width * (1 - p)));
+                const covered =
+                    Math.max(0, Math.min(slot, translated + width) - Math.max(0, translated));
+                expect(covered).toBeCloseTo(slot, 6);
+            }
+        }
+    });
+
+    it('the pre-fix arrangement fails that same invariant, so the test is not self-satisfying', () => {
+        // Flow layout: a panel always starts at its container's LEADING edge.
+        const width = 280;
+        let worst = 1;
+        for (let p = 0; p <= 1.0001; p += 0.05) {
+            const slot = width * p;
+            const translated = 0 + width * (1 - p);
+            const covered = Math.max(0, Math.min(slot, translated + width) - Math.max(0, translated));
+            worst = Math.min(worst, slot === 0 ? 1 : covered / slot);
+        }
+        expect(worst).toBe(0);
     });
 });

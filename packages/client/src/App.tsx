@@ -3881,7 +3881,18 @@ function Shell(props: AppProps): ReactElement {
                     className="flex h-full shrink-0"
                     style={{ width: sidebarSlide.slot.width, transition: sidebarSlide.slot.transition }}
                 >
-                    <div className="h-full min-w-0 flex-1 overflow-hidden">
+                    {/* §N31: the clip carries the panel's own ground for the full animated width,
+                        so the reveal is the sidebar's colour from the first frame rather than
+                        whatever lies behind the row — `<body>`'s ground, which is `transparent`
+                        (the desktop) under a window created transparent. */}
+                    <div
+                        data-testid="sidebar-clip"
+                        className="h-full min-w-0 flex-1 overflow-hidden"
+                        style={{
+                            background: sidebarSlide.clip.background,
+                            position: sidebarSlide.clip.position
+                        }}
+                    >
                     <div
                         data-testid="sidebar-panel"
                         className="h-full"
@@ -3890,7 +3901,12 @@ function Shell(props: AppProps): ReactElement {
                             opacity: sidebarSlide.panel.opacity,
                             transform: sidebarSlide.panel.transform,
                             transition: sidebarSlide.panel.transition,
-                            pointerEvents: sidebarSlide.panel.pointerEvents
+                            pointerEvents: sidebarSlide.panel.pointerEvents,
+                            position: sidebarSlide.panel.position,
+                            top: sidebarSlide.panel.top,
+                            bottom: sidebarSlide.panel.bottom,
+                            left: sidebarSlide.panel.left,
+                            right: sidebarSlide.panel.right
                         }}
                     >
                 <Sidebar
@@ -4086,7 +4102,18 @@ function Shell(props: AppProps): ReactElement {
                     className="flex h-full shrink-0"
                     style={{ width: inspectorSlide.slot.width, transition: inspectorSlide.slot.transition }}
                 >
-                    <div className="h-full min-w-0 flex-1 overflow-hidden">
+                    {/* §N31: the same clip fill and the same edge anchor as the sidebar's. The
+                        inspector needed BOTH — its panel travels off the trailing edge while
+                        flow lays it out at the clip's leading one, so the first half of every
+                        slide revealed a strip the panel was not even inside. */}
+                    <div
+                        data-testid="inspector-clip"
+                        className="h-full min-w-0 flex-1 overflow-hidden"
+                        style={{
+                            background: inspectorSlide.clip.background,
+                            position: inspectorSlide.clip.position
+                        }}
+                    >
                         <div
                             data-testid="inspector-panel"
                             className="h-full"
@@ -4095,7 +4122,12 @@ function Shell(props: AppProps): ReactElement {
                                 opacity: inspectorSlide.panel.opacity,
                                 transform: inspectorSlide.panel.transform,
                                 transition: inspectorSlide.panel.transition,
-                                pointerEvents: inspectorSlide.panel.pointerEvents
+                                pointerEvents: inspectorSlide.panel.pointerEvents,
+                                position: inspectorSlide.panel.position,
+                                top: inspectorSlide.panel.top,
+                                bottom: inspectorSlide.panel.bottom,
+                                left: inspectorSlide.panel.left,
+                                right: inspectorSlide.panel.right
                             }}
                         >
                 <Inspector

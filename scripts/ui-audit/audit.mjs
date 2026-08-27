@@ -20995,6 +20995,266 @@ function buildFlows(ctx) {
             }
         },
         {
+            id: 'panel-slide-flash',
+            expect:
+                'Every frame of a side panel’s slide shows the PANEL’s own colour across the whole strip the reveal has opened — the sidebar’s and the inspector’s alike, opening and closing. No frame composites the reveal onto the window ground (which is `transparent`, i.e. the desktop, under a window created at `background-opacity < 1`), and no frame leaves part of the reveal with no panel in it at all (§N31).',
+            needsEyes: true,
+            async run(recorder) {
+                /*
+                 * §N31's permanent net.
+                 *
+                 * The defect was a white flash mid-slide in a dark app, and its two causes were
+                 * both invisible to every assertion the suite had: the container between the slot
+                 * and the panel painted NOTHING (so the reveal composited onto `<body>`'s ground
+                 * — `transparent` under §N17's transparent window, i.e. the wallpaper), and the
+                 * INSPECTOR's panel, travelling off the trailing edge while flow laid it out at
+                 * its container's leading one, was not inside its own reveal for the first half
+                 * of every slide.
+                 *
+                 * The instrument is a per-rAF sampler — `sidebar-spring`'s precedent — reading
+                 * the three facts that decide what a frame's reveal is MADE of:
+                 *
+                 *   - `coverage`: how much of the slot's animated width the panel's own box
+                 *     actually spans. Anything below 1 is a strip with no panel in it.
+                 *   - `clipOpaque`: whether the container that IS the animated width paints an
+                 *     opaque fill, so a partly-faded panel still composites onto the panel's
+                 *     colour rather than onto whatever lies behind the window row.
+                 *   - `clipMatchesPanel`: and that the fill is the panel's own colour, not some
+                 *     other surface's — a reveal in the wrong dark grey is still the wrong colour.
+                 *
+                 * Each frame is classified from those three. `panel` is the only acceptable
+                 * class; `window-default` is the flash. The pixel-level counterpart — CDP
+                 * screencast frames decoded and classified against the resolved palette, which is
+                 * how the defect was found and measured — is `scripts/ui-audit/
+                 * panel-slide-flash.mjs`, run per opacity outside a full audit.
+                 *
+                 * One opacity per run, necessarily: `transparent` is fixed at window creation
+                 * (APP-012 / SET-049), so a run sees whichever the sandbox was built with. What
+                 * makes that sufficient is that every predicate here is opacity-INDEPENDENT — an
+                 * opaque clip covering the whole reveal composites to the panel's colour at any
+                 * background-opacity — and the arithmetic behind `coverage` is additionally
+                 * pinned, both edges, in `chrome/sidebar-reveal.test.ts`.
+                 */
+                const startSampler = async () =>
+                    await page.eval(
+                        `(() => {
+                            const samples = [];
+                            let running = true;
+                            const r3 = (value) => Math.round(value * 1000) / 1000;
+                            const alphaOf = (colour) => {
+                                const match = /rgba?\\(([^)]+)\\)/.exec(colour ?? '');
+                                if (match === null) return colour === 'transparent' ? 0 : 1;
+                                const parts = match[1].split(/[,/\\s]+/).filter(Boolean);
+                                return parts.length < 4 ? 1 : Number.parseFloat(parts[3]);
+                            };
+                            const read = (slotID, panelID, rootSelector) => {
+                                const slot = document.querySelector('[data-testid="' + slotID + '"]');
+                                const panel = document.querySelector('[data-testid="' + panelID + '"]');
+                                if (slot === null || panel === null) return null;
+                                const clip = panel.parentElement;
+                                const root = document.querySelector(rootSelector);
+                                const s = slot.getBoundingClientRect();
+                                const p = panel.getBoundingClientRect();
+                                const overlap = Math.max(0, Math.min(s.right, p.right) - Math.max(s.left, p.left));
+                                const clipBg = clip === null ? '' : getComputedStyle(clip).backgroundColor;
+                                const rootBg = root === null ? '' : getComputedStyle(root).backgroundColor;
+                                return {
+                                    width: r3(s.width),
+                                    coverage: s.width <= 0.5 ? 1 : r3(overlap / s.width),
+                                    opacity: Number(getComputedStyle(panel).opacity),
+                                    clipBg,
+                                    rootBg,
+                                    clipOpaque: alphaOf(clipBg) === 1,
+                                    clipMatchesPanel: rootBg !== '' && clipBg === rootBg
+                                };
+                            };
+                            const tick = () => {
+                                if (!running) return;
+                                samples.push({
+                                    sidebar: read('sidebar-slot', 'sidebar-panel', '[data-testid="sidebar"]'),
+                                    inspector: read('inspector-slot', 'inspector-panel', '[data-testid="inspector"]')
+                                });
+                                requestAnimationFrame(tick);
+                            };
+                            requestAnimationFrame(tick);
+                            window.__nexSlideNet = { samples, stop: () => { running = false; } };
+                            return true;
+                        })()`
+                    );
+                const readSamples = async () => {
+                    await page.eval(`(() => { window.__nexSlideNet?.stop?.(); return true; })()`);
+                    return JSON.parse(
+                        String(await page.eval(`JSON.stringify(window.__nexSlideNet?.samples ?? [])`))
+                    );
+                };
+
+                /**
+                 * Classify one panel's frames. A frame counts as "mid-slide" when the slot has
+                 * opened at all and is not yet at rest — that is the window in which a reveal
+                 * exists to be the wrong colour.
+                 */
+                const classify = (samples, key, restWidth) => {
+                    const frames = samples
+                        .map((sample) => sample[key])
+                        .filter((state) => state !== null && state !== undefined);
+                    const midSlide = frames.filter(
+                        (state) => state.width > 2 && state.width < restWidth - 2
+                    );
+                    const uncovered = midSlide.filter((state) => state.coverage < 0.999);
+                    const unpainted = midSlide.filter((state) => !state.clipOpaque);
+                    const mismatched = midSlide.filter((state) => !state.clipMatchesPanel);
+                    const windowDefault = midSlide.filter(
+                        (state) => state.coverage < 0.999 || !state.clipOpaque || !state.clipMatchesPanel
+                    );
+                    return {
+                        frames: frames.length,
+                        midSlide: midSlide.length,
+                        uncovered: uncovered.length,
+                        unpainted: unpainted.length,
+                        mismatched: mismatched.length,
+                        windowDefault: windowDefault.length,
+                        minCoverage: midSlide.reduce((low, state) => Math.min(low, state.coverage), 1),
+                        minOpacity: midSlide.reduce((low, state) => Math.min(low, state.opacity), 1),
+                        clipBg: midSlide[0]?.clipBg ?? frames[0]?.clipBg ?? '(none)',
+                        rootBg: midSlide[0]?.rootBg ?? frames[0]?.rootBg ?? '(none)'
+                    };
+                };
+
+                // ── the sidebar: close, then open ───────────────────────────────────
+                const sidebarWasVisible =
+                    (await page.eval(`document.querySelector('[data-testid="sidebar-slot"]') !== null`)) === true;
+                if (!sidebarWasVisible) {
+                    await page.click('button[aria-label="Toggle sidebar"]');
+                    await sleep(700);
+                }
+                await startSampler();
+                await page.click('button[aria-label="Toggle sidebar"]');
+                await sleep(400);
+                await recorder.shot(page, 'sidebar-mid-slide');
+                await sleep(400);
+                await page.click('button[aria-label="Toggle sidebar"]');
+                await sleep(700);
+                const sidebar = classify(await readSamples(), 'sidebar', 220);
+                recorder.note(`sidebar slide: ${JSON.stringify(sidebar)}`);
+                recorder.check(
+                    'the sidebar’s slide really produced frames to classify',
+                    sidebar.midSlide >= 8,
+                    `${String(sidebar.midSlide)} mid-slide frames of ${String(sidebar.frames)}`
+                );
+                recorder.check(
+                    '§N31: the panel spans the WHOLE strip the sidebar’s slide has revealed, every frame',
+                    sidebar.midSlide > 0 && sidebar.uncovered === 0,
+                    `${String(sidebar.uncovered)} uncovered frames, minimum coverage ${String(Math.round(sidebar.minCoverage * 1000) / 10)}%`
+                );
+                recorder.check(
+                    '§N31: and the container that IS that strip paints the panel’s own colour, opaquely',
+                    sidebar.midSlide > 0 && sidebar.unpainted === 0 && sidebar.mismatched === 0,
+                    `clip ${sidebar.clipBg} vs panel ${sidebar.rootBg}; ${String(sidebar.unpainted)} unpainted, ${String(sidebar.mismatched)} mismatched`
+                );
+                recorder.check(
+                    '§N31: so ZERO frames of an open+close cycle composite the reveal onto the window ground',
+                    sidebar.midSlide > 0 && sidebar.windowDefault === 0,
+                    `${String(sidebar.windowDefault)} window-default frames of ${String(sidebar.midSlide)}`
+                );
+                /*
+                 * The panel really does fade — which is exactly why the clip's fill is
+                 * load-bearing rather than belt-and-braces: at α≈0.5 the panel's own fill is half
+                 * transparent, and without an opaque backing the desktop shows through it.
+                 */
+                recorder.check(
+                    'and the check has something to catch: the panel is genuinely translucent mid-slide',
+                    sidebar.minOpacity < 0.9,
+                    `minimum panel opacity ${String(Math.round(sidebar.minOpacity * 100) / 100)}`
+                );
+
+                // ── the inspector: open, then close ─────────────────────────────────
+                //
+                // The panel N31 broke hardest: a trailing-edge slide whose panel was laid out at
+                // its clip's LEADING edge, so `coverage` was 0 for the first half of every slide.
+                const inspectorWasOpen =
+                    (await page.eval(`document.querySelector('[data-testid="inspector-slot"]') !== null`)) === true;
+                if (inspectorWasOpen) {
+                    await page.click('[data-testid="toggle-inspector"]');
+                    await sleep(700);
+                }
+                await startSampler();
+                await page.click('[data-testid="toggle-inspector"]');
+                await sleep(400);
+                await recorder.shot(page, 'inspector-mid-slide');
+                await sleep(400);
+                await page.click('[data-testid="toggle-inspector"]');
+                await sleep(700);
+                const inspector = classify(await readSamples(), 'inspector', 280);
+                recorder.note(`inspector slide: ${JSON.stringify(inspector)}`);
+                recorder.check(
+                    'the inspector’s slide really produced frames to classify',
+                    inspector.midSlide >= 8,
+                    `${String(inspector.midSlide)} mid-slide frames of ${String(inspector.frames)}`
+                );
+                recorder.check(
+                    '§N31: the inspector’s panel spans its whole reveal too — the trailing edge is not a special case',
+                    inspector.midSlide > 0 && inspector.uncovered === 0,
+                    `${String(inspector.uncovered)} uncovered frames, minimum coverage ${String(Math.round(inspector.minCoverage * 1000) / 10)}%`
+                );
+                recorder.check(
+                    '§N31: its clip paints the same panel ground, opaquely',
+                    inspector.midSlide > 0 && inspector.unpainted === 0 && inspector.mismatched === 0,
+                    `clip ${inspector.clipBg} vs panel ${inspector.rootBg}; ${String(inspector.unpainted)} unpainted, ${String(inspector.mismatched)} mismatched`
+                );
+                recorder.check(
+                    '§N31: ZERO window-default frames across the inspector’s open+close cycle',
+                    inspector.midSlide > 0 && inspector.windowDefault === 0,
+                    `${String(inspector.windowDefault)} window-default frames of ${String(inspector.midSlide)}`
+                );
+
+                // ── the window's own ground, the third suspect ──────────────────────
+                //
+                // Not a frame fact — it is what Chromium fills any pixel NO layer covers with (a
+                // resize's new edge, the frame before first paint). It was a hardcoded `#16161a`,
+                // in neither theme. The shell reports it now, and the transparent path keeps its
+                // `#00000000` because §N17 depends on it.
+                //
+                // Read the LATEST ground the shell reported, not the creation one. The window's
+                // background follows the theme for the window's whole life (`applyWindowGround`,
+                // on a settings write and on an OS scheme change), so in any run where the theme
+                // has moved since launch — a full run applies Gruvbox Dark at
+                // `appearance-preset-theme`, thirty steps before this — the creation line and the
+                // page's live `--nex-bg` are two different moments and comparing them is a
+                // question about neither. Taking the last line makes the check what it always
+                // meant: the ground on the window NOW is the ground the page is painting NOW,
+                // which asserts the live-update path as well as the creation one. The creation
+                // line still decides `transparentWindow` (that IS fixed at construction), and it
+                // is the fallback when nothing has moved the ground since.
+                const lines = runtime.shell?.lines ?? [];
+                const groundLine = lines.find((line) => line.includes('window:')) ?? '';
+                const updateLine = [...lines].reverse().find((line) => line.includes('window ground ')) ?? '';
+                const ground =
+                    /ground (#[0-9A-Fa-f]{8}|#[0-9A-Fa-f]{6})/.exec(updateLine || groundLine)?.[1] ?? '';
+                const transparentWindow = groundLine.includes('transparent');
+                const pageGround = String(
+                    await page.eval(
+                        `getComputedStyle(document.documentElement).getPropertyValue('--nex-bg').trim()`
+                    )
+                );
+                recorder.note(
+                    `shell window line: ${groundLine || '(none)'}${updateLine === '' ? '' : ` · latest: ${updateLine}`} · page --nex-bg ${pageGround}`
+                );
+                recorder.check(
+                    '§N31: the window’s own background is the THEME’s ground, not the old `#16161a`',
+                    ground !== '' &&
+                        ground.toLowerCase() !== '#16161a' &&
+                        (transparentWindow
+                            ? ground === '#00000000'
+                            : ground.toLowerCase() === pageGround.toLowerCase()),
+                    `${transparentWindow ? 'transparent window' : 'opaque window'} ground ${ground || '(unreported)'} vs page ${pageGround}`
+                );
+
+                recorder.eyes(
+                    'in the two mid-slide frames, is the strip the panel is sliding into the PANEL’s own colour edge to edge — no lighter band, no window gap, nothing of the desktop — and does the sidebar frame read as one continuous surface with the panel rather than as a panel over a hole?'
+                );
+            }
+        },
+        {
             id: 'sidebar-escape-clears-selection',
             expect:
                 'Escape clears a sidebar multi-selection before any keybinding lookup — so it beats `close_search` — while an open context menu keeps the key for itself (§SET-186/§APP-109).',

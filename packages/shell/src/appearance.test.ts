@@ -13,9 +13,13 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+    DARK_WINDOW_GROUND,
+    LIGHT_WINDOW_GROUND,
     readBackgroundOpacity,
     readSearchPalette,
+    readWindowGround,
     resolveGhosttyConfigPath,
+    resolveWindowGround,
     transparencyNeedsRelaunch,
     windowTransparency
 } from './appearance.js';
@@ -84,6 +88,77 @@ describe('windowTransparency (SET-049’s isOpaque = opacity >= 1)', () => {
         expect(transparencyNeedsRelaunch(true, 1)).toBe(true);
         expect(transparencyNeedsRelaunch(false, 0.85)).toBe(true);
         expect(transparencyNeedsRelaunch(false, 1)).toBe(false);
+    });
+});
+
+/**
+ * §N31 — the window's own background is the theme's ground, not a constant.
+ *
+ * The value Chromium fills every unpainted pixel with was a hardcoded `#16161a`: 12 units off
+ * the dark ground and a whole appearance away from the light one, so a light-chrome window's
+ * resize edge — and its first frame — flashed near-black. These are the two columns of
+ * shell-ui.md §2's `windowBackground`, resolved the way `resolveTrayStatusPalette` resolves the
+ * status column, with the same "an unparseable override is ignored, never painted" rule.
+ */
+describe('resolveWindowGround (§N31)', () => {
+    it('is the preset for the resolved bucket', () => {
+        expect(resolveWindowGround({ appearance: 'dark' })).toBe(DARK_WINDOW_GROUND);
+        expect(resolveWindowGround({ appearance: 'light' })).toBe(LIGHT_WINDOW_GROUND);
+        expect(resolveWindowGround({ appearance: 'system', systemDark: true })).toBe(DARK_WINDOW_GROUND);
+        expect(resolveWindowGround({ appearance: 'system', systemDark: false })).toBe(LIGHT_WINDOW_GROUND);
+        // Anything unrecognised (including nothing at all) reads as `system`.
+        expect(resolveWindowGround({ appearance: 'mauve', systemDark: true })).toBe(DARK_WINDOW_GROUND);
+        expect(resolveWindowGround()).toBe(LIGHT_WINDOW_GROUND);
+    });
+
+    it('is neither the old hardcoded flash colour nor anything near it', () => {
+        // The regression this closes, named: `#16161a` is in no palette the app resolves.
+        expect(resolveWindowGround({ appearance: 'dark' })).not.toBe('#16161a');
+        expect(resolveWindowGround({ appearance: 'light' })).not.toBe('#16161a');
+    });
+
+    it('takes the user’s `<bucket>:windowBackground` override, and ignores a broken one', () => {
+        expect(
+            resolveWindowGround({ appearance: 'dark', overrides: { 'dark:windowBackground': '123456' } })
+        ).toBe('#123456');
+        expect(
+            resolveWindowGround({ appearance: 'dark', overrides: { 'dark:windowBackground': '#abcdef' } })
+        ).toBe('#ABCDEF');
+        // The other bucket's override is not this bucket's.
+        expect(
+            resolveWindowGround({ appearance: 'dark', overrides: { 'light:windowBackground': '#123456' } })
+        ).toBe(DARK_WINDOW_GROUND);
+        // A mistyped hex must not blank the window.
+        for (const broken of ['', 'nope', '#12345', 'rgb(1,2,3)']) {
+            expect(
+                resolveWindowGround({ appearance: 'light', overrides: { 'light:windowBackground': broken } })
+            ).toBe(LIGHT_WINDOW_GROUND);
+        }
+    });
+});
+
+describe('readWindowGround (§N31)', () => {
+    it('is the system-bucket preset when the config names nothing', () => {
+        expect(readWindowGround(true, { NEXD_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
+            DARK_WINDOW_GROUND
+        );
+        expect(readWindowGround(false, { NEXD_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
+            LIGHT_WINDOW_GROUND
+        );
+    });
+
+    it('follows `chrome-appearance`, so an explicit choice beats the OS', () => {
+        const file = tempFile('config', 'chrome-appearance = dark\n');
+        expect(readWindowGround(false, { NEXD_CONFIG_PATH: file }, '/Users/test')).toBe(DARK_WINDOW_GROUND);
+    });
+
+    it('follows `chrome-colors`, so a recoloured chrome takes the window with it', () => {
+        // `chrome-colors` is the one-line JSON map `parseChromeColors` reads.
+        const file = tempFile(
+            'config',
+            'chrome-appearance = dark\nchrome-colors = {"dark:windowBackground":"101014"}\n'
+        );
+        expect(readWindowGround(true, { NEXD_CONFIG_PATH: file }, '/Users/test')).toBe('#101014');
     });
 });
 

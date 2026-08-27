@@ -79,20 +79,73 @@ export function isSidebarSettledOpen(phase: SidebarPhase): boolean {
     return phase === 'open';
 }
 
-/** The two inline styles the slide needs: the slot that reserves width, and the panel that moves. */
+/**
+ * §N31 — the colour the REVEAL is made of.
+ *
+ * `Sidebar.tsx` and `Inspector.tsx` both paint `sidebarBackground`, so one token covers both
+ * panels; the literal fallback is the dark preset, exactly as every other chrome component
+ * spells its own (`var(--nex-fg, #E6E6EA)`), so the strip is right even before `ThemeProvider`
+ * has stamped anything.
+ */
+export const SIDEBAR_PANEL_GROUND = 'var(--nex-sidebar-bg, #0C0C10)';
+
+/** The three inline styles the slide needs: the slot, the clip inside it, and the moving panel. */
 export interface SidebarSlideStyle {
     /** The flex slot whose width the pane grid is pushed by. */
     readonly slot: {
         readonly width: number;
         readonly transition: string;
     };
-    /** The panel inside it: fixed at its full width, translated off the edge while collapsed. */
+    /**
+     * §N31 — the clipping box between the slot and the panel, and the thing that made the port
+     * flash.
+     *
+     * It is exactly the animated width, and it used to paint NOTHING: every pixel the panel did
+     * not itself cover was whatever lay behind the window row, which is `<body>`'s ground —
+     * `--nex-window-fill`, and under a window created transparent (§N17, `background-opacity <
+     * 1`) that ground is `transparent`, i.e. **the desktop**. A slide therefore opened a
+     * 220/280 px hole onto the wallpaper: measured at 100 % of the revealed strip fully cleared
+     * mid-flight on the inspector's close, and up to 23 % on the sidebar's (whose panel *is*
+     * over its slot the whole way, but fades in through `opacity`, so its own opaque fill is
+     * translucent while it travels). On a light desktop that reads as a white flash in a dark
+     * app, which is exactly what N31 reports.
+     *
+     * So the container carries the panel's ground for the full animated width. It cannot show
+     * the wrong colour even for one frame, whatever the panel's opacity or geometry is doing,
+     * and it does not touch §N17: this is the panel's OWN opaque colour inside the panel's own
+     * slot — one of the surfaces the Swift keeps opaque at every background-opacity — never
+     * `--nex-bg`, and it exists only while the slot has width, i.e. only where the panel is.
+     */
+    readonly clip: {
+        readonly background: string;
+        /** The containing block for the panel's edge anchor below. */
+        readonly position: 'relative';
+    };
+    /**
+     * The panel inside it: fixed at its full width, translated off the edge while collapsed, and
+     * ANCHORED to the edge it travels from.
+     *
+     * The anchor is §N31's other half. In flow, a panel is laid out at its container's *leading*
+     * edge — which is the right anchor for the sidebar (the clip's left edge is the window's,
+     * fixed) and the wrong one for the inspector (the clip's RIGHT edge is the window's, and its
+     * left edge is the thing that moves). With the panel in flow, an inspector at slide progress
+     * `p` sat at `[280−280p, 560−280p]` inside a clip of `[0, 280p]`: the two do not intersect
+     * at all until `p > 0.5`, so **the first half of every inspector slide revealed a strip with
+     * no panel in it whatsoever** (measured coverage 0 %). Anchoring the panel to its own edge
+     * makes both directions the same arithmetic — the panel spans exactly `[0, width]` in clip
+     * space at every `p`, so it covers the whole reveal from the first frame.
+     */
     readonly panel: {
         readonly width: number;
         readonly opacity: number;
         readonly transform: string;
         readonly transition: string;
         readonly pointerEvents: 'auto' | 'none';
+        readonly position: 'absolute';
+        readonly top: number;
+        readonly bottom: number;
+        readonly left: number | 'auto';
+        readonly right: number | 'auto';
     };
 }
 
@@ -137,8 +190,10 @@ export function sidebarSlideStyle(
     const out = phase === 'open';
     const transition = animate ? `width ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}` : 'none';
     const offscreen = edge === 'trailing' ? width : -width;
+    const trailing = edge === 'trailing';
     return {
         slot: { width: out ? width : 0, transition },
+        clip: { background: SIDEBAR_PANEL_GROUND, position: 'relative' },
         panel: {
             width,
             opacity: out ? 1 : 0,
@@ -146,7 +201,14 @@ export function sidebarSlideStyle(
             transition: animate
                 ? `transform ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}, opacity ${String(SIDEBAR_SLIDE_MS)}ms ${SIDEBAR_SLIDE_EASING}`
                 : 'none',
-            pointerEvents: out ? 'auto' : 'none'
+            pointerEvents: out ? 'auto' : 'none',
+            // §N31: anchored to the edge it travels from, so the panel spans the whole clip at
+            // every point of the slide instead of only once the transform has nearly finished.
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: trailing ? 'auto' : 0,
+            right: trailing ? 0 : 'auto'
         }
     };
 }

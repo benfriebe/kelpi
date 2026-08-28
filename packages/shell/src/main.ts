@@ -60,6 +60,7 @@ import {
     transparencyNeedsRelaunch,
     windowTransparency
 } from './appearance.js';
+import { auditWindowBounds, auditWindowLogLine, auditWindowPolicy, auditWindowVisibility } from './audit-window.js';
 import { sendControlCommand } from './control.js';
 import {
     DaemonUnavailableError,
@@ -217,6 +218,25 @@ function isVisibleOnAllWorkspaces(): boolean {
     return readWindowState(stateFile()).visibleOnAllWorkspaces;
 }
 
+/**
+ * The origin the window WOULD have had if the audit had not moved it (`./audit-window.ts`).
+ *
+ * Null for every launch that is not an audit run with a non-default placement. When it is set,
+ * frame saves keep this origin instead of the parked one, so `window-state.json` — which the
+ * `reattach-after-relaunch` step relaunches the shell against — holds the same rectangle an
+ * onscreen run would have stored. Without it the stored frame is off the work area, the restore
+ * clamp recentres it, and a step that is supposed to be about reattachment quietly becomes a
+ * step about the clamp.
+ */
+let auditRestoreOrigin: { x: number; y: number } | null = null;
+
+/** `getNormalBounds()`, with the audit's parked origin swapped back out. */
+function persistableBounds(window: BrowserWindow): Rect {
+    const normal = window.getNormalBounds();
+    if (auditRestoreOrigin === null) return normal;
+    return { ...normal, x: auditRestoreOrigin.x, y: auditRestoreOrigin.y };
+}
+
 function scheduleBoundsSave(window: BrowserWindow): void {
     if (saveTimer !== null) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -229,7 +249,7 @@ function scheduleBoundsSave(window: BrowserWindow): void {
         // silently reset it).
         writeWindowState(stateFile(), {
             ...readWindowState(stateFile()),
-            bounds: window.getNormalBounds(),
+            bounds: persistableBounds(window),
             fullScreen: false
         });
     }, SAVE_DEBOUNCE_MS);
@@ -240,7 +260,7 @@ function saveFullScreenFlag(window: BrowserWindow, fullScreen: boolean): void {
     const stored = readWindowState(stateFile());
     writeWindowState(stateFile(), {
         ...stored,
-        bounds: fullScreen ? stored.bounds : window.getNormalBounds(),
+        bounds: fullScreen ? stored.bounds : persistableBounds(window),
         fullScreen
     });
 }
@@ -374,8 +394,17 @@ function createWindow(): BrowserWindow {
         `window: ${windowIsTransparent ? 'transparent' : 'opaque'} ` +
             `(background-opacity ${transparency.opacity.toFixed(2)}) ground ${ground}`
     );
+    /*
+     * The audit's two window concessions — see `./audit-window.ts` for what they buy and why
+     * they are safe. With `NEX_AUDIT` unset (every user launch, every packaged launch) the policy
+     * is Electron's own defaults and the three expressions below are the identity.
+     */
+    const audit = auditWindowPolicy(process.env);
+    const placedBounds = audit.active
+        ? auditWindowBounds(audit.placement, bounds, screen.getPrimaryDisplay().workArea)
+        : bounds;
     const window = new BrowserWindow({
-        ...bounds,
+        ...placedBounds,
         minWidth: MIN_WINDOW_WIDTH,
         minHeight: MIN_WINDOW_HEIGHT,
         show: false,
@@ -403,9 +432,45 @@ function createWindow(): BrowserWindow {
             nodeIntegration: false,
             webviewTag: false,
             webSecurity: true,
-            spellcheck: false
+            spellcheck: false,
+            /*
+             * Electron's default is `true`, and `auditWindowPolicy` returns `true` for every
+             * launch that is not an audit run — so this key is present with its default value
+             * and the window a user gets is unchanged. Under `NEX_AUDIT=1` it goes false, which
+             * is what keeps a run alive when its window stops being the one nobody is looking
+             * at: Chromium drops an occluded renderer's frame clock and timers to a crawl, and
+             * the audit's animation steps advance on double-rAF gates, so they do not slow down
+             * — they hang until they time out.
+             */
+            backgroundThrottling: audit.backgroundThrottling
         }
     });
+
+    auditRestoreOrigin = audit.active && audit.placement !== 'default' ? { x: bounds.x, y: bounds.y } : null;
+    if (audit.active) {
+        /*
+         * AppKit constrains the origin of a frame it is handed, so what was ASKED for and what
+         * the window got are two different rectangles; both go in the log, because "which window
+         * produced these pixels" is exactly the assumption a fidelity comparison rests on.
+         * Re-asserted after `show()` too: showing a window re-runs the constraint.
+         */
+        log(auditWindowLogLine(audit, placedBounds, window.getBounds()));
+        const visibility = auditWindowVisibility(audit.placement);
+        if (audit.placement !== 'default') {
+            window.once('show', () => {
+                try {
+                    window.setBounds(placedBounds);
+                    // Applied after `show()`, not before: showing a window resets neither, but a
+                    // window that has never been shown has no surface to make click-through.
+                    if (visibility.opacity !== null) window.setOpacity(visibility.opacity);
+                    if (visibility.ignoreMouseEvents) window.setIgnoreMouseEvents(true);
+                    log(auditWindowLogLine(audit, placedBounds, window.getBounds()));
+                } catch (error) {
+                    warn(`audit window placement failed: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            });
+        }
+    }
 
     /*
      * APP-046, reported rather than assumed.

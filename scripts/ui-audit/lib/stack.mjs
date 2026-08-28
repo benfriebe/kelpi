@@ -15,6 +15,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import { bundleHash, cacheDecision, writeRecordedHash } from './build-cache.mjs';
+
 export const PROTOCOL_VERSION = 1;
 
 /** The user's own dev stack. The audit must never bind or connect to these. */
@@ -55,6 +57,11 @@ export async function waitFor(label, predicate, timeoutMs = 30_000, intervalMs =
 export function run(command, args, opts = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
+        // Every child, not just the ones that host a window — see `clearBackgroundTaskPolicy`.
+        // `buildAll`, `packageApp` and the `codesign` check all come through here, and
+        // `packageApp` in particular is a minute of first-touch I/O over a 250 MB bundle, which
+        // is precisely the shape DARWIN_BG throttles.
+        clearBackgroundTaskPolicy(child.pid);
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8');
@@ -68,6 +75,13 @@ export function run(command, args, opts = {}) {
 
 /**
  * Take a just-spawned child out of the **background task policy** it inherited from this harness.
+ *
+ * Applied to EVERY child the harness makes — the dev shell, the packaged app, the daemon, each
+ * build step, every CLI probe, and each shard's child process — and not only to the packaged
+ * launch it was written for. A `nex` probe is a Node cold start and a run makes hundreds of them;
+ * `packageApp` is a minute of first-touch I/O over a 250 MB bundle. Both are the shape the policy
+ * throttles, and leaving them inherited left the run's non-Electron half on the slow path for no
+ * reason. It is one ~1 ms `taskpolicy` exec per child, best-effort.
  *
  * A run started from an agent session or a CI shell is usually running under `DARWIN_BG`: macOS
  * throttles its disk I/O hard and coalesces its timers, and every child inherits that. The dev
@@ -118,8 +132,17 @@ function releaseChild(child) {
  *
  * This is what makes the harness safe to re-run while other agents are editing the tree: the
  * screenshots always describe the working copy as it is right now, never a stale `dist/`.
+ *
+ * "From source" is the promise; "unconditionally" never was. Each bundle is content-hashed over
+ * its declared inputs (`./build-cache.mjs`) and skipped when that hash matches the one the last
+ * build recorded beside its `dist/`. Measured on this tree: 2.5 s for all four cold, 0.05 s when
+ * all four are cached. The saving is small because esbuild and vite are fast here — the reason it
+ * is worth having is the *sharded* run, where the parent builds once and N children would
+ * otherwise race four `pnpm build`s against the same `dist/` trees and against each other.
+ * `force: true` (`--force-build`) bypasses it. Either way the decision is logged per bundle, so a
+ * skip is never a silent one.
  */
-export async function buildAll(repoRoot, { log = () => {} } = {}) {
+export async function buildAll(repoRoot, { log = () => {}, force = false } = {}) {
     const steps = [
         ['daemon', ['pnpm', ['--filter', '@nex/daemon', 'build'], { cwd: repoRoot }]],
         ['cli', ['pnpm', ['--filter', '@nex/cli', 'build'], { cwd: repoRoot }]],
@@ -128,19 +151,29 @@ export async function buildAll(repoRoot, { log = () => {} } = {}) {
     ];
     const built = {};
     for (const [name, [command, args, opts]] of steps) {
-        log(`building ${name}…`);
+        const decision = cacheDecision(repoRoot, name, { force });
+        if (decision.cached) {
+            log(`${name}: cached — ${decision.reason}`);
+            built[name] = 'cached';
+            continue;
+        }
+        log(`building ${name}… (${decision.reason})`);
         const result = await run(command, args, opts);
         if (result.code !== 0) {
             throw new Error(`${name} build failed (exit ${String(result.code)}):\n${result.stdout}${result.stderr}`);
         }
-        built[name] = true;
+        // Recorded only AFTER a successful build, and re-hashed rather than reusing the decision's
+        // hash: a bundle step that writes into its own input tree (or a concurrent edit landing
+        // mid-build) would otherwise record a hash for a tree that no longer exists.
+        writeRecordedHash(repoRoot, name, bundleHash(repoRoot, name));
+        built[name] = 'built';
     }
     return built;
 }
 
 // ── sandbox ─────────────────────────────────────────────────────────────────────────
 
-export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {}) {
+export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditWindow } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `nexaudit-${label}-`));
     const home = path.join(root, 'home');
     const userData = path.join(root, 'electron');
@@ -206,6 +239,19 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir } = {})
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
         NEX_HARNESS: '1',
+        /*
+         * Where every shell this sandbox ever launches puts its window
+         * (`packages/shell/src/audit-window.ts`).
+         *
+         * It lives on the SANDBOX rather than in the caller's `extraEnv` because a run launches
+         * the shell more than once: `reattach-after-relaunch` quits it and starts another, with
+         * its own `extraEnv` that knows nothing about placement. With the value only in the
+         * caller's hands, the last two steps of every run silently got a differently-placed
+         * window from the other 116 — which is exactly the kind of split a fidelity comparison
+         * is supposed to detect and this one would have hidden. `extraEnv` still wins where a
+         * caller passes it, so nothing loses the ability to override.
+         */
+        ...(auditWindow === undefined ? {} : { NEX_AUDIT_WINDOW: auditWindow }),
         ...(clientDir === undefined ? {} : { NEXD_CLIENT_DIR: clientDir })
     };
 
@@ -472,6 +518,9 @@ export function makeCli(sandbox, { repoRoot }) {
                 },
                 stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']
             });
+            // A CLI probe is a Node cold start, and the run makes hundreds of them. Under the
+            // inherited DARWIN_BG policy that start is throttled I/O; clear it here too.
+            clearBackgroundTaskPolicy(child.pid);
             // `nex event` reads its hook payload (session_id, background_tasks) from stdin, so
             // an agent-lifecycle flow has to be able to hand it one.
             if (opts.stdin !== undefined) {

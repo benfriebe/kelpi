@@ -124,23 +124,43 @@ export function createReport({ outDir, meta }) {
         },
 
         write() {
-            const summary = this.summary();
-            fs.writeFileSync(
-                path.join(outDir, 'results.json'),
-                `${JSON.stringify({ meta, summary, steps }, null, 2)}\n`
-            );
-            fs.writeFileSync(path.join(outDir, 'index.md'), renderIndex({ meta, summary, steps }));
-            // The seed is scaffolding for a human verdict; once someone has written real findings
-            // into it, a re-run must never throw that away.
-            const findings = path.join(outDir, 'FINDINGS.md');
-            if (!fs.existsSync(findings)) {
-                fs.writeFileSync(findings, renderFindingsSeed({ meta, summary, steps }));
-            } else {
-                fs.writeFileSync(path.join(outDir, 'FINDINGS.seed.md'), renderFindingsSeed({ meta, summary, steps }));
-            }
-            return summary;
+            return writeReport(outDir, { meta, summary: this.summary(), steps });
         }
     };
+}
+
+/** Tally a step list the same way a live recorder does — the aggregator needs it too. */
+export function summarize(steps) {
+    return {
+        total: steps.length,
+        assertions: steps.reduce((sum, step) => sum + step.assertions.length, 0),
+        failedAssertions: steps.reduce((sum, step) => sum + step.assertions.filter((a) => !a.ok).length, 0),
+        errored: steps.filter((step) => step.error !== null && step.error !== undefined).length,
+        eyes: steps.filter((step) => step.needsEyes).length
+    };
+}
+
+/**
+ * Write the three documents a run leaves behind.
+ *
+ * Split out of `write()` so the shard aggregator produces a directory that is indistinguishable
+ * from a serial run's: same `results.json` shape, same `index.md`, same `FINDINGS.md` seeding
+ * rule. The campaign's reconciliation tooling reads `results.json` and must not be able to tell
+ * how many processes made it.
+ */
+export function writeReport(outDir, { meta, summary, steps }) {
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, 'results.json'), `${JSON.stringify({ meta, summary, steps }, null, 2)}\n`);
+    fs.writeFileSync(path.join(outDir, 'index.md'), renderIndex({ meta, summary, steps }));
+    // The seed is scaffolding for a human verdict; once someone has written real findings
+    // into it, a re-run must never throw that away.
+    const findings = path.join(outDir, 'FINDINGS.md');
+    if (!fs.existsSync(findings)) {
+        fs.writeFileSync(findings, renderFindingsSeed({ meta, summary, steps }));
+    } else {
+        fs.writeFileSync(path.join(outDir, 'FINDINGS.seed.md'), renderFindingsSeed({ meta, summary, steps }));
+    }
+    return summary;
 }
 
 function renderIndex({ meta, summary, steps }) {

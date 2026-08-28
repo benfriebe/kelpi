@@ -51,7 +51,8 @@
  *
  *     node scripts/ui-audit/panel-slide-flash.mjs [--cycles N] [--opacity 1|0.85]
  *          [--appearance dark|light|system] [--probe] [--panels sidebar,inspector]
- *          [--split N] [--no-alpha] [--out DIR] [--keep] [--verbose] [--build]
+ *          [--split N] [--no-alpha] [--placement default|hidden|offscreen|onscreen]
+ *          [--out DIR] [--keep] [--verbose] [--build]
  *
  * Exit code 0 = no probe pixel, no foreign pixel, no uncovered grid observation and no
  * unpainted (alpha 0) pixel in any frame of any slide.
@@ -93,6 +94,18 @@ const options = {
     split: Number(flag('--split', '0')),
     /** Photograph the WINDOW (`fromSurface: false`) rather than the renderer's own surface. */
     window: argv.includes('--window'),
+    /**
+     * Where the shell window is placed: `default` (visible, unchanged), `hidden`, `offscreen` or
+     * `onscreen` — `packages/shell/src/audit-window.ts` decides what each means. Read from
+     * `NEX_AUDIT_WINDOW` when the flag is absent so a caller can set it once for a comparison.
+     *
+     * This instrument is one of the two places a placement can be judged rather than guessed: it
+     * counts real composited frames, so a compositor skipping them shows up as a smaller
+     * `totals.inFlight` than the same run visible. (It is also, notably, blind to the failure that
+     * disqualified `hidden` — a zero-opacity window photographs as blank, which shows up in the
+     * PNG bytes rather than in any of these counters.)
+     */
+    placement: flag('--placement', process.env['NEX_AUDIT_WINDOW'] ?? 'default'),
     /** Multiply every slide transition by this, so a slow instrument still resolves the motion. */
     slow: Number(flag('--slow', '1')),
     dump: argv.includes('--dump'),
@@ -292,7 +305,14 @@ async function main() {
 
     try {
         await waitForHealthz(sandbox.base);
-        shell = startShell(sandbox, { repoRoot, verbose: options.verbose, extraEnv: { NEX_AUDIT: '1' } });
+        shell = startShell(sandbox, {
+            repoRoot,
+            verbose: options.verbose,
+            // Unset, this is `default` and the instrument behaves exactly as it did. Pass
+            // `--placement X` to measure a placement: run it twice and compare `report.json`'s
+            // `totals`, which is how `offscreen` was measured and rejected.
+            extraEnv: { NEX_AUDIT: '1', NEX_AUDIT_WINDOW: options.placement }
+        });
         const target = await waitForPageTarget(sandbox.debugPort, {
             timeoutMs: 90_000,
             match: (candidate) => String(candidate?.url ?? '').includes('shellWindow=')

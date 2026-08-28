@@ -70,6 +70,7 @@ import { createReport } from './lib/report.mjs';
 import {
     assertPackagedSignature,
     buildAll,
+    clearBackgroundTaskPolicy,
     freePort,
     makeCli,
     makeSandbox,
@@ -79,38 +80,78 @@ import {
     startShell,
     waitForHealthz
 } from './lib/stack.mjs';
+import { CANONICAL_ORDER, aggregateShards, describePartition, planShards } from './lib/shards.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 
 // ── options ─────────────────────────────────────────────────────────────────────────
 
+const WINDOW_PLACEMENTS = new Set(['hidden', 'offscreen', 'onscreen', 'default']);
+
 function parseArgs(argv) {
     const options = {
         out: null,
         build: true,
+        forceBuild: false,
         packaged: false,
         keep: false,
         verbose: false,
-        only: null
+        only: null,
+        /*
+         * Where the shell window goes.
+         *
+         * `default` — a visible window, exactly as before — because it is the only placement
+         * measured to keep BOTH the assertions and the screenshots. Freeing the machine's display
+         * was the goal and it was tried three ways; `packages/shell/src/audit-window.ts` holds the
+         * table. In short: `offscreen` loses the Retina backing store (devicePixelRatio 2 → 1,
+         * which turned two green assertions red in a full run), and `hidden` (zero opacity) is
+         * assertion-identical but writes blank PNGs, which is fatal for a suite where 107 of 118
+         * steps are `needs-eyes`.
+         *
+         * `--window hidden` is still worth having for an assertions-only regression run, and
+         * `--window onscreen` is the per-class fidelity pin used by `lib/shards.mjs`'s
+         * `ONSCREEN_STEPS`. The throttling half of the change (`backgroundThrottling: false`) is
+         * unconditional under `NEX_AUDIT` and is what makes any of them survive being occluded.
+         */
+        window: 'default',
+        /** Total shards. 1 = the classic single-process serial run. */
+        shards: 1,
+        /** Which shard THIS process is; null in the parent. Set by the parent on each child. */
+        shard: null
     };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
-        if (arg === '--out') options.out = argv[++i] ?? null;
-        else if (arg.startsWith('--out=')) options.out = arg.slice('--out='.length);
+        const valued = (name) => (arg === `--${name}` ? (argv[++i] ?? '') : arg.slice(`--${name}=`.length));
+        if (arg === '--out' || arg.startsWith('--out=')) options.out = valued('out');
         else if (arg === '--no-build') options.build = false;
+        else if (arg === '--force-build') options.forceBuild = true;
         else if (arg === '--packaged') options.packaged = true;
         else if (arg === '--keep') options.keep = true;
         else if (arg === '--verbose') options.verbose = true;
-        else if (arg === '--only') options.only = (argv[++i] ?? '').split(',').filter(Boolean);
-        else if (arg.startsWith('--only=')) options.only = arg.slice('--only='.length).split(',').filter(Boolean);
+        else if (arg === '--only' || arg.startsWith('--only=')) options.only = valued('only').split(',').filter(Boolean);
+        else if (arg === '--window' || arg.startsWith('--window=')) options.window = valued('window');
+        else if (arg === '--shards' || arg.startsWith('--shards=')) options.shards = Number.parseInt(valued('shards'), 10);
+        else if (arg === '--shard' || arg.startsWith('--shard=')) options.shard = Number.parseInt(valued('shard'), 10);
         else if (arg === '--help' || arg === '-h') {
             process.stdout.write(
-                'usage: node scripts/ui-audit/audit.mjs [--out <dir>] [--packaged] [--no-build] [--keep] [--verbose] [--only a,b]\n'
+                'usage: node scripts/ui-audit/audit.mjs [--out <dir>] [--packaged] [--no-build] [--force-build]\n' +
+                    '                                      [--keep] [--verbose] [--only a,b]\n' +
+                    '                                      [--window hidden|offscreen|onscreen|default] [--shards N]\n'
             );
             process.exit(0);
         } else throw new Error(`unknown argument: ${arg}`);
     }
+    if (!WINDOW_PLACEMENTS.has(options.window)) {
+        throw new Error(`--window must be one of ${[...WINDOW_PLACEMENTS].join(', ')} (got "${options.window}")`);
+    }
+    if (!Number.isInteger(options.shards) || options.shards < 1) throw new Error('--shards must be a positive integer');
+    if (options.shard !== null && (!Number.isInteger(options.shard) || options.shard < 0)) {
+        throw new Error('--shard must be a non-negative integer');
+    }
+    // Deliberately NOT bounded by `--shards`: a manifest that pins a fidelity class to its own
+    // window placement produces one more group than the requested shard count, and the parent
+    // addresses it by index. `planShards` is the authority on how many groups there are.
     return options;
 }
 
@@ -561,6 +602,226 @@ const paneCountExpr = `document.querySelectorAll('[data-testid^="pane-header-"]'
 /** Pane ids in DOM order — the audit addresses panes the way a user points at them. */
 const paneIDsExpr = `Array.from(document.querySelectorAll('[data-testid^="pane-header-"]')).map(el => el.getAttribute('data-testid').slice('pane-header-'.length))`;
 
+// ── the settle lane ─────────────────────────────────────────────────────────────────
+/*
+ * WHY THESE EXIST.
+ *
+ * run-AH2 spent 18.5 minutes of inherent step time, and 10.5 of them were literal `sleep()`
+ * calls in step bodies. Almost none of those sleeps are semantics: they are a fixed number
+ * picked so the slowest plausible machine would be finished by the time the next line ran.
+ * On a fast one the step waits out the whole number anyway, and on a loaded one the number
+ * was already a guess.
+ *
+ * Every sleep in a step body is one of three things, and the whole point of this section is
+ * that the three are handled DIFFERENTLY:
+ *
+ *   (a) SETTLE-WAIT — waiting for a condition a machine can read: a pane in `pane list`, a
+ *       DOM node, a capture containing a string, a status flipping. These become polls.
+ *   (b) DURATION-ASSERTION — the wait IS the semantics: a dwell window, a blink period, a
+ *       debounce span, the 650 ms spring, the window in which a negative assertion ("this
+ *       chord must NOT split a pane") gets its chance to be wrong. These STAY, and carry a
+ *       `DURATION-ASSERTION:` comment so nobody converts them later.
+ *   (c) PADDING — a sleep after a condition that has already been asserted. These go, with
+ *       the assertion as the guard.
+ *
+ * THE TWO RULES THAT MAKE THIS FLAKE-NEUTRAL.
+ *
+ *   1. The ORIGINAL sleep is the CEILING, never a timeout that throws. A poll that never
+ *      settles has waited exactly as long as the sleep it replaced and the step carries on
+ *      into the same assertion it always ran — so the worst case is today's behaviour and
+ *      today's verdict, and the only thing a conversion can change is how fast the good case
+ *      gets there. Nothing here can turn a green step red on a slow machine that the sleep
+ *      would have carried.
+ *   2. A poll must assert the SETTLED condition, not the first sign of motion. "The capture
+ *      is non-empty" is motion; "the capture contains the string the next assertion reads" is
+ *      settled. Where the settled state has no single positive signal, `settleStable` waits
+ *      for the value to STOP CHANGING, which is the honest form of "it has finished".
+ *
+ * AND A THIRD RULE, WHICH THIS WAVE LEARNED THE EXPENSIVE WAY.
+ *
+ *   3. Some sleeps buy a settling time NOTHING IN THE PAGE PUBLISHES, and the giveaway is what
+ *      comes AFTER them. Several conversions were made, measured, and REVERTED; each is still
+ *      in the tree with its evidence, marked `CONVERTED AND REVERTED`:
+ *
+ *        · before an `openSidebarMenu` right-click. The DOM condition a poll can see (a status
+ *          flip, `data-selected="true"`, a closed modal) goes true well before the sidebar has
+ *          finished re-rendering around it, and a right-click landing inside that window opens
+ *          no menu at all. Two step errors in an otherwise 116/118-identical full run.
+ *        · before a PIXEL read. `data-terminal-cursor-focus` is the client telling the engine;
+ *          the assertion is about the cursor's painted cells across a 530 ms blink period,
+ *          which the attribute precedes by a long way. Two reds in three runs.
+ *        · before reading `document.hasFocus()` to decide whether the machine's OS focus is
+ *          stable enough to measure. A poll reads the first instant it is true, which is
+ *          exactly how you miss another window taking it back.
+ *
+ *      The pattern: when the next line is a GESTURE aimed at a coordinate, a reading of
+ *      PIXELS, or a decision about the ENVIRONMENT rather than the app, the dwell is probably
+ *      doing more work than the visible condition and a poll will quietly shorten it.
+ */
+
+/**
+ * Poll `probe` until it answers true, for at most `ceilingMs` — the duration of the sleep
+ * being replaced.
+ *
+ * @param {() => Promise<boolean> | boolean} probe   the SETTLED condition
+ * @param {object} options
+ * @param {number} options.ceilingMs  the original sleep, spent in full only if it never settles
+ * @param {number} [options.intervalMs]  poll cadence
+ * @param {number} [options.holdMs]  the condition must hold this long before it counts (use it
+ *                                   where a value can pass through the target on its way past it)
+ * @param {number} [options.floorMs]  sleep this long BEFORE polling — for a wait whose front
+ *                                    half is a debounce that has to elapse before the condition
+ *                                    means anything
+ * @returns {Promise<boolean>} true if it settled, false if the ceiling expired
+ */
+async function settle(probe, { ceilingMs, intervalMs = 50, holdMs = 0, floorMs = 0 }) {
+    const deadline = Date.now() + ceilingMs;
+    if (floorMs > 0) await sleep(Math.min(floorMs, ceilingMs));
+    let trueSince = null;
+    for (;;) {
+        let ok = false;
+        try {
+            ok = (await probe()) === true;
+        } catch {
+            ok = false;
+        }
+        if (ok) {
+            if (holdMs === 0) return true;
+            if (trueSince === null) trueSince = Date.now();
+            else if (Date.now() - trueSince >= holdMs) return true;
+        } else {
+            trueSince = null;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return false;
+        await sleep(Math.min(intervalMs, remaining));
+    }
+}
+
+/** `settle` over a page expression — the common case. The expression is coerced to a boolean. */
+async function settleDom(page, expression, options) {
+    return await settle(async () => (await page.eval(`Boolean(${expression})`)) === true, {
+        intervalMs: 40,
+        ...options
+    });
+}
+
+/**
+ * Poll `sample` until its value STOPS CHANGING for `stableMs` — "it has finished animating /
+ * reflowing / counting", expressed without naming a target value.
+ *
+ * This is the settled predicate for the waits whose real meaning is "let it come to rest":
+ * a slide, a debounced search count, a grid reflow. A single equal pair is not enough (two
+ * frames of an animation can land on the same value), hence `stableMs`.
+ */
+async function settleStable(sample, { ceilingMs, stableMs = 200, intervalMs = 60 }) {
+    const deadline = Date.now() + ceilingMs;
+    let last = Symbol('nothing sampled yet');
+    let sameSince = null;
+    for (;;) {
+        let value;
+        try {
+            value = JSON.stringify(await sample());
+        } catch {
+            value = null;
+        }
+        if (value !== null && value === last) {
+            if (sameSince === null) sameSince = Date.now();
+            if (Date.now() - sameSince >= stableMs) return true;
+        } else {
+            sameSince = null;
+            last = value;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return false;
+        await sleep(Math.min(intervalMs, remaining));
+    }
+}
+
+/**
+ * `nex pane capture`, polled until the capture satisfies `accept` — and RETURNED, so the
+ * assertion that follows reads the very text the poll settled on.
+ *
+ * The replacement for the commonest shape in the terminal steps:
+ *
+ *     await sleep(800);
+ *     const text = await cli.ok(['pane', 'capture', '--target', paneID]);
+ *     recorder.check('…', text.includes(MARKER), …);
+ *
+ * The condition the sleep was really waiting for is written down (`text.includes(MARKER)`),
+ * the capture the step was going to make anyway becomes the poll, and when the marker never
+ * arrives the ceiling expires and ONE FINAL capture is taken — at the same moment the old
+ * `sleep(800)` would have taken it, so a failing assertion fails identically.
+ */
+async function captureUntil(cli, paneID, accept, { ceilingMs, intervalMs = 120, scrollback = false }) {
+    const args = ['pane', 'capture', '--target', paneID, ...(scrollback ? ['--scrollback'] : [])];
+    const deadline = Date.now() + ceilingMs;
+    let last = '';
+    for (;;) {
+        try {
+            last = await cli.ok(args);
+        } catch {
+            last = '';
+        }
+        if (accept(last) === true) return last;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await sleep(Math.min(intervalMs, remaining));
+    }
+    // The ceiling expired: read the world once more, at the instant the sleep would have.
+    try {
+        last = await cli.ok(args);
+    } catch {
+        /* keep the last good read */
+    }
+    return last;
+}
+
+/** "This pane's terminal is mounted, live and has painted" — as a page expression. */
+const paneLiveExpr = (paneID) =>
+    `(() => { const root = document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]');
+      if (root === null) return false;
+      if (root.getAttribute('data-terminal-status') !== 'live') return false;
+      const canvas = root.querySelector('canvas');
+      return canvas !== null && canvas.width > 0; })()`;
+
+/** "No pane with this id is on screen" — the settled end of a close. */
+const paneGoneExpr = (paneID) => `document.querySelector('[data-testid="pane-header-${paneID}"]') === null`;
+
+/**
+ * "This pane holds focus" — the settled end of a focus click.
+ *
+ * Both halves, because they are two different facts: the client's own focus model (the header's
+ * `data-focused`) and, for a terminal, whether the pane has told its ENGINE it has surface focus
+ * — which is what decides where the next keystroke goes. A non-terminal pane has no engine and
+ * satisfies the second half vacuously.
+ */
+const paneFocusedExpr = (paneID) =>
+    `(() => { const header = document.querySelector('[data-testid="pane-header-${paneID}"]');
+      if (header?.getAttribute('data-focused') !== 'true') return false;
+      const root = document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]');
+      return root === null || root.getAttribute('data-terminal-cursor-focus') === 'true'; })()`;
+
+/**
+ * A freshly split pane, settled enough to TYPE INTO.
+ *
+ * Three separate things have to have happened and only the first is visible in the DOM: the
+ * client mounts and paints the terminal, the daemon spawns the PTY, and the SHELL gets as far
+ * as printing its prompt. A step that types after only the first loses its leading characters
+ * to a shell that is still starting — which is what the fixed `sleep(2500)` was really buying.
+ * So: the DOM says live AND the daemon's own capture of the pane is no longer blank.
+ */
+async function settleShellPane(page, cli, paneID, { ceilingMs, intervalMs = 120 }) {
+    return await settle(
+        async () => {
+            if ((await page.eval(paneLiveExpr(paneID))) !== true) return false;
+            const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
+            return capture.trim().length > 0;
+        },
+        { ceilingMs, intervalMs }
+    );
+}
+
 /**
  * Open the Settings overlay, whatever state it is in.
  *
@@ -602,6 +863,8 @@ async function nexdStatus(sandbox, { repoRoot, json = true } = {}) {
             env: sandbox.env,
             stdio: ['ignore', 'pipe', 'pipe']
         });
+        // Every spawned child leaves the inherited background task policy, this one included.
+        clearBackgroundTaskPolicy(child.pid);
         let stdout = '';
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (chunk) => (stdout += chunk));
@@ -912,9 +1175,27 @@ async function resizeWindow(page, width, height) {
             mobile: false
         });
     }
-    // The grid reflows on a ResizeObserver, the engine re-measures, the PTY gets a SIGWINCH and
-    // the shell repaints — none of it synchronous with the resize call.
-    await sleep(1400);
+    /*
+     * SETTLE-WAIT (was sleep(1400)).
+     *
+     * The grid reflows on a ResizeObserver, the engine re-measures, the PTY gets a SIGWINCH and
+     * the shell repaints — none of it synchronous with the resize call, and none of it with a
+     * single "done" signal to wait on either. So the settled condition is stated as REST: the
+     * viewport, every terminal's published cell metrics and every canvas backing store have all
+     * stopped changing. A resize still in flight moves at least one of them on every frame.
+     */
+    await settleStable(
+        () =>
+            page.eval(
+                `JSON.stringify({ iw: window.innerWidth, ih: window.innerHeight,
+                  panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status]')).map((el) => {
+                      const canvas = el.querySelector('canvas');
+                      return (el.getAttribute('data-terminal-cell') ?? '') + '/' +
+                          String(canvas?.width ?? 0) + 'x' + String(canvas?.height ?? 0);
+                  }) })`
+            ),
+        { ceilingMs: 1400, stableMs: 350, intervalMs: 60 }
+    );
     const inner = await page.eval('({ w: window.innerWidth, h: window.innerHeight })');
     return { mechanism, inner };
 }
@@ -1080,12 +1361,148 @@ async function openSidebarMenu(page, selector, needle) {
 
 // ── the run ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * The parent half of a `--shards N` run: N of this same script, each in its own sandbox with its
+ * own daemon, shell and CDP session, then one aggregate.
+ *
+ * The children are the *same* harness with `--shard i` — not a special mode — so a sharded run
+ * and a serial run execute identical step code against identical stacks. All the parent adds is
+ * the fan-out, the `--no-build` (it builds once, up front, so N children do not race four builds
+ * against each other and each other's `dist/`), and the fold.
+ *
+ * A child that dies is reported and does NOT kill its siblings: the aggregate is more useful with
+ * one shard's worth of holes in it than not at all, and the missing steps are visible as missing
+ * step ids when the result is diffed against the baseline.
+ *
+ * With `lib/shards.mjs`'s free lane switched off — which is where the measurements left it — the
+ * partition puts every step in shard 0 and the other shards are empty and never started, so this
+ * path is the serial run with a fan-out and a fold around it. That is deliberate: the entrypoint
+ * stays exercised (and stays honest) while the lane is closed.
+ */
+async function runShardedParent() {
+    const startedAt = new Date().toISOString();
+    process.stdout.write(`nex UI audit → ${outDir}  (${String(options.shards)} shards)\n`);
+
+    if (options.build) {
+        // Once, here. Every child runs `--no-build`: four concurrent `pnpm build`s writing the
+        // same `dist/` trees is a race, and the cache would make three of them no-ops anyway.
+        await buildAll(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`), force: options.forceBuild });
+        if (options.packaged) await packageApp(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
+    }
+    if (options.packaged) await assertPackagedSignature(repoRoot);
+
+    const plan = planShards(CANONICAL_ORDER, options.shards);
+    process.stdout.write(`${describePartition(plan)}\n\n`);
+
+    const shardsDir = path.join(outDir, 'shards');
+    fs.mkdirSync(shardsDir, { recursive: true });
+    const shardDirs = [];
+    const children = [];
+    for (let index = 0; index < plan.groups.length; index++) {
+        if (plan.groups[index].length === 0) {
+            process.stdout.write(`  shard ${String(index)}: nothing assigned, not started\n`);
+            continue;
+        }
+        const dir = path.join(shardsDir, `shard-${String(index)}`);
+        shardDirs.push(dir);
+        const args = [
+            fileURLToPath(import.meta.url),
+            '--out',
+            dir,
+            '--no-build',
+            '--shards',
+            String(options.shards),
+            '--shard',
+            String(index),
+            // A shard the manifest pinned to a placement (the fidelity class) overrides the run's
+            // choice: Electron fixes the placement when the window is built, so "this class needs
+            // a visible window" can only be honoured by giving it a process of its own.
+            '--window',
+            plan.placements[index] ?? options.window,
+            ...(options.packaged ? ['--packaged'] : []),
+            ...(options.keep ? ['--keep'] : []),
+            ...(options.verbose ? ['--verbose'] : []),
+            ...(options.only === null ? [] : ['--only', options.only.join(',')])
+        ];
+        /*
+         * Stagger the launches.
+         *
+         * `freePort` picks a port by binding one, reading it and closing again — which is a
+         * race the moment two sandboxes are built in the same instant, and each shard draws
+         * three of them (HTTP, control, DevTools). A second and a half between starts makes
+         * the windows disjoint in practice, and costs a sharded run nothing measurable.
+         */
+        if (index > 0) await sleep(1500);
+        const child = spawnProcess(process.execPath, args, { cwd: repoRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+        clearBackgroundTaskPolicy(child.pid);
+        const logPath = path.join(shardsDir, `shard-${String(index)}.log`);
+        const sink = fs.createWriteStream(logPath);
+        child.stdout.pipe(sink);
+        child.stderr.pipe(sink);
+        // One line per step, prefixed, so a sharded run is still watchable; the full transcript
+        // is in the per-shard log.
+        let pending = '';
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => {
+            pending += chunk;
+            const parts = pending.split('\n');
+            pending = parts.pop() ?? '';
+            for (const line of parts) {
+                if (/^\[\d+\] /.test(line)) process.stdout.write(`  [shard ${String(index)}] ${line}\n`);
+            }
+        });
+        const startedShardAt = Date.now();
+        children.push(
+            new Promise((resolve) => {
+                child.on('close', (code) => {
+                    const seconds = ((Date.now() - startedShardAt) / 1000).toFixed(0);
+                    process.stdout.write(`  shard ${String(index)} finished in ${seconds}s (exit ${String(code ?? -1)}) → ${logPath}\n`);
+                    resolve({ index, code: code ?? -1, seconds: Number(seconds) });
+                });
+                child.on('error', (error) => resolve({ index, code: -1, seconds: 0, error: String(error) }));
+            })
+        );
+    }
+
+    const outcomes = await Promise.all(children);
+    const broken = outcomes.filter((outcome) => outcome.code !== 0);
+
+    const shardZero = path.join(shardsDir, 'shard-0', 'results.json');
+    const inheritedMeta = fs.existsSync(shardZero) ? JSON.parse(fs.readFileSync(shardZero, 'utf8')).meta : {};
+    const summary = aggregateShards({
+        outDir,
+        shardDirs,
+        canonicalOrder: [...CANONICAL_ORDER, 'renderer-console'],
+        meta: {
+            ...inheritedMeta,
+            startedAt,
+            commit: gitCommit(),
+            shellMode: options.packaged ? 'packaged Nex.app' : 'dev electron (packages/shell)',
+            windowPlacement: options.window,
+            shardCount: options.shards
+        }
+    });
+    process.stdout.write(
+        `\n${String(summary.total)} steps · ${String(summary.assertions)} assertions · ` +
+            `${String(summary.failedAssertions)} failed · ${String(summary.errored)} step errors · ` +
+            `${String(summary.eyes)} need eyes\n`
+    );
+    if (broken.length > 0) {
+        process.stdout.write(`⚠ ${String(broken.length)} shard(s) exited non-zero: ${broken.map((o) => String(o.index)).join(', ')}\n`);
+    }
+    process.stdout.write(`report: ${path.join(outDir, 'index.md')}\n`);
+    if (broken.length > 0) process.exitCode = 1;
+}
+
 async function main() {
     const startedAt = new Date().toISOString();
     process.stdout.write(`nex UI audit → ${outDir}\n`);
 
     if (options.build) {
-        await buildAll(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
+        await buildAll(repoRoot, {
+            log: (message) => process.stdout.write(`  ${message}\n`),
+            force: options.forceBuild
+        });
         // A `--packaged` run drives `Nex.app`, so the bundle is a build input like any other:
         // rebuild it from the bundles above rather than debugging whatever `out/` happens to
         // hold. (`--no-build` still skips this, and the signature check below still runs.)
@@ -1116,7 +1533,9 @@ async function main() {
         throw new Error(`the web client is not built: ${clientDir}`);
     }
 
-    const sandbox = await makeSandbox(repoRoot, { label: 'ui', clientDir });
+    // `auditWindow` on the sandbox, not just on `launchShell`'s `extraEnv`: the reattach step
+    // starts a SECOND shell with an `extraEnv` of its own, and the placement has to survive that.
+    const sandbox = await makeSandbox(repoRoot, { label: 'ui', clientDir, auditWindow: options.window });
     if (options.packaged) delete sandbox.env.NEXD_ENTRY;
 
     const work = writeFixtures(sandbox);
@@ -1129,6 +1548,10 @@ async function main() {
             startedAt,
             commit: gitCommit(),
             shellMode: options.packaged ? 'packaged Nex.app' : 'dev electron (packages/shell)',
+            // Which window placement produced these pixels. `shell.log` cannot answer it for the
+            // whole run — it holds only the LAST shell's lines, and `reattach-after-relaunch`
+            // starts a second one — so the run states it here instead.
+            windowPlacement: options.window,
             sandboxRoot: sandbox.root,
             httpPort: sandbox.httpPort,
             controlPort: sandbox.controlPort,
@@ -1164,7 +1587,17 @@ async function main() {
      */
     const runtime = { daemon: null, shell: null, page: null };
 
-    const skip = (id) => options.only !== null && !options.only.includes(id);
+    /**
+     * Which steps THIS process runs.
+     *
+     * `--only` is unchanged. The shard filter is layered on top and is computed from the flows
+     * this process actually built, not from the manifest's copy of the list — so every child
+     * derives the same partition from the same input, and a manifest that has drifted from the
+     * harness throws here (in every shard at once) instead of silently dropping steps from one.
+     */
+    let shardFilter = null;
+    const skip = (id) =>
+        (options.only !== null && !options.only.includes(id)) || (shardFilter !== null && !shardFilter.has(id));
 
     try {
         // The daemon's first pane should open in the fixture dir, so `ls` has content.
@@ -1181,6 +1614,10 @@ async function main() {
                 verbose: options.verbose,
                 extraEnv: {
                     NEX_AUDIT: '1',
+                    // Where the window goes, and (implicitly) `backgroundThrottling: false`.
+                    // `packages/shell/src/audit-window.ts` reads both; with NEX_AUDIT unset — i.e.
+                    // in every launch that is not this harness — it returns Electron's defaults.
+                    NEX_AUDIT_WINDOW: options.window,
                     // The ⌘O step's scripted answer to the native open panel — an OS window CDP
                     // cannot click. See `shell/src/main.ts` `promptOpenFile`.
                     NEX_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
@@ -1249,6 +1686,26 @@ async function main() {
         await sleep(2500);
 
         const flows = buildFlows({ report, page, cli, sandbox, work, repo, site, consoleErrors, runtime, repoRoot, options });
+        if (options.shard !== null) {
+            /*
+             * The partition is derived from the flows THIS process actually built, not from the
+             * manifest's copy of the list — so every child computes the same groups from the same
+             * input, and a manifest that has drifted from the harness throws here (in every shard
+             * at once) instead of silently dropping steps out of one of them.
+             */
+            const plan = planShards(flows.map((flow) => flow.id), options.shards);
+            if (plan.groups[options.shard] === undefined) {
+                throw new Error(
+                    `--shard ${String(options.shard)} is out of range: the manifest partitions this run into ` +
+                        `${String(plan.groups.length)} group(s)`
+                );
+            }
+            shardFilter = new Set(plan.groups[options.shard]);
+            process.stdout.write(
+                `shard ${String(options.shard)}/${String(options.shards)} — ${String(shardFilter.size)} steps` +
+                    `${options.shard === 0 ? ' (spine, canonical order)' : ' (free)'}\n`
+            );
+        }
         /*
          * State timeline: one JSON line per step with the pane roster (id/type/cwd/label per
          * workspace) and the active workspace, taken AFTER the step ran. This exists because
@@ -1928,11 +2385,23 @@ function buildFlows(ctx) {
                         `${label}: asked ${String(width)}x${String(height)} · ${resized.mechanism} · innerWidth ${String(resized.inner?.w)}`
                     );
                     await focusPaneBody(page, paneID);
-                    await runInTerminal(page, 'clear', { settleMs: 400 });
-                    await runInTerminal(page, `sh ${path.join(work, 'width.sh')}`, { settleMs: 1800 });
+                    // SETTLE-WAIT (was settleMs: 400): the previous pass's ruler is off the
+                    // screen, which is the only thing `clear` is here to achieve.
+                    await runInTerminal(page, 'clear', { settleMs: 0 });
+                    await captureUntil(cli, paneID, (text) => !text.includes('[END]'), { ceilingMs: 400, intervalMs: 60 });
+                    // SETTLE-WAIT (was settleMs: 1800): the fixture has printed BOTH halves of
+                    // what the three assertions below read — the PTY's own size report and the
+                    // full-width ruler's terminator. A capture with only one of them is the
+                    // half-finished state, and the poll keeps going.
+                    await runInTerminal(page, `sh ${path.join(work, 'width.sh')}`, { settleMs: 0 });
+                    const capture = await captureUntil(
+                        cli,
+                        paneID,
+                        (text) => /reported:\s+\d+\s+cols\s+x\s+\d+\s+rows/.test(text) && text.includes('[END]'),
+                        { ceilingMs: 1800, intervalMs: 120 }
+                    );
                     await recorder.shot(page, label);
 
-                    const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
                     recorder.artifact(`${label}-capture.txt`, capture);
                     const reported = /reported:\s+(\d+)\s+cols\s+x\s+(\d+)\s+rows/.exec(capture);
                     recorder.check(`${label}: the PTY reports a size`, reported !== null, reported === null ? '' : `${reported[1]}x${reported[2]}`);
@@ -1999,10 +2468,25 @@ function buildFlows(ctx) {
                     await resizeWindow(page, original.width, original.height);
                 } else {
                     await page.send('Emulation.clearDeviceMetricsOverride');
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the same "everything has stopped moving"
+                    // condition `resizeWindow` waits on, for the branch that clears the override.
+                    await settleStable(
+                        () =>
+                            page.eval(
+                                `JSON.stringify({ iw: window.innerWidth, ih: window.innerHeight,
+                                  panes: Array.from(document.querySelectorAll('[data-pane-id][data-terminal-status]')).map((el) => {
+                                      const canvas = el.querySelector('canvas');
+                                      return (el.getAttribute('data-terminal-cell') ?? '') + '/' +
+                                          String(canvas?.width ?? 0) + 'x' + String(canvas?.height ?? 0);
+                                  }) })`
+                            ),
+                        { ceilingMs: 1200, stableMs: 350, intervalMs: 60 }
+                    );
                 }
                 await focusPaneBody(page, paneID);
-                await runInTerminal(page, 'clear', { settleMs: 500 });
+                // SETTLE-WAIT (was settleMs: 500): the ruler is off the screen the shot is of.
+                await runInTerminal(page, 'clear', { settleMs: 0 });
+                await captureUntil(cli, paneID, (text) => !text.includes('[END]'), { ceilingMs: 500, intervalMs: 60 });
                 await recorder.shot(page, 'restored');
             }
         },
@@ -2052,7 +2536,9 @@ function buildFlows(ctx) {
                 const paneID = String(split.pane_id ?? '');
                 recorder.check('a pane to storm was provisioned', paneID.length > 0, JSON.stringify(split));
                 if (paneID.length === 0) return;
-                await sleep(2500);
+                // SETTLE-WAIT (was sleep(2500)): the new pane is live, painted and its shell has
+                // printed something — the state the `exec … zsh` below needs to not lose keys.
+                await settleShellPane(page, cli, paneID, { ceilingMs: 2500 });
 
                 let original = null;
                 try {
@@ -2138,12 +2624,21 @@ function buildFlows(ctx) {
                 try {
                     // ── 1. a shell whose prompt fills the width ──────────────────────
                     await focusPaneBody(page, paneID);
-                    await runInTerminal(page, `exec env ZDOTDIR=${zdotdir} zsh`, { settleMs: 2500 });
+                    await runInTerminal(page, `exec env ZDOTDIR=${zdotdir} zsh`, { settleMs: 0 });
                     // NOTHING may run in this pane between here and the storm: the trail count
                     // below is over the whole scrollback, and every command a shell runs leaves
                     // another prompt in it. The multibyte fixture therefore lives in phase 4c,
                     // after the last NEXTRAIL assertion.
-                    const armed = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    //
+                    // SETTLE-WAIT (was runInTerminal's settleMs: 2500): the replacement shell has
+                    // drawn its two-line prompt exactly once — the fixture-integrity condition the
+                    // assertion below states, so the wait ends on the thing being asserted.
+                    const armed = await captureUntil(
+                        cli,
+                        paneID,
+                        (text) => (text.match(/NEXTRAIL/g) ?? []).length === 1 && text.includes('NEXPROMPT'),
+                        { ceilingMs: 2500, scrollback: true }
+                    );
                     recorder.artifact('armed-capture.txt', armed);
                     const armedTrails = (armed.match(/NEXTRAIL/g) ?? []).length;
                     recorder.check(
@@ -2161,7 +2656,10 @@ function buildFlows(ctx) {
                     // dragged corner takes, 90 times, faster than a human can drag.
                     const before = await page.eval('JSON.stringify({ w: window.outerWidth, h: window.outerHeight })');
                     await stormStep(900, 600);
-                    await sleep(400);
+                    // SETTLE-WAIT (was sleep(400)): the window has actually taken the width the
+                    // probe below reads. When it never does — no native resize — the ceiling is
+                    // spent in full and the check fails exactly as it did before.
+                    await settleDom(page, 'window.outerWidth === 900', { ceilingMs: 400, intervalMs: 40 });
                     const probe = JSON.parse(String(await page.eval('JSON.stringify({ w: window.outerWidth, h: window.outerHeight })')));
                     const nativeResize = probe.w === 900;
                     recorder.note(`resizeTo probe: ${String(before)} → ${JSON.stringify(probe)} · native=${String(nativeResize)}`);
@@ -2178,12 +2676,35 @@ function buildFlows(ctx) {
                         const width = Math.round(1280 - 800 * Math.abs(Math.sin(step * 0.21)));
                         const height = Math.round(820 - 300 * Math.abs(Math.sin(step * 0.17)));
                         await stormStep(width, height);
+                        // DURATION-ASSERTION: the storm's cadence. 33 ms between steps is what
+                        // makes this a storm rather than 90 settled resizes — the defect only
+                        // exists when the next width lands before the last one has replayed.
                         await sleep(33);
                     }
                     await stormStep(1280, 820);
-                    // Longer than the client's 100 ms debounce + the daemon's 150 ms settle, so
-                    // what is asserted below is the SETTLED state, not the middle of a gesture.
-                    await sleep(3000);
+                    /*
+                     * SETTLE-WAIT (was sleep(3000), "longer than the client's 100 ms debounce +
+                     * the daemon's 150 ms settle"). The settled condition is stated instead of
+                     * timed: NOTHING is still moving — not the window, not the engine's grid,
+                     * not the paint hold, and not the daemon's own screen. Stability rather than
+                     * a target value, because there is no single value that says "the replay
+                     * landed"; the point of the wait is that the next four assertions read a
+                     * screen that has stopped changing.
+                     */
+                    await settleStable(
+                        async () => [
+                            await page.eval(
+                                `(() => { const root = document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]');
+                                  const canvas = root === null ? null : root.querySelector('canvas');
+                                  return JSON.stringify({ w: window.outerWidth, h: window.outerHeight,
+                                      cell: root?.getAttribute('data-terminal-cell') ?? '',
+                                      held: root?.getAttribute('data-terminal-paint-held') ?? '',
+                                      cw: canvas?.width ?? 0, ch: canvas?.height ?? 0 }); })()`
+                            ),
+                            await cli.ok(['pane', 'capture', '--target', paneID])
+                        ],
+                        { ceilingMs: 3000, stableMs: 300, intervalMs: 120 }
+                    );
                     await recorder.shot(page, 'after-storm');
 
                     // ── 3. what the DAEMON's buffer holds ────────────────────────────
@@ -2255,13 +2776,30 @@ function buildFlows(ctx) {
                         };
                         await page.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
                         await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+                        // DURATION-ASSERTION (×3): the pacing of the DRAG itself. ghostty-web
+                        // grows a selection from pointer motion over time; three instantaneous
+                        // moves are not a drag and select nothing.
                         await sleep(80);
                         await page.mouse('mouseMoved', (from.x + to.x) / 2, (from.y + to.y) / 2, { button: 'left', buttons: 1 });
                         await sleep(60);
                         await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
                         await sleep(80);
                         await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                        await sleep(600);
+                        // SETTLE-WAIT (was sleep(600)): the engine has published a non-empty
+                        // selection AND the mouse-up copy has replaced the sentinel — which is
+                        // exactly the pair the assertion below reads.
+                        await settle(
+                            async () =>
+                                (await page.eval(
+                                    `(async () => {
+                                        const root = document.querySelector('${paneRoot}');
+                                        if (Number(root?.getAttribute('data-terminal-selection') ?? 0) <= 0) return false;
+                                        const text = await navigator.clipboard.readText().catch(() => '');
+                                        return text !== '' && text !== ${JSON.stringify(CLIP_SENTINEL_STORM)};
+                                    })()`
+                                )) === true,
+                            { ceilingMs: 600, intervalMs: 50 }
+                        );
 
                         const selectedChars = await page.eval(
                             `Number(document.querySelector('${paneRoot}')?.getAttribute('data-terminal-selection') ?? 0)`
@@ -2307,7 +2845,9 @@ function buildFlows(ctx) {
                             '--target', paneID, '--json'
                         ]);
                         const siblingID = String(sibling.pane_id ?? '');
-                        await sleep(260);
+                        // SETTLE-WAIT (was sleep(260)): the sibling is on screen, so the pane
+                        // under test has actually been re-measured by the time we type into it.
+                        if (siblingID !== '') await settleDom(page, paneLiveExpr(siblingID), { ceilingMs: 260 });
                         await focusPaneBody(page, paneID);
                         await runInTerminal(
                             page,
@@ -2315,11 +2855,29 @@ function buildFlows(ctx) {
                             { settleMs: 180 }
                         );
                         if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
-                        await sleep(320);
+                        // SETTLE-WAIT (was sleep(320)): the sibling is GONE from the grid, which
+                        // is the event this round exists to provoke.
+                        if (siblingID !== '') await settleDom(page, paneGoneExpr(siblingID), { ceilingMs: 320 });
                     }
-                    // Past the client's debounce and the daemon's settle, so this reads the
-                    // SETTLED state rather than the middle of the last close.
-                    await sleep(2500);
+                    /*
+                     * SETTLE-WAIT (was sleep(2500), "past the client's debounce and the daemon's
+                     * settle"): the same stability probe §4b used — window, grid, paint hold and
+                     * the daemon's screen all at rest — so the read below is of a settled pane
+                     * rather than the middle of the last close.
+                     */
+                    await settleStable(
+                        async () => [
+                            await page.eval(
+                                `(() => { const root = document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]');
+                                  const canvas = root === null ? null : root.querySelector('canvas');
+                                  return JSON.stringify({ cell: root?.getAttribute('data-terminal-cell') ?? '',
+                                      held: root?.getAttribute('data-terminal-paint-held') ?? '',
+                                      cw: canvas?.width ?? 0, ch: canvas?.height ?? 0 }); })()`
+                            ),
+                            await cli.ok(['pane', 'capture', '--target', paneID])
+                        ],
+                        { ceilingMs: 2500, stableMs: 300, intervalMs: 120 }
+                    );
                     await recorder.shot(page, 'after-close-storm');
                     await focusPaneBody(page, paneID);
                     const afterCloses = (await readClientScreen('after-close-storm')) ?? '';
@@ -2411,7 +2969,9 @@ function buildFlows(ctx) {
                                 'pane', 'split', '--direction', 'horizontal', '--target', paneID, '--json'
                             ]);
                             const siblingID = String(sibling.pane_id ?? '');
-                            await sleep(300);
+                            // SETTLE-WAIT (was sleep(300)): the sibling is on screen, so the
+                            // close below is a real LEFT/RIGHT close and not a no-op.
+                            if (siblingID !== '') await settleDom(page, paneLiveExpr(siblingID), { ceilingMs: 300 });
                             await focusPaneBody(page, paneID);
                             await runInTerminal(
                                 page,
@@ -2419,11 +2979,26 @@ function buildFlows(ctx) {
                                 { settleMs: 160 }
                             );
                             if (siblingID !== '') await cli.run(['pane', 'close', '--target', siblingID]);
-                            // Long enough to cover the daemon's 150 ms settle plus its snapshot:
-                            // the whole window has to be inside the probe's watch.
+                            // DURATION-ASSERTION: long enough to cover the daemon's 150 ms settle
+                            // plus its snapshot — the whole hold window has to be inside the
+                            // probe's watch, and the assertion below counts those windows. A poll
+                            // that left early would shorten the very window being measured.
                             await sleep(700);
                         }
-                        await sleep(1200);
+                        /*
+                         * SETTLE-WAIT (was sleep(1200)): the last hold window has opened AND
+                         * closed. `holdWindows` is what the first assertion below counts, and the
+                         * paint hold being back to false is what makes the count final — so wait
+                         * for the settled pair, not for a fixed number of milliseconds.
+                         */
+                        await settleDom(
+                            page,
+                            `(() => { const p = window.__nexN24;
+                              const root = document.querySelector('${paneRoot}');
+                              return p !== undefined && p.holdWindows >= 8 &&
+                                  root?.getAttribute('data-terminal-paint-held') !== 'true'; })()`,
+                            { ceilingMs: 1200, intervalMs: 50 }
+                        );
                         const probe = JSON.parse(
                             String(
                                 await page.eval(
@@ -2461,8 +3036,14 @@ function buildFlows(ctx) {
                     // ── 5. still a live shell when the window is handed back ─────────
                     await restoreWindow();
                     await focusPaneBody(page, paneID);
-                    await runInTerminal(page, 'echo NEX_STILL_ALIVE_$((6*7))', { settleMs: 1500 });
-                    const alive = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                    // SETTLE-WAIT (was runInTerminal's settleMs: 1500): the shell has ECHOED the
+                    // answer — which is the very string the assertion below looks for, so the
+                    // wait and the assertion now name the same condition.
+                    await runInTerminal(page, 'echo NEX_STILL_ALIVE_$((6*7))', { settleMs: 0 });
+                    const alive = await captureUntil(cli, paneID, (text) => text.includes('NEX_STILL_ALIVE_42'), {
+                        ceilingMs: 1500,
+                        scrollback: true
+                    });
                     recorder.artifact('restored-capture.txt', alive);
                     recorder.check(
                         'the pane is still a live shell after the storm and the restore',
@@ -2487,7 +3068,9 @@ function buildFlows(ctx) {
                         // best effort — the close below matters more
                     }
                     await cli.run(['pane', 'close', '--target', paneID]);
-                    await sleep(1500);
+                    // SETTLE-WAIT (was sleep(1500)): the stormed pane is off the grid, which is
+                    // what "hand the run back what it lent" actually means.
+                    await settleDom(page, paneGoneExpr(paneID), { ceilingMs: 1500 });
                     if (anchor) await focusPaneBody(page, anchor);
                 }
             }
@@ -5535,9 +6118,26 @@ function buildFlows(ctx) {
                 }
                 // Two more tabs, so a reorder is a real permutation rather than a swap.
                 await cli.run(['web', 'tab-new', site.url, '--target', paneID, '--no-focus'], { timeoutMs: 40_000 });
-                await sleep(1200);
+                // SETTLE-WAIT (was sleep(1200)): the second tab's pill is in the strip, so the
+                // third `tab-new` below appends to a settled strip rather than racing it.
+                await settleDom(page, `document.querySelectorAll('[data-testid^="web-tab-select-"]').length >= 2`, {
+                    ceilingMs: 1200,
+                    intervalMs: 70
+                });
                 await cli.run(['web', 'tab-new', `${site.url}?three`, '--target', paneID, '--no-focus'], { timeoutMs: 40_000 });
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): all three pills are in the strip and the strip
+                // has stopped moving — the shot below is a picture of it and every geometry
+                // assertion in this step measures those pills.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `(() => { const pills = [...document.querySelectorAll('[data-testid^="web-tab-select-"]')];
+                              if (pills.length < 3) return 'only ' + String(pills.length) + ' pills @' + String(Date.now());
+                              return pills.map((pill) => { const r = pill.getBoundingClientRect();
+                                  return [Math.round(r.x), Math.round(r.width)].join(','); }).join('|'); })()`
+                        ),
+                    { ceilingMs: 1500, stableMs: 250, intervalMs: 70 }
+                );
                 await recorder.shot(page, 'strip');
 
                 const before = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
@@ -5621,9 +6221,19 @@ function buildFlows(ctx) {
                         button: 'none',
                         buttons: 0
                     });
+                    // DURATION-ASSERTION: the pointer is parked AWAY from the pill first, and this
+                    // is the beat that makes the move that follows a real ENTER rather than a
+                    // pointer that was already inside the box.
                     await sleep(250);
                     await page.mouse('mouseMoved', (box?.cx ?? 0), (box?.cy ?? 0), { button: 'none', buttons: 0 });
-                    await sleep(500);
+                    // SETTLE-WAIT (was sleep(500)): the hover has been answered — the pill's own
+                    // close affordance is what the read below measures.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="web-tab-${idleID}"]')
+                            ?.querySelector('[data-testid^="web-tab-close-"]') !== null`,
+                        { ceilingMs: 500, intervalMs: 40 }
+                    );
                     const hovered = await page.eval(
                         `(() => {
                             const pill = document.querySelector('[data-testid="web-tab-${idleID}"]');
@@ -5670,7 +6280,16 @@ function buildFlows(ctx) {
                     if (from !== null && to !== null) {
                         const beforeOrder = before.map((tab) => String(tab.id));
                         await page.drag(from.cx, from.cy, to.cx, to.cy, { steps: 10 });
-                        await sleep(1200);
+                        // SETTLE-WAIT (was sleep(1200)): the DAEMON's tab order has changed — the
+                        // reorder assertion reads that listing, and a drag that was swallowed
+                        // never changes it, spends the whole ceiling and fails identically.
+                        await settle(
+                            async () =>
+                                (await cli.json(['web', 'tabs', '--target', paneID, '--json']))
+                                    .map((tab) => String(tab.id))
+                                    .join(',') !== beforeOrder.join(','),
+                            { ceilingMs: 1200, intervalMs: 100 }
+                        );
                         await recorder.shot(page, 'after-drag');
                         const after = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
                         const order = after.map((tab) => String(tab.id));
@@ -5737,6 +6356,10 @@ function buildFlows(ctx) {
                     // (a) the no-op: re-selecting the active tab changes nothing.
                     const titleBefore = await headerTitle();
                     await page.click(`[data-testid="web-tab-select-${String(activeNow.id)}"]`);
+                    // DURATION-ASSERTION: the window in which the NO-OP assertion below gets its
+                    // chance to be wrong. "Re-selecting the active tab changed nothing" is only
+                    // meaningful if a change had time to happen; a poll would either exit on
+                    // nothing (proving nothing) or wait the whole ceiling anyway.
                     await sleep(700);
                     const unchanged = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
                     const stillActive = unchanged.find((tab) => tab.active === true) ?? {};
@@ -5748,7 +6371,15 @@ function buildFlows(ctx) {
 
                     // (b) the switch: the daemon moves, and the pane header follows.
                     await page.click(`[data-testid="web-tab-select-${String(idleTab.id)}"]`);
-                    await sleep(1100);
+                    // SETTLE-WAIT (was sleep(1100)): the DAEMON has moved the active tab — the
+                    // assertion's own condition, and the pane header is read from it next.
+                    await settle(
+                        async () =>
+                            String(
+                                (await cli.json(['web', 'tabs', '--target', paneID, '--json'])).find((tab) => tab.active === true)?.id ?? ''
+                            ) === String(idleTab.id),
+                        { ceilingMs: 1100, intervalMs: 90 }
+                    );
                     await recorder.shot(page, 'tab-selected');
                     const switched = await cli.json(['web', 'tabs', '--target', paneID, '--json']);
                     const nowActive = switched.find((tab) => tab.active === true) ?? null;
@@ -5799,7 +6430,16 @@ function buildFlows(ctx) {
                  */
                 const lonelyURL = `${site.url}?lonetab`;
                 await cli.ok(['web', 'open', lonelyURL], { timeoutMs: 60_000, paneID });
-                await sleep(2600);
+                // SETTLE-WAIT (was sleep(2600)): a SECOND web pane exists in the daemon's listing
+                // — the assertion on the next line but one, and everything after it addresses
+                // that pane by id.
+                await settle(
+                    async () =>
+                        (await cli.json(['pane', 'list', '--json'])).some(
+                            (pane) => pane.type === 'web' && pane.id !== paneID
+                        ),
+                    { ceilingMs: 2600, intervalMs: 120 }
+                );
                 const openedPanes = await cli.json(['pane', 'list', '--json']);
                 const lonely = openedPanes.find((pane) => pane.type === 'web' && pane.id !== paneID)?.id ?? null;
                 recorder.check('a second, single-tab web pane exists to close', lonely !== null);
@@ -5827,7 +6467,9 @@ function buildFlows(ctx) {
                      * test a path no user is on.
                      */
                     await clickPaneHeader(page, lonely);
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the lone web pane holds focus, which is what
+                    // decides where the ⌘W below is dispatched.
+                    await settleDom(page, paneFocusedExpr(String(lonely)), { ceilingMs: 600, intervalMs: 40 });
                     const paneCountBefore = (await domPaneIDs(page)).length;
                     const lonelyTargets = await listTargets(sandbox.debugPort);
                     const lonelyTarget = lonelyTargets.find(
@@ -5838,6 +6480,10 @@ function buildFlows(ctx) {
                     if (lonelyTarget !== undefined) {
                         const view = await connect(lonelyTarget.webSocketDebuggerUrl, { repoRoot });
                         await view.clickAt(30, 200);
+                        // DURATION-ASSERTION: the beat between giving the page's own view the
+                        // keyboard and pressing ⌘W in it. The click is what makes this view the
+                        // one the chord is delivered to, and it is delivered by the SHELL, a
+                        // process away — there is nothing in this page to poll for it.
                         await sleep(300);
                         /*
                          * Fired with a short leash, and the rejection swallowed on purpose.
@@ -5868,7 +6514,11 @@ function buildFlows(ctx) {
                             /* the view may already be gone — that is the success case */
                         }
                     }
-                    await sleep(2200);
+                    // SETTLE-WAIT (was sleep(2200)): the lone web pane is off the GRID — which is
+                    // what ⌘W on a one-tab pane is supposed to do, and what the assertions below
+                    // read (the pane count, and the daemon's listing). A chord that was swallowed
+                    // never satisfies it, spends the ceiling, and fails exactly as before.
+                    await settleDom(page, paneGoneExpr(String(lonely)), { ceilingMs: 2200, intervalMs: 90 });
                     recorder.note(
                         `shell chord relay: ${(runtime.shell?.lines ?? []).filter((line) => line.includes('forwarding')).slice(-2).join(' | ') || '(none)'}`
                     );
@@ -5900,9 +6550,23 @@ function buildFlows(ctx) {
                      */
                     const undoAnchor = await widestShellPane(page, cli);
                     if (undoAnchor !== null) await focusPaneBody(page, undoAnchor.id);
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the TERMINAL pane holds focus — the chord
+                    // below is an ordinary binding and only the client renderer will take it.
+                    if (undoAnchor !== null) {
+                        await settleDom(page, paneFocusedExpr(String(undoAnchor.id)), { ceilingMs: 600, intervalMs: 40 });
+                    }
                     await page.key('KeyT', { modifiers: MOD.meta | MOD.shift });
-                    await sleep(3000);
+                    // SETTLE-WAIT (was sleep(3000)): the closed web pane has been REOPENED — a
+                    // web pane other than this step's own is back in the daemon's listing, which
+                    // is the §WEB-007 assertion's own condition. An undo that never fires spends
+                    // the whole ceiling and fails identically.
+                    await settle(
+                        async () =>
+                            (await cli.json(['pane', 'list', '--json'])).some(
+                                (pane) => pane.type === 'web' && pane.id !== paneID
+                            ),
+                        { ceilingMs: 3000, intervalMs: 150 }
+                    );
                     await recorder.shot(page, 'web-pane-reopened');
                     const afterReopen = await cli.json(['pane', 'list', '--json']);
                     const restored = afterReopen.find((pane) => pane.type === 'web' && pane.id !== paneID) ?? null;
@@ -5934,11 +6598,23 @@ function buildFlows(ctx) {
                             restoredTabs.map((tab) => String(tab.url)).join(', ')
                         );
                         await cli.run(['pane', 'close', '--target', String(restored.id)]);
-                        await sleep(1200);
+                        // SETTLE-WAIT (was sleep(1200)): the reopened pane is off the grid again,
+                        // so the layout reset below runs on the shape the step was handed.
+                        await settleDom(page, paneGoneExpr(String(restored.id)), { ceilingMs: 1200, intervalMs: 60 });
                     }
                 }
                 await cli.run(['layout', 'select', 'even-horizontal'], { paneID });
-                await sleep(1400);
+                // SETTLE-WAIT (was sleep(1400)): the grid has come to REST in even-horizontal, so
+                // the next step inherits a settled layout rather than one still reflowing.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid^="pane-header-"]')]
+                                .map((el) => { const r = el.getBoundingClientRect();
+                                    return [Math.round(r.x), Math.round(r.width)].join(','); }).join('|')`
+                        ),
+                    { ceilingMs: 1400, stableMs: 250, intervalMs: 70 }
+                );
 
                 recorder.eyes('tab strip: pill spacing, the hovered ✕ over the masked label, the accent fill/border on the active pill');
             }
@@ -6985,12 +7661,30 @@ function buildFlows(ctx) {
                 const created = await cli.run(['workspace', 'create', '--name', workspaceName], { timeoutMs: 40_000 });
                 recorder.check('a scratch workspace for this step exists', created.code === 0, created.stdout.trim() || created.stderr.trim());
                 if (created.code !== 0) return;
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the new workspace is the ACTIVE one on screen —
+                // every `web open` below lands in whichever workspace is active, so this is the
+                // precondition for the whole step rather than a courtesy pause.
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.textContent ?? '')
+                        .includes(${JSON.stringify(workspaceName)})`,
+                    { ceilingMs: 1500, intervalMs: 60 }
+                );
 
                 const openWeb = async () => {
                     const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
-                    await sleep(2500);
-                    return (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                    const id = (/open ok:\s*([0-9a-f-]{36})/i.exec(output) ?? [])[1] ?? null;
+                    // SETTLE-WAIT (was sleep(2500) before the id was even parsed): the pane's
+                    // page HOLE is mounted and the shell has placed a view into it
+                    // (`data-visible="true"`) — the state every placement assertion below reads.
+                    if (id !== null) {
+                        await settleDom(
+                            page,
+                            `document.querySelector('[data-testid="web-page-${id}"]')?.getAttribute('data-visible') === 'true'`,
+                            { ceilingMs: 2500, intervalMs: 80 }
+                        );
+                    }
+                    return id;
                 };
                 const left = await openWeb();
                 const right = await openWeb();
@@ -7002,10 +7696,26 @@ function buildFlows(ctx) {
                 const panes = await cli.json(['pane', 'list', '--json'], { timeoutMs: 40_000 });
                 for (const pane of panes.filter((entry) => entry.is_active_workspace === true && entry.type !== 'web')) {
                     await cli.run(['pane', 'close', '--target', String(pane.id)], { timeoutMs: 40_000 });
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600) per pane): that pane is off the grid.
+                    await settleDom(page, paneGoneExpr(String(pane.id)), { ceilingMs: 600, intervalMs: 50 });
                 }
                 await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left });
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the two page holes have finished moving into the
+                // new layout. Stability, because "the layout has been applied" is a geometry
+                // fact spread across the client's reflow and the shell's re-placement — and the
+                // baseline every later assertion is compared against is read right after this.
+                // (Spelled out rather than calling `holes()`, which is declared below.)
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `JSON.stringify([...document.querySelectorAll('[data-testid^="web-page-"]')].map((el) => {
+                                const r = el.getBoundingClientRect();
+                                return [el.getAttribute('data-testid'), el.getAttribute('data-visible'),
+                                        Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join('/');
+                            }))`
+                        ),
+                    { ceilingMs: 1500, stableMs: 300, intervalMs: 80 }
+                );
 
                 /** Both ends of one pane's placement: what the client decided, what the shell did. */
                 const holes = async () =>
@@ -7214,7 +7924,24 @@ function buildFlows(ctx) {
                 const flips = [];
                 for (const flip of focusOrder) {
                     await clickPaneHeader(page, flip.pane);
-                    await sleep(1000);
+                    /*
+                     * SETTLE-WAIT (was sleep(1000)): the ring is ON THE PANE THAT WAS CLICKED and
+                     * every native view has stopped moving. Both halves are load-bearing here —
+                     * this step exists to prove the placement does NOT drift across a focus
+                     * change, so a snapshot taken while the shell is still re-placing would
+                     * either invent drift or, worse, miss it.
+                     */
+                    await settleStable(
+                        async () => {
+                            const focused = await page.eval(
+                                `document.querySelector('[data-testid="pane-header-${flip.pane}"]')?.getAttribute('data-focused') === 'true'`
+                            );
+                            if (focused !== true) return `ring has not moved yet @${String(Date.now())}`;
+                            const pages = await holes();
+                            return JSON.stringify([pages, pages.map((hole) => embedOf(hole.id))]);
+                        },
+                        { ceilingMs: 1000, stableMs: 250, intervalMs: 70 }
+                    );
                     const rows = await geometrySnapshot(flip.label);
                     await recorder.shot(page, flip.shot);
                     await checkRingClearsView(flip.label);
@@ -7303,7 +8030,31 @@ function buildFlows(ctx) {
                 const layer = async (name, open, close, { whole = false } = {}) => {
                     const baseline = await holes();
                     await open();
-                    await sleep(900);
+                    /*
+                     * SETTLE-WAIT (was sleep(900)): three facts, all of them ones the assertions
+                     * below read — the surface is up, the page holes have stopped moving, and the
+                     * SHELL has taken every covered page's view back to the holder. Written as
+                     * "at rest, AND those facts hold", so that a surface which never arrives or a
+                     * view the shell never parks spends the whole ceiling and fails identically.
+                     * The shell half matters: `embedOf` reads the shell's own log, which lags the
+                     * client, and a poll on the client alone would race it.
+                     */
+                    await settleStable(
+                        async () => {
+                            const live = await surfaceRect(name.selector);
+                            if (live === null || !(live.w > 0)) return `no surface yet @${String(Date.now())}`;
+                            const pages = await holes();
+                            const under = pages.filter((hole) => overlaps(live, hole));
+                            if (under.length === 0 || !under.every((hole) => hole.visible === 'false')) {
+                                return `pages not parked yet @${String(Date.now())}`;
+                            }
+                            if (!under.every((hole) => embedOf(hole.id).includes('owner=holder'))) {
+                                return `the shell has not parked them yet @${String(Date.now())}`;
+                            }
+                            return JSON.stringify([live, pages]);
+                        },
+                        { ceilingMs: 900, stableMs: 200, intervalMs: 70 }
+                    );
                     const rect = await surfaceRect(name.selector);
                     const during = await holes();
                     await recorder.shot(page, name.shot);
@@ -7341,7 +8092,31 @@ function buildFlows(ctx) {
                     }
 
                     await close();
-                    await sleep(1000);
+                    /*
+                     * SETTLE-WAIT (was sleep(1000)): the mirror image of the open settle — the
+                     * surface is gone, every page is placed again, and the SHELL has each view
+                     * back in the window at the bounds §N27a says it belongs at. Again these are
+                     * the assertions' own conditions, so a restore that never happens burns the
+                     * whole ceiling and produces the same red.
+                     */
+                    await settleStable(
+                        async () => {
+                            const live = await surfaceRect(name.selector);
+                            if (live !== null && live.w > 0) return `the surface is still up @${String(Date.now())}`;
+                            const pages = await holes();
+                            if (pages.length !== baseline.length || !pages.every((hole) => hole.visible === 'true')) {
+                                return `pages not handed back yet @${String(Date.now())}`;
+                            }
+                            const restored = pages.every((hole) => {
+                                const line = embedOf(hole.id);
+                                const want = expectedPlacement(hole);
+                                return line.includes('owner=main') && line.includes(`${String(want.x)},${String(want.y)}`);
+                            });
+                            if (!restored) return `the shell has not restored them yet @${String(Date.now())}`;
+                            return JSON.stringify(pages);
+                        },
+                        { ceilingMs: 1000, stableMs: 200, intervalMs: 70 }
+                    );
                     const after = await holes();
                     recorder.check(
                         `${name.label}: closing it hands every page back`,
@@ -7379,7 +8154,15 @@ function buildFlows(ctx) {
                     { label: 'row menu + submenu', shot: 'sidebar-submenu', selector: '[data-testid="context-menu"]' },
                     async () => {
                         await page.rightClick('[data-testid="workspace-row"]');
-                        await sleep(700);
+                        // SETTLE-WAIT (was sleep(700)): the row menu is up and carries the
+                        // submenu row the eval below reaches for.
+                        await settleDom(
+                            page,
+                            `(() => { const menu = document.querySelector('[data-testid="context-menu"]');
+                              return menu !== null && [...menu.querySelectorAll('[role="menuitem"]')]
+                                  .some((r) => (r.textContent ?? '').includes('▸')); })()`,
+                            { ceilingMs: 700, intervalMs: 40 }
+                        );
                         const opened = await page.eval(
                             `(() => {
                                 const menu = document.querySelector('[data-testid="context-menu"]');
@@ -7417,7 +8200,15 @@ function buildFlows(ctx) {
                             })()`
                         );
                         recorder.note(`row: ${String(raised)}`);
-                        await sleep(700);
+                        // SETTLE-WAIT (was sleep(700)): the row menu is up and carries the Delete
+                        // row the eval below clicks.
+                        await settleDom(
+                            page,
+                            `(() => { const menu = document.querySelector('[data-testid="context-menu"]');
+                              return menu !== null && [...menu.querySelectorAll('[role="menuitem"]')]
+                                  .some((r) => /^delete$/i.test((r.textContent ?? '').trim())); })()`,
+                            { ceilingMs: 700, intervalMs: 40 }
+                        );
                         const clicked = await page.eval(
                             `(() => {
                                 const menu = document.querySelector('[data-testid="context-menu"]');
@@ -7531,7 +8322,23 @@ function buildFlows(ctx) {
                     `(document.querySelector('[data-testid="layout-cycle"]')?.textContent ?? '').trim()`
                 );
                 await page.click('[data-testid="layout-menu-toggle"]');
-                await sleep(800);
+                // SETTLE-WAIT (was sleep(800)): the dropdown is open with its rows laid out —
+                // the measurement below picks a row BY GEOMETRY, so a half-open menu would pick
+                // the wrong one or none at all.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            // A menu that is absent or empty is never "at rest" — the timestamp
+                            // makes every such sample differ from the last, so the poll keeps
+                            // going until the ceiling rather than settling on nothing.
+                            `(() => { const menu = document.querySelector('[data-testid="layout-menu"]');
+                              const rows = menu === null ? [] : [...menu.querySelectorAll('[role="menuitem"]')];
+                              if (rows.length === 0) return 'no menu yet @' + String(Date.now());
+                              return rows.map((row) => { const r = row.getBoundingClientRect();
+                                  return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)].join(','); }).join('|'); })()`
+                        ),
+                    { ceilingMs: 800, stableMs: 200, intervalMs: 50 }
+                );
                 const overRow = await page.eval(
                     `(() => {
                         const menu = document.querySelector('[data-testid="layout-menu"]');
@@ -7558,7 +8365,15 @@ function buildFlows(ctx) {
                 );
                 if (overRow !== null) {
                     await page.clickAt(overRow.cx, overRow.cy);
-                    await sleep(1500);
+                    // SETTLE-WAIT (was sleep(1500)): the title bar's layout chip now names the
+                    // row that was clicked — the exact condition the assertion below states, so
+                    // a click that was swallowed spends the whole ceiling and fails identically.
+                    await settleDom(
+                        page,
+                        `(document.querySelector('[data-testid="layout-cycle"]')?.textContent ?? '')
+                            .trim().toLowerCase().includes(${JSON.stringify(String(overRow.label).toLowerCase())})`,
+                        { ceilingMs: 1500, intervalMs: 60 }
+                    );
                     const layoutAfter = await page.eval(
                         `(document.querySelector('[data-testid="layout-cycle"]')?.textContent ?? '').trim()`
                     );
@@ -7569,7 +8384,9 @@ function buildFlows(ctx) {
                         `${String(layoutBefore)} → ${String(layoutAfter)}`
                     );
                     await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left, timeoutMs: 40_000 });
-                    await sleep(1500);
+                    // SETTLE-WAIT (was sleep(1500)): the pages have finished moving back into
+                    // even-horizontal — `afterRowClick` is read off them on the next line.
+                    await settleStable(async () => await holes(), { ceilingMs: 1500, stableMs: 300, intervalMs: 80 });
                 }
                 const afterRowClick = await holes();
                 recorder.check(
@@ -7606,7 +8423,14 @@ function buildFlows(ctx) {
                     // document, above the page, and is what bootstraps the whole gesture.
                     await page.mouse('mouseMoved', dragFrom.cx + 30, dragFrom.cy + 6, { button: 'left', buttons: 1 });
                     await page.mouse('mouseMoved', dragOnto.cx, dragOnto.cy, { button: 'left', buttons: 1 });
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the drag has been recognised and the drop
+                    // highlight has published a zone — `onHeader` is read off it on the next
+                    // line and is half of the top→bottom assertion below.
+                    await settleDom(
+                        page,
+                        `(document.querySelector('[data-testid="drop-zone-overlay"]')?.getAttribute('data-zone') ?? '') !== ''`,
+                        { ceilingMs: 600, intervalMs: 40 }
+                    );
                     const onHeader = await page.eval(
                         `(() => { const el = document.querySelector('[data-testid="drop-zone-overlay"]');
                                   return el === null ? null : el.getAttribute('data-zone'); })()`
@@ -7616,7 +8440,30 @@ function buildFlows(ctx) {
                     const intoX = Math.round(dropHole.x + dropHole.w / 2);
                     const intoY = Math.round(dropHole.y + dropHole.h * 0.75);
                     await page.mouse('mouseMoved', intoX, intoY, { button: 'left', buttons: 1 });
-                    await sleep(800);
+                    /*
+                     * SETTLE-WAIT (was sleep(800)): the pointer's new position has been answered
+                     * — the highlight names the target pane, the zone has flipped to `bottom`,
+                     * and the SHELL has taken that pane's view back to the holder. All three are
+                     * assertions below; polling on the client alone would race the shell log
+                     * that two of them are read from.
+                     */
+                    await settle(
+                        async () => {
+                            const state = await page.eval(
+                                `(() => { const el = document.querySelector('[data-testid="drop-zone-overlay"]');
+                                  if (el === null) return null;
+                                  return JSON.stringify({ zone: el.getAttribute('data-zone'), target: el.getAttribute('data-target') }); })()`
+                            );
+                            if (typeof state !== 'string') return false;
+                            const parsed = JSON.parse(state);
+                            if (String(parsed.target).toLowerCase() !== String(right).toLowerCase()) return false;
+                            if (parsed.zone !== 'bottom') return false;
+                            const live = await holes();
+                            const target = live.find((hole) => hole.id.toLowerCase() === String(right).toLowerCase()) ?? null;
+                            return target !== null && target.visible === 'false' && embedOf(target.id).includes('owner=holder');
+                        },
+                        { ceilingMs: 800, intervalMs: 60 }
+                    );
                     const zone = await page.eval(
                         `(() => {
                             const el = document.querySelector('[data-testid="drop-zone-overlay"]');
@@ -7662,7 +8509,25 @@ function buildFlows(ctx) {
                     }
 
                     await page.mouse('mouseReleased', intoX, intoY, { button: 'left', clickCount: 1 });
-                    await sleep(2000);
+                    /*
+                     * SETTLE-WAIT (was sleep(2000)): the drop has been applied and the two pages
+                     * have come to rest STACKED with both placed — the two assertions below. The
+                     * stacked test is the assertions' own geometry test, and it is paired with a
+                     * stability requirement so a mid-reflow frame that happens to satisfy it
+                     * cannot end the wait.
+                     */
+                    await settleStable(
+                        async () => {
+                            const live = await holes();
+                            const stacked =
+                                live.length === 2 &&
+                                Math.abs(live[0].x - live[1].x) < 8 &&
+                                Math.abs(live[0].y - live[1].y) > 8 &&
+                                live.every((hole) => hole.visible === 'true');
+                            return stacked ? JSON.stringify(live) : `not stacked yet @${String(Date.now())}`;
+                        },
+                        { ceilingMs: 2000, stableMs: 300, intervalMs: 80 }
+                    );
                     const afterDrop = await holes();
                     recorder.note(`after the drop: ${JSON.stringify(afterDrop)}`);
                     recorder.check(
@@ -7678,7 +8543,9 @@ function buildFlows(ctx) {
                         JSON.stringify(afterDrop.map((hole) => `${hole.id.slice(0, 8)}=${String(hole.visible)}`))
                     );
                     await cli.run(['layout', 'select', 'even-horizontal'], { paneID: left, timeoutMs: 40_000 });
-                    await sleep(1500);
+                    // SETTLE-WAIT (was sleep(1500)): the pages are back at rest side by side
+                    // before the next matrix row takes its own baseline.
+                    await settleStable(async () => await holes(), { ceilingMs: 1500, stableMs: 300, intervalMs: 80 });
                 }
 
                 /*
@@ -7690,7 +8557,12 @@ function buildFlows(ctx) {
                     { label: 'custom emoji sheet', shot: 'emoji-sheet', selector: '[data-testid="emoji-sheet"]' },
                     async () => {
                         await page.rightClick('[data-testid="workspace-row"]');
-                        await sleep(700);
+                        // SETTLE-WAIT (was sleep(700)): the row menu is up and carries the
+                        // Change Icon row the eval below hovers.
+                        await settleDom(page, `document.querySelector('[data-testid="context-menu"] [data-menu-item="icon"]') !== null`, {
+                            ceilingMs: 700,
+                            intervalMs: 40
+                        });
                         const opened = await page.eval(
                             `(() => {
                                 const menu = document.querySelector('[data-testid="context-menu"]');
@@ -7703,7 +8575,12 @@ function buildFlows(ctx) {
                             })()`
                         );
                         recorder.note(`change-icon: ${String(opened)}`);
-                        await sleep(600);
+                        // SETTLE-WAIT (was sleep(600)): the submenu is out and carries the
+                        // Custom Emoji row the eval below clicks.
+                        await settleDom(page, `document.querySelector('[data-menu-item="icon:custom"]') !== null`, {
+                            ceilingMs: 600,
+                            intervalMs: 40
+                        });
                         const picked = await page.eval(
                             `(() => {
                                 const row = document.querySelector('[data-menu-item="icon:custom"]');
@@ -7741,13 +8618,22 @@ function buildFlows(ctx) {
                 const helperID = typeof helper?.pane_id === 'string' ? helper.pane_id : null;
                 recorder.check('a shell pane for the agent bucket exists', helperID !== null, JSON.stringify(helper));
                 if (helperID !== null) {
-                    await sleep(1500);
+                    // SETTLE-WAIT (was sleep(1500)): the helper pane is live and its shell has
+                    // started, so the `event start` below has a real pane to attach an agent to.
+                    await settleShellPane(page, cli, helperID, { ceilingMs: 1500 });
                     await cli.ok(['event', 'start'], {
                         paneID: helperID,
                         stdin: JSON.stringify({ session_id: 'n26-0000-1111-2222' }),
                         timeoutMs: 40_000
                     });
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the footer's running chip is NON-ZERO. A
+                    // zero chip is inert (§M22) and clicking it would open nothing, so "the
+                    // count has reached the footer" is exactly what this wait is for.
+                    await settleDom(
+                        page,
+                        `/[1-9]/.test(document.querySelector('[data-testid="count-running"]')?.textContent ?? '')`,
+                        { ceilingMs: 1200, intervalMs: 60 }
+                    );
                     await layer(
                         { label: 'bucket popover', shot: 'bucket-popover', selector: '[data-testid="bucket-popover"]' },
                         async () => {
@@ -7772,6 +8658,9 @@ function buildFlows(ctx) {
                  * A step that leaves a hover behind is a step that fails someone else's.
                  */
                 await page.mouse('mouseMoved', 640, 300, { button: 'none', buttons: 0 });
+                // DURATION-ASSERTION: the beat the hover styles need to fall away before the
+                // step ends. There is nothing to poll — the fact being bought is the ABSENCE of
+                // a hover key twenty-two steps later — and 300 ms is the cheapest way to buy it.
                 await sleep(300);
 
                 recorder.eyes(
@@ -7785,7 +8674,16 @@ function buildFlows(ctx) {
                     removed.code === 0,
                     removed.stdout.trim() || removed.stderr.trim()
                 );
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the scratch workspace's row is off the sidebar
+                // and another workspace has taken the screen — "leave the app as this step found
+                // it" is a fact about the screen, and the next step inherits it.
+                await settleDom(
+                    page,
+                    `![...document.querySelectorAll('[data-testid="workspace-row"]')]
+                        .some((row) => (row.textContent ?? '').includes(${JSON.stringify(workspaceName)})) &&
+                     document.querySelector('[data-testid="workspace-row"][data-active="true"]') !== null`,
+                    { ceilingMs: 1500, intervalMs: 60 }
+                );
             }
         },
 
@@ -11120,11 +12018,21 @@ function buildFlows(ctx) {
                 ];
                 for (const [code, key] of controls) {
                     await page.key(code, { modifiers: MOD.ctrl, key });
+                    // DURATION-ASSERTION: keystroke SPACING. The ten control codes are read back
+                    // out of `cat -v` as a sequence; keys dispatched in the same tick coalesce
+                    // before the PTY sees them as ten separate writes.
                     await sleep(60);
                 }
                 await page.key('Enter');
-                await sleep(900);
-                const controlCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                // SETTLE-WAIT (was sleep(900) then a capture): every one of the ten control codes
+                // is on the screen — which is the assertion's own condition, so a code that never
+                // arrives spends the whole ceiling and fails exactly as it did before.
+                const controlCapture = await captureUntil(
+                    cli,
+                    paneID,
+                    (text) => controls.every(([, , caret]) => text.includes(caret)),
+                    { ceilingMs: 900, intervalMs: 90, scrollback: true }
+                );
                 recorder.block('after ctrl+a…ctrl+x (cat -v)', controlCapture.slice(-600));
                 const seen = controls.filter(([, , caret]) => controlCapture.includes(caret));
                 recorder.note(
@@ -11153,11 +12061,20 @@ function buildFlows(ctx) {
                 ];
                 for (const [code, key] of navKeys) {
                     await page.key(code, { key });
+                    // DURATION-ASSERTION: keystroke spacing, as above — the assertion counts the
+                    // escape introducers on ONE line, so the four keys have to arrive as four.
                     await sleep(80);
                 }
                 await page.key('Enter');
-                await sleep(900);
-                const navCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                // SETTLE-WAIT (was sleep(900) then a capture): the escape-bearing line carries at
+                // least the four introducers the assertion counts.
+                const navCapture = await captureUntil(
+                    cli,
+                    paneID,
+                    (text) =>
+                        (((text.split('\n').filter((line) => line.includes('^[')).pop() ?? '').match(/\^\[/g) ?? []).length) >= 4,
+                    { ceilingMs: 900, intervalMs: 90, scrollback: true }
+                );
                 const navLine = navCapture.split('\n').filter((line) => line.includes('^[')).pop() ?? '';
                 recorder.block('after Home/End/PageUp/PageDown (cat -v)', navCapture.slice(-400));
                 recorder.note(`escape-bearing line: ${JSON.stringify(navLine)}`);
@@ -11272,7 +12189,14 @@ function buildFlows(ctx) {
                 await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
                 await sleep(80);
                 await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the engine has published a selection — the first
+                // assertion of this pair reads that length, and the second reads a NEGATIVE (no
+                // mouse reports) which is only meaningful once the drag has been fully handled.
+                await settleDom(
+                    page,
+                    `Number(document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]')?.getAttribute('data-terminal-selection') ?? 0) > 0`,
+                    { ceilingMs: 400, intervalMs: 40 }
+                );
                 const plainSelection = await selectionLength();
                 const plainCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                 const plainReports = plainCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
@@ -11327,9 +12251,18 @@ function buildFlows(ctx) {
                 await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
                 await sleep(120);
                 await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                await sleep(900);
-
-                const mouseCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                /*
+                 * SETTLE-WAIT (was sleep(900) then a capture): the RELEASE report is on screen.
+                 * It is the last byte the gesture produces, so its arrival is the settled state of
+                 * the whole drag — and it is the second assertion's own needle. Waiting for "any
+                 * report" instead would be the half-true exit: the press lands first and the
+                 * motion reports are still in flight behind it.
+                 */
+                const mouseCapture = await captureUntil(cli, paneID, (text) => text.includes('^[[<0;11;6m'), {
+                    ceilingMs: 900,
+                    intervalMs: 90,
+                    scrollback: true
+                });
                 const reports = mouseCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
                 recorder.block('after a click-drag with mouse reporting on', mouseCapture.slice(-500));
                 recorder.note(`SGR mouse reports: ${reports.join(' ') || '(none)'}`);
@@ -11394,7 +12327,14 @@ function buildFlows(ctx) {
                     clickCount: 1,
                     modifiers: MOD.shift
                 });
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the shift-drag has produced a SELECTION, which is
+                // the positive half of this pair (its other half — that no mouse report was
+                // written — is a negative and is read from the same settled capture).
+                await settleDom(
+                    page,
+                    `Number(document.querySelector('[data-pane-id="${paneID}"][data-terminal-status]')?.getAttribute('data-terminal-selection') ?? 0) > 0`,
+                    { ceilingMs: 600, intervalMs: 50 }
+                );
                 const shiftCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                 const shiftReports = shiftCapture.match(/\^\[\[<\d+;\d+;\d+[Mm]/g) ?? [];
                 const shiftSelection = await selectionLength();
@@ -11847,12 +12787,21 @@ function buildFlows(ctx) {
                 // A sentinel keystroke AFTER the commit, so the terminator space is an INTERIOR
                 // cell. `pane capture` trims trailing whitespace off a row, so a space at the
                 // end of the line would be unprovable; `한글 Q` is not.
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the composed text has reached the PTY, so the
+                // sentinel below is typed AFTER it rather than into the middle of the commit.
+                await captureUntil(cli, paneID, (text) => text.includes(HANGUL), { ceilingMs: 500, intervalMs: 70 });
                 await page.key('KeyQ', { key: 'Q', text: 'Q' });
-                await sleep(800);
+                // SETTLE-WAIT (was sleep(800) then a capture): the screen carries the composed
+                // text, its terminating space and the sentinel — `${HANGUL} Q` is exactly what
+                // the second assertion below looks for, and the first counts occurrences in the
+                // same capture. A dropped terminator never satisfies it, spends the whole
+                // ceiling and fails identically.
+                const spaceCapture = await captureUntil(cli, paneID, (text) => text.includes(`${HANGUL} Q`), {
+                    ceilingMs: 800,
+                    intervalMs: 90
+                });
                 await recorder.shot(page, 'composed');
 
-                const spaceCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
                 recorder.block('nex pane capture (Space-terminated composition)', spaceCapture.trimEnd());
                 const hangulCount = spaceCapture.split(HANGUL).length - 1;
                 recorder.note(`"${HANGUL}" occurrences on screen: ${String(hangulCount)}`);
@@ -11871,7 +12820,13 @@ function buildFlows(ctx) {
 
                 // Submit that line so the next composition starts on a clean one.
                 await page.key('Enter');
-                await sleep(800);
+                // SETTLE-WAIT (was sleep(800)): the submitted line is off the input line — the
+                // screen has come to rest, which is what "a clean line to compose on" means.
+                await settleStable(() => cli.ok(['pane', 'capture', '--target', paneID]), {
+                    ceilingMs: 800,
+                    stableMs: 200,
+                    intervalMs: 90
+                });
 
                 // ── composition 2: terminated by Enter (the vendored hardening) ──────
                 await page.eval(
@@ -11888,8 +12843,15 @@ function buildFlows(ctx) {
                         return 'ok';
                     })()`
                 );
-                await sleep(900);
-                const enterCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                // SETTLE-WAIT (was sleep(900) then a capture): the composed text is on a line of
+                // its own — the third assertion below's own condition, and the state in which the
+                // other two (no leaked key name, at most two occurrences) are meaningful.
+                const enterCapture = await captureUntil(
+                    cli,
+                    paneID,
+                    (text) => text.split('\n').some((line) => line.trim() === TEST),
+                    { ceilingMs: 900, intervalMs: 90 }
+                );
                 recorder.block('nex pane capture (Enter-terminated composition)', enterCapture.trimEnd());
                 const keyNameLeak = ['Enter', 'Return', 'Escape', 'Backspace'].filter((name) => enterCapture.includes(name));
                 recorder.check(
@@ -12072,7 +13034,14 @@ function buildFlows(ctx) {
                     );
 
                     await composeAtCaret(HANGUL_PREEDIT);
-                    await sleep(250);
+                    // SETTLE-WAIT (was sleep(250)): the preedit chip is SHOWING THE IN-FLIGHT
+                    // STRING — the geometry read below is of that chip, so a read taken before
+                    // it renders measures nothing.
+                    await settleDom(
+                        page,
+                        `(document.querySelector('${paneRoot} [data-terminal-host] [data-ime-preedit]')?.textContent ?? '') === ${JSON.stringify(HANGUL_PREEDIT)}`,
+                        { ceilingMs: 250, intervalMs: 25 }
+                    );
                     const composingA = await readCaretGeometry();
                     recorder.note(
                         `composing at CUP(${String(cellA.row)},${String(cellA.col)}): preedit ${JSON.stringify(composingA?.preedit ?? null)} · ` +
@@ -12093,7 +13062,13 @@ function buildFlows(ctx) {
                     );
                     await recorder.shot(page, 'preedit-at-caret');
                     await endComposition('');
-                    await sleep(300);
+                    // SETTLE-WAIT (was sleep(300)): the preedit chip is withdrawn, so probe B
+                    // below starts from no marked text rather than from A's leftovers.
+                    await settleDom(
+                        page,
+                        `(document.querySelector('${paneRoot} [data-terminal-host] [data-ime-preedit]')?.textContent ?? '') === ''`,
+                        { ceilingMs: 300, intervalMs: 30 }
+                    );
 
                     // Probe B — a DIFFERENT cell. One probe cannot tell "follows the caret"
                     // from "happens to be offset from the container by exactly that much".
@@ -12103,7 +13078,13 @@ function buildFlows(ctx) {
                         settleMs: 900
                     });
                     await composeAtCaret(TEST_PREEDIT);
-                    await sleep(250);
+                    // SETTLE-WAIT (was sleep(250)): as for probe A — the chip carries the
+                    // in-flight string before its box is measured.
+                    await settleDom(
+                        page,
+                        `(document.querySelector('${paneRoot} [data-terminal-host] [data-ime-preedit]')?.textContent ?? '') === ${JSON.stringify(TEST_PREEDIT)}`,
+                        { ceilingMs: 250, intervalMs: 25 }
+                    );
                     const composingB = await readCaretGeometry();
                     recorder.note(
                         `composing at CUP(${String(cellB.row)},${String(cellB.col)}): preedit ${JSON.stringify(composingB?.preedit ?? null)} · ` +
@@ -12123,7 +13104,18 @@ function buildFlows(ctx) {
                     await recorder.shot(page, 'preedit-tracked');
 
                     await endComposition(TEST);
-                    await sleep(800);
+                    // SETTLE-WAIT (was sleep(800)): the commit is COMPLETE — the preedit is gone
+                    // and the hidden textarea has walked past where it composed, which is exactly
+                    // the pair of assertions below.
+                    await settleDom(
+                        page,
+                        `(() => { const chip = document.querySelector('${paneRoot} [data-terminal-host] [data-ime-preedit]');
+                          const ta = document.querySelector(${JSON.stringify(textarea)});
+                          if (chip === null || ta === null) return false;
+                          if (getComputedStyle(chip).display !== 'none') return false;
+                          return ta.getBoundingClientRect().x >= ${String((composingB?.textarea?.x ?? 0) + cellW)}; })()`,
+                        { ceilingMs: 800, intervalMs: 50 }
+                    );
                     const afterB = await readCaretGeometry();
                     recorder.note(
                         `after commit: preedit ${String(afterB?.preeditDisplay ?? 'missing')} ${JSON.stringify(afterB?.preeditText ?? null)} · ` +
@@ -12151,6 +13143,10 @@ function buildFlows(ctx) {
                 // the PTY received, not the engine's rendering of its own state.
                 await runInTerminal(page, "clear; printf '\\033[?1l'; cat -v", { settleMs: 900 });
                 await page.key('Tab', { modifiers: MOD.shift, key: 'Tab' });
+                // DURATION-ASSERTION (this whole sequence): keystroke SPACING. The bytes are
+                // read back out of `cat -v` as a SEQUENCE, and keys dispatched in the same tick
+                // coalesce before the PTY sees them as separate events — the gaps are what make
+                // `^[[Z`, `^[[27;2;13~`, `^[[H` and `^[[F` land as four distinguishable writes.
                 await sleep(200);
                 await page.key('Enter');
                 await sleep(600);
@@ -12163,8 +13159,15 @@ function buildFlows(ctx) {
                 await page.key('End');
                 await sleep(150);
                 await page.key('Enter');
-                await sleep(700);
-                const encoderCapture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
+                // SETTLE-WAIT (was sleep(700) then a capture): `cat -v` has printed the Home and
+                // End sequences — the last assertion of this group reads exactly those two, and
+                // they are the last bytes of the sequence typed above.
+                const encoderCapture = await captureUntil(
+                    cli,
+                    paneID,
+                    (text) => text.includes('^[[H') && text.includes('^[[F'),
+                    { ceilingMs: 700, intervalMs: 90, scrollback: true }
+                );
                 recorder.block('nex pane capture (cat -v, DECCKM off)', encoderCapture.trimEnd().split('\n').slice(-8).join('\n'));
                 recorder.check(
                     'Shift+Tab reaches the PTY as `ESC [ Z` — TERM-029\'s named case, unasserted until now',
@@ -12186,14 +13189,22 @@ function buildFlows(ctx) {
                 await sleep(500);
                 await runInTerminal(page, "clear; printf '\\033[?1h'; cat -v", { settleMs: 900 });
                 await page.key('Home');
+                // DURATION-ASSERTION (this whole sequence): keystroke SPACING. The bytes are
+                // read back out of `cat -v` as a SEQUENCE, and keys dispatched in the same tick
+                // coalesce before the PTY sees them as separate events — the gaps are what make
+                // `^[[Z`, `^[[27;2;13~`, `^[[H` and `^[[F` land as four distinguishable writes.
                 await sleep(150);
                 await page.key('End');
                 await sleep(150);
                 await page.key('ArrowUp');
                 await sleep(150);
                 await page.key('Enter');
-                await sleep(700);
-                const decckmCapture = await cli.ok(['pane', 'capture', '--target', paneID]);
+                // SETTLE-WAIT (was sleep(700) then a capture): with DECCKM set, `cat -v` has
+                // printed the application-mode arrow — `^[OA` is the assertion's own needle.
+                const decckmCapture = await captureUntil(cli, paneID, (text) => text.includes('^[OA'), {
+                    ceilingMs: 700,
+                    intervalMs: 90
+                });
                 recorder.block('nex pane capture (cat -v, DECCKM set)', decckmCapture.trimEnd().split('\n').slice(-4).join('\n'));
                 const decckmLine = decckmCapture.split('\n').filter((line) => line.includes('^[')).pop() ?? '';
                 recorder.note(`DECCKM line: ${JSON.stringify(decckmLine)}`);
@@ -12275,7 +13286,21 @@ function buildFlows(ctx) {
                         await page.mouse('mouseMoved', to.x, to.y, { button: 'left', buttons: 1 });
                         await sleep(80);
                         await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                        await sleep(500);
+                        // SETTLE-WAIT (was sleep(500)): the engine has published a selection AND
+                        // the mouse-up copy has replaced the sentinel — the pair the assertions
+                        // below read, so the wait ends on the thing being asserted.
+                        await settle(
+                            async () =>
+                                (await page.eval(
+                                    `(async () => {
+                                        const root = document.querySelector('${paneRoot}');
+                                        if (Number(root?.getAttribute('data-terminal-selection') ?? 0) <= 0) return false;
+                                        const text = await navigator.clipboard.readText().catch(() => '');
+                                        return text !== '' && text !== ${JSON.stringify(CLIP_SENTINEL)};
+                                    })()`
+                                )) === true,
+                            { ceilingMs: 500, intervalMs: 40 }
+                        );
                         await recorder.shot(page, 'wide-selection');
 
                         const selected = await page.eval(
@@ -12395,7 +13420,10 @@ function buildFlows(ctx) {
                     const split = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', shells[0].id, '--json']);
                     borrowed = typeof split?.pane_id === 'string' ? split.pane_id : null;
                     recorder.note(`borrowed a sibling for the comparison, to be closed at the end of this step: ${String(borrowed)}`);
-                    await sleep(2400);
+                    // SETTLE-WAIT (was sleep(2400)): the borrowed sibling is live, painted and at
+                    // a prompt — this step types `cat` into both panes, so a pane that is merely
+                    // mounted is not enough.
+                    if (borrowed !== null) await settleShellPane(page, cli, borrowed, { ceilingMs: 2400 });
                     const grown = new Set(await domPaneIDs(page));
                     shells = (await cli.json(['pane', 'list', '--json'])).filter(
                         (pane) => pane.type === 'shell' && grown.has(pane.id)
@@ -12428,6 +13456,20 @@ function buildFlows(ctx) {
                 } catch {
                     /* a Chromium without the Page domain here still runs the rest */
                 }
+                /*
+                 * DURATION-ASSERTION — and this one was CONVERTED AND REVERTED, so the reason is
+                 * worth leaving in the record.
+                 *
+                 * As a poll (`settleDom('document.hasFocus()')`) it read true the instant the
+                 * window took focus, ~40 ms in. That is not the same measurement: `hasFocus()` is
+                 * read here to decide whether the machine's OS focus is STABLE enough to measure a
+                 * real cursor, and reading it early is exactly how you miss another window taking
+                 * it back. Three converted runs under load produced two failures — the window was
+                 * key at 40 ms, so the synthetic fall-back below was skipped, and by the time the
+                 * cursor was sampled both panes reported `data-terminal-cursor-focus="false"`.
+                 * The same three runs on the sleep were clean. The dwell IS the semantics here:
+                 * it is the window manager's settling time, and the sample belongs at its END.
+                 */
                 await sleep(500);
                 let windowKey = await page.eval('document.hasFocus()');
                 if (windowKey !== true) {
@@ -12657,6 +13699,17 @@ function buildFlows(ctx) {
                  * is the line under `recorder.eyes` below.
                  */
                 await page.eval("(() => { window.dispatchEvent(new Event('blur')); return 'ok'; })()");
+                /*
+                 * DURATION-ASSERTION — CONVERTED AND REVERTED, for the reason this lane exists.
+                 *
+                 * The obvious poll is `data-terminal-cursor-focus === "false"`, and it is wrong:
+                 * the attribute is the client TELLING the engine, which happens one tick after
+                 * the event and long before the engine has repainted the cell. What the assertion
+                 * below reads is PIXELS — hollow, and steady — and "steady" cannot be true until a
+                 * blink period (530 ms) has passed without the cell changing. Polling the
+                 * attribute went red on 2 of 3 runs with a cursor still caught mid-blink; the
+                 * sleep is the blink period, and that is the semantics.
+                 */
                 await sleep(500);
                 const backgrounded = await sampleCursor(focusedPane);
                 await recorder.shot(page, 'window-blurred');
@@ -12672,6 +13725,9 @@ function buildFlows(ctx) {
                 );
 
                 await page.eval("(() => { window.dispatchEvent(new Event('focus')); return 'ok'; })()");
+                // DURATION-ASSERTION: the mirror of the blur dwell above — the restore assertion
+                // reads a cursor that is filled AND blinking again, which is a statement about a
+                // blink period's worth of frames, not about the attribute that precedes them.
                 await sleep(500);
                 const restored = await sampleCursor(focusedPane);
                 recorder.block('the same pane after the window came back', summarise(restored));
@@ -12694,9 +13750,16 @@ function buildFlows(ctx) {
                         await sleep(400);
                         await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 500 });
                         const probe = `CURSOROK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-                        await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 700 });
-                        const back = await cli.run(['pane', 'capture', '--target', paneID]);
-                        handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                        // SETTLE-WAIT (was settleMs: 700 then a capture): the shell has echoed the
+                        // probe on a line of its own — the exact test `handedBack` performs.
+                        await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 0 });
+                        const back = await captureUntil(
+                            cli,
+                            paneID,
+                            (text) => text.split('\n').some((line) => line.trim() === probe),
+                            { ceilingMs: 700, intervalMs: 90 }
+                        );
+                        handedBack = back.split('\n').some((line) => line.trim() === probe);
                     }
                     recorder.check(`pane ${paneID} is handed back with a live shell, not a reader on the tty`, handedBack);
                     await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 400 });
@@ -12705,15 +13768,20 @@ function buildFlows(ctx) {
                 // Give the borrowed pane back, and prove the grid is the shape it was handed.
                 if (borrowed !== null) {
                     await cli.run(['pane', 'close', '--target', borrowed]);
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the borrowed pane is off the grid — the
+                    // assertion's own condition, so the grid handed on is the grid handed in.
+                    await settleDom(page, paneGoneExpr(String(borrowed)), { ceilingMs: 1200, intervalMs: 60 });
                     const left = await domPaneIDs(page);
                     recorder.check(
                         'the pane this step borrowed is closed again — the next step gets the grid it was given',
                         !left.includes(borrowed),
                         `${String(left.length)} pane(s) on screen · borrowed ${String(borrowed)}`
                     );
-                    await focusPaneBody(page, focusedPane === borrowed ? otherPane : focusedPane);
-                    await sleep(300);
+                    const handBackTo = focusedPane === borrowed ? otherPane : focusedPane;
+                    await focusPaneBody(page, handBackTo);
+                    // SETTLE-WAIT (was sleep(300)): focus really is on the pane the next step
+                    // inherits.
+                    await settleDom(page, paneFocusedExpr(String(handBackTo)), { ceilingMs: 300, intervalMs: 30 });
                 }
 
                 recorder.eyes(
@@ -12862,7 +13930,16 @@ function buildFlows(ctx) {
                     page.eval(`document.querySelector('[data-testid="clipboard-write-toggle"]')?.checked === true`);
                 recorder.check('Settings ▸ Workspaces carries the toggle, and it ships OFF', (await toggleState()) === false);
                 await page.click('[data-testid="clipboard-write-toggle"]');
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the toggle's new value has reached the DAEMON's
+                // config file and come back to the switch — the two assertions below read exactly
+                // those two facts, so a value that never lands spends the whole ceiling and fails
+                // identically.
+                await settle(
+                    async () =>
+                        /clipboard-write\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')) &&
+                        (await toggleState()) === true,
+                    { ceilingMs: 1000, intervalMs: 60 }
+                );
                 await recorder.shot(page, 'settings-toggle-on');
                 const configOn = fs.readFileSync(sandbox.configPath, 'utf8');
                 recorder.check(
@@ -12876,7 +13953,14 @@ function buildFlows(ctx) {
                     String(await toggleState())
                 );
                 await page.key('Escape');
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the Settings overlay is gone, so the terminal
+                // below has the keyboard rather than a modal.
+                await settleDom(
+                    page,
+                    `document.querySelector('${PAGE.settingsPanel}') === null &&
+                     document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                    { ceilingMs: 600, intervalMs: 40 }
+                );
 
                 // ── 3. the same daemon honours the very next sequence ───────────────
                 mark = daemonMark();
@@ -13011,7 +14095,15 @@ function buildFlows(ctx) {
                 await openSettingsTab(page, 'workspaces');
                 if ((await toggleState()) === true) {
                     await page.click('[data-testid="clipboard-write-toggle"]');
-                    await sleep(1000);
+                    // SETTLE-WAIT (was sleep(1000)): the gate is SHUT again on disk and in the
+                    // switch — the assertion below reads the file, and the run after this step
+                    // inherits whatever the file says.
+                    await settle(
+                        async () =>
+                            /clipboard-write\s*=\s*false/.test(fs.readFileSync(sandbox.configPath, 'utf8')) &&
+                            (await toggleState()) === false,
+                        { ceilingMs: 1000, intervalMs: 60 }
+                    );
                 }
                 const configOff = fs.readFileSync(sandbox.configPath, 'utf8');
                 recorder.check(
@@ -13020,7 +14112,14 @@ function buildFlows(ctx) {
                     configOff.trim().slice(-160)
                 );
                 await page.key('Escape');
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the overlay is gone before the hand-back below
+                // starts typing into the pane.
+                await settleDom(
+                    page,
+                    `document.querySelector('${PAGE.settingsPanel}') === null &&
+                     document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                    { ceilingMs: 600, intervalMs: 40 }
+                );
 
                 /**
                  * Hand the pane back with a live shell, and prove it — `terminal-ime`'s lesson:
@@ -13034,9 +14133,18 @@ function buildFlows(ctx) {
                     await sleep(500);
                     await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
                     const probe = `OSCOK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 800 });
-                    const back = await cli.run(['pane', 'capture', '--target', paneID]);
-                    handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                    // SETTLE-WAIT (was settleMs: 800 then a capture): the shell has ECHOED the
+                    // probe on a line of its own — the exact test `handedBack` performs, so the
+                    // wait and the check now name the same condition, and an attempt that fails
+                    // still burns its whole window before the next one starts.
+                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 0 });
+                    const back = await captureUntil(
+                        cli,
+                        paneID,
+                        (text) => text.split('\n').some((line) => line.trim() === probe),
+                        { ceilingMs: 800, intervalMs: 90 }
+                    );
+                    handedBack = back.split('\n').some((line) => line.trim() === probe);
                 }
                 recorder.check('the pane is handed back with a live shell, not a reader on the tty', handedBack);
                 await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
@@ -13094,7 +14202,15 @@ function buildFlows(ctx) {
                         timeoutMs: 5000,
                         label: 'the settings overlay an earlier flow left open to close'
                     });
-                    await sleep(400);
+                    // PADDING (was sleep(400)) — the `waitFor` above IS the guard. The one thing
+                    // it does not cover is a backdrop outliving the panel and eating the clicks
+                    // below, so that is what is waited on, and it is normally already true.
+                    await settleDom(
+                        page,
+                        `document.querySelector('${PAGE.settingsPanel}') === null &&
+                         document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                        { ceilingMs: 400, intervalMs: 40 }
+                    );
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
 
@@ -13111,7 +14227,11 @@ function buildFlows(ctx) {
                             `(() => { const row = document.querySelector('[data-workspace-id="${workspaceID}"]');
                                       if (row === null) return false; row.click(); return true; })()`
                         );
-                        await sleep(700);
+                        // SETTLE-WAIT (was sleep(700) per attempt): the row this click aimed at
+                        // is the ACTIVE one — the exact condition the line below re-reads, and
+                        // the reason the retry loop exists. An attempt whose click never takes
+                        // still burns its whole 700 ms window before the next one.
+                        await settle(async () => (await activeRow()) === workspaceID, { ceilingMs: 700, intervalMs: 50 });
                         if ((await activeRow()) === workspaceID) return true;
                     }
                     return false;
@@ -13143,7 +14263,9 @@ function buildFlows(ctx) {
                 if (paneID === null) return;
                 recorder.note(`scratch pane: ${paneID}`);
                 await focusPaneBody(page, paneID);
-                await sleep(300);
+                // SETTLE-WAIT (was sleep(300)): the click has moved focus to this pane and its
+                // engine has surface focus — the state every keystroke below assumes.
+                await settleDom(page, paneFocusedExpr(paneID), { ceilingMs: 300, intervalMs: 40 });
 
                 // ── §TERM-036: the surface is an accessibility element ──────────────
                 //
@@ -13267,6 +14389,8 @@ function buildFlows(ctx) {
                         modifiers: MOD.meta,
                         commands: ['paste']
                     });
+                    // DURATION-ASSERTION: the key HOLD. A keyDown/keyUp pair with no time
+                    // between them is not a keypress the engine's own handling will honour.
                     await sleep(40);
                     await page.send('Input.dispatchKeyEvent', {
                         type: 'keyUp',
@@ -13284,11 +14408,24 @@ function buildFlows(ctx) {
                 await runInTerminal(page, 'cat -v', { settleMs: 700 });
                 await focusPaneBody(page, paneID);
                 await pressPaste();
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the pasted payload has reached the PTY and been
+                // echoed by `cat -v`. Pressing Enter before it lands would submit half a paste.
+                await captureUntil(cli, paneID, (text) => text.includes(PASTE_A), { ceilingMs: 700, intervalMs: 100 });
                 await page.key('Enter');
-                await sleep(800);
+                /*
+                 * SETTLE-WAIT (was sleep(800) then a capture): the capture the four assertions
+                 * below read is polled for the state they read it FOR — all three pasted lines
+                 * plus the closing DEC 2004 bracket. When it never arrives the ceiling is spent
+                 * in full and one last capture is taken, so a real failure fails identically.
+                 */
+                const bracketed = await captureUntil(
+                    cli,
+                    paneID,
+                    (text) =>
+                        text.includes(PASTE_A) && text.includes(PASTE_B) && text.includes(PASTE_C) && text.includes('^[[201~'),
+                    { ceilingMs: 800, intervalMs: 100, scrollback: true }
+                );
                 await recorder.shot(page, 'bracketed-paste');
-                const bracketed = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                 recorder.block('after ⌘V with DEC 2004 set (cat -v)', bracketed.slice(-800));
                 recorder.check(
                     'the ⌘V chord reached the engine at all (the pasted text is at the PTY)',
@@ -13316,16 +14453,28 @@ function buildFlows(ctx) {
 
                 // …and the contrast: with 2004 OFF the SAME chord sends the text bare.
                 await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                // SETTLE-WAIT LEFT AS A DWELL: the settled condition is "the shell has reaped
+                // `cat -v` and reprinted its prompt", and nothing the harness can read says so —
+                // the sandbox prompt is not a known string and `pane list` does not publish a
+                // foreground process. A stability poll would pass on an idle `cat` that has not
+                // exited yet, which is exactly the half-true exit this lane forbids.
                 await sleep(500);
                 await runInTerminal(page, `printf '\\033[?2004l'`, { settleMs: 500 });
                 await runInTerminal(page, 'clear', { settleMs: 400 });
                 await runInTerminal(page, 'cat -v', { settleMs: 700 });
                 await focusPaneBody(page, paneID);
                 await pressPaste();
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the payload is at the PTY before Enter submits it.
+                await captureUntil(cli, paneID, (text) => text.includes(PASTE_A), { ceilingMs: 700, intervalMs: 100 });
                 await page.key('Enter');
-                await sleep(800);
-                const bare = await cli.ok(['pane', 'capture', '--target', paneID]);
+                // SETTLE-WAIT (was sleep(800) then a capture): polled for the pasted text the
+                // assertion reads. The assertion's other half is a NEGATIVE (no `^[[200~`) and is
+                // deliberately not polled for — the envelope, if it were wrongly emitted, would
+                // already be in this capture, since it precedes the payload in the byte stream.
+                const bare = await captureUntil(cli, paneID, (text) => text.includes(PASTE_A), {
+                    ceilingMs: 800,
+                    intervalMs: 100
+                });
                 recorder.block('after ⌘V with DEC 2004 cleared (cat -v)', bare.slice(-500));
                 recorder.check(
                     'with bracketed paste OFF the same chord sends the text with no envelope',
@@ -13333,6 +14482,8 @@ function buildFlows(ctx) {
                     `text=${String(bare.includes(PASTE_A))} envelope=${String(bare.includes('^[[200~'))}`
                 );
                 await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                // SETTLE-WAIT LEFT AS A DWELL — see the note on the first ⌃D above: nothing the
+                // harness can read says `cat -v` has exited.
                 await sleep(500);
 
                 // ── §TERM-035: text arriving outside a keyDown mirrors to sync peers ──
@@ -13349,14 +14500,34 @@ function buildFlows(ctx) {
                 if (siblingID !== '') {
                     const syncOn = await cli.json(['pane', 'sync', 'on', '--workspace', edgesID, '--json']);
                     recorder.note(`sync on: ${JSON.stringify(syncOn)}`);
-                    await sleep(400);
+                    // SETTLE-WAIT (was sleep(400)): the sync group has REACHED THE CLIENT — both
+                    // panes wear the badge — which is the state the mirrored paste depends on.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="pane-sync-badge-${paneID}"]') !== null &&
+                         document.querySelector('[data-testid="pane-sync-badge-${siblingID}"]') !== null`,
+                        { ceilingMs: 400, intervalMs: 40 }
+                    );
                     await focusPaneBody(page, paneID);
                     await runInTerminal(page, 'clear', { settleMs: 400 });
                     await pressPaste();
-                    await sleep(900);
+                    /*
+                     * SETTLE-WAIT (was sleep(900) then two captures): the paste is on BOTH
+                     * screens — the pane it was pasted into and its mirror — which is precisely
+                     * the pair the two assertions below read. One shared ceiling, so a mirror
+                     * that never receives cannot cost twice the original wait; and when it
+                     * expires both screens are read again at the moment the sleep would have.
+                     */
+                    let source = '';
+                    let mirror = '';
+                    const readBoth = async () => {
+                        source = await cli.ok(['pane', 'capture', '--target', paneID]);
+                        mirror = await cli.ok(['pane', 'capture', '--target', siblingID]);
+                        return source.includes(PASTE_A) && mirror.includes(PASTE_A);
+                    };
+                    const mirrored = await settle(readBoth, { ceilingMs: 900, intervalMs: 100 });
+                    if (!mirrored) await readBoth().catch(() => false);
                     await recorder.shot(page, 'sync-paste');
-                    const source = await cli.ok(['pane', 'capture', '--target', paneID]);
-                    const mirror = await cli.ok(['pane', 'capture', '--target', siblingID]);
                     recorder.block('sync sibling after the paste', mirror.slice(-400));
                     recorder.check(
                         'the pasted text reached the pane it was pasted into',
@@ -13371,22 +14542,44 @@ function buildFlows(ctx) {
                     await cli.run(['pane', 'sync', 'off', '--workspace', edgesID]);
                     // Clear both composed command lines so nothing runs when a later Enter lands.
                     await page.key('KeyC', { modifiers: MOD.ctrl, key: 'c' });
-                    await sleep(300);
+                    // SETTLE-WAIT (was sleep(300)): the ⌃C has been echoed by both shells, i.e.
+                    // the composed lines really are gone. `^C` is what the sandbox's zsh prints.
+                    await settle(
+                        async () =>
+                            (await cli.ok(['pane', 'capture', '--target', paneID])).includes('^C') &&
+                            (await cli.ok(['pane', 'capture', '--target', siblingID])).includes('^C'),
+                        { ceilingMs: 300, intervalMs: 60 }
+                    );
                     await cli.run(['pane', 'close', '--target', siblingID]);
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700)): the sibling is off the grid again.
+                    await settleDom(page, paneGoneExpr(siblingID), { ceilingMs: 700 });
                 }
 
                 // ── §TERM-090: opening a pane un-zooms first ────────────────────────
                 await focusPaneBody(page, paneID);
                 const zoomBinding = await pressBoundAction(page, 'toggle_zoom');
                 recorder.note(`toggle_zoom is bound to ${String(zoomBinding.display) || '(nothing)'}`);
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the zoom has taken — the grid is showing exactly
+                // the zoomed pane, which is the state `zoomedPanes` is read for. There is only
+                // one pane here, so "1 header" is also the un-zoomed count; the settled signal is
+                // the pane's own zoom badge, which the header only wears while zoomed.
+                await settleDom(page, `document.querySelector('[data-testid="pane-zoom-badge-${paneID}"]') !== null`, {
+                    ceilingMs: 700,
+                    intervalMs: 50
+                });
                 const zoomedPanes = await page.eval(
                     `document.querySelectorAll('[data-testid^="pane-header-"]').length`
                 );
                 await recorder.shot(page, 'zoomed');
                 await cli.run(['pane', 'split', '--target', paneID]);
-                await sleep(1200);
+                // SETTLE-WAIT (was sleep(1200)): the split's new pane is ON SCREEN, which is the
+                // §TERM-090 claim itself (a split while zoomed un-zooms so the new pane shows).
+                // Polled for `> 1`, the very condition the assertion states: if the un-zoom never
+                // happens the ceiling is spent in full and the assertion fails exactly as before.
+                await settleDom(page, `document.querySelectorAll('[data-testid^="pane-header-"]').length > 1`, {
+                    ceilingMs: 1200,
+                    intervalMs: 60
+                });
                 const afterOpen = await page.eval(
                     `document.querySelectorAll('[data-testid^="pane-header-"]').length`
                 );
@@ -13401,7 +14594,12 @@ function buildFlows(ctx) {
                 for (const extra of (await paneIn(edgesID)).filter((pane) => pane.id !== paneID)) {
                     await cli.run(['pane', 'close', '--target', extra.id]);
                 }
-                await sleep(800);
+                // SETTLE-WAIT (was sleep(800)): the scratch workspace is back to one pane, which
+                // is what "tidy" means and what the search section below assumes.
+                await settleDom(page, `document.querySelectorAll('[data-testid^="pane-header-"]').length === 1`, {
+                    ceilingMs: 800,
+                    intervalMs: 60
+                });
 
                 // ── §TERM-116: a one-character needle waits out the debounce ────────
                 //
@@ -13411,14 +14609,23 @@ function buildFlows(ctx) {
                 // than the debounce is the debounce.
                 await focusPaneBody(page, paneID);
                 await runInTerminal(page, 'clear', { settleMs: 400 });
-                await runInTerminal(
-                    page,
-                    `printf 'NEEDLEPROBE %s\\n' 1 2 3 4`,
-                    { settleMs: 800 }
-                );
+                // SETTLE-WAIT (was settleMs: 800): all four NEEDLEPROBE lines are on the pane's
+                // screen. The search count asserted below is a count OF THEM, so "the fixture is
+                // fully printed" is the settled state — three of four lines is the half-true one.
+                await runInTerminal(page, `printf 'NEEDLEPROBE %s\\n' 1 2 3 4`, { settleMs: 0 });
+                await captureUntil(cli, paneID, (text) => (text.match(/NEEDLEPROBE/g) ?? []).length >= 4, {
+                    ceilingMs: 800,
+                    intervalMs: 100,
+                    scrollback: true
+                });
                 const searchBinding = await pressBoundAction(page, 'toggle_search');
                 recorder.note(`toggle_search is bound to ${String(searchBinding.display) || '(nothing)'}`);
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the search bar is mounted — the exact condition
+                // `barUp` reads on the next line and the assertion after it states.
+                await settleDom(page, `document.querySelector('[data-testid="pane-search-${paneID}"]') !== null`, {
+                    ceilingMs: 700,
+                    intervalMs: 40
+                });
                 const barUp = await page.eval(
                     `document.querySelector('[data-testid="pane-search-${paneID}"]') !== null`
                 );
@@ -13442,6 +14649,9 @@ function buildFlows(ctx) {
                             firstCountAt = Date.now() - started;
                             break;
                         }
+                        // DURATION-ASSERTION: this is not a wait, it is the SAMPLING INTERVAL of
+                        // the measurement — `firstCountAt` is the number the §TERM-116 assertion
+                        // reads, and 40 ms is its resolution against a 300 ms debounce.
                         await sleep(40);
                     }
                     await recorder.shot(page, 'search-debounce');
@@ -13461,8 +14671,27 @@ function buildFlows(ctx) {
                     // A needle of three characters or more skips the timer entirely, and the
                     // count it lands on is the real one — the debounce defers the request, it
                     // does not change the answer.
+                    const oneCharCount = (await countText()).trim();
                     await page.insertText('EEDLEPROBE');
-                    await sleep(1200);
+                    /*
+                     * SETTLE-WAIT (was sleep(1200)): the LONGER needle's own count is up and has
+                     * stopped changing.
+                     *
+                     * Two guards, both needed. Stability rather than the assertion's `>= 4`,
+                     * because a count polled for "at least 4" can be read on its way past 4 and
+                     * stops being a check of the settled answer. And "different from the
+                     * one-character needle's count", because the count sitting on screen the
+                     * instant the text changes is the PREVIOUS search's — perfectly stable, and
+                     * the wrong number. When the two counts genuinely coincide nothing ever looks
+                     * settled, the ceiling is spent in full, and the read is the old behaviour.
+                     */
+                    await settleStable(
+                        async () => {
+                            const now = (await countText()).trim();
+                            return now === oneCharCount ? `still the previous needle @${String(Date.now())}` : now;
+                        },
+                        { ceilingMs: 1200, stableMs: 250, intervalMs: 60 }
+                    );
                     const fullCount = (await countText()).trim();
                     const total = Number(/\/(\d+)$/.exec(fullCount)?.[1] ?? '0');
                     recorder.note(`the full needle NEEDLEPROBE counts ${fullCount}`);
@@ -13472,7 +14701,12 @@ function buildFlows(ctx) {
                         fullCount
                     );
                     await page.key('Escape');
-                    await sleep(500);
+                    // SETTLE-WAIT (was sleep(500)): the bar is gone — the exact condition the
+                    // assertion below states, so the wait ends on the thing being asserted.
+                    await settleDom(page, `document.querySelector('[data-testid="pane-search-${paneID}"]') === null`, {
+                        ceilingMs: 500,
+                        intervalMs: 40
+                    });
                     recorder.check(
                         'Escape closes the bar it opened',
                         (await page.eval(
@@ -13490,10 +14724,17 @@ function buildFlows(ctx) {
                 await runInTerminal(page, 'clear', { settleMs: 400 });
                 await runInTerminal(page, 'cat -v', { settleMs: 700 });
                 await page.key('Escape');
+                // DURATION-ASSERTION: the gap between two keystrokes a person could not press
+                // together. Escape and Enter arriving in the same tick is not the gesture
+                // §TERM-155 is about, and `cat -v` would fold them into one line either way.
                 await sleep(200);
                 await page.key('Enter');
-                await sleep(700);
-                const escaped = await cli.ok(['pane', 'capture', '--target', paneID]);
+                // SETTLE-WAIT (was sleep(700) then a capture): `cat -v` has printed the escape
+                // byte — the exact string the assertion below looks for.
+                const escaped = await captureUntil(cli, paneID, (text) => text.includes('^['), {
+                    ceilingMs: 700,
+                    intervalMs: 90
+                });
                 recorder.block('after Escape with no search open (cat -v)', escaped.slice(-300));
                 recorder.check(
                     'Escape with no search open is NOT consumed — it reaches the PTY (§TERM-155)',
@@ -13501,6 +14742,7 @@ function buildFlows(ctx) {
                     escaped.slice(-160)
                 );
                 await page.key('KeyD', { modifiers: MOD.ctrl, key: 'd' });
+                // SETTLE-WAIT LEFT AS A DWELL — see the note on the first ⌃D above.
                 await sleep(500);
 
                 // ── §TERM-154: the dispatcher defers to a key secondary window ──────
@@ -13513,9 +14755,26 @@ function buildFlows(ctx) {
                     timeoutMs: 8000,
                     label: 'the Settings overlay'
                 });
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the overlay has finished arriving — it is the
+                // KEY WINDOW that §TERM-154 is about, and a chord pressed mid-transition is not
+                // testing the claim. Stability of the panel's own geometry and opacity, because
+                // "it has finished animating" has no single flag.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `(() => { const panel = document.querySelector('${PAGE.settingsPanel}');
+                              if (panel === null) return 'absent';
+                              const rect = panel.getBoundingClientRect();
+                              return [rect.x, rect.y, rect.width, rect.height, getComputedStyle(panel).opacity].join('/'); })()`
+                        ),
+                    { ceilingMs: 600, stableMs: 200, intervalMs: 50 }
+                );
                 if (splitBinding.key !== null) {
                     await page.key(splitBinding.key.code, { modifiers: splitBinding.key.modifiers });
+                    // DURATION-ASSERTION: the window in which the NEGATIVE assertion below gets
+                    // its chance to be wrong. "No pane appeared" is only meaningful if a pane had
+                    // long enough to appear; a poll here would either exit on nothing (proving
+                    // nothing) or wait the whole ceiling anyway.
                     await sleep(900);
                 }
                 const duringSettings = await page.eval(paneCountExpr);
@@ -13530,11 +14789,22 @@ function buildFlows(ctx) {
                     timeoutMs: 8000,
                     label: 'Settings to close'
                 });
-                await sleep(600);
+                // PADDING (was sleep(600)) — the `waitFor` above is the guard for the panel; the
+                // backdrop is the part that could still be swallowing the click below.
+                await settleDom(page, `document.querySelector('[data-testid="settings-backdrop"]') === null`, {
+                    ceilingMs: 600,
+                    intervalMs: 40
+                });
                 await focusPaneBody(page, paneID);
                 if (splitBinding.key !== null) {
                     await page.key(splitBinding.key.code, { modifiers: splitBinding.key.modifiers });
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the chord DID split — the positive half of
+                    // the pair, and the condition the assertion below states. If it never splits
+                    // the ceiling is spent in full and the assertion fails exactly as before.
+                    await settleDom(page, `${paneCountExpr} > ${String(duringSettings)}`, {
+                        ceilingMs: 1200,
+                        intervalMs: 60
+                    });
                 }
                 const afterSettings = await page.eval(paneCountExpr);
                 recorder.check(
@@ -13545,7 +14815,8 @@ function buildFlows(ctx) {
                 for (const extra of (await paneIn(edgesID)).filter((pane) => pane.id !== paneID)) {
                     await cli.run(['pane', 'close', '--target', extra.id]);
                 }
-                await sleep(800);
+                // SETTLE-WAIT (was sleep(800)): back to one pane in the scratch workspace.
+                await settleDom(page, `${paneCountExpr} === 1`, { ceilingMs: 800, intervalMs: 60 });
 
                 // ── §TERM-047 / §TERM-048 / §TERM-050 in a BACKGROUND workspace ─────
                 //
@@ -13587,7 +14858,10 @@ function buildFlows(ctx) {
                             /* a binary frame (a PTY stream) — not ours */
                         }
                     });
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the observer socket is OPEN. Everything
+                    // below is read off this connection, so "it is attached" is the settled
+                    // condition — not a fixed grace period for it to get there.
+                    await settle(() => observer.readyState === 1, { ceilingMs: 1200, intervalMs: 40 });
                 }
                 recorder.check('an observer is attached to the daemon’s broadcast', observer !== null);
 
@@ -13610,7 +14884,16 @@ function buildFlows(ctx) {
                 // OSC 2 (title) and OSC 7 (pwd) written by the shell itself, driven from outside
                 // the window — `pane send` types the line and submits it.
                 await cli.ok(['pane', 'send', '--target', paneID, `printf '\\033]2;${BG_TITLE}\\007'`]);
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the OSC 2 has reached the daemon's pane record —
+                // the title assertion's own condition, and the guarantee that the OSC 7 below
+                // cannot be typed into a line the first printf has not finished.
+                await settle(
+                    async () =>
+                        String(
+                            (await cli.json(['pane', 'list', '--json'])).find((pane) => pane.id === paneID)?.title ?? ''
+                        ) === BG_TITLE,
+                    { ceilingMs: 900, intervalMs: 120 }
+                );
                 await cli.ok([
                     'pane',
                     'send',
@@ -13618,7 +14901,16 @@ function buildFlows(ctx) {
                     paneID,
                     `cd ${bgDir} && printf '\\033]7;file://%s%s\\007' "$(hostname)" "$PWD"`
                 ]);
-                await sleep(1400);
+                // SETTLE-WAIT (was sleep(1400)): the OSC 7 has moved the pane's recorded working
+                // directory — the second assertion's own condition.
+                await settle(
+                    async () =>
+                        String(
+                            (await cli.json(['pane', 'list', '--json'])).find((pane) => pane.id === paneID)
+                                ?.working_directory ?? ''
+                        ).endsWith('bg-cwd'),
+                    { ceilingMs: 1400, intervalMs: 120 }
+                );
 
                 const afterReports = (await cli.json(['pane', 'list', '--json'])).find(
                     (pane) => pane.id === paneID
@@ -13649,7 +14941,22 @@ function buildFlows(ctx) {
                 // §TERM-050: an OSC 9 desktop notification from the same background pane.
                 const BG_BODY = 'NEX-BG-OSC-NOTIFY';
                 await cli.ok(['pane', 'send', '--target', paneID, `printf '\\033]9;${BG_BODY}\\007'`]);
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the notification has arrived ON THE OBSERVER —
+                // an in-process array, so this poll costs nothing — carrying the body the first
+                // assertion reads AND the attribution the second one reads. Waiting for the body
+                // alone would be the half-true exit: the two assertions are about one message.
+                await settle(
+                    () =>
+                        seenNotifications.some(
+                            (message) =>
+                                message.kind === 'osc' &&
+                                String(message.body) === BG_BODY &&
+                                message.paneID === paneID &&
+                                message.workspaceID === edgesID &&
+                                message.dedupeKey === `nex-${paneID}`
+                        ),
+                    { ceilingMs: 1500, intervalMs: 30 }
+                );
                 const oscNotifications = seenNotifications.filter((message) => message.kind === 'osc');
                 recorder.block('notifications the daemon broadcast', JSON.stringify(seenNotifications, null, 2));
                 recorder.check(
@@ -13672,7 +14979,14 @@ function buildFlows(ctx) {
                 // The reports are visible when the workspace comes back — the header shows the
                 // title the background shell set, which is what a person actually sees.
                 await activateWorkspace(edgesID);
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the pane header on screen is showing the title
+                // the shell took while the workspace was away — the assertion's own condition,
+                // and what the screenshot below is a picture of.
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').includes(${JSON.stringify(BG_TITLE)})`,
+                    { ceilingMs: 900, intervalMs: 50 }
+                );
                 await recorder.shot(page, 'background-reports-visible');
                 const headerTitle = await page.eval(
                     `(document.querySelector('[data-testid="pane-title-${paneID}"]')?.textContent ?? '').trim()`
@@ -13690,7 +15004,12 @@ function buildFlows(ctx) {
 
                 // ── put the world back ──────────────────────────────────────────────
                 await cli.run(['workspace', 'delete', edgesID, '--force']);
-                await sleep(1200);
+                // SETTLE-WAIT (was sleep(1200)): the scratch workspace's row is off the sidebar,
+                // which is what "put the world back" means and what the click below aims past.
+                await settleDom(page, `document.querySelector('[data-workspace-id="${edgesID}"]') === null`, {
+                    ceilingMs: 1200,
+                    intervalMs: 60
+                });
                 const restored = await activateWorkspace(cameFrom);
                 recorder.check(
                     'the step hands the run back on the workspace it found active',
@@ -13772,10 +15091,20 @@ function buildFlows(ctx) {
                 /** SIGINT from the DAEMON side — see the block comment above. */
                 const interrupt = async () => {
                     await cli.run(['pane', 'send-key', '--target', paneID, 'ctrl-c']);
+                    // SETTLE-WAIT LEFT AS A DWELL: the settled condition is "the shell has reaped
+                    // `cat -vt` and reprinted its prompt", and nothing readable says so — the
+                    // sandbox prompt is not a known string and `pane list` publishes no
+                    // foreground process. A stability poll would pass on an idle `cat` that is
+                    // still running, which is the half-true exit this lane forbids.
                     await sleep(600);
                 };
                 /** The four probe keys, pressed and released, then a Return to flush the line. */
                 const pressProbes = async () => {
+                    const before = await capture().catch(() => '');
+                    // DURATION-ASSERTION (×4): keystroke SPACING. The four probe keys are read
+                    // back out of `cat -vt` as a SEQUENCE — under the kitty protocol as press and
+                    // release pairs — and keys dispatched in the same tick coalesce before the
+                    // PTY distinguishes them.
                     await page.key('Escape', { key: 'Escape' });
                     await sleep(90);
                     await page.key('KeyI', { modifiers: MOD.ctrl, key: 'i' });
@@ -13787,7 +15116,19 @@ function buildFlows(ctx) {
                     // Return through the daemon: under `report all keys` an Enter keystroke is
                     // `CSI 13u` and would never flush the tty's line buffer.
                     await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
-                    await sleep(900);
+                    /*
+                     * SETTLE-WAIT (was sleep(900)): the flushed line is on the screen and the
+                     * screen has come to rest. CHANGED and at rest, never merely at rest — a
+                     * screen that has not received the line yet is perfectly still, and settling
+                     * on that would hand the assertions the PREVIOUS phase's bytes.
+                     */
+                    await settleStable(
+                        async () => {
+                            const now = await capture();
+                            return now === before ? `nothing new on screen yet @${String(Date.now())}` : now;
+                        },
+                        { ceilingMs: 900, stableMs: 200, intervalMs: 90 }
+                    );
                 };
 
                 // ── 1. the legacy baseline, with the protocol off ───────────────────
@@ -13951,9 +15292,19 @@ function buildFlows(ctx) {
                 await modifierKey('Shift', 'ShiftRight', 2, MOD.shift);
                 // And an ordinary letter, which under `report all keys` is an escape code too.
                 await page.key('KeyA', { key: 'a', text: 'a' });
+                // DURATION-ASSERTION: keystroke spacing, as in `pressProbes`.
                 await sleep(150);
+                const beforeModifiers = await capture().catch(() => '');
                 await cli.run(['pane', 'send-key', '--target', paneID, 'enter']);
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the flushed line is on screen and at rest — the
+                // same "changed AND still" condition `pressProbes` uses, for the same reason.
+                await settleStable(
+                    async () => {
+                        const now = await capture();
+                        return now === beforeModifiers ? `nothing new on screen yet @${String(Date.now())}` : now;
+                    },
+                    { ceilingMs: 900, stableMs: 200, intervalMs: 90 }
+                );
 
                 const modifiers = await capture();
                 recorder.block('flags 11 — modifier keys and a letter (cat -vt)', modifiers.slice(-500));
@@ -13980,7 +15331,15 @@ function buildFlows(ctx) {
                 // it is exactly why the protocol has a stack.
                 await interrupt();
                 await cli.run(['pane', 'send', '--target', paneID, "printf '\\033[<2u'"]);
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900) in front of a poll that already exists): the pop has
+                // reached the CLIENT as pane state — which is exactly what `waitForFlags(0)` on
+                // the next line asserts, so this is that assertion's own condition, bounded by the
+                // sleep it replaces rather than by the poll's own 5 s.
+                await settleDom(
+                    page,
+                    `document.querySelector('${paneRoot}')?.getAttribute('data-terminal-kitty') === '0'`,
+                    { ceilingMs: 900, intervalMs: 50 }
+                );
                 const popped = await waitForFlags(0);
                 recorder.check(
                     'CSI < 2 u pops both pushes and the client sees the protocol go off',
@@ -14018,12 +15377,26 @@ function buildFlows(ctx) {
                 for (let attempt = 0; attempt < 3 && !handedBack; attempt++) {
                     await interrupt();
                     await cli.run(['pane', 'send', '--target', paneID, "printf '\\033[<10u'"]);
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the pops have taken the protocol back off in
+                    // the CLIENT — the "no later step inherits it" assertion below reads exactly
+                    // this attribute.
+                    await settleDom(
+                        page,
+                        `document.querySelector('${paneRoot}')?.getAttribute('data-terminal-kitty') === '0'`,
+                        { ceilingMs: 600, intervalMs: 50 }
+                    );
                     await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
                     const probe = `KITTYOK-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 800 });
-                    const back = await cli.run(['pane', 'capture', '--target', paneID]);
-                    handedBack = back.stdout.split('\n').some((line) => line.trim() === probe);
+                    // SETTLE-WAIT (was settleMs: 800 then a capture): the shell has echoed the
+                    // probe on a line of its own — the exact test `handedBack` performs.
+                    await runInTerminal(page, `printf '%s\\n' ${probe}`, { settleMs: 0 });
+                    const back = await captureUntil(
+                        cli,
+                        paneID,
+                        (text) => text.split('\n').some((line) => line.trim() === probe),
+                        { ceilingMs: 800, intervalMs: 90 }
+                    );
+                    handedBack = back.split('\n').some((line) => line.trim() === probe);
                 }
                 recorder.check('the pane is handed back with a live shell, not a reader on the tty', handedBack);
                 const finalFlags = await readFlags();
@@ -16709,7 +18082,16 @@ function buildFlows(ctx) {
                 recorder.check('the toggle exists and ships ON (\u00a7SET-012)', (await toggleState()) === true);
                 const configBefore = fs.readFileSync(sandbox.configPath, 'utf8');
                 await page.click('[data-testid="expand-group-on-drop-toggle"]');
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the new value has reached the DAEMON's config
+                // file and come back to the switch — the two assertions below read exactly those
+                // two facts, so a value that never lands spends the whole ceiling and fails the
+                // same way.
+                await settle(
+                    async () =>
+                        /expand-group-on-workspace-drop\s*=\s*false/.test(fs.readFileSync(sandbox.configPath, 'utf8')) &&
+                        (await toggleState()) === false,
+                    { ceilingMs: 1000, intervalMs: 60 }
+                );
                 const configOff = fs.readFileSync(sandbox.configPath, 'utf8');
                 recorder.block('config file after turning it off', configOff.trim().slice(-200) || '(empty)');
                 recorder.check(
@@ -16723,7 +18105,14 @@ function buildFlows(ctx) {
                     String(await toggleState())
                 );
                 await page.click('[data-testid="expand-group-on-drop-toggle"]');
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the round trip back to `true` on disk — the
+                // assertion's own condition.
+                await settle(
+                    async () =>
+                        /expand-group-on-workspace-drop\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')) &&
+                        (await toggleState()) === true,
+                    { ceilingMs: 1000, intervalMs: 60 }
+                );
                 recorder.check(
                     'turning it back on round-trips through the same file',
                     /expand-group-on-workspace-drop\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
@@ -16746,7 +18135,12 @@ function buildFlows(ctx) {
                     })()`
                 );
                 await page.enter();
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the base path is on disk — the assertion below
+                // greps the file for exactly this line.
+                await settle(
+                    () => fs.readFileSync(sandbox.configPath, 'utf8').includes(`worktree-base-path = ${liveBase}`),
+                    { ceilingMs: 1000, intervalMs: 60 }
+                );
                 await recorder.shot(page, 'general-tab');
                 const configBase = fs.readFileSync(sandbox.configPath, 'utf8');
                 recorder.check(
@@ -16755,7 +18149,14 @@ function buildFlows(ctx) {
                     configBase.trim().slice(-160)
                 );
                 await page.key('Escape');
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the overlay is gone, so the workspace created
+                // below is not raced by a modal still closing over the sidebar.
+                await settleDom(
+                    page,
+                    `document.querySelector('${PAGE.settingsPanel}') === null &&
+                     document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                    { ceilingMs: 600, intervalMs: 40 }
+                );
 
                 const created = await cli.json([
                     'workspace',
@@ -16796,7 +18197,14 @@ function buildFlows(ctx) {
                 );
                 if (workspaceID !== '') {
                     await cli.run(['workspace', 'delete', workspaceID, '--force', '--prune-worktree']);
-                    await sleep(1200);
+                    // SETTLE-WAIT (was sleep(1200)): the deleted workspace's row is off the
+                    // sidebar and another workspace has the screen.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-workspace-id="${workspaceID}"]') === null &&
+                         document.querySelector('[data-testid="workspace-row"][data-active="true"]') !== null`,
+                        { ceilingMs: 1200, intervalMs: 60 }
+                    );
                 }
                 await openSettingsTab(page, 'general');
                 // The testid sits on the ROW; the field itself is `<testid>-input` (controls.tsx).
@@ -16812,9 +18220,20 @@ function buildFlows(ctx) {
                     })()`
                 );
                 await page.enter();
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the restored base path is on disk — the exact
+                // regex the assertion below runs over the file.
+                await settle(
+                    () => /worktree-base-path\s*=\s*~\/nex\/worktrees\/<repo>/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    { ceilingMs: 900, intervalMs: 60 }
+                );
                 await page.key('Escape');
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the overlay is gone before the next section.
+                await settleDom(
+                    page,
+                    `document.querySelector('${PAGE.settingsPanel}') === null &&
+                     document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                    { ceilingMs: 500, intervalMs: 40 }
+                );
                 recorder.check(
                     'the step puts the base path back where it found it',
                     /worktree-base-path\s*=\s*~\/nex\/worktrees\/<repo>/.test(
@@ -17199,6 +18618,8 @@ function buildFlows(ctx) {
                     paintedAfterRedraw = await sampleCanvas();
                     redrawVerdict = cellAreaTookTheTheme(paintedAfterRedraw);
                     if (redrawVerdict.ok) break;
+                    // DURATION-ASSERTION: the SAMPLING INTERVAL of the retry, not a wait — this
+                    // loop is already the settle the rest of this lane is about.
                     await sleep(400);
                 }
                 /*
@@ -17278,6 +18699,13 @@ function buildFlows(ctx) {
                 // ── put the ghostty file and the themes directory back ───────────────────
                 fs.writeFileSync(sandbox.ghosttyConfigPath, ghosttyBefore, 'utf8');
                 fs.rmSync(themesDir, { recursive: true, force: true });
+                /*
+                 * DURATION-ASSERTION: the daemon WATCHES the ghostty config file, and this dwell
+                 * is the window in which that watcher must not undo the restore — the assertion
+                 * below is that the file is byte-for-byte what it was. There is nothing to poll:
+                 * the file is already correct the instant it is written, so a poll would exit at
+                 * zero and stop covering the watcher's reaction at all.
+                 */
                 await sleep(1200);
                 recorder.check(
                     'the step puts the ghostty config back byte-for-byte',
@@ -18832,7 +20260,16 @@ function buildFlows(ctx) {
                         return true;
                     })()`
                 );
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the group has finished EXPANDING — the guide-rule
+                // measurement below reads the rows it reveals, and the shot is a picture of them.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid="workspace-row"]')]
+                                .map((el) => Math.round(el.getBoundingClientRect().top)).join(',')`
+                        ),
+                    { ceilingMs: 700, stableMs: 200, intervalMs: 50 }
+                );
                 await recorder.shot(page, 'guide');
 
                 // ── §WS-007: the guide rule ─────────────────────────────────────────
@@ -18938,7 +20375,18 @@ function buildFlows(ctx) {
                     `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Slot B'))`,
                     { timeoutMs: 20_000, label: 'the second slot row' }
                 );
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the sidebar rows have stopped moving. Everything
+                // below is a GEOMETRY read of those rows (slot boxes for the drag), so the list
+                // has to be at rest, not merely to contain the last row the `waitFor` proved.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid="workspace-row"]')]
+                                .map((el) => { const r = el.getBoundingClientRect();
+                                    return [Math.round(r.top), Math.round(r.height)].join(','); }).join('|')`
+                        ),
+                    { ceilingMs: 900, stableMs: 250, intervalMs: 60 }
+                );
                 const rows = JSON.parse(
                     String(
                         await page.eval(
@@ -19205,7 +20653,14 @@ function buildFlows(ctx) {
                         String(slot.tinted)
                     );
                     await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
-                    await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): every insert indicator is gone — the exact count
+                // the next line reads and the assertion after it states.
+                await settleDom(
+                    page,
+                    `document.querySelectorAll('[data-testid="drop-insert-line"]').length
+                        + document.querySelectorAll('[data-insert-line]').length === 0`,
+                    { ceilingMs: 900, intervalMs: 50 }
+                );
                     const gone = await page.eval(
                         `document.querySelectorAll('[data-testid="drop-insert-line"]').length
                             + document.querySelectorAll('[data-insert-line]').length`
@@ -19422,7 +20877,10 @@ function buildFlows(ctx) {
                     }
                     await recorder.shot(page, 'drag-no-smear');
                     await page.mouse('mouseReleased', origin.x, origin.y, { button: 'left', clickCount: 1 });
-                    await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the drag is fully over and the selection state has
+                // come to rest — the sample taken on the next line is the one the "no smear"
+                // assertion reads, and a mid-teardown read would be neither state.
+                await settleStable(async () => await readSelection(), { ceilingMs: 900, stableMs: 250, intervalMs: 60 });
                     samples.push(await readSelection());
                     const dirty = samples.filter(
                         (sample) => sample.ranges !== 0 || sample.text !== '' || sample.inSidebar !== 0
@@ -19442,9 +20900,24 @@ function buildFlows(ctx) {
                 // The editables, which the container rule would otherwise have broken: the
                 // inline rename editor and the filter field both still take text.
                 await page.rightClick(`${PAGE.workspaceRows}`);
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the row menu is up and carries the Rename row the
+                // click below aims at.
+                await settleDom(
+                    page,
+                    `(() => { const menu = document.querySelector('${PAGE.contextMenu}');
+                      return menu !== null && [...menu.querySelectorAll('[role="menuitem"]')]
+                          .some((row) => (row.textContent ?? '').includes('Rename')); })()`,
+                    { ceilingMs: 400, intervalMs: 40 }
+                );
                 await clickMenuItem(page, 'Rename…');
-                await sleep(300);
+                // SETTLE-WAIT (was sleep(300)): the rename editor is up AND has the keyboard — the
+                // `select()` and the typing below both go to `document.activeElement`.
+                await settleDom(
+                    page,
+                    `(() => { const field = document.querySelector('input[aria-label^="Rename "]');
+                      return field !== null && document.activeElement === field; })()`,
+                    { ceilingMs: 300, intervalMs: 30 }
+                );
                 await page.eval(`document.activeElement?.select?.()`);
                 await page.insertText('Selectable Rename');
                 await sleep(150);
@@ -19479,11 +20952,21 @@ function buildFlows(ctx) {
                 // Escape, not Enter: the rename is a probe, and the flows after this one expect
                 // the workspace names they were handed.
                 await page.key('Escape');
-                await sleep(300);
+                // SETTLE-WAIT (was sleep(300)): the inline rename editor is gone, so the click on
+                // the filter field below lands on the filter field.
+                await settleDom(page, `document.querySelector('input[aria-label^="Rename "]') === null`, {
+                    ceilingMs: 300,
+                    intervalMs: 30
+                });
 
                 await page.click(`[data-testid="sidebar-filter"]`);
                 await page.insertText('Slot');
-                await sleep(300);
+                // SETTLE-WAIT (was sleep(300)): the filter field carries what was typed, so the
+                // selection measurement below has text to select inside.
+                await settleDom(page, `document.querySelector('[data-testid="sidebar-filter"]')?.value === 'Slot'`, {
+                    ceilingMs: 300,
+                    intervalMs: 30
+                });
                 const filterField = JSON.parse(
                     String(
                         await page.eval(
@@ -19514,7 +20997,12 @@ function buildFlows(ctx) {
                 );
                 // Put the list back the way the rest of the step found it.
                 await page.click(`[aria-label="Clear filter"]`);
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the filter field is empty again — the exact value
+                // read on the next line and asserted on the one after.
+                await settleDom(page, `document.querySelector('[data-testid="sidebar-filter"]')?.value === ''`, {
+                    ceilingMs: 400,
+                    intervalMs: 40
+                });
                 const filterCleared = await page.eval(
                     `document.querySelector('[data-testid="sidebar-filter"]')?.value ?? null`
                 );
@@ -19554,7 +21042,17 @@ function buildFlows(ctx) {
                     entered.flagged === 1 && entered.animation === 'nex-sidebar-row-enter',
                     JSON.stringify(entered)
                 );
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the entry animation has finished — the rows below
+                // are measured for their SETTLED offsets, and a row still animating in is not at
+                // one. Stability, because "the animation ended" leaves no flag behind it.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid="workspace-row"]')]
+                                .map((el) => Math.round(el.getBoundingClientRect().top)).join(',')`
+                        ),
+                    { ceilingMs: 600, stableMs: 200, intervalMs: 50 }
+                );
                 const settled = await page.eval(
                     `(() => {
                         const rows = Array.from(document.querySelectorAll('[data-testid="workspace-row"]'));
@@ -19710,7 +21208,12 @@ function buildFlows(ctx) {
                     exit.named === 0 && exit.rows === beforeDelete - 1,
                     `${String(exit.rows)} rows, was ${String(beforeDelete)}; matches named "Slot B": ${String(exit.named)}`
                 );
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the exit ghost has been COLLECTED — the assertion
+                // on the line after next reads exactly this count.
+                await settleDom(page, `document.querySelectorAll('[data-testid="sidebar-row-ghost"]').length === 0`, {
+                    ceilingMs: 700,
+                    intervalMs: 50
+                });
                 const cleared = await page.eval(
                     `document.querySelectorAll('[data-testid="sidebar-row-ghost"]').length`
                 );
@@ -19726,7 +21229,17 @@ function buildFlows(ctx) {
                     `Array.from(document.querySelectorAll('[data-testid="group-empty"]')).length > 0`,
                     { timeoutMs: 20_000, label: 'the empty group’s placeholder row' }
                 );
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the empty group's rows have stopped moving — the
+                // chevron read below is a GEOMETRY measurement of them.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid="group-header"], [data-testid="group-empty"]')]
+                                .map((el) => { const r = el.getBoundingClientRect();
+                                    return [Math.round(r.top), Math.round(r.height)].join(','); }).join('|')`
+                        ),
+                    { ceilingMs: 500, stableMs: 150, intervalMs: 40 }
+                );
                 const chevron = JSON.parse(
                     String(
                         await page.eval(
@@ -19857,7 +21370,13 @@ function buildFlows(ctx) {
                         `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-active') ?? 'null'`
                     );
                     await page.mouse('mouseReleased', dragAfter.fromX, dragAfter.toY, { button: 'left', clickCount: 1 });
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the drag gate is DOWN again, so the assertions
+                    // that follow read a sidebar that is no longer mid-gesture.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-active') !== 'true'`,
+                        { ceilingMs: 600, intervalMs: 40 }
+                    );
                     recorder.check(
                         '§WS-093 stays green: a drag started around a removal still measures and starts',
                         String(gate) === 'true',
@@ -19902,7 +21421,19 @@ function buildFlows(ctx) {
                     `Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Bulk 12'))`,
                     { timeoutMs: 40_000, label: 'the twelfth bulk row' }
                 );
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the sidebar list has come to REST with all twelve
+                // bulk rows in it. The overflow assertions below are MEASUREMENTS of that list's
+                // scroll geometry, so a list still growing would be measured mid-flight.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `(() => { const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                              const rows = document.querySelectorAll('[data-testid="workspace-row"]').length;
+                              return String(rows) + '/' + String(list === null ? -1 : Math.round(list.scrollHeight)) +
+                                  '/' + String(list === null ? -1 : Math.round(list.clientHeight)); })()`
+                        ),
+                    { ceilingMs: 900, stableMs: 250, intervalMs: 70 }
+                );
                 const overflowed = JSON.parse(
                     String(
                         await page.eval(
@@ -20022,7 +21553,17 @@ function buildFlows(ctx) {
                      !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Bulk '))`,
                     { timeoutMs: 25_000, label: 'the bulk rows to leave the sidebar' }
                 );
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the DAEMON has no Bulk workspaces and no Overflow
+                // group left — the `waitFor` above is about the sidebar, this is about the daemon,
+                // and the hand-back assertions read the daemon.
+                await settle(
+                    async () =>
+                        (await cli.json(['workspace', 'list', '--json'])).every(
+                            (workspace) => !String(workspace.name).startsWith('Bulk ')
+                        ) &&
+                        (await cli.json(['group', 'list', '--json'])).every((group) => group.name !== 'Overflow'),
+                    { ceilingMs: 900, intervalMs: 100 }
+                );
                 let restored = false;
                 let handedBack = '';
                 for (let attempt = 0; attempt < 6; attempt++) {
@@ -20035,7 +21576,13 @@ function buildFlows(ctx) {
                                 return true;
                             })()`
                         )) === true;
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700) per attempt): the row clicked is the ACTIVE one
+                    // — the condition read below, which is why this loop retries.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(activeBefore)}`,
+                        { ceilingMs: 700, intervalMs: 50 }
+                    );
                     handedBack = String(
                         await page.eval(
                             `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
@@ -22994,7 +24541,14 @@ function buildFlows(ctx) {
                     } catch {
                         await page.key('Escape');
                     }
-                    await sleep(400);
+                    // PADDING (was sleep(400)) — the `waitFor` above is the guard; the backdrop
+                    // is the only part of the overlay that could still eat the clicks below.
+                    await settleDom(
+                        page,
+                        `document.querySelector('${PAGE.settingsPanel}') === null &&
+                         document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                        { ceilingMs: 400, intervalMs: 40 }
+                    );
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
                 /*
@@ -23005,7 +24559,12 @@ function buildFlows(ctx) {
                 for (const testid of ['new-workspace-sheet', 'new-group-sheet']) {
                     if (await page.eval(`document.querySelector('[data-testid="${testid}"]') !== null`)) {
                         await page.key('Escape', { key: 'Escape' });
-                        await sleep(400);
+                        // SETTLE-WAIT (was sleep(400)): the sheet is gone, which is the whole
+                        // point of the dismissal — every click below aims past where it was.
+                        await settleDom(page, `document.querySelector('[data-testid="${testid}"]') === null`, {
+                            ceilingMs: 400,
+                            intervalMs: 40
+                        });
                         recorder.note(`dismissed the ${testid} an earlier flow left open`);
                     }
                 }
@@ -23050,8 +24609,12 @@ function buildFlows(ctx) {
                 // lands on the same `act.toggleSidebar`. Focus is put in a terminal first, so
                 // this is also the hostile case (a canvas with its own key handling).
                 const focusTarget = (await widestShellPane(page, cli))?.id ?? state.firstPane;
-                if (focusTarget !== null && focusTarget !== undefined) await focusPaneBody(page, focusTarget);
-                await sleep(400);
+                if (focusTarget !== null && focusTarget !== undefined) {
+                    await focusPaneBody(page, focusTarget);
+                    // SETTLE-WAIT (was sleep(400)): the terminal really holds focus, so the chord
+                    // below is dispatched from the hostile case this section is about.
+                    await settleDom(page, paneFocusedExpr(String(focusTarget)), { ceilingMs: 400, intervalMs: 40 });
+                }
 
                 const readSlot = async () =>
                     JSON.parse(
@@ -23102,6 +24665,8 @@ function buildFlows(ctx) {
                         closing = seen;
                         if (seen.width < fullWidth - 1) break;
                     }
+                    // DURATION-ASSERTION: the SAMPLING INTERVAL of a 250 ms animation. This loop
+                    // is the measurement, not a wait for it.
                     await sleep(8);
                 }
                 // A beat, then a SECOND sample. One reading only proves the transition was
@@ -23133,7 +24698,13 @@ function buildFlows(ctx) {
                     `panelX ${String(atRest.panelX)} → ${String(closing.panelX)} · opacity ${String(closing.panelOpacity)}`
                 );
 
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the slide has finished — the slot is gone and the
+                // grid has taken the space, which is the assertion's own pair of conditions.
+                await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="sidebar-slot"]') === null`,
+                    { ceilingMs: 700, intervalMs: 40 }
+                );
                 const hidden = await readSlot();
                 recorder.note(`hidden: ${JSON.stringify(hidden)}`);
                 recorder.check(
@@ -23151,6 +24722,7 @@ function buildFlows(ctx) {
                         opening = seen;
                         if (seen.width > 1 && seen.width < fullWidth - 1) break;
                     }
+                    // DURATION-ASSERTION: the sampling interval, as above.
                     await sleep(8);
                 }
                 await sleep(60);
@@ -23171,7 +24743,11 @@ function buildFlows(ctx) {
                     `document.querySelector('[data-testid="sidebar-slot"]')?.getAttribute('data-sidebar-phase') === 'open'`,
                     { timeoutMs: 10_000, label: 'the sidebar to settle back open' }
                 );
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): "comes to REST" is the assertion, so what is
+                // waited for is rest — the slot's geometry and the panel's opacity unchanging. The
+                // `waitFor` above only proves the PHASE flipped to open, which happens at the
+                // start of the last frames, not after them.
+                await settleStable(async () => await readSlot(), { ceilingMs: 400, stableMs: 150, intervalMs: 40 });
                 const settled = await readSlot();
                 recorder.check(
                     'and it comes to rest at exactly the width it started from',
@@ -23226,13 +24802,18 @@ function buildFlows(ctx) {
                     still.present === true && still.width > fullWidth * 0.2 && still.width < fullWidth * 0.8,
                     `${String(still.width)} of ${String(fullWidth)}`
                 );
+                // DURATION-ASSERTION: the tail of the DELIBERATELY SLOWED (2 s) transition this
+                // block injected so a CDP capture could photograph it mid-slide. The wait is the
+                // animation it is waiting out, and the override is removed on the line below.
                 await sleep(2200);
                 await page.eval(`(() => { document.getElementById('audit-slow-sidebar')?.remove(); return true; })()`);
                 await page.waitFor(
                     `document.querySelector('[data-testid="sidebar-slot"]')?.getAttribute('data-sidebar-phase') === 'open'`,
                     { timeoutMs: 10_000, label: 'the sidebar to come back for the row work' }
                 );
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the sidebar has come to REST at full width after
+                // the slowed transition — the row work below clicks rows inside it.
+                await settleStable(async () => await readSlot(), { ceilingMs: 600, stableMs: 200, intervalMs: 50 });
 
                 // ── the rows this step owns, provisioned rather than inherited ───────
                 for (const name of ['Remain A', 'Remain B', 'Remain C']) {
@@ -23242,6 +24823,15 @@ function buildFlows(ctx) {
                     `Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Remain C'))`,
                     { timeoutMs: 25_000, label: 'the three Remain rows' }
                 );
+                /*
+                 * DURATION-ASSERTION — CONVERTED AND REVERTED. Everything immediately in front of
+                 * an `openSidebarMenu` right-click is now treated as a dwell rather than a poll:
+                 * the accumulated run showed that the sidebar keeps re-rendering after the DOM
+                 * condition a poll can see is already true, and a right-click landing inside that
+                 * window opens no menu at all (`context menu item "…" not found (no-menu)`, twice
+                 * in an otherwise 116/118-identical full run). There is no signal for "the row
+                 * list has finished reacting", so the number stays the number.
+                 */
                 await sleep(900);
 
                 // ── §WS-048: a row's Color ▸ ────────────────────────────────────────
@@ -23266,7 +24856,15 @@ function buildFlows(ctx) {
                     `${String(colourBefore?.color)} · ${JSON.stringify(colours.map((entry) => [entry.label, entry.checked]))}`
                 );
                 await clickSubmenuItem(page, 'color:orange');
-                await sleep(1200);
+                // SETTLE-WAIT (was sleep(1200) in front of a retry loop that already polls): the
+                // colour has reached the daemon — which is the assertion's own condition, and the
+                // loop below re-reads it.
+                await settle(
+                    async () =>
+                        (await cli.json(['workspace', 'list', '--json'])).find((workspace) => workspace.name === 'Remain A')
+                            ?.color === 'orange',
+                    { ceilingMs: 1200, intervalMs: 120 }
+                );
                 let recoloured = null;
                 for (let attempt = 0; attempt < 10; attempt++) {
                     recoloured = (await cli.json(['workspace', 'list', '--json'])).find(
@@ -23289,6 +24887,8 @@ function buildFlows(ctx) {
                 );
                 await recorder.shot(page, 'colour-persisted');
                 await page.key('Escape');
+                // DURATION-ASSERTION — CONVERTED AND REVERTED: another right-click follows, and
+                // see the note above on why those are dwells here.
                 await sleep(300);
 
                 // ── §WS-052: Move to Group ▸ New Group… ─────────────────────────────
@@ -23330,13 +24930,25 @@ function buildFlows(ctx) {
                 );
                 await recorder.shot(page, 'new-group-rename');
                 await page.insertText('Remain Group');
-                await sleep(200);
+                // SETTLE-WAIT (was sleep(200)): the field carries the typed name — the exact
+                // string the assertion below reads back out of it.
+                await settleDom(
+                    page,
+                    `document.querySelector('input[aria-label="Rename New Group"]')?.value === 'Remain Group'`,
+                    { ceilingMs: 200, intervalMs: 25 }
+                );
                 const typed = String(
                     await page.eval(`document.querySelector('input[aria-label="Rename New Group"]')?.value ?? ''`)
                 );
                 recorder.check('the field takes a new name', typed === 'Remain Group', typed);
                 await page.key('Enter');
-                await sleep(1400);
+                // SETTLE-WAIT (was sleep(1400) in front of a retry loop that already polls): the
+                // group exists in the DAEMON's listing — the assertion's own condition.
+                await settle(
+                    async () =>
+                        (await cli.json(['group', 'list', '--json'])).some((group) => group.name === 'Remain Group'),
+                    { ceilingMs: 1400, intervalMs: 120 }
+                );
 
                 let created = null;
                 for (let attempt = 0; attempt < 10; attempt++) {
@@ -23373,11 +24985,29 @@ function buildFlows(ctx) {
                         paneID: remainB.id,
                         stdin: JSON.stringify({ session_id: sessionID })
                     });
+                    /*
+                     * DURATION-ASSERTION — CONVERTED AND REVERTED, with the measurement.
+                     *
+                     * As a poll on "the daemon says this pane is running" it settled in ~560 ms
+                     * (measured in the full run's `cli-invocations.jsonl`) instead of 1800. The
+                     * daemon is only half of what this dwell buys: the agent status also re-renders
+                     * the pane's sidebar ROW and the footer counts, and the very next gesture is a
+                     * RIGHT-CLICK on that row. Landing it 1.2 s earlier, in an accumulated run with
+                     * thirteen workspaces on screen, produced `context menu item "Delete" not found
+                     * (no-menu)` — a step error, in a full run that was otherwise 116/118 identical.
+                     * The client's re-render has no signal to wait on, so the dwell stays.
+                     */
                     await sleep(1800);
                 }
                 await openSidebarMenu(page, PAGE.workspaceRows, 'Remain B');
                 await clickMenuItem(page, 'Delete');
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the confirmation is up AND has published its
+                // active-agent count — the facts the read below is taken for.
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="confirm-dialog"]')?.getAttribute('data-active-agents') ?? '') !== ''`,
+                    { ceilingMs: 500, intervalMs: 40 }
+                );
                 const gate = JSON.parse(
                     String(
                         await page.eval(
@@ -23426,7 +25056,17 @@ function buildFlows(ctx) {
                 recorder.check('confirming it goes through', goneB === false, `still listed: ${String(goneB)}`);
 
                 // ── §WS-062: one confirmation for the whole selection ────────────────
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the deleted row is off the sidebar and the two
+                // survivors are drawn — the boxes measured below are stale otherwise, which is
+                // the exact hazard the comment inside the loop describes.
+                await settleDom(
+                    page,
+                    `(() => { const rows = [...document.querySelectorAll('${PAGE.workspaceRows}')].map((el) => el.innerText ?? '');
+                      return !rows.some((text) => text.includes('Remain B')) &&
+                          rows.some((text) => text.includes('Remain A')) &&
+                          rows.some((text) => text.includes('Remain C')); })()`,
+                    { ceilingMs: 700, intervalMs: 50 }
+                );
                 const picked = JSON.parse(
                     String(
                         await page.eval(
@@ -23460,6 +25100,15 @@ function buildFlows(ctx) {
                         );
                         if (box.found !== true) continue;
                         await page.clickAt(box.x, box.y, { modifiers: MOD.meta });
+                        /*
+                         * DURATION-ASSERTION — CONVERTED AND REVERTED, for the same reason as the
+                         * agent dwell above. `data-selected="true"` appears well before the row
+                         * list has finished re-rendering around the new selection, and the gesture
+                         * that follows is a RIGHT-CLICK on one of these rows: with the poll in
+                         * place the accumulated run failed with `context menu item "Delete 2
+                         * Workspaces" not found (no-menu)`. The selection flag is the first sign of
+                         * motion here, not the settled state.
+                         */
                         await sleep(300);
                     }
                     const selected = await page.eval(
@@ -23468,7 +25117,11 @@ function buildFlows(ctx) {
                     recorder.check('⌘-click builds a two-row selection', Number(selected) === 2, String(selected));
                     await openSidebarMenu(page, PAGE.workspaceRows, 'Remain A');
                     await clickMenuItem(page, 'Delete 2 Workspaces');
-                    await sleep(500);
+                    // SETTLE-WAIT (was sleep(500)): the bulk confirmation is up.
+                    await settleDom(page, `document.querySelector('[data-testid="confirm-dialog"]') !== null`, {
+                        ceilingMs: 500,
+                        intervalMs: 40
+                    });
                     const bulk = JSON.parse(
                         String(
                             await page.eval(
@@ -23510,7 +25163,15 @@ function buildFlows(ctx) {
                         `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => ['Remain A', 'Remain C'].some(name => (el.innerText ?? '').includes(name)))`,
                         { timeoutMs: 25_000, label: 'both selected rows to leave' }
                     );
-                    await sleep(900);
+                    // SETTLE-WAIT (was sleep(900)): the DAEMON's listing no longer holds either
+                    // selected workspace — the assertion below counts exactly that.
+                    await settle(
+                        async () =>
+                            (await cli.json(['workspace', 'list', '--json'])).every(
+                                (workspace) => workspace.name !== 'Remain A' && workspace.name !== 'Remain C'
+                            ),
+                        { ceilingMs: 900, intervalMs: 100 }
+                    );
                     const remaining = await cli.json(['workspace', 'list', '--json']);
                     recorder.check(
                         'one confirmation deletes the WHOLE selection',
@@ -23605,7 +25266,19 @@ function buildFlows(ctx) {
 
                 // The chevron OPENS a menu — the whole point of the report.
                 await page.click('[data-testid="sidebar-new-menu-toggle"]');
-                await sleep(450);
+                // SETTLE-WAIT (was sleep(450)): the footer's chevron menu is open with rows laid
+                // out — the read below is a MEASUREMENT of those rows.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `(() => { const menu = document.querySelector('${PAGE.contextMenu}');
+                              const rows = menu === null ? [] : [...menu.querySelectorAll('[role="menuitem"]')];
+                              if (rows.length === 0) return 'no menu yet @' + String(Date.now());
+                              return rows.map((row) => { const r = row.getBoundingClientRect();
+                                  return [Math.round(r.x), Math.round(r.y), Math.round(r.width)].join(','); }).join('|'); })()`
+                        ),
+                    { ceilingMs: 450, stableMs: 150, intervalMs: 40 }
+                );
                 const footerMenu = JSON.parse(
                     String(
                         await page.eval(
@@ -23717,7 +25390,14 @@ function buildFlows(ctx) {
                     JSON.stringify(footerGroup)
                 );
                 await page.key('Escape');
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the footer menu and its inline field are gone, so
+                // the + button below raises the sheet rather than dismissing this.
+                await settleDom(
+                    page,
+                    `document.querySelector('${PAGE.contextMenu}') === null &&
+                     document.querySelector('input[aria-label^="Rename New Group"]') === null`,
+                    { ceilingMs: 400, intervalMs: 40 }
+                );
 
                 /*
                  * The + button raises the SHEET (§WS-075), which is the other row — and the
@@ -23772,7 +25452,13 @@ function buildFlows(ctx) {
                     timeoutMs: 10_000,
                     label: 'the sheet to close on Escape'
                 });
-                await sleep(300);
+                // PADDING (was sleep(300)) — the `waitFor` above IS the guard for the sheet. The
+                // only thing it does not cover is a context menu still up behind it eating the
+                // teardown's clicks, and that is normally already true.
+                await settleDom(page, `document.querySelector('${PAGE.contextMenu}') === null`, {
+                    ceilingMs: 300,
+                    intervalMs: 30
+                });
 
                 // ── hand the run back where it found it ──────────────────────────────
                 if (footerGroup !== null) await cli.run(['group', 'delete', String(footerGroup.id)]);
@@ -23781,7 +25467,17 @@ function buildFlows(ctx) {
                     timeoutMs: 20_000,
                     label: 'the sidebar to settle after the deletes'
                 });
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the DAEMON has no Remain workspaces and none of
+                // the groups this step minted — the cleanup assertion's own condition, and the
+                // `waitFor` above only proves the sidebar is non-empty.
+                await settle(
+                    async () =>
+                        (await cli.json(['workspace', 'list', '--json'])).every(
+                            (workspace) => !String(workspace.name).startsWith('Remain ')
+                        ) &&
+                        (await cli.json(['group', 'list', '--json'])).every((group) => group.name !== 'Remain Group'),
+                    { ceilingMs: 900, intervalMs: 100 }
+                );
                 let handedBack = '';
                 for (let attempt = 0; attempt < 6; attempt++) {
                     await page.eval(
@@ -23792,7 +25488,13 @@ function buildFlows(ctx) {
                             return true;
                         })()`
                     );
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700) per attempt): the row clicked is the ACTIVE
+                    // one — the condition the line below re-reads and the retry loop exists for.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(activeBefore)}`,
+                        { ceilingMs: 700, intervalMs: 50 }
+                    );
                     handedBack = String(
                         await page.eval(
                             `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
@@ -23885,7 +25587,11 @@ function buildFlows(ctx) {
                             `(() => { const row = document.querySelector('[data-workspace-id="${workspaceID}"]');
                                       if (row === null) return false; row.click(); return true; })()`
                         );
-                        await sleep(700);
+                        // SETTLE-WAIT (was sleep(700) per attempt): the row this click aimed at
+                        // is the ACTIVE one — the exact condition the line below re-reads, and
+                        // the reason the retry loop exists. An attempt whose click never takes
+                        // still burns its whole 700 ms window before the next one.
+                        await settle(async () => (await activeRow()) === workspaceID, { ceilingMs: 700, intervalMs: 50 });
                         if ((await activeRow()) === workspaceID) return true;
                     }
                     return false;
@@ -24083,7 +25789,14 @@ function buildFlows(ctx) {
                     } catch {
                         await page.key('Escape');
                     }
-                    await sleep(400);
+                    // PADDING (was sleep(400)) — the `waitFor` above is the guard; the backdrop
+                    // is the only part of the overlay that could still eat the clicks below.
+                    await settleDom(
+                        page,
+                        `document.querySelector('${PAGE.settingsPanel}') === null &&
+                         document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                        { ceilingMs: 400, intervalMs: 40 }
+                    );
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
                 recorder.check(
@@ -24108,7 +25821,15 @@ function buildFlows(ctx) {
                     `Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Edge B'))`,
                     { timeoutMs: 25_000, label: 'the Edge rows' }
                 );
-                await sleep(900);
+                // SETTLE-WAIT (was sleep(900)): the DAEMON's group listing carries Edge A inside
+                // Edge Group — the fixture-integrity condition the assertion below states. The
+                // `waitFor` above only proves the ROWS arrived; the move is a separate fact.
+                await settle(
+                    async () =>
+                        ((await cli.json(['group', 'list', '--json'])).find((group) => group.name === 'Edge Group')
+                            ?.workspaces ?? []).some((member) => member.name === 'Edge A'),
+                    { ceilingMs: 900, intervalMs: 100 }
+                );
                 const edgeGroup = (await cli.json(['group', 'list', '--json'])).find(
                     (group) => group.name === 'Edge Group'
                 );
@@ -24134,7 +25855,20 @@ function buildFlows(ctx) {
                 // than about an error message.
                 const ghostMove = await cli.run(['workspace', 'move', 'Edge B', '--group', 'Ghost Group']);
                 recorder.note(`move into a group that does not exist: exit ${String(ghostMove.code)}`);
-                await sleep(1200);
+                /*
+                 * SETTLE-WAIT (was sleep(1200)): Edge B's listing entry and its sidebar row have
+                 * both come to REST. Stability rather than the assertion's "still top-level",
+                 * deliberately: the defect being ruled out is a row detached mid-move, and a poll
+                 * that exited the moment the row looked right could sample it before the bad move
+                 * had even been attempted.
+                 */
+                await settleStable(
+                    async () => [
+                        (await cli.json(['workspace', 'list', '--json'])).find((workspace) => workspace.name === 'Edge B') ?? null,
+                        await page.eval(`document.querySelectorAll('[data-testid="workspace-row"]').length`)
+                    ],
+                    { ceilingMs: 1200, stableMs: 250, intervalMs: 100 }
+                );
                 const afterGhost = (await cli.json(['workspace', 'list', '--json'])).find(
                     (workspace) => workspace.name === 'Edge B'
                 );
@@ -24157,7 +25891,16 @@ function buildFlows(ctx) {
 
                 // …and an out-of-range index clamps rather than dropping the move.
                 await cli.run(['workspace', 'move', 'Edge B', '--group', 'Edge Group', '--index', '99']);
-                await sleep(1400);
+                // SETTLE-WAIT (was sleep(1400)): the clamped move has landed — Edge Group's
+                // membership is exactly `Edge A,Edge B`, which is the assertion's own condition.
+                // A move that is dropped instead of clamped never satisfies it and spends the
+                // whole ceiling, failing identically.
+                await settle(
+                    async () =>
+                        ((await cli.json(['group', 'list', '--json'])).find((group) => group.name === 'Edge Group')
+                            ?.workspaces ?? []).map((member) => member.name).join(',') === 'Edge A,Edge B',
+                    { ceilingMs: 1400, intervalMs: 100 }
+                );
                 const clamped =
                     (await cli.json(['group', 'list', '--json'])).find((group) => group.name === 'Edge Group') ??
                     null;
@@ -24188,6 +25931,18 @@ function buildFlows(ctx) {
                         paneID: edgeBPane.id,
                         stdin: JSON.stringify({ session_id: sessionID })
                     });
+                    /*
+                     * DURATION-ASSERTION — CONVERTED AND REVERTED, with the measurement.
+                     *
+                     * As a poll on "the daemon says this pane is running" it settled in ~560 ms
+                     * (measured in the full run's `cli-invocations.jsonl`) instead of 1800. The
+                     * daemon is only half of what this dwell buys: the agent status also re-renders
+                     * the pane's sidebar ROW and the footer counts, and the very next gesture is a
+                     * RIGHT-CLICK on that row. Landing it 1.2 s earlier, in an accumulated run with
+                     * thirteen workspaces on screen, produced `context menu item "Delete" not found
+                     * (no-menu)` — a step error, in a full run that was otherwise 116/118 identical.
+                     * The client's re-render has no signal to wait on, so the dwell stays.
+                     */
                     await sleep(1800);
                 }
 
@@ -24210,7 +25965,13 @@ function buildFlows(ctx) {
 
                 await openSidebarMenu(page, PAGE.workspaceRows, 'Edge B');
                 await clickMenuItem(page, 'Delete');
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the confirmation dialog is up AND has published
+                // its active-agent count — the two facts `readGate()` reads on the next line.
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="confirm-dialog"]')?.getAttribute('data-active-agents') ?? '') !== ''`,
+                    { ceilingMs: 500, intervalMs: 40 }
+                );
                 const armed = await readGate();
                 recorder.note(`gate with the setting on: ${JSON.stringify(armed)}`);
                 await recorder.shot(page, 'gate-armed');
@@ -24225,9 +25986,24 @@ function buildFlows(ctx) {
                  * fixture survives for the rest of this flow.
                  */
                 await page.click('[data-testid="confirm-suppress"]');
-                await sleep(200);
+                // SETTLE-WAIT (was sleep(200)): the checkbox is actually TICKED. Cancelling
+                // before it registers is the one way this section could silently prove nothing.
+                await settleDom(page, `document.querySelector('[data-testid="confirm-suppress"]')?.checked === true`, {
+                    ceilingMs: 200,
+                    intervalMs: 25
+                });
                 await page.click('[data-testid="confirm-cancel"]');
-                await sleep(1500);
+                /*
+                 * SETTLE-WAIT (was sleep(1500)): the dialog is gone AND the checkbox's value has
+                 * reached the daemon's config file — the two things the next two assertions read
+                 * (the workspace surviving, and `confirm-workspace-delete = false` on disk).
+                 */
+                await settle(
+                    async () =>
+                        (await page.eval(`document.querySelector('[data-testid="confirm-dialog"]') === null`)) === true &&
+                        /confirm-workspace-delete\s*=\s*false/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    { ceilingMs: 1500, intervalMs: 60 }
+                );
                 const survived = (await cli.json(['workspace', 'list', '--json'])).some(
                     (workspace) => workspace.name === 'Edge B'
                 );
@@ -24258,7 +26034,15 @@ function buildFlows(ctx) {
                 );
                 // …and back the other way: the control puts it back, and the gate has to follow.
                 await page.click('[data-testid="confirm-delete-toggle"]');
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the toggle reads on again AND the config file
+                // says so — both halves of the assertion below, so a value that never reaches
+                // disk spends the whole ceiling and fails exactly as it did.
+                await settle(
+                    async () =>
+                        (await toggleState()) === true &&
+                        /confirm-workspace-delete\s*=\s*true/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    { ceilingMs: 1000, intervalMs: 60 }
+                );
                 const restoredToggle = await toggleState();
                 recorder.check(
                     'turning it back on in Settings sticks',
@@ -24271,11 +26055,22 @@ function buildFlows(ctx) {
                     timeoutMs: 8000,
                     label: 'the settings overlay to close'
                 });
+                /*
+                 * DURATION-ASSERTION — CONVERTED AND REVERTED. A whole-window modal has just
+                 * closed and the sidebar is re-rendering behind it; the gesture below is an
+                 * `openSidebarMenu` right-click, which is the one thing measured to break when it
+                 * lands inside that window. See the note in `sidebar-remaining`.
+                 */
                 await sleep(700);
 
                 await openSidebarMenu(page, PAGE.workspaceRows, 'Edge B');
                 await clickMenuItem(page, 'Delete');
-                await sleep(500);
+                // SETTLE-WAIT (was sleep(500)): the dialog is up with its agent count published.
+                await settleDom(
+                    page,
+                    `(document.querySelector('[data-testid="confirm-dialog"]')?.getAttribute('data-active-agents') ?? '') !== ''`,
+                    { ceilingMs: 500, intervalMs: 40 }
+                );
                 const rearmed = await readGate();
                 recorder.note(`gate after the Settings round trip: ${JSON.stringify(rearmed)}`);
                 recorder.check(
@@ -24284,13 +26079,24 @@ function buildFlows(ctx) {
                     JSON.stringify(rearmed)
                 );
                 await page.click('[data-testid="confirm-cancel"]');
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the dialog is gone, so the sidebar click below
+                // lands on a row rather than on a modal backdrop.
+                await settleDom(page, `document.querySelector('[data-testid="confirm-dialog"]') === null`, {
+                    ceilingMs: 700,
+                    intervalMs: 40
+                });
 
                 // ── §WS-112: arriving at a workspace hidden inside a collapsed group ──
                 await page.eval(
                     `(() => { const row = document.querySelector('[data-workspace-id="${String(edgeA.id)}"]'); if (row === null) return false; row.click(); return true; })()`
                 );
-                await sleep(1300);
+                // SETTLE-WAIT (was sleep(1300)): Edge A is the ACTIVE row — the assertion's own
+                // condition, and the precondition for hiding it inside a collapsed group next.
+                await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(String(edgeA.id))}`,
+                    { ceilingMs: 1300, intervalMs: 60 }
+                );
                 const activeNow = String(
                     await page.eval(
                         `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
@@ -24305,7 +26111,15 @@ function buildFlows(ctx) {
                 await page.click(
                     `[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"] [data-testid="group-chevron"]`
                 );
-                await sleep(1300);
+                // SETTLE-WAIT (was sleep(1300)): the group header says collapsed AND Edge A's row
+                // has left the sidebar — the two facts `hidden` is read for and the assertion
+                // states. A collapse that never takes spends the whole ceiling and fails the same.
+                await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"]')?.getAttribute('data-collapsed') === 'true' &&
+                     document.querySelectorAll('[data-workspace-id="${String(edgeA.id)}"]').length === 0`,
+                    { ceilingMs: 1300, intervalMs: 60 }
+                );
                 const hidden = JSON.parse(
                     String(
                         await page.eval(
@@ -24339,7 +26153,19 @@ function buildFlows(ctx) {
                     label: 'the command palette'
                 });
                 await page.insertText('Edge A');
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the palette's filtered result list has stopped
+                // changing. Stability rather than "the Edge A row is present", because the very
+                // next assertions measure the LIST — its geometry, its row kinds, its ordering —
+                // and a list still being filtered would be measured mid-flight.
+                await settleStable(
+                    () =>
+                        page.eval(
+                            `[...document.querySelectorAll('[data-testid="palette-row"]')]
+                                .map((row) => (row.getAttribute('data-item-id') ?? '') + ':' + (row.getAttribute('data-item-kind') ?? ''))
+                                .join('|')`
+                        ),
+                    { ceilingMs: 700, stableMs: 200, intervalMs: 50 }
+                );
                 await recorder.shot(page, 'palette');
                 const paletteRow = await page.eval(
                     `document.querySelectorAll('[data-testid="palette-row"][data-item-id="ws:${String(edgeA.id)}"]').length`
@@ -24421,7 +26247,22 @@ function buildFlows(ctx) {
                     `${JSON.stringify(paletteBox.kinds)} · headings=${String(paletteBox.headings)}`
                 );
                 await page.click(`[data-testid="palette-row"][data-item-id="ws:${String(edgeA.id)}"]`);
-                await sleep(2200);
+                /*
+                 * SETTLE-WAIT (was sleep(2200)): the four facts `arrived` is read for, which are
+                 * the two assertions below — the palette is gone, the group has opened, Edge A's
+                 * row is drawn again, and it is the active one. A jump that leaves the group shut
+                 * never satisfies it, spends the whole ceiling, and fails identically.
+                 */
+                await settleDom(
+                    page,
+                    `(() => {
+                        const header = document.querySelector('[data-testid="group-header"][data-group-id="${String(edgeGroup.id)}"]');
+                        return document.querySelector('[data-testid="command-palette"]') === null &&
+                            header?.getAttribute('data-collapsed') === 'false' &&
+                            document.querySelector('[data-workspace-id="${String(edgeA.id)}"]') !== null &&
+                            document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(String(edgeA.id))}; })()`,
+                    { ceilingMs: 2200, intervalMs: 80 }
+                );
 
                 const arrived = JSON.parse(
                     String(
@@ -24477,14 +26318,28 @@ function buildFlows(ctx) {
                 try {
                     const focusTarget = (await widestShellPane(page, cli))?.id ?? null;
                     if (focusTarget !== null) await focusPaneBody(page, focusTarget);
-                    await sleep(400);
+                    // SETTLE-WAIT (was sleep(400)): focus has actually landed on the pane, so
+                    // the chord below is dispatched from the grid rather than from the sidebar.
+                    if (focusTarget !== null) {
+                        await settleDom(page, paneFocusedExpr(String(focusTarget)), { ceilingMs: 400, intervalMs: 40 });
+                    }
                     const groupKey = await pressBoundAction(page, 'new_group');
                     recorder.note(`new_group is bound to ${String(groupKey.display)}`);
                     await page.waitFor(
                         `document.querySelector('input[aria-label^="Rename New Group"]') !== null`,
                         { timeoutMs: 15_000, label: 'the new group’s inline rename field' }
                     );
-                    await sleep(800);
+                    // SETTLE-WAIT (was sleep(800)): the rename field HOLDS FOCUS with its
+                    // placeholder selected — the assertion below reads `focused`, `value` and
+                    // `selected`, and the `waitFor` above only proves the field exists.
+                    await settleDom(
+                        page,
+                        `(() => { const field = document.querySelector('input[aria-label^="Rename New Group"]');
+                          return field !== null && document.activeElement === field &&
+                              String(field.value).startsWith('New Group') &&
+                              field.selectionEnd - field.selectionStart === String(field.value).length; })()`,
+                        { ceilingMs: 800, intervalMs: 50 }
+                    );
                     const minted = JSON.parse(
                         String(
                             await page.eval(
@@ -24531,7 +26386,12 @@ function buildFlows(ctx) {
                         JSON.stringify(mintedGroup ?? null)
                     );
                     await page.key('Escape');
-                    await sleep(600);
+                    // SETTLE-WAIT (was sleep(600)): the inline rename field is gone, so nothing
+                    // below is typing into it.
+                    await settleDom(page, `document.querySelector('input[aria-label^="Rename New Group"]') === null`, {
+                        ceilingMs: 600,
+                        intervalMs: 40
+                    });
                 } catch (error) {
                     recorder.check(
                         'the new-group chord opens an inline rename on the group it just made (§WS-123)',
@@ -24539,11 +26399,23 @@ function buildFlows(ctx) {
                         error instanceof Error ? error.message : String(error)
                     );
                     await page.key('Escape');
-                    await sleep(400);
+                    // SETTLE-WAIT (was sleep(400)): the same, on the failure path.
+                    await settleDom(page, `document.querySelector('input[aria-label^="Rename New Group"]') === null`, {
+                        ceilingMs: 400,
+                        intervalMs: 40
+                    });
                 }
 
                 // ── hand the run back where it found it ─────────────────────────────
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): nothing modal is left on screen before the
+                // teardown starts driving the CLI and the sidebar.
+                await settleDom(
+                    page,
+                    `document.querySelector('[data-testid="confirm-dialog"]') === null &&
+                     document.querySelector('[data-testid="command-palette"]') === null &&
+                     document.querySelector('${PAGE.settingsPanel}') === null`,
+                    { ceilingMs: 700, intervalMs: 50 }
+                );
                 if (edgeBPane !== undefined) {
                     await cli.run(['event', 'stop'], {
                         paneID: edgeBPane.id,
@@ -24560,7 +26432,19 @@ function buildFlows(ctx) {
                     `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => ['Edge A', 'Edge B'].some(name => (el.innerText ?? '').includes(name)))`,
                     { timeoutMs: 25_000, label: 'the Edge rows to leave' }
                 );
-                await sleep(1000);
+                // SETTLE-WAIT (was sleep(1000)): the DAEMON's listings have no Edge workspaces
+                // and no minted groups left — the leftovers assertion's own condition. The
+                // `waitFor` above is about the sidebar; this is about the daemon.
+                await settle(
+                    async () =>
+                        (await cli.json(['workspace', 'list', '--json'])).every(
+                            (workspace) => !String(workspace.name).startsWith('Edge ')
+                        ) &&
+                        (await cli.json(['group', 'list', '--json'])).every(
+                            (group) => group.name !== 'Edge Group' && !String(group.name).startsWith('New Group')
+                        ),
+                    { ceilingMs: 1000, intervalMs: 100 }
+                );
                 const leftovers = (await cli.json(['workspace', 'list', '--json'])).filter((workspace) =>
                     String(workspace.name).startsWith('Edge ')
                 );
@@ -24582,7 +26466,13 @@ function buildFlows(ctx) {
                             return true;
                         })()`
                     );
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700) per attempt): the row clicked is the ACTIVE
+                    // one — the condition the line below re-reads and the retry loop exists for.
+                    await settleDom(
+                        page,
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(activeBefore)}`,
+                        { ceilingMs: 700, intervalMs: 50 }
+                    );
                     handedBack = String(
                         await page.eval(
                             `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
@@ -24823,7 +26713,14 @@ function buildFlows(ctx) {
                     } catch {
                         await view.key('Escape');
                     }
-                    await sleep(400);
+                    // PADDING (was sleep(400)) — the `waitFor` above is the guard; the backdrop is
+                    // what could still swallow this step's chords.
+                    await settleDom(
+                        view,
+                        `document.querySelector('${PAGE.settingsPanel}') === null &&
+                         document.querySelector('[data-testid="settings-backdrop"]') === null`,
+                        { ceilingMs: 400, intervalMs: 40 }
+                    );
                     recorder.note('dismissed the Settings overlay an earlier flow left open');
                 }
                 // The create sheet is modal too, and gates the dispatcher for the same reason —
@@ -24831,7 +26728,12 @@ function buildFlows(ctx) {
                 for (const testid of ['new-workspace-sheet', 'new-group-sheet']) {
                     if (await view.eval(`document.querySelector('[data-testid="${testid}"]') !== null`)) {
                         await view.key('Escape', { key: 'Escape' });
-                        await sleep(400);
+                        // SETTLE-WAIT (was sleep(400)): the sheet is gone — it gates the
+                        // dispatcher, so this step's ⌘N depends on it.
+                        await settleDom(view, `document.querySelector('[data-testid="${testid}"]') === null`, {
+                            ceilingMs: 400,
+                            intervalMs: 40
+                        });
                         recorder.note(`dismissed the ${testid} an earlier flow left open`);
                     }
                 }
@@ -24958,7 +26860,19 @@ function buildFlows(ctx) {
                 } catch (error) {
                     recorder.note(`⌘N did not open the sheet: ${String(error?.message ?? error)}`);
                 }
-                await sleep(300);
+                // SETTLE-WAIT (was sleep(300)): the sheet has come to REST — the shot below is a
+                // picture of it and the fields are measured from it.
+                await settleStable(
+                    () =>
+                        view.eval(
+                            `(() => { const sheet = document.querySelector('[data-testid="new-workspace-sheet"]');
+                              if (sheet === null) return 'no sheet @' + String(Date.now());
+                              const r = sheet.getBoundingClientRect();
+                              return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height),
+                                      getComputedStyle(sheet).opacity].join('/'); })()`
+                        ),
+                    { ceilingMs: 300, stableMs: 100, intervalMs: 40 }
+                );
                 await recorder.shot(view, 'new-workspace-sheet');
                 recorder.check('⌘N opens the New Workspace sheet (§APP-018)', sheetOpen);
                 /*
@@ -25031,7 +26945,12 @@ function buildFlows(ctx) {
                 );
                 // Hand it back: Escape closes the form without creating anything.
                 await view.key('Escape');
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the form is gone — the exact condition the next
+                // line reads and the assertion after it states.
+                await settleDom(view, `document.querySelector('[data-testid="new-workspace-form"]') === null`, {
+                    ceilingMs: 400,
+                    intervalMs: 40
+                });
                 const sheetGone = await view.eval(
                     `document.querySelector('[data-testid="new-workspace-form"]') === null`
                 );
@@ -25121,7 +27040,10 @@ function buildFlows(ctx) {
                         });
                         setTimeout(resolve, 3000);
                     });
-                    await sleep(800);
+                    // SETTLE-WAIT (was sleep(800)): the socket is OPEN. Every menu row this step
+                    // fires goes down it, so "it is attached" is the settled condition — and the
+                    // assertion on the next line is exactly that claim.
+                    await settle(() => menuSocket?.readyState === 1, { ceilingMs: 800, intervalMs: 30 });
                 }
                 recorder.check('a stand-in for the shell’s menu IPC is attached', menuSocket !== null);
                 /**
@@ -25135,6 +27057,13 @@ function buildFlows(ctx) {
                  */
                 const fireMenu = async (command, settleMs = 900) => {
                     menuSocket?.send(JSON.stringify({ type: 'menu-request', command }));
+                    /*
+                     * DURATION-ASSERTION: `settleMs` is a PARAMETER of this helper and callers
+                     * choose it deliberately — the doc comment above says so. The default 900 ms
+                     * waits the relay out; the mid-flight callers pass 0 precisely because a
+                     * settle would overshoot the 250 ms slide they are photographing. Converting
+                     * it to a poll would erase the distinction the helper exists to express.
+                     */
                     await sleep(settleMs);
                 };
 
@@ -25143,7 +27072,12 @@ function buildFlows(ctx) {
                 );
                 if (inspectorOpenAtEntry === true) {
                     await fireMenu('toggle-inspector');
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700)): the inspector really is gone before the
+                    // measured open below starts from a known state.
+                    await settleDom(view, `document.querySelector('[data-testid="inspector"]') === null`, {
+                        ceilingMs: 700,
+                        intervalMs: 50
+                    });
                     recorder.note('closed an inspector an earlier flow left open');
                 }
 
@@ -25213,8 +27147,12 @@ function buildFlows(ctx) {
                         closing = seen;
                         if (seen.width < inspectorWidth - 1) break;
                     }
+                    // DURATION-ASSERTION: the SAMPLING INTERVAL of a 250 ms animation. This loop
+                    // is the measurement, not a wait for one.
                     await sleep(8);
                 }
+                // DURATION-ASSERTION: the beat BETWEEN the two samples whose disagreement is the
+                // proof that the transition is running. Zero here proves nothing.
                 await sleep(60);
                 const closingLater = await readInspector();
                 recorder.note(`inspector closing: ${JSON.stringify(closing)} → later ${JSON.stringify(closingLater)}`);
@@ -25236,7 +27174,12 @@ function buildFlows(ctx) {
                         Number(closing.panelOpacity) < 1,
                     `panelX ${String(inspectorRest.panelX)} → ${String(closing.panelX)} · opacity ${String(closing.panelOpacity)}`
                 );
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the slide has finished and the panel is gone —
+                // the assertion's own condition, re-read on the line below.
+                await settleDom(view, `document.querySelector('[data-testid="inspector"]') === null`, {
+                    ceilingMs: 700,
+                    intervalMs: 50
+                });
                 recorder.check(
                     'it ends fully gone',
                     (await readInspector()).present === false,
@@ -25270,6 +27213,7 @@ function buildFlows(ctx) {
                     ) {
                         break;
                     }
+                    // DURATION-ASSERTION: the SAMPLING INTERVAL of the hunt for a mid-slide frame.
                     await sleep(10);
                 }
                 recorder.note(
@@ -25283,11 +27227,19 @@ function buildFlows(ctx) {
                         still.width < inspectorWidth * 0.8,
                     `${String(still.width)} of ${String(inspectorWidth)}`
                 );
+                // DURATION-ASSERTION: the tail of the DELIBERATELY SLOWED (2 s) transition this
+                // block injected so a CDP capture could photograph it mid-slide. The wait is the
+                // animation, and the override is removed on the line below.
                 await sleep(2400);
                 await view.eval(`(() => { document.getElementById('audit-slow-inspector')?.remove(); return true; })()`);
                 // Put the inspector back where it was found (shut, in every run so far).
                 await fireMenu('toggle-inspector');
-                await sleep(700);
+                // SETTLE-WAIT (was sleep(700)): the inspector is shut again — the assertion's own
+                // condition, and the state the next step inherits.
+                await settleDom(view, `document.querySelector('[data-testid="inspector"]') === null`, {
+                    ceilingMs: 700,
+                    intervalMs: 50
+                });
                 recorder.check(
                     'the inspector is handed back CLOSED',
                     (await view.eval(`document.querySelector('[data-testid="inspector"]') === null`)) === true
@@ -25308,7 +27260,12 @@ function buildFlows(ctx) {
                  */
                 if (!(await view.eval(`document.querySelector('${PAGE.sidebar}') !== null`))) {
                     await view.click('button[aria-label="Toggle sidebar"]');
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700)): the sidebar is out — everything below is a
+                    // measurement of rows inside it.
+                    await settleDom(view, `document.querySelector('${PAGE.sidebar}') !== null`, {
+                        ceilingMs: 700,
+                        intervalMs: 50
+                    });
                     recorder.note('re-opened the sidebar an earlier flow left hidden');
                 }
 
@@ -25356,10 +27313,23 @@ function buildFlows(ctx) {
                 // Escape the rename and take the group back out: this step must leave the world
                 // as it found it, and the destructive part below only removes WORKSPACES.
                 await view.key('Escape');
-                await sleep(400);
+                // SETTLE-WAIT (was sleep(400)): the inline rename field is gone before the group
+                // it renames is deleted underneath it.
+                await settleDom(view, `document.querySelector('input[aria-label^="Rename "]') === null`, {
+                    ceilingMs: 400,
+                    intervalMs: 40
+                });
                 if (mintedGroup !== undefined) {
                     await cli.run(['group', 'delete', String(mintedGroup.id)]);
-                    await sleep(800);
+                    // SETTLE-WAIT (was sleep(800)): the DAEMON no longer lists the minted group —
+                    // the "leave the world as it was found" assertion's own condition.
+                    await settle(
+                        async () =>
+                            (await cli.json(['group', 'list', '--json'])).every(
+                                (group) => String(group.id) !== String(mintedGroup.id)
+                            ),
+                        { ceilingMs: 800, intervalMs: 80 }
+                    );
                 }
                 const groupsRestored = await cli.json(['group', 'list', '--json']);
                 recorder.check(
@@ -25409,7 +27379,15 @@ function buildFlows(ctx) {
                 for (const name of ['Select A', 'Select B']) {
                     await cli.run(['workspace', 'create', '--name', name]);
                 }
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): both new rows are drawn in the sidebar — the
+                // selection assertions below count rows, so a sidebar still catching up would be
+                // counted short.
+                await settleDom(
+                    view,
+                    `(() => { const rows = [...document.querySelectorAll('${PAGE.workspaceRows}')].map((el) => el.innerText ?? '');
+                      return ['Select A', 'Select B'].every((name) => rows.some((text) => text.includes(name))); })()`,
+                    { ceilingMs: 1500, intervalMs: 70 }
+                );
                 const selectionAtEntry = await readSelection();
                 recorder.note(`sidebar rows at entry: ${JSON.stringify(selectionAtEntry)}`);
                 recorder.check(
@@ -25437,6 +27415,8 @@ function buildFlows(ctx) {
                 // The shell's own line is a THIRD process away, so poll for it rather than
                 // assuming one settle covers client → daemon → shell.
                 for (let tick = 0; tick < 60 && !lastSelectionLog().includes('enabled'); tick++) {
+                    // DURATION-ASSERTION: the SAMPLING INTERVAL of the poll this loop already is
+                    // — the comment above says so.
                     await sleep(100);
                 }
                 const enabledLog = lastSelectionLog();
@@ -25464,6 +27444,7 @@ function buildFlows(ctx) {
                     `${String(clearedSelection.selected)} of ${String(clearedSelection.total)}`
                 );
                 for (let tick = 0; tick < 60 && !lastSelectionLog().includes('disabled'); tick++) {
+                    // DURATION-ASSERTION: the sampling interval of the poll, as above.
                     await sleep(100);
                 }
                 const disabledLog = lastSelectionLog();
@@ -25487,13 +27468,24 @@ function buildFlows(ctx) {
                 const scratch = await cli.json(['workspace', 'create', '--name', 'Mac Chrome', '--json']);
                 const scratchID = String(scratch?.workspace_id ?? '');
                 recorder.check('a fresh single-pane workspace to spend on the empty state', scratchID !== '');
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the scratch workspace's row is drawn, so the
+                // click loop below has something to click.
+                await settleDom(view, `document.querySelector('[data-workspace-id="${scratchID}"]') !== null`, {
+                    ceilingMs: 1500,
+                    intervalMs: 70
+                });
                 for (let attempt = 0; attempt < 6; attempt++) {
                     await view.eval(
                         `(() => { const row = document.querySelector('[data-workspace-id="${scratchID}"]');
                                   if (row === null) return false; row.click(); return true; })()`
                     );
-                    await sleep(700);
+                    // SETTLE-WAIT (was sleep(700) per attempt): the clicked row is the ACTIVE one
+                    // — the condition read on the line below, which is why the loop retries.
+                    await settleDom(
+                        view,
+                        `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') === ${JSON.stringify(scratchID)}`,
+                        { ceilingMs: 700, intervalMs: 50 }
+                    );
                     const active = await view.eval(
                         `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
                     );
@@ -25502,7 +27494,12 @@ function buildFlows(ctx) {
                 for (const workspace of before) {
                     await cli.run(['workspace', 'delete', String(workspace.id), '--force']);
                 }
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the daemon's listing has come down to the one
+                // workspace it refuses to delete — the assertion's own condition.
+                await settle(async () => (await cli.json(['workspace', 'list', '--json'])).length === 1, {
+                    ceilingMs: 1500,
+                    intervalMs: 100
+                });
                 const remaining = await cli.json(['workspace', 'list', '--json']);
                 recorder.check(
                     'exactly one workspace is left, and the CLI refused to take it (§WS-156’s CLI half)',
@@ -25522,7 +27519,9 @@ function buildFlows(ctx) {
                 recorder.check('the scratch workspace has exactly one pane', scratchPanes.length === 1, String(scratchPanes.length));
                 if (scratchPanes.length === 1) {
                     await focusPaneBody(view, String(scratchPanes[0].id));
-                    await sleep(300);
+                    // SETTLE-WAIT (was sleep(300)): the pane really holds focus, because the very
+                    // next gesture is ⌘W on it.
+                    await settleDom(view, paneFocusedExpr(String(scratchPanes[0].id)), { ceilingMs: 300, intervalMs: 30 });
                 }
                 // ⌘W on the last pane of the LAST workspace — the one gesture allowed to reach
                 // zero (`act.closeFocused` → the GUI's own `delete-workspace` verb).
@@ -25537,7 +27536,16 @@ function buildFlows(ctx) {
                 } catch (error) {
                     recorder.note(`empty state never appeared: ${String(error?.message ?? error)}`);
                 }
-                await sleep(600);
+                // SETTLE-WAIT (was sleep(600)): the empty state has come to REST — the shot below
+                // is a picture of it and its text is read straight after.
+                await settleStable(
+                    () =>
+                        view.eval(
+                            `(document.querySelector('[data-testid="no-workspace-empty"]')?.innerText ?? '(absent)') +
+                             '|' + String(document.querySelectorAll('${PAGE.workspaceRows}').length)`
+                        ),
+                    { ceilingMs: 600, stableMs: 200, intervalMs: 50 }
+                );
                 await recorder.shot(view, 'no-workspace');
                 const emptyText = await view.eval(
                     `(document.querySelector('[data-testid="no-workspace-empty"]')?.innerText ?? '').replace(/\\n/g, ' | ')`
@@ -25585,7 +27593,14 @@ function buildFlows(ctx) {
                     timeoutMs: 25_000,
                     label: 'the recreated workspace row'
                 });
-                await sleep(1500);
+                // SETTLE-WAIT (was sleep(1500)): the DAEMON's listing has caught up with the
+                // recreated workspaces — the restore assertion reads that listing, not the rows
+                // the `waitFor` above proved.
+                await settleStable(async () => (await cli.json(['workspace', 'list', '--json'])).length, {
+                    ceilingMs: 1500,
+                    stableMs: 250,
+                    intervalMs: 100
+                });
                 const restored = await cli.json(['workspace', 'list', '--json']);
                 recorder.note(`restored: ${restored.map((entry) => `${String(entry.name)} (${String(entry.id)})`).join(', ')}`);
                 recorder.check(
@@ -25624,7 +27639,11 @@ function buildFlows(ctx) {
     ];
 }
 
-main().catch((error) => {
+// `--shards N` without `--shard i` is the parent: it fans out N copies of this same script and
+// folds their results. Everything else — including each of those copies — is the run itself.
+const entry = options.shards > 1 && options.shard === null ? runShardedParent : main;
+
+entry().catch((error) => {
     process.stderr.write(`\nAUDIT HARNESS FAILED: ${String(error?.stack ?? error)}\n`);
     process.exitCode = 1;
 });

@@ -219,6 +219,10 @@ interface ArrowIntent {
  * order-changing commit that follows, and from then on may only be RE-asserted while the user is
  * still standing on the row's own arrows. See the layout effect for why "still standing" is not
  * read off `document.activeElement` alone.
+ *
+ * N33 (run-AH2) — the whole gesture is also DROPPED, honoured or not, the moment a non-arrow
+ * element takes focus after the press: that free first honour must not be owed to a user who has
+ * moved on. The `focusin` listener does it, because only an event can answer it in time.
  */
 interface ArrowGesture extends ArrowIntent {
     honoured: boolean;
@@ -712,8 +716,43 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
      */
     const lastFocused = useRef<Element | null>(null);
     useEffect(() => {
+        /** Is this node one of the list's reorder arrows — any row's, not only the intent's? */
+        const isReorderArrow = (node: Element): boolean => {
+            for (const entry of arrows.current.values()) {
+                if (entry.up === node || entry.down === node) return true;
+            }
+            return false;
+        };
         const remember = (event: FocusEvent): void => {
-            if (event.target instanceof Element) lastFocused.current = event.target;
+            if (!(event.target instanceof Element)) return;
+            lastFocused.current = event.target;
+            /*
+             * N33 (run-AH2) — the residual the `honoured` flag leaves, closed at its source.
+             *
+             * The first honour is UNCONDITIONAL, so an intent armed by a press whose commit has
+             * not come back yet is still owed one, and it is paid into whatever the user is doing
+             * when an order-changing commit finally arrives. The verifier bounded that window
+             * live (`docs/audit/n32-33-verify-ah2/`: the commit is on screen 14-15 ms after the
+             * press on a local stack) and proved the mechanism at level 1 — but a bound is not a
+             * closure: a daemon across a real network, or a `move-label-preset` that is refused or
+             * dropped across a reconnect, widens it without limit.
+             *
+             * This closes it DETERMINISTICALLY, and without a timer. The record proposed judging
+             * the first honour by the same ANCHOR the re-assert uses; that reads `activeElement`
+             * (or its last-known stand-in) at COMMIT time, which is exactly the reading that
+             * cannot tell a transient `<body>` from the user moving on — the original §N33 dead
+             * end. The question is answerable BEFORE the commit instead: an intent is dead the
+             * moment a NON-ARROW element takes focus after the press, because that is the user
+             * moving on, and it is an EVENT rather than a state so a blur to `<body>` (which
+             * fires no `focusin`) can never be mistaken for one.
+             *
+             * Any row's arrow keeps it alive, not just the intent's own: a burst of presses
+             * inside one echo focuses arrows and nothing else (Chromium focuses a `<button>` on
+             * mousedown), and a press on ANOTHER row arms its own gesture a moment later at the
+             * click — neither is the user leaving the reorder. The three failures the `honoured`
+             * flag closed all move to a name field, which is not an arrow.
+             */
+            if (focusIntent.current !== null && !isReorderArrow(event.target)) focusIntent.current = null;
         };
         document.addEventListener('focusin', remember, true);
         return () => {
@@ -799,6 +838,13 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
          * cases that must keep working all re-assert from the row's own arrow (a burst re-arms on
          * every press, and a second client's move leaves focus where this window put it); the
          * three failures all re-assert from somewhere else — a name field, another row's arrow.
+         *
+         * The first honour is unconditional HERE and bounded ELSEWHERE (run-AH2): an intent whose
+         * press has been followed by a non-arrow `focusin` is already null by the time this runs,
+         * dropped at the event rather than judged at the commit — see the `focusin` listener. So
+         * "from anywhere" now means "from anywhere the user has not visibly left", and the
+         * transient `<body>` this effect must tolerate still costs nothing, because a blur fires
+         * no `focusin` at all.
          *
          * `anchor`, not `active`: the commit being handled may itself have destroyed whatever held
          * focus (see `lastFocused`), and a transient `<body>` is not the user moving on.

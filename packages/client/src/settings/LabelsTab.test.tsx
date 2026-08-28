@@ -1366,3 +1366,151 @@ describe('a finished reorder does not replay (N33, run-AH)', () => {
         expect(order()).toEqual(before);
     });
 });
+
+/*
+ * (J) — the residual `run-AH2` bounded, closed. PROMOTED from
+ * `docs/audit/n32-33-verify-ah2/probe-J.test.tsx`, where it was kept FAILING on purpose as the
+ * record of a hole: the first honour was unconditional, so an intent armed by a press whose
+ * order-changing commit had not come back yet was still owed one, and it was paid into whatever
+ * the user was doing when a commit finally arrived. The verifier measured the live window at
+ * 14-15 ms on all four corners (a local daemon's echo) — narrower than the second press of a
+ * double-click, so unreachable by hand — but a daemon across a real network, or a
+ * `move-label-preset` refused or dropped across a reconnect, widens it without limit.
+ *
+ * The closure is an EVENT, not a timer and not a second reading of `activeElement` at commit
+ * time: a non-arrow `focusin` after the press means the user moved on, so the intent is dead.
+ * Both halves are asserted here — the intent that must die, and the one that must still be
+ * honoured through the transient `<body>` a moved or disabled arrow leaves behind.
+ */
+describe('an un-honoured intent dies when the user moves on (N33, run-AH2)', () => {
+    const FIVE: readonly ChromeLabelPreset[] = [
+        { name: 'a', color: { kind: 'named', color: 'gray' }, textColor: null },
+        { name: 'b', color: { kind: 'named', color: 'blue' }, textColor: null },
+        { name: 'c', color: { kind: 'named', color: 'red' }, textColor: null },
+        { name: 'd', color: { kind: 'named', color: 'green' }, textColor: null },
+        { name: 'e', color: { kind: 'named', color: 'purple' }, textColor: null }
+    ];
+
+    /**
+     * The daemon has NOT answered the move (or answered with no order change at all — a move to
+     * the index the row already holds, which is what a second client's earlier move leaves), so
+     * the intent sits armed and un-honoured. The `echo` button then delivers the first
+     * order-changing commit: a plain RENAME of another row, from outside the tab, with focus left
+     * exactly where the test put it.
+     */
+    function SlowHarness(): ReactElement {
+        const [presets, setPresets] = useState<readonly ChromeLabelPreset[]>(FIVE);
+        return (
+            <>
+                <button
+                    type="button"
+                    data-testid="echo"
+                    onClick={() => {
+                        setPresets((current) =>
+                            current.map((preset) =>
+                                preset.name === 'd' ? { ...preset, name: 'd-renamed' } : preset
+                            )
+                        );
+                    }}
+                >
+                    echo
+                </button>
+                <LabelsTab
+                    presets={presets}
+                    workspaces={[]}
+                    actions={{
+                        ...actions(),
+                        // The move goes out and nothing comes back. Chromium blurs a button it
+                        // moves or disables under the finger; jsdom does neither, so the blur is
+                        // modelled here — and the `<body>` it leaves must NOT read as moving on.
+                        moveLabelPreset: () => {
+                            const active = document.activeElement as HTMLElement | null;
+                            if ((active?.getAttribute('data-testid') ?? '').startsWith('label-move-')) {
+                                active?.blur();
+                            }
+                        }
+                    }}
+                    bucket="dark"
+                />
+            </>
+        );
+    }
+
+    const activeID = (): string =>
+        document.activeElement === document.body
+            ? 'BODY'
+            : (document.activeElement?.getAttribute('data-testid') ?? 'unknown');
+
+    const order = (): string[] =>
+        Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((node) =>
+            (node.getAttribute('data-testid') ?? '').replace('label-preset-', '')
+        );
+
+    /** A mouse press on an arrow: Chromium focuses the `<button>` on mousedown, then clicks. */
+    function pressArrow(testID: string): void {
+        const arrow = screen.getByTestId(testID);
+        act(() => {
+            fireEvent.mouseDown(arrow, { detail: 1, clientX: 400, clientY: 300 });
+            arrow.focus();
+        });
+        fireEvent.click(arrow, { detail: 1, clientX: 400, clientY: 300 });
+    }
+
+    it('does not pay a pending arrow press into a name field the user has moved to', () => {
+        render(<SlowHarness />);
+        pressArrow('label-move-up-c');
+        // Nothing came back: the order is untouched and the intent is armed, un-honoured.
+        expect(order()).toEqual(['a', 'b', 'c', 'd', 'e']);
+
+        // The user moves on — into another row's name field.
+        const field = screen.getByTestId('label-rename-field-e') as HTMLInputElement;
+        act(() => {
+            field.focus();
+        });
+        expect(activeID()).toBe('label-rename-field-e');
+
+        // …and NOW the first order-changing commit arrives: a rename of an unrelated row.
+        act(() => {
+            fireEvent.click(screen.getByTestId('echo'));
+        });
+        expect(order()).toEqual(['a', 'b', 'c', 'd-renamed', 'e']);
+        expect(activeID()).toBe('label-rename-field-e');
+    });
+
+    /*
+     * The other half, and the reason this is not simply "disarm on every commit": the first
+     * honour still fires for a gesture the user has NOT left. Focus here is `<body>` at the
+     * commit — the blur a moved or disabled arrow leaves — which the layout effect must keep
+     * treating as "still mine", because that is the common case the intent exists for at all.
+     */
+    it('still honours a pending press when the user has not moved on, through a transient BODY', () => {
+        render(<SlowHarness />);
+        pressArrow('label-move-up-c');
+        expect(activeID()).toBe('BODY');
+
+        act(() => {
+            fireEvent.click(screen.getByTestId('echo'));
+        });
+        expect(order()).toEqual(['a', 'b', 'c', 'd-renamed', 'e']);
+        expect(activeID()).toBe('label-move-up-c');
+    });
+
+    /*
+     * A burst keeps focus on ARROWS, which is why the rule is "a non-arrow took focus" and not
+     * "focus moved": three presses inside one echo re-arm on every press and must still land on
+     * the row, including when they cross rows.
+     */
+    it('survives a burst of presses, including one that crosses rows', () => {
+        render(<SlowHarness />);
+        pressArrow('label-move-up-c');
+        pressArrow('label-move-up-c');
+        pressArrow('label-move-down-b');
+        expect(activeID()).toBe('BODY');
+
+        act(() => {
+            fireEvent.click(screen.getByTestId('echo'));
+        });
+        // The LAST press owns the gesture, and it is honoured onto its own row's arrow.
+        expect(activeID()).toBe('label-move-down-b');
+    });
+});

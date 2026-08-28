@@ -463,19 +463,51 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * DOM focus alone cannot win that argument.
      */
     const blankTab = liveURL.trim() === '';
+    /**
+     * §N30's second residual (`run-AD`), and where its anchor actually lives.
+     *
+     * The gain used to be consumed BEFORE the blank-tab and chrome-text guards, so a pane born
+     * focused whose active tab arrived blank and gained a URL a moment later ate its own claim
+     * and never made another — a tab filling in is not a focus change, so nothing re-armed it.
+     * `nex web open` is measured to deliver the tab with its URL in one update, which is why the
+     * row could only call it latent; the ordering is not a contract, and a client that reloads
+     * over a running daemon reaches it with no daemon change at all. Measured live in that state
+     * (`docs/audit/n29-verify/`): ring on the web pane, its page holding a freshly landed URL,
+     * and the keyboard still in this renderer — §N19/§N20's divergence, one pane type further on.
+     *
+     * So the gain is spent only when the claim is actually MADE, or on a guard that stands.
+     *
+     * The anchor that keeps "armed until it can act" from becoming "fired at some unrelated later
+     * moment" is the CARET, read when the claim would be made — not a count of focus events since
+     * the gain. That distinction is measured, not stylistic: a client reload fires three `focusin`
+     * events in its first 50 ms (`pane-grid-new-pane`, then WEB-002's URL bar, then the terminal's
+     * hidden `<textarea>`), and the caret settles on `<body>`. None of them is the user moving on,
+     * so an event anchor drops every deferred claim for reasons that have nothing to do with the
+     * person at the keyboard — and it is also the wrong QUESTION: what may not be stolen is a
+     * caret that is in use, which is a fact about the present, not about history. It is the same
+     * test Swift makes at the same moment (`firstResponder is NSText`, WEB-043), and §N33's
+     * event-shaped anchor is right there for the opposite reason: those events are user gestures.
+     *
+     * Focus leaving the pane resets the gain outright, so a claim can never outlive its ring.
+     */
     useEffect(() => {
-        const gained = focused && !wasFocused.current;
         if (!focused) {
             wasFocused.current = false;
             return;
         }
-        // The gain is CONSUMED only once the pane can act on it. A pane that mounts focused
-        // before its tab set has arrived would otherwise eat its own claim and never make
-        // another, because a tab landing is not a focus change.
-        if (!gained || !embedded || liveTabID === null) return;
+        // The gain has already been spent — on a claim, or on a guard that stands.
+        if (wasFocused.current) return;
+        // Not claimable YET — a browser client with no native view, no tab, or a tab that is
+        // still blank (WEB-002 owns that caret). Stay armed and re-decide when that changes.
+        if (!embedded || liveTabID === null || blankTab) return;
+        // WEB-043's `firstResponder is NSText` guard, and the anchor: a chrome text field holding
+        // the caret is a caret in use, so the page does not take it. The gain is spent refusing —
+        // the user is typing an address, and the page must not take it back when that URL lands.
+        if (chromeTextIsFocused(typeof document === 'undefined' ? null : document.activeElement)) {
+            wasFocused.current = true;
+            return;
+        }
         wasFocused.current = true;
-        if (blankTab) return;
-        if (chromeTextIsFocused(typeof document === 'undefined' ? null : document.activeElement)) return;
         void commands.focusView(paneID, liveTabID);
     }, [focused, embedded, liveTabID, blankTab, commands, paneID]);
 

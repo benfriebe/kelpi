@@ -74,7 +74,26 @@ export function run(command, args, opts = {}) {
 }
 
 /**
- * Take a just-spawned child out of the **background task policy** it inherited from this harness.
+ * Clear a just-spawned child's **external** background task policy.
+ *
+ * The name and the paragraphs below used to say "the policy it INHERITED", and that is measurably
+ * not what this does — §N22's residual lane, `docs/audit/n22-darwin-bg/`. The policy has two
+ * components. The **internal** one is self-applied and is carried across `fork`/`exec` into every
+ * descendant; the **external** one is applied by another process and is not inherited at all.
+ * `taskpolicy -B -p <pid>` writes only the external one, so on a child that INHERITED `DARWIN_BG`
+ * it changes nothing: measured with the kernel's own `PROC_FLAG_DARWINBG`, such a child reads
+ * `flag=1` before and after the call, and the children it then spawns are throttled too. Read with
+ * `getpriority(PRIO_DARWIN_PROCESS, <other pid>)` it *looks* cleared — that call returns only the
+ * external component, which is why the original measurement read as a success.
+ *
+ * It is kept because it is cheap (~1.3 ms per child) and it does clear a genuine external override
+ * (`taskpolicy -b -p <pid>` applied to a running process). What it is not is a fix for the
+ * inherited case, and the operative mitigation for that is the one already written down in
+ * `docs/audit/README.md`: prefer a quiet machine, and do not start a `--packaged` run from a shell
+ * that is itself under `DARWIN_BG`. The two levers that would work are an internal self-clear
+ * inside the launched process (`setpriority(PRIO_DARWIN_PROCESS, 0, 0)`, which needs a native call
+ * Node does not expose, and must precede Electron's helper spawns) or a LaunchServices launch,
+ * which drops the policy outright.
  *
  * Applied to EVERY child the harness makes — the dev shell, the packaged app, the daemon, each
  * build step, every CLI probe, and each shard's child process — and not only to the packaged
@@ -96,7 +115,9 @@ export function run(command, args, opts = {}) {
  * Measured, packaged, harness-daemon shape: `-B` on the child attached in 191–207 ms on 7 of 8
  * launches; without it, 1 of 8 (the rest never answered inside 15 s). It has to be the CHILD's
  * pid — clearing the policy on this process first does not propagate to what it spawns (measured:
- * 0/4). Best-effort: a missing `taskpolicy` just leaves the inherited policy in place.
+ * 0/4), and the residual lane explains why: an EXTERNAL clear is not inherited either, so neither
+ * end of that call reaches a child's internal policy. Best-effort: a missing `taskpolicy` just
+ * leaves the policy as it was.
  */
 export function clearBackgroundTaskPolicy(pid) {
     if (process.platform !== 'darwin' || pid === undefined) return;

@@ -18610,18 +18610,69 @@ function buildFlows(ctx) {
                  * query answered with (and may not even be in the workspace on screen), so the
                  * "after a redraw" sample could be of a canvas nothing had redrawn.
                  */
+                /**
+                 * The canvas as it stood the instant BEFORE the write, so the settle below can
+                 * tell a repaint from a still life.
+                 *
+                 * `run-AD` filed this as a residual and it is closed here: the settle used to
+                 * sample the moment `cli.run(… clear)` returned and `break` on the FIRST sample
+                 * that satisfied §N18's predicate — and the ARRIVAL sample already satisfies it
+                 * whenever the live theme change worked. So "and a full-screen redraw comes back
+                 * in it too" could be decided by a canvas that had not redrawn at all. Measured
+                 * both ways inside one wave: the lane's scoped record has the two samples
+                 * differing (415 156 → 414 576) while the verifier's scoped run on the same
+                 * recipe reproduces them byte-identical (415 156 both), and the full-run-shaped
+                 * record is identical too (815 287 both) — so "the two samples differ" was a
+                 * race, not a property, and the assertion was weaker than its name.
+                 *
+                 * `clear` CHANGES THE SCREEN — it marks every row dirty and wipes what the pane
+                 * had painted — so the change is the event, and the signature below is what
+                 * names it. §N18's predicate `cellAreaTookTheTheme` is untouched, byte for byte:
+                 * it is asked the same question about a strictly later canvas.
+                 */
+                const canvasSignature = (sample) =>
+                    JSON.stringify([
+                        sample?.top ?? null,
+                        sample?.topOpaque ?? null,
+                        sample?.cleared ?? null,
+                        sample?.total ?? null
+                    ]);
+                const beforeClear = await sampleCanvas();
+                const beforeClearSignature = canvasSignature(beforeClear);
                 if (probePaneID !== '') await cli.run(['pane', 'send', '--target', probePaneID, 'clear']);
-                let paintedAfterRedraw = paintedOnArrival;
-                let redrawVerdict = arrivalVerdict;
-                // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep.
+                let paintedAfterRedraw = beforeClear;
+                let redrawVerdict = cellAreaTookTheTheme(beforeClear);
+                let redrew = false;
+                let samplesTaken = 0;
+                // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep — and
+                // only a sample that PROVABLY post-dates the clear is allowed to decide it.
                 for (let attempt = 0; attempt < 30; attempt++) {
-                    paintedAfterRedraw = await sampleCanvas();
-                    redrawVerdict = cellAreaTookTheTheme(paintedAfterRedraw);
-                    if (redrawVerdict.ok) break;
+                    const sample = await sampleCanvas();
+                    samplesTaken += 1;
+                    if (canvasSignature(sample) !== beforeClearSignature) {
+                        // The screen moved: this canvas is one the clear produced.
+                        redrew = true;
+                        paintedAfterRedraw = sample;
+                        redrawVerdict = cellAreaTookTheTheme(sample);
+                        if (redrawVerdict.ok) break;
+                    }
                     // DURATION-ASSERTION: the SAMPLING INTERVAL of the retry, not a wait — this
                     // loop is already the settle the rest of this lane is about.
                     await sleep(400);
                 }
+                if (!redrew) {
+                    // A pane that never repainted has not answered the question, and saying so
+                    // is the point of the tightening: the old loop would have passed here on the
+                    // arrival canvas.
+                    redrawVerdict = {
+                        ok: false,
+                        why: `the clear never changed the canvas in ${String(samplesTaken)} samples — ${redrawVerdict.why}`
+                    };
+                }
+                recorder.note(
+                    `the clear's own transition: ${redrew ? `the canvas changed by sample ${String(samplesTaken)} of 30` : 'NEVER — the canvas is byte-identical to the pre-clear sample'}` +
+                        ` · pre-clear ${JSON.stringify(beforeClear.cleared ?? beforeClear.topOpaque?.[0] ?? null)}`
+                );
                 /*
                  * ASSERTED as of §N18's fix, and the upgrade is the point.
                  *
@@ -21612,6 +21663,62 @@ function buildFlows(ctx) {
                     )
                 );
 
+                /**
+                 * The teardown, as a function, because EVERY exit from this step has to take it.
+                 *
+                 * `run-AI`'s `trial1` is the record of what the alternative costs. The
+                 * group-shed drag's `seekTopLevel` probe returned `null`, the step took its
+                 * `if (out === null) { … return; }` branch — which released the mouse and
+                 * returned WITHOUT this block — and the `Springboard` group and its five
+                 * workspaces stayed in the sidebar for the rest of the run. The next three
+                 * sidebar steps then hunted rows in a sidebar that is not the one they were
+                 * written against, and one failed probe read as four broken steps
+                 * (`sidebar-escape-clears-selection`, `sidebar-remaining`, `workspace-edges`).
+                 *
+                 * So the fixture is torn down on every path, the hand-back is ASSERTED on every
+                 * path, and a failed probe is worth exactly one red.
+                 */
+                const handBack = async () => {
+                    await page.eval(`(() => { delete window.__nexSpring; return true; })()`);
+                    await cli.run(['group', 'delete', 'Springboard', '--cascade']);
+                    // Phase (d) drags `Spring Nested` OUT of the group, so the cascade above may
+                    // no longer own it. Deleting it by name is a no-op when the cascade already
+                    // did.
+                    await cli.run(['workspace', 'delete', 'Spring Nested', '--force']);
+                    for (let n = 1; n <= 4; n++) {
+                        await cli.run(['workspace', 'delete', `Spring ${String(n)}`, '--force']);
+                    }
+                    await page.waitFor(
+                        `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
+                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring '))`,
+                        { timeoutMs: 30_000, label: 'the spring rows to leave the sidebar' }
+                    );
+                    await sleep(900);
+                    let handedBack = '';
+                    for (let attempt = 0; attempt < 6; attempt++) {
+                        await page.eval(
+                            `(() => {
+                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
+                            if (row === null) return false;
+                            row.click();
+                            return true;
+                        })()`
+                        );
+                        await sleep(700);
+                        handedBack = String(
+                            await page.eval(
+                                `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
+                            )
+                        );
+                        if (handedBack === activeBefore) break;
+                    }
+                    recorder.check(
+                        'the step hands the run back on the workspace it found active',
+                        activeBefore !== '' && handedBack === activeBefore,
+                        `${String(activeBefore)} → ${String(handedBack)}`
+                    );
+                };
+
                 /*
                  * A group ABOVE the rows this step drags, so §5.5's spring-load has something
                  * below it to push down when it opens, and four contiguous top-level rows to
@@ -21667,7 +21774,10 @@ function buildFlows(ctx) {
                 recorder.note(`spring rows: ${JSON.stringify(boxes)}`);
                 const haveRows = names.every((name) => boxes[name] !== undefined);
                 recorder.check('the four rows this step drags across are on screen', haveRows, JSON.stringify(Object.keys(boxes)));
-                if (!haveRows) return;
+                if (!haveRows) {
+                    await handBack();
+                    return;
+                }
 
                 const pitch = boxes['Spring 4'].top - boxes['Spring 3'].top;
                 recorder.check(
@@ -22173,6 +22283,7 @@ function buildFlows(ctx) {
                     if (out === null) {
                         await page.mouse('mouseReleased', nestedX, nestedGrabY, { button: 'left', clickCount: 1 });
                         await sleep(600);
+                        await handBack();
                         return;
                     }
                     await sleep(120);
@@ -22266,6 +22377,7 @@ function buildFlows(ctx) {
                     if (finalOut === null) {
                         await page.mouse('mouseReleased', nestedX, nestedGrabY, { button: 'left', clickCount: 1 });
                         await sleep(600);
+                        await handBack();
                         return;
                     }
                     await sleep(120);
@@ -22373,6 +22485,54 @@ function buildFlows(ctx) {
 
                 // ── (e) §5.5's spring-load, at 650 ms and not at 300 ────────────────
                 await sleep(400);
+                /**
+                 * Put the rows this phase drives back on screen before it measures them.
+                 *
+                 * The four `Spring` rows are created last, so they live at the TAIL of a list
+                 * that overflows its scroller by this point in a full run — and phase (d)'s
+                 * `seekTopLevel` parks a LIVE drag inside the scroller's own 40 px auto-scroll
+                 * margin (`AUTO_SCROLL_EDGE_PX`, `chrome/Sidebar.tsx`): `run-AI` records that
+                 * probe resolving at y 128 against a scroller whose top edge is 88.2, so §5.5's
+                 * auto-scroll runs for the whole of each 140 ms dwell and walks the list away
+                 * from the tail, three pixels at a time.
+                 *
+                 * What that cost, measured rather than guessed: by the time this phase measured
+                 * `Spring 2`, its centre was BELOW the scroller's bottom edge, so the press
+                 * landed outside the list — `data-drag-active` null, `data-drag-target` null, no
+                 * ghost, no drag — and a group cannot spring open under a gesture that never
+                 * started. That is BOTH of this step's standing full-run reds, from one cause,
+                 * and it is not a load flake: `run-AA` … `run-AI` are ten consecutive full runs
+                 * with `collapsed after the dwell = true` and `0 of ~310 frames` of motion, all
+                 * ten sampling at ~120 Hz throughout. Reproduced directly by scrolling the list
+                 * away from the tail on a padded sandbox sidebar, and absent when it is not.
+                 *
+                 * A scoped run's list does not overflow, so this is a no-op there — which is why
+                 * the step is 7 / 88 / 0 scoped and red in every full run.
+                 */
+                const revealTail = async () =>
+                    JSON.parse(
+                        String(
+                            await page.eval(
+                                `(() => {
+                                    const el = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                    if (el === null) return JSON.stringify({ found: false });
+                                    const before = el.scrollTop;
+                                    el.scrollTop = el.scrollHeight;
+                                    const r = el.getBoundingClientRect();
+                                    return JSON.stringify({
+                                        found: true,
+                                        from: Math.round(before * 10) / 10,
+                                        to: Math.round(el.scrollTop * 10) / 10,
+                                        max: el.scrollHeight - el.clientHeight,
+                                        top: Math.round(r.top * 10) / 10,
+                                        bottom: Math.round(r.bottom * 10) / 10
+                                    });
+                                })()`
+                            )
+                        )
+                    );
+                const tailOnEntry = await revealTail();
+                await sleep(300);
                 const header = JSON.parse(
                     String(
                         await page.eval(
@@ -22399,6 +22559,13 @@ function buildFlows(ctx) {
                         await page.clickAt(header.x, header.top + header.height / 2);
                         await sleep(700);
                     }
+                    // Collapsing takes the group's own rows out of the list, so the tail moves:
+                    // re-reveal it before the measurement the whole gesture is aimed by.
+                    const tailAfterCollapse = await revealTail();
+                    await sleep(300);
+                    recorder.note(
+                        `spring-load scroller: on entry ${JSON.stringify(tailOnEntry)} → after the collapse ${JSON.stringify(tailAfterCollapse)}`
+                    );
                     const reMeasured = JSON.parse(
                         String(
                             await page.eval(
@@ -22433,6 +22600,47 @@ function buildFlows(ctx) {
                             );
                             await sleep(16);
                         }
+                        /*
+                         * The dwell only measures §5.5 if the cursor is ON the header when the
+                         * clock starts. `updateSpring` arms on the RESOLVED drop target
+                         * (`ontoGroupHeader:` / `intoGroup:`), so a gesture that resolved to
+                         * nothing — a press outside the scroller, or an approach the auto-scroll
+                         * moved the header out of — waits out both dwells and reports "it never
+                         * opened", which is the product's answer to a question nobody asked.
+                         *
+                         * Confirm the target, and re-aim at the header's LIVE box if the approach
+                         * drifted. Bounded, and a no-op the moment the first read names the group
+                         * — which is the branch every scoped run takes. The 300 ms below is then
+                         * measured from the last aim, i.e. from the moment the group became the
+                         * hover target, which is what "300 ms of hovering" means.
+                         */
+                        let aimed = 'none';
+                        let reaims = 0;
+                        for (let attempt = 0; attempt < 4; attempt++) {
+                            aimed = String(
+                                await page.eval(
+                                    `document.querySelector('[data-testid="sidebar"] [role="listbox"]')?.getAttribute('data-drag-target') ?? 'none'`
+                                )
+                            );
+                            if (aimed.startsWith('ontoGroupHeader:') || aimed.startsWith('intoGroup:')) break;
+                            const live = JSON.parse(
+                                String(
+                                    await page.eval(
+                                        `(() => {
+                                            const el = Array.from(document.querySelectorAll('[data-testid="group-header"]'))
+                                                .find(node => (node.innerText ?? '').includes('Springboard'));
+                                            if (el === undefined) return JSON.stringify({ found: false });
+                                            const r = el.getBoundingClientRect();
+                                            return JSON.stringify({ found: true, x: r.x + r.width / 2, y: r.y + r.height * 0.7 });
+                                        })()`
+                                    )
+                                )
+                            );
+                            if (live.found !== true) break;
+                            reaims += 1;
+                            await page.mouse('mouseMoved', live.x, live.y, { button: 'left', buttons: 1 });
+                            await sleep(60);
+                        }
                         // 300 ms of dwell: a cursor merely transiting a header must not open it.
                         await sleep(300);
                         const at300 = String(
@@ -22459,7 +22667,8 @@ function buildFlows(ctx) {
                         const moved = pushed.filter((value) => Math.abs(value) > 0.5).length;
                         recorder.note(
                             `spring-load: collapsed at 300ms = ${at300}, after the dwell = ${at650}; ` +
-                                `the row below moved on ${String(moved)} of ${String(pushed.length)} frames`
+                                `the row below moved on ${String(moved)} of ${String(pushed.length)} frames; ` +
+                                `the drag resolved to ${aimed} after ${String(reaims)} re-aim(s)`
                         );
                         recorder.check(
                             'a collapsed group does NOT open after 300 ms of hovering (§5.5)',
@@ -22498,43 +22707,7 @@ function buildFlows(ctx) {
                 }
 
                 // ── hand the run back exactly as it was found ────────────────────────
-                await page.eval(`(() => { delete window.__nexSpring; return true; })()`);
-                await cli.run(['group', 'delete', 'Springboard', '--cascade']);
-                // Phase (d) drags `Spring Nested` OUT of the group, so the cascade above may no
-                // longer own it. Deleting it by name is a no-op when the cascade already did.
-                await cli.run(['workspace', 'delete', 'Spring Nested', '--force']);
-                for (let n = 1; n <= 4; n++) {
-                    await cli.run(['workspace', 'delete', `Spring ${String(n)}`, '--force']);
-                }
-                await page.waitFor(
-                    `document.querySelectorAll('[data-testid="workspace-row"]').length > 0 &&
-                     !Array.from(document.querySelectorAll('[data-testid="workspace-row"]')).some(el => (el.innerText ?? '').includes('Spring '))`,
-                    { timeoutMs: 30_000, label: 'the spring rows to leave the sidebar' }
-                );
-                await sleep(900);
-                let handedBack = '';
-                for (let attempt = 0; attempt < 6; attempt++) {
-                    await page.eval(
-                        `(() => {
-                            const row = document.querySelector('[data-workspace-id="${activeBefore}"]');
-                            if (row === null) return false;
-                            row.click();
-                            return true;
-                        })()`
-                    );
-                    await sleep(700);
-                    handedBack = String(
-                        await page.eval(
-                            `document.querySelector('[data-testid="workspace-row"][data-active="true"]')?.getAttribute('data-workspace-id') ?? ''`
-                        )
-                    );
-                    if (handedBack === activeBefore) break;
-                }
-                recorder.check(
-                    'the step hands the run back on the workspace it found active',
-                    activeBefore !== '' && handedBack === activeBefore,
-                    `${String(activeBefore)} → ${String(handedBack)}`
-                );
+                await handBack();
 
                 recorder.eyes(
                     'in the mid-flight frame, does the row the cursor just crossed read as sliding out of the way rather than as having already moved; in the clone-shed frame, does the thing under the cursor read as a TOP-LEVEL row (no group rail down its left, full width) with the group it left behind closing over an empty slot; and does the settled frame show the released row seated in its slot with nothing left mid-air?'
@@ -26363,6 +26536,53 @@ function buildFlows(ctx) {
                         )
                     );
                     recorder.note(`new-group chord: ${JSON.stringify(minted)}`);
+                    /*
+                     * §WS-123's reveal, with its own arithmetic in the record.
+                     *
+                     * `inView: false` on its own says nothing about WHY, and this assertion has
+                     * been red in every full run since `run-AA` while passing in every scoped
+                     * one — because a scoped run's four-row list does not overflow, so the
+                     * reveal has nothing to do and "in view" is vacuous. Measured on a padded
+                     * sandbox sidebar that DOES overflow, the reveal runs and lands exactly
+                     * 2 CSS px short, twice out of two:
+                     *
+                     *     to = offsetTop + offsetHeight − clientHeight   (chrome/sidebar-scroll.ts)
+                     *     landed 175, wanted 177   ·   landed 244, wanted 246
+                     *
+                     * The 2 px is the RENAME FIELD. `runCreateGroup` sets the scroll target and
+                     * the rename request as two separate state updates, so §WS-102's one-shot is
+                     * computed against a header that is 36 px tall and consumed
+                     * (`onScrollHandled`) before the field mounts and makes it 38 — and its only
+                     * "wait for the row to measure" is `height <= 0`, which a 36 px header
+                     * passes. The header therefore settles ~2.4 px past the fold and the reveal
+                     * never recomputes.
+                     *
+                     * So this red is a product finding, not a harness flake, and the assertion
+                     * stays exactly as it is. These numbers ride with it so the next reader does
+                     * not have to re-derive them.
+                     */
+                    const revealArithmetic = await page.eval(
+                        `(() => {
+                            const field = document.querySelector('input[aria-label^="Rename New Group"]');
+                            const header = field === null ? null : field.closest('[data-testid="group-header"]');
+                            const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                            if (header === null || list === null) return '(no header)';
+                            const want = header.offsetTop + header.offsetHeight - list.clientHeight;
+                            const h = header.getBoundingClientRect();
+                            const l = list.getBoundingClientRect();
+                            return JSON.stringify({
+                                scrollTop: Math.round(list.scrollTop * 100) / 100,
+                                maxScroll: list.scrollHeight - list.clientHeight,
+                                clientHeight: list.clientHeight,
+                                offsetTop: header.offsetTop,
+                                offsetHeight: header.offsetHeight,
+                                wantScrollTop: want,
+                                shortBy: Math.round((want - list.scrollTop) * 100) / 100,
+                                pastTheFold: Math.round((h.bottom - l.bottom) * 100) / 100
+                            });
+                        })()`
+                    );
+                    recorder.note(`the reveal's own arithmetic: ${String(revealArithmetic)}`);
                     await recorder.shot(page, 'new-group-revealed');
                     recorder.check(
                         'the chord mints a PLACEHOLDER name and drops straight into rename (§WS-123)',

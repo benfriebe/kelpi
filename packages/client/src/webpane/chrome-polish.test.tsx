@@ -530,6 +530,93 @@ describe('focus handoff (WEB-043)', () => {
             { verb: 'focusView', args: [PANE, TAB1] }
         ]);
     });
+
+    /*
+     * §N30's second residual (`run-AD`): the ORDERING, and the one the tab-set case above does
+     * not reach. A pane born focused whose active tab arrives BLANK used to consume its gain on
+     * the blank-tab guard and never claim once the URL landed — a tab filling in is not a focus
+     * change, so nothing re-armed it. `nex web open` is measured to deliver the tab with its URL
+     * in one update, which is what kept this latent; the ordering is not a contract, and a client
+     * that ADOPTS an existing blank tab reaches it with no daemon change at all.
+     */
+    it('claims when a blank active tab gains its URL later (§N30 residual)', () => {
+        const { commands, sent } = fakeCommands();
+        const pane = (url: string): ReactElement => (
+            <WebPane
+                paneID={PANE}
+                tabs={[{ id: TAB1, url, title: '' }]}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        const view = render(pane(''));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([]);
+        view.rerender(pane('https://example.com/'));
+        // Exactly once: the gain is spent on the claim, not on the guard that deferred it.
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([
+            { verb: 'focusView', args: [PANE, TAB1] }
+        ]);
+        view.rerender(pane('https://example.com/deeper'));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toHaveLength(1);
+    });
+
+    it('refuses that deferred claim while the URL field holds the caret (WEB-002)', () => {
+        const { commands, sent } = fakeCommands();
+        const pane = (url: string): ReactElement => (
+            <WebPane
+                paneID={PANE}
+                tabs={[{ id: TAB1, url, title: '' }]}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        const view = render(pane(''));
+        // What WEB-002 does to a pane that arrives blank: the caret goes to the URL bar so an
+        // address can be typed. The page may not take it back when that address lands.
+        act(() => {
+            (screen.getByTestId(`web-url-${PANE}`) as HTMLInputElement).focus();
+        });
+        view.rerender(pane('https://example.com/'));
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([]);
+    });
+
+    /*
+     * The anchor is the CARET, and only a chrome text one. Measured on the live stack: a client
+     * reload fires three focus events in its first 50 ms — the grid's new-pane button, WEB-002's
+     * URL bar, then the terminal's hidden textarea — none of them the user moving on. So "some
+     * element in this document has focus" must NOT block the claim, or every deferred claim dies
+     * of the client's own mount churn; what blocks it is a caret that is in use.
+     */
+    it('claims with a non-chrome-text element holding focus (the mount-churn case)', () => {
+        const { commands, sent } = fakeCommands();
+        const elsewhere = document.createElement('button');
+        elsewhere.setAttribute('data-testid', 'mount-churn');
+        document.body.append(elsewhere);
+        act(() => {
+            elsewhere.focus();
+        });
+        render(
+            <WebPane
+                paneID={PANE}
+                tabs={TABS}
+                activeTabID={TAB1}
+                commands={commands}
+                embedded={true}
+                measure={() => ({ x: 0, y: 0, w: 10, h: 10 })}
+                focused={true}
+            />
+        );
+        expect(sent.filter((entry) => entry.verb === 'focusView')).toEqual([
+            { verb: 'focusView', args: [PANE, TAB1] }
+        ]);
+        elsewhere.remove();
+    });
 });
 
 // ── WEB-002 ─────────────────────────────────────────────────────────────────────────

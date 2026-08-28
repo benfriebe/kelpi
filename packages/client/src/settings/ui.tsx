@@ -6,7 +6,18 @@
  * with the same `--nex-*` tokens, so a chrome theme change moves this window too.
  */
 
-import { Children, useState, type CSSProperties, type ReactElement, type ReactNode, type Ref } from 'react';
+import {
+    Children,
+    useCallback,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+    type MouseEvent as ReactMouseEvent,
+    type ReactElement,
+    type ReactNode,
+    type Ref
+} from 'react';
 
 import { tokens, withAlpha } from '../chrome';
 
@@ -45,19 +56,52 @@ export const SETTINGS_HOVER_FILL = tokens.selectionFill;
  * title bar and footer render their controls inline. Settings' controls are already components,
  * so a hook per control is available and is the simpler shape; the FILL is the same token, which
  * is the half that has to agree.
+ *
+ * **`resyncKey` — for a list whose rows MOVE (§N33).** `onMouseEnter`/`onMouseLeave` are the only
+ * inputs, and they are not enough for a control that can slide out from under a stationary
+ * pointer: the reorder measurements caught a preset row keeping `over === true` for good, because
+ * the row was moved in the tree and the `mouseleave` that would have cleared it went to a node
+ * Chromium had already detached. The result is a second, ghost wash on a row nobody is pointing
+ * at, which outlives the gesture. So a caller whose controls move may pass a key that changes
+ * whenever they do, and attach `hoverRef` to the same element `hoverProps` goes on: the state is
+ * then re-read from the live `:hover`, which is the browser's own answer to "is the pointer over
+ * this", rather than from an event that never arrived. Callers that pass nothing (every other
+ * Settings surface) are byte-identical to before — no ref, no effect, no behaviour change.
  */
-export function useHover(enabled = true): {
+export function useHover(
+    enabled = true,
+    resyncKey?: unknown
+): {
     readonly hovered: boolean;
     readonly hoverProps: {
         readonly onMouseEnter: () => void;
         readonly onMouseLeave: () => void;
         readonly 'data-hovered': 'true' | 'false';
     };
+    readonly hoverRef: (node: HTMLElement | null) => void;
 } {
     const [over, setOver] = useState(false);
+    const node = useRef<HTMLElement | null>(null);
+    const hoverRef = useCallback((element: HTMLElement | null) => {
+        node.current = element;
+    }, []);
+    useLayoutEffect(() => {
+        if (resyncKey === undefined) return;
+        const element = node.current;
+        if (element === null || typeof element.matches !== 'function') return;
+        try {
+            // `:hover` is live and hierarchical: a row matches while the pointer is anywhere
+            // inside it, a button only while it is directly over it — which is exactly what each
+            // of them paints. Guarded because a DOM implementation may reject the pseudo-class.
+            setOver(element.matches(':hover'));
+        } catch {
+            /* a DOM that cannot answer keeps whatever the events last said */
+        }
+    }, [resyncKey]);
     const hovered = over && enabled;
     return {
         hovered,
+        hoverRef,
         hoverProps: {
             onMouseEnter: () => {
                 setOver(true);
@@ -326,13 +370,34 @@ export function SettingsButton(props: SettingsButtonProps): ReactElement {
 
 export interface IconButtonProps {
     readonly children: ReactNode;
-    readonly onClick: () => void;
+    /**
+     * The click event is passed through so a caller can tell a MOUSE press from a keyboard one
+     * (`event.detail === 0`) and read where the pointer was — which is what §N33's parked
+     * highlight needs, and what nothing else in Settings looks at. Widening the signature is
+     * source-compatible: every existing `() => void` handler still satisfies it.
+     */
+    readonly onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
     readonly ariaLabel: string;
     readonly title?: string | undefined;
     readonly testID?: string | undefined;
     readonly disabled?: boolean | undefined;
     readonly tone?: SettingsButtonTone | undefined;
     readonly buttonRef?: Ref<HTMLButtonElement> | undefined;
+    /**
+     * §N33 — paint the highlight from the CALLER rather than from this button's own pointer
+     * state, for the one case where the pointer's state is a lie: a list that re-orders under a
+     * stationary cursor. Chromium re-evaluates `:hover` after the DOM moves, so the row that
+     * slid under the pointer lights up and the row the user actually moved goes dark, with no
+     * input at all. `undefined` (the default, and every other caller) keeps the button's own
+     * hover state; `true`/`false` overrides it, including the `data-hovered` an instrument reads.
+     */
+    readonly highlight?: boolean | undefined;
+    /**
+     * §N33 — pass a value that changes whenever this button MOVES in the tree, and its hover
+     * state is re-read from the live `:hover` on that commit instead of waiting for a
+     * `mouseleave` the browser will never send. See `useHover`.
+     */
+    readonly hoverEpoch?: unknown;
 }
 
 /**
@@ -345,20 +410,33 @@ export interface IconButtonProps {
  */
 export function SettingsIconButton(props: IconButtonProps): ReactElement {
     const disabled = props.disabled === true;
-    const { hovered, hoverProps } = useHover(!disabled);
+    const { hovered, hoverProps, hoverRef } = useHover(!disabled, props.hoverEpoch);
+    const lit = (props.highlight ?? hovered) && !disabled;
+    // Two refs on one node: the caller's (§N33's arrow map) and the hook's resync handle.
+    const buttonRef = props.buttonRef;
+    const setRef = useCallback(
+        (node: HTMLButtonElement | null) => {
+            hoverRef(node);
+            if (typeof buttonRef === 'function') buttonRef(node);
+            else if (buttonRef !== null && buttonRef !== undefined) buttonRef.current = node;
+        },
+        [hoverRef, buttonRef]
+    );
     return (
         <button
-            ref={props.buttonRef ?? null}
+            ref={setRef}
             type="button"
             disabled={disabled}
             aria-label={props.ariaLabel}
             title={props.title ?? props.ariaLabel}
             {...hoverProps}
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
+            // After the spread, so an overridden highlight is what a test and the audit read.
+            data-hovered={lit ? 'true' : 'false'}
             className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[11px] leading-none transition-colors duration-100 disabled:opacity-40"
             style={{
-                color: hovered ? tokens.textPrimary : TONE_COLOR[props.tone ?? 'default'],
-                background: hoverBackground(hovered, 'transparent')
+                color: lit ? tokens.textPrimary : TONE_COLOR[props.tone ?? 'default'],
+                background: hoverBackground(lit, 'transparent')
             }}
             onClick={props.onClick}
         >

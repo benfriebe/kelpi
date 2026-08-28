@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useState, type ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,12 +69,23 @@ describe('the label preset list', () => {
         expect(bound.log.updated).toHaveLength(1);
     });
 
-    it('creates a preset in gray, the same default the CLI back-fill uses', () => {
-        const bound = setup();
-        fireEvent.change(screen.getByTestId('label-new-name'), { target: { value: '  release  ' } });
+    /*
+     * §N32 SWAP — this was "type a name into the composer, press Add". The composer is gone, so
+     * the claim it carried (a new preset is created GRAY, the one default every route into this
+     * list shares) is now made about the mint, and about the mint's payload being the CLI
+     * back-fill's payload rather than merely resembling it.
+     */
+    it('mints a preset in gray, with the same payload the CLI back-fill writes', () => {
+        const bound = setup([{ labels: ['adopt-me'] }]);
         fireEvent.click(screen.getByTestId('label-add'));
-        expect(bound.log.added).toEqual([{ name: 'release', color: 'gray' }]);
-        expect((screen.getByTestId('label-new-name') as HTMLInputElement).value).toBe('');
+        expect(bound.log.added).toEqual([{ name: 'New label', color: 'gray' }]);
+        // The orphan adoption below IS the `workspace label` back-fill's write (§6.5/§6.6): the
+        // GUI mint has to be indistinguishable from it, or a GUI preset and a CLI preset would
+        // round-trip differently.
+        fireEvent.click(screen.getByTestId('label-adopt-adopt-me'));
+        const [minted, backFilled] = bound.log.added;
+        expect(Object.keys(minted ?? {})).toEqual(Object.keys(backFilled ?? {}));
+        expect(minted?.color).toBe(backFilled?.color);
     });
 
     it('renames on Enter, and ignores an unchanged or empty name', () => {
@@ -108,29 +119,40 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         return Array.from(screen.getByTestId(testID).children) as HTMLElement[];
     }
 
-    // H25: `VStack(spacing: 0) { addRow; Divider(); List }` — the add row is the FIRST thing on
-    // the tab, not the last row under a list that can be longer than the window.
-    it('puts the add row above the preset list, with a divider between them', () => {
+    /*
+     * H25: `VStack(spacing: 0) { addRow; Divider(); List }` — the add affordance is the FIRST
+     * thing on the tab, not the last control under a list that can be longer than the window.
+     *
+     * §N32 SWAP: the thing in that first position is now one button rather than a composer row.
+     * The POSITION is the assertion, and it is unchanged.
+     */
+    it('puts the Add button above the preset list, with a divider between them', () => {
         setup();
         const section = screen.getByTestId('label-presets');
         const order = Array.from(section.querySelectorAll<HTMLElement>('[data-testid]'))
             .map((node) => node.dataset['testid'] ?? '')
             .filter(
-                (id) =>
-                    id === 'label-add-row' || id === 'label-add-divider' || id.startsWith('label-preset-')
+                (id) => id === 'label-add' || id === 'label-add-divider' || id.startsWith('label-preset-')
             );
         expect(order).toEqual([
-            'label-add-row',
+            'label-add',
             'label-add-divider',
             'label-preset-ship',
             'label-preset-wip'
         ]);
     });
 
-    // H26: one grid line per row, on LabelCol's widths — not a two-line stacked card.
+    /*
+     * H26: one grid line per row, on LabelCol's widths — not a two-line stacked card.
+     *
+     * §N32 SWAP: the loop no longer includes the composer, because there is no composer. The
+     * TRACKS are untouched by that removal and this is the assertion that says so — §S60's 184
+     * was sized for the Aa/Auto/Black/White/well cluster that lives in every PRESET row, not for
+     * the composer's copy of it, so removing the composer must not move a single number here.
+     */
     it('lays every row out on LabelCol’s fixed columns', () => {
         setup();
-        for (const row of ['label-add-row', 'label-preset-ship', 'label-preset-wip']) {
+        for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
             expect(node.style.display).toBe('grid');
             /*
@@ -151,21 +173,27 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         }
     });
 
-    // …and the columns are in the SAME ORDER in the add row as in a preset row, which is what
-    // makes them line up: colour, name, text colour, preview, then the trailing controls.
-    it('orders the add row’s cells the same way a preset row orders its own', () => {
+    /*
+     * …and every row orders its cells the same way, which is what makes them line up: colour,
+     * name, text colour, preview, then the trailing controls.
+     *
+     * §N32 SWAP: this compared the composer against a preset row. With the composer gone the
+     * alignment that remains — and the only one the Swift's widths were ever about for the list
+     * — is row against row.
+     */
+    it('orders every preset row’s cells the same way', () => {
         setup();
-        const add = cells('label-add-row');
-        const row = cells('label-preset-ship');
+        const first = cells('label-preset-ship');
+        const second = cells('label-preset-wip');
         // L93: the group announces the field AND the value in it, so the name is a prefix.
-        expect(add[0]?.getAttribute('aria-label')).toBe('new preset color: Gray');
-        expect(row[0]?.getAttribute('aria-label')).toBe('ship color: Gray');
-        expect(add[1]?.getAttribute('data-testid')).toBe('label-new-name');
-        expect(row[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
-        expect(add[2]?.getAttribute('aria-label')).toBe('new preset text color: Auto');
-        expect(row[2]?.getAttribute('aria-label')).toBe('ship text color: Auto');
-        expect(add[3]?.querySelector('[data-testid="label-new-preview"]')).not.toBeNull();
-        expect(row[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
+        expect(first[0]?.getAttribute('aria-label')).toBe('ship color: Gray');
+        expect(second[0]?.getAttribute('aria-label')).toBe('wip color: Blue');
+        expect(first[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
+        expect(second[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-wip');
+        expect(first[2]?.getAttribute('aria-label')).toBe('ship text color: Auto');
+        expect(second[2]?.getAttribute('aria-label')).toBe('wip text color: Auto');
+        expect(first[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
+        expect(second[3]?.querySelector('[data-testid="label-chip-wip"]')).not.toBeNull();
     });
 
     // H27: no Rename button anywhere — the name is a live field in every row.
@@ -204,26 +232,26 @@ describe('the tab’s shape (H25/H26/H27)', () => {
 });
 
 describe('designing a preset (SET-058, SET-061, SET-062)', () => {
-    it('previews the draft chip live, placeholder first, then the typed name', () => {
-        setup();
-        const preview = screen.getByTestId('label-new-preview');
-        expect(preview.textContent).toBe('label');
-        expect(preview.dataset['placeholder']).toBe('true');
-        fireEvent.change(screen.getByTestId('label-new-name'), { target: { value: 'release' } });
-        expect(screen.getByTestId('label-new-preview').textContent).toBe('release');
-        expect(screen.getByTestId('label-new-preview').dataset['placeholder']).toBe('false');
-    });
-
-    it('carries the chosen background AND text colour into the add', () => {
+    /*
+     * §N32 SWAP — two tests died here and their coverage moved one row down.
+     *
+     *   · "previews the draft chip live, placeholder first, then the typed name" was about the
+     *     composer's chip. The live preview is now the ROW's chip, which is covered by "follows
+     *     the typed name in the row's chip while it is being edited" above and, for a freshly
+     *     minted preset, by the mint suite below.
+     *   · "carries the chosen background AND text colour into the add" was about designing a
+     *     preset BEFORE it existed. A preset is now designed after it exists, through the row's
+     *     own controls — the same two writes, in the other order, asserted here end to end so
+     *     the capability is not merely assumed to have survived.
+     */
+    it('designs a minted preset through its own row: background, then text colour', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-new-color-purple'));
-        fireEvent.click(screen.getByTestId('label-new-text-white'));
-        fireEvent.change(screen.getByTestId('label-new-name'), { target: { value: 'release' } });
-        // The preview is painted with exactly what will be written.
-        const preview = screen.getByTestId('label-new-preview');
-        expect(preview.style.color).toBe('rgb(255, 255, 255)');
-        fireEvent.click(screen.getByTestId('label-add'));
-        expect(bound.log.added).toEqual([{ name: 'release', color: 'purple', textColor: '#ffffff' }]);
+        fireEvent.click(screen.getByTestId('label-color-ship-purple'));
+        fireEvent.click(screen.getByTestId('label-text-ship-white'));
+        expect(bound.log.updated).toEqual([
+            { id: 'ship', color: 'purple' },
+            { id: 'ship', textColor: '#ffffff' }
+        ]);
     });
 
     it('takes a custom hex from the colour well', () => {
@@ -364,10 +392,27 @@ describe('labels with no preset (§6.5/§6.6)', () => {
 
 /*
  * ────────────────────────────────────────────────────────────────────────────────────────────
- * N32 — the composer has ONE position, and it reads as a composer.
+ * N32 (owner-directed) — the composer is gone; a preset is MINTED and renamed in place.
  * ────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * The three tests this replaces were about the composer having ONE position and reading as a
+ * composer rather than as a fourth preset with an empty name. Neither claim can be made about a
+ * thing that does not exist, so each is SWAPPED for the claim that now carries its weight:
+ *
+ *   · "puts the composer first in the EMPTY state too, with the art below the divider" and "and
+ *     in exactly the same place once presets exist" → the ADD BUTTON leads the tab in both
+ *     states, with the art still below the divider. The defect they were written for (an add
+ *     affordance with two positions) is still possible, so the assertion survives with a new
+ *     subject.
+ *   · "names the composer and gives it a ground no preset row wears" → there is nothing left to
+ *     tell apart from a row: the tab carries exactly one add affordance and no draft controls at
+ *     all. That is the stronger form of the same guarantee, and it is what makes the heading and
+ *     the accent ground unnecessary rather than merely absent.
+ *   · "leaves the shared column template and the row inset untouched" → the same grid assertion,
+ *     now row-against-row (§S60's 184 px track was sized for the cluster in every PRESET row, so
+ *     removing the composer must not move it).
  */
-describe('the composer’s place and identity (N32)', () => {
+describe('minting a preset (N32)', () => {
     /** The section's rows, in document order, restricted to the ones with a stable id. */
     function sectionOrder(): string[] {
         return Array.from(
@@ -376,76 +421,242 @@ describe('the composer’s place and identity (N32)', () => {
             .map((node) => node.dataset['testid'] ?? '')
             .filter(
                 (id) =>
-                    id === 'label-add-heading' ||
-                    id === 'label-add-row' ||
+                    id === 'label-add' ||
                     id === 'label-add-divider' ||
                     id === 'labels-empty' ||
                     id.startsWith('label-preset-')
             );
     }
 
-    /*
-     * N32(a). `LabelPresetsSettingsView.swift:27-35` is
-     * `VStack(spacing: 0) { addRow; Divider(); if isEmpty { emptyState } else { List } }` — the
-     * add row's position does not depend on whether any preset exists. H25 had moved it above
-     * the LIST and left it below the EMPTY state, so on a fresh install the one control that is
-     * always there sat at the bottom of the tab and jumped to the top on the first Add.
+    /**
+     * The tab wired to a list the daemon actually appends to — because the mint's whole shape is
+     * "write, wait for the echo, then take the field". A `LabelsTab` handed a frozen array can
+     * only prove the write.
      */
-    it('puts the composer first in the EMPTY state too, with the art below the divider', () => {
+    function MintHarness(props: {
+        readonly initial?: readonly ChromeLabelPreset[];
+        readonly bound: SettingsActions & { readonly log: Recorded };
+    }): ReactElement {
+        const [presets, setPresets] = useState<readonly ChromeLabelPreset[]>(props.initial ?? []);
+        const bound = props.bound;
+        const wired: SettingsActions = {
+            ...bound,
+            addLabelPreset: (input) => {
+                bound.addLabelPreset(input);
+                // §6.4's own rule, and the reason the mint must uniquify: a duplicate name is
+                // refused outright, so a list that accepted one would be a lie.
+                setPresets((current) =>
+                    current.some((preset) => preset.name === input.name)
+                        ? current
+                        : [
+                              ...current,
+                              {
+                                  name: input.name,
+                                  color: { kind: 'named', color: 'gray' },
+                                  textColor: null
+                              } satisfies ChromeLabelPreset
+                          ]
+                );
+            },
+            removeLabelPreset: (id) => {
+                bound.removeLabelPreset(id);
+                setPresets((current) => current.filter((preset) => preset.name !== id));
+            },
+            moveLabelPreset: ({ id, index }) => {
+                bound.moveLabelPreset?.({ id, index });
+                setPresets((current) => {
+                    const from = current.findIndex((preset) => preset.name === id);
+                    if (from < 0) return current;
+                    const next = current.slice();
+                    const [moved] = next.splice(from, 1);
+                    if (moved === undefined) return current;
+                    next.splice(Math.max(0, Math.min(next.length, index)), 0, moved);
+                    return next;
+                });
+            }
+        };
+        return (
+            <>
+                {/* Another client reordering the same list, with nothing in this window focused
+                    by the gesture (`fireEvent.click` does not focus in jsdom). */}
+                <button
+                    type="button"
+                    data-testid="third-party"
+                    onClick={() => {
+                        setPresets((current) =>
+                            current.length < 2 ? current : [...current.slice(1), ...current.slice(0, 1)]
+                        );
+                    }}
+                >
+                    third party
+                </button>
+                <LabelsTab presets={presets} workspaces={[]} actions={wired} bucket="dark" />
+            </>
+        );
+    }
+
+    const names = (): string[] =>
+        Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((node) =>
+            (node.getAttribute('data-testid') ?? '').replace('label-preset-', '')
+        );
+
+    it('leads the tab with the Add button in the EMPTY state, with the art below the divider', () => {
         setup([], []);
-        expect(sectionOrder()).toEqual([
-            'label-add-heading',
-            'label-add-row',
-            'label-add-divider',
-            'labels-empty'
-        ]);
+        expect(sectionOrder()).toEqual(['label-add', 'label-add-divider', 'labels-empty']);
     });
 
     it('and in exactly the same place once presets exist', () => {
         setup();
         expect(sectionOrder()).toEqual([
-            'label-add-heading',
-            'label-add-row',
+            'label-add',
             'label-add-divider',
             'label-preset-ship',
             'label-preset-wip'
         ]);
     });
 
-    /*
-     * N32(b). The composer's two signals: a name, and a ground of its own. The Swift's own
-     * separation is structural (the add row is outside the `List`, above a `Divider()`, on the
-     * plain surface while every preset row is a band inside an `alternatesRowBackgrounds` list),
-     * and H26 requires the same grid in both — so the port says it with a heading plus a tint
-     * the eye resolves, rather than by moving a column.
-     */
-    it('names the composer and gives it a ground no preset row wears', () => {
+    it('carries no draft controls at all — there is nothing that can read as a row', () => {
         setup();
-        const heading = screen.getByTestId('label-add-heading');
-        expect(heading.textContent).toBe('New preset');
-        const add = screen.getByTestId('label-add-row');
-        // The heading introduces the row it names: nothing between them.
-        expect(heading.nextElementSibling).toBe(add);
-        const row = screen.getByTestId('label-preset-ship');
-        expect(add.style.background).not.toBe('');
-        expect(add.style.background).not.toBe(row.style.background);
+        // Every control that used to make the composer a lookalike, gone: no draft name field,
+        // no draft palette, no draft text-colour cluster, no draft chip, no heading over it.
+        expect(screen.queryByTestId('label-new-name')).toBeNull();
+        expect(screen.queryByTestId('label-new-preview')).toBeNull();
+        expect(screen.queryByTestId('label-add-heading')).toBeNull();
+        expect(screen.queryByTestId('label-add-row')).toBeNull();
+        expect(document.querySelectorAll('[data-testid^="label-new-"]')).toHaveLength(0);
+        // …and exactly one add affordance, which is a button.
+        const add = screen.getByTestId('label-add');
+        expect(add.tagName).toBe('BUTTON');
+        expect(add.textContent).toBe('New Label');
+        expect(screen.getAllByTestId('label-add')).toHaveLength(1);
+    });
+
+    it('leaves every preset row on one shared column template and inset', () => {
+        setup();
+        const first = screen.getByTestId('label-preset-ship');
+        const second = screen.getByTestId('label-preset-wip');
+        expect(first.style.gridTemplateColumns).toBe(second.style.gridTemplateColumns);
+        expect(first.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
+        // S64's 10 px horizontal inset, measured off the shipped dialog.
+        expect(first.className).toContain('px-2.5');
+        expect(second.className).toContain('px-2.5');
+    });
+
+    it('mints a uniquely named preset every time it is pressed', () => {
+        const bound = actions();
+        render(<MintHarness bound={bound} />);
+        fireEvent.click(screen.getByTestId('label-add'));
+        expect(names()).toEqual(['New label']);
+        fireEvent.click(screen.getByTestId('label-add'));
+        fireEvent.click(screen.getByTestId('label-add'));
+        expect(names()).toEqual(['New label', 'New label 2', 'New label 3']);
+        expect(bound.log.added.map((entry) => entry.name)).toEqual([
+            'New label',
+            'New label 2',
+            'New label 3'
+        ]);
+        // …and it skips a name a preset already holds, wherever that preset came from.
+        cleanup();
+        render(
+            <MintHarness
+                bound={actions()}
+                initial={[
+                    { name: 'New label', color: { kind: 'named', color: 'blue' }, textColor: null },
+                    { name: 'New label 2', color: { kind: 'named', color: 'blue' }, textColor: null }
+                ]}
+            />
+        );
+        fireEvent.click(screen.getByTestId('label-add'));
+        expect(names()).toEqual(['New label', 'New label 2', 'New label 3']);
+    });
+
+    it('appends the new preset at the end, the CLI back-fill’s own position', () => {
+        render(
+            <MintHarness
+                bound={actions()}
+                initial={[{ name: 'ship', color: { kind: 'named', color: 'gray' }, textColor: null }]}
+            />
+        );
+        fireEvent.click(screen.getByTestId('label-add'));
+        expect(names()).toEqual(['ship', 'New label']);
+    });
+
+    it('hands the new row’s name field the focus, with the default name SELECTED', () => {
+        render(<MintHarness bound={actions()} />);
+        fireEvent.click(screen.getByTestId('label-add'));
+        const field = screen.getByTestId('label-rename-field-New label') as HTMLInputElement;
+        expect(document.activeElement).toBe(field);
+        // Selected, not merely focused: the default name is a placeholder to type OVER.
+        expect(field.value).toBe('New label');
+        expect(field.selectionStart).toBe(0);
+        expect(field.selectionEnd).toBe('New label'.length);
+    });
+
+    it('leaves a VALID preset behind when the rename is abandoned immediately', () => {
+        const bound = actions();
+        render(<MintHarness bound={bound} />);
+        fireEvent.click(screen.getByTestId('label-add'));
+        const field = screen.getByTestId('label-rename-field-New label') as HTMLInputElement;
+        // Escape, then blur — the two ways out of a rename nobody wanted. Neither may write, and
+        // neither may leave a half-made preset: the row was created by the daemon the moment the
+        // button was pressed, so the only question is whether it survives untouched.
+        fireEvent.keyDown(field, { key: 'Escape' });
+        fireEvent.blur(field);
+        expect(names()).toEqual(['New label']);
+        expect(bound.log.updated).toEqual([]);
+        expect(bound.log.removed).toEqual([]);
+        expect((screen.getByTestId('label-rename-field-New label') as HTMLInputElement).value).toBe(
+            'New label'
+        );
+    });
+
+    it('renames the minted preset in place, exactly like any other row', () => {
+        const bound = actions();
+        render(<MintHarness bound={bound} />);
+        fireEvent.click(screen.getByTestId('label-add'));
+        const field = screen.getByTestId('label-rename-field-New label') as HTMLInputElement;
+        fireEvent.change(field, { target: { value: 'release' } });
+        fireEvent.keyDown(field, { key: 'Enter' });
+        expect(bound.log.updated).toEqual([{ id: 'New label', name: 'release' }]);
     });
 
     /*
-     * …and it does it WITHOUT touching the grid H26 exists to hold. This is the assertion that
-     * rejects the two candidates a border or a leading rail would have shipped: both move the
-     * add row's cells off the preset rows' columns, and `labels-design` measures exactly that.
+     * A mint SUPERSEDES the last reorder's focus intent (§N33 keeps that intent armed on purpose,
+     * so that a second commit can finish the move). Without this, the next commit to change the
+     * order — another client's reorder, arriving while the user is still typing the new name —
+     * would take the caret out of the field the mint just handed it to.
      */
-    it('leaves the shared column template and the row inset untouched', () => {
-        setup();
-        const add = screen.getByTestId('label-add-row');
-        const row = screen.getByTestId('label-preset-ship');
-        expect(add.style.gridTemplateColumns).toBe(row.style.gridTemplateColumns);
-        expect(add.style.borderWidth).toBe('');
-        expect(add.style.borderLeft).toBe('');
-        // S64's 10 × 8 — the density row that measured these off the shipped dialog.
-        expect(add.className).toContain('px-2.5');
-        expect(add.className).toContain('py-2');
+    it('supersedes a pending reorder intent, so a later commit cannot steal the new field', () => {
+        render(
+            <MintHarness
+                bound={actions()}
+                initial={[
+                    { name: 'a', color: { kind: 'named', color: 'gray' }, textColor: null },
+                    { name: 'b', color: { kind: 'named', color: 'gray' }, textColor: null },
+                    { name: 'c', color: { kind: 'named', color: 'gray' }, textColor: null }
+                ]}
+            />
+        );
+        // Mid-list, so the pressed arrow is still enabled afterwards and the intent is plainly
+        // the one this test is about.
+        fireEvent.click(screen.getByTestId('label-move-down-a'), { detail: 1, clientX: 10, clientY: 10 });
+        expect(document.activeElement).toBe(screen.getByTestId('label-move-down-a'));
+        fireEvent.click(screen.getByTestId('label-add'));
+        const field = screen.getByTestId('label-rename-field-New label');
+        expect(document.activeElement).toBe(field);
+        fireEvent.click(screen.getByTestId('third-party'));
+        expect(document.activeElement).toBe(screen.getByTestId('label-rename-field-New label'));
+    });
+
+    it('deletes a minted preset from its own row, with no confirmation while it is unused', () => {
+        const bound = actions();
+        render(<MintHarness bound={bound} />);
+        fireEvent.click(screen.getByTestId('label-add'));
+        fireEvent.click(screen.getByTestId('label-delete-New label'));
+        expect(bound.log.removed).toEqual(['New label']);
+        expect(names()).toEqual([]);
+        // Back to the empty state, with the button still leading the tab.
+        expect(sectionOrder()).toEqual(['label-add', 'label-add-divider', 'labels-empty']);
     });
 });
 
@@ -639,5 +850,519 @@ describe('reorder focus (N33)', () => {
         fireEvent.click(elsewhere);
         expect(order()).toEqual(['a', 'b', 'renamed', 'd']);
         expect(activeID()).toBe('elsewhere');
+    });
+});
+
+
+/*
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ * N33 (reopened) — the highlight the user can SEE, and a focus intent that survives the echo.
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * The first N33 fix was verified against `document.activeElement` alone, and the owner still saw
+ * the defect. The live probe (`docs/audit/n33-reorder-focus/echo-probe.mjs`, real daemon, real
+ * Chromium, one transition entry per animation frame) says why: a mouse click on a `<button>`
+ * never matches `:focus-visible` in Chromium — `ring=no` on EVERY frame of every case — so a
+ * mouse-driven reorder paints no focus ring at all. What the eye follows is the hover wash, and
+ * Chromium re-evaluates `:hover` when the DOM moves, with the pointer perfectly still: the wash
+ * jumps off the row that moved and onto the row that slid into the pressed slot.
+ *
+ * jsdom implements none of that either — it has no pointer, so `:hover` never matches and no
+ * mouse events are synthesised by a DOM change. What it CAN check is the port's own answer to
+ * it: the paint is taken from the reorder while the list is parked, the park is released by a
+ * real pointer move and not by jitter, and a stale hover cannot outlive the row it was on.
+ * Those are asserted here; that they are the right answer is settled on the live stack.
+ */
+describe('reorder highlight and intent (N33 reopened)', () => {
+    const FOUR: readonly ChromeLabelPreset[] = [
+        { name: 'a', color: { kind: 'named', color: 'gray' }, textColor: null },
+        { name: 'b', color: { kind: 'named', color: 'blue' }, textColor: null },
+        { name: 'c', color: { kind: 'named', color: 'red' }, textColor: null },
+        { name: 'd', color: { kind: 'named', color: 'green' }, textColor: null }
+    ];
+
+    /**
+     * A list a test can reorder from the outside as well as from a row — which is how a SECOND
+     * CLIENT reorders it. `blur` models Chromium blurring an element that has just become
+     * `disabled`; jsdom leaves focus sitting on a disabled button.
+     */
+    function Harness(props: { readonly external?: (list: ChromeLabelPreset[]) => ChromeLabelPreset[] }): ReactElement {
+        const [presets, setPresets] = useState<readonly ChromeLabelPreset[]>(FOUR);
+        const blurArrowLikeChromium = (): void => {
+            const active = document.activeElement as HTMLElement | null;
+            if ((active?.getAttribute('data-testid') ?? '').startsWith('label-move-')) active?.blur();
+        };
+        const move = (id: string, index: number): void => {
+            blurArrowLikeChromium();
+            setPresets((current) => {
+                const from = current.findIndex((preset) => preset.name === id);
+                if (from < 0) return current;
+                const next = current.slice();
+                const [moved] = next.splice(from, 1);
+                if (moved === undefined) return current;
+                next.splice(Math.max(0, Math.min(next.length, index)), 0, moved);
+                return next;
+            });
+        };
+        return (
+            <>
+                <button type="button" data-testid="outside" onClick={() => undefined}>
+                    outside
+                </button>
+                <button
+                    type="button"
+                    data-testid="third-party"
+                    onClick={() => {
+                        // A delta from another client: the rows re-order under a focused control
+                        // that nobody in this window touched. `fireEvent.click` does not focus in
+                        // jsdom, so focus is exactly where the previous gesture left it — and only
+                        // an ARROW is blurred, because that is all Chromium would move or disable.
+                        blurArrowLikeChromium();
+                        setPresets((current) => (props.external ?? ((list) => list))(current.slice()));
+                    }}
+                >
+                    third party
+                </button>
+                <LabelsTab
+                    presets={presets}
+                    workspaces={[]}
+                    actions={{ ...actions(), moveLabelPreset: ({ id, index }) => move(id, index) }}
+                    bucket="dark"
+                />
+            </>
+        );
+    }
+
+    const activeID = (): string =>
+        document.activeElement === document.body
+            ? 'BODY'
+            : (document.activeElement?.getAttribute('data-testid') ?? 'unknown');
+
+    /** What is PAINTED as highlighted — the rows and arrows a person sees lit. */
+    function painted(): string[] {
+        return Array.from(
+            document.querySelectorAll(
+                '[data-testid^="label-preset-"][data-hovered="true"], [data-testid^="label-move-"][data-hovered="true"]'
+            )
+        ).map((node) => node.getAttribute('data-testid') ?? '');
+    }
+
+    /** A MOUSE click: `detail > 0` and a real position, which is what a keyboard press lacks. */
+    function mouseClick(testID: string, at = { x: 400, y: 300 }): void {
+        fireEvent.click(screen.getByTestId(testID), { detail: 1, clientX: at.x, clientY: at.y });
+    }
+
+    /**
+     * The pointer moving, as the window sees it. Built by hand rather than through
+     * `fireEvent.pointerMove` because jsdom has no `PointerEvent` constructor, and the two
+     * coordinates are the whole point of the event.
+     */
+    function movePointer(x: number, y: number): void {
+        const event = new Event('pointermove', { bubbles: true });
+        Object.assign(event, { clientX: x, clientY: y });
+        // `act` because this listener is the tab's own, not a React handler `fireEvent` wraps:
+        // without it the release lands after the assertion rather than before it.
+        act(() => {
+            window.dispatchEvent(event);
+        });
+    }
+
+    /**
+     * What Chromium does to hover at a reorder commit, and jsdom does not: the pointer has not
+     * moved, but the element under it has changed, so the browser fires `mouseout` on the row
+     * that left and `mouseover` on the one that took its place.
+     */
+    function hoverJumpsTo(row: string, arrow: string, from: { row: string; arrow: string }): void {
+        fireEvent.mouseLeave(screen.getByTestId(`label-move-${from.arrow}-${from.row}`));
+        fireEvent.mouseLeave(screen.getByTestId(`label-preset-${from.row}`));
+        fireEvent.mouseEnter(screen.getByTestId(`label-preset-${row}`));
+        fireEvent.mouseEnter(screen.getByTestId(`label-move-${arrow}-${row}`));
+    }
+
+    it('keeps the highlight on the moved row when the pointer has not moved', () => {
+        render(<Harness />);
+        fireEvent.mouseEnter(screen.getByTestId('label-preset-c'));
+        fireEvent.mouseEnter(screen.getByTestId('label-move-up-c'));
+        expect(painted()).toEqual(['label-preset-c', 'label-move-up-c']);
+
+        mouseClick('label-move-up-c');
+        // The row moved up; Chromium now says the pointer is over `b`, which slid into the slot.
+        hoverJumpsTo('b', 'up', { row: 'c', arrow: 'up' });
+
+        // …and the tab does not believe it: the wash and the arrow fill stay with the row that
+        // moved, which is the bounce the owner reported, refused.
+        expect(painted()).toEqual(['label-preset-c', 'label-move-up-c']);
+        expect(activeID()).toBe('label-move-up-c');
+    });
+
+    it('paints the row’s OTHER arrow when the press drove it into an end', () => {
+        render(<Harness />);
+        fireEvent.mouseEnter(screen.getByTestId('label-move-up-b'));
+        mouseClick('label-move-up-b');
+        expect((screen.getByTestId('label-move-up-b') as HTMLButtonElement).disabled).toBe(true);
+        // The pressed arrow disabled itself, so both the ring and the paint move to the arrow
+        // that is still armed — the one that walks the row back.
+        expect(activeID()).toBe('label-move-down-b');
+        expect(painted()).toEqual(['label-preset-b', 'label-move-down-b']);
+    });
+
+    /**
+     * Whether the park is still on, asked the way it MATTERS: park is "the list will not
+     * re-decide what is hovered", so the question is whether a fresh hover can light a row.
+     *
+     * Read this way rather than off the moved row's own paint on purpose. jsdom has no pointer,
+     * and `matches(':hover')` there is not a pointer state at all — it answers about the ACTIVE
+     * element — so any assertion whose value comes from jsdom's `:hover` is asserting a quirk.
+     * This one is pure port logic, and reads identically in a browser.
+     */
+    function anotherRowCanLight(row: string): boolean {
+        fireEvent.mouseEnter(screen.getByTestId(`label-preset-${row}`));
+        const lit = painted().includes(`label-preset-${row}`);
+        fireEvent.mouseLeave(screen.getByTestId(`label-preset-${row}`));
+        return lit;
+    }
+
+    it('releases the park when the pointer really moves', () => {
+        render(<Harness />);
+        fireEvent.mouseEnter(screen.getByTestId('label-move-up-c'));
+        mouseClick('label-move-up-c', { x: 400, y: 300 });
+        expect(anotherRowCanLight('d')).toBe(false);
+        movePointer(460, 300);
+        // Released: hover is the pointer's business again, and the paint is no longer pinned.
+        expect(anotherRowCanLight('d')).toBe(true);
+    });
+
+    it('ignores pointer jitter smaller than the slop', () => {
+        render(<Harness />);
+        fireEvent.mouseEnter(screen.getByTestId('label-move-up-c'));
+        mouseClick('label-move-up-c', { x: 400, y: 300 });
+        // A hand resting on a mouse. This is the movement that would make the fix look right in
+        // the lab and fail on the owner's desk, so it is asserted rather than assumed.
+        movePointer(402, 301);
+        movePointer(399, 302);
+        expect(painted()).toEqual(['label-preset-c', 'label-move-up-c']);
+        expect(anotherRowCanLight('d')).toBe(false);
+        movePointer(410, 300);
+        expect(anotherRowCanLight('d')).toBe(true);
+    });
+
+    it('parks a KEYBOARD reorder too, and lets any pointer movement release it', () => {
+        render(<Harness />);
+        const up = screen.getByTestId('label-move-up-c');
+        up.focus();
+        // `fireEvent.click` with no `detail` is an Enter/Space activation: no pointer, no origin,
+        // so there is no anchor to measure jitter against and the first movement releases.
+        fireEvent.click(up);
+        expect(painted()).toEqual(['label-preset-c', 'label-move-up-c']);
+        expect(anotherRowCanLight('d')).toBe(false);
+        movePointer(1, 1);
+        expect(anotherRowCanLight('d')).toBe(true);
+    });
+
+    it('re-reads a moved control’s hover from the DOM instead of waiting for a mouseleave', () => {
+        // The ghost: `c` is hovered, the list moves it, and Chromium sends the `mouseleave` to a
+        // node it has already detached — so nothing clears it and the tab paints TWO hovered
+        // rows at once (measured live on the pre-fix bundle, CASE 5: `alpha,charlie`).
+        //
+        // The fix is to ASK the DOM again on the commit that moved the row. jsdom's `:hover`
+        // cannot answer that question, so the DOM's answer is stubbed and what is asserted is
+        // that the tab asks at all, and believes the answer over the event it never got.
+        const matches = vi.spyOn(HTMLElement.prototype, 'matches');
+        matches.mockImplementation(function (this: HTMLElement, selector: string): boolean {
+            return selector === ':hover' ? false : Object.getPrototypeOf(HTMLElement.prototype).matches !== undefined;
+        });
+        try {
+            render(<Harness />);
+            fireEvent.mouseEnter(screen.getByTestId('label-preset-c'));
+            expect(painted()).toContain('label-preset-c');
+            mouseClick('label-move-up-c');
+            movePointer(600, 600);
+            expect(painted()).toEqual([]);
+        } finally {
+            matches.mockRestore();
+        }
+    });
+
+    /*
+     * The idempotent half. One gesture is not always one commit: the daemon may answer with more
+     * than one, and another client can reorder the same list at any time. The intent is keyed to
+     * the PRESET ID, so any later commit that changes row identity re-asserts it — measured live
+     * as CASE 7, where the pre-fix bundle drops `document.activeElement` to `<body>`.
+     */
+    it('re-asserts the ring on a LATER commit, on the same preset’s arrow', () => {
+        render(
+            <Harness
+                external={(list) => {
+                    // Another client sends `a` to the end: `c` lands in the first slot, so the ↑
+                    // holding focus disables under it.
+                    const next = list.filter((preset) => preset.name !== 'a');
+                    const moved = list.find((preset) => preset.name === 'a');
+                    return moved === undefined ? list : [...next, moved];
+                }}
+            />
+        );
+        mouseClick('label-move-up-c');
+        expect(activeID()).toBe('label-move-up-c');
+        fireEvent.click(screen.getByTestId('third-party'));
+        expect(
+            Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((node) =>
+                (node.getAttribute('data-testid') ?? '').replace('label-preset-', '')
+            )
+        ).toEqual(['c', 'b', 'd', 'a']);
+        expect((screen.getByTestId('label-move-up-c') as HTMLButtonElement).disabled).toBe(true);
+        expect(activeID()).toBe('label-move-down-c');
+    });
+
+    it('never steals the ring back once focus has left the tab', () => {
+        render(
+            <Harness
+                external={(list) => {
+                    const next = list.filter((preset) => preset.name !== 'a');
+                    const moved = list.find((preset) => preset.name === 'a');
+                    return moved === undefined ? list : [...next, moved];
+                }}
+            />
+        );
+        mouseClick('label-move-up-c');
+        expect(activeID()).toBe('label-move-up-c');
+        // The user moves on — a control outside the tab entirely (the terminal taking the caret
+        // when the window activates is the real case). A later reorder must not yank it back.
+        screen.getByTestId('outside').focus();
+        fireEvent.click(screen.getByTestId('third-party'));
+        expect(activeID()).toBe('outside');
+    });
+});
+
+/*
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ * N33 (run-AH) — a FINISHED reorder must not replay into whatever the user does next.
+ * ────────────────────────────────────────────────────────────────────────────────────────────
+ *
+ * The re-assert that makes a burst and a second client's move land correctly was armed for ever:
+ * the intent was re-asserted by every later commit that changed the ORDER and never cleared. A
+ * preset's identity IS its name (SET-066), so the order key is the names joined — and a RENAME
+ * changes it. Any rename after any reorder therefore replayed a gesture the user had finished,
+ * measured on the live stack (`docs/audit/n32-33-verify-ah/`):
+ *
+ *   (F) a rename echo landing inside the 110 ms a human holds the mouse button down on ANOTHER
+ *       row put the ring and the wash on a row nobody was touching, mid-gesture;
+ *   (G) renaming any preset after having used an arrow jumped focus to that arrow;
+ *   (H) the ordinary two-field edit — type in one name, click into another — took the caret out
+ *       of the field just clicked, so the next keystrokes were lost AND the SPACE in them pressed
+ *       the focused arrow and silently reordered the list.
+ *
+ * The two guards written for the wave could see none of it: one never performed a reorder first
+ * (so nothing was ever armed), and the other moved focus OUTSIDE the tab (so the `foreign` guard
+ * answered instead). Both of these cases put focus on another control INSIDE the tab after a real
+ * reorder, which is where the defect lives. Each fails on the pre-fix shape — an intent that is
+ * re-armed rather than judged — and passes once a re-assert is allowed only while focus is still
+ * on the moved row's own arrows.
+ */
+describe('a finished reorder does not replay (N33, run-AH)', () => {
+    const FIVE: readonly ChromeLabelPreset[] = [
+        { name: 'a', color: { kind: 'named', color: 'gray' }, textColor: null },
+        { name: 'b', color: { kind: 'named', color: 'blue' }, textColor: null },
+        { name: 'c', color: { kind: 'named', color: 'red' }, textColor: null },
+        { name: 'd', color: { kind: 'named', color: 'green' }, textColor: null },
+        { name: 'e', color: { kind: 'named', color: 'purple' }, textColor: null }
+    ];
+
+    /**
+     * A list that both REORDERS and RENAMES, which is what these cases need and the older
+     * harnesses do not have: a rename is the order change that replays the stale gesture.
+     *
+     * `echo` is a rename arriving from the daemon with nobody touching the tab — the button is
+     * outside the tab and `fireEvent.click` does not focus in jsdom, so pressing it changes the
+     * list while leaving `document.activeElement` exactly where the test put it. That is the only
+     * way to model an echo landing MID-GESTURE (F).
+     */
+    function LiveHarness(props: { readonly echo?: { readonly id: string; readonly name: string } }): ReactElement {
+        const [presets, setPresets] = useState<readonly ChromeLabelPreset[]>(FIVE);
+        // Chromium blurs an element it moves in the tree or disables under the finger; jsdom does
+        // neither, and the transient `<body>` it leaves is exactly what the fix must still honour.
+        const blurArrowLikeChromium = (): void => {
+            const active = document.activeElement as HTMLElement | null;
+            if ((active?.getAttribute('data-testid') ?? '').startsWith('label-move-')) active?.blur();
+        };
+        const rename = (id: string, name: string): void => {
+            setPresets((current) =>
+                current.map((preset) => (preset.name === id ? { ...preset, name } : preset))
+            );
+        };
+        return (
+            <>
+                <button
+                    type="button"
+                    data-testid="echo"
+                    onClick={() => {
+                        if (props.echo !== undefined) rename(props.echo.id, props.echo.name);
+                    }}
+                >
+                    echo
+                </button>
+                <LabelsTab
+                    presets={presets}
+                    workspaces={[]}
+                    actions={{
+                        ...actions(),
+                        moveLabelPreset: ({ id, index }) => {
+                            blurArrowLikeChromium();
+                            setPresets((current) => {
+                                const from = current.findIndex((preset) => preset.name === id);
+                                if (from < 0) return current;
+                                const next = current.slice();
+                                const [moved] = next.splice(from, 1);
+                                if (moved === undefined) return current;
+                                next.splice(Math.max(0, Math.min(next.length, index)), 0, moved);
+                                return next;
+                            });
+                        },
+                        updateLabelPreset: (input) => {
+                            if (typeof input.name === 'string') rename(input.id, input.name);
+                        }
+                    }}
+                    bucket="dark"
+                />
+            </>
+        );
+    }
+
+    const activeID = (): string =>
+        document.activeElement === document.body
+            ? 'BODY'
+            : (document.activeElement?.getAttribute('data-testid') ?? 'unknown');
+
+    function order(): string[] {
+        return Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((node) =>
+            (node.getAttribute('data-testid') ?? '').replace('label-preset-', '')
+        );
+    }
+
+    /** A MOUSE click: `detail > 0` and a real position, which is what a keyboard press lacks. */
+    function mouseClick(testID: string, at = { x: 400, y: 300 }): void {
+        fireEvent.click(screen.getByTestId(testID), { detail: 1, clientX: at.x, clientY: at.y });
+    }
+
+    /** Chromium focuses a `<button>` on MOUSEDOWN — a whole hold before its click fires. */
+    function pressAndHold(testID: string): void {
+        const button = screen.getByTestId(testID);
+        act(() => {
+            fireEvent.mouseDown(button, { detail: 1, clientX: 400, clientY: 300 });
+            button.focus();
+        });
+    }
+
+    /** Click into a field the way a person does: the caret goes there, the old field commits. */
+    function clickInto(testID: string): HTMLInputElement {
+        const field = screen.getByTestId(testID) as HTMLInputElement;
+        act(() => {
+            field.focus();
+        });
+        return field;
+    }
+
+    /**
+     * SPACE, delivered where focus actually IS — which is the whole point of (H). In a text field
+     * it is a character; on a focused `<button>` the browser makes it an ACTIVATION, so it presses
+     * the arrow and reorders the list. jsdom synthesises neither, so both are modelled here.
+     */
+    function pressSpace(): void {
+        const active = document.activeElement;
+        if (active instanceof HTMLButtonElement) {
+            fireEvent.click(active);
+            return;
+        }
+        if (active instanceof HTMLInputElement) {
+            fireEvent.change(active, { target: { value: `${active.value} ` } });
+        }
+    }
+
+    /*
+     * (F) — the echo lands INSIDE the hold, on a row the gesture is not about.
+     *
+     * The live frame log: `+82..182ms focus=label-move-down-bravo` while the button on `charlie`
+     * was still held down, 99 ms of ring and wash on a row the user had not touched in this
+     * gesture. Here: a reorder of `c` settles, the user presses and holds `b`'s ↑, and a rename
+     * of an unrelated preset arrives before the click fires.
+     */
+    it('does not replay a settled reorder when a rename echo lands during a mouse hold on another row', () => {
+        render(<LiveHarness echo={{ id: 'e', name: 'renamed-by-the-daemon' }} />);
+        mouseClick('label-move-up-c');
+        expect(order()).toEqual(['a', 'c', 'b', 'd', 'e']);
+        expect(activeID()).toBe('label-move-up-c');
+
+        // The pointer moves to another row and the button goes down: Chromium focuses it here,
+        // a whole hold before the click that will actually dispatch the move.
+        pressAndHold('label-move-up-b');
+        expect(activeID()).toBe('label-move-up-b');
+
+        // …and the echo of a rename nobody in this gesture asked for arrives mid-hold.
+        fireEvent.click(screen.getByTestId('echo'));
+        expect(order()).toEqual(['a', 'c', 'b', 'd', 'renamed-by-the-daemon']);
+        expect(activeID()).toBe('label-move-up-b');
+        // Nor may the WASH be dragged back onto the settled row: what is painted is read by row
+        // identity, which is the channel the reopening was actually about.
+        expect(
+            Array.from(document.querySelectorAll('[data-hovered="true"]')).map((node) =>
+                node.getAttribute('data-testid')
+            )
+        ).not.toContain('label-preset-c');
+
+        // The gesture the user is actually making then completes normally.
+        mouseClick('label-move-up-b');
+        expect(order()).toEqual(['a', 'b', 'c', 'd', 'renamed-by-the-daemon']);
+        expect(activeID()).toBe('label-move-up-b');
+    });
+
+    /*
+     * (G) — the plain one: reorder, walk away, rename something else.
+     */
+    it('does not yank focus to the old arrow when a LATER rename changes the order', () => {
+        render(<LiveHarness />);
+        mouseClick('label-move-up-c');
+        expect(activeID()).toBe('label-move-up-c');
+
+        // The user moves on to a control INSIDE the tab — which is the half the shipped guards
+        // missed, because `foreign` only ever answered for controls outside it.
+        const field = clickInto('label-rename-field-e');
+        fireEvent.change(field, { target: { value: 'typed-later' } });
+        fireEvent.keyDown(field, { key: 'Enter' });
+
+        expect(order()).toEqual(['a', 'c', 'b', 'd', 'typed-later']);
+        // The rename replaced the row (SET-066), so focus lands wherever the removed field left
+        // it — `<body>`, which is where a pristine HEAD bundle leaves it too. What may NOT happen
+        // is the ring appearing on an arrow the user last touched a gesture ago.
+        expect(activeID()).not.toMatch(/^label-move-/);
+    });
+
+    /*
+     * (H) — the severe form, and the one that loses keystrokes: two name fields in a row.
+     */
+    it('keeps the caret in the second name field when the first commits, and SPACE stays a space', () => {
+        render(<LiveHarness />);
+        mouseClick('label-move-up-c');
+        expect(activeID()).toBe('label-move-up-c');
+
+        // Edit one name…
+        const first = clickInto('label-rename-field-a');
+        fireEvent.change(first, { target: { value: 'edited-one' } });
+        // …then click straight into another row's field, which is how anyone edits two labels.
+        // The blur commits the first rename, the order changes, and the stale gesture used to be
+        // replayed onto an arrow right here.
+        clickInto('label-rename-field-e');
+        expect(order()).toEqual(['edited-one', 'c', 'b', 'd', 'e']);
+        expect(activeID()).toBe('label-rename-field-e');
+
+        // …so what is typed next lands in the field, and the SPACE in it is a character rather
+        // than a press of a focused arrow. Measured live on the pre-fix bundle, the space
+        // reordered the list: `alpha echo charlie bravo edited-one` → `alpha echo bravo charlie
+        // edited-one`, while the field never took a character.
+        const before = order();
+        fireEvent.change(screen.getByTestId('label-rename-field-e'), { target: { value: 'two' } });
+        pressSpace();
+        pressSpace();
+        expect(activeID()).toBe('label-rename-field-e');
+        expect((screen.getByTestId('label-rename-field-e') as HTMLInputElement).value).toBe('two  ');
+        expect(order()).toEqual(before);
     });
 });

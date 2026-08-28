@@ -60,7 +60,10 @@ function actions(): SettingsActions {
 }
 
 const PRESETS: readonly ChromeLabelPreset[] = [
-    { name: 'ship', color: { kind: 'named', color: 'blue' }, textColor: null }
+    { name: 'ship', color: { kind: 'named', color: 'blue' }, textColor: null },
+    // §N32 SWAP: the grid used to be measured against the composer, which every fixture had for
+    // free. Row-against-row needs a SECOND row, so the fixture grew one.
+    { name: 'wip', color: { kind: 'named', color: 'gray' }, textColor: null }
 ];
 
 // ── S24 ─────────────────────────────────────────────────────────────────────────────
@@ -136,9 +139,12 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * beside the last three swatches in a track the Swift fixes at 150 (`:8`), so the palette
      * wrapped to a third line and every row on the tab grew 18 px. Measured both ways.
      */
+    // §N32 SWAP: the two wells were read off the COMPOSER, which no longer exists. They are the
+    // same two controls in every preset row, so the measurement moves to a row and the claim is
+    // unchanged.
     it('S25 — both colour wells are one 24 × 20 control, not two 20 × 14 slivers', () => {
         open();
-        for (const testID of ['label-new-color-custom', 'label-new-text-custom']) {
+        for (const testID of ['label-color-ship-custom', 'label-text-ship-custom']) {
             const well = screen.getByTestId(testID).parentElement as HTMLElement;
             expect(well.className).toContain('h-5');
             expect(well.className).toContain('w-6');
@@ -158,15 +164,20 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * among five hard px ones, so a 760 × 700 window took it to 14 × 28.2 px while `bgColor`,
      * `textColor`, `preview`, `reorder` and `action` all held their width.
      */
+    /*
+     * §N32 SWAP: the loop read the composer and a preset row. §N32 removed the composer, and the
+     * 184 was never the composer's — the five controls it is sized for are in every preset row —
+     * so the same template is now asserted ROW against ROW, which is what has to keep lining up.
+     */
     it('S57/S60 — one grid template: a 184 px text-colour track and a floored name track', () => {
         open();
-        for (const row of ['label-add-row', 'label-preset-ship']) {
+        for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
             expect(node.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
         // The cluster is sized off the same constant, so the track and its contents cannot drift.
-        const group = screen.getByRole('group', { name: /new preset text color/i });
+        const group = screen.getByRole('group', { name: /ship text color/i });
         expect(group.style.width).toBe('184px');
     });
 
@@ -176,12 +187,14 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * used two insets and the eye read a 2 px step moving between them. The 6/8 px VERTICAL
      * values are §L79's measurements off the shipped dialog and do not move.
      */
+    // §N32 SWAP: the composer's own `px-2.5 py-2` went with it; the row inset it had to match is
+    // still here, and so is the Add button that now leads the tab on the same 10 px gutter.
     it('S64 — the labels rows are inset 10 px horizontally, vertical untouched', () => {
         open();
-        expect(screen.getByTestId('label-add-row').className).toContain('px-2.5');
-        expect(screen.getByTestId('label-add-row').className).toContain('py-2');
         expect(screen.getByTestId('label-preset-ship').className).toContain('px-2.5');
         expect(screen.getByTestId('label-preset-ship').className).toContain('py-1.5');
+        expect(screen.getByTestId('label-preset-wip').className).toContain('px-2.5');
+        expect(screen.getByTestId('label-add').parentElement?.className).toContain('px-2.5');
     });
 });
 

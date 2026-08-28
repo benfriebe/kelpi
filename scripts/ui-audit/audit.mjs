@@ -21740,7 +21740,7 @@ function buildFlows(ctx) {
         {
             id: 'labels-design',
             expect:
-                'Settings \u25b8 Labels designs a preset before it exists: the add row \u2014 FIRST on the tab, above a divider (\u00a7H25) \u2014 carries a background swatch palette, an Auto/Black/White text-colour triple and a live chip preview, and the created preset comes back from the daemon with BOTH colours; then the row\u2019s own controls recolour it, and a rename typed straight into the row\u2019s ALWAYS-LIVE name field (\u00a7H27 \u2014 there is no Rename button) that collides snaps back. Every row, the add row included, is one grid line on LabelCol\u2019s fixed widths (\u00a7H26).',
+                'Settings ▸ Labels creates a preset by MINTING one (§N32): a single Add button — FIRST on the tab, above a divider (§H25) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over. Every property is then edited in that row: the background palette, the Auto/Black/White text triple and the live chip. There is no composer and no draft control anywhere. Every row is one grid line on LabelCol’s fixed widths (§H26), a rename that collides snaps back (SET-063), and a preset minted here is the same object the CLI’s `workspace label` back-fill makes.',
             needsEyes: true,
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
@@ -21755,9 +21755,14 @@ function buildFlows(ctx) {
                  * §H25 / §H26 / §H27 — the SHAPE of the tab, read off the live DOM before
                  * anything is typed into it. `LabelPresetsSettingsView.swift:4-12` says the
                  * fixed widths exist so the wells, the "Aa" sample, the chip and the trash line
-                 * up across the add row and every preset row; that is a geometric claim, so it
-                 * is measured as geometry (`getBoundingClientRect().left` of each row's first
-                 * three cells) rather than as a class name.
+                 * up across every row; that is a geometric claim, so it is measured as geometry
+                 * (`getBoundingClientRect().left` of each row's first three cells) rather than as
+                 * a class name.
+                 *
+                 * §N32 SWAP: this used to read the composer's own row as the first of those
+                 * things and compare every preset row against it. The composer is gone — the add
+                 * affordance is one button — so `order` now expects `label-add` where it expected
+                 * `label-add-row`, and the alignment below is measured ROW AGAINST ROW.
                  */
                 const readShape = () => page.eval(
                     `(() => {
@@ -21765,118 +21770,131 @@ function buildFlows(ctx) {
                         if (section === null) return null;
                         const ids = Array.from(section.querySelectorAll('[data-testid]'))
                             .map((el) => el.getAttribute('data-testid') ?? '')
-                            .filter((id) => id === 'label-add-row' || id === 'label-add-divider' || id.startsWith('label-preset-'));
-                        const add = document.querySelector('[data-testid="label-add-row"]');
+                            .filter((id) => id === 'label-add' || id === 'label-add-divider' || id.startsWith('label-preset-'));
                         const cols = (el) => el === null ? null : getComputedStyle(el).gridTemplateColumns;
                         const lefts = (el) => el === null ? null : Array.from(el.children).slice(0, 4).map((c) => Math.round(c.getBoundingClientRect().left));
-                        const firstPreset = document.querySelector('[data-testid^="label-preset-"]');
+                        const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'));
                         return {
                             order: ids.slice(0, 3),
-                            addCols: cols(add),
-                            rowCols: cols(firstPreset),
-                            addLefts: lefts(add),
-                            rowLefts: lefts(firstPreset),
+                            rowCols: rows.map((el) => cols(el)),
+                            rowLefts: rows.map((el) => JSON.stringify(lefts(el))),
+                            drafts: document.querySelectorAll('[data-testid^="label-new-"]').length,
+                            addButtons: document.querySelectorAll('[data-testid="label-add"]').length,
+                            addTag: document.querySelector('[data-testid="label-add"]')?.tagName ?? null,
+                            addLeft: (() => { const el = document.querySelector('[data-testid="label-add"]');
+                                return el === null ? null : Math.round(el.getBoundingClientRect().left); })(),
+                            addText: (document.querySelector('[data-testid="label-add"]')?.innerText ?? '').trim(),
                             renameButtons: document.querySelectorAll('[data-testid^="label-rename-"]:not([data-testid*="-field-"]):not([data-testid*="-error-"])').length,
                             liveFields: document.querySelectorAll('[data-testid^="label-rename-field-"]').length,
-                            presetRows: document.querySelectorAll('[data-testid^="label-preset-"]').length
+                            presetRows: rows.length
                         };
                     })()`
                 );
                 const shape = await readShape();
                 recorder.note(`labels tab shape: ${JSON.stringify(shape)}`);
                 recorder.check(
-                    'the add row is FIRST on the tab, above a divider (§H25)',
-                    (shape?.order ?? [])[0] === 'label-add-row' && (shape?.order ?? [])[1] === 'label-add-divider',
+                    'the Add button is FIRST on the tab, above a divider (§H25 / §N32)',
+                    (shape?.order ?? [])[0] === 'label-add' && (shape?.order ?? [])[1] === 'label-add-divider',
                     JSON.stringify(shape?.order)
+                );
+                /*
+                 * §N32 SWAP, second half. The two checks this replaces were "the composer is
+                 * NAMED" and "the composer carries a ground no preset row wears" — both of them
+                 * treatments for a lookalike. There is nothing left to tell apart: the tab holds
+                 * ONE add affordance and no draft control at all, which is the stronger form of
+                 * the same guarantee and the reason the heading and the accent ground are gone.
+                 */
+                recorder.check(
+                    'and it is the ONLY add affordance: one button, no draft controls anywhere (§N32)',
+                    shape?.addButtons === 1 &&
+                        shape?.addTag === 'BUTTON' &&
+                        shape?.addText === 'New Label' &&
+                        shape?.drafts === 0,
+                    JSON.stringify({ buttons: shape?.addButtons, tag: shape?.addTag, text: shape?.addText, drafts: shape?.drafts })
                 );
 
                 /*
-                 * §N32(a) — the composer has ONE position, in BOTH states.
+                 * §N32(a) — the add affordance has ONE position, in BOTH states.
                  *
                  * `LabelPresetsSettingsView.swift:27-35` is
                  * `VStack(spacing: 0) { addRow; Divider(); if isEmpty { emptyState } else { List } }`,
-                 * so the add row's place does not depend on whether a preset exists. §H25 moved it
+                 * so where you add from does not depend on whether a preset exists. §H25 moved it
                  * above the LIST and left the EMPTY-state art above IT, which is why the owner saw
                  * the one always-present control sit at the bottom of a fresh tab and jump to the
-                 * top on the first Add.
-                 *
-                 * Written as ONE check that is true in either state rather than as a check that
-                 * only fires when the tab happens to be empty: the composer's three parts lead the
-                 * tab, and the art — if it is on screen at all — is below the divider. Under
-                 * `--only` the tab really is empty here, so the second clause has teeth; in a full
-                 * run the first three still do.
+                 * top on the first Add. The subject changed with §N32; the defect it guards
+                 * against did not.
                  */
-                // `rowBgs` is EVERY preset row's ground, not just the first: the two
-                // `alternatesRowBackgrounds` tones are different colours, so the composer has to
-                // be unlike both of them rather than unlike one.
                 const readPlacement = () => page.eval(
                     `(() => {
                         const section = document.querySelector('[data-testid="label-presets"]');
                         if (section === null) return null;
                         const ids = Array.from(section.querySelectorAll('[data-testid]'))
                             .map((el) => el.getAttribute('data-testid') ?? '')
-                            .filter((id) => id === 'label-add-heading' || id === 'label-add-row'
-                                || id === 'label-add-divider' || id === 'labels-empty' || id.startsWith('label-preset-'));
-                        const add = document.querySelector('[data-testid="label-add-row"]');
-                        const heading = document.querySelector('[data-testid="label-add-heading"]');
-                        const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'));
-                        const row = rows[0] ?? null;
-                        const bg = (el) => el === null ? null : getComputedStyle(el).backgroundColor;
+                            .filter((id) => id === 'label-add' || id === 'label-add-divider'
+                                || id === 'labels-empty' || id.startsWith('label-preset-'));
+                        const add = document.querySelector('[data-testid="label-add"]');
+                        const row = document.querySelector('[data-testid^="label-preset-"]');
                         return {
                             ids,
-                            heading: heading === null ? null : (heading.innerText ?? '').trim(),
-                            headingLeadsTheRow: heading !== null && heading.nextElementSibling === add,
-                            addBg: bg(add),
-                            rowBgs: rows.map((el) => bg(el)),
                             addLeft: add === null ? null : Math.round(add.getBoundingClientRect().left),
-                            rowLeft: row === null ? null : Math.round(row.getBoundingClientRect().left)
+                            rowLeft: row === null ? null : Math.round(row.getBoundingClientRect().left),
+                            addWidth: add === null ? null : Math.round(add.getBoundingClientRect().width)
                         };
                     })()`
                 );
                 const placement = await readPlacement();
-                recorder.note(`labels composer placement: ${JSON.stringify(placement)}`);
+                recorder.note(`labels add placement: ${JSON.stringify(placement)}`);
                 const placementIDs = placement?.ids ?? [];
                 const dividerAt = placementIDs.indexOf('label-add-divider');
                 const emptyAt = placementIDs.indexOf('labels-empty');
                 recorder.check(
-                    'the composer leads the tab in BOTH states — heading, row, divider, and the empty-state art BELOW it (§N32a)',
-                    placementIDs[0] === 'label-add-heading' &&
-                        placementIDs[1] === 'label-add-row' &&
-                        placementIDs[2] === 'label-add-divider' &&
+                    'the Add button leads the tab in BOTH states, with the empty-state art BELOW the divider (§N32a)',
+                    placementIDs[0] === 'label-add' &&
+                        placementIDs[1] === 'label-add-divider' &&
                         (emptyAt === -1 || emptyAt > dividerAt),
                     JSON.stringify(placementIDs)
                 );
-                /*
-                 * §N32(b) — and it READS as a composer rather than as another preset row. Two
-                 * signals, because H26 forbids the third: every row on this tab is one grid line
-                 * on `LabelCol`'s widths, so the composer cannot be told apart by its shape.
-                 */
-                recorder.check(
-                    'the composer is NAMED, and the name introduces the row it belongs to (§N32b)',
-                    placement?.heading === 'New preset' && placement?.headingLeadsTheRow === true,
-                    JSON.stringify({ heading: placement?.heading, leads: placement?.headingLeadsTheRow })
-                );
+
                 /*
                  * §H26 / §H27 need ROWS, and under `--only` the tab starts empty — so the
-                 * geometry is measured a second time at the end of the step, once this step's
-                 * own two presets exist. `checkRowGeometry` is called there.
+                 * geometry is measured once this step's own presets exist. `checkRowGeometry` is
+                 * called there.
+                 *
+                 * §N32 SWAP: `addCols === rowCols` and `addLefts === rowLefts` compared the
+                 * composer against a row. With no composer, the alignment that has to hold — and
+                 * the only one the Swift's widths were ever about for the list — is every row
+                 * against every other. §S60's 184 px track was sized for the Aa/Auto/Black/White/
+                 * well cluster that lives in each of those rows, never for the composer's copy of
+                 * it, so this is also where "removing the composer did not move the grid" is read.
                  */
                 const checkRowGeometry = async (label) => {
                     const rows = await readShape();
                     recorder.note(`labels row geometry (${label}): ${JSON.stringify(rows)}`);
-                    if ((rows?.presetRows ?? 0) === 0) {
-                        recorder.check(`there are preset rows to measure (${label})`, false, 'none');
+                    if ((rows?.presetRows ?? 0) < 2) {
+                        recorder.check(`there are two preset rows to compare (${label})`, false, String(rows?.presetRows));
                         return;
                     }
+                    const cols = rows?.rowCols ?? [];
+                    const lefts = rows?.rowLefts ?? [];
                     recorder.check(
-                        'the add row and the preset rows share ONE column template (§H26)',
-                        rows?.addCols !== null && rows?.addCols === rows?.rowCols,
-                        `${String(rows?.addCols)} vs ${String(rows?.rowCols)}`
+                        'every preset row is on ONE column template (§H26 / §S60)',
+                        cols.length > 1 && cols.every((value) => typeof value === 'string' && value === cols[0]),
+                        JSON.stringify(cols)
                     );
                     recorder.check(
                         'and their first four cells start at the same x — the alignment the widths exist for (§H26)',
-                        JSON.stringify(rows?.addLefts) === JSON.stringify(rows?.rowLefts),
-                        `${JSON.stringify(rows?.addLefts)} vs ${JSON.stringify(rows?.rowLefts)}`
+                        lefts.length > 1 && lefts.every((value) => value === lefts[0]),
+                        JSON.stringify(lefts)
+                    );
+                    /*
+                     * …and the Add button's own leading edge lands on that same x. §N32 SWAP for
+                     * the old `addLefts === rowLefts`: the composer used to line its cells up with
+                     * the rows', and what is left to line up is where the add affordance starts.
+                     */
+                    recorder.check(
+                        'the Add button starts on the same x as every row’s first cell (§N32 / §H26)',
+                        rows?.addLeft !== null && String(rows?.addLeft) === String(JSON.parse(String(lefts[0]))[0]),
+                        `${String(rows?.addLeft)} vs ${String(lefts[0])}`
                     );
                     recorder.check(
                         'every preset row carries a LIVE name field and no Rename button (§H27)',
@@ -21885,70 +21903,138 @@ function buildFlows(ctx) {
                     );
                 };
 
-                // SET-058: the add row is always visible, and the preview is a real chip.
-                const placeholder = await page.eval(
-                    `(() => { const el = document.querySelector('[data-testid="label-new-preview"]');
-                              if (el === null) return null;
-                              const style = getComputedStyle(el);
-                              return { text: el.innerText, placeholder: el.getAttribute('data-placeholder'),
-                                       opacity: style.opacity, background: style.backgroundColor }; })()`
-                );
-                recorder.note(`add-row preview (empty): ${JSON.stringify(placeholder)}`);
-                recorder.check('the add row previews a placeholder chip', placeholder?.text === 'label', JSON.stringify(placeholder));
-                recorder.check(
-                    'the placeholder is dimmed (the Swift 50% rule)',
-                    Number(placeholder?.opacity ?? '1') < 1,
-                    String(placeholder?.opacity)
-                );
+                /*
+                 * §N32 — the MINT, which is the whole redesign in one gesture.
+                 *
+                 * SWAPPED IN for the three checks that used to design a preset before it existed
+                 * (the placeholder chip at 50 %, the draft palette + text triple, and the Add that
+                 * carried both colours). A preset is now born gray with a default name and is
+                 * designed in its own row, so those capabilities are asserted below where they now
+                 * live — and this asserts the handoff that makes the button usable at all: the new
+                 * row's field must arrive FOCUSED with its default name SELECTED, or the user is
+                 * left to find the row and clear the name by hand.
+                 */
+                const mintState = `(() => {
+                    const active = document.activeElement;
+                    const id = active === null ? 'null' : (active.getAttribute('data-testid') ?? active.tagName);
+                    const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'))
+                        .map((el) => (el.getAttribute('data-testid') ?? '').replace('label-preset-', ''));
+                    return JSON.stringify({
+                        id,
+                        rows,
+                        value: active === null ? null : (active.value ?? null),
+                        selection: active === null || active.selectionStart === undefined ? null
+                            : [active.selectionStart, active.selectionEnd],
+                        chip: document.querySelector('[data-testid="label-chip-New label"]')?.getAttribute('data-color') ?? null
+                    });
+                })()`;
 
-                // SET-061 + SET-062: pick a named background and an explicit WHITE text colour.
-                await page.click('[data-testid="label-new-color-purple"]');
-                await sleep(200);
-                await page.click('[data-testid="label-new-text-white"]');
-                await sleep(200);
-                await page.click('[data-testid="label-new-name"]');
-                await page.insertText('audit-design');
-                await sleep(300);
-                await recorder.shot(page, 'designing');
-                const preview = await page.eval(
-                    `(() => { const el = document.querySelector('[data-testid="label-new-preview"]');
-                              if (el === null) return null;
-                              const style = getComputedStyle(el);
-                              return { text: el.innerText, background: style.backgroundColor, color: style.color,
-                                       sample: getComputedStyle(document.querySelector('[data-testid="label-new-text-sample"]')).color }; })()`
-                );
-                recorder.note(`add-row preview (designed): ${JSON.stringify(preview)}`);
-                recorder.check('the preview follows the typed name', preview?.text === 'audit-design', String(preview?.text));
-                recorder.check(
-                    'the preview paints the chosen text colour (white on purple)',
-                    String(preview?.color) === 'rgb(255, 255, 255)',
-                    String(preview?.color)
-                );
-                recorder.check(
-                    'and the chosen background, not gray',
-                    String(preview?.background) !== 'rgb(154, 154, 160)' && String(preview?.background).startsWith('rgb'),
-                    String(preview?.background)
-                );
-
+                const beforeMint = JSON.parse(String(await page.eval(
+                    `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((el) => (el.getAttribute('data-testid') ?? '').replace('label-preset-','')))`
+                )));
                 await page.click('[data-testid="label-add"]');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-New label"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the minted preset row'
+                });
+                await sleep(400);
+                const minted = JSON.parse(String(await page.eval(mintState)));
+                recorder.note(`mint: ${JSON.stringify(minted)}`);
+                await recorder.shot(page, 'minted');
+                recorder.check(
+                    'pressing Add mints a preset with a default name, in gray (§N32)',
+                    minted.rows.includes('New label') && minted.chip === 'gray',
+                    JSON.stringify({ rows: minted.rows, chip: minted.chip })
+                );
+                recorder.check(
+                    'and it appends at the END, where the CLI back-fill puts one (§N32)',
+                    minted.rows.length === beforeMint.length + 1 && minted.rows[minted.rows.length - 1] === 'New label',
+                    `${JSON.stringify(beforeMint)} → ${JSON.stringify(minted.rows)}`
+                );
+                recorder.check(
+                    'the new row’s name field has the focus, with the default name SELECTED (§N32)',
+                    minted.id === 'label-rename-field-New label' &&
+                        minted.value === 'New label' &&
+                        JSON.stringify(minted.selection) === JSON.stringify([0, 'New label'.length]),
+                    JSON.stringify({ focus: minted.id, value: minted.value, selection: minted.selection })
+                );
+
+                // …so the very next keystroke REPLACES the default name. Typed blind, on whatever
+                // holds focus, which is the point of the handoff.
+                await page.insertText('audit-design');
+                await page.key('Enter');
                 await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-design"]') !== null`, {
                     timeoutMs: 15_000,
-                    label: 'the created preset row'
+                    label: 'the renamed preset row'
                 });
-                await sleep(500);
-                await recorder.shot(page, 'created');
-                // The daemon is the authority: read the stored preset back off the row the
-                // delta produced, not off the draft that produced it.
+                await sleep(400);
+                recorder.check(
+                    'typing over the selection renames it in place, with no Rename button in sight (§N32 / §H27)',
+                    (await page.eval(`document.querySelector('[data-testid="label-preset-New label"]') === null`)) === true,
+                    'the default name is gone'
+                );
+
+                // A second mint, to prove the name is uniquified rather than refused: §6.4 makes
+                // a preset's name its identity, so a second `New label` would be rejected by the
+                // daemon and the button would silently stop working.
+                await page.click('[data-testid="label-add"]');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-New label"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the second minted row'
+                });
+                await sleep(300);
+                await page.insertText('audit-taken');
+                await page.key('Enter');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-taken"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the second preset'
+                });
+                await sleep(400);
+                await page.click('[data-testid="label-add"]');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-New label"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the third minted row'
+                });
+                await sleep(300);
+                const uniquified = JSON.parse(String(await page.eval(mintState)));
+                recorder.note(`third mint: ${JSON.stringify(uniquified)}`);
+                recorder.check(
+                    'a mint alongside an existing default name is uniquified, not refused (§N32)',
+                    uniquified.rows.filter((name) => name.startsWith('New label')).length === 1,
+                    JSON.stringify(uniquified.rows)
+                );
+                await page.insertText('audit-third');
+                await page.key('Enter');
+                await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-third"]') !== null`, {
+                    timeoutMs: 15_000,
+                    label: 'the third preset'
+                });
+                await sleep(400);
+
+                // Three real rows now exist, so §H26's geometry and §H27's live fields can be read.
+                await checkRowGeometry('three presets');
+
+                /*
+                 * SET-061 + SET-062, in the ROW rather than in a draft (§N32 SWAP): pick a named
+                 * background and an explicit WHITE text colour on the minted preset, and read what
+                 * the DAEMON stored back off the chip its delta produced.
+                 */
+                await page.click('[data-testid="label-color-audit-design-purple"]');
+                await sleep(400);
+                await page.click('[data-testid="label-text-audit-design-white"]');
+                await sleep(600);
+                await recorder.shot(page, 'designed');
                 const stored = await page.eval(
                     `(() => { const chip = document.querySelector('[data-testid="label-chip-audit-design"]');
                               if (chip === null) return null;
                               const style = getComputedStyle(chip);
-                              return { color: chip.getAttribute('data-color'), background: style.backgroundColor, text: style.color }; })()`
+                              return { color: chip.getAttribute('data-color'), background: style.backgroundColor, text: style.color,
+                                       sample: getComputedStyle(document.querySelector('[data-testid="label-text-audit-design-sample"]')).color }; })()`
                 );
                 recorder.note(`stored preset: ${JSON.stringify(stored)}`);
-                recorder.check('the preset was created with the chosen colour', stored?.color === 'purple', JSON.stringify(stored));
+                recorder.check('the row’s palette recolours the stored preset', stored?.color === 'purple', JSON.stringify(stored));
                 recorder.check(
-                    'and with the chosen TEXT colour \u2014 the add carried both (SET-059)',
+                    'and its triple writes an explicit TEXT colour back through the daemon (SET-059)',
                     String(stored?.text) === 'rgb(255, 255, 255)',
                     String(stored?.text)
                 );
@@ -21975,27 +22061,12 @@ function buildFlows(ctx) {
                     `getComputedStyle(document.querySelector('[data-testid="label-chip-audit-design"]')).color`
                 );
                 recorder.check(
-                    'and the row\u2019s triple writes an explicit colour back through the daemon',
+                    'and White writes an explicit colour back over it',
                     String(white) === 'rgb(255, 255, 255)',
                     String(white)
                 );
 
                 // SET-063: a rename onto an existing preset snaps back and says why.
-                await page.click('[data-testid="label-add"]');
-                await sleep(200);
-                await page.click('[data-testid="label-new-name"]');
-                await page.insertText('audit-taken');
-                await sleep(200);
-                await page.click('[data-testid="label-add"]');
-                await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-taken"]') !== null`, {
-                    timeoutMs: 15_000,
-                    label: 'the second preset'
-                });
-                await sleep(400);
-                // Two real rows now exist, so §H26's geometry and §H27's live fields can be read.
-                await checkRowGeometry('two presets');
-                // §H27: no "Rename" button to arm — the row's name field is always live, so the
-                // rename starts by clicking straight into it.
                 await page.click('[data-testid="label-rename-field-audit-design"]');
                 await sleep(300);
                 await page.eval(
@@ -22025,38 +22096,53 @@ function buildFlows(ctx) {
                     collision?.stillThere === true && collision?.chip === 'audit-design',
                     JSON.stringify(collision)
                 );
-                // §H27: the live FIELD is what the user is looking at, and it is the thing that
-                // has to snap back — a chip that reverts while the field keeps rejected text is
-                // the failure this replaces.
                 recorder.check(
                     'the live name field itself holds the stored name again (§H27)',
                     collision?.field === 'audit-design',
                     String(collision?.field)
                 );
+
                 /*
-                 * §N32(b), second half: the composer's own GROUND, read once real preset rows
-                 * exist to compare it against. A tint that resolves to the same pixel as a list
-                 * row is not a distinction, and the shipped 7 % accent did exactly that.
+                 * §N32 — the CLI ROUND TRIP, which is the half of the redesign a screenshot
+                 * cannot show. §6.5/§6.6's back-fill (`nex workspace label … --add`) creates a
+                 * gray preset for any label that has none; a preset MINTED here must be the same
+                 * object, or the two routes would produce different rows for the same name. So
+                 * the CLI is pointed at the name this tab just minted: it must ADOPT it (no
+                 * duplicate row, the colour chosen in the GUI untouched) and the row's own usage
+                 * caption must count the workspace wearing it.
                  */
-                // Park the pointer off the list first: a hovered row paints `SETTINGS_HOVER_FILL`
-                // over its stripe (H11), and comparing the composer against a HOVER is comparing
-                // it against a state no row is in at rest.
-                await page.mouse('mouseMoved', 20, 20, { button: 'none', buttons: 0 });
-                await sleep(250);
-                const grounds = await readPlacement();
-                recorder.note(`labels composer ground: ${JSON.stringify({ add: grounds?.addBg, rows: grounds?.rowBgs })}`);
-                // `backgroundColor` is whatever Chromium serialises the computed value as — a
-                // `color-mix()` comes back as `color(srgb …)`, not `rgb…`, so the test for "it
-                // paints something" is that it is not the fully transparent value.
-                const CLEAR = 'rgba(0, 0, 0, 0)';
-                recorder.check(
-                    'the composer carries a ground no preset row wears, and still starts on the same x (§N32b / §H26)',
-                    typeof grounds?.addBg === 'string' &&
-                        grounds.addBg !== CLEAR &&
-                        (grounds.rowBgs ?? []).every((value) => value !== grounds.addBg) &&
-                        grounds?.addLeft === grounds?.rowLeft,
-                    JSON.stringify({ add: grounds?.addBg, rows: grounds?.rowBgs, addLeft: grounds?.addLeft, rowLeft: grounds?.rowLeft })
-                );
+                const workspaces = await cli.json(['workspace', 'list', '--json']);
+                const target = workspaces[0];
+                if (target === undefined) {
+                    recorder.check('there is a workspace to label', false, '0 workspaces');
+                } else {
+                    await cli.ok(['workspace', 'label', target.id, '--add', 'audit-design']);
+                    await sleep(900);
+                    const roundTrip = await page.eval(
+                        `(() => {
+                            const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'))
+                                .map((el) => (el.getAttribute('data-testid') ?? '').replace('label-preset-', ''));
+                            const chip = document.querySelector('[data-testid="label-chip-audit-design"]');
+                            return {
+                                copies: rows.filter((name) => name === 'audit-design').length,
+                                color: chip === null ? null : chip.getAttribute('data-color'),
+                                usage: document.querySelector('[data-testid="label-usage-audit-design"]')?.innerText ?? '',
+                                orphans: document.querySelectorAll('[data-testid^="label-adopt-"]').length
+                            };
+                        })()`
+                    );
+                    recorder.note(`CLI back-fill round trip: ${JSON.stringify(roundTrip)}`);
+                    recorder.check(
+                        'the CLI back-fill ADOPTS the minted preset rather than making a second one (§N32)',
+                        roundTrip?.copies === 1 && roundTrip?.color === 'purple',
+                        JSON.stringify(roundTrip)
+                    );
+                    recorder.check(
+                        'and the minted row counts the workspace now wearing it — it is not an orphan',
+                        String(roundTrip?.usage).includes('workspace'),
+                        String(roundTrip?.usage)
+                    );
+                }
 
                 /*
                  * §N33 — where focus goes when a row is REORDERED, driven the way a person
@@ -22075,19 +22161,16 @@ function buildFlows(ctx) {
                  * Three presets, so the walk passes through a middle slot AND both ends, and it
                  * returns the list to the order it started in: click ↓ (0→1, mid-list), Enter
                  * (1→2, ↓ disables), Enter (2→1, mid-list ↑), Enter (1→0, ↑ disables).
+                 *
+                 * §N33 REOPENED — and `document.activeElement` was never the whole question. A
+                 * mouse click on a `<button>` does not match `:focus-visible` in Chromium, so a
+                 * mouse-driven reorder paints NO focus ring: what the owner watches is the hover
+                 * wash, and Chromium re-evaluates `:hover` when the DOM moves under a still
+                 * pointer — the highlight jumped off the row that moved and onto the row that slid
+                 * into the pressed slot. So every settle point below now asserts the PAINT as well
+                 * as the focus, by row identity: exactly the moved row and its own landed arrow
+                 * carry `data-hovered`, and no other row does.
                  */
-                await page.click('[data-testid="label-add"]');
-                await sleep(200);
-                await page.click('[data-testid="label-new-name"]');
-                await page.insertText('audit-third');
-                await sleep(200);
-                await page.click('[data-testid="label-add"]');
-                await page.waitFor(`document.querySelector('[data-testid="label-preset-audit-third"]') !== null`, {
-                    timeoutMs: 15_000,
-                    label: 'the third preset'
-                });
-                await sleep(400);
-
                 const focusTrace = `(() => {
                     if (window.__nexLabelFocus !== undefined) { window.__nexLabelFocus.length = 0; return 'reset'; }
                     window.__nexLabelFocus = [];
@@ -22101,6 +22184,9 @@ function buildFlows(ctx) {
                 const presetOrder = `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="label-preset-"]')).map((el) => (el.getAttribute('data-testid') ?? '').replace('label-preset-','')))`;
                 const activeID = `(() => { const el = document.activeElement;
                     return el === null ? 'null' : el === document.body ? 'BODY' : (el.getAttribute('data-testid') ?? el.tagName); })()`;
+                // What is PAINTED as highlighted: the rows and arrows a person sees lit. This is
+                // the channel §N33's reopening was about, and it is read by ROW IDENTITY.
+                const paintedIDs = `JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="label-preset-"][data-hovered="true"], [data-testid^="label-move-"][data-hovered="true"]')).map((el) => el.getAttribute('data-testid')))`;
                 const before = String(await page.eval(presetOrder));
                 recorder.note(`labels reorder — order before the walk: ${before}`);
 
@@ -22110,6 +22196,7 @@ function buildFlows(ctx) {
                     const state = {
                         order: JSON.parse(String(await page.eval(presetOrder))),
                         active: String(await page.eval(activeID)),
+                        painted: JSON.parse(String(await page.eval(paintedIDs))),
                         trace: await page.eval(`JSON.stringify(window.__nexLabelFocus ?? [])`)
                     };
                     recorder.note(`labels reorder — ${label}: ${JSON.stringify(state)}`);
@@ -22117,6 +22204,18 @@ function buildFlows(ctx) {
                         `focus follows the moved row ${label} (§N33)`,
                         state.active === expectFocus,
                         `${state.active} (wanted ${expectFocus}); order ${state.order.join(' ')}`
+                    );
+                    /*
+                     * …and so does the highlight, which is the half the owner could see. The
+                     * pointer has not moved since the one mouse click that started the walk, so
+                     * the paint must still be on the row the gesture is about — never on the row
+                     * that swapped into the pressed slot.
+                     */
+                    recorder.check(
+                        `and the highlight travels WITH the row, on no other row’s arrow ${label} (§N33)`,
+                        JSON.stringify(state.painted) ===
+                            JSON.stringify([`label-preset-${TARGET}`, expectFocus]),
+                        `${JSON.stringify(state.painted)} (wanted the ${TARGET} row and ${expectFocus})`
                     );
                     return state;
                 };
@@ -22196,7 +22295,129 @@ function buildFlows(ctx) {
                     afterTab
                 );
 
-                recorder.eyes('the Labels tab as a TABLE and a design surface: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND with the add row above the divider (§H26) — swatch row, Auto/Black/White triple, and whether the preview chip reads like the chip a workspace will wear. And §N32(b), which only an eye can settle: does the first row READ as the composer rather than as a fourth preset with an empty name — its "New preset" heading and its own ground against the list\u2019s stripes?');
+                /*
+                 * §N33 (run-AH) — the REPLAY, which the walk above cannot see.
+                 *
+                 * That walk presses arrows and asks where focus goes; every press re-arms the
+                 * intent, so an intent that is never CLEARED looks exactly like one that is. The
+                 * defect only shows once the user stops reordering and does the next ordinary
+                 * thing: a preset's identity is its NAME (§SET-066), so the order key is the names
+                 * joined and a RENAME changes it — a stale intent replays a finished gesture into
+                 * the middle of one. Measured on the live stack before the fix
+                 * (`docs/audit/n32-33-verify-ah/`): the caret left the field just clicked, the
+                 * SPACE in what was typed next pressed the focused arrow and silently reordered
+                 * the list, and Escape reached the overlay and closed Settings instead of
+                 * cancelling the edit.
+                 *
+                 * So: press an arrow, walk away, and then edit two names the way anyone edits two
+                 * names. The blur of the first commits it, and the caret must still be in the
+                 * second when that echo arrives.
+                 */
+                const RENAME_A = 'audit-taken';
+                const RENAME_B = 'audit-third';
+                const bothPresent = await page.eval(
+                    `document.querySelector('[data-testid="label-rename-field-${RENAME_A}"]') !== null &&
+                     document.querySelector('[data-testid="label-rename-field-${RENAME_B}"]') !== null`
+                );
+                recorder.check(
+                    'there are two other presets to rename after a reorder (§N33)',
+                    bothPresent === true,
+                    `${RENAME_A} + ${RENAME_B}`
+                );
+                if (bothPresent === true) {
+                    // A real mouse press on an arrow: the gesture that arms the intent.
+                    await page.click(`[data-testid="label-move-down-${TARGET}"]`);
+                    await sleep(900);
+                    const armed = String(await page.eval(activeID));
+                    recorder.check(
+                        'the reorder that arms the intent lands on the moved row\u2019s own arrow (§N33)',
+                        armed === `label-move-down-${TARGET}` || armed === `label-move-up-${TARGET}`,
+                        armed
+                    );
+                    // …and the pointer leaves the list, exactly as a person's does.
+                    await page.mouse('mouseMoved', 40, 40, { button: 'none', buttons: 0 });
+                    await sleep(400);
+                    const orderBeforeRename = JSON.parse(String(await page.eval(presetOrder)));
+
+                    // Edit ONE name…
+                    await page.click(`[data-testid="label-rename-field-${RENAME_A}"]`);
+                    await sleep(250);
+                    await page.eval(`document.execCommand('selectAll')`);
+                    await page.insertText('audit-renamed');
+                    await sleep(200);
+                    // …then click straight into ANOTHER row's field. The blur commits the first
+                    // rename, and its echo is the order change that used to replay the arrow.
+                    await page.eval(focusTrace); // reset: this window is the case under test
+                    await page.click(`[data-testid="label-rename-field-${RENAME_B}"]`);
+                    await page
+                        .waitFor(`document.querySelector('[data-testid="label-preset-audit-renamed"]') !== null`, {
+                            timeoutMs: 15_000,
+                            label: 'the blur-committed rename'
+                        })
+                        .catch(() => {});
+                    await sleep(1200);
+                    const caret = String(await page.eval(activeID));
+                    const trace = JSON.parse(String(await page.eval(`JSON.stringify(window.__nexLabelFocus ?? [])`)));
+                    const orderAfterRename = JSON.parse(String(await page.eval(presetOrder)));
+                    recorder.note(
+                        `rename after reorder: focus=${caret} order=${orderAfterRename.join(' ')} trace=${JSON.stringify(trace)}`
+                    );
+                    recorder.check(
+                        'the caret stays in the field just clicked while the rename echo lands (§N33)',
+                        caret === `label-rename-field-${RENAME_B}`,
+                        `${caret} (wanted label-rename-field-${RENAME_B})`
+                    );
+                    // A settled read cannot see a BOUNCE, so the whole window is recorded rather
+                    // than sampled: no arrow may take focus at any point during the echo.
+                    recorder.check(
+                        'and no reorder arrow takes focus at any point during that echo (§N33)',
+                        trace.filter((entry) => String(entry).startsWith('in:label-move-')).length === 0,
+                        JSON.stringify(trace)
+                    );
+                    const expectedOrder = orderBeforeRename.map((name) => (name === RENAME_A ? 'audit-renamed' : name));
+                    recorder.check(
+                        'a rename changes that row\u2019s NAME only — the list does not reorder (§N33 / §SET-066)',
+                        JSON.stringify(orderAfterRename) === JSON.stringify(expectedOrder),
+                        `${orderBeforeRename.join(' ')} → ${orderAfterRename.join(' ')}`
+                    );
+
+                    /*
+                     * …and the next keystrokes go where the caret is, the SPACE included. Typed
+                     * with REAL key events rather than `insertText`: `insertText` is an IME commit
+                     * and Chromium routes it to the last editable even when a BUTTON holds focus,
+                     * so it would land in the field either way and prove nothing. A space on a
+                     * focused button is an ACTIVATION — which is how typing a label name came to
+                     * reorder the presets.
+                     */
+                    const valueBefore = String(
+                        await page.eval(`document.querySelector('[data-testid="label-rename-field-${RENAME_B}"]')?.value ?? ''`)
+                    );
+                    await page.type('x y');
+                    await sleep(500);
+                    const valueAfter = String(
+                        await page.eval(`document.querySelector('[data-testid="label-rename-field-${RENAME_B}"]')?.value ?? ''`)
+                    );
+                    const orderAfterTyping = JSON.parse(String(await page.eval(presetOrder)));
+                    recorder.note(`typed after the echo: ${JSON.stringify(valueBefore)} → ${JSON.stringify(valueAfter)}`);
+                    recorder.check(
+                        'what is typed next lands in that field (§N33)',
+                        valueAfter !== valueBefore && valueAfter.includes('x'),
+                        `${JSON.stringify(valueBefore)} → ${JSON.stringify(valueAfter)}`
+                    );
+                    recorder.check(
+                        'and the SPACE in it stays a space rather than pressing a focused arrow (§N33)',
+                        JSON.stringify(orderAfterTyping) === JSON.stringify(orderAfterRename),
+                        `${orderAfterRename.join(' ')} → ${orderAfterTyping.join(' ')}`
+                    );
+                    await recorder.shot(page, 'rename-after-reorder');
+                    // Leave the typo'd draft unwritten: Escape in a focused field is "cancel this
+                    // edit" (§H27), and the blur that follows commits nothing because the draft is
+                    // the stored name again.
+                    await page.key('Escape');
+                    await sleep(300);
+                }
+
+                recorder.eyes('the Labels tab as a TABLE and a design surface. §N32 first: the tab opens with ONE small Add button above the divider and nothing else — no composer, no empty-named row — and pressing it drops a real row into the list with its name already selected, so the next thing typed is the name. Is that button findable without being loud, and does the new row read as a row of the list rather than as something provisional? Then the table itself: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab (§H26), and does the preview chip read like the chip a workspace will wear? And §N33, which only an eye can settle: while a row is being walked with the arrows, does the highlight stay on THAT row — never flicking to the row that slid into the slot under the pointer?');
             }
         },
         {

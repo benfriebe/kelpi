@@ -128,9 +128,11 @@ describe('Settings ▸ Labels', () => {
      * `Capsule` around `.font(.system(size: 10, weight: .medium))`. The port drew a 4 px-radius
      * rectangle at 11 px regular, a shape no label in the app has.
      */
+    // §N32 SWAP: `label-new-preview` was the composer's draft chip. Every preset row still
+    // carries the chip this rule is about, so the loop is over rows.
     it('M40 — previews the chip it previews: a capsule at 10 px medium', () => {
         renderLabels();
-        for (const id of ['label-chip-ship', 'label-new-preview']) {
+        for (const id of ['label-chip-ship', 'label-chip-wip']) {
             const chip = screen.getByTestId(id);
             expect(chip.className).toContain('rounded-full');
             expect(chip.className).toContain('text-[10px]');

@@ -19,11 +19,14 @@
  * The orphan section closes §6.5/§6.6's loop: any label applied somewhere with no preset gets a
  * one-click gray preset — the same back-fill the CLI's `workspace label` performs.
  *
- * **The design surface (SET-058, SET-061, SET-062).** A preset is *designed* here, not just
- * created: the add row carries a background colour, a text colour and a live chip preview
- * before anything is written, and every row carries the same three controls afterwards. Three
- * deliberate presentation divergences from the Swift sheet, each because a browser has no
- * `NSColorWell` + `Menu` pair:
+ * **The design surface (SET-058, SET-061, SET-062).** A preset is designed IN ITS ROW: a
+ * background colour, a text colour and a live chip preview, all editable in place. §N32 removed
+ * the always-visible composer that used to carry a second copy of those three controls above the
+ * list — a preset is minted with a default name and colour and then edited exactly like any
+ * other, which is the mint-with-rename shape the port already uses for a group. That is an
+ * OWNER-DIRECTED divergence from the Swift, which does keep an always-visible add row
+ * (`LabelPresetsSettingsView.swift:106-132`). Three further presentation divergences, each
+ * because a browser has no `NSColorWell` + `Menu` pair:
  *
  *   - the eight (here ten) named colours are a SWATCH ROW with `aria-pressed` on the current
  *     one rather than a dropdown with a checkmark — same list, same "which one is set" answer,
@@ -41,19 +44,28 @@
  * **The shape of the tab is the Swift sheet's** (H25/H26/H27), and it is not decoration:
  * `LabelPresetsSettingsView.swift:4-12` opens by saying the fixed column widths exist so "the
  * colour controls, text-colour control, and preview line up vertically across the add row and
- * every preset row". So:
+ * every preset row". The add row is gone (§N32), so the alignment is now row-to-row — which is
+ * the half of that sentence that was ever about the list. So:
  *
- *   - the ADD ROW is first, above a divider, then the list (`:27-31`) — not below a list that
- *     can be longer than the window;
- *   - every row (add row included) is ONE grid line on `LabelCol`'s widths — background 150,
- *     text colour 124, preview 80, action 40, with the name field flexing between them
- *     (`:7-12`, `:106-132`, `:204-245`) — not a two-line stacked card;
+ *   - the ADD control is first, above a divider, then the list (`:27-31`) — not below a list
+ *     that can be longer than the window;
+ *   - every row is ONE grid line on `LabelCol`'s widths — background 150, text colour 124,
+ *     preview 80, action 40, with the name field flexing between them (`:7-12`, `:204-245`) —
+ *     not a two-line stacked card;
  *   - the NAME is a live `TextField` in every row (`:214-222`), committed on Return or focus
  *     loss. There is no "Rename" button in the shipped app and there is none here: click into
  *     any name and type.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type MouseEvent as ReactMouseEvent,
+    type ReactElement
+} from 'react';
 
 import {
     WORKSPACE_COLORS,
@@ -109,10 +121,16 @@ const LABEL_COL = { bgColor: 150, textColor: 184, preview: 80, reorder: 44, acti
  * currently leaves the name column 166 px of slack"): at the 880 px dialog that track is 102 px
  * rather than 166.
  *
- * **The residual, measured and stated rather than hidden.** A PRESET row's name cell holds the
+ * **§N32 did not give this width back, and could not.** The 184 was never the composer's: the
+ * five controls it is sized for (Aa + Auto + Black + White + the well) are in EVERY PRESET ROW,
+ * and they are what wrapped. Removing the composer removes one instance of them, not the track —
+ * measured again on the live stack after the redesign at `150px minmax(100px,1fr) 184px 80px
+ * 44px 40px`, identical to before, with every row's cells starting on the same x.
+ *
+ * **The residual, measured and stated rather than hidden.** A preset row's name cell holds the
  * rename field *and* the port-only usage caption ("unused" / "N workspaces", `shrink-0`), so at
- * 102 px the field itself renders 49.6 px where it used to render ~114. The add row's field
- * keeps the whole 102. Nothing here can give it back without taking width from a Swift column:
+ * 102 px the field itself renders 49.6 px. Nothing here can give it back without taking width
+ * from a Swift column:
  * the way to recover it is the register's own second option for this row — collapse Auto /
  * Black / White into ONE control, the way `LabelPresetsSettingsView.swift:365-394` collapses
  * them into a `Menu`, which would return ~24 px to the name track. That is a shape change, so
@@ -145,45 +163,9 @@ const LABEL_GRID_GAP = '10px';
 
 /**
  * `alternatesRowBackgrounds`' two tones (M41), even → clear and odd → a faint wash, which is the
- * parity AppKit paints. The add row keeps its own accent tint: it is not a list row.
+ * parity AppKit paints. Every row on the tab is a list row now (N32), so there is no third tone.
  */
 const LABEL_ROW_STRIPE = { base: 'transparent', alternate: withAlpha('#808080', 0.06) } as const;
-
-/**
- * N32(b) — the composer has to READ as a composer, and the shipped 7 % tint did not.
- *
- * The Swift separates its add row STRUCTURALLY: `LabelPresetsSettingsView.swift:27-35` puts it
- * outside the `List` entirely, above a `Divider()`, on the plain `chromeTheme.surfaceBackground`,
- * while every preset row is a band inside a `.listStyle(.inset(alternatesRowBackgrounds: true))`
- * with the list's own inset and stripe. A browser has no AppKit `List`, so "outside the list" is
- * not a thing this port can paint — H26 requires the composer to sit on the SAME grid as the rows
- * so the wells, the "Aa" sample and the chip line up, which is exactly what makes the two look
- * alike. The separation has to come from somewhere else.
- *
- * **Two signals, chosen off photographs of six candidates** (`docs/audit/n32-composer/`):
- *
- *   - a NAME. `label-add-heading` is the port's stand-in for the Swift's "this is not a list row"
- *     structure: the one thing a tint cannot say is *what the region is for*, and the tab already
- *     proves a weight difference alone is not enough — the preset rows carry a 6 % stripe of
- *     their own, so a slightly heavier band just reads as another stripe.
- *   - that tint, at a weight the eye actually resolves: 12 % rather than 7 %.
- *
- * The candidates that were REJECTED were rejected on measurements, not taste. Two of them move
- * the very grid H26 exists to hold:
- *
- *   - a **framed inset** (1 px border + radius) eats 2 px off the row's width, and the name
- *     track is the only flexible one, so the field narrows and the placeholder truncates
- *     ("New label nam…" in the candidate frame);
- *   - a **leading accent rail** shifts every cell in the add row 2 px right of the preset rows'
- *     cells, which is precisely the `addLefts === rowLefts` alignment `labels-design` asserts.
- *
- * The third fails for the other reason: a **neutral (gray) ground** is the same hue as
- * `LABEL_ROW_STRIPE.alternate`, so at any weight that reads, it reads as a stripe.
- *
- * Nothing here touches a settled row: no padding change (S64's 10 × 8 stands), no column change
- * (H26/S57/S60's template stands), and no card (L79 — this tab has none).
- */
-const LABEL_COMPOSER_GROUND = withAlpha(tokens.accent, 0.12);
 
 /**
  * `Image(systemName: "trash")` at this file's own scale.
@@ -222,6 +204,67 @@ export interface LabelsTabProps {
 
 /** Which of a preset row's two reorder arrows a gesture came from (N33). */
 type ArrowControl = 'up' | 'down';
+
+/** A reorder's subject: the preset (SET-066: its NAME is its id) and the arrow that was pressed. */
+interface ArrowIntent {
+    readonly name: string;
+    readonly control: ArrowControl;
+}
+
+/**
+ * The live reorder gesture: an `ArrowIntent` plus whether a commit has already HONOURED it.
+ *
+ * N33 (run-AH) — the flag is the whole fix, and one field on one object rather than a second ref
+ * so the two can never drift: the intent is armed un-honoured by a press, honoured by the first
+ * order-changing commit that follows, and from then on may only be RE-asserted while the user is
+ * still standing on the row's own arrows. See the layout effect for why "still standing" is not
+ * read off `document.activeElement` alone.
+ */
+interface ArrowGesture extends ArrowIntent {
+    honoured: boolean;
+}
+
+/**
+ * N33 (reopened) — how far the pointer must travel before the list is allowed to re-decide what
+ * is hovered.
+ *
+ * Zero would be wrong, and wrong in exactly the way the first fix was: a hand resting on a mouse
+ * emits sub-pixel moves constantly, so "unpark on any movement" is "unpark immediately" on real
+ * hardware while looking perfect under a synthetic click. 4 px is smaller than the 16 px arrow
+ * it protects, so a deliberate move to a different control always clears the park.
+ */
+const POINTER_PARK_SLOP = 4;
+
+/**
+ * N32 — the name a MINTED preset is born with: `New label`, then `New label 2`, `New label 3`, …
+ *
+ * The shape, and the reason for it, are `sidebar-model.ts`'s `defaultGroupName` (§WS-083, the
+ * Swift's own `NexCommands.defaultGroupName`): a mint has to produce something the daemon will
+ * accept on the first try, and §6.4 makes a preset's NAME its identity — a duplicate is refused
+ * outright, so the uniquifier is not a nicety, it is what makes the button work twice in a row.
+ * Matching against the list this tab is rendering is enough: it IS the daemon's list.
+ */
+export function defaultLabelPresetName(existing: readonly string[]): string {
+    const base = 'New label';
+    const taken = new Set(existing);
+    if (!taken.has(base)) return base;
+    let suffix = 2;
+    while (taken.has(`${base} ${String(suffix)}`)) suffix += 1;
+    return `${base} ${String(suffix)}`;
+}
+
+/**
+ * Where a reorder press came from, for that threshold.
+ *
+ * `event.detail === 0` is a KEYBOARD activation (Enter or Space on a focused button); Chromium
+ * reports `clientX/Y` as 0,0 for it, which is a real coordinate and would anchor the park to the
+ * top-left corner of the window. A keyboard press has no pointer origin at all, so it returns
+ * `null` and any pointer movement at all releases the park — which is right: nothing moved under
+ * the cursor because of the cursor.
+ */
+export function pointerOrigin(event: ReactMouseEvent<HTMLButtonElement>): { x: number; y: number } | null {
+    return event.detail === 0 ? null : { x: event.clientX, y: event.clientY };
+}
 
 /** A preset's colour, in whichever of §6.2's two shapes it is stored as. */
 type LabelColorValue = ChromeLabelPreset['color'];
@@ -562,13 +605,13 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
 interface ChipPreviewProps {
     readonly testID: string;
     readonly text: string;
-    readonly placeholder?: boolean | undefined;
     readonly style: ResolvedLabelStyle;
     readonly colorToken?: string | undefined;
 }
 
 /**
- * SET-058's live chip: the placeholder reads "label" at 50 % opacity while the name is empty.
+ * SET-058's live chip — one per preset row, following the name as it is typed (N32: there is no
+ * composer draft to preview any more, so there is no dimmed placeholder either).
  *
  * **It is the chip it previews** (M40). `WorkspaceLabelViews.swift:7-31`'s `LabelChip` — the view
  * this preview column exists to show — is a `Capsule` around `.font(.system(size: 10, weight:
@@ -582,17 +625,12 @@ function ChipPreview(props: ChipPreviewProps): ReactElement {
         <span
             data-testid={props.testID}
             {...(props.colorToken === undefined ? {} : { 'data-color': props.colorToken })}
-            data-placeholder={props.placeholder === true ? 'true' : 'false'}
             // `truncate`: the chip lives in the fixed 80 px preview column (`LabelCol.preview`),
             // leading-aligned like the Swift `.frame(width:alignment:.leading)`, so a long name
             // ellipsises inside its column instead of pushing the trash button out of line.
             // (`.lineLimit(1)` is on the Swift chip too.)
             className="block max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-            style={{
-                background: props.style.background,
-                color: props.style.text,
-                opacity: props.placeholder === true ? 0.5 : 1
-            }}
+            style={{ background: props.style.background, color: props.style.text }}
         >
             {props.text}
         </span>
@@ -601,11 +639,6 @@ function ChipPreview(props: ChipPreviewProps): ReactElement {
 
 export function LabelsTab(props: LabelsTabProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
-    const [draftName, setDraftName] = useState('');
-    // Gray rather than the Swift sheet's blue: it is the colour the CLI back-fill and the orphan
-    // adoption below both create with, so every route into this list starts from one default.
-    const [draftColor, setDraftColor] = useState<LabelColorValue>({ kind: 'named', color: 'gray' });
-    const [draftTextColor, setDraftTextColor] = useState<LabelTextColorValue>(null);
     // H27: there is no `renaming` row any more. Every row's name field is live, so the only
     // cross-row state left is the message a REFUSED rename leaves behind.
     const [renameError, setRenameError] = useState<{ id: string; message: string } | null>(null);
@@ -613,43 +646,91 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     const usage = labelUsage(props.workspaces);
     const orphans = orphanLabels(props.workspaces, props.presets);
 
-    const trimmedDraft = draftName.trim();
-    const draftStyle = previewStyle(draftColor, draftTextColor, bucket);
-
     /*
-     * N33 — the reorder arrows' focus, made explicit rather than left to the browser.
+     * N33 — where the ring is after a reorder, and it is TWO channels, not one.
      *
-     * Measured on the real stack (Electron/Chromium over CDP, `docs/audit/n33-reorder-focus/`),
-     * because jsdom cannot see any of it: jsdom neither blurs a node that is MOVED in the tree
-     * nor blurs a focused element that becomes `disabled`, so every reorder "kept focus" there
-     * while the shipped app did three different things:
+     * Measured on the real stack (Electron/Chromium over CDP, driving a LIVE daemon round trip:
+     * `docs/audit/n33-reorder-focus/echo-probe.mjs`, and the film beside it), because jsdom can
+     * see none of it: it neither blurs a node that is MOVED in the tree, nor blurs a focused
+     * element that becomes `disabled`, nor re-evaluates `:hover` when the DOM moves under a
+     * stationary pointer.
      *
-     *   - **↓ mid-list**: React's keyed reconciliation moves the minimum number of nodes, and
-     *     for an adjacent swap that is always the row that was EARLIER — i.e. the row you
-     *     pressed ↓ on. Chromium fires `focusout` + `focusin` on it as it is re-inserted (the
-     *     probe caught the pair in the same millisecond), which is the flicker.
-     *   - **↑ mid-list**: the pressed row is the LATER one, so its node is not moved at all and
-     *     focus is never interrupted. Same gesture, opposite mechanics — that asymmetry is the
-     *     whole of the report.
-     *   - **either direction into an END**: the pressed arrow becomes `disabled` in the same
-     *     commit, Chromium blurs it, and `document.activeElement` falls to `<body>` — measured,
-     *     both ends. Keyboard-only reordering dead-ends there: the next Tab restarts from the
-     *     top of the dialog rather than from the row you were moving.
+     * **Channel 1 — `document.activeElement`.** A reorder carries an INTENT (which preset, which
+     * arrow), recorded on the press and RE-ASSERTED by every commit in which the order changes
+     * while that preset still exists. A layout effect (before paint, so nothing flashes) puts
+     * focus on that arrow, or on the row’s OTHER arrow when the pressed one has just disabled
+     * itself at an end — a row can only be at one end at a time, so with two or more presets the
+     * fallback is always enabled. Keyed on the ORDER rather than on the array’s identity: the
+     * mirror hands this tab a fresh `labelPresets` on every `label-presets-changed` delta, a
+     * recolour’s included, so identity would fire a commit early. RE-asserted rather than
+     * consumed once, because one gesture is not always one commit: the daemon may answer with
+     * more than one, another client can reorder the same list, and a second press inside one
+     * round trip (the echo measures ~170 ms; a double tap is ~150) leaves the earlier intent for
+     * the later echo to finish. Re-asserting costs nothing — `focus()` on the already-focused
+     * node fires no events.
      *
-     * So the reorder now carries an INTENT — which preset, and which of its two arrows — set on
-     * the press and consumed by the first commit in which the order actually changes. A layout
-     * effect (before paint, so nothing flashes) puts focus back on that arrow, or on the row's
-     * OTHER arrow when the pressed one has just disabled itself. A row can only be at one end at
-     * a time, so with two or more presets the fallback is always enabled, and walking a row to
-     * the bottom leaves you on its ↑ ready to walk it back.
+     * But re-asserted only while the gesture is still under the user’s hand, which is what the
+     * `honoured` flag on `ArrowGesture` decides: the order key is the NAMES joined, so a rename
+     * is an order change too (SET-066), and an intent that never stops being re-asserted replays
+     * a finished gesture into the middle of the next thing the user does. The condition, and the
+     * three failures it closes, are stated at the layout effect below.
      *
-     * Keyed by the ORDER, not by the array's identity: the mirror hands this tab a fresh
-     * `labelPresets` array on every `label-presets-changed` delta, including the ones a recolour
-     * raises, and consuming the intent on one of those would restore focus a commit too early —
-     * before the move it was recorded for.
+     * **Channel 2 — the highlight the user can actually SEE, which is what the report was
+     * about.** A mouse click on a `<button>` never matches `:focus-visible` in Chromium, so a
+     * mouse-driven reorder paints no focus ring at all (`ring=no` on every frame of the probe):
+     * what the eye follows is the hover fill on the arrow and the wash on its row. Chromium
+     * re-evaluates `:hover` after the DOM moves and fires `mouseout`/`mouseover` at the reorder
+     * commit — so with the pointer perfectly still, the highlight jumps off the row the user
+     * just moved and onto the row that slid into the pressed slot. That is the owner’s report
+     * exactly: on ↑ the highlight travels one slot up with the row and then bounces straight
+     * back down, photographed at +230 ms and +302 ms in `docs/audit/n33-reorder-focus/film/`.
+     *
+     * AppKit does not do this — a SwiftUI `.onHover` does not re-fire when a view slides under a
+     * still cursor — so the port had invented a signal the reference app cannot send. So the
+     * pointer-driven paint is PARKED at a reorder commit: until the pointer really moves
+     * (`POINTER_PARK_SLOP`), the list paints the highlight on the arrow focus landed on and on no
+     * other row. Hit-testing is untouched — the pointer still points where it points — and the
+     * moment it moves, hover is the pointer’s business again.
      */
     const arrows = useRef(new Map<string, { up: HTMLButtonElement | null; down: HTMLButtonElement | null }>());
-    const pendingArrowFocus = useRef<{ name: string; control: ArrowControl } | null>(null);
+    const focusIntent = useRef<ArrowGesture | null>(null);
+    /** Where the pointer was when a reorder was pressed. `null` for a keyboard press. */
+    const pressOrigin = useRef<{ x: number; y: number } | null>(null);
+    /**
+     * N33 (run-AH) — the last element that actually HELD focus, which is the anchor a RE-assert is
+     * judged against, because `document.activeElement` at layout-effect time cannot answer the
+     * question on its own.
+     *
+     * A commit that reorders the list MOVES DOM nodes, and a commit that renames a preset UNMOUNTS
+     * the row (SET-066: the name IS the id, so the key changes) — Chromium blurs the focused
+     * element in both cases and `document.activeElement` reads `<body>` by the time this tab gets
+     * to look. So "the user is still on the row's arrow" and "the user had moved on to a name
+     * field that this very commit destroyed" are indistinguishable AFTER the fact; the difference
+     * has to be captured BEFORE it, which is what this listener does. Kept as the last focus
+     * rather than cleared on `focusout`, because the transient `<body>` is exactly what must not
+     * count as moving on.
+     */
+    const lastFocused = useRef<Element | null>(null);
+    useEffect(() => {
+        const remember = (event: FocusEvent): void => {
+            if (event.target instanceof Element) lastFocused.current = event.target;
+        };
+        document.addEventListener('focusin', remember, true);
+        return () => {
+            document.removeEventListener('focusin', remember, true);
+        };
+    }, []);
+    const rootRef = useRef<HTMLDivElement | null>(null);
+    const [parked, setParked] = useState(false);
+    const [parkedArrow, setParkedArrow] = useState<ArrowIntent | null>(null);
+    /**
+     * N33 — bumped whenever the rows MOVE, and again when the park is released, so every control
+     * in the list re-reads its own hover state from the live `:hover` (see `useHover`). Without
+     * it a row that slides out from under the pointer keeps its wash for ever: the `mouseleave`
+     * that would clear it goes to a node Chromium has already detached, and the tab paints TWO
+     * hovered rows at once (measured on the pre-fix bundle, `docs/audit/n33-reorder-focus/`).
+     */
+    const [hoverEpoch, setHoverEpoch] = useState(0);
 
     const registerArrow = useCallback(
         (name: string, control: ArrowControl, node: HTMLButtonElement | null): void => {
@@ -662,56 +743,193 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     );
 
     const reorder = useCallback(
-        (name: string, control: ArrowControl, index: number): void => {
-            pendingArrowFocus.current = { name, control };
+        (name: string, control: ArrowControl, index: number, origin: { x: number; y: number } | null): void => {
+            // A press arms a FRESH gesture, un-honoured: every press gets its own first honour,
+            // which is what keeps a burst of them (three inside one echo) landing on this row.
+            focusIntent.current = { name, control, honoured: false };
+            pressOrigin.current = origin;
             props.actions.moveLabelPreset?.({ id: name, index });
         },
         [props.actions]
     );
 
-    const order = props.presets.map((preset) => preset.name).join(' ');
+    // A NUL separator, not a space: a preset name may contain spaces, and two different orders
+    // must never collapse to the same key.
+    const order = props.presets.map((preset) => preset.name).join('\u0000');
+    const settledOrder = useRef(order);
     useLayoutEffect(() => {
-        const pending = pendingArrowFocus.current;
-        if (pending === null) return;
-        pendingArrowFocus.current = null;
-        const entry = arrows.current.get(pending.name);
-        if (entry === undefined) return;
-        const pressed = entry[pending.control];
-        const sibling = entry[pending.control === 'up' ? 'down' : 'up'];
+        // The mount run is not a reorder: nothing moved, so nothing is parked and there is no
+        // intent to re-assert.
+        if (settledOrder.current === order) return;
+        settledOrder.current = order;
+        const intent = focusIntent.current;
+        let landed: ArrowIntent | null = null;
+        const entry = intent === null ? undefined : arrows.current.get(intent.name);
+        const active = document.activeElement;
+        /*
+         * Never STEAL focus back. The intent survives the transient `<body>` that a moved or
+         * disabled arrow leaves behind, and survives focus sitting on another control in this
+         * list; but once something OUTSIDE the tab holds it (the terminal taking the caret when
+         * the window activates, another window), the reorder is no longer what the user is
+         * doing, and the intent is dropped rather than the caret being yanked back.
+         */
+        const foreign =
+            active !== null &&
+            active !== document.body &&
+            active !== entry?.up &&
+            active !== entry?.down &&
+            rootRef.current !== null &&
+            !rootRef.current.contains(active);
+        /*
+         * N33 (run-AH) — ONE free honour, then the gesture has to still be under the user's hand.
+         *
+         * The re-assert exists because one gesture is not always one commit (a burst inside one
+         * echo, a daemon answering twice, a second client moving the same list). What it must not
+         * be is a recording: a preset's identity IS its name (SET-066), so the `order` key this
+         * effect is keyed on changes on a RENAME too — and an intent that is re-asserted forever
+         * replays a finished gesture into the middle of someone typing. Measured on the live
+         * stack (`docs/audit/n32-33-verify-ah/`): the caret left the field the user had just
+         * clicked into, the SPACE in what they typed next pressed the focused arrow and reordered
+         * the list, and Escape reached the overlay and closed Settings.
+         *
+         * So the FIRST honour may come from anywhere — including the `<body>` a moved or disabled
+         * arrow leaves behind, which is the common case and the reason the intent exists at all.
+         * A RE-assert may only fire while the user is still standing on one of that row's own two
+         * arrows; anywhere else means they have moved on, and the gesture is dropped instead. The
+         * cases that must keep working all re-assert from the row's own arrow (a burst re-arms on
+         * every press, and a second client's move leaves focus where this window put it); the
+         * three failures all re-assert from somewhere else — a name field, another row's arrow.
+         *
+         * `anchor`, not `active`: the commit being handled may itself have destroyed whatever held
+         * focus (see `lastFocused`), and a transient `<body>` is not the user moving on.
+         */
+        const anchor = active === null || active === document.body ? lastFocused.current : active;
+        const stale =
+            intent !== null &&
+            intent.honoured &&
+            (anchor === null || (anchor !== entry?.up && anchor !== entry?.down));
+        if (intent === null || entry === undefined || foreign || stale) {
+            if (intent !== null) focusIntent.current = null;
+            setParked(true);
+            setParkedArrow(null);
+            setHoverEpoch((epoch) => epoch + 1);
+            return;
+        }
+        // Consumed: from here on this gesture is a RE-assert, judged against the anchor above.
+        // Marked before the focus rather than after it, so a row whose arrows are both gone (a
+        // one-preset list) spends its honour too instead of staying armed for a later commit.
+        intent.honoured = true;
+        const pressed = entry[intent.control];
+        const other: ArrowControl = intent.control === 'up' ? 'down' : 'up';
+        const sibling = entry[other];
         // The arrow that was pressed, unless the move disabled it — then the row's other one,
         // which the move necessarily enabled. Never `<body>`.
         const target =
             pressed !== null && !pressed.disabled ? pressed : sibling !== null && !sibling.disabled ? sibling : null;
-        if (target === null) return;
-        target.focus({ preventScroll: true });
-        // `nearest` and not the default: the row moved ONE slot and was on screen when it was
-        // pressed, so a centring scroll would be a jump of its own. Guarded because jsdom does
-        // not implement `scrollIntoView` at all.
-        if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+        if (target !== null) {
+            target.focus({ preventScroll: true });
+            // `nearest` and not the default: the row moved ONE slot and was on screen when it was
+            // pressed, so a centring scroll would be a jump of its own. Guarded because jsdom does
+            // not implement `scrollIntoView` at all.
+            if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+            landed = { name: intent.name, control: target === pressed ? intent.control : other };
+        }
+        // Park the pointer-driven paint on EVERY order change, including one this window did not
+        // cause: a preset moved by another client slides rows under a still pointer just the same.
+        setParked(true);
+        setParkedArrow(landed);
+        setHoverEpoch((epoch) => epoch + 1);
     }, [order]);
 
-    const create = (): void => {
-        const name = trimmedDraft;
-        if (name === '') return;
-        props.actions.addLabelPreset({
-            name,
-            color: tokenOf(draftColor),
-            // Only sent when the user chose one: SET-059's rule is that the text colour is
-            // applied ONLY when the add really creates a preset, and "auto" is the daemon's
-            // own default for a new one — so the common add stays a two-field command.
-            ...(draftTextColor === null ? {} : { textColor: textToken(draftTextColor) })
-        });
-        setDraftName('');
-        setDraftTextColor(null);
-    };
+    /*
+     * The park ends when the pointer really moves, and `POINTER_PARK_SLOP` is what makes that
+     * sentence true on hardware rather than only under a synthetic click: a hand resting on a
+     * mouse emits sub-pixel motion continuously, so a zero-threshold release would fire in the
+     * same millisecond as the reorder and the highlight would bounce exactly as before.
+     */
+    useEffect(() => {
+        if (!parked) return;
+        const origin = pressOrigin.current;
+        const release = (event: PointerEvent): void => {
+            if (
+                origin !== null &&
+                Math.abs(event.clientX - origin.x) <= POINTER_PARK_SLOP &&
+                Math.abs(event.clientY - origin.y) <= POINTER_PARK_SLOP
+            ) {
+                return;
+            }
+            setParked(false);
+            setParkedArrow(null);
+            setHoverEpoch((epoch) => epoch + 1);
+        };
+        window.addEventListener('pointermove', release, true);
+        return () => {
+            window.removeEventListener('pointermove', release, true);
+        };
+    }, [parked]);
+
+    /*
+     * N32 — the mint, and the handoff that makes it a rename rather than a riddle.
+     *
+     * `addLabelPreset` is fire-and-forget here (every Settings verb is: the daemon's
+     * `label-presets-changed` delta is the only truth, §SET-058's own note), so the new row does
+     * not exist when the click returns — it arrives a round trip later, ~170 ms on this machine.
+     * The name is therefore recorded as an INTENT, exactly like §N33's arrow, and the first
+     * commit that actually contains it hands the field focus and selects it, so the default name
+     * is typed OVER rather than edited around. If that commit never comes (the daemon refused
+     * the name because another client took it in the meantime), the intent is dropped on the
+     * next preset change rather than left armed to grab focus at some unrelated moment later.
+     */
+    const nameFields = useRef(new Map<string, HTMLInputElement | null>());
+    const pendingMint = useRef<string | null>(null);
+    /** The order the pending mint was last measured against, so "not yet" and "never" differ. */
+    const mintOrder = useRef(order);
+
+    const registerNameField = useCallback((name: string, node: HTMLInputElement | null): void => {
+        if (node === null) nameFields.current.delete(name);
+        else nameFields.current.set(name, node);
+    }, []);
+
+    const mint = useCallback((): void => {
+        const name = defaultLabelPresetName(props.presets.map((preset) => preset.name));
+        pendingMint.current = name;
+        // A new gesture supersedes the last reorder's: without this, §N33's intent stays armed
+        // and the NEXT commit that changes the order would take the caret out of the name field
+        // this mint is about to hand it to.
+        focusIntent.current = null;
+        // The SAME two-field command the composer sent, and the same one the orphan adoption
+        // below and the CLI's `workspace label` back-fill send: a gray preset with a name. No
+        // new wire surface, and a GUI-minted preset is indistinguishable from a back-filled one.
+        props.actions.addLabelPreset({ name, color: 'gray' });
+    }, [props.actions, props.presets]);
+
+    useLayoutEffect(() => {
+        const pending = pendingMint.current;
+        if (pending === null) return;
+        if (!props.presets.some((preset) => preset.name === pending)) {
+            // A preset change that is not the one we asked for: stop waiting.
+            if (mintOrder.current !== order) pendingMint.current = null;
+            mintOrder.current = order;
+            return;
+        }
+        pendingMint.current = null;
+        mintOrder.current = order;
+        const field = nameFields.current.get(pending);
+        if (field === undefined || field === null) return;
+        if (typeof field.scrollIntoView === 'function') field.scrollIntoView({ block: 'nearest' });
+        field.focus({ preventScroll: true });
+        // Selected, not just focused: the row is born with a placeholder NAME rather than an
+        // empty field, so "ready to type" means the default is already highlighted.
+        field.select();
+    }, [order, props.presets]);
 
     return (
-        <div className="flex flex-col gap-4" data-testid="settings-tab-labels">
+        <div className="flex flex-col gap-4" data-testid="settings-tab-labels" ref={rootRef}>
             {/*
              * L79's `plain`: `LabelPresetsSettingsView.swift:27-45` is a `VStack { addRow;
              * Divider(); List }`, not a `Form` — there is no grouped card anywhere on this tab,
-             * and the rows below carry their own chrome (the add row's accent tint, the list's
-             * `alternatesRowBackgrounds` stripe, an explicit `Divider()`).
+             * and the rows below carry their own chrome (the list's `alternatesRowBackgrounds`
+             * stripe, an explicit `Divider()`).
              */}
             <SettingsSection
                 plain
@@ -720,105 +938,38 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                 testID="label-presets"
             >
                 {/*
-                 * H25 + N32(a): the composer is FIRST, above a divider, then the list OR the
-                 * empty state — `LabelPresetsSettingsView.swift:27-35`'s
-                 * `VStack(spacing: 0) { addRow; Divider(); if isEmpty { emptyState } else { List } }`.
+                 * N32 (owner-directed) — the composer is GONE, and in its place is one button.
                  *
-                 * H25 had already moved it above the *list*; what it did not move was the EMPTY
-                 * state, which still rendered before it. So the one row on the tab that never
-                 * goes away had two positions — under the empty-state art on a fresh install,
-                 * then jumping to the top the moment the first preset existed. The Swift has one
-                 * position for it in both states, and so does this: the empty state is a sibling
-                 * of the list below the divider, not a header above the composer.
+                 * What stood here was an always-visible design surface: a heading, ten swatches,
+                 * a name field, an Auto/Black/White cluster, a chip preview and an Add button —
+                 * a whole preset's worth of controls, on the same `LabelCol` grid as the rows
+                 * (§H26 requires that, so the wells line up), which is exactly why the owner kept
+                 * reading it as a fourth preset with an empty name. Two rounds of treatment (a
+                 * name, then a ground) made it discernible without making it right: the tab was
+                 * asking for a design BEFORE the thing existed, and then repeating every one of
+                 * those controls in the row it created.
+                 *
+                 * So a preset is now MINTED and then edited in place, which is the pattern this
+                 * port already uses for a group (`App.tsx`'s `newGroupWithRename` → `New Group` /
+                 * `New Group 2` / …, straight into inline rename) and which the Swift uses for
+                 * every one of its four group routes. One button, where the composer's row was;
+                 * pressing it writes a gray preset with a unique default name through the SAME
+                 * `add-label-preset` verb the composer used — no new wire surface — and the row
+                 * the daemon echoes back opens with its name field focused and selected, ready
+                 * to be typed over. Every property of it is then edited exactly where every other
+                 * preset's is.
                  */}
-                <div className="flex flex-col gap-1">
-                    {/*
-                     * N32(b): the composer's NAME. See `LABEL_COMPOSER_GROUND` — the tint alone
-                     * cannot say what the region is for, and the preset rows carry a stripe of
-                     * their own, so weight alone reads as another stripe.
-                     */}
-                    <h4
-                        data-testid="label-add-heading"
-                        className="px-2.5 text-[11px] font-semibold"
-                        style={{ color: tokens.textSecondary }}
+                <div className="flex items-center px-2.5">
+                    <SettingsButton
+                        testID="label-add"
+                        title="Add a label preset and name it"
+                        onClick={mint}
                     >
-                        New preset
-                    </h4>
-                    <div
-                        data-testid="label-add-row"
-                        // S64: `px-2.5` — one horizontal row inset for the whole window.
-                        // `SETTINGS_ROW_PADDING` is 10 px on every carded tab (General, Workspaces,
-                        // Appearance, Keybindings-Global); the four `plain` tabs' own rows were at 8,
-                        // so the eye read a 2 px step moving from General to Labels. The 6/8 px
-                        // VERTICAL values stay — §L79 measured those off the shipped dialog.
-                        className="grid items-center rounded px-2.5 py-2"
-                        style={{
-                            display: 'grid',
-                            gridTemplateColumns: LABEL_GRID,
-                            columnGap: LABEL_GRID_GAP,
-                            rowGap: '6px',
-                            background: LABEL_COMPOSER_GROUND
-                        }}
-                    >
-                        <LabelColorField
-                            idPrefix="label-new-color"
-                            label="new preset color"
-                            value={draftColor}
-                            bucket={bucket}
-                            onChange={setDraftColor}
-                        />
-                        <input
-                            aria-label="New preset name"
-                            placeholder="New label name"
-                            data-testid="label-new-name"
-                            className="min-w-0 rounded border bg-transparent px-1.5 py-1 text-[12px] outline-none"
-                            style={{ borderColor: tokens.divider, color: tokens.textPrimary }}
-                            value={draftName}
-                            onChange={(event) => {
-                                setDraftName(event.target.value);
-                            }}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Escape') {
-                                    event.stopPropagation();
-                                    setDraftName('');
-                                    return;
-                                }
-                                if (event.key === 'Enter') create();
-                            }}
-                        />
-                        <LabelTextColorField
-                            idPrefix="label-new-text"
-                            label="new preset text color"
-                            value={draftTextColor}
-                            background={hexOf(draftColor, bucket)}
-                            bucket={bucket}
-                            onChange={setDraftTextColor}
-                        />
-                        <span className="flex min-w-0 justify-start">
-                            <ChipPreview
-                                testID="label-new-preview"
-                                colorToken={tokenOf(draftColor)}
-                                text={trimmedDraft === '' ? 'label' : trimmedDraft}
-                                placeholder={trimmedDraft === ''}
-                                style={draftStyle}
-                            />
-                        </span>
-                        {/*
-                         * The Swift add row lets "Add" size to its own text and only pins the column
-                         * to `LabelCol.action` as a MINIMUM, because a bordered text button clipped
-                         * to 40 px reads as "A…" (`:122-128`). Here it spans the reorder and action
-                         * columns for the same reason, right-aligned so its trailing edge still
-                         * lands on the trash buttons below it.
-                         */}
-                        <span className="flex justify-end" style={{ gridColumn: 'span 2' }}>
-                            <SettingsButton testID="label-add" disabled={trimmedDraft === ''} onClick={create}>
-                                Add
-                            </SettingsButton>
-                        </span>
-                    </div>
+                        New Label
+                    </SettingsButton>
                 </div>
 
-                {/* `Divider()` — the add row is a header for the list, not the last row of it. */}
+                {/* `Divider()` — the add control heads the list, it is not a row of it. */}
                 <div
                     data-testid="label-add-divider"
                     className="h-px"
@@ -843,6 +994,12 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
 
                 {props.presets.map((preset, index) => (
                     <PresetRow
+                        /*
+                         * N33: the key is the PRESET ID (SET-066 — a preset's identity IS its
+                         * name), so a reorder MOVES each row's nodes instead of recreating them,
+                         * and the arrow the focus intent points at is the same DOM node before
+                         * and after the daemon's echo. Nothing here may key on the index.
+                         */
                         key={preset.name}
                         preset={preset}
                         presets={props.presets}
@@ -854,6 +1011,10 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                         confirming={confirming === preset.name}
                         onReorder={reorder}
                         registerArrow={registerArrow}
+                        registerNameField={registerNameField}
+                        parked={parked}
+                        parkedArrow={parked && parkedArrow?.name === preset.name ? parkedArrow.control : null}
+                        hoverEpoch={hoverEpoch}
                         onConfirmChange={(open) => {
                             setConfirming(open ? preset.name : null);
                         }}
@@ -900,10 +1061,29 @@ interface PresetRowProps {
     /** A refused rename's message, owned by the tab so it survives this row re-rendering. */
     readonly error: string | null;
     readonly confirming: boolean;
-    /** N33: dispatch the move AND record which arrow should hold focus once it lands. */
-    readonly onReorder: (name: string, control: ArrowControl, index: number) => void;
+    /**
+     * N33: dispatch the move, record which arrow should hold focus once it lands, and say where
+     * the pointer was (`null` for a keyboard press) so the park can tell jitter from a real move.
+     */
+    readonly onReorder: (
+        name: string,
+        control: ArrowControl,
+        index: number,
+        origin: { x: number; y: number } | null
+    ) => void;
     /** N33: hand the tab this row's two arrow nodes, so it can put focus back on one of them. */
     readonly registerArrow: (name: string, control: ArrowControl, node: HTMLButtonElement | null) => void;
+    /** N32: hand the tab this row's name field, so a freshly minted preset opens ready to type. */
+    readonly registerNameField: (name: string, node: HTMLInputElement | null) => void;
+    /**
+     * N33: the list has re-ordered and the pointer has not moved since, so `:hover` is a lie —
+     * paint from the reorder rather than from the pointer until it moves.
+     */
+    readonly parked: boolean;
+    /** Which of THIS row's arrows the reorder left focus on, or `null` when it is not the subject. */
+    readonly parkedArrow: ArrowControl | null;
+    /** N33: changes whenever the rows move, so hover states are re-read rather than trusted. */
+    readonly hoverEpoch: number;
     readonly onConfirmChange: (open: boolean) => void;
     readonly onRenameRefused: (message: string | null) => void;
 }
@@ -927,7 +1107,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
     const { preset, presets, bucket } = props;
     const [draft, setDraft] = useState(preset.name);
     const [focused, setFocused] = useState(false);
-    const { hovered, hoverProps } = useHover();
+    const { hovered, hoverProps, hoverRef } = useHover(true, props.hoverEpoch);
     const textColor = preset.textColor ?? null;
 
     /*
@@ -969,6 +1149,14 @@ function PresetRow(props: PresetRowProps): ReactElement {
         },
         [registerArrow, preset.name]
     );
+    /** N32: the same shape for the name field, for the mint's focus handoff. */
+    const registerNameField = props.registerNameField;
+    const nameRef = useCallback(
+        (node: HTMLInputElement | null) => {
+            registerNameField(preset.name, node);
+        },
+        [registerNameField, preset.name]
+    );
 
     /** Swift `previewText`: the chip follows what is typed, falling back to the stored name. */
     const previewText = draft.trim() === '' ? preset.name : draft.trim();
@@ -993,6 +1181,13 @@ function PresetRow(props: PresetRowProps): ReactElement {
         props.actions.updateLabelPreset({ id: preset.name, name: next });
     };
 
+    /*
+     * N33: what this row PAINTS as hovered. While the list is parked the pointer's own state is
+     * a lie — the rows moved under a stationary cursor — so the wash goes to the row the reorder
+     * was about (`parkedArrow !== null`) and to no other, until the pointer really moves.
+     */
+    const lit = props.parked ? props.parkedArrow !== null : hovered;
+
     return (
         <div
             data-testid={`label-preset-${preset.name}`}
@@ -1009,11 +1204,13 @@ function PresetRow(props: PresetRowProps): ReactElement {
                 // takes, and for the same reason: rows of wells and swatches need something
                 // holding the eye across five columns. Hover still wins over the stripe.
                 background: hoverBackground(
-                    hovered,
+                    lit,
                     props.index % 2 === 1 ? LABEL_ROW_STRIPE.alternate : LABEL_ROW_STRIPE.base
                 )
             }}
             {...hoverProps}
+            data-hovered={lit ? 'true' : 'false'}
+            ref={hoverRef}
         >
             <LabelColorField
                 idPrefix={`label-color-${preset.name}`}
@@ -1027,6 +1224,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
 
             <span className="flex min-w-0 items-center gap-2">
                 <input
+                    ref={nameRef}
                     aria-label={`New name for ${preset.name}`}
                     data-testid={`label-rename-field-${preset.name}`}
                     className="min-w-0 flex-1 rounded border bg-transparent px-1.5 py-1 text-[12px] font-medium outline-none"
@@ -1112,8 +1310,10 @@ function PresetRow(props: PresetRowProps): ReactElement {
                             ariaLabel={`Move ${preset.name} up`}
                             buttonRef={upRef}
                             disabled={props.index === 0}
-                            onClick={() => {
-                                props.onReorder(preset.name, 'up', props.index - 1);
+                            highlight={props.parked ? props.parkedArrow === 'up' : undefined}
+                            hoverEpoch={props.hoverEpoch}
+                            onClick={(event) => {
+                                props.onReorder(preset.name, 'up', props.index - 1, pointerOrigin(event));
                             }}
                         >
                             ↑
@@ -1123,8 +1323,10 @@ function PresetRow(props: PresetRowProps): ReactElement {
                             ariaLabel={`Move ${preset.name} down`}
                             buttonRef={downRef}
                             disabled={props.index === presets.length - 1}
-                            onClick={() => {
-                                props.onReorder(preset.name, 'down', props.index + 1);
+                            highlight={props.parked ? props.parkedArrow === 'down' : undefined}
+                            hoverEpoch={props.hoverEpoch}
+                            onClick={(event) => {
+                                props.onReorder(preset.name, 'down', props.index + 1, pointerOrigin(event));
                             }}
                         >
                             ↓
@@ -1144,6 +1346,10 @@ function PresetRow(props: PresetRowProps): ReactElement {
                     testID={`label-delete-${preset.name}`}
                     ariaLabel={`Remove the ${preset.name} preset`}
                     title="Remove preset"
+                    // Parked: the pointer is over an arrow, not over this — and while the list is
+                    // parked no control may light from a hover the pointer never performed.
+                    highlight={props.parked ? false : undefined}
+                    hoverEpoch={props.hoverEpoch}
                     onClick={() => {
                         if (props.inUse === 0) {
                             props.actions.removeLabelPreset(preset.name);

@@ -23868,7 +23868,7 @@ function buildFlows(ctx) {
         {
             id: 'labels-design',
             expect:
-                'Settings ▸ Labels creates a label by MINTING one (§N32): a single Add button — in the section header’s TOP RIGHT, above the divider (§H25 / §N36) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over, and that default name is displayed UNCLIPPED (§N36). Every row then collapses to [swatch trigger · name · chip · reorder · trash] (§N38): ONE swatch per row opens an anchored FLYOVER carrying both colours — a live chip preview with a close ×, a Background section (ten swatches + a bordered ✎ Custom row) and a Text section (Auto / Black / White + a Custom row showing the current swatch and hex), with either Custom opening a hand-rolled HSV view (saturation/value square, hue slider, hex field) that round-trips a stored colour byte-exactly. Picks apply IMMEDIATELY; the × and Escape only close, and Escape returns focus to the trigger. There is no composer, no draft control and no OS colour well anywhere. Every row is one grid line on LabelCol’s widths (§H26) — a 24 px swatch track with the 260 px the two colour tracks freed in the name column (§N38) — a rename that collides snaps back (SET-063), the tab says LABELS and never “preset” (§N36), and a label minted here is the same object the CLI’s `workspace label` back-fill makes.',
+                'Settings ▸ Labels creates a label by MINTING one (§N32): a single Add button — in the section header’s TOP RIGHT, above the divider (§H25 / §N36) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over, and that default name is displayed UNCLIPPED (§N36). Every row then collapses to [swatch trigger · name · usage · chip · reorder · trash] (§N38 / §N40): ONE swatch per row opens an anchored FLYOVER carrying both colours — a live chip preview with a close ×, a Background section (ten swatches + a bordered ✎ Custom row) and a Text section (Auto / Black / White + a Custom row showing the current swatch and hex), with either Custom opening a hand-rolled HSV view (saturation/value square, hue slider, hex field) that round-trips a stored colour byte-exactly. Picks apply IMMEDIATELY; the × and Escape only close, and Escape returns focus to the trigger. There is no composer, no draft control and no OS colour well anywhere. Every row is one grid line on LabelCol’s widths (§H26) — a 24 px swatch track with the 260 px the two colour tracks freed in the name column (§N38), and the in-use count in a FIXED 80 px track of its own between the name and the chip (§N40), left-aligned and singular at one ("1 workspace"), so the name/usage boundary is the same x in every row instead of moving with the string — a rename that collides snaps back (SET-063), the tab says LABELS and never “preset” (§N36), and a label minted here is the same object the CLI’s `workspace label` back-fill makes.',
             needsEyes: true,
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
@@ -23884,7 +23884,7 @@ function buildFlows(ctx) {
                  * anything is typed into it. `LabelPresetsSettingsView.swift:4-12` says the
                  * fixed widths exist so the wells, the "Aa" sample, the chip and the trash line
                  * up across every row; that is a geometric claim, so it is measured as geometry
-                 * (`getBoundingClientRect().left` of each row's first three cells) rather than as
+                 * (`getBoundingClientRect().left` of every one of a row's cells) rather than as
                  * a class name.
                  *
                  * §N32 SWAP: this used to read the composer's own row as the first of those
@@ -23900,7 +23900,14 @@ function buildFlows(ctx) {
                             .map((el) => el.getAttribute('data-testid') ?? '')
                             .filter((id) => id === 'label-add' || id === 'label-add-divider' || id.startsWith('label-preset-'));
                         const cols = (el) => el === null ? null : getComputedStyle(el).gridTemplateColumns;
-                        const lefts = (el) => el === null ? null : Array.from(el.children).slice(0, 4).map((c) => Math.round(c.getBoundingClientRect().left));
+                        /*
+                         * §N40: SIX cells, and all six are walked — the usage count has a track
+                         * of its own between the name and the chip now, so the boundary that
+                         * used to wander with its string is itself one of the lefts compared,
+                         * and the walk reaches the trash column instead of stopping at reorder.
+                         * (No backticks in here: this comment is inside a template literal.)
+                         */
+                        const lefts = (el) => el === null ? null : Array.from(el.children).slice(0, 6).map((c) => Math.round(c.getBoundingClientRect().left));
                         const rows = Array.from(document.querySelectorAll('[data-testid^="label-preset-"]'));
                         return {
                             order: ids.slice(0, 3),
@@ -24066,6 +24073,18 @@ function buildFlows(ctx) {
                  * the first. What is deliberately NOT pinned here is the template string: it is
                  * asserted exactly once, in `LabelsTab.test.tsx`, so a rebalance is a one-line
                  * change rather than a hunt.
+                 *
+                 * §N40 SWAP (owner-directed) — and the walk is now the WHOLE row, six cells,
+                 * `[swatch · name · usage · chip · reorder · trash]`. Two reasons it grew rather
+                 * than merely shifting. The usage count used to be a caption INSIDE the flexible
+                 * name cell, so the one boundary a reader actually sees — where the name field
+                 * stops and the count starts — was invisible to a walk of cell lefts: every row
+                 * passed this check while drawing three different name widths (measured live at
+                 * 1280 × 820 before the fix: fields ending at 812.55 / 786.36 / 773.84 for
+                 * `unused` / `1 workspace` / `12 workspaces`). With a track of its own that
+                 * boundary IS a cell left, so the defect is now inside the assertion's reach.
+                 * And walking to six reaches the trash column, which the old `slice(0, 4)` never
+                 * did — the last of the columns §H26 exists for.
                  */
                 const checkRowGeometry = async (label) => {
                     const rows = await readShape();
@@ -24082,7 +24101,7 @@ function buildFlows(ctx) {
                         JSON.stringify(cols)
                     );
                     recorder.check(
-                        'and their first four cells start at the same x — the alignment the widths exist for (§H26)',
+                        'and all six of their cells start at the same x — trigger, name, usage, chip, reorder, trash (§H26 / §N40)',
                         lefts.length > 1 && lefts.every((value) => value === lefts[0]),
                         JSON.stringify(lefts)
                     );
@@ -24379,10 +24398,11 @@ function buildFlows(ctx) {
                 const readFlyover = async () => JSON.parse(String(await page.eval(flyoverState)));
 
                 /*
-                 * The ROW COLLAPSE, first, because it is what the redesign looks like: five cells,
-                 * a trigger in the first, and NEITHER of the two controls the flyover replaced
-                 * anywhere in the list. Asserted by absence as well as by presence — a row that
-                 * kept its old palette would still pass every positive check below.
+                 * The ROW COLLAPSE, first, because it is what the redesign looks like: six cells
+                 * (§N38's five, plus §N40's own track for the usage count), a trigger in the
+                 * first, and NEITHER of the two controls the flyover replaced anywhere in the
+                 * list. Asserted by absence as well as by presence — a row that kept its old
+                 * palette would still pass every positive check below.
                  */
                 const collapse = await page.eval(
                     `(() => {
@@ -24397,9 +24417,44 @@ function buildFlows(ctx) {
                             /*
                              * Every row's own child count, deduped — not the first row's alone.
                              * The step reaches here with four presets in a full run and three in
-                             * a scoped one, and "five cells" is a claim about all of them.
+                             * a scoped one, and "six cells" is a claim about all of them.
                              */
                             cells: [...new Set(rows.map((row) => row.children.length))].sort((a, b) => a - b),
+                            /*
+                             * §N40: each row's OWN usage count in its OWN third cell, and nothing
+                             * else in that cell. Read per row for the same reason the trigger is
+                             * (below): the list's order differs between a full and a scoped run,
+                             * so a named row's caption against the first row's cell would be a
+                             * coin flip. This is the structural half of the fix — before it, the
+                             * count was one of TWO children of the flexible name cell, so no
+                             * arrangement of cell lefts could have caught it.
+                             * (No backticks in here: this comment is inside a template literal.)
+                             */
+                            rowsWithUsageThird: rows.filter((row) => {
+                                const own = row.querySelector('[data-testid^="label-usage-"]');
+                                const cell = row.children[2];
+                                return own !== null && cell !== undefined && cell.contains(own) && cell.children.length === 1;
+                            }).length,
+                            /* …and the name cell holds the field ALONE, which is the other half. */
+                            rowsWithLoneNameField: rows.filter((row) => {
+                                const cell = row.children[1];
+                                return cell !== undefined && cell.children.length === 1
+                                    && cell.querySelector('[data-testid^="label-rename-field-"]') !== null;
+                            }).length,
+                            /* Left-aligned, the reading direction it carries on from the name. */
+                            usageJustify: (() => {
+                                const cell = rows[0]?.children[2];
+                                return cell === undefined ? null : getComputedStyle(cell).justifyContent;
+                            })(),
+                            /*
+                             * And the name FIELD is the same width in every row — the symptom the
+                             * owner actually reported. Before §N40 this read three widths for
+                             * three usage strings (375.55 / 349.36 / 336.84 live at 1280 x 820).
+                             */
+                            nameFieldWidths: [...new Set(rows.map((row) => {
+                                const el = row.querySelector('[data-testid^="label-rename-field-"]');
+                                return el === null ? null : Math.round(el.getBoundingClientRect().width * 100) / 100;
+                            }))],
                             template: first === null ? null : getComputedStyle(first).gridTemplateColumns,
                             triggers: document.querySelectorAll('[data-testid$="-trigger"][aria-haspopup="dialog"]').length,
                             haspopup: trigger?.getAttribute('aria-haspopup') ?? null,
@@ -24440,8 +24495,8 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`§N38 row collapse: ${JSON.stringify(collapse)}`);
                 recorder.check(
-                    'every row collapses to [swatch trigger · name · chip · reorder · trash] (§N38)',
-                    JSON.stringify(collapse?.cells) === '[5]' &&
+                    'every row collapses to [swatch trigger · name · usage · chip · reorder · trash] (§N38 / §N40)',
+                    JSON.stringify(collapse?.cells) === '[6]' &&
                         collapse?.rows > 0 &&
                         collapse?.rowsWithTriggerFirst === collapse?.rows &&
                         collapse?.haspopup === 'dialog' &&
@@ -24450,6 +24505,32 @@ function buildFlows(ctx) {
                         cells: collapse?.cells,
                         triggerFirst: collapse?.rowsWithTriggerFirst,
                         triggers: collapse?.triggers,
+                        rows: collapse?.rows
+                    })
+                );
+                /*
+                 * §N40 — the usage count is a COLUMN, not a caption riding in the name's cell.
+                 *
+                 * Three claims, and the third is the one the owner reported: the count is alone
+                 * in cell 3, the field is alone in cell 2, and therefore every row's name field
+                 * is the SAME WIDTH whatever its own count happens to say. That last one is the
+                 * assertion the old shape could not have passed — the caption was `shrink-0`
+                 * beside a `flex-1` field, so `unused` / `1 workspace` / `12 workspaces` drew
+                 * three widths (375.55 / 349.36 / 336.84 measured live at 1280 × 820 before the
+                 * fix) while every cell left stayed identical.
+                 */
+                recorder.check(
+                    'the usage count has a track of its own, left-aligned, and the name field is one width in every row (§N40)',
+                    collapse?.rows > 0 &&
+                        collapse?.rowsWithUsageThird === collapse?.rows &&
+                        collapse?.rowsWithLoneNameField === collapse?.rows &&
+                        collapse?.usageJustify === 'flex-start' &&
+                        (collapse?.nameFieldWidths ?? []).length === 1,
+                    JSON.stringify({
+                        usageThird: collapse?.rowsWithUsageThird,
+                        loneNameField: collapse?.rowsWithLoneNameField,
+                        justify: collapse?.usageJustify,
+                        nameFieldWidths: collapse?.nameFieldWidths,
                         rows: collapse?.rows
                     })
                 );
@@ -24864,9 +24945,15 @@ function buildFlows(ctx) {
                         roundTrip?.copies === 1 && roundTrip?.color === 'purple',
                         JSON.stringify(roundTrip)
                     );
+                    /*
+                     * §N40 tightens this from `includes('workspace')` to the exact string. The
+                     * back-fill puts the label on exactly ONE workspace, so the caption reads
+                     * "1 workspace" — singular. `includes` passed the plural too, which is what
+                     * let "1 workspaces" stand until the owner read it off a frame.
+                     */
                     recorder.check(
-                        'and the minted row counts the workspace now wearing it — it is not an orphan',
-                        String(roundTrip?.usage).includes('workspace'),
+                        'and the minted row counts the workspace now wearing it, singular at one (§N40)',
+                        String(roundTrip?.usage).trim() === '1 workspace',
                         String(roundTrip?.usage)
                     );
                 }
@@ -25144,7 +25231,7 @@ function buildFlows(ctx) {
                     await sleep(300);
                 }
 
-                recorder.eyes('the Labels tab as a TABLE and a design surface, now that §N38 has emptied the row of controls. First the ROW: it is [swatch · name · chip · reorder · trash], so a name has roughly 280 px more than it had — is every name fully readable at last (the owner\u2019s frame showed "Tes" and "New lab" clipped in ~50 px), and does the one swatch read as something you press rather than as decoration? Do the swatch, chip and trash still line up in columns down the tab (\u00a7H26)? Then the FLYOVER, in `flyover-palette`: is it anchored under the swatch it came from, whole, and above the dialog rather than clipped by the panel? Does the chip preview at the top read like the chip a workspace will wear, and do the "Background" and "Text" headings group what they should \u2014 ten swatches and a bordered \u270e Custom row, then Auto/Black/White and a Custom row showing the current swatch and its hex? Then `flyover-custom`: does the saturation/value square show a real gradient with a visible circular cursor on it, is the hue rail a full spectrum with its knob where the hue is, and does the \u270e + hex row read as an input rather than as a label? \u00a7N36 still: is the section headed "Labels" with ONE small New Label button on the header\u2019s top right, flush with the right edge of the rows? Does anything on the tab still say "preset"? \u00a7N32: pressing the button drops a real row into the list with its name already selected \u2014 does it read as a row rather than as something provisional? And \u00a7N33, which only an eye can settle: while a row is walked with the arrows, does the highlight stay on THAT row \u2014 never flicking to the row that slid into the slot under the pointer?');
+                recorder.eyes('the Labels tab as a TABLE and a design surface, now that §N38 has emptied the row of controls and §N40 has given the in-use count a column of its own. First the ROW: it is [swatch · name · usage · chip · reorder · trash], and the name FLOOR has gone 160 → 420 → 330, so a name still has ~170 px more than §N36(3) left it — is every name fully readable (the owner\u2019s frame showed "Tes" and "New lab" clipped in ~50 px), and does the one swatch read as something you press rather than as decoration? Do the swatch, chip and trash still line up in columns down the tab (\u00a7H26)? §N40, which is why this row was redrawn: the in-use counts ("unused" / "1 workspace" / "12 workspaces") sit in a FIXED 80 px track of their own now — do they all START at the same x, do all the name fields END at the same x, and does the count read as a quiet caption in a column of its own rather than as something hanging off the field it used to share a cell with? Is the singular right at one? Then the FLYOVER, in `flyover-palette`: is it anchored under the swatch it came from, whole, and above the dialog rather than clipped by the panel? Does the chip preview at the top read like the chip a workspace will wear, and do the "Background" and "Text" headings group what they should \u2014 ten swatches and a bordered \u270e Custom row, then Auto/Black/White and a Custom row showing the current swatch and its hex? Then `flyover-custom`: does the saturation/value square show a real gradient with a visible circular cursor on it, is the hue rail a full spectrum with its knob where the hue is, and does the \u270e + hex row read as an input rather than as a label? \u00a7N36 still: is the section headed "Labels" with ONE small New Label button on the header\u2019s top right, flush with the right edge of the rows? Does anything on the tab still say "preset"? \u00a7N32: pressing the button drops a real row into the list with its name already selected \u2014 does it read as a row rather than as something provisional? And \u00a7N33, which only an eye can settle: while a row is walked with the arrows, does the highlight stay on THAT row \u2014 never flicking to the row that slid into the slot under the pointer?');
             }
         },
         {

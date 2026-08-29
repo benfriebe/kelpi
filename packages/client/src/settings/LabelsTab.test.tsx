@@ -164,13 +164,23 @@ describe('the tab’s shape (H25/H26/H27)', () => {
      *   · `bgColor` 150 + `textColor` 124 → **one 24 px swatch-trigger track**;
      *   · six tracks become five, so one 10 px column gap goes with them;
      *   · 126 + 124 + 10 = **260 px**, all of it into §S57's name floor: 160 → **420**.
+     *
+     * §N40 SWAP (owner-directed): the in-use count gets a track of its own, so the pinned string
+     * gains a sixth number and the floor gives back what it costs.
+     *
+     *   · `usage` is **80 px** — MEASURED at the caption's own computed font on the live stack
+     *     (`11px/15.4px ui-sans-serif, -apple-system, …`), where `12 workspaces`, the widest
+     *     realistic string, renders **77.16 px**; 80 also clears `99 workspaces` (79.43), so
+     *     every two-digit count fits untruncated;
+     *   · five tracks become six, so one 10 px column gap comes back;
+     *   · 80 + 10 = **90 px**, straight out of §S57's name floor: 420 → **330**.
      */
     it('lays every row out on LabelCol’s fixed columns', () => {
         setup();
         for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
             expect(node.style.display).toBe('grid');
-            expect(node.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('24px minmax(330px,1fr) 80px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
     });
@@ -179,11 +189,11 @@ describe('the tab’s shape (H25/H26/H27)', () => {
      * …and the rebalance is free at the narrow end, which is the half a template alone does not
      * say. §S57's floor is what stops a narrowing window emptying the name field, and the width
      * below which the list scrolls sideways instead is the sum of the tracks and the gaps. That
-     * sum is 648 through §S57, §S60, §N36(3) and now §N38 — 150 + 100 + 184 = 150 + 160 + 124 =
-     * 24 + 420 — so a panel that fitted the row before still fits it, and one that scrolled
-     * scrolls by the same amount.
+     * sum is 648 through §S57, §S60, §N36(3), §N38 and now §N40 — 150 + 100 + 184 = 150 + 160 +
+     * 124 = 24 + 420 = 24 + 330 + 80 + 10 — so a panel that fitted the row before still fits it,
+     * and one that scrolled scrolls by the same amount.
      */
-    it('leaves the width at which the list starts scrolling unchanged (§S57 / §N36 / §N38)', () => {
+    it('leaves the width at which the list starts scrolling unchanged (§S57 / §N36 / §N38 / §N40)', () => {
         expect(LABEL_GRID_MIN_WIDTH).toBe(648);
     });
 
@@ -198,9 +208,13 @@ describe('the tab’s shape (H25/H26/H27)', () => {
      * `swatch trigger · name · preview` now, with the trigger carrying BOTH colours. L93's rule
      * (announce the field AND the value in it) applies to the one control that replaced the two
      * groups, so it names both values.
+     *
+     * §N40 SWAP: `usage` is a CELL now, cell 2, between the name and the chip — so the chip's is
+     * cell 3. That is the whole of the fix in structural terms: the count is no longer a
+     * `shrink-0` caption sharing the name's cell, so it cannot move the boundary between them.
      */
     it('orders every preset row’s cells the same way', () => {
-        setup();
+        setup([{ labels: ['ship'] }]);
         const first = cells('label-preset-ship');
         const second = cells('label-preset-wip');
         expect(first[0]?.querySelector('[data-testid="label-color-ship-trigger"]')).not.toBeNull();
@@ -213,11 +227,61 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         ).toBe('wip colours: Blue background, Auto text');
         expect(first[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
         expect(second[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-wip');
-        expect(first[2]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
-        expect(second[2]?.querySelector('[data-testid="label-chip-wip"]')).not.toBeNull();
+        // …and the name cell holds NOTHING but that field, which is what makes its width the
+        // track's width rather than the track's width minus whatever the caption happened to say.
+        expect(first[1]?.children).toHaveLength(1);
+        expect(second[1]?.children).toHaveLength(1);
+        expect(first[2]?.querySelector('[data-testid="label-usage-ship"]')).not.toBeNull();
+        expect(second[2]?.querySelector('[data-testid="label-usage-wip"]')).not.toBeNull();
+        expect(first[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
+        expect(second[3]?.querySelector('[data-testid="label-chip-wip"]')).not.toBeNull();
         // …and the two cells the flyover replaced are gone from the row entirely.
         expect(screen.queryByTestId('label-text-ship-mode')).toBeNull();
         expect(screen.queryByTestId('label-color-ship-purple')).toBeNull();
+    });
+
+    /*
+     * §N40 (owner-directed) — the usage caption is a CELL of the grid, and it says one thing.
+     *
+     * The defect was that it was not: a `shrink-0` caption beside a `flex-1` field moves the
+     * boundary between them by exactly its own string, so `unused` / `1 workspace` /
+     * `12 workspaces` drew three different name widths down a tab whose premise is that a row is
+     * a table line (measured live at 1280 × 820 before the fix: the field ended at 812.55 /
+     * 786.36 / 773.84 — a 38.71 px rag). Three claims here, and the geometry itself is proved on
+     * the live stack because jsdom has no layout:
+     *
+     *   · the count lives in its OWN cell, whatever it says — so no string can reach the name;
+     *   · it is LEFT-aligned, the reading direction it already had, carrying on from the field;
+     *   · and it is singular at one.
+     */
+    it('gives the usage count its own cell, left-aligned, whatever the count is (§N40)', () => {
+        cleanup();
+        const presets: readonly ChromeLabelPreset[] = [
+            { name: 'archived', color: { kind: 'named', color: 'gray' }, textColor: null },
+            { name: 'staging', color: { kind: 'named', color: 'blue' }, textColor: null },
+            { name: 'production', color: { kind: 'named', color: 'red' }, textColor: null }
+        ];
+        const workspaces: readonly LabelledWorkspace[] = [
+            { labels: ['staging', 'production'] },
+            ...Array.from({ length: 11 }, () => ({ labels: ['production'] }))
+        ];
+        render(<LabelsTab presets={presets} workspaces={workspaces} actions={actions()} bucket="dark" />);
+        expect(screen.getByTestId('label-usage-archived').textContent).toBe('unused');
+        expect(screen.getByTestId('label-usage-staging').textContent).toBe('1 workspace');
+        expect(screen.getByTestId('label-usage-production').textContent).toBe('12 workspaces');
+        for (const name of ['archived', 'staging', 'production']) {
+            const cell = cells(`label-preset-${name}`)[2];
+            expect(cell?.querySelector(`[data-testid="label-usage-${name}"]`)).not.toBeNull();
+            // One cell, one child: nothing else shares the track, so it cannot be widened by
+            // anything but the track itself.
+            expect(cell?.children).toHaveLength(1);
+            expect(cell?.className).toContain('justify-start');
+            // …and a count wider than the track ellipsises inside it rather than pushing the
+            // chip out of line, with the whole string still on the element's own `title`.
+            const usage = screen.getByTestId(`label-usage-${name}`);
+            expect(usage.className).toContain('truncate');
+            expect(usage.getAttribute('title')).toBe(usage.textContent);
+        }
     });
 
     // H27: no Rename button anywhere — the name is a live field in every row.
@@ -537,6 +601,37 @@ describe('renaming a preset (SET-063)', () => {
     });
 
     /*
+     * §N40 — §6.4's rename consequence is a SENTENCE, so it goes on the row's sentence line.
+     *
+     * It used to REPLACE the usage count in the caption, which is exactly what made that
+     * caption's width a function of what was being typed: fifty characters where the count is
+     * two words. In an 80 px track it would read `Renaming unst…`, so it moves down to the
+     * full-width `1 / -1` line the refusal message already uses, and the count stays visible in
+     * its own column while it is up. It appears only while the field holds a name that WOULD
+     * commit AND something is actually wearing the old one.
+     */
+    it('says what a rename costs on the row’s full-width line, not in the usage cell (§N40)', () => {
+        setup([{ labels: ['ship'] }, { labels: ['ship'] }]);
+        expect(screen.queryByTestId('label-rename-warning-ship')).toBeNull();
+        const field = screen.getByTestId('label-rename-field-ship') as HTMLInputElement;
+        fireEvent.change(field, { target: { value: 'shipped' } });
+        const warning = screen.getByTestId('label-rename-warning-ship');
+        expect(warning.textContent).toBe('Renaming unstyles the chips already using this name');
+        expect(warning.style.gridColumn).toBe('1 / -1');
+        // The count is still in its own cell, still saying the count and nothing else.
+        expect(screen.getByTestId('label-usage-ship').textContent).toBe('2 workspaces');
+        const usageCell = Array.from(screen.getByTestId('label-preset-ship').children)[2];
+        expect(usageCell?.contains(warning)).toBe(false);
+        expect(usageCell?.contains(screen.getByTestId('label-usage-ship'))).toBe(true);
+        // …and an UNUSED label has nothing to warn about, however it is renamed.
+        fireEvent.change(screen.getByTestId('label-rename-field-wip'), { target: { value: 'wipped' } });
+        expect(screen.queryByTestId('label-rename-warning-wip')).toBeNull();
+        // Back to the stored name and the warning goes with it.
+        fireEvent.change(field, { target: { value: 'ship' } });
+        expect(screen.queryByTestId('label-rename-warning-ship')).toBeNull();
+    });
+
+    /*
      * The live field's other half (H27): it has to survive the deltas the row's OWN controls
      * produce. Recolouring through the swatch round-trips `label-presets-changed` back into
      * this list, and a half-typed name must still be there when it lands — the failure mode a
@@ -755,9 +850,9 @@ describe('minting a preset (N32)', () => {
         const first = screen.getByTestId('label-preset-ship');
         const second = screen.getByTestId('label-preset-wip');
         expect(first.style.gridTemplateColumns).toBe(second.style.gridTemplateColumns);
-        // §N36(3) / §N38 SWAP: the same one-template-for-every-row claim, on the template the
-        // owner's rebalance produced. Reasoned about where it is defined, above.
-        expect(first.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
+        // §N36(3) / §N38 / §N40 SWAP: the same one-template-for-every-row claim, on the template
+        // the owner's rebalance produced. Reasoned about where it is defined, above.
+        expect(first.style.gridTemplateColumns).toBe('24px minmax(330px,1fr) 80px 80px 44px 40px');
         // S64's 10 px horizontal inset, measured off the shipped dialog.
         expect(first.className).toContain('px-2.5');
         expect(second.className).toContain('px-2.5');

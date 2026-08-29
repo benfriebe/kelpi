@@ -68,7 +68,8 @@
  *     which is still above that divider;
  *   - every row is ONE grid line on `LabelCol`'s widths — §N38 collapses the background 150 and
  *     the text colour 124 into a single 24 px swatch-trigger column and hands the 260 px that
- *     frees to the name, leaving swatch 24, preview 80, reorder 44, action 40 with the name
+ *     frees to the name, and §N40 takes 80 of them back out as a fixed track for the in-use
+ *     count, leaving swatch 24, usage 80, preview 80, reorder 44, action 40 with the name
  *     flexing between them (`:7-12`, `:204-245`) — not a two-line stacked card;
  *   - the NAME is a live `TextField` in every row (`:214-222`), committed on Return or focus
  *     loss. There is no "Rename" button in the shipped app and there is none here: click into
@@ -126,14 +127,48 @@ import {
  * opens the flyover. Both of the Swift's colour controls live in that popover now, so the row has
  * one cell where it had two, and the widths those two spent are the name's (see `LABEL_NAME_MIN`).
  *
- * One column is this port's own and is named as such: `reorder`, holding the ↑/↓ pair that
- * stands in for the Swift `List`'s drag (SET-065's stated divergence). It sits between the
- * preview and the action column so the Swift columns keep both their widths and their order.
+ * TWO columns are this port's own and are named as such:
+ *
+ *   - `reorder`, holding the ↑/↓ pair that stands in for the Swift `List`'s drag (SET-065's
+ *     stated divergence). It sits between the preview and the action column so the Swift columns
+ *     keep both their widths and their order;
+ *   - `usage`, §N40's, holding the in-use count. It used to ride INSIDE the flexible name cell,
+ *     which is the one thing on this row that made the widths a half-truth: a `shrink-0` caption
+ *     beside a `flex-1` field moves the boundary between them by exactly its own string, so
+ *     `unused` / `1 workspace` / `12 workspaces` drew three different name widths down a tab
+ *     whose whole premise is that a row is a table line. Measured on the live stack before the
+ *     fix (1280 × 820, dark): the field ended at **812.55 / 786.36 / 773.84** and the caption
+ *     began at **820.55 / 794.36 / 781.84** — a 38.71 px rag over three rows.
+ *
+ * **80 px, and it is measured rather than chosen.** In the page, at the caption's own computed
+ * font (`11px/15.4px ui-sans-serif, -apple-system, …` — the system UI face), `12 workspaces` —
+ * the widest realistic string, per the owner — renders **77.16 px**. 78 would be its ceiling with
+ * 0.84 px to spare, which is less than a pixel of protection against a machine that resolves a
+ * different face; 80 keeps ~2.8 px and, usefully, covers the widest TWO-DIGIT count there is
+ * (`99 workspaces`, 79.43 px), so the entire realistic range fits with nothing truncated. Above
+ * it the cell ellipsises inside its own track and keeps its `title`, rather than pushing the
+ * chip. (For the record, the other strings: `unused` 38.45 px, `1 workspace` 64.64 px.)
  */
-const LABEL_COL = { swatch: 24, preview: 80, reorder: 44, action: 40 } as const;
+const LABEL_COL = { swatch: 24, usage: 80, preview: 80, reorder: 44, action: 40 } as const;
 
 /**
- * §N38 — the name floor is **420**, and every pixel of the rise is accounted for.
+ * §N40 — the name floor is **330**, and it is §N38's 420 with the usage track taken out of it.
+ *
+ * The caption was never free: it rode in the name cell, so its width came out of the field's
+ * every time. Giving it a track of its own does not change what the row costs, only WHERE the
+ * cost is stated — so the floor pays for it, exactly as the flyover's 260 px went into the floor:
+ *
+ *   | what moves out of the name cell            |   px |
+ *   |--------------------------------------------|-----:|
+ *   | the `usage` track                          |   80 |
+ *   | one 10 px column gap (five tracks → six)    |   10 |
+ *   | **taken**                                   | **90** |
+ *
+ * 420 − 90 = **330**, so `LABEL_GRID_MIN_WIDTH` comes out **648 px** for the fourth redesign
+ * running (see below), and the name FIELD stops changing width from row to row: at 1280 × 820 it
+ * is 332 px in every row where §N38 drew 375.55 / 349.36 / 336.84.
+ *
+ * §N38 — the name floor was **420**, and every pixel of the rise is accounted for.
  *
  * §N36(3) put it at 160 by collapsing the Auto/Black/White triple into a `<select>`, which freed
  * 60 px out of the text-colour track; §S60 had recorded the debt that fix was paying down (at the
@@ -156,20 +191,26 @@ const LABEL_COL = { swatch: 24, preview: 80, reorder: 44, action: 40 } as const;
  * `overflow-y-auto`, and CSS resolves a scroll container's other axis to `auto` with it).
  *
  * And it costs nothing: `LABEL_GRID_MIN_WIDTH` comes out **648 px, exactly what it was** through
- * §S57, §S60, §N36(3) and now §N38 (24 + 420 + 80 + 44 + 40 + 4 × 10 = 648 = 150 + 160 + 124 + 80
- * + 44 + 40 + 5 × 10). Nothing that fitted before stops fitting, and a panel narrow enough to
- * scroll scrolls by the same amount it did.
+ * §S57, §S60, §N36(3), §N38 and now §N40 (24 + 330 + 80 + 80 + 44 + 40 + 5 × 10 = 648 = 24 + 420
+ * + 80 + 44 + 40 + 4 × 10 = 150 + 160 + 124 + 80 + 44 + 40 + 5 × 10). Nothing that fitted before
+ * stops fitting, and a panel narrow enough to scroll scrolls by the same amount it did.
  */
-const LABEL_NAME_MIN = 420;
+const LABEL_NAME_MIN = 330;
 
-/** §N38: five tracks, `[swatch trigger · name · chip · reorder · trash]`. */
+/** §N40: six tracks, `[swatch trigger · name · usage · chip · reorder · trash]`. */
 const LABEL_GRID = `${String(LABEL_COL.swatch)}px minmax(${String(LABEL_NAME_MIN)}px,1fr) ${String(
-    LABEL_COL.preview
-)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
+    LABEL_COL.usage
+)}px ${String(LABEL_COL.preview)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
 
 /** The width the tracks + gaps need; below it the list scrolls rather than the name collapsing. */
 export const LABEL_GRID_MIN_WIDTH =
-    LABEL_COL.swatch + LABEL_NAME_MIN + LABEL_COL.preview + LABEL_COL.reorder + LABEL_COL.action + 4 * 10;
+    LABEL_COL.swatch +
+    LABEL_NAME_MIN +
+    LABEL_COL.usage +
+    LABEL_COL.preview +
+    LABEL_COL.reorder +
+    LABEL_COL.action +
+    5 * 10;
 
 /** `HStack(spacing: 10)` — the gap between those columns. */
 const LABEL_GRID_GAP = '10px';
@@ -982,15 +1023,17 @@ interface PresetRowProps {
 }
 
 /**
- * One preset, as ONE grid line on `LABEL_COL`'s widths (H26) — §N38's five cells.
+ * One preset, as ONE grid line on `LABEL_COL`'s widths (H26) — §N40's six cells.
  *
  * `LabelPresetsSettingsView.swift:204-245` is a single `HStack(spacing: 10)`: colour well,
  * name field, text-colour well, chip, trash — every one of them in a fixed column so the tab
  * reads as a table rather than a stack of cards. §N38 collapses the Swift's two colour cells into
- * ONE — a swatch trigger that opens the flyover carrying both — so the line is
- * `[swatch · name · chip · reorder · trash]`. The two port-only affordances that have no Swift
- * column (the in-use count and the ↑/↓ pair) still do not get to break the grid: the count rides
- * in the flexible NAME cell, and the reorder pair has its own fixed column in every row.
+ * ONE — a swatch trigger that opens the flyover carrying both — and §N40 gives the in-use count
+ * a fixed cell of its own, so the line is `[swatch · name · usage · chip · reorder · trash]`.
+ * BOTH port-only affordances that have no Swift column (the in-use count and the ↑/↓ pair) now
+ * have their own fixed column in every row, which is what §N40 is: while the count rode in the
+ * flexible NAME cell it moved the name/usage boundary by its own string, so the one cell whose
+ * width the eye can actually see redrew itself per row.
  *
  * The name is live (H27). `LabelPresetsSettingsView.swift:214-222` binds a `TextField` in every
  * row, focus-committed and Return-committed — there is no Rename button in the shipped app, so
@@ -1061,6 +1104,19 @@ function PresetRow(props: PresetRowProps): ReactElement {
     const previewText = draft.trim() === '' ? preset.name : draft.trim();
     const live = draft.trim() !== '' && draft.trim() !== preset.name;
 
+    /**
+     * §6.4's in-use count, and §N40's whole subject: it is the ONLY thing the usage track ever
+     * says, whatever else the row is doing, so the column's width is a function of the count and
+     * not of what the user happens to be typing.
+     *
+     * Singular at one (§N40): `1 workspace`, `12 workspaces`, and `unused` unchanged for none —
+     * "unused" is a state rather than a count of zero, which is why it is not `0 workspaces`.
+     */
+    const usageText =
+        props.inUse === 0 ? 'unused' : `${String(props.inUse)} workspace${props.inUse === 1 ? '' : 's'}`;
+    /** …and the consequence of renaming, which only exists while a committable name is in the field. */
+    const renameWarning = live && props.inUse > 0;
+
     const commit = (): void => {
         const next = draft.trim();
         // SET-063: empty, unchanged, or a name another preset already holds — the reducer would
@@ -1103,7 +1159,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
                 // M41: `.listStyle(.inset(alternatesRowBackgrounds: true))`
                 // (`LabelPresetsSettingsView.swift:74`) — the same stripe the Keybindings table
                 // takes, and for the same reason: rows of wells and swatches need something
-                // holding the eye across five columns. Hover still wins over the stripe.
+                // holding the eye across six columns. Hover still wins over the stripe.
                 background: hoverBackground(
                     lit,
                     props.index % 2 === 1 ? LABEL_ROW_STRIPE.alternate : LABEL_ROW_STRIPE.base
@@ -1156,7 +1212,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
                 ) : null}
             </span>
 
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 items-center">
                 <input
                     ref={nameRef}
                     aria-label={`New name for ${preset.name}`}
@@ -1187,22 +1243,37 @@ function PresetRow(props: PresetRowProps): ReactElement {
                         commit();
                     }}
                 />
-                {/*
-                 * §6.4's consequence, made concrete: the count of workspaces wearing this label,
-                 * and — while the field holds a name that WOULD be committed — what renaming
-                 * does to them. Port-only, so it rides in the flexible column rather than
-                 * claiming one of the Swift widths.
-                 */}
+            </span>
+
+            {/*
+             * §6.4's consequence, made concrete: the count of workspaces wearing this label.
+             *
+             * §N40 (owner-directed) — its OWN fixed track, `LabelCol.usage`, where it used to be
+             * a `shrink-0` caption sharing the flexible name cell with the field. The column is
+             * port-only, like `reorder`, and it is measured rather than picked: see `LABEL_COL`
+             * for the 77.16 px `12 workspaces` renders at and why the track is 80.
+             *
+             * LEFT-aligned, which is the reading direction it already had — the sentence carries
+             * on from the name field to its left, and a left edge is the one a fixed track can
+             * hold still (a right-aligned count would pin the wrong end and leave the ragged edge
+             * facing the name, which is the edge the owner was reading). `truncate` + `title`
+             * because a track sized to the widest REALISTIC string is not sized to every string:
+             * a three-digit count ellipsises inside its own column instead of pushing the chip.
+             *
+             * What is NOT here any more is the rename warning. It used to REPLACE this count
+             * while the field held a committable name, and at 50 characters it is not a caption —
+             * in an 80 px track it would read `Renaming unst…`. It moves to the row's full-width
+             * note line below, beside the refusal message, which is the other sentence this row
+             * says to the person typing in it.
+             */}
+            <span className="flex min-w-0 items-center justify-start">
                 <span
                     data-testid={`label-usage-${preset.name}`}
-                    className="shrink-0 whitespace-nowrap text-[11px]"
+                    className="min-w-0 truncate text-[11px]"
+                    title={usageText}
                     style={{ color: tokens.textTertiary }}
                 >
-                    {live && props.inUse > 0
-                        ? 'Renaming unstyles the chips already using this name'
-                        : props.inUse === 0
-                          ? 'unused'
-                          : `${String(props.inUse)} workspace${props.inUse === 1 ? '' : 's'}`}
+                    {usageText}
                 </span>
             </span>
 
@@ -1290,6 +1361,29 @@ function PresetRow(props: PresetRowProps): ReactElement {
                     <TrashGlyph />
                 </SettingsIconButton>
             </span>
+
+            {/*
+             * §N40 — the rename CONSEQUENCE, on the row's own full-width note line.
+             *
+             * §6.4 makes a preset's name its identity, so committing a new one silently unstyles
+             * every chip already wearing the old one; this is the sentence that says so, and it
+             * appears only while the field holds a name that WOULD commit and something is
+             * actually wearing it. It used to live in the usage caption, replacing the count —
+             * which is what made that caption's width a function of what was being typed. It is
+             * a sentence, not a caption, so it goes where the row's other sentence goes: the
+             * `1 / -1` line under the cells, next to the refusal message it is the counterpart of
+             * (that one says a rename was refused; this one says what an accepted rename costs).
+             * The count stays visible in its own column while it is up.
+             */}
+            {renameWarning ? (
+                <span
+                    data-testid={`label-rename-warning-${preset.name}`}
+                    className="text-[11px]"
+                    style={{ gridColumn: '1 / -1', color: tokens.textTertiary }}
+                >
+                    Renaming unstyles the chips already using this name
+                </span>
+            ) : null}
 
             {props.error === null ? null : (
                 <span

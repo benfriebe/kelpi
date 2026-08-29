@@ -185,12 +185,20 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * unchanged at 648, which is the property S57 and S60 and §N36(3) each preserved in turn,
      * so nothing that fitted before stops fitting and a too-narrow panel scrolls by the same
      * amount it always did.
+     *
+     * §N40 SWAP (owner-directed) — the in-use count takes a track of its own, `usage`, so the row
+     * is `[swatch 24 · name · usage 80 · chip 80 · reorder 44 · trash 40]`. 80 is MEASURED, not
+     * picked: at the caption's own computed font on the live stack `12 workspaces` renders
+     * **77.16 px**, and 80 also clears the widest two-digit count there is (`99 workspaces`,
+     * 79.43). The 90 px it costs — the track plus the sixth column's gap — comes straight back
+     * out of S57's floor, **420 → 330**, so `LABEL_GRID_MIN_WIDTH` is 648 for the fourth
+     * redesign running and nothing else on the row moves.
      */
-    it('§N38/S57/S60 — one grid template: a 24 px swatch track and a 420 px floored name', () => {
+    it('§N40/§N38/S57/S60 — one grid template: a 24 px swatch, an 80 px usage track, a 330 px floored name', () => {
         open();
         for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
-            expect(node.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('24px minmax(330px,1fr) 80px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
         expect(LABEL_GRID_MIN_WIDTH).toBe(648);

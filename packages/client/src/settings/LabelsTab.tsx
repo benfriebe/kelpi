@@ -35,11 +35,17 @@
  *     control that opens the OS picker (`controls.tsx`'s `ColorField` makes the same choice for
  *     the same reason). Picking through it switches the preset to `{kind:'custom', hex}`,
  *     exactly as dragging the Swift well did;
- *   - the text colour is an Auto / Black / White segmented triple plus that same custom well.
- *     Auto is `null` — the daemon and `resolveLabelStyle` derive black-or-white from the
- *     background's luminance, which is the rule `LabelPreset.resolvedStyle` states.
+ *   - the text colour is an Auto / Black / White `<select>` plus that same custom well — one
+ *     control, as `:365-394`'s `Menu` is (§N36(3) collapsed the three explicit buttons the port
+ *     drew here, which is what returns `LabelCol.textColor` to the Swift's 124). Auto is `null`
+ *     — the daemon and `resolveLabelStyle` derive black-or-white from the background's
+ *     luminance, which is the rule `LabelPreset.resolvedStyle` states.
  *
  * Reordering (SET-065) is ↑/↓ buttons rather than drag, matching the Web tab's favourites list.
+ *
+ * **The words on it are LABELS** (§N36(2)). The daemon's object is a "preset" and stays one in
+ * every identifier here; nothing a person reads says so. See the `SettingsSection` title below
+ * for where that boundary is drawn.
  *
  * **The shape of the tab is the Swift sheet's** (H25/H26/H27), and it is not decoration:
  * `LabelPresetsSettingsView.swift:4-12` opens by saying the fixed column widths exist so "the
@@ -48,7 +54,8 @@
  * the half of that sentence that was ever about the list. So:
  *
  *   - the ADD control is first, above a divider, then the list (`:27-31`) — not below a list
- *     that can be longer than the window;
+ *     that can be longer than the window. §N36(1) put it on the section header's trailing edge,
+ *     which is still above that divider;
  *   - every row is ONE grid line on `LabelCol`'s widths — background 150, text colour 124,
  *     preview 80, action 40, with the name field flexing between them (`:7-12`, `:204-245`) —
  *     not a two-line stacked card;
@@ -102,53 +109,53 @@ import {
  * stands in for the Swift `List`'s drag (SET-065's stated divergence). It sits between the
  * preview and the action column so the Swift four keep both their widths and their order.
  */
-const LABEL_COL = { bgColor: 150, textColor: 184, preview: 80, reorder: 44, action: 40 } as const;
+const LABEL_COL = { bgColor: 150, textColor: 124, preview: 80, reorder: 44, action: 40 } as const;
 
 /**
- * S60 — `textColor` is **184**, not the Swift's 124.
+ * §N36(3) — `textColor` is back to the SWIFT's own **124** (`LabelPresetsSettingsView.swift:9`),
+ * and §S60's divergence is retired rather than restated.
  *
- * `LabelPresetsSettingsView.swift:9`'s 124 pt was sized for what the Swift puts in that column:
- * ONE compact `Menu` ("Aa <mode> ⌄") plus a `ColorPicker` well (`:224-233`, `:356-399`). This
- * port draws the mode as three explicit choices instead (§H26/§L93's shape, so the current mode
- * is readable without opening anything), which is five controls: 21.07 (Aa) + 36.27 (Auto) +
- * 40.23 (Black) + 41.89 (White) + 24 (the S25 well) + 4 gaps × 4 px = **179.5 px**. In a 124 px
- * track that wrapped on EVERY row at EVERY window width — a 44.4 px two-line group where a
- * single-line control is 20 px — and the wrapped line drew over the row's usage caption. A track
- * inherited from a control the port no longer draws.
+ * S60 widened this track to 184 because the port drew the text-colour MODE as three explicit
+ * buttons where the Swift draws one `Menu` — 21.07 (Aa) + 36.27 (Auto) + 40.23 (Black) + 41.89
+ * (White) + 24 (the S25 well) + 4 gaps × 4 px = **179.5 px**, which wrapped on every row inside
+ * 124. The width came out of the name column, and S60 recorded the debt in the same breath: at
+ * the 880 px dialog the name track was 102 px and the field inside it rendered **49.6 px**, so a
+ * preset called `Test` read `Tes` and a freshly minted `New label` read `New lal`.
  *
- * The register suggested 176, which was arithmetic on the pre-S1 chip widths; 176 still wraps.
- * The width comes out of the name column, which is where the register put it ("the grid
- * currently leaves the name column 166 px of slack"): at the 880 px dialog that track is 102 px
- * rather than 166.
+ * The owner has now directed S60's own recorded option: **collapse Auto / Black / White into ONE
+ * control**, the way `:365-394` collapses them into a `Menu`. Measured on the live stack at the
+ * default window (1280 × 820 → the 880 px dialog) before choosing, with each candidate rendered
+ * in a real row and read off `getBoundingClientRect()`:
  *
- * **§N32 did not give this width back, and could not.** The 184 was never the composer's: the
- * five controls it is sized for (Aa + Auto + Black + White + the well) are in EVERY PRESET ROW,
- * and they are what wrapped. Removing the composer removes one instance of them, not the track —
- * measured again on the live stack after the redesign at `150px minmax(100px,1fr) 184px 80px
- * 44px 40px`, identical to before, with every row's cells starting on the same x.
+ *   | candidate for the mode control      | control | the cluster it makes | track |
+ *   |-------------------------------------|--------:|---------------------:|------:|
+ *   | three buttons (what was there)       |  126.39 |               179.50 |   184 |
+ *   | a compact 3-segment control          |  102.39 |               155.46 |   156 |
+ *   | `<select>`, SelectField's 11 px      |   74.50 |               127.57 |   132 |
+ *   | `<select>`, this row's 10 px scale   |   67.50 |               120.57 |   124 |
  *
- * **The residual, measured and stated rather than hidden.** A preset row's name cell holds the
- * rename field *and* the port-only usage caption ("unused" / "N workspaces", `shrink-0`), so at
- * 102 px the field itself renders 49.6 px. Nothing here can give it back without taking width
- * from a Swift column:
- * the way to recover it is the register's own second option for this row — collapse Auto /
- * Black / White into ONE control, the way `LabelPresetsSettingsView.swift:365-394` collapses
- * them into a `Menu`, which would return ~24 px to the name track. That is a shape change, so
- * it is the owner's to take.
+ * (the cluster is `Aa 21.07 + 4 + control + 4 + well 24`). Only the last lands inside a SWIFT
+ * width, which is why it is the one taken: the segmented candidate frees 28 px, the `<select>`
+ * frees 60, and 60 is exactly what returns the track to `LabelCol.textColor`.
  */
-const LABEL_NAME_MIN = 100;
+const LABEL_NAME_MIN = 160;
 
 /**
- * S57 — the name track has a FLOOR (`minmax(100px,1fr)`), not `minmax(0,1fr)`.
+ * S57 — the name track has a FLOOR (`minmax(…,1fr)`), not `minmax(0,1fr)` — and §N36(3) is where
+ * the 60 px the collapse freed went: the floor is **160**, not 100.
  *
  * It is the only flexible track and every other one is a hard px, so a narrowing window took it
  * all: at a 760 × 700 window the field measured **14 × 28.2 px** — no room for one character —
  * while `bgColor`, `textColor`, `preview`, `reorder` and `action` each held their width. A track
  * with a floor gives the row a min-content width instead, so a too-narrow panel scrolls sideways
  * rather than emptying the one field you type into (`settings-panel` is `overflow-y-auto`, and
- * CSS resolves a scroll container's other axis to `auto` with it). 96 px is exactly what the
- * track gets at the dialog's own full width, so the default window is unchanged and nothing
- * overflows there.
+ * CSS resolves a scroll container's other axis to `auto` with it).
+ *
+ * Putting the freed width into the FLOOR rather than only into the flexible share is what makes
+ * the name readable at every width instead of only at the default one — and it costs nothing,
+ * because `LABEL_GRID_MIN_WIDTH` comes out **648 px, exactly what it was** (150 + 100 + 184 +
+ * … = 150 + 160 + 124 + …). Nothing that fitted before stops fitting, and a panel narrow enough
+ * to scroll scrolls by the same amount it did.
  */
 const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(${String(LABEL_NAME_MIN)}px,1fr) ${String(
     LABEL_COL.textColor
@@ -499,38 +506,26 @@ interface TextColorFieldProps {
     readonly onChange: (next: LabelTextColorValue) => void;
 }
 
-interface TextChoiceProps {
-    readonly testID: string;
-    readonly label: string;
-    readonly selected: boolean;
-    readonly onClick: () => void;
-}
+/**
+ * §N36(3) — the width the collapsed mode control is pinned to.
+ *
+ * Pinned rather than intrinsic, and that is the point of pinning it: a `<select>` sizes itself to
+ * the option currently SHOWING, so a row on Auto and a row on Custom would draw two different
+ * widths and slide the "Aa" sample and the well out of line with each other down the tab — the
+ * exact property §H26's fixed columns exist to hold. 68 px is the widest of the four labels
+ * measured in place at this scale (`Custom`, 67.5 px), so nothing is clipped either.
+ */
+const LABEL_TEXT_MODE_WIDTH = 68;
 
-/** One of the Auto / Black / White triple — hover-lit like every other Settings control (H11). */
-function TextChoice(props: TextChoiceProps): ReactElement {
-    const { hovered, hoverProps } = useHover();
-    return (
-        <button
-            type="button"
-            data-testid={props.testID}
-            aria-pressed={props.selected}
-            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors duration-100"
-            style={{
-                background: props.selected
-                    ? withAlpha(tokens.accent, 0.2)
-                    : hoverBackground(hovered, 'transparent'),
-                color: props.selected || hovered ? tokens.textPrimary : tokens.textTertiary,
-                border: `1px solid ${
-                    props.selected ? tokens.accent : hovered ? tokens.selectionStroke : tokens.divider
-                }`
-            }}
-            {...hoverProps}
-            onClick={props.onClick}
-        >
-            {props.label}
-        </button>
-    );
-}
+/** The Auto / Black / White triple, as the one value a `<select>` carries. */
+type TextModeOption = 'auto' | 'black' | 'white' | 'custom';
+
+/** What each mode writes back. `custom` is display-only — the well is what sets a custom colour. */
+const TEXT_MODE_VALUE: Readonly<Record<'auto' | 'black' | 'white', LabelTextColorValue>> = {
+    auto: null,
+    black: { kind: 'custom', hex: BLACK },
+    white: { kind: 'custom', hex: WHITE }
+};
 
 /** SET-062: Auto (luminance) / Black / White, a custom well, and the "Aa" preview. */
 function LabelTextColorField(props: TextColorFieldProps): ReactElement {
@@ -539,24 +534,6 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
         props.value === null
             ? previewStyle({ kind: 'custom', hex: props.background }, null, props.bucket).text
             : hexOf(props.value, props.bucket);
-    const choice = (
-        key: 'auto' | 'black' | 'white',
-        label: string,
-        next: LabelTextColorValue
-    ): ReactElement => {
-        const selected = mode === key;
-        return (
-            <TextChoice
-                key={key}
-                testID={`${props.idPrefix}-${key}`}
-                label={label}
-                selected={selected}
-                onClick={() => {
-                    props.onChange(next);
-                }}
-            />
-        );
-    };
     return (
         // H26: the fixed `LabelCol.textColor` column, wrapping inside it for the same reason
         // the palette does — identical content in every row means an identical wrap.
@@ -575,9 +552,44 @@ function LabelTextColorField(props: TextColorFieldProps): ReactElement {
             >
                 Aa
             </span>
-            {choice('auto', 'Auto', null)}
-            {choice('black', 'Black', { kind: 'custom', hex: BLACK })}
-            {choice('white', 'White', { kind: 'custom', hex: WHITE })}
+            {/*
+             * §N36(3) — ONE control where three buttons stood, which is what gives the name
+             * column its width back (see `LABEL_COL`). It is `controls.tsx`'s `SelectField`
+             * recipe — a plain `<select>`, `rounded border`, the divider stroke, the surface
+             * ground — at this row's own 10 px scale rather than a Settings row's 11 px, because
+             * every other control in the row (the `Custom…` label, the "Aa" sample, the chip) is
+             * 10 px and because 11 px does not fit a Swift-width track.
+             *
+             * It is also the shape the shipped app has: `LabelPresetsSettingsView.swift:365-394`
+             * is a `Menu` of exactly these three, labelled with the "Aa" sample and the current
+             * mode's name. `Custom` is offered only when it is what the well has already made —
+             * the Swift menu has no Custom entry either, but its `currentLabel` (`:398-409`) does
+             * read "Custom", and a `<select>` cannot display a value that is not one of its
+             * options.
+             */}
+            <select
+                data-testid={`${props.idPrefix}-mode`}
+                data-mode={mode}
+                aria-label={props.label}
+                value={mode}
+                className="shrink-0 rounded border px-1 py-0.5 text-[10px]"
+                style={{
+                    width: `${String(LABEL_TEXT_MODE_WIDTH)}px`,
+                    borderColor: tokens.divider,
+                    background: tokens.surfaceBackground,
+                    color: tokens.textPrimary
+                }}
+                onChange={(event) => {
+                    const next = event.target.value as TextModeOption;
+                    if (next === 'custom') return;
+                    props.onChange(TEXT_MODE_VALUE[next]);
+                }}
+            >
+                <option value="auto">Auto</option>
+                <option value="black">Black</option>
+                <option value="white">White</option>
+                {mode === 'custom' ? <option value="custom">Custom</option> : null}
+            </select>
             <span
                 // S25: the text well takes the same 24 × 20 box as the background well above
                 // it, so one row does not draw two sizes of the same control.
@@ -979,9 +991,38 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
              */}
             <SettingsSection
                 plain
-                title="Presets"
-                hint="A label wears a preset's colors when its text matches the preset name exactly."
+                /*
+                 * §N36(2) — "Labels", not "Presets".
+                 *
+                 * The user-facing concept in this app is a LABEL: the sidebar's submenu applies
+                 * labels, `nex workspace label` writes labels, a workspace WEARS labels. "Preset"
+                 * is what the daemon calls the stored row (`labelPresets`, `add-label-preset`,
+                 * §SET-058…§SET-068) and it stays there — in the wire verbs, the props, the
+                 * test ids and these comments — but no copy on this tab says it any more. The
+                 * boundary is exactly: anything a person reads or a screen reader speaks (titles,
+                 * hints, button text, `title` tooltips, `aria-label`s, the empty state, the
+                 * refusal and confirmation sentences) says "label"; every identifier keeps
+                 * "preset". Where the Swift has the same string it is quoted in the comment and
+                 * the divergence noted, because this is a deliberate one: `:88` really does say
+                 * "No label presets yet" and `:244` really does say "Remove preset".
+                 */
+                title="Labels"
+                hint="A workspace's label wears the colors set here when its text matches the name exactly."
                 testID="label-presets"
+                /*
+                 * §N36(1) — the New Label button moves to the header's TOP RIGHT.
+                 *
+                 * Owner-directed, from the frame where it sat under the title looking like the
+                 * first item of the list it heads. In the header it reads as the section's
+                 * toolbar, which is what `LabelPresetsSettingsView.swift:27-31` makes the add
+                 * affordance: the thing above the `Divider()`, not a row of the `List`. The
+                 * divider below is unchanged and still separates it from the list.
+                 */
+                action={
+                    <SettingsButton testID="label-add" title="Add a label and name it" onClick={mint}>
+                        New Label
+                    </SettingsButton>
+                }
             >
                 {/*
                  * N32 (owner-directed) — the composer is GONE, and in its place is one button.
@@ -1004,16 +1045,11 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                  * the daemon echoes back opens with its name field focused and selected, ready
                  * to be typed over. Every property of it is then edited exactly where every other
                  * preset's is.
+                 *
+                 * §N36(1) moved that one button out of the list's own left column and up into the
+                 * section header's trailing edge (see the `action` prop above). The verb it
+                 * sends, the mint and the focus handoff are untouched; only where it stands moved.
                  */}
-                <div className="flex items-center px-2.5">
-                    <SettingsButton
-                        testID="label-add"
-                        title="Add a label preset and name it"
-                        onClick={mint}
-                    >
-                        New Label
-                    </SettingsButton>
-                </div>
 
                 {/* `Divider()` — the add control heads the list, it is not a row of it. */}
                 <div
@@ -1028,12 +1064,15 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                  * centred in the space. The port had an inline `🏷` at body size on one wrapped
                  * paragraph. It stands BELOW the divider, where the Swift's `if` puts it — it is
                  * the list's empty state, not the tab's (N32(a)).
+                 *
+                 * §N36(2): the Swift's own headline is "No label presets yet" (`:88`). The detail
+                 * beneath it was already written in labels, so only the headline moves.
                  */}
                 {props.presets.length === 0 ? (
                     <SettingsEmptyState
                         testID="labels-empty"
                         glyph={<TagGlyph size={28} />}
-                        title="No label presets yet"
+                        title="No labels yet"
                         detail="Define reusable labels with colours, then assign them from a workspace's right-click menu — or apply a label from the CLI and adopt it here."
                     />
                 ) : null}
@@ -1074,8 +1113,15 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
             {orphans.length === 0 ? null : (
                 <SettingsSection
                     plain
-                    title="Labels without a preset"
-                    hint="Applied to a workspace but not managed here — they render neutral until you give them one."
+                    /*
+                     * §N36(2): "without a preset" and "give them one" both named the internal
+                     * object. The section is port-only (§6.5/§6.6 — the Swift has no orphan
+                     * list), so there is no shipped string to weigh it against; what it has to
+                     * say is that these labels are worn somewhere but not DEFINED in the list
+                     * above, and that adding them here is what colours them.
+                     */
+                    title="Labels not defined here"
+                    hint="Applied to a workspace but not in the list above — they render neutral until you add them."
                     testID="label-orphans"
                 >
                     <div className="flex flex-wrap items-center gap-2">
@@ -1220,7 +1266,9 @@ function PresetRow(props: PresetRowProps): ReactElement {
         }
         if (presets.some((candidate) => candidate.name === next)) {
             setDraft(preset.name);
-            props.onRenameRefused(`“${next}” is already a preset — the name is unchanged.`);
+            // §N36(2): "…is already a preset" named the internal object at the one moment the
+            // user is being told why their edit was refused, which is the worst place for it.
+            props.onRenameRefused(`“${next}” is already a label — the name is unchanged.`);
             return;
         }
         props.onRenameRefused(null);
@@ -1390,8 +1438,9 @@ function PresetRow(props: PresetRowProps): ReactElement {
                  */}
                 <SettingsIconButton
                     testID={`label-delete-${preset.name}`}
-                    ariaLabel={`Remove the ${preset.name} preset`}
-                    title="Remove preset"
+                    // §N36(2): the Swift's own help text is "Remove preset" (`:244`).
+                    ariaLabel={`Remove the ${preset.name} label`}
+                    title="Remove label"
                     // Parked: the pointer is over an arrow, not over this — and while the list is
                     // parked no control may light from a hover the pointer never performed.
                     highlight={props.parked ? false : undefined}
@@ -1425,9 +1474,15 @@ function PresetRow(props: PresetRowProps): ReactElement {
                     style={{ gridColumn: '1 / -1', color: tokens.textSecondary }}
                 >
                     <span>
-                        {`Delete the preset? The label stays on ${String(props.inUse)} workspace${
+                        {/*
+                         * §N36(2): the sentence used to lean on the preset/label distinction to
+                         * say what survives a delete ("the PRESET goes, the LABEL stays"). With
+                         * one word for both, it has to name the two things plainly: the name
+                         * stays applied, the colours are what go.
+                         */}
+                        {`Delete this label? The name stays on ${String(props.inUse)} workspace${
                             props.inUse === 1 ? '' : 's'
-                        } and renders neutral.`}
+                        } and those chips render neutral.`}
                     </span>
                     <SettingsButton
                         tone="danger"

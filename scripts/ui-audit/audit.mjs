@@ -23460,7 +23460,7 @@ function buildFlows(ctx) {
         {
             id: 'labels-design',
             expect:
-                'Settings ▸ Labels creates a preset by MINTING one (§N32): a single Add button — FIRST on the tab, above a divider (§H25) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over. Every property is then edited in that row: the background palette, the Auto/Black/White text triple and the live chip. There is no composer and no draft control anywhere. Every row is one grid line on LabelCol’s fixed widths (§H26), a rename that collides snaps back (SET-063), and a preset minted here is the same object the CLI’s `workspace label` back-fill makes.',
+                'Settings ▸ Labels creates a label by MINTING one (§N32): a single Add button — in the section header’s TOP RIGHT, above the divider (§H25 / §N36) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over, and that default name is displayed UNCLIPPED (§N36). Every property is then edited in that row: the background palette, the collapsed Auto/Black/White text-colour control and the live chip. There is no composer and no draft control anywhere. Every row is one grid line on LabelCol’s fixed widths (§H26) — the text-colour track back at the Swift’s 124 with the freed width in the name column (§N36) — a rename that collides snaps back (SET-063), the tab says LABELS and never “preset” (§N36), and a label minted here is the same object the CLI’s `workspace label` back-fill makes.',
             needsEyes: true,
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
@@ -23498,11 +23498,39 @@ function buildFlows(ctx) {
                             order: ids.slice(0, 3),
                             rowCols: rows.map((el) => cols(el)),
                             rowLefts: rows.map((el) => JSON.stringify(lefts(el))),
+                            // §N36(1): the row's own trailing edge, which is what the header
+                            // button is now aligned to (it used to be the first cell's left).
+                            rowRights: rows.map((el) => Math.round(el.getBoundingClientRect().right)),
                             drafts: document.querySelectorAll('[data-testid^="label-new-"]').length,
                             addButtons: document.querySelectorAll('[data-testid="label-add"]').length,
                             addTag: document.querySelector('[data-testid="label-add"]')?.tagName ?? null,
                             addLeft: (() => { const el = document.querySelector('[data-testid="label-add"]');
                                 return el === null ? null : Math.round(el.getBoundingClientRect().left); })(),
+                            addRight: (() => { const el = document.querySelector('[data-testid="label-add"]');
+                                return el === null ? null : Math.round(el.getBoundingClientRect().right); })(),
+                            /*
+                             * …and WHERE in the tree it sits: the section heading's own row.
+                             *
+                             * VERIFIER (run-AK) — tightened. "h3.parentElement.contains(el)"
+                             * on its own is satisfied by the shape §N36 replaced: in a section
+                             * with no action the h3's parent IS the section root, which
+                             * contains the whole list, so the pre-N36 button (a child of the
+                             * list) passed it too — demonstrated in jsdom against a reverted
+                             * LabelsTab. A header ROW is a wrapper that is not the section
+                             * root and holds the title and the action together, so that is
+                             * what is read. The paired geometry below is unchanged.
+                             * (No backticks in here: this comment lives inside a template
+                             * literal that is evaluated in the page.)
+                             */
+                            addInHeader: (() => {
+                                const el = document.querySelector('[data-testid="label-add"]');
+                                const h3 = section.querySelector('h3');
+                                const row = h3?.parentElement ?? null;
+                                return el === null || h3 === null || row === null
+                                    ? null
+                                    : row !== section && row.contains(el) && row.contains(h3);
+                            })(),
+                            heading: (section.querySelector('h3')?.innerText ?? '').trim(),
                             addText: (document.querySelector('[data-testid="label-add"]')?.innerText ?? '').trim(),
                             renameButtons: document.querySelectorAll('[data-testid^="label-rename-"]:not([data-testid*="-field-"]):not([data-testid*="-error-"])').length,
                             liveFields: document.querySelectorAll('[data-testid^="label-rename-field-"]').length,
@@ -23531,6 +23559,44 @@ function buildFlows(ctx) {
                         shape?.addText === 'New Label' &&
                         shape?.drafts === 0,
                     JSON.stringify({ buttons: shape?.addButtons, tag: shape?.addTag, text: shape?.addText, drafts: shape?.drafts })
+                );
+
+                /*
+                 * §N36(2) — what the tab CALLS things, read off the rendered page.
+                 *
+                 * Owner-directed: the user-facing concept is a LABEL. "Preset" is what the daemon
+                 * calls the stored object (`labelPresets`, `add-label-preset`, §SET-058…§SET-068)
+                 * and it stays there — this whole step addresses rows by `label-preset-<name>`,
+                 * which is the other half of the boundary and is asserted by every selector here
+                 * continuing to work.
+                 *
+                 * Read out of the DOM rather than out of the source, and including `aria-label`
+                 * and `title`: a string a sighted user never meets is still one a screen reader
+                 * reads out, and the empty state, the refusal and the delete confirmation are all
+                 * strings that only appear in a state a static read would miss (the confirmation
+                 * is exercised further down; the refusal is `already a label`, checked with it).
+                 */
+                const copy = await page.eval(
+                    `(() => {
+                        const tab = document.querySelector('[data-testid="settings-tab-labels"]');
+                        if (tab === null) return null;
+                        return {
+                            heading: (document.querySelector('[data-testid="label-presets"] h3')?.innerText ?? '').trim(),
+                            preset: (tab.innerText ?? '').split('\\n').map((s) => s.trim()).filter((s) => /preset/i.test(s)),
+                            announced: Array.from(tab.querySelectorAll('[aria-label], [title]'))
+                                .map((el) => [el.getAttribute('aria-label'), el.getAttribute('title')].filter(Boolean).join(' | '))
+                                .filter((s) => /preset/i.test(s)),
+                            ids: document.querySelectorAll('[data-testid^="label-preset-"]').length
+                        };
+                    })()`
+                );
+                recorder.note(`labels copy: ${JSON.stringify(copy)}`);
+                recorder.check(
+                    'the section is called “Labels”, and no rendered copy or announcement says “preset” (§N36)',
+                    copy?.heading === 'Labels' &&
+                        (copy?.preset ?? ['?']).length === 0 &&
+                        (copy?.announced ?? ['?']).length === 0,
+                    JSON.stringify(copy)
                 );
 
                 /*
@@ -23607,14 +23673,30 @@ function buildFlows(ctx) {
                         JSON.stringify(lefts)
                     );
                     /*
-                     * …and the Add button's own leading edge lands on that same x. §N32 SWAP for
-                     * the old `addLefts === rowLefts`: the composer used to line its cells up with
-                     * the rows', and what is left to line up is where the add affordance starts.
+                     * …and the Add button lands on the grid's own TRAILING edge.
+                     *
+                     * §N36(1) SWAP, owner-directed, for §N32's `addLeft === rowLefts[0]`. That
+                     * check was the right one while the button stood where the composer's row
+                     * had: its leading edge on the first cell's x. The owner moved it to the
+                     * section header's top right, so the edge it shares with the grid is the
+                     * other one — its RIGHT against the row's right, which is the same class of
+                     * claim (the add affordance is aligned to the table, not floating beside it)
+                     * read off the edge it is now aligned to. Measured live at both window
+                     * widths in `docs/audit/n36-labels-design/`: 1063 = 1063 at the default
+                     * window, 712.59 = 712.59 at 760 px.
+                     *
+                     * Paired with `addInHeader`, so the geometry cannot be satisfied by a button
+                     * that merely happens to end at that x while sitting somewhere else.
                      */
+                    const rights = rows?.rowRights ?? [];
                     recorder.check(
-                        'the Add button starts on the same x as every row’s first cell (§N32 / §H26)',
-                        rows?.addLeft !== null && String(rows?.addLeft) === String(JSON.parse(String(lefts[0]))[0]),
-                        `${String(rows?.addLeft)} vs ${String(lefts[0])}`
+                        'the Add button is in the section HEADER, its trailing edge on the row’s (§N36 / §H26)',
+                        rows?.addInHeader === true &&
+                            rows?.addRight !== null &&
+                            rights.length > 0 &&
+                            rights.every((value) => value === rights[0]) &&
+                            rows?.addRight === rights[0],
+                        `in header ${String(rows?.addInHeader)}; add right ${String(rows?.addRight)} vs rows ${JSON.stringify(rights)}`
                     );
                     recorder.check(
                         'every preset row carries a LIVE name field and no Rename button (§H27)',
@@ -23679,6 +23761,55 @@ function buildFlows(ctx) {
                     JSON.stringify({ focus: minted.id, value: minted.value, selection: minted.selection })
                 );
 
+                /*
+                 * §N36(4) — and the default name is READABLE in the field it lands in.
+                 *
+                 * The owner's frame showed `New lab`, which is §S60's recorded residual landing on
+                 * the one string §N32 introduced: at the default window the name track was 102 px,
+                 * the port-only usage caption took 64.64 of it, and the field rendered 49.6 px
+                 * against a 56.49 px glyph run. §N36(3) rebalanced the grid; this is the assertion
+                 * that says the rebalance actually reaches the user-visible symptom.
+                 *
+                 * Two independent reads, because one of them is the browser's own bookkeeping and
+                 * the other is ours: `scrollWidth > clientWidth` is Chromium saying the input
+                 * scrolls, and the measured glyph run against the field's content box is the same
+                 * question asked in pixels. A pass needs both, and the slack is recorded either
+                 * way so a future narrowing shows up as a shrinking number rather than as a
+                 * sudden red.
+                 */
+                const mintFit = JSON.parse(String(await page.eval(
+                    `(() => {
+                        const round = (n) => Math.round(n * 100) / 100;
+                        const input = document.querySelector('[data-testid="label-rename-field-New label"]');
+                        if (input === null) return JSON.stringify(null);
+                        const style = getComputedStyle(input);
+                        const probe = document.createElement('span');
+                        probe.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:pre;';
+                        probe.style.font = style.font;
+                        probe.style.letterSpacing = style.letterSpacing;
+                        probe.textContent = input.value;
+                        document.body.appendChild(probe);
+                        const textWidth = round(probe.getBoundingClientRect().width);
+                        probe.remove();
+                        const room = round(input.clientWidth
+                            - parseFloat(style.paddingLeft || '0') - parseFloat(style.paddingRight || '0'));
+                        return JSON.stringify({
+                            value: input.value,
+                            field: round(input.getBoundingClientRect().width),
+                            nameCell: round((input.parentElement?.getBoundingClientRect().width) ?? 0),
+                            usage: (document.querySelector('[data-testid="label-usage-New label"]')?.innerText ?? '').trim(),
+                            overflowing: input.scrollWidth > input.clientWidth,
+                            textWidth, room, slack: round(room - textWidth)
+                        });
+                    })()`
+                )));
+                recorder.note(`minted name fit: ${JSON.stringify(mintFit)}`);
+                recorder.check(
+                    'and the minted default name is displayed UNCLIPPED in it (§N36)',
+                    mintFit !== null && mintFit.overflowing === false && mintFit.slack > 0,
+                    JSON.stringify(mintFit)
+                );
+
                 // …so the very next keystroke REPLACES the default name. Typed blind, on whatever
                 // holds focus, which is the point of the handoff.
                 await page.insertText('audit-design');
@@ -23738,10 +23869,30 @@ function buildFlows(ctx) {
                  * SET-061 + SET-062, in the ROW rather than in a draft (§N32 SWAP): pick a named
                  * background and an explicit WHITE text colour on the minted preset, and read what
                  * the DAEMON stored back off the chip its delta produced.
+                 *
+                 * §N36(3) SWAP: the Auto / Black / White triple is ONE `<select>` now — that
+                 * collapse is what pays for the name column's width — so the GESTURE changes from
+                 * a click on the chosen button to a real change on the chosen option, and the
+                 * "which is set" read changes from that button's `aria-pressed` to the select's
+                 * own value. Nothing asserted below moves: the same two writes, the same daemon
+                 * round trip, the same colours read back off the chip.
+                 *
+                 * `value` set through the native setter and `change` dispatched, exactly as
+                 * `search-colors` drives a colour input further down this file: React binds the
+                 * select's value, so assigning `.value` alone is reverted on the next render.
                  */
+                const setTextMode = async (preset, mode) => {
+                    await page.eval(
+                        `(() => { const el = document.querySelector('[data-testid="label-text-${preset}-mode"]');
+                                  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+                                  setter.call(el, '${mode}');
+                                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                                  return true; })()`
+                    );
+                };
                 await page.click('[data-testid="label-color-audit-design-purple"]');
                 await sleep(400);
-                await page.click('[data-testid="label-text-audit-design-white"]');
+                await setTextMode('audit-design', 'white');
                 await sleep(600);
                 await recorder.shot(page, 'designed');
                 const stored = await page.eval(
@@ -23754,7 +23905,7 @@ function buildFlows(ctx) {
                 recorder.note(`stored preset: ${JSON.stringify(stored)}`);
                 recorder.check('the row’s palette recolours the stored preset', stored?.color === 'purple', JSON.stringify(stored));
                 recorder.check(
-                    'and its triple writes an explicit TEXT colour back through the daemon (SET-059)',
+                    'and its text-colour control writes an explicit TEXT colour back through the daemon (SET-059)',
                     String(stored?.text) === 'rgb(255, 255, 255)',
                     String(stored?.text)
                 );
@@ -23763,19 +23914,20 @@ function buildFlows(ctx) {
                 // purple (#A98BE8) is LIGHT enough that `contrastingText`'s 0.6 threshold picks
                 // BLACK — so Auto visibly flips away from the explicit white just written,
                 // which is the whole difference between "auto" and "a colour that looks auto".
-                await page.click('[data-testid="label-text-audit-design-auto"]');
+                await setTextMode('audit-design', 'auto');
                 await sleep(700);
                 const auto = await page.eval(
                     `(() => ({ color: getComputedStyle(document.querySelector('[data-testid="label-chip-audit-design"]')).color,
-                               pressed: document.querySelector('[data-testid="label-text-audit-design-auto"]')?.getAttribute('aria-pressed') }))()`
+                               mode: document.querySelector('[data-testid="label-text-audit-design-mode"]')?.value ?? null,
+                               shown: document.querySelector('[data-testid="label-text-audit-design-mode"]')?.getAttribute('data-mode') ?? null }))()`
                 );
                 recorder.note(`after Auto: ${JSON.stringify(auto)}`);
                 recorder.check(
                     'Auto re-derives the text colour by luminance (black on this light purple)',
-                    auto?.pressed === 'true' && String(auto?.color) === 'rgb(0, 0, 0)',
+                    auto?.mode === 'auto' && auto?.shown === 'auto' && String(auto?.color) === 'rgb(0, 0, 0)',
                     JSON.stringify(auto)
                 );
-                await page.click('[data-testid="label-text-audit-design-white"]');
+                await setTextMode('audit-design', 'white');
                 await sleep(700);
                 const white = await page.eval(
                     `getComputedStyle(document.querySelector('[data-testid="label-chip-audit-design"]')).color`
@@ -23807,8 +23959,12 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`rename collision: ${JSON.stringify(collision)}`);
                 recorder.check(
-                    'a colliding rename is refused with a reason (SET-063)',
-                    String(collision?.error).includes('already a preset'),
+                    // §N36(2): the refusal says "already a label" — same sentence, the noun the
+                    // owner directed. Strengthened rather than loosened: it also asserts the
+                    // colliding NAME is quoted back, which is what makes the refusal actionable.
+                    'a colliding rename is refused with a reason, naming the collision (SET-063 / §N36)',
+                    String(collision?.error).includes('already a label') &&
+                        String(collision?.error).includes('audit-taken'),
                     String(collision?.error)
                 );
                 recorder.check(
@@ -24137,7 +24293,7 @@ function buildFlows(ctx) {
                     await sleep(300);
                 }
 
-                recorder.eyes('the Labels tab as a TABLE and a design surface. §N32 first: the tab opens with ONE small Add button above the divider and nothing else — no composer, no empty-named row — and pressing it drops a real row into the list with its name already selected, so the next thing typed is the name. Is that button findable without being loud, and does the new row read as a row of the list rather than as something provisional? Then the table itself: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab (§H26), and does the preview chip read like the chip a workspace will wear? And §N33, which only an eye can settle: while a row is being walked with the arrows, does the highlight stay on THAT row — never flicking to the row that slid into the slot under the pointer?');
+                recorder.eyes('the Labels tab as a TABLE and a design surface. §N36 first, since it is what the tab now looks like: the section is headed "Labels" with ONE small New Label button on the header’s top right, level with the title and flush with the right edge of the rows below it — does it read as the section’s toolbar rather than as the first item of the list? Is every row’s NAME fully readable now (the owner’s frame showed "Tes" and "New lab" clipped in ~50 px), and does the collapsed Auto/Black/White pop-up sit comfortably beside the "Aa" sample and the well without crowding them? Does anything on the tab still say "preset"? Then §N32: pressing the button drops a real row into the list with its name already selected, so the next thing typed is the name — does the new row read as a row of the list rather than as something provisional? Then the table itself: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab (§H26), and does the preview chip read like the chip a workspace will wear? And §N33, which only an eye can settle: while a row is being walked with the arrows, does the highlight stay on THAT row — never flicking to the row that slid into the slot under the pointer?');
             }
         },
         {
@@ -26482,12 +26638,42 @@ function buildFlows(ctx) {
                  *
                  * What the reveal can and cannot be shown here: the sidebar's own scroll is
                  * measured by `chrome/sidebar-polish.test.tsx` ("reveals a newly created GROUP
-                 * by its header") on a list long enough to need one; this run's list is four
-                 * rows and has nothing to scroll. What this proves is the half that only the
-                 * live app can answer — the id came back at all, which is the one closure that
-                 * queues the reveal and opens the rename together (`runCreateGroup`), and the
-                 * header the field opens on is on screen.
+                 * by its header") on a list long enough to need one. In a FULL run this list is
+                 * long enough too; under `--only` it was four rows, and that is what made the
+                 * scoped pass vacuous — `{"maxScroll":0,…,"wantScrollTop":-467}`, a claim about
+                 * a reveal on a list with nothing to reveal (§N34).
+                 *
+                 * So the step now provisions the precondition its own assertion needs, and only
+                 * when it is missing: pad the sidebar until it actually overflows. A full run
+                 * already overflows, so this measures once, adds nothing, and leaves that run
+                 * byte-identical; a scoped run gets `maxScroll > 0` and the "on a header the
+                 * user can SEE" check becomes a real one. STRENGTHENING, and no assertion is
+                 * touched — the padding rows are named so they cannot collide with the Edge
+                 * fixture the earlier checks count, and they are removed in the teardown.
                  */
+                const foldPads = [];
+                const listOverhang = async () =>
+                    Number(
+                        await page.eval(
+                            `(() => { const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                              return list === null ? -1 : list.scrollHeight - list.clientHeight; })()`
+                        )
+                    );
+                let overhang = await listOverhang();
+                for (let attempt = 0; overhang <= 0 && attempt < 24; attempt++) {
+                    const name = `Fold Pad ${String(attempt)}`;
+                    await cli.ok(['workspace', 'create', '--name', name]);
+                    foldPads.push(name);
+                    await page.waitFor(
+                        `Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes(${JSON.stringify(name)}))`,
+                        { timeoutMs: 25_000, label: `the ${name} row` }
+                    );
+                    overhang = await listOverhang();
+                }
+                recorder.note(
+                    `the sidebar can scroll ${String(overhang)}px before the chord` +
+                        `${foldPads.length === 0 ? ' (inherited — no padding needed)' : ` (after ${String(foldPads.length)} padding row(s))`}`
+                );
                 try {
                     const focusTarget = (await widestShellPane(page, cli))?.id ?? null;
                     if (focusTarget !== null) await focusPaneBody(page, focusTarget);
@@ -26512,6 +26698,35 @@ function buildFlows(ctx) {
                               String(field.value).startsWith('New Group') &&
                               field.selectionEnd - field.selectionStart === String(field.value).length; })()`,
                         { ceilingMs: 800, intervalMs: 50 }
+                    );
+                    /*
+                     * SETTLE-WAIT — and this one is the reason §WS-123's `inView` had never once
+                     * measured what it claims to (§N34).
+                     *
+                     * The reveal ANIMATES: `chrome/sidebar-scroll.ts` moves `scrollTop` over
+                     * `REVEAL_MS` (0.22 s), which is §WS-102's own spec. Every wait above is
+                     * about the rename FIELD, and the field exists within a frame of the chord —
+                     * so the read below used to happen while the scroll was still in flight.
+                     * Measured on this step: the reveal is computed at client clock 33 338 and
+                     * `inView` was read at 33 346 — EIGHT milliseconds into a 220 ms animation,
+                     * with the list 2 px of the 25 px it was going to move. That is why the
+                     * check has been red in every run whose list could actually scroll and green
+                     * in every run whose list could not: it was sampling a transient, and no
+                     * product fix could ever have turned it green.
+                     *
+                     * So settle on the scroller coming to REST before reading where the header
+                     * ended up. No assertion is touched; the check simply gets to see the
+                     * outcome it is written about. (It stays a real discriminator: with the
+                     * reveal's arithmetic left as it was, the header still settles 2.59 px past
+                     * the fold and this goes red — see `docs/audit/n34-n35-reveal-focus/`.)
+                     */
+                    await settleStable(
+                        async () =>
+                            await page.eval(
+                                `(() => { const list = document.querySelector('[data-testid="sidebar"] [role="listbox"]');
+                                  return list === null ? -1 : Math.round(list.scrollTop * 10) / 10; })()`
+                            ),
+                        { ceilingMs: 2500, stableMs: 200, intervalMs: 50 }
                     );
                     const minted = JSON.parse(
                         String(
@@ -26557,9 +26772,19 @@ function buildFlows(ctx) {
                      * passes. The header therefore settles ~2.4 px past the fold and the reveal
                      * never recomputes.
                      *
-                     * So this red is a product finding, not a harness flake, and the assertion
-                     * stays exactly as it is. These numbers ride with it so the next reader does
-                     * not have to re-derive them.
+                     * §N34 CLOSED THAT, and corrected the paragraph above it. Two facts, both
+                     * measured live rather than argued (`docs/audit/n34-n35-reveal-focus/`):
+                     *
+                     *   · the 2 px is real and permanent — `sidebar-scroll.ts` now re-measures
+                     *     the destination while the reveal runs, and the same list that settled
+                     *     2.59 px past the fold settles 0.59 px inside it;
+                     *   · but the RED was never that 2 px. The numbers quoted above are not the
+                     *     reveal's resting place at all: they are a sample taken 8 ms into a
+                     *     220 ms animation, which is why `scrollTop` reads 2 of a wanted 25 and
+                     *     why the same run reads 27 two seconds later. The settle above is what
+                     *     makes this an outcome again.
+                     *
+                     * The arithmetic note stays, and now records where the reveal LANDED.
                      */
                     const revealArithmetic = await page.eval(
                         `(() => {
@@ -26646,6 +26871,15 @@ function buildFlows(ctx) {
                     if (group.name === 'Edge Group' || String(group.name).startsWith('New Group')) {
                         await cli.run(['group', 'delete', String(group.id)]);
                     }
+                }
+                // The fold padding above, put back. A scoped run must hand the stack on with
+                // the same sidebar it found, exactly as the Edge fixture does below.
+                if (foldPads.length > 0) {
+                    await cli.run(['workspace', 'delete', ...foldPads, '--force']);
+                    await page.waitFor(
+                        `!Array.from(document.querySelectorAll('${PAGE.workspaceRows}')).some(el => (el.innerText ?? '').includes('Fold Pad '))`,
+                        { timeoutMs: 25_000, label: 'the fold padding rows to leave' }
+                    );
                 }
                 await cli.run(['workspace', 'delete', 'Edge A', 'Edge B', '--force']);
                 await page.waitFor(

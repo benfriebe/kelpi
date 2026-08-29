@@ -90,6 +90,58 @@ export function releasePaneCaret(host: HTMLElement | null): void {
 }
 
 /**
+ * §N35 — undo a surface that focused ITSELF, and give the caret back to whoever had it.
+ *
+ * `releasePaneCaret` above is for a surface that has LOST pane focus; this is for one that
+ * never had it. ghostty-web's `Terminal.open()` ends with `this.focus()` — "auto-focus so user
+ * can start typing immediately", `vendor/ghostty-web-patched/source/lib/terminal.ts:636` — so
+ * every terminal that mounts takes the caret whichever pane wears the ring. The politeness rule
+ * ({@link shouldGrabFocus}) is applied to the port's own `renderer.focus()`, and the engine goes
+ * straight around it. The Swift has no equivalent at all: creating a `ghostty_surface_t` claims
+ * nothing, and `SurfaceContainerView` (`:146-156`) is what decides.
+ *
+ * `previous` is the element the grab took the caret FROM, and putting it back is the half that
+ * matters: what an opening engine interrupts is a sidebar rename, the command palette, or the
+ * pane the user is actually typing in. It takes precedence over the ring, because a chrome text
+ * field mid-edit is the one caret nothing may move (`shouldGrabFocus`, WEB-043's `NSText`).
+ *
+ * When `previous` is gone — unmounted, or `<body>` because nothing held it — the caret goes to
+ * whichever pane WEARS THE RING, which is where a reload has to leave it. Measured on the
+ * packaged stack, where the engines come up in a different order than on the dev one: without
+ * this the grab was undone to `<body>` and the window came back taking no keystrokes at all,
+ * ring drawn and caret nowhere — §N19's original symptom, one cause further on. The blur is the
+ * last resort, for a window with no focused pane to give it to.
+ */
+export function undoSurfaceAutoFocus(host: HTMLElement | null, previous: Element | null): void {
+    if (typeof document === 'undefined' || host === null) return;
+    const active = document.activeElement;
+    // The engine did not take it, or something else has taken it since: leave it alone.
+    if (!(active instanceof HTMLElement) || !host.contains(active)) return;
+    if (previous instanceof HTMLElement && previous.isConnected && !host.contains(previous)) {
+        previous.focus?.();
+        if (document.activeElement !== active) return;
+    }
+    const ringed = document.querySelector<HTMLElement>('[data-pane-id][data-focused="true"]');
+    const ringedID = ringed === null || ringed.contains(host) ? null : (ringed.getAttribute('data-pane-id') ?? '');
+    if (ringedID !== null && ringedID !== '' && ringed !== null && ringed.querySelector(PANE_SURFACE_SELECTOR) !== null) {
+        /*
+         * The focused pane HAS a surface, so the caret is its business and not `<body>`'s. It
+         * may not be focusable yet — an engine that has not finished loading has built no
+         * textarea — and that is exactly why this returns either way: its own `open()` claims
+         * the caret a moment later, and `shouldGrabFocus` lets it take one held by another
+         * pane's surface. Blurring into the void here is what made the outcome depend on which
+         * engine came up first: the window drew a ring and took no keystrokes.
+         */
+        focusPaneSurface(ringedID);
+        return;
+    }
+    // Nothing in this document can hold it — a web pane wears the ring, and its surface is a
+    // native view in another process — so the caret is dropped rather than left in the wrong
+    // pane's PTY.
+    active.blur();
+}
+
+/**
  * §N29's caret half: let go of whichever PANE SURFACE holds the caret, wherever it is.
  *
  * `releasePaneCaret` above is the ordinary case — a surface that can see it lost pane focus lets

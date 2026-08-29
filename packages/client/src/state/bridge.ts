@@ -351,7 +351,31 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
 
         focusPane(workspaceID, paneID): void {
             store.getState().setFocusEcho(workspaceID, paneID);
-            commands.reportFocus(workspaceID, paneID);
+            /*
+             * §N35 — the report's own dedupe remembers what this CLIENT last SENT, and that
+             * stops being the truth the moment anything else moves focus: a split (the daemon
+             * focuses the pane it made), the CLI, or a second client. A click back onto the
+             * pane this client last reported was then swallowed as a duplicate, and the daemon
+             * kept a focus nobody was in.
+             *
+             * Invisible in the window, because the echo draws the ring where the user clicked
+             * (`setFocusEcho` above), and `echoSurvives` keeps it until the DAEMON's value
+             * changes — which is exactly what never happened. What it costs is everything that
+             * reads the daemon's answer instead of this window's: `nex pane list --json`'s
+             * `is_focused`, a second client, and above all a RELOAD, which restores the
+             * daemon's focused pane and so came back on a pane the user had left.
+             *
+             * Measured: click pane A in a two-pane workspace made by ⌘D, and six seconds later
+             * `ring=A daemon=B` (`docs/audit/n34-n35-reveal-focus/`).
+             *
+             * So the report is forced whenever the daemon's own value disagrees with what this
+             * gesture means. When it already agrees the dedupe still stands and nothing is
+             * sent twice.
+             */
+            const known = store
+                .getState()
+                .daemon.state.workspaces.find((workspace) => workspace.id === workspaceID)?.focusedPaneID;
+            commands.reportFocus(workspaceID, paneID, known === paneID ? {} : { force: true });
             // Visiting a pane acknowledges its notification (agent-lifecycle §7.5 removal).
             if (paneID !== null) notifications?.clear(paneID);
         },

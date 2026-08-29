@@ -73,6 +73,27 @@ export interface ScrollAnimationOptions {
      * `null` to run the animation on frames alone.
      */
     readonly timer?: ((callback: () => void, ms: number) => unknown) | null | undefined;
+    /**
+     * §N34: re-measure the destination instead of trusting the one taken at the start.
+     *
+     * A `scrollTop` is a number, but "reveal this row" is a promise about a row — and between
+     * the frame the caller measured and the frame the animation lands on, the row can move.
+     * The reveal's own caller is the proof: `runCreateGroup` queues the scroll target and the
+     * inline rename as two separate updates, so the header is measured at 36 px and mounts its
+     * rename field a commit later at 38 — and every later relayout (a row entering above it, a
+     * label chip wrapping) moves it again. Called on every frame while the animation runs and
+     * through `settleMs` afterwards; return `null` to keep the current target.
+     */
+    readonly retarget?: (() => number | null) | undefined;
+    /**
+     * §N34: how long after landing the animation keeps honouring `retarget`.
+     *
+     * The window is bounded and short — long enough for the commits that follow a reveal to
+     * settle, far too short to fight a person who has started scrolling (and the caller stops
+     * the whole reveal on the first user gesture anyway). `0`, the default, is the historical
+     * behaviour: land once and stop looking.
+     */
+    readonly settleMs?: number | undefined;
 }
 
 /**
@@ -90,6 +111,9 @@ function easeOut(progress: number): number {
  * Degradations, both deliberate: a non-positive duration, or an environment with no animation
  * frames at all (jsdom), assigns the target immediately — the reveal still happens, it simply
  * does not animate, which is exactly what "no layout, nothing to animate" should mean.
+ *
+ * §N34: `to` is the destination as measured when the caller asked, and `options.retarget` is
+ * how it stays honest — see the option's own note. Without it this behaves exactly as it did.
  */
 export function animateScrollTop(
     element: ScrollTarget,
@@ -102,18 +126,44 @@ export function animateScrollTop(
         (typeof performance === 'object' && typeof performance.now === 'function'
             ? () => performance.now()
             : () => Date.now());
+    const settleMs = Math.max(0, options.settleMs ?? 0);
+    /** The live destination: the last thing `retarget` said, or the caller's number. */
+    let target = to;
+    const aim = (): number => {
+        const next = options.retarget?.();
+        if (typeof next === 'number' && Number.isFinite(next)) target = next;
+        return target;
+    };
     const from = element.scrollTop;
-    if (options.durationMs <= 0 || raf === undefined || from === to) {
-        element.scrollTop = to;
+    if (options.durationMs <= 0 || raf === undefined || (from === to && settleMs === 0)) {
+        element.scrollTop = aim();
         return () => {};
     }
     const started = now();
     let cancelled = false;
     let landed = false;
+    /**
+     * The settle window: after the animation has landed, the destination is still re-measured
+     * every frame and re-applied the moment it moves. A correction here is a handful of pixels
+     * against a layout that has just changed under the row, so it is applied outright rather
+     * than animated — an eased 2 px is not a motion anyone can read.
+     */
+    const watch = (): void => {
+        if (cancelled) return;
+        if (now() - started > options.durationMs + settleMs) return;
+        const want = aim();
+        // A scroller clamps an offset its content cannot reach, so this can be a write that
+        // does not move: idempotent, raises no `scroll`, and the next frame asks again — which
+        // is what has to happen, because the content growing is exactly how such a target
+        // becomes reachable.
+        if (Math.abs(element.scrollTop - want) > 0.5) element.scrollTop = want;
+        raf(watch);
+    };
     const land = (): void => {
         if (cancelled || landed) return;
         landed = true;
-        element.scrollTop = to;
+        element.scrollTop = aim();
+        if (settleMs > 0) raf(watch);
     };
     const step = (): void => {
         if (cancelled || landed) return;
@@ -122,10 +172,11 @@ export function animateScrollTop(
             land();
             return;
         }
-        element.scrollTop = from + (to - from) * easeOut(progress);
+        element.scrollTop = from + (aim() - from) * easeOut(progress);
         raf(step);
     };
-    raf(step);
+    if (from === to && settleMs > 0) land();
+    else raf(step);
     /**
      * The settle guard: frame delivery is not a guarantee. A renderer can stop issuing
      * animation frames for reasons the page cannot see — occlusion, a throttled compositor, a

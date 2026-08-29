@@ -10,6 +10,7 @@ import { createNexStore, type NexStoreApi } from './store';
 const HOME = '/Users/test';
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
 const P1 = 'dddddddd-0000-4000-8000-000000000001';
+const P2 = 'dddddddd-0000-4000-8000-000000000002';
 const NOW = 1_755_500_000_000;
 
 function snapshotState(): unknown {
@@ -345,6 +346,44 @@ describe('nex runtime', () => {
         expect(reports(h.sockets.last(), 'focus-report')).toEqual([
             { type: 'focus-report', workspaceID: W1, paneID: P1 }
         ]);
+    });
+
+    /**
+     * §N35 — the report's dedupe is against what this client SENT, and the daemon can move
+     * focus without it: a split focuses the pane it made, the CLI focuses another, a second
+     * client clicks. The next click back onto the pane this client last reported was swallowed
+     * as a duplicate, so the daemon kept a focus nobody was in — invisible here, because the
+     * echo above draws the ring where the user clicked, and fatal on a RELOAD, which restores
+     * the daemon's answer.
+     */
+    it('re-reports a pane the DAEMON has since moved focus away from (N35)', () => {
+        const h = runtimeHarness();
+        h.runtime.focusPane(W1, P1);
+        expect(reports(h.sockets.last(), 'focus-report')).toHaveLength(1);
+
+        // The daemon moves focus on its own — a split, the CLI, another client.
+        h.sockets.last().emit({
+            type: 'delta',
+            seq: 1,
+            events: [{ kind: 'workspace-upserted', id: W1, workspace: { ...renamed('alpha'), focusedPaneID: P2 } }]
+        });
+        expect(
+            h.store.getState().daemon.state.workspaces.find((workspace) => workspace.id === W1)?.focusedPaneID
+        ).toBe(P2);
+
+        // …and the user clicks back onto the pane this client last reported.
+        h.runtime.focusPane(W1, P1);
+        expect(reports(h.sockets.last(), 'focus-report')).toEqual([
+            { type: 'focus-report', workspaceID: W1, paneID: P1 },
+            { type: 'focus-report', workspaceID: W1, paneID: P1 }
+        ]);
+    });
+
+    it('…and still says nothing when the daemon already agrees (N35)', () => {
+        const h = runtimeHarness();
+        h.runtime.focusPane(W1, P1);
+        h.runtime.focusPane(W1, P1);
+        expect(reports(h.sockets.last(), 'focus-report')).toHaveLength(1);
     });
 
     it('re-reports visibility when the document is hidden', () => {

@@ -1009,7 +1009,11 @@ function Shell(props: AppProps): ReactElement {
     // WEB-002: a web pane (or tab) that arrives BLANK hands the caret to the URL bar; one that
     // arrives with a URL is loading a page, so focus belongs to the page. Same token the ⌘L
     // path bumps, so the two cannot disagree about what "focus the URL bar" means.
-    useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar);
+    //
+    // §N35: `hasSnapshot` is what tells the rule an ARRIVAL from an OPENING. A client that
+    // reloads is handed every web pane the workspace already had, and none of them was opened
+    // here — see the hook's own note.
+    useBlankWebPaneURLFocus(blankURLTargets, webAct.focusURLBar, daemon.hasSnapshot);
 
     /**
      * §7.3's tri-state layer, behind a ref so the key dispatcher (rebuilt only on a keybinding

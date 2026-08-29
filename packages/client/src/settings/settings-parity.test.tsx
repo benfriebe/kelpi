@@ -156,7 +156,11 @@ describe('Settings ▸ Labels', () => {
         renderLabels([]);
         const glyph = screen.getByTestId('labels-empty-glyph').querySelector('svg');
         expect(glyph?.getAttribute('width')).toBe('28');
-        expect(screen.getByTestId('labels-empty').textContent).toContain('No label presets yet');
+        // §N36(2) SWAP: the Swift headline is "No label presets yet" (`:88`). M45 is about the
+        // SHAPE of the empty state — a 28 pt glyph over a headline and a caption, not an inline
+        // emoji on one paragraph — and that is untouched; the owner directed the noun.
+        expect(screen.getByTestId('labels-empty').textContent).toContain('No labels yet');
+        expect(screen.getByTestId('labels-empty').textContent).toContain('Define reusable labels');
         // The `VStack` has no card behind it; the port's dashed box was its own invention.
         expect(screen.getByTestId('labels-empty').className).not.toContain('border');
     });

@@ -28,7 +28,8 @@ import {
     isPaneSurfaceCaret,
     releaseFocusedPaneCaret,
     releasePaneCaret,
-    shouldGrabFocus
+    shouldGrabFocus,
+    undoSurfaceAutoFocus
 } from './pane-focus';
 
 const SCRATCH = 'DDDDDDDD-0000-4000-8000-000000000004';
@@ -129,6 +130,117 @@ describe('releasePaneCaret', () => {
         input.focus();
         releasePaneCaret(null);
         expect(document.activeElement).toBe(input);
+    });
+});
+
+/**
+ * §N35 — the engine grabs the caret on `open()`, and the port has to be able to say no.
+ *
+ * `Terminal.open()` ends with `this.focus()`, so a pane that is not the focused one takes the
+ * keyboard simply by finishing its wasm load. On a client reload every pane remounts at once,
+ * which makes the winner "whichever engine came up last".
+ */
+describe('undoSurfaceAutoFocus (§N35)', () => {
+    it('puts the caret back where the engine took it from', () => {
+        const typing = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000A');
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000B');
+        typing.area.focus();
+        // The engine's own grab, verbatim: it focuses its textarea, from wherever the caret was.
+        const stolenFrom = document.activeElement;
+        arriving.area.focus();
+        expect(document.activeElement).toBe(arriving.area);
+
+        undoSurfaceAutoFocus(arriving.host, stolenFrom);
+        expect(document.activeElement).toBe(typing.area);
+    });
+
+    it('gives a chrome field its caret back — the case shouldGrabFocus exists to protect', () => {
+        const input = mountChromeField();
+        const arriving = mountFakeTerminal();
+        input.focus();
+        const stolenFrom = document.activeElement;
+        arriving.area.focus();
+
+        undoSurfaceAutoFocus(arriving.host, stolenFrom);
+        expect(document.activeElement).toBe(input);
+    });
+
+    it('blurs when there is nowhere to give it back to', () => {
+        const arriving = mountFakeTerminal();
+        arriving.area.focus();
+        undoSurfaceAutoFocus(arriving.host, document.body);
+        expect(document.activeElement).not.toBe(arriving.area);
+    });
+
+    /**
+     * The focused pane's engine has not built anything focusable yet — the case that made the
+     * outcome depend on which engine finished its wasm load first. Dropping the caret on
+     * `<body>` here is a window that draws a ring and takes no keystrokes; leaving it is a
+     * transient the ring's owner ends the moment it opens.
+     */
+    it('leaves the caret alone rather than voiding it when the ringed pane cannot take it yet', () => {
+        const loading = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000010');
+        loading.area.remove();
+        (loading.host.closest('[data-pane-id]') as HTMLElement).setAttribute('data-focused', 'true');
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000011');
+        arriving.area.focus();
+
+        undoSurfaceAutoFocus(arriving.host, document.body);
+        expect(document.activeElement).toBe(arriving.area);
+    });
+
+    /**
+     * The reload's own case, and the one the packaged stack found: the element the grab took the
+     * caret from is already gone (the empty-grid placeholder that was on screen while the
+     * snapshot was in flight), so "give it back" has nowhere to aim. The ring does.
+     */
+    it('falls back to the pane WEARING THE RING when the previous owner is gone', () => {
+        const ringed = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000C');
+        (ringed.host.closest('[data-pane-id]') as HTMLElement).setAttribute('data-focused', 'true');
+        const gone = mountChromeField();
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000D');
+        gone.focus();
+        const stolenFrom = document.activeElement;
+        gone.remove();
+        arriving.area.focus();
+
+        undoSurfaceAutoFocus(arriving.host, stolenFrom);
+        expect(document.activeElement).toBe(ringed.area);
+    });
+
+    it('…and the ring never beats a chrome field that is still there', () => {
+        const ringed = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000E');
+        (ringed.host.closest('[data-pane-id]') as HTMLElement).setAttribute('data-focused', 'true');
+        const renaming = mountChromeField();
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-00000000000F');
+        renaming.focus();
+        const stolenFrom = document.activeElement;
+        arriving.area.focus();
+
+        undoSurfaceAutoFocus(arriving.host, stolenFrom);
+        expect(document.activeElement).toBe(renaming);
+    });
+
+    it('never touches a caret the engine did not take', () => {
+        const input = mountChromeField();
+        const arriving = mountFakeTerminal();
+        input.focus();
+        // Nothing inside the host holds the caret: this pane has nothing to undo, and a blur
+        // here would cancel an edit that has nothing to do with it.
+        undoSurfaceAutoFocus(arriving.host, null);
+        expect(document.activeElement).toBe(input);
+    });
+
+    it('does not restore a node that has since been unmounted', () => {
+        const gone = mountChromeField();
+        const arriving = mountFakeTerminal();
+        gone.focus();
+        const stolenFrom = document.activeElement;
+        gone.remove();
+        arriving.area.focus();
+
+        undoSurfaceAutoFocus(arriving.host, stolenFrom);
+        expect(document.activeElement).not.toBe(arriving.area);
     });
 });
 

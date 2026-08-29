@@ -178,10 +178,29 @@ function blankTargetKey(target: BlankURLTarget): string {
  */
 export function useBlankWebPaneURLFocus(
     targets: readonly BlankURLTarget[],
-    focusURLBar: (paneID: string) => void
+    focusURLBar: (paneID: string) => void,
+    attached = true
 ): void {
     const seen = useRef<Set<string> | null>(null);
     useEffect(() => {
+        /**
+         * §N35: the adoption pass is the client's FIRST SNAPSHOT, not its first render.
+         *
+         * The paragraph below has been the intent since WEB-002 was written, and until this row
+         * it was not what the code did. The first effect run happens before any state has
+         * arrived, so `previous` was recorded as an EMPTY set — and every pane the snapshot then
+         * delivered looked like one that had just been opened. Measured on a client reload
+         * (`docs/audit/n33-j-n30-mount-claim/reload-focus-trace.mjs`): the URL bar of a RESTORED
+         * blank tab took the caret at +35 ms, in a window where nobody had opened anything.
+         *
+         * `attached` is the daemon's `hasSnapshot`. Until it is true this hook records nothing,
+         * so what the first snapshot brings is what gets adopted, and only what arrives after
+         * that is an opening — the event the Swift's `webPaneURLFocusTokens` bumps on.
+         */
+        if (!attached) {
+            seen.current = null;
+            return;
+        }
         const previous = seen.current;
         const next = new Set(targets.map(blankTargetKey));
         seen.current = next;
@@ -194,5 +213,5 @@ export function useBlankWebPaneURLFocus(
             if (target.activeURL.trim() !== '') continue;
             focusURLBar(target.paneID);
         }
-    }, [targets, focusURLBar]);
+    }, [attached, targets, focusURLBar]);
 }

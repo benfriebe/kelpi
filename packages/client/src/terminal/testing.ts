@@ -40,6 +40,16 @@ export interface FakeRendererOptions {
     readonly failOpensBefore?: number;
     /** The error a failing `open()` rejects with; defaults to the N1 `RangeError`. */
     readonly openError?: () => Error;
+    /**
+     * §N35 — model the vendored engine's own `open()`, which ends with `this.focus()`.
+     *
+     * `Terminal.open()` creates a hidden `<textarea>` inside the host and focuses it —
+     * "auto-focus so user can start typing immediately"
+     * (`vendor/ghostty-web-patched/source/lib/terminal.ts:636`). It is unconditional, so it goes
+     * around `shouldGrabFocus` entirely, and the fake could not express it. Off by default: only
+     * the tests about who ends up with the caret ask for it.
+     */
+    readonly autoFocusOnOpen?: boolean;
 }
 
 export class FakeRenderer implements TerminalRenderer {
@@ -97,7 +107,7 @@ export class FakeRenderer implements TerminalRenderer {
 
     constructor(
         readonly options: TerminalRendererOptions | undefined,
-        fake: FakeRendererOptions = {},
+        private readonly fake: FakeRendererOptions = {},
         /** Which renderer this is, counting from 1 — `failOpensBefore` reads it. */
         readonly ordinal = 1
     ) {
@@ -119,7 +129,20 @@ export class FakeRenderer implements TerminalRenderer {
 
     open(element: HTMLElement): Promise<void> {
         this.opened = element;
-        return this.ready;
+        if (this.fake.autoFocusOnOpen !== true) return this.ready;
+        // The grab is the LAST thing the real `open()` does, so it happens when the engine has
+        // finished coming up — not when the call is made. That ordering is the whole point: the
+        // pane's own focus effect has long since run by then, which is why a release on
+        // `focused === false` cannot cover this and the undo has to.
+        return this.ready.then(() => {
+            const area = element.ownerDocument.createElement('textarea');
+            area.setAttribute('aria-label', 'Terminal input');
+            element.appendChild(area);
+            area.focus();
+            // …and the engine's own delayed BACKUP focus (`terminal.ts:844-860`, "some browsers
+            // may need this if DOM isn't fully settled"), which lands after any one-shot undo.
+            setTimeout(() => area.focus(), 0);
+        });
     }
 
     /** Resolve a deferred `open()`. */

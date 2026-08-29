@@ -1544,6 +1544,41 @@ describe('the reveal, measured (§WS-020, §WS-102)', () => {
         });
     });
 
+    /**
+     * §N34 — the reveal is a promise about a ROW, and rows move after they are measured.
+     *
+     * The live case is the group header the reveal is computed against at 36 px, which mounts
+     * its inline rename field a commit later and becomes 38: the one-shot landed 2 px short and
+     * the header's foot sat past the fold for good, because a row moving is not a focus change
+     * and nothing re-armed the reveal (`docs/audit/n34-n35-reveal-focus/`).
+     */
+    it('re-aims when the row it is revealing GROWS under it (N34)', async () => {
+        const onScrollHandled = vi.fn();
+        const view = render(<Sidebar {...baseProps()} entries={entries()} onScrollHandled={onScrollHandled} />);
+        const list = stubViewport(100);
+        stubRowGeometry();
+
+        view.rerender(
+            <Sidebar
+                {...baseProps()}
+                entries={entries()}
+                scrollToWorkspaceID={W3}
+                onScrollHandled={onScrollHandled}
+            />
+        );
+        await waitFor(() => {
+            expect(onScrollHandled).toHaveBeenCalledTimes(1);
+        });
+
+        // gamma occupies 84–104 in a 100px viewport: the reveal is aiming at 4. Now it grows,
+        // the way a header does when its rename field mounts.
+        const gamma = rowFor(W3);
+        Object.defineProperty(gamma, 'offsetHeight', { configurable: true, value: 24 });
+        await waitFor(() => {
+            expect(Math.round(list.scrollTop)).toBe(8);
+        });
+    });
+
     it('no-ops when the row is already fully visible, and still reports it handled', async () => {
         const onScrollHandled = vi.fn();
         const view = render(<Sidebar {...baseProps()} entries={entries()} onScrollHandled={onScrollHandled} />);

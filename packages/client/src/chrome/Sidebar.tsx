@@ -424,6 +424,18 @@ export const ROW_EXIT_MS = REORDER_MS;
  */
 export const REVEAL_MS = 220;
 /**
+ * §N34: how long past the animation the reveal keeps re-measuring the row it revealed.
+ *
+ * The Swift retries its reveal off the row's height-preference change; a browser has no such
+ * signal, so the port watches instead — and it has to, because the layout a reveal is measured
+ * against keeps moving after the measurement. The one that filed this row is the inline rename
+ * field: `runCreateGroup` queues the scroll and the rename as two updates, so the group header
+ * is measured at 36 px and mounts its field a commit later at 38, leaving the header's foot
+ * past the fold with nothing to re-arm the reveal. The window is bounded and stops dead on the
+ * first wheel or pointer-down, so it can never fight a person who has taken the list back.
+ */
+export const REVEAL_SETTLE_MS = 400;
+/**
  * §WS-102's "wait until the newly inserted row has actually measured". The Swift retries off
  * the height preference change; a browser has no such signal, so the reveal re-checks on
  * animation frames and gives up after this many — ~0.5s at 60Hz, far longer than a row takes to
@@ -3195,16 +3207,62 @@ export function Sidebar(props: SidebarProps): ReactElement {
             return undefined;
         }
         revealAttemptsRef.current = { target: '', attempts: 0 };
-        const to = revealScrollTop({
-            scrollTop: list.scrollTop,
-            viewportHeight: list.clientHeight,
-            rowTop: element.offsetTop,
-            rowHeight: element.offsetHeight,
-            topInset: CONTENT_TOP_PADDING
-        });
+        /**
+         * §N34: the destination is re-measured, and the ORIGIN is not.
+         *
+         * `revealScrollTop` decides two things at once — which way to move (a row above the
+         * fold scrolls up, one below scrolls down) and how far. The direction has to be decided
+         * from where the list was when the reveal was asked for, or a mid-flight re-measure
+         * would keep re-deciding it against a `scrollTop` this animation is itself moving. So
+         * the origin is frozen here and everything else is read live: the row's own `offsetTop`
+         * and `offsetHeight`, and the viewport's height.
+         *
+         * What that buys is the row actually being revealed. Measured on this list
+         * (`docs/audit/n34-n35-reveal-focus/`): the reveal is computed against a 36 px group
+         * header and the inline rename field mounts a commit later at 38, so the one-shot
+         * landed 2 px short with the header's foot past the fold — and nothing ever looked
+         * again, because a row that moves after a reveal is not a focus change and nothing
+         * re-arms it. Re-aiming makes the promise hold at the END of the reveal rather than at
+         * the instant it was measured, whatever moved in between.
+         */
+        const origin = list.scrollTop;
+        const aim = (): number | null =>
+            revealScrollTop({
+                scrollTop: origin,
+                viewportHeight: list.clientHeight,
+                rowTop: element.offsetTop,
+                rowHeight: element.offsetHeight,
+                topInset: CONTENT_TOP_PADDING
+            });
+        const to = aim();
         if (to !== null) {
             cancelRevealRef.current?.();
-            cancelRevealRef.current = animateScrollTop(list, to, { durationMs: revealMs });
+            const stopAnimation = animateScrollTop(list, to, {
+                durationMs: revealMs,
+                retarget: aim,
+                settleMs: REVEAL_SETTLE_MS
+            });
+            /*
+             * The settle window is short, but it is still a window in which this code writes
+             * `scrollTop` — so a person who reaches for the list inside it wins outright. The
+             * gestures listened for are the ones that BEGIN a manual scroll (a wheel, a
+             * pointer going down on the scroller); the `scroll` event cannot be used, because
+             * the animation's own writes raise it.
+             */
+            let stopped = false;
+            let expiry: ReturnType<typeof setTimeout> | undefined;
+            const stop = (): void => {
+                if (stopped) return;
+                stopped = true;
+                stopAnimation();
+                list.removeEventListener('wheel', stop);
+                list.removeEventListener('pointerdown', stop);
+                if (expiry !== undefined) clearTimeout(expiry);
+            };
+            list.addEventListener('wheel', stop, { passive: true });
+            list.addEventListener('pointerdown', stop);
+            expiry = setTimeout(stop, revealMs + REVEAL_SETTLE_MS + 50);
+            cancelRevealRef.current = stop;
         }
         onScrollHandled?.();
         return undefined;

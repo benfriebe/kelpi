@@ -167,6 +167,80 @@ describe('animateScrollTop', () => {
         void cancel;
     });
 
+    /**
+     * §N34: the destination is a promise about a ROW, and rows move.
+     *
+     * The live case is the group header the reveal is measured against at 36 px, which mounts
+     * its inline rename field a commit later and becomes 38 — after the reveal has been
+     * computed, consumed and forgotten. These three cover the seam: a target that moves while
+     * the animation runs, one that moves after it has landed, and the bound on how long the
+     * reveal is willing to keep looking.
+     */
+    it('lands on the destination as it is when it LANDS, not as it was when it started', () => {
+        const h = harness();
+        let want = 200;
+        animateScrollTop(h.element, want, {
+            durationMs: 220,
+            now: h.now,
+            raf: h.raf,
+            timer: null,
+            retarget: () => want
+        });
+        h.advance(0);
+        h.advance(110);
+        // The row grew under the reveal (the rename field mounted): 2px further down.
+        want = 202;
+        h.advance(110);
+        expect(h.element.scrollTop).toBe(202);
+    });
+
+    it('keeps honouring the destination through the settle window, then stops', () => {
+        const h = harness();
+        let want = 200;
+        animateScrollTop(h.element, want, {
+            durationMs: 220,
+            now: h.now,
+            raf: h.raf,
+            timer: null,
+            retarget: () => want,
+            settleMs: 400
+        });
+        h.advance(0);
+        h.advance(220);
+        expect(h.element.scrollTop).toBe(200);
+        // A commit AFTER the reveal moved the row. The historical one-shot never looked again.
+        want = 223;
+        h.advance(16);
+        expect(h.element.scrollTop).toBe(223);
+        // …and once the window is spent the reveal lets go, whatever moves next.
+        h.advance(400);
+        want = 900;
+        h.advance(16);
+        expect(h.element.scrollTop).toBe(223);
+        expect(h.pending()).toBe(0);
+    });
+
+    it('a cancel ends the settle watch too — the caller can hand the list back', () => {
+        const h = harness();
+        let want = 200;
+        const cancel = animateScrollTop(h.element, want, {
+            durationMs: 220,
+            now: h.now,
+            raf: h.raf,
+            timer: null,
+            retarget: () => want,
+            settleMs: 400
+        });
+        h.advance(0);
+        h.advance(220);
+        expect(h.element.scrollTop).toBe(200);
+        cancel();
+        want = 400;
+        h.advance(16);
+        expect(h.element.scrollTop).toBe(200);
+        expect(h.pending()).toBe(0);
+    });
+
     it('assigns immediately with no frames available (jsdom) or a zero duration', () => {
         const frames = globalThis.requestAnimationFrame;
         // @ts-expect-error — deliberately modelling an environment that has no frames at all.

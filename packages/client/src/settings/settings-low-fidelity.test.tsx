@@ -220,7 +220,10 @@ describe('L80 — the six missing `.help()` tooltips', () => {
         expect(screen.getByTestId('label-text-ship-custom').getAttribute('title')).toBe(
             'Pick a text colour'
         );
-        expect(screen.getByTestId('label-delete-ship').getAttribute('title')).toBe('Remove preset');
+        // §N36(2) SWAP: the Swift's own help text is "Remove preset" (`:244`); the owner directed
+        // the tab's user-facing vocabulary to LABELS, so the tooltip exists — which is what L80
+        // is about — and says "Remove label". The divergence is recorded, not silent.
+        expect(screen.getByTestId('label-delete-ship').getAttribute('title')).toBe('Remove label');
     });
 
     /** `SettingsView.swift:792`. */

@@ -621,9 +621,13 @@ describe('focus handoff (WEB-043)', () => {
 
 // ── WEB-002 ─────────────────────────────────────────────────────────────────────────
 
-function BlankHarness(props: { readonly onFocus: (paneID: string) => void }): ReactElement {
+function BlankHarness(props: {
+    readonly onFocus: (paneID: string) => void;
+    /** §N35: the daemon's `hasSnapshot`. Defaults to "already attached", as the hook does. */
+    readonly attached?: boolean;
+}): ReactElement {
     const [targets, setTargets] = useState<readonly BlankURLTarget[]>([]);
-    useBlankWebPaneURLFocus(targets, props.onFocus);
+    useBlankWebPaneURLFocus(targets, props.onFocus, props.attached ?? true);
     return (
         <div>
             <button type="button" data-testid="add-blank" onClick={() => setTargets([{ paneID: PANE, activeTabID: TAB1, activeURL: '' }])}>
@@ -681,6 +685,33 @@ describe('a blank web pane claims the URL bar (WEB-002)', () => {
     it('bumps again for a blank NEW TAB in a pane it already knows', () => {
         const focused: string[] = [];
         render(<BlankHarness onFocus={(paneID) => focused.push(paneID)} />);
+        fireEvent.click(screen.getByTestId('add-loaded'));
+        fireEvent.click(screen.getByTestId('add-blank-tab'));
+        expect(focused).toEqual([PANE]);
+    });
+
+    /**
+     * §N35 — a RELOAD is not an opening, and the first-pass guard has to be able to tell.
+     *
+     * The hook's adoption pass keyed off its first effect RUN, which happens before any state
+     * has arrived: `previous` was an empty set, so the panes the snapshot then delivered all
+     * looked new. Live, that is WEB-002 taking the caret off a restored pane 35 ms into a
+     * reload (`docs/audit/n34-n35-reveal-focus/`). The pass now keys off the snapshot.
+     */
+    it('adopts what a RELOAD attaches to in silence, and still bumps for what opens after (N35)', () => {
+        const focused: string[] = [];
+        const { rerender } = render(<BlankHarness attached={false} onFocus={(paneID) => focused.push(paneID)} />);
+        // The panes are on screen before the client is attached — the reload's own ordering.
+        fireEvent.click(screen.getByTestId('add-blank'));
+        expect(focused).toEqual([]);
+        // The snapshot lands with those same panes already there: adopted, not opened.
+        rerender(<BlankHarness attached={true} onFocus={(paneID) => focused.push(paneID)} />);
+        expect(focused).toEqual([]);
+    });
+
+    it('an attached client still bumps for a tab that opens after the snapshot (N35)', () => {
+        const focused: string[] = [];
+        render(<BlankHarness attached={true} onFocus={(paneID) => focused.push(paneID)} />);
         fireEvent.click(screen.getByTestId('add-loaded'));
         fireEvent.click(screen.getByTestId('add-blank-tab'));
         expect(focused).toEqual([PANE]);

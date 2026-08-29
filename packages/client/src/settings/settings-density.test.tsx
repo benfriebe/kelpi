@@ -154,31 +154,37 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
 
     /**
      * S60 — the Swift's 124 pt track (`LabelPresetsSettingsView.swift:9`) holds what the SWIFT
-     * puts there: one compact `Menu` plus a well (`:224-233`, `:356-399`). This port draws the
-     * mode as three explicit choices, so the cluster measured 21.07 (Aa) + 36.27 + 40.23 + 41.89
-     * + 24 (well) + 4 × 4 px of gaps = 179.5 px, and the group wrapped to a 44.4 px two-line box
-     * on EVERY row at EVERY window width — the wrapped `White` chip drawing over the row's usage
-     * caption at a narrow window.
+     * puts there: one compact `Menu` plus a well (`:224-233`, `:356-399`). This port drew the
+     * mode as three explicit choices instead, so the cluster measured 21.07 (Aa) + 36.27 + 40.23
+     * + 41.89 + 24 (well) + 4 × 4 px of gaps = 179.5 px, and S60 widened the track to 184 so it
+     * would stop wrapping to a 44.4 px two-line box on every row.
      *
      * S57 — and the name track has a floor. As `minmax(0,1fr)` it was the only flexible track
      * among five hard px ones, so a 760 × 700 window took it to 14 × 28.2 px while `bgColor`,
      * `textColor`, `preview`, `reorder` and `action` all held their width.
+     *
+     * §N36(3) SWAP — owner-directed, and it settles BOTH of those rows rather than restating
+     * them. S60's own recorded remedy (collapse Auto/Black/White into one control, as `:365-394`
+     * does) is now taken, so the cluster is 121.07 px and the track goes back to the Swift's
+     * **124**; the 60 px it frees goes into S57's floor, **100 → 160**, which is what makes the
+     * name field readable at a narrow window and not only at the default one. Measured live at
+     * both widths in `docs/audit/n36-labels-design/`: the cluster does not wrap at either
+     * (121.07 px of content in 124, one line), the row height is unchanged at 54 px, and
+     * `LABEL_GRID_MIN_WIDTH` is unchanged at 648 px.
      */
-    /*
-     * §N32 SWAP: the loop read the composer and a preset row. §N32 removed the composer, and the
-     * 184 was never the composer's — the five controls it is sized for are in every preset row —
-     * so the same template is now asserted ROW against ROW, which is what has to keep lining up.
-     */
-    it('S57/S60 — one grid template: a 184 px text-colour track and a floored name track', () => {
+    it('S57/S60/§N36 — one grid template: the Swift’s 124 px text-colour track, floored name', () => {
         open();
         for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
-            expect(node.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
         // The cluster is sized off the same constant, so the track and its contents cannot drift.
         const group = screen.getByRole('group', { name: /ship text color/i });
-        expect(group.style.width).toBe('184px');
+        expect(group.style.width).toBe('124px');
+        // …and what makes 124 possible is that the three buttons are ONE control now.
+        expect(screen.getByTestId('label-text-ship-mode').tagName).toBe('SELECT');
+        expect(screen.queryByTestId('label-text-ship-white')).toBeNull();
     });
 
     /**
@@ -187,14 +193,26 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * used two insets and the eye read a 2 px step moving between them. The 6/8 px VERTICAL
      * values are §L79's measurements off the shipped dialog and do not move.
      */
-    // §N32 SWAP: the composer's own `px-2.5 py-2` went with it; the row inset it had to match is
-    // still here, and so is the Add button that now leads the tab on the same 10 px gutter.
+    /*
+     * §N32 SWAP: the composer's own `px-2.5 py-2` went with it; the row inset it had to match is
+     * still here.
+     *
+     * §N36(1) SWAP for the last line, owner-directed. It pinned the Add button to the same 10 px
+     * gutter as a row, which was the right claim while the button stood in the list's own left
+     * column. It stands in the SECTION HEADER now, on the trailing edge, so the gutter it has to
+     * respect is the header's — and the header is `SettingsSection`'s, not this tab's. What the
+     * row inset has to line up with there is the button's RIGHT edge against the row's right
+     * edge, which is geometry and is measured live (`add.right 1063 === row.right 1063` at the
+     * default window, 712.59 = 712.59 at 760 px: `docs/audit/n36-labels-design/after.json`).
+     * Here, the DOM claim: the button is in the header, and the rows keep their 10 px.
+     */
     it('S64 — the labels rows are inset 10 px horizontally, vertical untouched', () => {
         open();
         expect(screen.getByTestId('label-preset-ship').className).toContain('px-2.5');
         expect(screen.getByTestId('label-preset-ship').className).toContain('py-1.5');
         expect(screen.getByTestId('label-preset-wip').className).toContain('px-2.5');
-        expect(screen.getByTestId('label-add').parentElement?.className).toContain('px-2.5');
+        const heading = screen.getByTestId('label-presets').querySelector('h3');
+        expect(heading?.parentElement?.contains(screen.getByTestId('label-add'))).toBe(true);
     });
 });
 

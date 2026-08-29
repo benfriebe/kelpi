@@ -137,6 +137,21 @@ export interface SettingsSectionProps {
      * the first — which is L79's own defect pointing the other way.
      */
     readonly plain?: boolean | undefined;
+    /**
+     * §N36(1) — a control on the header's TRAILING edge, level with the title.
+     *
+     * Owner-directed, and it had no in-app precedent to inherit: the one header-trailing action
+     * this port ever drew was the Keybindings tab's "Reset All to Defaults", and §M44 took it OUT
+     * of a header row and put it back in the footer strip the shipped app has
+     * (`KeybindingsSettingsView.swift:61-72`). So the anchor is §L79's own section recipe — the
+     * heading row is the section's toolbar — rather than a shape copied from another tab.
+     *
+     * It lives on the SECTION rather than being hand-rolled in the tab for the reason L79 states
+     * about the heading itself: two header recipes inside one window is what the uppercase
+     * micro-label already looked like. A section with no `action` renders exactly the markup it
+     * rendered before — the row is only introduced when there is something to put in it.
+     */
+    readonly action?: ReactNode;
 }
 
 /**
@@ -192,9 +207,23 @@ export function SettingsSection(props: SettingsSectionProps): ReactElement {
             className="flex flex-col gap-1.5"
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
         >
-            <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
-                {props.title}
-            </h3>
+            {props.action === undefined ? (
+                <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
+                    {props.title}
+                </h3>
+            ) : (
+                // §N36(1): title left, action right, on ONE line. `min-h` is the button's own
+                // height, so a section with an action and one without do not sit at different
+                // heights when they are stacked on the same tab.
+                <div className="flex min-h-[24px] items-center justify-between gap-3">
+                    <h3 className={SETTINGS_SECTION_HEADING} style={{ color: tokens.textPrimary }}>
+                        {props.title}
+                    </h3>
+                    <div data-settings-section-action="true" className="flex shrink-0 items-center gap-2">
+                        {props.action}
+                    </div>
+                </div>
+            )}
             {props.plain === true ? (
                 <div className="flex flex-col gap-2">{props.children}</div>
             ) : (

@@ -1053,6 +1053,88 @@ describe('TerminalPane — helpers', () => {
         expect(document.activeElement).not.toBe(engineInput);
         expect(shouldGrabFocus(document.createElement('div'))).toBe(true);
     });
+
+    /**
+     * §N35 — the ENGINE grabs the caret on `open()`, and an unfocused pane has to hand it back.
+     *
+     * `Terminal.open()` ends with `this.focus()` (`vendor/…/terminal.ts:636`), unconditionally,
+     * so the politeness rule the pane applies to its own `renderer.focus()` is bypassed
+     * completely. Live, that is a client reload handing the keyboard to whichever engine
+     * finished loading last, whatever pane wears the ring
+     * (`docs/audit/n34-n35-reveal-focus/`).
+     */
+    it('hands the caret back when an UNFOCUSED pane’s engine focuses itself on open (N35)', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        input.focus();
+
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
+        expect(host.querySelector('textarea')).not.toBeNull();
+        expect(document.activeElement).toBe(input);
+        input.remove();
+    });
+
+    it('…and answers the engine’s DELAYED backup grab too (N35)', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        input.focus();
+
+        render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused={false}
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+        // `Terminal.focus()` schedules the same focus again on a `setTimeout(0)`; a one-shot
+        // undo catches only the first, and the packaged stack measured exactly that. Fake
+        // timers here, so the backup is advanced rather than waited for.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        await settle();
+        expect(document.activeElement).toBe(input);
+        input.remove();
+    });
+
+    it('…and a FOCUSED pane keeps what its engine took (N35)', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+            />
+        );
+        await settle();
+
+        const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
+        expect(host.contains(document.activeElement)).toBe(true);
+    });
 });
 
 // ── mouse reporting (§TERM-037…§TERM-039) ───────────────────────────────────────────

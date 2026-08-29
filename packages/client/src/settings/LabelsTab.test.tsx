@@ -3,7 +3,7 @@ import { useState, type ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChromeLabelPreset } from '../chrome';
-import { LabelsTab } from './LabelsTab';
+import { LABEL_GRID_MIN_WIDTH, LabelsTab } from './LabelsTab';
 import type { LabelledWorkspace } from './model';
 import type { SettingsActions } from './types';
 
@@ -159,18 +159,38 @@ describe('the tab’s shape (H25/H26/H27)', () => {
              * bgColor 150 / name flexes / textColor / preview 80 / (port-only reorder) /
              * action 40 — `LabelPresetsSettingsView.swift:7-12`.
              *
-             * Two of those numbers moved, and the old assertion pinned both of the defects:
+             * §N36(3) SWAP — owner-directed, and it is one template pinned in place of another.
+             * The pinned string was `150px minmax(100px,1fr) 184px 80px 44px 40px`, and both of
+             * the numbers that moved were port deviations rather than Swift widths:
              *
-             *   · S60 — `textColor` is 184, not the Swift's 124. 124 pt holds what the SWIFT
-             *     draws there (one compact `Menu` + a well); this port draws the mode as three
-             *     explicit choices, which need 179.5 px, so the group wrapped to two lines on
-             *     every row at every width and the wrapped line drew over the usage caption.
-             *   · S57 — the name track has a floor. As `minmax(0,1fr)` it was the only flexible
-             *     track among five hard px ones, so a 760 px window took it to 14 px.
+             *   · `textColor` 184 → **124**, the Swift's own `LabelCol.textColor`. §S60 widened
+             *     it because this port drew the text-colour mode as three explicit buttons
+             *     (179.5 px of children) where `:365-394` draws one `Menu`; the owner directed
+             *     §S60's own recorded remedy — collapse them into ONE control — and a `<select>`
+             *     at this row's scale makes the cluster 121.07 px, which fits 124.
+             *   · the name track's FLOOR 100 → **160**, which is where the 60 px went. §S57 put
+             *     the floor there so a narrowing window scrolls instead of emptying the field;
+             *     raising it is what makes the field readable at EVERY width rather than only at
+             *     the default one, and `LABEL_GRID_MIN_WIDTH` is unchanged at 648 either way.
+             *
+             * Measured on the live stack (`docs/audit/n36-labels-design/`): at the default window
+             * the name field goes 29.36 → 89.36 px and the minted `New label` stops overflowing
+             * its field (slack −14.49 → +45.51 px).
              */
-            expect(node.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
+    });
+
+    /*
+     * …and the rebalance is free at the narrow end, which is the half a template alone does not
+     * say. §S57's floor is what stops a narrowing window emptying the name field, and the width
+     * below which the list scrolls sideways instead is the sum of the tracks and the gaps. That
+     * sum is 648 either side of §N36 — 150 + 100 + 184 = 150 + 160 + 124 — so a panel that fitted
+     * the row before still fits it, and one that scrolled scrolls by the same amount.
+     */
+    it('leaves the width at which the list starts scrolling unchanged (§S57 / §N36)', () => {
+        expect(LABEL_GRID_MIN_WIDTH).toBe(648);
     });
 
     /*
@@ -231,6 +251,106 @@ describe('the tab’s shape (H25/H26/H27)', () => {
     });
 });
 
+/*
+ * §N36 — the owner's three directives, in the two halves jsdom can answer.
+ *
+ * The GEOMETRY half of (3) and the whole of (4) are not here and cannot be: jsdom has no layout,
+ * so "the name track is 162 px" and "the minted name is not clipped" are measured on the live
+ * stack instead (`docs/audit/n36-labels-design/probe.mjs`, and the `labels-design` audit step).
+ * What is here is what a DOM can be asked: WHERE the button is in the tree, and WHAT the tab
+ * says. The template the geometry follows from is pinned in "the tab's shape" above.
+ */
+describe('§N36 — the header action and the tab’s words', () => {
+    /** The section's heading row: the `<h3>`'s own parent, which is where the action lives. */
+    function headerRow(): HTMLElement {
+        const heading = screen.getByTestId('label-presets').querySelector('h3');
+        expect(heading).not.toBeNull();
+        return heading?.parentElement as HTMLElement;
+    }
+
+    /*
+     * (1) The New Label button is IN the header row, level with the title — not the first item of
+     * the list it heads, which is where the owner's frame found it.
+     *
+     * Asserted as containment plus source order rather than as a class list: `justify-between`
+     * is one way to put a control on the trailing edge and there is no reason for a test to
+     * insist on it, but "the heading and the button are children of one row, title first" is the
+     * claim, and the live probe reads the resulting x's (`add.right === row.right`, 1063 = 1063
+     * at the default window).
+     */
+    it('puts the New Label button in the section header, after the title', () => {
+        setup();
+        const header = headerRow();
+        const add = screen.getByTestId('label-add');
+        expect(header.contains(add)).toBe(true);
+        const order = Array.from(header.children);
+        expect(order[0]?.tagName).toBe('H3');
+        expect(order[order.length - 1]?.contains(add)).toBe(true);
+        // …and it is still ABOVE the divider, which is the position §N32(a) fixed and §N36 must
+        // not undo: header, rule, then the list.
+        const section = screen.getByTestId('label-presets');
+        const ids = Array.from(section.querySelectorAll<HTMLElement>('[data-testid]'))
+            .map((node) => node.dataset['testid'] ?? '')
+            .filter((id) => id === 'label-add' || id === 'label-add-divider');
+        expect(ids).toEqual(['label-add', 'label-add-divider']);
+    });
+
+    it('keeps the header action out of every OTHER section, which renders a bare heading', () => {
+        // The orphan section takes no action, so `SettingsSection` must not have grown a row
+        // wrapper for everyone: a section with no action renders the `<h3>` it always did.
+        setup([{ labels: ['adopt-me'] }], []);
+        const orphans = screen.getByTestId('label-orphans');
+        const heading = orphans.querySelector('h3');
+        expect(heading?.parentElement).toBe(orphans);
+        expect(orphans.querySelector('[data-settings-section-action]')).toBeNull();
+    });
+
+    /*
+     * (2) The tab's user-facing vocabulary is LABELS. The daemon's object stays a "preset" in
+     * every identifier — `label-presets`, `label-preset-ship`, `add-label-preset` — which is the
+     * boundary this asserts from both sides: no rendered text and no announced string says
+     * "preset", while the test ids this very file addresses rows by still do.
+     */
+    it('says "label" everywhere a person can read, and "preset" only in identifiers', () => {
+        setup();
+        const tab = screen.getByTestId('settings-tab-labels');
+        expect(screen.getByTestId('label-presets').querySelector('h3')?.textContent).toBe('Labels');
+        expect(tab.textContent ?? '').not.toMatch(/preset/i);
+        const announced = Array.from(tab.querySelectorAll('[aria-label], [title]')).flatMap((node) =>
+            [node.getAttribute('aria-label'), node.getAttribute('title')].filter(
+                (value): value is string => value !== null
+            )
+        );
+        expect(announced.filter((value) => /preset/i.test(value))).toEqual([]);
+        // The identifiers are untouched — this is the half that says the rename was COPY only.
+        expect(screen.getByTestId('label-preset-ship')).toBeDefined();
+        expect(screen.getByTestId('label-presets')).toBeDefined();
+    });
+
+    it('says it in the empty state', () => {
+        setup([], []);
+        expect(screen.getByTestId('labels-empty').textContent).toContain('No labels yet');
+        expect(screen.getByTestId('settings-tab-labels').textContent ?? '').not.toMatch(/preset/i);
+    });
+
+    it('says it in the orphan section too', () => {
+        setup([{ labels: ['adopt-me'] }], []);
+        expect(screen.getByTestId('settings-tab-labels').textContent ?? '').not.toMatch(/preset/i);
+        expect(screen.getByTestId('label-orphans').textContent).toContain('Labels not defined here');
+    });
+
+    it('says it in the delete confirmation, which is the one place the two nouns met', () => {
+        setup([{ labels: ['ship'] }]);
+        fireEvent.click(screen.getByTestId('label-delete-ship'));
+        const confirm = screen.getByTestId('label-delete-confirm-ship');
+        expect(confirm.textContent).toContain('Delete this label?');
+        // …and it still says exactly what survives the delete (§6.4): the NAME stays applied.
+        expect(confirm.textContent).toContain('The name stays on 1 workspace');
+        expect(confirm.textContent).toContain('render neutral');
+        expect(confirm.textContent ?? '').not.toMatch(/preset/i);
+    });
+});
+
 describe('designing a preset (SET-058, SET-061, SET-062)', () => {
     /*
      * §N32 SWAP — two tests died here and their coverage moved one row down.
@@ -244,13 +364,56 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
      *     own controls — the same two writes, in the other order, asserted here end to end so
      *     the capability is not merely assumed to have survived.
      */
+    /*
+     * §N36(3) SWAP — the text-colour mode is now ONE `<select>` where three `aria-pressed`
+     * buttons stood, so the GESTURE in these three tests changes from a click on the chosen
+     * button to a change on the chosen option. What is asserted does not: the same two writes,
+     * in the same order, with the same values. The button test ids (`label-text-ship-white`
+     * etc.) are gone with the buttons; `label-text-ship-mode` is the control that replaced them,
+     * and its `data-mode` is the read that replaced `aria-pressed`.
+     */
+    function setTextMode(preset: string, mode: 'auto' | 'black' | 'white'): void {
+        fireEvent.change(screen.getByTestId(`label-text-${preset}-mode`), { target: { value: mode } });
+    }
+
     it('designs a minted preset through its own row: background, then text colour', () => {
         const bound = setup();
         fireEvent.click(screen.getByTestId('label-color-ship-purple'));
-        fireEvent.click(screen.getByTestId('label-text-ship-white'));
+        setTextMode('ship', 'white');
         expect(bound.log.updated).toEqual([
             { id: 'ship', color: 'purple' },
             { id: 'ship', textColor: '#ffffff' }
+        ]);
+    });
+
+    /*
+     * …and the control SHOWS which mode is set, which is the whole reason this port draws the
+     * mode rather than hiding it behind a menu (§H26/§L93). `Custom` is offered only when the
+     * well has already made one — a `<select>` cannot display a value that is not an option, and
+     * the Swift menu (`:365-394`) does not offer Custom either.
+     */
+    it('shows the current mode in the collapsed control, Custom included (§N36)', () => {
+        setup([], [
+            { name: 'auto', color: { kind: 'named', color: 'gray' }, textColor: null },
+            { name: 'white', color: { kind: 'named', color: 'gray' }, textColor: { kind: 'custom', hex: '#ffffff' } },
+            { name: 'odd', color: { kind: 'named', color: 'gray' }, textColor: { kind: 'custom', hex: '#3366cc' } }
+        ]);
+        const modeOf = (preset: string): HTMLSelectElement =>
+            screen.getByTestId(`label-text-${preset}-mode`) as HTMLSelectElement;
+        expect(modeOf('auto').value).toBe('auto');
+        expect(modeOf('auto').dataset['mode']).toBe('auto');
+        expect(Array.from(modeOf('auto').options).map((option) => option.value)).toEqual([
+            'auto',
+            'black',
+            'white'
+        ]);
+        expect(modeOf('white').value).toBe('white');
+        expect(modeOf('odd').value).toBe('custom');
+        expect(Array.from(modeOf('odd').options).map((option) => option.value)).toEqual([
+            'auto',
+            'black',
+            'white',
+            'custom'
         ]);
     });
 
@@ -262,8 +425,8 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
 
     it('sends null for Auto, so the daemon re-derives black/white by luminance', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-text-ship-black'));
-        fireEvent.click(screen.getByTestId('label-text-ship-auto'));
+        setTextMode('ship', 'black');
+        setTextMode('ship', 'auto');
         expect(bound.log.updated).toEqual([
             { id: 'ship', textColor: '#000000' },
             { id: 'ship', textColor: null }
@@ -303,7 +466,8 @@ describe('renaming a preset (SET-063)', () => {
         fireEvent.change(field, { target: { value: 'wip' } });
         fireEvent.keyDown(field, { key: 'Enter' });
         expect(bound.log.updated).toEqual([]);
-        expect(screen.getByTestId('label-rename-error-ship').textContent).toContain('already a preset');
+        // §N36(2): the refusal says "label", not "preset" — the sweep's most load-bearing string.
+        expect(screen.getByTestId('label-rename-error-ship').textContent).toContain('already a label');
         // The row still shows the STORED name — nothing was left half-renamed on screen.
         expect(field.value).toBe('ship');
         expect(screen.getByTestId('label-chip-ship').textContent).toBe('ship');
@@ -364,7 +528,9 @@ describe('deleting a preset (§6.4)', () => {
         const bound = setup([{ labels: ['ship'] }]);
         fireEvent.click(screen.getByTestId('label-delete-ship'));
         expect(bound.log.removed).toEqual([]);
-        expect(screen.getByTestId('label-delete-confirm-ship').textContent).toContain('renders neutral');
+        // §N36(2): "…renders neutral" → "…those chips render neutral" — the sentence had to name
+        // what survives without the preset/label pair to lean on. The claim is untouched.
+        expect(screen.getByTestId('label-delete-confirm-ship').textContent).toContain('render neutral');
         fireEvent.click(screen.getByTestId('label-delete-confirm-yes-ship'));
         expect(bound.log.removed).toEqual(['ship']);
     });
@@ -536,7 +702,9 @@ describe('minting a preset (N32)', () => {
         const first = screen.getByTestId('label-preset-ship');
         const second = screen.getByTestId('label-preset-wip');
         expect(first.style.gridTemplateColumns).toBe(second.style.gridTemplateColumns);
-        expect(first.style.gridTemplateColumns).toBe('150px minmax(100px,1fr) 184px 80px 44px 40px');
+        // §N36(3) SWAP: the same one-template-for-every-row claim, on the template the owner's
+        // rebalance produced. Reasoned about where it is defined, above.
+        expect(first.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
         // S64's 10 px horizontal inset, measured off the shipped dialog.
         expect(first.className).toContain('px-2.5');
         expect(second.className).toContain('px-2.5');

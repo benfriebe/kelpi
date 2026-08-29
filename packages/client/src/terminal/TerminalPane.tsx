@@ -27,7 +27,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { PANE_SURFACE_ATTR, releasePaneCaret, shouldGrabFocus } from '../app/pane-focus';
+import { PANE_SURFACE_ATTR, releasePaneCaret, shouldGrabFocus, undoSurfaceAutoFocus } from '../app/pane-focus';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
@@ -94,6 +94,17 @@ export const TERMINAL_START_ATTEMPTS = 3;
 
 /** Backoff before rebuilding a failed engine; doubles per attempt (150 ms, then 300 ms). */
 export const TERMINAL_START_RETRY_MS = 150;
+
+/**
+ * §N35 — how long after `open()` the pane keeps answering its ENGINE's own focus grabs.
+ *
+ * `Terminal.focus()` focuses the textarea and schedules the same focus again on a
+ * `setTimeout(0)` backup (`vendor/ghostty-web-patched/source/lib/terminal.ts:844-860`), and
+ * `open()` calls it unconditionally — so an unfocused pane grabs the caret at least twice, the
+ * second time after any one-shot undo has run. The window is short and bounded: once the pane is
+ * live every claim goes through the focus effect like any other.
+ */
+export const ENGINE_AUTOFOCUS_WINDOW_MS = 250;
 
 /**
  * §TERM-036 — the surface's accessibility identity.
@@ -599,16 +610,83 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             publishHold(false);
             const offHold = renderer.onPaintHoldChange(publishHold);
 
+            /**
+             * §N35 — the engine focuses ITSELF, and the port has to be able to say no.
+             *
+             * `Terminal.open()` ends with `this.focus()` ("auto-focus so user can start typing
+             * immediately", `vendor/ghostty-web-patched/source/lib/terminal.ts:636`), which is
+             * a reasonable default for a page that hosts one terminal and wrong for a window
+             * that hosts several. The Swift has no equivalent: a `ghostty_surface_t` does not
+             * claim anything, `SurfaceContainerView` decides (`:146-156`). So the port lets the
+             * grab happen and then undoes it unless THIS pane was entitled to it — and puts the
+             * caret back where the engine took it from, which is the whole point: the element
+             * it takes it from is the sidebar rename, the palette, or the pane the user is
+             * actually in.
+             *
+             * Reachable without a reload (any pane opening beside a focused one) but a reload
+             * is where it shows: every pane remounts at once, so the LAST engine to finish
+             * loading its wasm ends up holding the keyboard, whichever pane wears the ring.
+             *
+             * It grabs TWICE, which is why the undo is a window and not a line. `Terminal.focus()`
+             * focuses the textarea and then schedules the same focus again on a `setTimeout(0)`
+             * — "a delayed focus as backup to ensure it sticks" (`terminal.ts:844-860`). A
+             * one-shot undo catches the first and the backup lands after it, which is exactly
+             * the shape the PACKAGED stack produced while the dev one stayed green: the same
+             * code, a different engine-load order, and the caret ended on `<body>` with the ring
+             * drawn elsewhere. So the undo stays armed for a short bounded window and answers
+             * every grab in it.
+             */
+            const hostDocument = host.ownerDocument;
+            let engineTookFrom: Element | null = hostDocument.activeElement;
+            /*
+             * Who holds the caret while this engine is loading. `focusin`'s own `relatedTarget`
+             * would be the obvious source and is not portable enough to rest a caret on (jsdom
+             * leaves it null), so the owner is tracked instead: the last element to take focus
+             * from OUTSIDE this host, starting from whoever had it when the pane mounted. A
+             * wasm load is long enough that a person can start a sidebar rename inside it.
+             */
+            const noteEngineGrab = (event: FocusEvent): void => {
+                const target = event.target;
+                if (target instanceof Element && !host.contains(target)) engineTookFrom = target;
+            };
+            hostDocument.addEventListener('focusin', noteEngineGrab, true);
+            /** Every grab this engine makes while the window is open, answered the same way. */
+            const answerEngineGrab = (): void => {
+                if (cancelled) return;
+                // Entitled after all (the pane gained focus while its engine was loading):
+                // `shouldGrabFocus` passes trivially for a caret already inside this host.
+                if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) return;
+                undoSurfaceAutoFocus(host, engineTookFrom);
+            };
+            let closeUndoWindow: (() => void) | null = null;
             void renderer.open(host).then(
                 () => {
-                    if (cancelled) return;
+                    if (cancelled) {
+                        hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                        return;
+                    }
                     setStatus('live');
                     // The engine's real metrics exist only now; a disagreement with the
                     // estimate is corrected here, before anything else can measure.
                     syncGeometry(true);
                     if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
+                    else undoSurfaceAutoFocus(host, engineTookFrom);
+                    // …and the engine's own delayed backup, and anything else it does while it
+                    // finishes coming up. Bounded: after this the pane is live and every claim
+                    // goes through the focus effect like any other.
+                    host.addEventListener('focusin', answerEngineGrab);
+                    const timer = setTimeout(() => {
+                        closeUndoWindow?.();
+                    }, ENGINE_AUTOFOCUS_WINDOW_MS);
+                    closeUndoWindow = () => {
+                        closeUndoWindow = null;
+                        clearTimeout(timer);
+                        host.removeEventListener('focusin', answerEngineGrab);
+                        hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                    };
                 },
                 (error: unknown) => {
+                    hostDocument.removeEventListener('focusin', noteEngineGrab, true);
                     if (cancelled) return;
                     // Seal the stream BEFORE the teardown: the daemon keeps sending, and a
                     // chunk that arrives between the rejection and the unsubscribe must not be
@@ -619,6 +697,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             );
 
             teardown = () => {
+                // Idempotent: an engine still loading when the pane unmounts would otherwise
+                // leave these attached until its promise settles.
+                hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                closeUndoWindow?.();
                 clearResizeTimer();
                 // A rebuilt engine re-attaches and is told its modes again; until then this
                 // pane reports nothing rather than reporting against a dead stream.

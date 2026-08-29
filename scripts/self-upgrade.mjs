@@ -52,6 +52,20 @@ const daemonPattern =
 
 const log = (line) => console.log(`[self-upgrade] ${line}`);
 
+// ── 0. the battery ──────────────────────────────────────────────────────────────────
+// A promote is the moment the owner receives the build, so it is the moment the FULL
+// battery runs — the tiered flow's whole bargain (scoped checks per change) rests on this
+// gate being unskippable in the normal path. --skip-verify exists for a re-promote of a
+// bundle the battery already passed, and it says so out loud.
+
+if (!has('--skip-verify') && !dryRun) {
+    log('running the full battery first (scripts/verify.mjs --full; skip with --skip-verify');
+    log('only when re-promoting a bundle the battery already passed)…');
+    execSync(`"${process.execPath}" scripts/verify.mjs --full`, { cwd: repoRoot, stdio: 'inherit' });
+} else if (has('--skip-verify')) {
+    log('SKIPPING the battery (--skip-verify) — this bundle had better have passed it already.');
+}
+
 // ── 1. package ──────────────────────────────────────────────────────────────────────
 
 if (!noPackage && !dryRun) {

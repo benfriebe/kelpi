@@ -7759,7 +7759,7 @@ function buildFlows(ctx) {
              */
             id: 'web-popup-layering',
             expect:
-                'Every floating DOM surface that can land over a web pane is VISIBLE over it: the sidebar row menu, its delete confirmation, the title bar layout dropdown, the footer stat popover and the pane\'s own bookmarks menu each park the page they cover (client `data-visible=false` + the shell taking the view back to the holder), leave the pages they do NOT cover placed, and hand every page back at the same bounds on close.',
+                'Every floating DOM surface that can land over a web pane is VISIBLE over it: the sidebar row menu, its delete confirmation, the title bar layout dropdown, the footer stat popover, the pane\'s own bookmarks menu and Settings ▸ Labels\' colour flyover (§N38) each park the page they cover (client `data-visible=false` + the shell taking the view back to the holder), leave the pages they do NOT cover placed, and hand every page back at the same bounds on close.',
             needsEyes: true,
             async run(recorder) {
                 const workspaceName = 'n26-popup-layering';
@@ -8749,6 +8749,109 @@ function buildFlows(ctx) {
                         }
                     );
                 }
+                /*
+                 * 11 — §N38's LABELS COLOUR FLYOVER, the census's newest member.
+                 *
+                 * The owner's redesign put a popover behind every Labels row's swatch, and a
+                 * popover that is not enrolled is exactly what §N26 was raised about. It enrols by
+                 * RECT (`useOverlayPresence` in `ColorFlyover.tsx`, the same call `ContextMenu`
+                 * makes), and this is where that is read against real pages rather than against a
+                 * jsdom stub.
+                 *
+                 * `whole: true`, and the reason is worth stating rather than assuming: Settings is
+                 * a whole-window modal (`App.tsx`'s `modalOpen` counts `settingsTab !== null`), so
+                 * every page in the window is already parked before the popover opens. What this
+                 * entry proves is therefore the pair that survives if that ever stops being true —
+                 * the surface really does land OVER a page area (measured, not assumed), and every
+                 * page comes back placed at §N27a's bounds when it and the dialog go away.
+                 *
+                 * Self-provisioning, and it cleans up after itself: a preset is minted only if the
+                 * list is empty, and a minted one is deleted again, so this step cannot leave a
+                 * `New label` behind for `labels-design`'s uniquifier assertion to trip over.
+                 */
+                let mintedForFlyover = false;
+                await layer(
+                    {
+                        label: 'labels colour flyover',
+                        shot: 'labels-flyover',
+                        selector: '[data-testid="label-color-flyover"]'
+                    },
+                    async () => {
+                        await openSettingsRoot(page);
+                        await settleDom(page, `document.querySelector('${PAGE.settingsPanel}') !== null`, {
+                            ceilingMs: 1200,
+                            intervalMs: 60
+                        });
+                        await page.click('[data-testid="settings-tab-button-labels"]');
+                        await settleDom(
+                            page,
+                            `document.querySelector('[data-testid="settings-tab-labels"]') !== null`,
+                            { ceilingMs: 1200, intervalMs: 60 }
+                        );
+                        const rows = await page.eval(
+                            `document.querySelectorAll('[data-testid^="label-preset-"]').length`
+                        );
+                        if (Number(rows) === 0) {
+                            mintedForFlyover = true;
+                            await page.click('[data-testid="label-add"]');
+                            await settleDom(
+                                page,
+                                `document.querySelector('[data-testid^="label-preset-"]') !== null`,
+                                { ceilingMs: 15_000, intervalMs: 100 }
+                            );
+                        }
+                        const opened = await page.eval(
+                            `(() => {
+                                const trigger = document.querySelector('[data-testid$="-trigger"][aria-haspopup="dialog"]');
+                                if (trigger === null) return 'no swatch trigger';
+                                trigger.click();
+                                return trigger.getAttribute('data-testid');
+                            })()`
+                        );
+                        recorder.note(`labels flyover opened from: ${String(opened)}`);
+                        await settleDom(
+                            page,
+                            `document.querySelector('[data-testid="label-color-flyover"]') !== null`,
+                            { ceilingMs: 1200, intervalMs: 60 }
+                        );
+                        /*
+                         * …and it really is over a PAGE, which is the half `whole: true` would
+                         * otherwise let this entry assume. Measured against the same page holes
+                         * every other surface in this census is measured against.
+                         */
+                        const panel = await surfaceRect('[data-testid="label-color-flyover"]');
+                        const pages = await holes();
+                        recorder.note(`flyover rect ${JSON.stringify(panel)} vs holes ${JSON.stringify(pages)}`);
+                        recorder.check(
+                            'labels colour flyover: it lands OVER a web pane’s page area (§N26)',
+                            panel !== null && panel.w > 0 && pages.some((hole) => overlaps(panel, hole)),
+                            `${JSON.stringify(panel)} vs ${JSON.stringify(pages.map((hole) => `${hole.id.slice(0, 8)} ${String(hole.x)},${String(hole.y)} ${String(hole.w)}×${String(hole.h)}`))}`
+                        );
+                    },
+                    async () => {
+                        // Escape closes the popover and hands focus back to the trigger (§N33).
+                        await page.key('Escape');
+                        await sleep(300);
+                        if (mintedForFlyover) {
+                            await page.eval(
+                                `(() => { const trash = document.querySelector('[data-testid^="label-delete-"]');
+                                          if (trash !== null) trash.click(); return null; })()`
+                            );
+                            await sleep(600);
+                        }
+                        /*
+                         * …and Settings goes by its own Close button, not by a second Escape.
+                         * `SettingsOverlay`'s Escape is a React `onKeyDown` on the DIALOG, so it
+                         * only fires while focus is inside it — and the delete above unmounts the
+                         * row the caret was returned to, dropping focus to `<body>`. A key with
+                         * nowhere to land would leave the dialog up and every page parked, which
+                         * is exactly the restore this entry asserts.
+                         */
+                        await page.click('[data-testid="settings-close"]');
+                    },
+                    // Settings owns the window while it is up, so there is no "spare" page here.
+                    { whole: true }
+                );
 
                 /*
                  * Park the pointer off the chrome before leaving.
@@ -8769,7 +8872,7 @@ function buildFlows(ctx) {
                 await sleep(300);
 
                 recorder.eyes(
-                    'in `delete-confirm` and `emoji-sheet` the dialog is WHOLE — message and both buttons — over blanked panes rather than sliced at a page edge; in `sidebar-menu`, `sidebar-submenu`, `layout-menu`, `pane-header-menu` and `bucket-popover` the surface is whole AND the page it does not cover is still painted; in `pane-drop-zone` the accent half-pane highlight and its outline are visible inside the target web pane'
+                    'in `delete-confirm` and `emoji-sheet` the dialog is WHOLE — message and both buttons — over blanked panes rather than sliced at a page edge; in `sidebar-menu`, `sidebar-submenu`, `layout-menu`, `pane-header-menu` and `bucket-popover` the surface is whole AND the page it does not cover is still painted; in `pane-drop-zone` the accent half-pane highlight and its outline are visible inside the target web pane; and in `labels-flyover` the §N38 colour popover is whole — chip preview, Background swatch grid, ✎ Custom row, the Auto/Black/White triple — sitting over blanked pages rather than sliced at one'
                 );
 
                 // Leave the app as this step found it: the scratch workspace and its panes go.
@@ -23765,7 +23868,7 @@ function buildFlows(ctx) {
         {
             id: 'labels-design',
             expect:
-                'Settings ▸ Labels creates a label by MINTING one (§N32): a single Add button — in the section header’s TOP RIGHT, above the divider (§H25 / §N36) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over, and that default name is displayed UNCLIPPED (§N36). Every property is then edited in that row: the background palette, the collapsed Auto/Black/White text-colour control and the live chip. There is no composer and no draft control anywhere. Every row is one grid line on LabelCol’s fixed widths (§H26) — the text-colour track back at the Swift’s 124 with the freed width in the name column (§N36) — a rename that collides snaps back (SET-063), the tab says LABELS and never “preset” (§N36), and a label minted here is the same object the CLI’s `workspace label` back-fill makes.',
+                'Settings ▸ Labels creates a label by MINTING one (§N32): a single Add button — in the section header’s TOP RIGHT, above the divider (§H25 / §N36) — writes a gray preset with a unique default name and hands its row’s name field the focus with the name SELECTED, so it is typed over, and that default name is displayed UNCLIPPED (§N36). Every row then collapses to [swatch trigger · name · chip · reorder · trash] (§N38): ONE swatch per row opens an anchored FLYOVER carrying both colours — a live chip preview with a close ×, a Background section (ten swatches + a bordered ✎ Custom row) and a Text section (Auto / Black / White + a Custom row showing the current swatch and hex), with either Custom opening a hand-rolled HSV view (saturation/value square, hue slider, hex field) that round-trips a stored colour byte-exactly. Picks apply IMMEDIATELY; the × and Escape only close, and Escape returns focus to the trigger. There is no composer, no draft control and no OS colour well anywhere. Every row is one grid line on LabelCol’s widths (§H26) — a 24 px swatch track with the 260 px the two colour tracks freed in the name column (§N38) — a rename that collides snaps back (SET-063), the tab says LABELS and never “preset” (§N36), and a label minted here is the same object the CLI’s `workspace label` back-fill makes.',
             needsEyes: true,
             async run(recorder) {
                 const open = await page.eval(`document.querySelector('${PAGE.settingsPanel}') !== null`);
@@ -23954,9 +24057,15 @@ function buildFlows(ctx) {
                  * §N32 SWAP: `addCols === rowCols` and `addLefts === rowLefts` compared the
                  * composer against a row. With no composer, the alignment that has to hold — and
                  * the only one the Swift's widths were ever about for the list — is every row
-                 * against every other. §S60's 184 px track was sized for the Aa/Auto/Black/White/
-                 * well cluster that lives in each of those rows, never for the composer's copy of
-                 * it, so this is also where "removing the composer did not move the grid" is read.
+                 * against every other.
+                 *
+                 * §N38 SWAP: the tracks those lefts fall on are §N38's five, not §N36(3)'s six.
+                 * The CLAIM is untouched and is the reason this survives every redesign — one
+                 * template for every row, and the same cell boundaries down the tab — but the
+                 * cells it walks are now [swatch · name · chip · reorder], the trigger's own being
+                 * the first. What is deliberately NOT pinned here is the template string: it is
+                 * asserted exactly once, in `LabelsTab.test.tsx`, so a rebalance is a one-line
+                 * change rather than a hunt.
                  */
                 const checkRowGeometry = async (label) => {
                     const rows = await readShape();
@@ -24171,76 +24280,513 @@ function buildFlows(ctx) {
                 await checkRowGeometry('three presets');
 
                 /*
-                 * SET-061 + SET-062, in the ROW rather than in a draft (§N32 SWAP): pick a named
-                 * background and an explicit WHITE text colour on the minted preset, and read what
-                 * the DAEMON stored back off the chip its delta produced.
+                 * §N38 (OWNER-DIRECTED) — SET-061 + SET-062 through the FLYOVER.
                  *
-                 * §N36(3) SWAP: the Auto / Black / White triple is ONE `<select>` now — that
-                 * collapse is what pays for the name column's width — so the GESTURE changes from
-                 * a click on the chosen button to a real change on the chosen option, and the
-                 * "which is set" read changes from that button's `aria-pressed` to the select's
-                 * own value. Nothing asserted below moves: the same two writes, the same daemon
-                 * round trip, the same colours read back off the chip.
+                 * This is the step's largest swap and every part of it is stated. What stood here
+                 * drove two IN-ROW controls: a click on `label-color-<name>-<color>` (one of ten
+                 * swatches in the 150 px `LabelCol.bgColor` track) and a native-setter `change` on
+                 * `label-text-<name>-mode` (§N36(3)'s collapsed `<select>` in the 124 px
+                 * `LabelCol.textColor` track), reading the result off the row's chip and its "Aa"
+                 * sample. The owner's mockup replaces both tracks with ONE swatch trigger per row
+                 * and one anchored popover, so:
                  *
-                 * `value` set through the native setter and `change` dispatched, exactly as
-                 * `search-colors` drives a colour input further down this file: React binds the
-                 * select's value, so assigning `.value` alone is reverted on the next render.
+                 *   | the assertion that was                    | the assertion that is |
+                 *   |-------------------------------------------|-----------------------|
+                 *   | click `label-color-X-purple` in the row    | open `label-color-X-trigger`, click `label-flyover-bg-purple` |
+                 *   | `setTextMode` on the row's `<select>`      | click `label-flyover-text-{auto,black,white}` |
+                 *   | mode read off `select.value` / `data-mode` | mode read off the three buttons' `aria-pressed` |
+                 *   | the "Aa" sample's resolved colour          | the flyover's Text ▸ Custom row (`…-hex`) and the chip |
+                 *   | the row has a bg cell AND a text cell      | the row has ONE swatch cell; both old ids are absent |
+                 *
+                 * And three claims that had nowhere to live before, because the surface did not
+                 * exist: the popover's own dismissals and focus hand-back (§N33), the custom HSV
+                 * view's byte-exact hex round trip, and its layering over the dialog (§N26 — the
+                 * over-a-WEB-PANE half is the census's own new entry in `web-popup-layering`).
+                 *
+                 * Everything below is driven with real clicks and real keys rather than dispatched
+                 * events wherever the control allows it, because focus is half of what is under
+                 * test and a synthetic `click()` does not move it.
                  */
-                const setTextMode = async (preset, mode) => {
-                    await page.eval(
-                        `(() => { const el = document.querySelector('[data-testid="label-text-${preset}-mode"]');
-                                  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
-                                  setter.call(el, '${mode}');
-                                  el.dispatchEvent(new Event('change', { bubbles: true }));
-                                  return true; })()`
+                const TRIGGER = '[data-testid="label-color-audit-design-trigger"]';
+                const flyoverState = `(() => {
+                    const panel = document.querySelector('[data-testid="label-color-flyover"]');
+                    const trigger = document.querySelector('[data-testid="label-color-audit-design-trigger"]');
+                    const active = document.activeElement;
+                    const id = (el) => el === null || el === undefined ? null
+                        : el === document.body ? 'BODY' : (el.getAttribute('data-testid') ?? el.tagName);
+                    const text = (sel) => (document.querySelector(sel)?.innerText ?? '').trim();
+                    const pressed = (prefix, names) => names.filter(
+                        (name) => document.querySelector('[data-testid="' + prefix + name + '"]')?.getAttribute('aria-pressed') === 'true'
                     );
-                };
-                await page.click('[data-testid="label-color-audit-design-purple"]');
-                await sleep(400);
-                await setTextMode('audit-design', 'white');
-                await sleep(600);
-                await recorder.shot(page, 'designed');
-                const stored = await page.eval(
-                    `(() => { const chip = document.querySelector('[data-testid="label-chip-audit-design"]');
-                              if (chip === null) return null;
-                              const style = getComputedStyle(chip);
-                              return { color: chip.getAttribute('data-color'), background: style.backgroundColor, text: style.color,
-                                       sample: getComputedStyle(document.querySelector('[data-testid="label-text-audit-design-sample"]')).color }; })()`
+                    const box = panel === null ? null : panel.getBoundingClientRect();
+                    return JSON.stringify({
+                        open: panel !== null,
+                        view: panel?.getAttribute('data-view') ?? null,
+                        target: panel?.getAttribute('data-custom-target') ?? null,
+                        side: panel?.getAttribute('data-side') ?? null,
+                        expanded: trigger?.getAttribute('aria-expanded') ?? null,
+                        triggerColor: trigger?.getAttribute('data-color') ?? null,
+                        focus: id(active),
+                        focusInside: panel !== null && active !== null && panel.contains(active),
+                        // The PORTAL claim (§N26 / stacking): the panel is a child of <body>, not
+                        // of the settings panel it is drawn over.
+                        portalled: panel !== null && panel.parentElement === document.body,
+                        position: panel === null ? null : getComputedStyle(panel).position,
+                        rect: box === null ? null : { x: Math.round(box.x), y: Math.round(box.y),
+                                                      w: Math.round(box.width), h: Math.round(box.height) },
+                        // …and it WINS: whatever is painted at the popover's own centre is inside
+                        // the popover, not the dialog behind it.
+                        topmostAtCentre: box === null ? null : (() => {
+                            const hit = document.elementFromPoint(Math.round(box.x + box.width / 2),
+                                                                 Math.round(box.y + box.height / 2));
+                            return hit === null ? null : panel.contains(hit);
+                        })(),
+                        chip: text('[data-testid="label-flyover-chip"]'),
+                        chipBackground: document.querySelector('[data-testid="label-flyover-chip"]')?.getAttribute('data-background') ?? null,
+                        chipText: document.querySelector('[data-testid="label-flyover-chip"]')?.getAttribute('data-text') ?? null,
+                        // innerText honours text-transform, so these read BACKGROUND / TEXT.
+                        // Lowercased here so the check reads the WORDS the mockup labels the two
+                        // groups with rather than the casing the tab happens to paint them in.
+                        // (No backticks in here: this comment is inside a template literal.)
+                        headings: [text('[data-testid="label-flyover-background-heading"]').toLowerCase(),
+                                   text('[data-testid="label-flyover-text-heading"]').toLowerCase()],
+                        // The ten NAMED swatches, and the bordered Custom row beside them — read
+                        // apart, because the Custom row is also a pressable in the same group.
+                        swatches: [...document.querySelectorAll('[data-testid^="label-flyover-bg-"][aria-pressed]')]
+                            .filter((el) => el.getAttribute('data-testid') !== 'label-flyover-bg-custom').length,
+                        bgCustomRow: document.querySelector('[data-testid="label-flyover-bg-custom"]') !== null,
+                        textCustomRow: document.querySelector('[data-testid="label-flyover-text-custom"]') !== null,
+                        textModes: ['auto', 'black', 'white'].filter(
+                            (mode) => document.querySelector('[data-testid="label-flyover-text-' + mode + '"]') !== null
+                        ).length,
+                        bgPressed: pressed('label-flyover-bg-', ['red','orange','yellow','green','blue','purple','pink','gray','black','white','custom']),
+                        textPressed: pressed('label-flyover-text-', ['auto','black','white','custom']),
+                        textCustomHex: text('[data-testid="label-flyover-text-custom-hex"]'),
+                        bgCustomHex: text('[data-testid="label-flyover-bg-custom-hex"]'),
+                        hex: document.querySelector('[data-testid="label-flyover-hex"]')?.value ?? null,
+                        hexValid: document.querySelector('[data-testid="label-flyover-hex"]')?.getAttribute('data-valid') ?? null,
+                        hue: document.querySelector('[data-testid="label-flyover-hue"]')?.getAttribute('data-hue') ?? null,
+                        cursor: (() => { const el = document.querySelector('[data-testid="label-flyover-sv-cursor"]');
+                                         return el === null ? null : el.getAttribute('data-left') + '/' + el.getAttribute('data-top'); })(),
+                        // The chip a ROW shows, which is where a colour ends up being read from.
+                        rowChipText: (() => { const el = document.querySelector('[data-testid="label-chip-audit-design"]');
+                                              return el === null ? null : getComputedStyle(el).color; })(),
+                        rowChipBackground: (() => { const el = document.querySelector('[data-testid="label-chip-audit-design"]');
+                                                    return el === null ? null : getComputedStyle(el).backgroundColor; })(),
+                        rowColorToken: document.querySelector('[data-testid="label-chip-audit-design"]')?.getAttribute('data-color') ?? null
+                    });
+                })()`;
+                const readFlyover = async () => JSON.parse(String(await page.eval(flyoverState)));
+
+                /*
+                 * The ROW COLLAPSE, first, because it is what the redesign looks like: five cells,
+                 * a trigger in the first, and NEITHER of the two controls the flyover replaced
+                 * anywhere in the list. Asserted by absence as well as by presence — a row that
+                 * kept its old palette would still pass every positive check below.
+                 */
+                const collapse = await page.eval(
+                    `(() => {
+                        const rows = [...document.querySelectorAll('[data-testid^="label-preset-"]')];
+                        const first = rows[0] ?? null;
+                        const trigger = document.querySelector('[data-testid="label-color-audit-design-trigger"]');
+                        const ink = trigger === null ? null : trigger.getBoundingClientRect();
+                        const bleed = trigger?.querySelector('span[aria-hidden]') ?? null;
+                        const bleedBox = bleed === null ? null : bleed.getBoundingClientRect();
+                        return {
+                            rows: rows.length,
+                            /*
+                             * Every row's own child count, deduped — not the first row's alone.
+                             * The step reaches here with four presets in a full run and three in
+                             * a scoped one, and "five cells" is a claim about all of them.
+                             */
+                            cells: [...new Set(rows.map((row) => row.children.length))].sort((a, b) => a - b),
+                            template: first === null ? null : getComputedStyle(first).gridTemplateColumns,
+                            triggers: document.querySelectorAll('[data-testid$="-trigger"][aria-haspopup="dialog"]').length,
+                            haspopup: trigger?.getAttribute('aria-haspopup') ?? null,
+                            /*
+                             * Each row's OWN trigger in its OWN first cell.
+                             *
+                             * VERIFIER FIX (run-AN, 2026-08-29): this read rows[0].children[0]
+                             * .contains(audit-design's trigger) — the FIRST row's first cell
+                             * against a NAMED row's trigger, which is only the same row when
+                             * audit-design happens to lead the list. It does in a scoped run
+                             * (three presets, audit-design first) and does NOT in a full one
+                             * (four presets, audit-label first, from the earlier CLI back-fill),
+                             * so the check was red on a correct product. Rewritten per row, which
+                             * is strictly stronger: it answers the claim for EVERY row rather
+                             * than for one, and cannot depend on the list's order at all.
+                             * (No backticks in here: this comment is inside a template literal.)
+                             */
+                            rowsWithTriggerFirst: rows.filter((row) => {
+                                const own = row.querySelector('[data-testid$="-trigger"][aria-haspopup="dialog"]');
+                                const cell = row.children[0];
+                                return own !== null && cell !== undefined && cell.contains(own);
+                            }).length,
+                            // What the flyover replaced, by the ids it used to answer to.
+                            oldSwatches: document.querySelectorAll('[data-testid^="label-color-"][data-testid$="-purple"]').length,
+                            oldModes: document.querySelectorAll('[data-testid$="-mode"][data-testid^="label-text-"]').length,
+                            oldSamples: document.querySelectorAll('[data-testid$="-sample"][data-testid^="label-text-"]').length,
+                            oldWells: document.querySelectorAll('[data-testid^="label-"] input[type="color"]').length,
+                            // §S50: 16 px of paint in a 20 px target.
+                            inkW: ink === null ? null : Math.round(ink.width * 10) / 10,
+                            inkH: ink === null ? null : Math.round(ink.height * 10) / 10,
+                            targetW: bleedBox === null ? null : Math.round(bleedBox.width * 10) / 10,
+                            targetH: bleedBox === null ? null : Math.round(bleedBox.height * 10) / 10,
+                            // The name field, which is what the freed 260 px was spent on.
+                            nameField: (() => { const el = document.querySelector('[data-testid="label-rename-field-audit-design"]');
+                                                return el === null ? null : Math.round(el.getBoundingClientRect().width * 100) / 100; })()
+                        };
+                    })()`
                 );
-                recorder.note(`stored preset: ${JSON.stringify(stored)}`);
-                recorder.check('the row’s palette recolours the stored preset', stored?.color === 'purple', JSON.stringify(stored));
+                recorder.note(`§N38 row collapse: ${JSON.stringify(collapse)}`);
                 recorder.check(
-                    'and its text-colour control writes an explicit TEXT colour back through the daemon (SET-059)',
-                    String(stored?.text) === 'rgb(255, 255, 255)',
-                    String(stored?.text)
+                    'every row collapses to [swatch trigger · name · chip · reorder · trash] (§N38)',
+                    JSON.stringify(collapse?.cells) === '[5]' &&
+                        collapse?.rows > 0 &&
+                        collapse?.rowsWithTriggerFirst === collapse?.rows &&
+                        collapse?.haspopup === 'dialog' &&
+                        collapse?.triggers === collapse?.rows,
+                    JSON.stringify({
+                        cells: collapse?.cells,
+                        triggerFirst: collapse?.rowsWithTriggerFirst,
+                        triggers: collapse?.triggers,
+                        rows: collapse?.rows
+                    })
+                );
+                recorder.check(
+                    'and the two in-row colour controls are GONE — no palette, no mode select, no OS well (§N38)',
+                    collapse?.oldSwatches === 0 &&
+                        collapse?.oldModes === 0 &&
+                        collapse?.oldSamples === 0 &&
+                        collapse?.oldWells === 0,
+                    JSON.stringify({
+                        swatches: collapse?.oldSwatches,
+                        modes: collapse?.oldModes,
+                        samples: collapse?.oldSamples,
+                        wells: collapse?.oldWells
+                    })
+                );
+                recorder.check(
+                    'the trigger keeps §S50’s treatment: 16 px of paint in a 20 px target',
+                    collapse?.inkW === 16 &&
+                        collapse?.inkH === 16 &&
+                        collapse?.targetW === 20 &&
+                        collapse?.targetH === 20,
+                    `ink ${String(collapse?.inkW)}×${String(collapse?.inkH)}, target ${String(collapse?.targetW)}×${String(collapse?.targetH)}`
                 );
 
-                // SET-062's Auto: the luminance rule, not a stored colour. The dark-bucket
-                // purple (#A98BE8) is LIGHT enough that `contrastingText`'s 0.6 threshold picks
-                // BLACK — so Auto visibly flips away from the explicit white just written,
-                // which is the whole difference between "auto" and "a colour that looks auto".
-                await setTextMode('audit-design', 'auto');
-                await sleep(700);
-                const auto = await page.eval(
-                    `(() => ({ color: getComputedStyle(document.querySelector('[data-testid="label-chip-audit-design"]')).color,
-                               mode: document.querySelector('[data-testid="label-text-audit-design-mode"]')?.value ?? null,
-                               shown: document.querySelector('[data-testid="label-text-audit-design-mode"]')?.getAttribute('data-mode') ?? null }))()`
+                /*
+                 * …and the freed width really reached the NAME, which is the point of collapsing
+                 * two tracks into one. §N36(4) measured the field at 89.36 px after that round's
+                 * rebalance; the two colour tracks are worth 260 px more, so this is recorded as a
+                 * number rather than only as a template — a future narrowing shows up as a
+                 * shrinking measurement instead of as a sudden red.
+                 */
+                recorder.check(
+                    'the 260 px the two colour tracks freed went to the name field (§N38)',
+                    typeof collapse?.nameField === 'number' && collapse.nameField > 200,
+                    `${String(collapse?.nameField)} px`
                 );
+
+                /*
+                 * OPEN it — with a real click, so focus is a real fact — and read the popover the
+                 * owner's mockup describes: a chip preview, a Background heading over ten
+                 * swatches, a Text heading over three buttons, and a close ×.
+                 */
+                await page.click(TRIGGER);
+                await sleep(500);
+                const opened = await readFlyover();
+                recorder.note(`flyover opened: ${JSON.stringify(opened)}`);
+                await recorder.shot(page, 'flyover-palette');
+                recorder.check(
+                    'the trigger opens an anchored popover with the two sections the mockup draws (§N38)',
+                    opened.open === true &&
+                        opened.expanded === 'true' &&
+                        opened.view === 'palette' &&
+                        JSON.stringify(opened.headings) === JSON.stringify(['background', 'text']) &&
+                        opened.swatches === 10 &&
+                        opened.bgCustomRow === true &&
+                        opened.textModes === 3 &&
+                        opened.textCustomRow === true &&
+                        opened.chip === 'audit-design',
+                    JSON.stringify({
+                        open: opened.open,
+                        headings: opened.headings,
+                        swatches: opened.swatches,
+                        bgCustom: opened.bgCustomRow,
+                        textModes: opened.textModes,
+                        textCustom: opened.textCustomRow,
+                        chip: opened.chip
+                    })
+                );
+                /*
+                 * §N26 — the layering half a DOM can answer: the panel is portalled to <body>
+                 * (so no `overflow` in the settings panel can clip it), it is `fixed`, and the
+                 * thing painted at its own centre is INSIDE it rather than the dialog behind.
+                 * The over-a-web-pane half is the census's own entry — `web-popup-layering`'s
+                 * surface 11 — where it is read against real page holes.
+                 */
+                recorder.check(
+                    'the popover is portalled and paints ABOVE the dialog it is drawn over (§N26)',
+                    opened.portalled === true &&
+                        opened.position === 'fixed' &&
+                        opened.topmostAtCentre === true &&
+                        (opened.rect?.w ?? 0) > 0,
+                    JSON.stringify({
+                        portalled: opened.portalled,
+                        position: opened.position,
+                        topmost: opened.topmostAtCentre,
+                        rect: opened.rect,
+                        side: opened.side
+                    })
+                );
+                // §N33: it opens FROM the trigger, so the caret goes into it rather than staying
+                // on a control the panel is now covering.
+                recorder.check(
+                    'and it takes the keyboard, landing on the swatch that is set (§N33)',
+                    opened.focusInside === true && opened.focus === 'label-flyover-bg-gray',
+                    String(opened.focus)
+                );
+
+                /*
+                 * SET-061 — the Background section recolours the STORED preset, read back off the
+                 * chip the daemon's delta produced (not off the popover's own state).
+                 */
+                await page.click('[data-testid="label-flyover-bg-purple"]');
+                await sleep(700);
+                const recoloured = await readFlyover();
+                recorder.note(`after purple: ${JSON.stringify(recoloured)}`);
+                recorder.check(
+                    'the flyover’s palette recolours the stored preset (SET-061)',
+                    recoloured.rowColorToken === 'purple' && recoloured.triggerColor === 'purple',
+                    JSON.stringify({ chip: recoloured.rowColorToken, trigger: recoloured.triggerColor })
+                );
+                recorder.check(
+                    'it applies IMMEDIATELY and the popover stays up — an editor, not a menu (§N38)',
+                    recoloured.open === true && recoloured.bgPressed.join(',') === 'purple',
+                    JSON.stringify({ open: recoloured.open, pressed: recoloured.bgPressed })
+                );
+
+                /*
+                 * SET-062 — Auto / Black / White, now three explicit buttons (§N36(3) had
+                 * collapsed them into a `<select>` ONLY because 179.5 px would not fit a 124 px
+                 * Swift track, and that track no longer exists). The dark-bucket purple (#A98BE8)
+                 * is light enough that `contrastingText`'s 0.6 threshold picks BLACK, so Auto
+                 * visibly flips away from an explicit white — which is the whole difference
+                 * between "auto" and "a colour that looks auto".
+                 */
+                await page.click('[data-testid="label-flyover-text-white"]');
+                await sleep(700);
+                const white = await readFlyover();
+                recorder.note(`after White: ${JSON.stringify(white)}`);
+                await recorder.shot(page, 'designed');
+                recorder.check(
+                    'and its Text section writes an explicit TEXT colour back through the daemon (SET-059)',
+                    String(white.rowChipText) === 'rgb(255, 255, 255)' && white.textPressed.join(',') === 'white',
+                    JSON.stringify({ chip: white.rowChipText, pressed: white.textPressed })
+                );
+                await page.click('[data-testid="label-flyover-text-auto"]');
+                await sleep(700);
+                const auto = await readFlyover();
                 recorder.note(`after Auto: ${JSON.stringify(auto)}`);
                 recorder.check(
                     'Auto re-derives the text colour by luminance (black on this light purple)',
-                    auto?.mode === 'auto' && auto?.shown === 'auto' && String(auto?.color) === 'rgb(0, 0, 0)',
-                    JSON.stringify(auto)
+                    auto.textPressed.join(',') === 'auto' && String(auto.rowChipText) === 'rgb(0, 0, 0)',
+                    JSON.stringify({ pressed: auto.textPressed, chip: auto.rowChipText })
                 );
-                await setTextMode('audit-design', 'white');
+                /*
+                 * …and the Text ▸ Custom row is where the "Aa" sample's job went: it shows what
+                 * the rule RESOLVED to, which is the one place in the app that says an Auto
+                 * colour out loud.
+                 */
+                recorder.check(
+                    'the Text ▸ Custom row shows the resolved colour, as the “Aa” sample used to (§N38)',
+                    String(auto.textCustomHex).toLowerCase() === '#000000',
+                    String(auto.textCustomHex)
+                );
+                await page.click('[data-testid="label-flyover-text-white"]');
                 await sleep(700);
-                const white = await page.eval(
-                    `getComputedStyle(document.querySelector('[data-testid="label-chip-audit-design"]')).color`
-                );
+                const backToWhite = await readFlyover();
                 recorder.check(
                     'and White writes an explicit colour back over it',
-                    String(white) === 'rgb(255, 255, 255)',
-                    String(white)
+                    String(backToWhite.rowChipText) === 'rgb(255, 255, 255)',
+                    String(backToWhite.rowChipText)
+                );
+
+                /*
+                 * ── the CUSTOM view ────────────────────────────────────────────────────────
+                 *
+                 * The half that has no predecessor at all: the OS colour well is gone, so the way
+                 * to a custom colour is a hand-rolled HSV picker on the same surface. Three claims:
+                 * entering it writes NOTHING (a stored colour survives being looked at), the hex
+                 * field round-trips byte-exactly, and the two controls nudge from the keyboard —
+                 * which is also the only way this step can drive an SV square, since a drag is
+                 * pointer capture over a gradient with no addressable child.
+                 */
+                await page.click('[data-testid="label-flyover-bg-custom"]');
+                await sleep(500);
+                const entered = await readFlyover();
+                recorder.note(`custom view entered: ${JSON.stringify(entered)}`);
+                await recorder.shot(page, 'flyover-custom');
+                recorder.check(
+                    'either Custom row opens the HSV view — square, hue rail and hex field (§N38)',
+                    entered.view === 'custom' &&
+                        entered.target === 'background' &&
+                        entered.hex !== null &&
+                        entered.hue !== null &&
+                        entered.cursor !== null,
+                    JSON.stringify({ view: entered.view, target: entered.target, hex: entered.hex, hue: entered.hue })
+                );
+                // Either bucket's purple, so a run under a light theme reads the same claim: the
+                // picker opens on the colour that is SET, not on a default.
+                recorder.check(
+                    'it seeds from the value that is set, and the caret lands on the square (§N33)',
+                    ['#a98be8', '#8158c8'].includes(String(entered.hex).toLowerCase()) &&
+                        entered.focus === 'label-flyover-sv',
+                    `${String(entered.hex)} / ${String(entered.focus)}`
+                );
+                // …and merely LOOKING wrote nothing: the preset is still the named purple.
+                recorder.check(
+                    'and entering it writes nothing — a stored colour survives being looked at (§N38)',
+                    entered.rowColorToken === 'purple',
+                    String(entered.rowColorToken)
+                );
+
+                /*
+                 * The hex ROUND TRIP, byte for byte, through the daemon: type a hex, let the
+                 * delta come back, and read the same string out of the field it was typed into.
+                 * Driven with a real `input` event through the native setter (React binds the
+                 * field's value, so assigning `.value` alone is reverted on the next render),
+                 * exactly as `search-colors` drives a colour input further down this file.
+                 */
+                await page.eval(
+                    `(() => { const el = document.querySelector('[data-testid="label-flyover-hex"]');
+                              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                              el.focus();
+                              setter.call(el, '#ff8800');
+                              el.dispatchEvent(new Event('input', { bubbles: true }));
+                              return true; })()`
+                );
+                await sleep(900);
+                const custom = await readFlyover();
+                recorder.note(`custom hex applied: ${JSON.stringify(custom)}`);
+                recorder.check(
+                    'a hex typed into the picker reaches the daemon and comes back byte-identical (§N38)',
+                    custom.rowColorToken === '#ff8800' &&
+                        String(custom.hex).toLowerCase() === '#ff8800' &&
+                        custom.hexValid === 'true',
+                    JSON.stringify({ stored: custom.rowColorToken, field: custom.hex })
+                );
+                recorder.check(
+                    'and the chip repaints in it, so the picker and the label agree',
+                    String(custom.rowChipBackground) === 'rgb(255, 136, 0)',
+                    String(custom.rowChipBackground)
+                );
+
+                // The keyboard path through the picker: one ArrowRight on the hue rail is a real
+                // write, which is what makes the two controls usable without a pointer at all.
+                const hueBefore = custom.hue;
+                await page.eval(
+                    `(() => { document.querySelector('[data-testid="label-flyover-hue"]').focus(); return true; })()`
+                );
+                await page.key('ArrowRight');
+                await sleep(800);
+                const nudged = await readFlyover();
+                recorder.note(`hue nudged: ${String(hueBefore)} → ${String(nudged.hue)} (${String(nudged.rowColorToken)})`);
+                recorder.check(
+                    'the hue rail nudges with the arrows and writes each step (§N38)',
+                    nudged.hue !== hueBefore &&
+                        typeof nudged.rowColorToken === 'string' &&
+                        nudged.rowColorToken.startsWith('#') &&
+                        nudged.rowColorToken !== '#ff8800',
+                    `${String(hueBefore)} → ${String(nudged.hue)}, stored ${String(nudged.rowColorToken)}`
+                );
+
+                // Back to the palette, and back to a NAMED colour, so the rest of the step (and
+                // the CLI round trip below) reads the same purple it always did.
+                await page.click('[data-testid="label-flyover-back"]');
+                await sleep(400);
+                await page.click('[data-testid="label-flyover-bg-purple"]');
+                await sleep(700);
+
+                /*
+                 * ── the way OUT (§N33) ─────────────────────────────────────────────────────
+                 *
+                 * Escape closes the popover AND hands the caret back to the trigger it came from.
+                 * That is the whole of §N33's discipline applied to a new surface: a dismissal
+                 * that leaves focus on `<body>` is a keyboard dead end, and the next Tab would
+                 * restart from the top of the dialog rather than from the row being edited.
+                 */
+                await page.key('Escape');
+                await sleep(500);
+                const dismissed = await page.eval(
+                    `(() => {
+                        const active = document.activeElement;
+                        return JSON.stringify({
+                            open: document.querySelector('[data-testid="label-color-flyover"]') !== null,
+                            settings: document.querySelector('${PAGE.settingsPanel}') !== null,
+                            focus: active === null ? null : active === document.body ? 'BODY'
+                                : (active.getAttribute('data-testid') ?? active.tagName),
+                            expanded: document.querySelector('[data-testid="label-color-audit-design-trigger"]')?.getAttribute('aria-expanded') ?? null
+                        });
+                    })()`
+                );
+                const closed = JSON.parse(String(dismissed));
+                recorder.note(`flyover dismissed: ${JSON.stringify(closed)}`);
+                recorder.check(
+                    'Escape closes the popover and returns focus to the trigger (§N33 / §N38)',
+                    closed.open === false &&
+                        closed.focus === 'label-color-audit-design-trigger' &&
+                        closed.expanded === 'false',
+                    JSON.stringify(closed)
+                );
+                recorder.check(
+                    'and it is the POPOVER’s Escape, not the dialog’s — Settings is still open',
+                    closed.settings === true,
+                    String(closed.settings)
+                );
+
+                /*
+                 * …and the trigger is reachable from the keyboard alone, which closes the loop the
+                 * redesign opens: the only way to a label's colours is now a control that has to
+                 * be Tab-able and activatable without a pointer.
+                 *
+                 * ENTER is what this drives. (The comment here used to say "Space, not Enter, is
+                 * deliberate" while the line below pressed Enter and the assertion below that said
+                 * Enter — a stale sentence, corrected by the `run-AN` verifier rather than left to
+                 * mislead the next reader. A `<button>` answers both keys; the SPACE half is
+                 * covered live, on the flyover's swatch grid, in
+                 * `docs/audit/run-AN-attempts/n38-verify/probe.mjs`.)
+                 */
+                await page.key('Enter');
+                await sleep(500);
+                const viaKeyboard = await readFlyover();
+                recorder.check(
+                    'Enter on the focused trigger opens it again, keyboard end to end (§N33)',
+                    viaKeyboard.open === true && viaKeyboard.focusInside === true,
+                    JSON.stringify({ open: viaKeyboard.open, focus: viaKeyboard.focus })
+                );
+                // The × is the mockup's own way out, and it hands focus back the same way.
+                await page.click('[data-testid="label-flyover-close"]');
+                await sleep(500);
+                const viaClose = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const active = document.activeElement;
+                                return JSON.stringify({
+                                    open: document.querySelector('[data-testid="label-color-flyover"]') !== null,
+                                    focus: active === null ? null : active === document.body ? 'BODY'
+                                        : (active.getAttribute('data-testid') ?? active.tagName)
+                                });
+                            })()`
+                        )
+                    )
+                );
+                recorder.check(
+                    'the × closes it and returns focus to the trigger too (§N38)',
+                    viaClose.open === false && viaClose.focus === 'label-color-audit-design-trigger',
+                    JSON.stringify(viaClose)
                 );
 
                 // SET-063: a rename onto an existing preset snaps back and says why.
@@ -24598,7 +25144,7 @@ function buildFlows(ctx) {
                     await sleep(300);
                 }
 
-                recorder.eyes('the Labels tab as a TABLE and a design surface. §N36 first, since it is what the tab now looks like: the section is headed "Labels" with ONE small New Label button on the header’s top right, level with the title and flush with the right edge of the rows below it — does it read as the section’s toolbar rather than as the first item of the list? Is every row’s NAME fully readable now (the owner’s frame showed "Tes" and "New lab" clipped in ~50 px), and does the collapsed Auto/Black/White pop-up sit comfortably beside the "Aa" sample and the well without crowding them? Does anything on the tab still say "preset"? Then §N32: pressing the button drops a real row into the list with its name already selected, so the next thing typed is the name — does the new row read as a row of the list rather than as something provisional? Then the table itself: do the wells, the "Aa" sample, the chip and the trash line up in columns down the tab (§H26), and does the preview chip read like the chip a workspace will wear? And §N33, which only an eye can settle: while a row is being walked with the arrows, does the highlight stay on THAT row — never flicking to the row that slid into the slot under the pointer?');
+                recorder.eyes('the Labels tab as a TABLE and a design surface, now that §N38 has emptied the row of controls. First the ROW: it is [swatch · name · chip · reorder · trash], so a name has roughly 280 px more than it had — is every name fully readable at last (the owner\u2019s frame showed "Tes" and "New lab" clipped in ~50 px), and does the one swatch read as something you press rather than as decoration? Do the swatch, chip and trash still line up in columns down the tab (\u00a7H26)? Then the FLYOVER, in `flyover-palette`: is it anchored under the swatch it came from, whole, and above the dialog rather than clipped by the panel? Does the chip preview at the top read like the chip a workspace will wear, and do the "Background" and "Text" headings group what they should \u2014 ten swatches and a bordered \u270e Custom row, then Auto/Black/White and a Custom row showing the current swatch and its hex? Then `flyover-custom`: does the saturation/value square show a real gradient with a visible circular cursor on it, is the hue rail a full spectrum with its knob where the hue is, and does the \u270e + hex row read as an input rather than as a label? \u00a7N36 still: is the section headed "Labels" with ONE small New Label button on the header\u2019s top right, flush with the right edge of the rows? Does anything on the tab still say "preset"? \u00a7N32: pressing the button drops a real row into the list with its name already selected \u2014 does it read as a row rather than as something provisional? And \u00a7N33, which only an eye can settle: while a row is walked with the arrows, does the highlight stay on THAT row \u2014 never flicking to the row that slid into the slot under the pointer?');
             }
         },
         {

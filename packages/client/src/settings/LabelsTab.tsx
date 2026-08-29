@@ -19,27 +19,37 @@
  * The orphan section closes §6.5/§6.6's loop: any label applied somewhere with no preset gets a
  * one-click gray preset — the same back-fill the CLI's `workspace label` performs.
  *
- * **The design surface (SET-058, SET-061, SET-062).** A preset is designed IN ITS ROW: a
- * background colour, a text colour and a live chip preview, all editable in place. §N32 removed
- * the always-visible composer that used to carry a second copy of those three controls above the
- * list — a preset is minted with a default name and colour and then edited exactly like any
- * other, which is the mint-with-rename shape the port already uses for a group. That is an
- * OWNER-DIRECTED divergence from the Swift, which does keep an always-visible add row
- * (`LabelPresetsSettingsView.swift:106-132`). Three further presentation divergences, each
- * because a browser has no `NSColorWell` + `Menu` pair:
+ * **The design surface (SET-058, SET-061, SET-062) — §N38, owner-directed.** A preset is still
+ * designed FROM ITS ROW, but no longer IN it: the row carries a single swatch TRIGGER, and both
+ * colours are edited in the anchored popover that trigger opens (`ColorFlyover.tsx`, where the
+ * whole redesign is written up). §N32 removed the always-visible composer that used to carry a
+ * second copy of the controls above the list — a preset is minted with a default name and colour
+ * and then edited exactly like any other, which is the mint-with-rename shape the port already
+ * uses for a group. That is an OWNER-DIRECTED divergence from the Swift, which does keep an
+ * always-visible add row (`LabelPresetsSettingsView.swift:106-132`).
  *
- *   - the eight (here ten) named colours are a SWATCH ROW with `aria-pressed` on the current
- *     one rather than a dropdown with a checkmark — same list, same "which one is set" answer,
- *     one click instead of two;
- *   - "Custom…" is a native `<input type="color">` sitting on a swatch, which is the only
- *     control that opens the OS picker (`controls.tsx`'s `ColorField` makes the same choice for
- *     the same reason). Picking through it switches the preset to `{kind:'custom', hex}`,
- *     exactly as dragging the Swift well did;
- *   - the text colour is an Auto / Black / White `<select>` plus that same custom well — one
- *     control, as `:365-394`'s `Menu` is (§N36(3) collapsed the three explicit buttons the port
- *     drew here, which is what returns `LabelCol.textColor` to the Swift's 124). Auto is `null`
- *     — the daemon and `resolveLabelStyle` derive black-or-white from the background's
- *     luminance, which is the rule `LabelPreset.resolvedStyle` states.
+ * What §N38 replaced, so the swap is on the record:
+ *
+ *   - the ten named colours were a SWATCH ROW in a 150 px track (`LabelCol.bgColor`) with a
+ *     `Custom…` well — an `<input type="color">` over a swatch — at its end. They are now the
+ *     popover's **Background** section: the same ten swatches, the same `aria-pressed` answer to
+ *     "which one is set", and a bordered `✎ Custom` row where the OS well was;
+ *   - the text colour was an Auto / Black / White `<select>` plus a second well in a 124 px track
+ *     (`LabelCol.textColor`, §N36(3)'s collapse). It is now the popover's **Text** section: three
+ *     explicit buttons — which is what the mockup draws, and what §N36(3) had collapsed only
+ *     because 179.5 px would not fit a Swift-width track that no longer exists — over the same
+ *     `Custom` row. Auto is still `null`: the daemon and `resolveLabelStyle` derive black-or-white
+ *     from the background's luminance, which is the rule `LabelPreset.resolvedStyle` states;
+ *   - the OS colour picker is gone entirely. Both `Custom` rows open a HAND-ROLLED HSV picker
+ *     inside the same popover (a saturation/value square, a hue slider, a hex field), so the two
+ *     colours are chosen on one surface instead of in a native window the app cannot style, place
+ *     or read back. `controls.tsx`'s `ColorField` still uses the native well; this tab no longer
+ *     does, and that is the one divergence between the two.
+ *
+ * **The colour MODEL is untouched.** `{kind:'named'}` / `{kind:'custom', hex}` for the background,
+ * that-or-`null` for the text, written through the same `update-label-preset` verb with the same
+ * one-string encoding (`tokenOf` / `textToken`, which now live in `ColorFlyover.tsx` beside the
+ * editor that owns them). The popover is a new EDITOR over the same stored values.
  *
  * Reordering (SET-065) is ↑/↓ buttons rather than drag, matching the Web tab's favourites list.
  *
@@ -56,9 +66,10 @@
  *   - the ADD control is first, above a divider, then the list (`:27-31`) — not below a list
  *     that can be longer than the window. §N36(1) put it on the section header's trailing edge,
  *     which is still above that divider;
- *   - every row is ONE grid line on `LabelCol`'s widths — background 150, text colour 124,
- *     preview 80, action 40, with the name field flexing between them (`:7-12`, `:204-245`) —
- *     not a two-line stacked card;
+ *   - every row is ONE grid line on `LabelCol`'s widths — §N38 collapses the background 150 and
+ *     the text colour 124 into a single 24 px swatch-trigger column and hands the 260 px that
+ *     frees to the name, leaving swatch 24, preview 80, reorder 44, action 40 with the name
+ *     flexing between them (`:7-12`, `:204-245`) — not a two-line stacked card;
  *   - the NAME is a live `TextField` in every row (`:214-222`), committed on Return or focus
  *     loss. There is no "Rename" button in the shipped app and there is none here: click into
  *     any name and type.
@@ -75,16 +86,23 @@ import {
 } from 'react';
 
 import {
-    WORKSPACE_COLORS,
-    normalizeHexColor,
     resolveLabelStyle,
     tokens,
-    workspaceColorHex,
     withAlpha,
     type ChromeBucket,
     type ChromeLabelPreset,
     type ResolvedLabelStyle
 } from '../chrome';
+import {
+    ColorFlyover,
+    hexOf,
+    labelPreviewStyle,
+    textMode,
+    textToken,
+    tokenOf,
+    type LabelColorValue,
+    type LabelTextColorValue
+} from './ColorFlyover';
 import { TagGlyph } from './glyphs';
 import { labelUsage, orphanLabels, type LabelledWorkspace } from './model';
 import type { SettingsActions } from './types';
@@ -98,72 +116,60 @@ import {
 } from './ui';
 
 /**
- * `LabelCol` (`LabelPresetsSettingsView.swift:7-12`), to the point.
+ * `LabelCol` (`LabelPresetsSettingsView.swift:7-12`), to the point — as §N38 leaves it.
  *
- * The four fixed widths are the whole reason that file has an opening comment: they are what
- * makes the wells, the "Aa" sample, the chip and the trash line up in columns down the tab AND
- * with the add row. The name is the one thing that flexes, exactly as `.frame(maxWidth:
- * .infinity)` makes it in the Swift row.
+ * The fixed widths are the whole reason that file has an opening comment: they are what makes
+ * the colour control, the chip and the trash line up in columns down the tab. The name is the one
+ * thing that flexes, exactly as `.frame(maxWidth: .infinity)` makes it in the Swift row.
+ *
+ * §N38 replaces the Swift's two colour tracks with ONE: `swatch`, 24 px, holding the trigger that
+ * opens the flyover. Both of the Swift's colour controls live in that popover now, so the row has
+ * one cell where it had two, and the widths those two spent are the name's (see `LABEL_NAME_MIN`).
  *
  * One column is this port's own and is named as such: `reorder`, holding the ↑/↓ pair that
  * stands in for the Swift `List`'s drag (SET-065's stated divergence). It sits between the
- * preview and the action column so the Swift four keep both their widths and their order.
+ * preview and the action column so the Swift columns keep both their widths and their order.
  */
-const LABEL_COL = { bgColor: 150, textColor: 124, preview: 80, reorder: 44, action: 40 } as const;
+const LABEL_COL = { swatch: 24, preview: 80, reorder: 44, action: 40 } as const;
 
 /**
- * §N36(3) — `textColor` is back to the SWIFT's own **124** (`LabelPresetsSettingsView.swift:9`),
- * and §S60's divergence is retired rather than restated.
+ * §N38 — the name floor is **420**, and every pixel of the rise is accounted for.
  *
- * S60 widened this track to 184 because the port drew the text-colour MODE as three explicit
- * buttons where the Swift draws one `Menu` — 21.07 (Aa) + 36.27 (Auto) + 40.23 (Black) + 41.89
- * (White) + 24 (the S25 well) + 4 gaps × 4 px = **179.5 px**, which wrapped on every row inside
- * 124. The width came out of the name column, and S60 recorded the debt in the same breath: at
- * the 880 px dialog the name track was 102 px and the field inside it rendered **49.6 px**, so a
- * preset called `Test` read `Tes` and a freshly minted `New label` read `New lal`.
+ * §N36(3) put it at 160 by collapsing the Auto/Black/White triple into a `<select>`, which freed
+ * 60 px out of the text-colour track; §S60 had recorded the debt that fix was paying down (at the
+ * 880 px dialog the name track was 102 px and the field inside it rendered 49.6, so `Test` read
+ * `Tes` and a minted `New label` read `New lal`). The flyover retires the whole question by
+ * removing both colour tracks from the row:
  *
- * The owner has now directed S60's own recorded option: **collapse Auto / Black / White into ONE
- * control**, the way `:365-394` collapses them into a `Menu`. Measured on the live stack at the
- * default window (1280 × 820 → the 880 px dialog) before choosing, with each candidate rendered
- * in a real row and read off `getBoundingClientRect()`:
+ *   | what the row loses                        |   px |
+ *   |-------------------------------------------|-----:|
+ *   | `bgColor` 150 → the 24 px swatch trigger   |  126 |
+ *   | `textColor` 124 → gone entirely            |  124 |
+ *   | one 10 px column gap (six tracks → five)   |   10 |
+ *   | **freed**                                  | **260** |
  *
- *   | candidate for the mode control      | control | the cluster it makes | track |
- *   |-------------------------------------|--------:|---------------------:|------:|
- *   | three buttons (what was there)       |  126.39 |               179.50 |   184 |
- *   | a compact 3-segment control          |  102.39 |               155.46 |   156 |
- *   | `<select>`, SelectField's 11 px      |   74.50 |               127.57 |   132 |
- *   | `<select>`, this row's 10 px scale   |   67.50 |               120.57 |   124 |
+ * 160 + 260 = **420**, and it goes into the FLOOR rather than only into the flexible share, for
+ * §S57's reason: the name is the only flexible track and every other one is a hard px, so a
+ * narrowing window took it all (measured at a 760 × 700 window: a 14 × 28.2 px field, no room for
+ * one character). A track with a floor gives the row a min-content width instead, so a too-narrow
+ * panel scrolls sideways rather than emptying the one field you type into (`settings-panel` is
+ * `overflow-y-auto`, and CSS resolves a scroll container's other axis to `auto` with it).
  *
- * (the cluster is `Aa 21.07 + 4 + control + 4 + well 24`). Only the last lands inside a SWIFT
- * width, which is why it is the one taken: the segmented candidate frees 28 px, the `<select>`
- * frees 60, and 60 is exactly what returns the track to `LabelCol.textColor`.
+ * And it costs nothing: `LABEL_GRID_MIN_WIDTH` comes out **648 px, exactly what it was** through
+ * §S57, §S60, §N36(3) and now §N38 (24 + 420 + 80 + 44 + 40 + 4 × 10 = 648 = 150 + 160 + 124 + 80
+ * + 44 + 40 + 5 × 10). Nothing that fitted before stops fitting, and a panel narrow enough to
+ * scroll scrolls by the same amount it did.
  */
-const LABEL_NAME_MIN = 160;
+const LABEL_NAME_MIN = 420;
 
-/**
- * S57 — the name track has a FLOOR (`minmax(…,1fr)`), not `minmax(0,1fr)` — and §N36(3) is where
- * the 60 px the collapse freed went: the floor is **160**, not 100.
- *
- * It is the only flexible track and every other one is a hard px, so a narrowing window took it
- * all: at a 760 × 700 window the field measured **14 × 28.2 px** — no room for one character —
- * while `bgColor`, `textColor`, `preview`, `reorder` and `action` each held their width. A track
- * with a floor gives the row a min-content width instead, so a too-narrow panel scrolls sideways
- * rather than emptying the one field you type into (`settings-panel` is `overflow-y-auto`, and
- * CSS resolves a scroll container's other axis to `auto` with it).
- *
- * Putting the freed width into the FLOOR rather than only into the flexible share is what makes
- * the name readable at every width instead of only at the default one — and it costs nothing,
- * because `LABEL_GRID_MIN_WIDTH` comes out **648 px, exactly what it was** (150 + 100 + 184 +
- * … = 150 + 160 + 124 + …). Nothing that fitted before stops fitting, and a panel narrow enough
- * to scroll scrolls by the same amount it did.
- */
-const LABEL_GRID = `${String(LABEL_COL.bgColor)}px minmax(${String(LABEL_NAME_MIN)}px,1fr) ${String(
-    LABEL_COL.textColor
-)}px ${String(LABEL_COL.preview)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
+/** §N38: five tracks, `[swatch trigger · name · chip · reorder · trash]`. */
+const LABEL_GRID = `${String(LABEL_COL.swatch)}px minmax(${String(LABEL_NAME_MIN)}px,1fr) ${String(
+    LABEL_COL.preview
+)}px ${String(LABEL_COL.reorder)}px ${String(LABEL_COL.action)}px`;
 
 /** The width the tracks + gaps need; below it the list scrolls rather than the name collapsing. */
 export const LABEL_GRID_MIN_WIDTH =
-    LABEL_COL.bgColor + LABEL_NAME_MIN + LABEL_COL.textColor + LABEL_COL.preview + LABEL_COL.reorder + LABEL_COL.action + 5 * 10;
+    LABEL_COL.swatch + LABEL_NAME_MIN + LABEL_COL.preview + LABEL_COL.reorder + LABEL_COL.action + 4 * 10;
 
 /** `HStack(spacing: 10)` — the gap between those columns. */
 const LABEL_GRID_GAP = '10px';
@@ -277,48 +283,16 @@ export function pointerOrigin(event: ReactMouseEvent<HTMLButtonElement>): { x: n
     return event.detail === 0 ? null : { x: event.clientX, y: event.clientY };
 }
 
-/** A preset's colour, in whichever of §6.2's two shapes it is stored as. */
-type LabelColorValue = ChromeLabelPreset['color'];
-/** A preset's text colour: a colour, or `null` for AUTO (the luminance rule). */
-type LabelTextColorValue = LabelColorValue | null;
-
-const BLACK = '#000000';
-const WHITE = '#ffffff';
-
-/** §6.2's one-string encoding, read back off a preset so the palette can show the current pick. */
+/**
+ * §6.2's one-string encoding, read back off a preset so the trigger and the chip agree.
+ *
+ * §N38: the colour MODEL — `LabelColorValue`, `LabelTextColorValue`, `tokenOf`, `textToken`,
+ * `hexOf`, `textMode` and the preview's `labelPreviewStyle` — moved into `ColorFlyover.tsx`,
+ * which is the editor that owns it now. Nothing about the values changed; only where the
+ * functions that read them live, so the popover and this row cannot drift apart.
+ */
 function colorToken(preset: ChromeLabelPreset): string {
     return preset.color.kind === 'named' ? preset.color.color : preset.color.hex;
-}
-
-/** The same encoding for a value that is not (yet) on a preset — the add row's draft. */
-function tokenOf(color: LabelColorValue): string {
-    return color.kind === 'named' ? color.color : color.hex;
-}
-
-/** The wire token for a text colour: a colour, or the literal `auto` for the luminance rule. */
-function textToken(color: LabelTextColorValue): string | null {
-    return color === null ? null : tokenOf(color);
-}
-
-/** A concrete hex for any colour value, so a well and a chip can both paint it. */
-function hexOf(color: LabelColorValue, bucket: ChromeBucket): string {
-    if (color.kind === 'custom') return normalizeHexColor(color.hex) ?? '#808080';
-    return workspaceColorHex(color.color, bucket);
-}
-
-/**
- * The colours a chip WOULD have, for a value that may not be a stored preset yet.
- *
- * Routed through the shared `resolveLabelStyle` rather than reimplementing the contrast rule:
- * the add row's preview and a rendered sidebar chip must agree, and the only way to guarantee
- * that is to ask the same function. A one-entry synthetic preset list is how a draft asks it.
- */
-function previewStyle(
-    color: LabelColorValue,
-    textColor: LabelTextColorValue,
-    bucket: ChromeBucket
-): ResolvedLabelStyle {
-    return resolveLabelStyle('preview', [{ name: 'preview', color, textColor }], bucket);
 }
 
 /**
@@ -345,68 +319,51 @@ export function textColorAnnouncement(color: LabelTextColorValue): string {
     return 'Custom';
 }
 
-/** Which of the Auto / Black / White triple a text colour is (anything else is Custom). */
-function textMode(color: LabelTextColorValue): 'auto' | 'black' | 'white' | 'custom' {
-    if (color === null) return 'auto';
-    if (color.kind === 'named') return 'custom';
-    const hex = normalizeHexColor(color.hex)?.toLowerCase() ?? '';
-    if (hex === BLACK) return 'black';
-    if (hex === WHITE) return 'white';
-    return 'custom';
-}
-
-interface ColorFieldProps {
-    readonly idPrefix: string;
-    readonly label: string;
-    readonly value: LabelColorValue;
-    readonly bucket: ChromeBucket;
-    readonly onChange: (next: LabelColorValue) => void;
-}
-
-interface SwatchProps {
-    readonly color: string;
+interface SwatchTriggerProps {
     readonly testID: string;
     readonly ariaLabel: string;
-    readonly selected: boolean;
+    readonly title: string;
+    /** The label's current BACKGROUND — the trigger paints the value it opens an editor for. */
+    readonly color: string;
+    /** §6.2's token for that value (`purple` / `#ff8800`), so a test reads it without a colour. */
+    readonly token: string;
+    readonly open: boolean;
+    readonly buttonRef: (node: HTMLButtonElement | null) => void;
     readonly onClick: () => void;
 }
 
 /**
- * One palette swatch. H11: the Swift menu's rows light under the pointer and these did not, so
- * a hovered swatch takes the same selection ring the selected one wears, one shade quieter —
- * "this is the one that is set" and "this is the one you are about to set" have to be
- * distinguishable, so the hover ring is the selection STROKE and the selected ring is accent.
+ * §N38 — the row's whole colour surface: ONE swatch that opens the flyover.
+ *
+ * It paints the label's background, because that is the value a person scans a list of labels
+ * for, and it is the control the popover is anchored to. What it replaces is 274 px of inline
+ * controls (`LabelColorField`'s ten swatches + `Custom…` well in `LabelCol.bgColor`, and
+ * `LabelTextColorField`'s "Aa" sample + mode `<select>` + well in `LabelCol.textColor`), all of
+ * which now live in `ColorFlyover.tsx`.
+ *
+ * **§S50's hit treatment comes with it, unchanged in kind.** A swatch is a case where the box IS
+ * the picture, so `SettingsIconButton`'s `h-5 w-5` + `-m-0.5` recipe cannot be used as-is — a
+ * 20 px box would draw a 20 px disc. The paint is a 16 px disc and the target is grown to 20 px
+ * by the transparent inset overlay, exactly as the row's palette swatches did; the 24 px column
+ * leaves 2 px either side, so the target sits inside its own track and cannot reach the name.
+ *
+ * `aria-haspopup="dialog"` + `aria-expanded` is the pair a screen reader needs to know this is a
+ * disclosure rather than a colour that toggles, and it is what the audit reads to prove the row
+ * carries a TRIGGER rather than a swatch that sets a colour on click.
  */
-function ColorSwatch(props: SwatchProps): ReactElement {
+function SwatchTrigger(props: SwatchTriggerProps): ReactElement {
     const { hovered, hoverProps } = useHover();
-    const ring = props.selected ? tokens.accent : hovered ? tokens.selectionStroke : null;
+    const ring = props.open ? tokens.accent : hovered ? tokens.selectionStroke : null;
     return (
         <button
+            ref={props.buttonRef}
             type="button"
             data-testid={props.testID}
+            data-color={props.token}
             aria-label={props.ariaLabel}
-            aria-pressed={props.selected}
-            /*
-             * SPACING-REVIEW S50 (OWNER-DIRECTED) — a 20 px target that PAINTS the same 16 px disc.
-             *
-             * Ten of these wrap into two rows inside a 150 px track 4 px apart, and each was a
-             * 16 × 16 hit box. `SettingsIconButton` takes the row's own `h-5 w-5` + `-m-0.5`
-             * recipe unchanged, and a swatch CANNOT: here the box IS the picture, so a 20 px box
-             * draws a 20 px circle — the one thing this row forbids. Everything painted is
-             * therefore left exactly as it was (`h-4 w-4`, the disc, `outlineOffset: 1px` and the
-             * selection/hover ring), and the target is grown by the transparent overlay below.
-             *
-             * **Deviation from the register's `h-5 w-5` + `-m-0.5`, on measurement.** The first
-             * attempt kept the recipe and re-clipped the paint — `p-0.5` with
-             * `background-clip: content-box` and `outlineOffset: -1px`, which is geometrically
-             * exact (content radius 10 − 2 = 8; ring 18 px at radius 9 either way). It measured
-             * as 28 device pixels of difference per swatch, ≤16/255, on the four 45° arcs:
-             * clipping a background and painting a rounded one are two rasterizers, and they do
-             * not agree sub-pixel. That is a difference nobody would see and this lane still
-             * cannot claim, so the paint is not touched at all now.
-             *
-             * Owner-directed: do not re-report. The parity value is a 16 px hit box.
-             */
+            aria-haspopup="dialog"
+            aria-expanded={props.open}
+            title={props.title}
             className="relative h-4 w-4 shrink-0 rounded-full"
             style={{
                 background: props.color,
@@ -416,239 +373,11 @@ function ColorSwatch(props: SwatchProps): ReactElement {
             {...hoverProps}
             onClick={props.onClick}
         >
-            {/*
-             * The 20 px target: 2 px of transparent bleed on every side, hit-tested and clicked
-             * through to the button that owns it. It paints nothing and it is out of flow, so
-             * the swatch's own box, the `gap-1` between swatches, the wrap point inside
-             * `LABEL_COL.bgColor` (§H26) and every column after it are all untouched. The bleed
-             * is exactly half the 4 px gap, so neighbouring targets abut and never overlap.
-             *
-             * Measured on a two-preset tab: hit box 15.5 × 15.5 → 19.5 × 19.5, the swatch's own
-             * rect unmoved at [483, 205.8, 16, 16] (and every one of the other nineteen likewise),
-             * and 477 040 px of the tab pixel-identical.
-             */}
+            {/* §S50's 20 px target: 2 px of transparent bleed on every side, hit-tested and
+                clicked through to the button that owns it. It paints nothing and is out of flow,
+                so the disc, the 24 px column and every column after it are untouched. */}
             <span aria-hidden style={{ position: 'absolute', inset: -2, borderRadius: '9999px' }} />
         </button>
-    );
-}
-
-/** SET-061: the named palette, plus a Custom… well that writes a `#rrggbb`. */
-function LabelColorField(props: ColorFieldProps): ReactElement {
-    const custom = props.value.kind === 'custom';
-    const hex = hexOf(props.value, props.bucket);
-    return (
-        /*
-         * H26: the fixed `LabelCol.bgColor` column. The palette WRAPS inside it rather than
-         * being allowed to set the row's width — every row holds the same ten swatches and the
-         * same well, so every row wraps at the same point and the columns after it still line
-         * up, which is the property the Swift widths exist to guarantee.
-         */
-        <div
-            className="flex flex-wrap items-center gap-1"
-            style={{ width: `${String(LABEL_COL.bgColor)}px` }}
-            role="group"
-            // L93: the field's name AND its value — `"Colour: Blue"`, not `"work color"`.
-            aria-label={`${props.label}: ${colorAnnouncement(props.value)}`}
-        >
-            {WORKSPACE_COLORS.map((color) => {
-                const selected = props.value.kind === 'named' && props.value.color === color;
-                return (
-                    <ColorSwatch
-                        key={color}
-                        testID={`${props.idPrefix}-${color}`}
-                        ariaLabel={`${color} for ${props.label}`}
-                        color={workspaceColorHex(color, props.bucket)}
-                        selected={selected}
-                        onClick={() => {
-                            if (selected) return;
-                            props.onChange({ kind: 'named', color });
-                        }}
-                    />
-                );
-            })}
-            {/*
-             * The Swift menu's "Custom…" entry and its colour well, as one control: the swatch
-             * shows the value (a bare `<input type="color">` renders a dark colour as an empty
-             * white rectangle in Chromium), the transparent input on top opens the OS picker.
-             */}
-            <span
-                // S25: `h-[22px]`, because the well inside it is now 20 px tall.
-                className="relative ml-1 inline-flex h-[22px] items-center gap-1 rounded px-1"
-                style={{
-                    background: custom ? withAlpha(tokens.accent, 0.16) : 'transparent',
-                    outline: custom ? `2px solid ${tokens.accent}` : 'none',
-                    outlineOffset: '1px'
-                }}
-            >
-                <span className="text-[10px]" style={{ color: tokens.textTertiary }}>
-                    Custom…
-                </span>
-                <span
-                    /*
-                     * S25: `h-5 w-6` — 24 × 20. `LabelPresetsSettingsView.swift:289` (the
-                     * background well) and `:361` (the text one) are both `ColorPicker`s, i.e.
-                     * `NSColorWell`s with their own bezel at ~22-24 pt square minimum. At
-                     * `h-3.5 w-5` the painted well was 20 × 14 over an 18 × 12 `<input
-                     * type="color">` — the smallest hit target anywhere in Settings, while the
-                     * SAME control one tab away (Appearance's `ColorField`, `controls.tsx:119`
-                     * `h-6 w-10`) measures 38 × 22.
-                     *
-                     * **Deviation from the register, measured.** It asks for `h-5 w-8` (20 × 32)
-                     * "at minimum", which is a reading of the 20 px pointer floor rather than of
-                     * this column: at 32 px the `Custom…` chip measures 89.22 px and, with its
-                     * `ml-1`, needs 153.2 px beside the last three swatches — 3.2 px more than
-                     * `LabelCol.bgColor`, which is a SWIFT width (`:8`). The palette therefore
-                     * wrapped to a THIRD line and every row on the tab grew 18 px (add row 60 →
-                     * 78, preset row → 74), which is the opposite of what a density fix is for.
-                     * At 24 px the chip is 85.22, the line lands at 145.2 ≤ 150, and the well
-                     * still clears 20 px in both axes.
-                     */
-                    className="relative inline-block h-5 w-6 overflow-hidden rounded"
-                    style={{ background: hex, border: `1px solid ${tokens.divider}` }}
-                >
-                    {/*
-                     * L80: `.help("Pick a custom colour")` (`LabelPresetsSettingsView.swift:290`).
-                     * The port had the accessible name and no hover tooltip, so the well was the
-                     * one control in the row that said nothing to a pointer.
-                     */}
-                    <input
-                        type="color"
-                        aria-label={`Custom colour for ${props.label}`}
-                        title="Pick a custom colour"
-                        data-testid={`${props.idPrefix}-custom`}
-                        value={hex.toLowerCase()}
-                        className="absolute inset-0 h-full w-full border-0 bg-transparent p-0 opacity-0"
-                        onChange={(event) => {
-                            const next = normalizeHexColor(event.target.value);
-                            if (next === null) return;
-                            props.onChange({ kind: 'custom', hex: next.toLowerCase() });
-                        }}
-                    />
-                </span>
-            </span>
-        </div>
-    );
-}
-
-interface TextColorFieldProps {
-    readonly idPrefix: string;
-    readonly label: string;
-    readonly value: LabelTextColorValue;
-    /** The chip background the "Aa" sample is drawn on. */
-    readonly background: string;
-    readonly bucket: ChromeBucket;
-    readonly onChange: (next: LabelTextColorValue) => void;
-}
-
-/**
- * §N36(3) — the width the collapsed mode control is pinned to.
- *
- * Pinned rather than intrinsic, and that is the point of pinning it: a `<select>` sizes itself to
- * the option currently SHOWING, so a row on Auto and a row on Custom would draw two different
- * widths and slide the "Aa" sample and the well out of line with each other down the tab — the
- * exact property §H26's fixed columns exist to hold. 68 px is the widest of the four labels
- * measured in place at this scale (`Custom`, 67.5 px), so nothing is clipped either.
- */
-const LABEL_TEXT_MODE_WIDTH = 68;
-
-/** The Auto / Black / White triple, as the one value a `<select>` carries. */
-type TextModeOption = 'auto' | 'black' | 'white' | 'custom';
-
-/** What each mode writes back. `custom` is display-only — the well is what sets a custom colour. */
-const TEXT_MODE_VALUE: Readonly<Record<'auto' | 'black' | 'white', LabelTextColorValue>> = {
-    auto: null,
-    black: { kind: 'custom', hex: BLACK },
-    white: { kind: 'custom', hex: WHITE }
-};
-
-/** SET-062: Auto (luminance) / Black / White, a custom well, and the "Aa" preview. */
-function LabelTextColorField(props: TextColorFieldProps): ReactElement {
-    const mode = textMode(props.value);
-    const resolved =
-        props.value === null
-            ? previewStyle({ kind: 'custom', hex: props.background }, null, props.bucket).text
-            : hexOf(props.value, props.bucket);
-    return (
-        // H26: the fixed `LabelCol.textColor` column, wrapping inside it for the same reason
-        // the palette does — identical content in every row means an identical wrap.
-        <div
-            className="flex flex-wrap items-center gap-1"
-            style={{ width: `${String(LABEL_COL.textColor)}px` }}
-            role="group"
-            // L93: `"…text color: Auto"` — the mode the "Aa" sample is drawn in, said out loud.
-            aria-label={`${props.label}: ${textColorAnnouncement(props.value)}`}
-        >
-            <span
-                data-testid={`${props.idPrefix}-sample`}
-                data-color={normalizeHexColor(resolved)}
-                className="shrink-0 rounded px-1 text-[10px] font-semibold"
-                style={{ background: props.background, color: resolved }}
-            >
-                Aa
-            </span>
-            {/*
-             * §N36(3) — ONE control where three buttons stood, which is what gives the name
-             * column its width back (see `LABEL_COL`). It is `controls.tsx`'s `SelectField`
-             * recipe — a plain `<select>`, `rounded border`, the divider stroke, the surface
-             * ground — at this row's own 10 px scale rather than a Settings row's 11 px, because
-             * every other control in the row (the `Custom…` label, the "Aa" sample, the chip) is
-             * 10 px and because 11 px does not fit a Swift-width track.
-             *
-             * It is also the shape the shipped app has: `LabelPresetsSettingsView.swift:365-394`
-             * is a `Menu` of exactly these three, labelled with the "Aa" sample and the current
-             * mode's name. `Custom` is offered only when it is what the well has already made —
-             * the Swift menu has no Custom entry either, but its `currentLabel` (`:398-409`) does
-             * read "Custom", and a `<select>` cannot display a value that is not one of its
-             * options.
-             */}
-            <select
-                data-testid={`${props.idPrefix}-mode`}
-                data-mode={mode}
-                aria-label={props.label}
-                value={mode}
-                className="shrink-0 rounded border px-1 py-0.5 text-[10px]"
-                style={{
-                    width: `${String(LABEL_TEXT_MODE_WIDTH)}px`,
-                    borderColor: tokens.divider,
-                    background: tokens.surfaceBackground,
-                    color: tokens.textPrimary
-                }}
-                onChange={(event) => {
-                    const next = event.target.value as TextModeOption;
-                    if (next === 'custom') return;
-                    props.onChange(TEXT_MODE_VALUE[next]);
-                }}
-            >
-                <option value="auto">Auto</option>
-                <option value="black">Black</option>
-                <option value="white">White</option>
-                {mode === 'custom' ? <option value="custom">Custom</option> : null}
-            </select>
-            <span
-                // S25: the text well takes the same 24 × 20 box as the background well above
-                // it, so one row does not draw two sizes of the same control.
-                className="relative inline-block h-5 w-6 shrink-0 overflow-hidden rounded"
-                style={{
-                    background: resolved,
-                    border: `1px solid ${mode === 'custom' ? tokens.accent : tokens.divider}`
-                }}
-            >
-                {/* L80: `.help("Pick a text colour")` (`LabelPresetsSettingsView.swift:362`). */}
-                <input
-                    type="color"
-                    aria-label={`Custom text colour for ${props.label}`}
-                    title="Pick a text colour"
-                    data-testid={`${props.idPrefix}-custom`}
-                    value={(normalizeHexColor(resolved) ?? BLACK).toLowerCase()}
-                    className="absolute inset-0 h-full w-full border-0 bg-transparent p-0 opacity-0"
-                    onChange={(event) => {
-                        const next = normalizeHexColor(event.target.value);
-                        if (next === null) return;
-                        props.onChange({ kind: 'custom', hex: next.toLowerCase() });
-                    }}
-                />
-            </span>
-        </div>
     );
 }
 
@@ -693,6 +422,18 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
     // cross-row state left is the message a REFUSED rename leaves behind.
     const [renameError, setRenameError] = useState<{ id: string; message: string } | null>(null);
     const [confirming, setConfirming] = useState<string | null>(null);
+    /**
+     * §N38 — WHICH row's flyover is open, held by the TAB rather than by the row.
+     *
+     * The same lifetime argument `ContextMenu`'s header makes out loud: a popover whose open state
+     * lives in the row it hangs off is destroyed by anything that re-creates that row, and this
+     * list re-creates rows for a living (a rename changes the key — §SET-066 — and every colour
+     * write comes back as a fresh `labelPresets` array). Held here, the popover survives its own
+     * writes, which is the minimum for a surface whose whole job is to apply them immediately.
+     *
+     * It is also what makes "one at a time" true without any row knowing about any other.
+     */
+    const [flyover, setFlyover] = useState<string | null>(null);
     const usage = labelUsage(props.workspaces);
     const orphans = orphanLabels(props.workspaces, props.presets);
 
@@ -989,6 +730,9 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
         // and the NEXT commit that changes the order would take the caret out of the name field
         // this mint is about to hand it to.
         focusIntent.current = null;
+        // …and so does an open flyover (§N38). The mint's handoff is to the NEW row's name field;
+        // leaving a popover up over another row would put the caret behind it.
+        setFlyover(null);
         // The SAME two-field command the composer sent, and the same one the orphan adoption
         // below and the CLI's `workspace label` back-fill send: a gray preset with a name. No
         // new wire surface, and a GUI-minted preset is indistinguishable from a back-filled one.
@@ -1013,6 +757,22 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
         // Selected, not just focused: the row is born with a placeholder NAME rather than an
         // empty field, so "ready to type" means the default is already highlighted.
         field.select();
+    }, [order, props.presets]);
+
+    /*
+     * §N38 — an open flyover whose row has GONE closes itself.
+     *
+     * A preset's identity is its name (§SET-066), so a rename from anywhere (another client, the
+     * CLI's `workspace label`, this row's own field) unmounts the row the popover is anchored to,
+     * and a delete does the same. Left standing, the popover would be attached to a trigger that
+     * no longer exists — `anchorRef.current` null, focus with nowhere to go home to. Keyed on the
+     * ORDER string rather than on the array, for §N33's reason: the mirror hands this tab a fresh
+     * `labelPresets` on every delta, a recolour's included, and this must not fire on those.
+     */
+    useEffect(() => {
+        setFlyover((current) =>
+            current !== null && !props.presets.some((preset) => preset.name === current) ? null : current
+        );
     }, [order, props.presets]);
 
     return (
@@ -1134,6 +894,10 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                         parked={parked}
                         parkedArrow={parked && parkedArrow?.name === preset.name ? parkedArrow.control : null}
                         hoverEpoch={hoverEpoch}
+                        flyoverOpen={flyover === preset.name}
+                        onFlyoverChange={(open) => {
+                            setFlyover(open ? preset.name : null);
+                        }}
                         onConfirmChange={(open) => {
                             setConfirming(open ? preset.name : null);
                         }}
@@ -1210,19 +974,23 @@ interface PresetRowProps {
     readonly parkedArrow: ArrowControl | null;
     /** N33: changes whenever the rows move, so hover states are re-read rather than trusted. */
     readonly hoverEpoch: number;
+    /** §N38: is THIS row's colour flyover the one that is up? (One at a time, owned by the tab.) */
+    readonly flyoverOpen: boolean;
+    readonly onFlyoverChange: (open: boolean) => void;
     readonly onConfirmChange: (open: boolean) => void;
     readonly onRenameRefused: (message: string | null) => void;
 }
 
 /**
- * One preset, as ONE grid line on `LABEL_COL`'s widths (H26).
+ * One preset, as ONE grid line on `LABEL_COL`'s widths (H26) — §N38's five cells.
  *
  * `LabelPresetsSettingsView.swift:204-245` is a single `HStack(spacing: 10)`: colour well,
  * name field, text-colour well, chip, trash — every one of them in a fixed column so the tab
- * reads as a table rather than a stack of cards. That is what this is. The two port-only
- * affordances that have no Swift column (the in-use count and the ↑/↓ pair) do not get to
- * break the grid: the count rides in the flexible NAME cell, and the reorder pair has its own
- * fixed column of the same width in every row.
+ * reads as a table rather than a stack of cards. §N38 collapses the Swift's two colour cells into
+ * ONE — a swatch trigger that opens the flyover carrying both — so the line is
+ * `[swatch · name · chip · reorder · trash]`. The two port-only affordances that have no Swift
+ * column (the in-use count and the ↑/↓ pair) still do not get to break the grid: the count rides
+ * in the flexible NAME cell, and the reorder pair has its own fixed column in every row.
  *
  * The name is live (H27). `LabelPresetsSettingsView.swift:214-222` binds a `TextField` in every
  * row, focus-committed and Return-committed — there is no Rename button in the shipped app, so
@@ -1235,6 +1003,11 @@ function PresetRow(props: PresetRowProps): ReactElement {
     const [focused, setFocused] = useState(false);
     const { hovered, hoverProps, hoverRef } = useHover(true, props.hoverEpoch);
     const textColor = preset.textColor ?? null;
+    /** §N38: the trigger, which is both the flyover's anchor and where its Escape hands focus. */
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
+    const setTriggerRef = useCallback((node: HTMLButtonElement | null) => {
+        triggerRef.current = node;
+    }, []);
 
     /*
      * `LabelPresetRow`'s `.onChange(of: preset.name)` guard (`:249-251`): the store rewriting
@@ -1340,15 +1113,48 @@ function PresetRow(props: PresetRowProps): ReactElement {
             data-hovered={lit ? 'true' : 'false'}
             ref={hoverRef}
         >
-            <LabelColorField
-                idPrefix={`label-color-${preset.name}`}
-                label={`${preset.name} color`}
-                value={preset.color}
-                bucket={bucket}
-                onChange={(next) => {
-                    props.actions.updateLabelPreset({ id: preset.name, color: tokenOf(next) });
-                }}
-            />
+            {/*
+             * §N38 — cell 1: the swatch trigger, and the popover it owns.
+             *
+             * L93's announcement rule survives the redesign intact: the Swift menus are labelled
+             * `"Colour: \(name)"` / `"Text colour: \(currentLabel)"` — the field's name AND the
+             * value in it — so ONE control that carries both values says both, and a screen
+             * reader still answers "which colours are set" without opening anything.
+             */}
+            <span className="flex items-center justify-start">
+                <SwatchTrigger
+                    testID={`label-color-${preset.name}-trigger`}
+                    ariaLabel={`${preset.name} colours: ${colorAnnouncement(preset.color)} background, ${textColorAnnouncement(
+                        textColor
+                    )} text`}
+                    title="Edit colours"
+                    color={hexOf(preset.color, bucket)}
+                    token={colorToken(preset)}
+                    open={props.flyoverOpen}
+                    buttonRef={setTriggerRef}
+                    onClick={() => {
+                        props.onFlyoverChange(!props.flyoverOpen);
+                    }}
+                />
+                {props.flyoverOpen ? (
+                    <ColorFlyover
+                        name={preset.name}
+                        color={preset.color}
+                        textColor={textColor}
+                        bucket={bucket}
+                        anchorRef={triggerRef}
+                        onColorChange={(next) => {
+                            props.actions.updateLabelPreset({ id: preset.name, color: tokenOf(next) });
+                        }}
+                        onTextColorChange={(next) => {
+                            props.actions.updateLabelPreset({ id: preset.name, textColor: textToken(next) });
+                        }}
+                        onClose={() => {
+                            props.onFlyoverChange(false);
+                        }}
+                    />
+                ) : null}
+            </span>
 
             <span className="flex min-w-0 items-center gap-2">
                 <input
@@ -1400,17 +1206,11 @@ function PresetRow(props: PresetRowProps): ReactElement {
                 </span>
             </span>
 
-            <LabelTextColorField
-                idPrefix={`label-text-${preset.name}`}
-                label={`${preset.name} text color`}
-                value={textColor}
-                background={hexOf(preset.color, bucket)}
-                bucket={bucket}
-                onChange={(next) => {
-                    props.actions.updateLabelPreset({ id: preset.name, textColor: textToken(next) });
-                }}
-            />
-
+            {/*
+             * §N38: the text-colour cell is GONE from the row — `LabelTextColorField`'s "Aa"
+             * sample, its mode `<select>` and its well are the flyover's Text section now. The
+             * chip is what is left saying what the text colour resolved to, which it always did.
+             */}
             <span className="flex min-w-0 justify-start">
                 <ChipPreview
                     testID={`label-chip-${preset.name}`}
@@ -1418,7 +1218,7 @@ function PresetRow(props: PresetRowProps): ReactElement {
                     text={previewText}
                     style={
                         live
-                            ? previewStyle(preset.color, textColor, bucket)
+                            ? labelPreviewStyle(preset.color, textColor, bucket)
                             : resolveLabelStyle(preset.name, presets, bucket)
                     }
                 />

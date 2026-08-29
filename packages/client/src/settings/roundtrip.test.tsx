@@ -330,13 +330,23 @@ describe('the other tabs on the wire', () => {
         });
     };
 
-    it('recolors a label preset from the daemon’s own list', () => {
+    /*
+     * §N38 SWAP — the gesture is two clicks (open the flyover, pick a swatch) where it was one,
+     * because the row's palette moved into the popover. The CLAIM is unchanged, and is the only
+     * reason this test lives in the round-trip file: a colour picked on the Labels tab reaches
+     * the daemon as ONE `update-label-preset` carrying §6.2's one-string token, naming a preset
+     * that came out of the state snapshot rather than out of local state.
+     */
+    it('recolors a label preset from the daemon’s own list, through the flyover', () => {
         const h = setup();
         openTab('labels');
         // The preset came from the state snapshot, and the workspace wearing it is counted.
         expect(screen.getByTestId('label-preset-ship').textContent).toContain('1 workspace');
         act(() => {
-            fireEvent.click(screen.getByTestId('label-color-ship-purple'));
+            fireEvent.click(screen.getByTestId('label-color-ship-trigger'));
+        });
+        act(() => {
+            fireEvent.click(screen.getByTestId('label-flyover-bg-purple'));
         });
         expect(sent(h, 'update-label-preset')).toEqual([
             { command: 'update-label-preset', id: 'ship', color: 'purple' }

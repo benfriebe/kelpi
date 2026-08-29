@@ -9,6 +9,8 @@
  *   `AppearanceTab.tsx`   — the chrome palette + presets/share codes (nex config) and the
  *                           terminal theme/background/font (ghostty config)
  *   `LabelsTab.tsx`       — label presets, over the WS-only preset verbs
+ *   `ColorFlyover.tsx`    — §N38's anchored colour popover: the Background/Text sections and the
+ *                           hand-rolled HSV picker both of their Custom rows open
  *   `ProfilesTab.tsx`     — §9.5's config-file editor, over `set-profiles`
  *   `WorkspacesTab.tsx`   — the writable general settings (`set-general-setting`)
  *   `controls.tsx`        — the WRITING controls (debounced colour/slider, segmented, select)
@@ -47,6 +49,17 @@ export {
     useDebouncedValue
 } from './controls';
 export { LabelsTab, type LabelsTabProps } from './LabelsTab';
+export {
+    COLOR_FLYOVER_WIDTH,
+    ColorFlyover,
+    colorFlyoverPlacement,
+    hexFromHsv,
+    hsvFromHex,
+    parseFlexibleHex,
+    type ColorFlyoverProps,
+    type FlyoverPlacement,
+    type Hsv
+} from './ColorFlyover';
 export { WebTab, DEFAULT_FAVOURITES_PATH, type WebTabActions, type WebTabProps } from './WebTab';
 export { ProfilesTab, type ProfilesTabProps } from './ProfilesTab';
 export {

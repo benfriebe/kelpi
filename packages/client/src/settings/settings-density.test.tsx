@@ -36,7 +36,7 @@ import type { InspectorAssociation, InspectorRepo } from '../chrome';
 import type { ChromePane, ChromeWorkspace } from '../chrome/types';
 import { AppearanceTab } from './AppearanceTab';
 import { KeybindingsTab } from './KeybindingsTab';
-import { LabelsTab } from './LabelsTab';
+import { LABEL_GRID_MIN_WIDTH, LabelsTab } from './LabelsTab';
 import { ProfilesTab } from './ProfilesTab';
 import { RepositoriesTab } from './RepositoriesTab';
 import { SettingsOverlay } from './SettingsOverlay';
@@ -131,60 +131,73 @@ describe('Labels tab density (S25, S57, S60, S64)', () => {
      * S25 — `LabelPresetsSettingsView.swift:289` (background) and `:361` (text) are both
      * `ColorPicker`s: `NSColorWell`s with their own bezel, ~22-24 pt square minimum. The port
      * drew each as `h-3.5 w-5` — a 20 × 14 painted well over an 18 × 12 input, the smallest hit
-     * target anywhere in Settings, while Appearance's `ColorField` draws the same control at
-     * 38 × 22 one tab away.
+     * target anywhere in Settings.
      *
-     * 24 × 20 rather than the register's `h-5 w-8` (20 × 32), which is a reading of the 20 px
-     * pointer floor rather than of this column: at 32 px the `Custom…` chip needs 153.2 px
-     * beside the last three swatches in a track the Swift fixes at 150 (`:8`), so the palette
-     * wrapped to a third line and every row on the tab grew 18 px. Measured both ways.
+     * §N38 SWAP (owner-directed) — **there are no wells left to measure.** Both native
+     * `<input type="color">` controls are gone: the row carries one swatch TRIGGER, and both
+     * custom colours are picked in the flyover's own hand-rolled HSV view. So the density claim
+     * S25 was making — "the control you have to hit is not a sliver" — is re-read on the two
+     * controls that replaced them, against §S50's floor rather than S25's 24 × 20 bezel:
+     *
+     *   · the row's trigger paints a 16 px disc and hit-tests as 20 px (the transparent inset
+     *     overlay, exactly as the row's palette swatches did);
+     *   · the flyover's `✎ Custom` rows — what a person now presses to reach a custom colour —
+     *     are full-width 24 px rows, which is bigger than the well in both axes.
      */
-    // §N32 SWAP: the two wells were read off the COMPOSER, which no longer exists. They are the
-    // same two controls in every preset row, so the measurement moves to a row and the claim is
-    // unchanged.
-    it('S25 — both colour wells are one 24 × 20 control, not two 20 × 14 slivers', () => {
+    it('§N38/S25 — the colour controls are a 20 px trigger and 24 px flyover rows, no wells', () => {
         open();
-        for (const testID of ['label-color-ship-custom', 'label-text-ship-custom']) {
-            const well = screen.getByTestId(testID).parentElement as HTMLElement;
-            expect(well.className).toContain('h-5');
-            expect(well.className).toContain('w-6');
-            expect(well.className).not.toContain('h-3.5');
+        expect(screen.queryByTestId('label-color-ship-custom')).toBeNull();
+        expect(screen.queryByTestId('label-text-ship-custom')).toBeNull();
+        expect(document.querySelectorAll('input[type="color"]')).toHaveLength(0);
+
+        const trigger = screen.getByTestId('label-color-ship-trigger');
+        // 16 px of paint…
+        expect(trigger.className).toContain('h-4');
+        expect(trigger.className).toContain('w-4');
+        // …in a 20 px target: `inset: -2px` on every side of a 16 px box (§S50).
+        const bleed = trigger.querySelector('span[aria-hidden]') as HTMLElement;
+        expect(bleed.style.inset).toBe('-2px');
+
+        fireEvent.click(trigger);
+        for (const testID of ['label-flyover-bg-custom', 'label-flyover-text-custom']) {
+            expect(screen.getByTestId(testID).className).toContain('h-6');
+            expect(screen.getByTestId(testID).className).toContain('w-full');
         }
     });
 
     /**
      * S60 — the Swift's 124 pt track (`LabelPresetsSettingsView.swift:9`) holds what the SWIFT
      * puts there: one compact `Menu` plus a well (`:224-233`, `:356-399`). This port drew the
-     * mode as three explicit choices instead, so the cluster measured 21.07 (Aa) + 36.27 + 40.23
-     * + 41.89 + 24 (well) + 4 × 4 px of gaps = 179.5 px, and S60 widened the track to 184 so it
-     * would stop wrapping to a 44.4 px two-line box on every row.
+     * mode as three explicit choices instead, so the cluster measured 179.5 px and S60 widened
+     * the track to 184 so it would stop wrapping to a 44.4 px two-line box on every row.
      *
      * S57 — and the name track has a floor. As `minmax(0,1fr)` it was the only flexible track
-     * among five hard px ones, so a 760 × 700 window took it to 14 × 28.2 px while `bgColor`,
-     * `textColor`, `preview`, `reorder` and `action` all held their width.
+     * among five hard px ones, so a 760 × 700 window took it to 14 × 28.2 px while every other
+     * track held its width.
      *
-     * §N36(3) SWAP — owner-directed, and it settles BOTH of those rows rather than restating
-     * them. S60's own recorded remedy (collapse Auto/Black/White into one control, as `:365-394`
-     * does) is now taken, so the cluster is 121.07 px and the track goes back to the Swift's
-     * **124**; the 60 px it frees goes into S57's floor, **100 → 160**, which is what makes the
-     * name field readable at a narrow window and not only at the default one. Measured live at
-     * both widths in `docs/audit/n36-labels-design/`: the cluster does not wrap at either
-     * (121.07 px of content in 124, one line), the row height is unchanged at 54 px, and
-     * `LABEL_GRID_MIN_WIDTH` is unchanged at 648 px.
+     * §N36(3) collapsed the triple into a `<select>` and spent the 60 px it freed on that floor
+     * (100 → 160), which returned the track to the Swift's 124.
+     *
+     * §N38 SWAP (owner-directed) — **both colour tracks are gone.** The row is
+     * `[swatch 24 · name · chip 80 · reorder 44 · trash 40]`, and the 260 px the collapse frees
+     * (126 from `bgColor`, 124 from `textColor`, 10 from the column gap six tracks needed and
+     * five do not) all goes into S57's floor: **160 → 420**. `LABEL_GRID_MIN_WIDTH` is
+     * unchanged at 648, which is the property S57 and S60 and §N36(3) each preserved in turn,
+     * so nothing that fitted before stops fitting and a too-narrow panel scrolls by the same
+     * amount it always did.
      */
-    it('S57/S60/§N36 — one grid template: the Swift’s 124 px text-colour track, floored name', () => {
+    it('§N38/S57/S60 — one grid template: a 24 px swatch track and a 420 px floored name', () => {
         open();
         for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
-            expect(node.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
-        // The cluster is sized off the same constant, so the track and its contents cannot drift.
-        const group = screen.getByRole('group', { name: /ship text color/i });
-        expect(group.style.width).toBe('124px');
-        // …and what makes 124 possible is that the three buttons are ONE control now.
-        expect(screen.getByTestId('label-text-ship-mode').tagName).toBe('SELECT');
-        expect(screen.queryByTestId('label-text-ship-white')).toBeNull();
+        expect(LABEL_GRID_MIN_WIDTH).toBe(648);
+        // The two tracks the flyover replaced, and the controls that lived in them, are gone.
+        expect(screen.queryByTestId('label-text-ship-mode')).toBeNull();
+        expect(screen.queryByTestId('label-text-ship-sample')).toBeNull();
+        expect(screen.queryByTestId('label-color-ship-purple')).toBeNull();
     });
 
     /**

@@ -61,11 +61,20 @@ describe('the label preset list', () => {
         expect(screen.getByTestId('labels-empty')).toBeDefined();
     });
 
-    it('recolors through the palette, and no-ops on the current color', () => {
+    /*
+     * §N38 SWAP — the palette lives in the flyover, so the gesture opens it first. The claim is
+     * unchanged: a swatch writes §6.2's one-string token through `update-label-preset`, and the
+     * swatch that is ALREADY set writes nothing (`aria-pressed` is not a toggle).
+     */
+    it('recolors through the flyover’s palette, and no-ops on the current color', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-color-ship-purple'));
+        fireEvent.click(screen.getByTestId('label-color-ship-trigger'));
+        fireEvent.click(screen.getByTestId('label-flyover-bg-purple'));
         expect(bound.log.updated).toEqual([{ id: 'ship', color: 'purple' }]);
-        fireEvent.click(screen.getByTestId('label-color-wip-blue'));
+        fireEvent.click(screen.getByTestId('label-flyover-close'));
+
+        fireEvent.click(screen.getByTestId('label-color-wip-trigger'));
+        fireEvent.click(screen.getByTestId('label-flyover-bg-blue'));
         expect(bound.log.updated).toHaveLength(1);
     });
 
@@ -145,39 +154,23 @@ describe('the tab’s shape (H25/H26/H27)', () => {
     /*
      * H26: one grid line per row, on LabelCol's widths — not a two-line stacked card.
      *
-     * §N32 SWAP: the loop no longer includes the composer, because there is no composer. The
-     * TRACKS are untouched by that removal and this is the assertion that says so — §S60's 184
-     * was sized for the Aa/Auto/Black/White/well cluster that lives in every PRESET row, not for
-     * the composer's copy of it, so removing the composer must not move a single number here.
+     * §N32 SWAP: the loop no longer includes the composer, because there is no composer.
+     *
+     * §N38 SWAP (owner-directed): one template pinned in place of another, and both numbers that
+     * moved are accounted for in `LabelsTab.tsx`'s `LABEL_NAME_MIN`. The pinned string was
+     * `150px minmax(160px,1fr) 124px 80px 44px 40px` — the Swift's two colour tracks plus §N36(3)'s
+     * floor. The flyover takes BOTH colour controls out of the row, so:
+     *
+     *   · `bgColor` 150 + `textColor` 124 → **one 24 px swatch-trigger track**;
+     *   · six tracks become five, so one 10 px column gap goes with them;
+     *   · 126 + 124 + 10 = **260 px**, all of it into §S57's name floor: 160 → **420**.
      */
     it('lays every row out on LabelCol’s fixed columns', () => {
         setup();
         for (const row of ['label-preset-ship', 'label-preset-wip']) {
             const node = screen.getByTestId(row);
             expect(node.style.display).toBe('grid');
-            /*
-             * bgColor 150 / name flexes / textColor / preview 80 / (port-only reorder) /
-             * action 40 — `LabelPresetsSettingsView.swift:7-12`.
-             *
-             * §N36(3) SWAP — owner-directed, and it is one template pinned in place of another.
-             * The pinned string was `150px minmax(100px,1fr) 184px 80px 44px 40px`, and both of
-             * the numbers that moved were port deviations rather than Swift widths:
-             *
-             *   · `textColor` 184 → **124**, the Swift's own `LabelCol.textColor`. §S60 widened
-             *     it because this port drew the text-colour mode as three explicit buttons
-             *     (179.5 px of children) where `:365-394` draws one `Menu`; the owner directed
-             *     §S60's own recorded remedy — collapse them into ONE control — and a `<select>`
-             *     at this row's scale makes the cluster 121.07 px, which fits 124.
-             *   · the name track's FLOOR 100 → **160**, which is where the 60 px went. §S57 put
-             *     the floor there so a narrowing window scrolls instead of emptying the field;
-             *     raising it is what makes the field readable at EVERY width rather than only at
-             *     the default one, and `LABEL_GRID_MIN_WIDTH` is unchanged at 648 either way.
-             *
-             * Measured on the live stack (`docs/audit/n36-labels-design/`): at the default window
-             * the name field goes 29.36 → 89.36 px and the minted `New label` stops overflowing
-             * its field (slack −14.49 → +45.51 px).
-             */
-            expect(node.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
+            expect(node.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
             expect(node.style.columnGap).toBe('10px');
         }
     });
@@ -186,34 +179,45 @@ describe('the tab’s shape (H25/H26/H27)', () => {
      * …and the rebalance is free at the narrow end, which is the half a template alone does not
      * say. §S57's floor is what stops a narrowing window emptying the name field, and the width
      * below which the list scrolls sideways instead is the sum of the tracks and the gaps. That
-     * sum is 648 either side of §N36 — 150 + 100 + 184 = 150 + 160 + 124 — so a panel that fitted
-     * the row before still fits it, and one that scrolled scrolls by the same amount.
+     * sum is 648 through §S57, §S60, §N36(3) and now §N38 — 150 + 100 + 184 = 150 + 160 + 124 =
+     * 24 + 420 — so a panel that fitted the row before still fits it, and one that scrolled
+     * scrolls by the same amount.
      */
-    it('leaves the width at which the list starts scrolling unchanged (§S57 / §N36)', () => {
+    it('leaves the width at which the list starts scrolling unchanged (§S57 / §N36 / §N38)', () => {
         expect(LABEL_GRID_MIN_WIDTH).toBe(648);
     });
 
     /*
-     * …and every row orders its cells the same way, which is what makes them line up: colour,
-     * name, text colour, preview, then the trailing controls.
+     * …and every row orders its cells the same way, which is what makes them line up.
      *
      * §N32 SWAP: this compared the composer against a preset row. With the composer gone the
      * alignment that remains — and the only one the Swift's widths were ever about for the list
      * — is row against row.
+     *
+     * §N38 SWAP: the order was `colour · name · text colour · preview`; it is
+     * `swatch trigger · name · preview` now, with the trigger carrying BOTH colours. L93's rule
+     * (announce the field AND the value in it) applies to the one control that replaced the two
+     * groups, so it names both values.
      */
     it('orders every preset row’s cells the same way', () => {
         setup();
         const first = cells('label-preset-ship');
         const second = cells('label-preset-wip');
-        // L93: the group announces the field AND the value in it, so the name is a prefix.
-        expect(first[0]?.getAttribute('aria-label')).toBe('ship color: Gray');
-        expect(second[0]?.getAttribute('aria-label')).toBe('wip color: Blue');
+        expect(first[0]?.querySelector('[data-testid="label-color-ship-trigger"]')).not.toBeNull();
+        expect(second[0]?.querySelector('[data-testid="label-color-wip-trigger"]')).not.toBeNull();
+        expect(
+            first[0]?.querySelector('button')?.getAttribute('aria-label')
+        ).toBe('ship colours: Gray background, Auto text');
+        expect(
+            second[0]?.querySelector('button')?.getAttribute('aria-label')
+        ).toBe('wip colours: Blue background, Auto text');
         expect(first[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-ship');
         expect(second[1]?.querySelector('input')?.getAttribute('data-testid')).toBe('label-rename-field-wip');
-        expect(first[2]?.getAttribute('aria-label')).toBe('ship text color: Auto');
-        expect(second[2]?.getAttribute('aria-label')).toBe('wip text color: Auto');
-        expect(first[3]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
-        expect(second[3]?.querySelector('[data-testid="label-chip-wip"]')).not.toBeNull();
+        expect(first[2]?.querySelector('[data-testid="label-chip-ship"]')).not.toBeNull();
+        expect(second[2]?.querySelector('[data-testid="label-chip-wip"]')).not.toBeNull();
+        // …and the two cells the flyover replaced are gone from the row entirely.
+        expect(screen.queryByTestId('label-text-ship-mode')).toBeNull();
+        expect(screen.queryByTestId('label-color-ship-purple')).toBeNull();
     });
 
     // H27: no Rename button anywhere — the name is a live field in every row.
@@ -236,7 +240,9 @@ describe('the tab’s shape (H25/H26/H27)', () => {
     });
 
     // H11: the same hover recipe as the rail and the buttons, on the row and on a swatch.
-    it('lights a preset row and a colour swatch under the pointer', () => {
+    // §N38 SWAP: the swatch that is read is the ROW's trigger, and the ten palette swatches keep
+    // the identical recipe inside the flyover — one hover rule, two places it is now applied.
+    it('lights a preset row, its swatch trigger and a flyover swatch under the pointer', () => {
         setup();
         const row = screen.getByTestId('label-preset-ship');
         expect(row.dataset['hovered']).toBe('false');
@@ -244,7 +250,13 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         expect(row.dataset['hovered']).toBe('true');
         expect(row.style.background).toContain('--nex-selection-fill');
 
-        const swatch = screen.getByTestId('label-color-ship-purple');
+        const trigger = screen.getByTestId('label-color-ship-trigger');
+        expect(trigger.style.outline).toBe('none');
+        fireEvent.mouseEnter(trigger);
+        expect(trigger.style.outline).toContain('--nex-selection-stroke');
+
+        fireEvent.click(trigger);
+        const swatch = screen.getByTestId('label-flyover-bg-purple');
         expect(swatch.style.outline).toBe('none');
         fireEvent.mouseEnter(swatch);
         expect(swatch.style.outline).toContain('--nex-selection-stroke');
@@ -365,20 +377,31 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
      *     the capability is not merely assumed to have survived.
      */
     /*
-     * §N36(3) SWAP — the text-colour mode is now ONE `<select>` where three `aria-pressed`
-     * buttons stood, so the GESTURE in these three tests changes from a click on the chosen
-     * button to a change on the chosen option. What is asserted does not: the same two writes,
-     * in the same order, with the same values. The button test ids (`label-text-ship-white`
-     * etc.) are gone with the buttons; `label-text-ship-mode` is the control that replaced them,
-     * and its `data-mode` is the read that replaced `aria-pressed`.
+     * §N38 SWAP — every control these tests drove has moved into the flyover, and the gestures
+     * move with it. What is asserted does not change at all: the same writes, in the same order,
+     * with the same values, through the same `updateLabelPreset` verb.
+     *
+     *   · the ten background swatches → `label-flyover-bg-<color>` (was `label-color-<name>-<color>`);
+     *   · the Auto/Black/White `<select>` → three `aria-pressed` buttons, `label-flyover-text-*`
+     *     (§N36(3) had collapsed them into one control ONLY because 179.5 px would not fit a
+     *     124 px Swift track, and that track no longer exists — the owner's mockup draws three);
+     *   · the two `<input type="color">` wells → the popover's own HSV view, reached from either
+     *     `Custom` row, with a hex field that is the byte-exact way in and out;
+     *   · the "Aa" sample → the flyover's Text ▸ Custom row, which shows the resolved swatch and
+     *     hex, and the row's chip, which was always the other place the resolution showed.
      */
+    function openFlyover(preset: string): void {
+        fireEvent.click(screen.getByTestId(`label-color-${preset}-trigger`));
+    }
     function setTextMode(preset: string, mode: 'auto' | 'black' | 'white'): void {
-        fireEvent.change(screen.getByTestId(`label-text-${preset}-mode`), { target: { value: mode } });
+        if (screen.queryByTestId('label-flyover-text-auto') === null) openFlyover(preset);
+        fireEvent.click(screen.getByTestId(`label-flyover-text-${mode}`));
     }
 
     it('designs a minted preset through its own row: background, then text colour', () => {
         const bound = setup();
-        fireEvent.click(screen.getByTestId('label-color-ship-purple'));
+        openFlyover('ship');
+        fireEvent.click(screen.getByTestId('label-flyover-bg-purple'));
         setTextMode('ship', 'white');
         expect(bound.log.updated).toEqual([
             { id: 'ship', color: 'purple' },
@@ -388,39 +411,57 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
 
     /*
      * …and the control SHOWS which mode is set, which is the whole reason this port draws the
-     * mode rather than hiding it behind a menu (§H26/§L93). `Custom` is offered only when the
-     * well has already made one — a `<select>` cannot display a value that is not an option, and
-     * the Swift menu (`:365-394`) does not offer Custom either.
+     * mode rather than hiding it behind a menu (§L93). §N38 SWAP: the read is `aria-pressed` on
+     * three buttons again, where §N36(3)'s `<select>` had a `value` and a `data-mode`. `Custom`
+     * is not a fourth button — it is the row beneath, which is `aria-pressed` when the stored
+     * colour is neither black, white nor auto, and which is also the way IN to a custom colour.
      */
-    it('shows the current mode in the collapsed control, Custom included (§N36)', () => {
+    it('shows the current mode on the three buttons, Custom on its own row (§N38)', () => {
         setup([], [
             { name: 'auto', color: { kind: 'named', color: 'gray' }, textColor: null },
             { name: 'white', color: { kind: 'named', color: 'gray' }, textColor: { kind: 'custom', hex: '#ffffff' } },
             { name: 'odd', color: { kind: 'named', color: 'gray' }, textColor: { kind: 'custom', hex: '#3366cc' } }
         ]);
-        const modeOf = (preset: string): HTMLSelectElement =>
-            screen.getByTestId(`label-text-${preset}-mode`) as HTMLSelectElement;
-        expect(modeOf('auto').value).toBe('auto');
-        expect(modeOf('auto').dataset['mode']).toBe('auto');
-        expect(Array.from(modeOf('auto').options).map((option) => option.value)).toEqual([
-            'auto',
-            'black',
-            'white'
-        ]);
-        expect(modeOf('white').value).toBe('white');
-        expect(modeOf('odd').value).toBe('custom');
-        expect(Array.from(modeOf('odd').options).map((option) => option.value)).toEqual([
-            'auto',
-            'black',
-            'white',
-            'custom'
-        ]);
+        const pressed = (): string[] =>
+            ['auto', 'black', 'white', 'custom']
+                .filter(
+                    (mode) =>
+                        screen.getByTestId(`label-flyover-text-${mode}`).getAttribute('aria-pressed') === 'true'
+                );
+
+        openFlyover('auto');
+        expect(pressed()).toEqual(['auto']);
+        fireEvent.click(screen.getByTestId('label-flyover-close'));
+
+        openFlyover('white');
+        expect(pressed()).toEqual(['white']);
+        fireEvent.click(screen.getByTestId('label-flyover-close'));
+
+        openFlyover('odd');
+        expect(pressed()).toEqual(['custom']);
+        // …and the Custom row shows the colour it is pressed FOR, which the `<select>` could not.
+        expect(screen.getByTestId('label-flyover-text-custom-hex').textContent).toBe('#3366cc');
     });
 
-    it('takes a custom hex from the colour well', () => {
+    /*
+     * §N38 SWAP for "takes a custom hex from the colour well". The OS well is gone; the way to a
+     * custom colour is the popover's own picker, and the hex field is the byte-exact door.
+     */
+    it('takes a custom hex from the flyover’s picker, for both colours', () => {
         const bound = setup();
-        fireEvent.change(screen.getByTestId('label-color-ship-custom'), { target: { value: '#ff8800' } });
+        openFlyover('ship');
+        fireEvent.click(screen.getByTestId('label-flyover-bg-custom'));
+        fireEvent.change(screen.getByTestId('label-flyover-hex'), { target: { value: '#ff8800' } });
         expect(bound.log.updated).toEqual([{ id: 'ship', color: '#ff8800' }]);
+
+        // …and the SAME view, entered from the Text section, writes the other value.
+        fireEvent.click(screen.getByTestId('label-flyover-back'));
+        fireEvent.click(screen.getByTestId('label-flyover-text-custom'));
+        fireEvent.change(screen.getByTestId('label-flyover-hex'), { target: { value: '#123456' } });
+        expect(bound.log.updated).toEqual([
+            { id: 'ship', color: '#ff8800' },
+            { id: 'ship', textColor: '#123456' }
+        ]);
     });
 
     it('sends null for Auto, so the daemon re-derives black/white by luminance', () => {
@@ -433,13 +474,25 @@ describe('designing a preset (SET-058, SET-061, SET-062)', () => {
         ]);
     });
 
-    it('shows the resolved text colour on the Aa sample: white on a dark chip, black on a light one', () => {
+    /*
+     * §N38 SWAP for the "Aa" sample: white on a dark chip, black on a light one. The sample went
+     * with `LabelTextColorField`; the two surfaces that still SHOW the luminance rule's answer
+     * are the row's chip and the flyover's Text ▸ Custom row, and both are read here so the rule
+     * cannot quietly stop being displayed anywhere.
+     */
+    it('shows the resolved text colour: white on a dark chip, black on a light one', () => {
         setup([], [
             { name: 'dark', color: { kind: 'custom', hex: '#101014' }, textColor: null },
             { name: 'light', color: { kind: 'custom', hex: '#f4e7a1' }, textColor: null }
         ]);
-        expect(screen.getByTestId('label-text-dark-sample').dataset['color']?.toLowerCase()).toBe('#ffffff');
-        expect(screen.getByTestId('label-text-light-sample').dataset['color']?.toLowerCase()).toBe('#000000');
+        openFlyover('dark');
+        expect(screen.getByTestId('label-flyover-text-custom-hex').textContent).toBe('#ffffff');
+        expect(screen.getByTestId('label-flyover-chip').dataset['text']).toBe('#ffffff');
+        fireEvent.click(screen.getByTestId('label-flyover-close'));
+
+        openFlyover('light');
+        expect(screen.getByTestId('label-flyover-text-custom-hex').textContent).toBe('#000000');
+        expect(screen.getByTestId('label-flyover-chip').dataset['text']).toBe('#000000');
     });
 
     it('reorders with the ↑/↓ buttons, disabled at the ends (SET-065)', () => {
@@ -702,9 +755,9 @@ describe('minting a preset (N32)', () => {
         const first = screen.getByTestId('label-preset-ship');
         const second = screen.getByTestId('label-preset-wip');
         expect(first.style.gridTemplateColumns).toBe(second.style.gridTemplateColumns);
-        // §N36(3) SWAP: the same one-template-for-every-row claim, on the template the owner's
-        // rebalance produced. Reasoned about where it is defined, above.
-        expect(first.style.gridTemplateColumns).toBe('150px minmax(160px,1fr) 124px 80px 44px 40px');
+        // §N36(3) / §N38 SWAP: the same one-template-for-every-row claim, on the template the
+        // owner's rebalance produced. Reasoned about where it is defined, above.
+        expect(first.style.gridTemplateColumns).toBe('24px minmax(420px,1fr) 80px 44px 40px');
         // S64's 10 px horizontal inset, measured off the shipped dialog.
         expect(first.className).toContain('px-2.5');
         expect(second.className).toContain('px-2.5');

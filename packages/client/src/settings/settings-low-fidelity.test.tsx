@@ -211,19 +211,25 @@ describe('L80 — the six missing `.help()` tooltips', () => {
         { name: 'ship', color: { kind: 'named', color: 'gray' }, textColor: null }
     ];
 
-    /** `LabelPresetsSettingsView.swift:290, 362, 244`. */
-    it('Labels: the two colour wells and the trash say what they do', () => {
+    /**
+     * `LabelPresetsSettingsView.swift:290, 362, 244`.
+     *
+     * §N38 SWAP — the two `.help()`-bearing wells ("Pick a custom colour" / "Pick a text colour")
+     * are gone with the OS colour inputs they sat on. L80's claim is that every glyph-only
+     * control on this tab says what it does to a pointer, so it is re-read on the controls that
+     * replaced them: the row's swatch trigger, and the flyover's × (a bare `×` is exactly the
+     * kind of glyph L80 was raised about). The trash is unchanged.
+     */
+    it('Labels: the swatch trigger, the flyover’s close and the trash say what they do', () => {
         render(<LabelsTab presets={PRESETS} workspaces={[]} actions={actions()} bucket="dark" />);
-        expect(screen.getByTestId('label-color-ship-custom').getAttribute('title')).toBe(
-            'Pick a custom colour'
-        );
-        expect(screen.getByTestId('label-text-ship-custom').getAttribute('title')).toBe(
-            'Pick a text colour'
-        );
+        const trigger = screen.getByTestId('label-color-ship-trigger');
+        expect(trigger.getAttribute('title')).toBe('Edit colours');
         // §N36(2) SWAP: the Swift's own help text is "Remove preset" (`:244`); the owner directed
         // the tab's user-facing vocabulary to LABELS, so the tooltip exists — which is what L80
         // is about — and says "Remove label". The divergence is recorded, not silent.
         expect(screen.getByTestId('label-delete-ship').getAttribute('title')).toBe('Remove label');
+        fireEvent.click(trigger);
+        expect(screen.getByTestId('label-flyover-close').getAttribute('title')).toBe('Close');
     });
 
     /** `SettingsView.swift:792`. */
@@ -609,27 +615,37 @@ describe('L91 — the Labels delete control (already a glyph before this wave)',
     });
 });
 
-describe('L93 — the Labels colour groups announce their value', () => {
+describe('L93 — the Labels colour controls announce their value', () => {
+    const TWO: readonly ChromeLabelPreset[] = [
+        { name: 'wip', color: { kind: 'named', color: 'blue' }, textColor: null },
+        { name: 'hold', color: { kind: 'custom', hex: '#123456' }, textColor: { kind: 'custom', hex: '#ffffff' } }
+    ];
+
     /**
      * `LabelPresetsSettingsView.swift:330, 395` — `"Colour: \(name)"` / `"Text colour:
      * \(currentLabel)"`. The port's groups named the field and left the ten swatch buttons as the
      * only way to learn which one is pressed.
+     *
+     * §N38 SWAP — the two `role="group"` wrappers are gone with the two in-row fields. The claim
+     * is unchanged and, if anything, stronger: the row now has ONE control carrying BOTH values,
+     * so it has to announce both — a screen reader learns which background AND which text colour
+     * are set without opening anything. The two groups themselves survive INSIDE the flyover,
+     * where the ten swatches and the three mode buttons actually live, so `getByRole('group')`
+     * still answers the Swift's question at the place the Swift asks it.
      */
-    it('names the field AND the colour set in it', () => {
-        render(
-            <LabelsTab
-                presets={[
-                    { name: 'wip', color: { kind: 'named', color: 'blue' }, textColor: null },
-                    { name: 'hold', color: { kind: 'custom', hex: '#123456' }, textColor: { kind: 'custom', hex: '#ffffff' } }
-                ]}
-                workspaces={[]}
-                actions={actions()}
-                bucket="dark"
-            />
-        );
-        expect(screen.getByRole('group', { name: 'wip color: Blue' })).toBeDefined();
-        expect(screen.getByRole('group', { name: 'wip text color: Auto' })).toBeDefined();
-        expect(screen.getByRole('group', { name: 'hold color: Custom' })).toBeDefined();
-        expect(screen.getByRole('group', { name: 'hold text color: White' })).toBeDefined();
+    it('the row’s trigger names both colours, and the flyover keeps the two groups', () => {
+        render(<LabelsTab presets={TWO} workspaces={[]} actions={actions()} bucket="dark" />);
+        expect(
+            screen.getByTestId('label-color-wip-trigger').getAttribute('aria-label')
+        ).toBe('wip colours: Blue background, Auto text');
+        expect(
+            screen.getByTestId('label-color-hold-trigger').getAttribute('aria-label')
+        ).toBe('hold colours: Custom background, White text');
+
+        fireEvent.click(screen.getByTestId('label-color-hold-trigger'));
+        expect(screen.getByRole('group', { name: 'Background colour for hold' })).toBeDefined();
+        expect(screen.getByRole('group', { name: 'Text colour for hold' })).toBeDefined();
+        // …and the popover itself is named for the label it is designing.
+        expect(screen.getByRole('dialog', { name: 'Colours for hold' })).toBeDefined();
     });
 });

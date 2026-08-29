@@ -170,10 +170,17 @@ describe('S21 — the editor textarea is scoped off the global scrollbar rules',
 });
 
 /*
- * S42 — the markdown document's side padding (OWNER-DIRECTED) lives one package over.
+ * S42 and S51 — two OWNER-DIRECTED markdown-preview rows that live one package over.
  *
  * The preview's stylesheet is the DAEMON's (`daemon/src/content/markdown.ts`), outside this
- * client's cascade entirely, so its assertions are in `daemon/src/content/markdown.test.ts`
- * beside the rule they hold: `padding: 20px clamp(12px, 6%, 28px)` against the Swift's flat
- * `20px 28px`. Named here so a reader of this pack knows the row is covered and where.
+ * client's cascade entirely, so their assertions are in `daemon/src/content/markdown.test.ts`
+ * beside the rules they hold:
+ *
+ *   - S42, `padding: 20px clamp(12px, 6%, 28px)` on `body`, against the Swift's flat
+ *     `20px 28px` (`MarkdownHTMLRenderer.swift:300`);
+ *   - S51, `padding: 0` on `pre.frontmatter-nested`, against the Swift's `8px 10px`
+ *     (`:444-452`), so a nested front-matter value shares the cell's own 6/12 box and the
+ *     column has one left edge. The raw block keeps the Swift's 8/10.
+ *
+ * Named here so a reader of this pack knows the rows are covered and where.
  */

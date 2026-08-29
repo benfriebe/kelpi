@@ -220,12 +220,20 @@ describe('Settings ▸ Keybindings', () => {
         expect(hotkey?.style.fontFamily).toContain('ui-rounded');
     });
 
-    /** M43. `Image(systemName: "xmark.circle.fill")` — a filled disc, not a `×` character. */
-    it('M43 — removes a trigger with a filled-circle glyph at a 16 px target', () => {
+    /**
+     * M43. `Image(systemName: "xmark.circle.fill")` — a filled disc, not a `×` character.
+     *
+     * The target was `h-4 w-4` until SPACING-REVIEW S50 (owner-directed) took it to a 20 px box
+     * with a `-m-0.5` bleed, so it still OCCUPIES the 16 px M43 settled on. Both halves are
+     * asserted, because either one alone is the wrong control: `h-5 w-5` without the bleed moves
+     * the column, and the bleed without `h-5 w-5` is a 12 px target.
+     */
+    it('M43 — removes a trigger with a filled-circle glyph at a 20 px target that occupies 16 (S50)', () => {
         renderKeybindings();
         const remove = screen.getByTestId('keybinding-remove-focus_next_pane-super+]');
-        expect(remove.className).toContain('h-4');
-        expect(remove.className).toContain('w-4');
+        expect(remove.className).toContain('h-5');
+        expect(remove.className).toContain('w-5');
+        expect(remove.className).toContain('-m-0.5');
         expect(remove.textContent).toBe('');
         const svg = remove.querySelector('svg');
         expect(svg?.querySelector('circle')?.getAttribute('fill')).toBe('currentColor');

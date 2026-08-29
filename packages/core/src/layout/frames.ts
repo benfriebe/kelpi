@@ -110,7 +110,11 @@ export function splitDividers(
     ];
 }
 
-/** The grab strip: the visible bar inset by -4px on every side (§7.4). */
+/**
+ * The grab strip: the visible bar inset by `-DIVIDER_HIT_INSET` on every side (§7.4).
+ *
+ * That inset is 6, not the Swift's 4 — SPACING-REVIEW S48, owner-directed. See the constant.
+ */
 export function dividerHitRect(rect: Rect): Rect {
     return {
         x: rect.x - DIVIDER_HIT_INSET,

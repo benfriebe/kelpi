@@ -191,6 +191,97 @@ export function insetHoleForFocusRing(rect: GeometryRect, ring: number = FOCUS_R
 // The set moved to `./glyphs` so the pickup panel can draw the same `scope` crosshair its
 // toolbar button does (§M37) without importing back through this module.
 
+// ── §S43: the nav row's fit ─────────────────────────────────────────────────────────
+
+/** `h-[22px] w-[22px]` on every `ChromeButton` (`WebPaneChrome.swift:149-218`'s fixed frames). */
+export const WEB_CHROME_BUTTON_PX = 22;
+/** `gap-1.5` on the nav row — the Swift's `HStack(spacing: 6)`. */
+export const WEB_CHROME_GAP_PX = 6;
+/** §S43's floor for the address, so it stops being a stub while the row still has room. */
+export const WEB_URL_MIN_WIDTH_PX = 60;
+/** The three the row never sheds: back / forward / reload. */
+const WEB_CHROME_FIXED_BUTTONS = 3;
+/** Bookmarks, new-tab, storage, scope, dev tools — the row's other five. */
+const WEB_CHROME_SHEDDABLE = 5;
+
+export interface WebChromeFit {
+    /** Draw the dev-tools button. */
+    readonly devtools: boolean;
+    /** Draw the element-pickup (scope) button. */
+    readonly scope: boolean;
+    /** The URL form's `min-width`, in px — 60 while the row can seat it, 0 once it cannot. */
+    readonly urlMinWidth: number;
+}
+
+/**
+ * §S43 — what a nav row this wide can carry (OWNER-DIRECTED divergence from
+ * `WebPaneChrome.swift:149-218`, taken 2026-08-29).
+ *
+ * The Swift's row is an `HStack(spacing: 6)` of fixed-frame 22 × 22 buttons around a
+ * `WebURLBar().frame(maxWidth: .infinity)`, with **no minimum on the bar and no overflow
+ * affordance either**; the port transcribed it exactly (`min-w-0 flex-1` on the form, `shrink-0`
+ * on every button), so the row is parity rather than drift. What that produces in a split is an
+ * address that starves long before the row runs out of room, and then a row that overruns the
+ * pane anyway: measured, a 529 px pane gave the URL input 259 px, **a 339 px pane gave it 69,
+ * and a 239 px pane gave it 16 while the row ALREADY overflowed its content box by 1 px**; at
+ * 169 px the overflow was 71 — the scope button sliced in half, storage and dev tools entirely
+ * outside a pane that is `overflow-hidden`.
+ *
+ * Two rules, in this order:
+ *
+ *  1. **The address keeps 60 px** — enough to read a host — instead of collapsing to a stub.
+ *  2. **Dev tools, then element pickup, are SHED** to pay for it: removed from the row, not
+ *     folded into an overflow. They are the two the register names, and they are the two whose
+ *     verbs are pane-addressed and stateless, so both keep a route in the pane header's context
+ *     menu (`App.tsx` ▸ `paneMenuItems` adds them for every web pane, at every width) and
+ *     neither can become silently unreachable.
+ *
+ * …and one release, which measurement forced and the register did not anticipate: **once both
+ * have been shed and the row STILL cannot seat a 60 px address, the floor goes back to 0.** A
+ * hard 60 px minimum is a net regression at the narrow end — at the register's own 169 px pane
+ * it would take the row's overflow from 71 px to 75, because the floor adds 60 px where the
+ * form used to give up everything while the two sheds return only 56. With the release the row
+ * overflows by 15 px at 169 and not at all at 239, where the address is 55 px.
+ *
+ * The ladder deliberately stops at those two. Storage, bookmarks and new-tab are NOT shed: the
+ * storage panel's open state lives inside this component, so a menu route for it would mean
+ * hoisting that state out of the pane, and shedding a control with no route is the one thing
+ * this row forbids. Below ~184 px of pane the row therefore still overflows — less than a
+ * quarter as far as it did, and strictly less at every width measured.
+ *
+ * Owner-directed: do not re-report. The parity values are no minimum on the URL bar, and every
+ * button drawn unconditionally.
+ *
+ * @param contentWidth the row's own content box (its `px-2` already subtracted), or null when
+ *                     nothing has measured it yet — which draws everything, the pre-S43 row.
+ */
+export function webChromeFit(contentWidth: number | null): WebChromeFit {
+    if (contentWidth === null || !Number.isFinite(contentWidth)) {
+        return { devtools: true, scope: true, urlMinWidth: WEB_URL_MIN_WIDTH_PX };
+    }
+    /*
+     * What a row keeping `kept` of the five shed-able buttons needs, with the address at its
+     * floor: one 22 px box per button, and one 6 px gap between every adjacent pair of the
+     * (buttons + form) children — which is `buttons` gaps, since the form is the extra child.
+     */
+    const needs = (kept: number): number => {
+        const buttons = WEB_CHROME_FIXED_BUTTONS + kept;
+        return buttons * WEB_CHROME_BUTTON_PX + buttons * WEB_CHROME_GAP_PX + WEB_URL_MIN_WIDTH_PX;
+    };
+    // Shed order: dev tools first, then element pickup — the register's own order.
+    if (needs(WEB_CHROME_SHEDDABLE) <= contentWidth) {
+        return { devtools: true, scope: true, urlMinWidth: WEB_URL_MIN_WIDTH_PX };
+    }
+    if (needs(WEB_CHROME_SHEDDABLE - 1) <= contentWidth) {
+        return { devtools: false, scope: true, urlMinWidth: WEB_URL_MIN_WIDTH_PX };
+    }
+    if (needs(WEB_CHROME_SHEDDABLE - 2) <= contentWidth) {
+        return { devtools: false, scope: false, urlMinWidth: WEB_URL_MIN_WIDTH_PX };
+    }
+    // Exhausted: the form yields rather than pushing the surviving controls off the pane.
+    return { devtools: false, scope: false, urlMinWidth: 0 };
+}
+
 interface ChromeButtonProps {
     readonly testID: string;
     readonly label: string;
@@ -511,6 +602,40 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
         void commands.focusView(paneID, liveTabID);
     }, [focused, embedded, liveTabID, blankTab, commands, paneID]);
 
+    // ── §S43: the nav row's own width ───────────────────────────────────────────────
+
+    /*
+     * The row is measured rather than told, because what decides the fit is the row's content
+     * box and nothing upstream has it: the grid knows the pane's frame, but the chrome's `px-2`
+     * and (on a browser client) a scrollbar are between the two. `null` until something has
+     * measured — a jsdom render, or the first frame — which draws the pre-S43 row.
+     */
+    const navRowRef = useRef<HTMLDivElement | null>(null);
+    const [navRowWidth, setNavRowWidth] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const element = navRowRef.current;
+        if (element === null) return;
+        const read = (): void => {
+            const style = globalThis.getComputedStyle?.(element);
+            const pad =
+                style === undefined
+                    ? 0
+                    : (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+            const width = element.clientWidth - pad;
+            // jsdom reports 0 for everything; a 0-width row is "unmeasured", not "shed it all".
+            setNavRowWidth(width > 0 ? width : null);
+        };
+        read();
+        const view = globalThis as {
+            ResizeObserver?: new (callback: () => void) => { observe(target: Element): void; disconnect(): void };
+        };
+        if (view.ResizeObserver === undefined) return;
+        const observer = new view.ResizeObserver(() => read());
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
+    const chromeFit = useMemo(() => webChromeFit(navRowWidth), [navRowWidth]);
+
     // ── geometry ────────────────────────────────────────────────────────────────────
 
     const pageRef = useRef<HTMLDivElement | null>(null);
@@ -677,6 +802,11 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     </div>
                 ) : null}
                 <div
+                    // §S43: the row measures ITSELF rather than being told the pane's width.
+                    // Its own width is set by the pane above it and never by its children, so
+                    // shedding a button cannot change what was measured — no feedback loop.
+                    ref={navRowRef}
+                    data-testid={`web-nav-row-${paneID}`}
                     /*
                      * L69 — `navAndURLBar` is `HStack(spacing: 6) { … }.padding(.horizontal, 8)
                      * .padding(.vertical, 4)` (`WebPaneChrome.swift:149, 219-220`). The port had
@@ -723,6 +853,9 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     />
                     <form
                         className="min-w-0 flex-1"
+                        // §S43 (owner-directed): the address's floor, and the release under it.
+                        // See `webChromeFit`.
+                        style={{ minWidth: chromeFit.urlMinWidth }}
                         onSubmit={(event) => {
                             event.preventDefault();
                             submit();
@@ -795,6 +928,9 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         glyph="plus"
                         onClick={() => void commands.newTab(paneID)}
                     />
+                    {/* §S43 (owner-directed): shed second, below ~244 px of pane. The pane
+                        header's context menu carries "Element Pickup" at every width. */}
+                    {!chromeFit.scope ? null : (
                     <ChromeButton
                         testID={`web-batch-toggle-${paneID}`}
                         // WEB-126's three-way, said out loud so the button explains itself; WEB-039's
@@ -821,6 +957,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         disabled={active === null}
                         onClick={() => void commands.batchToggle(paneID)}
                     />
+                    )}
                     <ChromeButton
                         testID={`web-storage-toggle-${paneID}`}
                         // WEB-040: the glyph and the tooltip both distinguish the two modes — a
@@ -834,14 +971,18 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                         active={storageOpen || props.isPrivate === true}
                         onClick={() => setStorageOpen((current) => !current)}
                     />
-                    <ChromeButton
-                        testID={`web-devtools-${paneID}`}
-                        label="Toggle developer tools"
-                        glyph="code"
-                        // Only the shell can open dev tools; in a browser the button would lie.
-                        disabled={!embedded || active === null}
-                        onClick={() => void commands.toggleDevTools(paneID, active?.id ?? null)}
-                    />
+                    {/* §S43 (owner-directed): shed first, below ~272 px of pane. The pane
+                        header's context menu carries "Toggle Developer Tools" at every width. */}
+                    {!chromeFit.devtools ? null : (
+                        <ChromeButton
+                            testID={`web-devtools-${paneID}`}
+                            label="Toggle developer tools"
+                            glyph="code"
+                            // Only the shell can open dev tools; in a browser the button would lie.
+                            disabled={!embedded || active === null}
+                            onClick={() => void commands.toggleDevTools(paneID, active?.id ?? null)}
+                        />
+                    )}
                 </div>
 
                 {showTabs ? (

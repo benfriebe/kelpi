@@ -125,16 +125,23 @@ describe('the Settings hover recipe (H11)', () => {
         expect(button.style.background).toBe('transparent');
     });
 
-    // M43's ~10 px `×` is now a 16 px square that lights — the same fill, one size down.
-    it('gives the glyph buttons a real square target and the same fill', () => {
+    /**
+     * M43's ~10 px `×` is now a square that lights — the same fill, one size down.
+     *
+     * SPACING-REVIEW S50 (owner-directed) took that square from 16 to 20 px and gave it a
+     * `-m-0.5` bleed, so the LAID-OUT size is still M43's 16 px and no consumer's column moved.
+     * The bleed is asserted alongside the size: `h-5 w-5` without it is a different control.
+     */
+    it('gives the glyph buttons a 20 px square target that occupies 16 px, and the same fill (S50)', () => {
         render(
             <SettingsIconButton testID="probe-icon" ariaLabel="Remove ⌘D" onClick={vi.fn()}>
                 ×
             </SettingsIconButton>
         );
         const button = screen.getByTestId('probe-icon');
-        expect(button.className).toContain('h-4');
-        expect(button.className).toContain('w-4');
+        expect(button.className).toContain('h-5');
+        expect(button.className).toContain('w-5');
+        expect(button.className).toContain('-m-0.5');
         fireEvent.mouseEnter(button);
         expect(button.style.background).toContain('--nex-selection-fill');
     });

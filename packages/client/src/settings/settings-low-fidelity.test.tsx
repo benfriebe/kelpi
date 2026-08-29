@@ -598,9 +598,12 @@ describe('L91 — the Labels delete control (already a glyph before this wave)',
         expect(remove.querySelector('svg')).not.toBeNull();
         expect((remove.textContent ?? '').trim()).toBe('');
         expect(remove.className).not.toContain('border');
-        // The 16 px square target `SettingsIconButton` gives every plain glyph button.
-        expect(remove.className).toContain('h-4');
-        expect(remove.className).toContain('w-4');
+        // The square target `SettingsIconButton` gives every plain glyph button: 20 px since
+        // SPACING-REVIEW S50 (owner-directed), still OCCUPYING the 16 px §M43 settled on thanks
+        // to the `-m-0.5` bleed, which is asserted with it because the size alone is not the fix.
+        expect(remove.className).toContain('h-5');
+        expect(remove.className).toContain('w-5');
+        expect(remove.className).toContain('-m-0.5');
         // …and it is the quiet `.secondary` tone, not the destructive red.
         expect(remove.style.color).not.toContain('#E0');
     });

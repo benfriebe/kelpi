@@ -430,12 +430,31 @@ export interface IconButtonProps {
 }
 
 /**
- * A `.buttonStyle(.plain)` glyph button at a real 16 px target.
+ * A `.buttonStyle(.plain)` glyph button at a real 20 px target that OCCUPIES 16 px.
  *
  * The Swift plain buttons this stands in for (the trigger chip's `xmark.circle.fill`, the label
  * row's `trash`) are glyphs with no chrome until the pointer arrives. So is this: transparent
  * at rest, `SETTINGS_HOVER_FILL` in a rounded box under the pointer, and a hit box that is a
  * square rather than the glyph's own ink.
+ *
+ * SPACING-REVIEW S50 (OWNER-DIRECTED) — `h-5 w-5` with a `-m-0.5` bleed, where §M43 settled on
+ * `h-4 w-4`. The negative margin is the whole trick: it hands the extra 4 px back to the layout,
+ * so every consumer's margin box is still 16 × 16 and the glyph inside stays centred on exactly
+ * the pixel it was on. Measured live across all three consumers — `keybinding-remove-*` (×27 on
+ * the default map), `label-move-up/down-*` (4 px apart in a 44 px column) and `label-delete-*`:
+ * hit box 15.5 × 15.5 → 19.5 × 19.5, glyph rects byte-identical, and 148 060 px of the
+ * keybindings row plus 477 040 px of the Labels tab pixel-identical at rest.
+ *
+ * Two consequences, both stated rather than discovered later:
+ *
+ *   · the arrows' 4 px gap is now exactly spent by the two 2 px bleeds, so the up/down hit boxes
+ *     ABUT. They do not overlap — 4 px is the most the gap admits — so there is no strip where
+ *     one arrow silently fires the other;
+ *   · the hover wash is drawn on the border box, so it grows 16 → 20 px WITH the target. That is
+ *     the one thing about this that is visible, and only under the pointer. It is deliberate: a
+ *     16 px wash on a 20 px target would leave 2 px of live button that gives no feedback.
+ *
+ * Owner-directed: do not re-report. The parity value is `h-4 w-4` with no margin.
  */
 export function SettingsIconButton(props: IconButtonProps): ReactElement {
     const disabled = props.disabled === true;
@@ -462,7 +481,7 @@ export function SettingsIconButton(props: IconButtonProps): ReactElement {
             {...(props.testID === undefined ? {} : { 'data-testid': props.testID })}
             // After the spread, so an overridden highlight is what a test and the audit read.
             data-hovered={lit ? 'true' : 'false'}
-            className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[11px] leading-none transition-colors duration-100 disabled:opacity-40"
+            className="-m-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] leading-none transition-colors duration-100 disabled:opacity-40"
             style={{
                 color: lit ? tokens.textPrimary : TONE_COLOR[props.tone ?? 'default'],
                 background: hoverBackground(lit, 'transparent')

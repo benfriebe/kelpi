@@ -1,5 +1,5 @@
 /**
- * The SPACING-REVIEW pane-grid rows — `docs/SPACING-REVIEW.md` S8, S16, S19, S20, S30.
+ * The SPACING-REVIEW pane-grid rows — `docs/SPACING-REVIEW.md` S8, S16, S19, S20, S30, S40.
  *
  * The register is a DENSITY one: every row here is a control that measured correctly against
  * `docs/UI-FIDELITY.md` and still read wrong on screen, because a padding, a line box or a
@@ -12,13 +12,20 @@
  * only the metrics and the two behaviours those suites never looked at.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { leaf, split } from '@nex/core/layout';
 
 import { PaneGrid } from './PaneGrid';
-import { BADGE_COST, BADGE_TEXT_FLOOR, PaneHeader, badgeFit, headerChrome } from './PaneHeader';
+import {
+    BADGE_COST,
+    BADGE_TEXT_FLOOR,
+    PaneHeader,
+    badgeFit,
+    headerChrome,
+    headerOverflowCount
+} from './PaneHeader';
 import { PaneSearchOverlay } from './PaneSearchOverlay';
 import { testPane } from './testing';
 
@@ -319,5 +326,185 @@ describe('S16 — 160 is the field’s text column, not its border box', () => {
         // `12/345` → 6 × 7 + 12. Before, that came out of the 160 and left ~98 px of field.
         expect(input.style.paddingRight).toBe('54px');
         expect(input.style.boxSizing).toBe('content-box');
+    });
+});
+
+/*
+ * SPACING-REVIEW S40 — **owner-directed divergence**, taken 2026-08-29.
+ *
+ * `PaneHeaderView.swift:52,222-274` draws the whole button tail unconditionally and lets
+ * `PaneGridView.swift:354-355`'s `.clipped()` cut whatever overruns; the port transcribed that
+ * exactly, so the row is parity rather than drift. What the clip reaches first is the
+ * destructive control: measured live before the fix, a markdown pane's six-button tail put the
+ * close ✕ **1.36 px past the header's right edge at a 168.64 px pane, 21.25 px past at 148.75,
+ * 39.23 at 130.77 and 60.19 at 109.81**, and a shell pane's four-button tail 2.25 px past at
+ * 119.75 and 12.19 at 109.81. After: the ✕ is inside the header at every one of those widths.
+ *
+ * These tests exist so that a later parity sweep re-reporting "the tail never folds" fails here
+ * first, and so the two invariants the fold rests on stay true: the ✕ is never a candidate, and
+ * the first fold is two buttons deep (one would cost exactly what it saves).
+ */
+describe('headerOverflowCount — the ••• fold (S40, owner-directed)', () => {
+    const shell = { buttons: 4, badgeCost: 0 } as const;
+    const markdown = { buttons: 6, badgeCost: 0 } as const;
+
+    it('folds nothing while the whole tail fits — the roomy case is byte-identical', () => {
+        // `headerChrome(4)` is 130 and `headerChrome(6)` is 178: the crossovers measured live.
+        expect(headerOverflowCount({ ...shell, paneWidth: headerChrome(4) })).toBe(0);
+        expect(headerOverflowCount({ ...shell, paneWidth: 1000 })).toBe(0);
+        expect(headerOverflowCount({ ...markdown, paneWidth: headerChrome(6) })).toBe(0);
+        expect(headerOverflowCount({ ...markdown, paneWidth: 198.58 })).toBe(0);
+    });
+
+    it('never folds ONE — the ••• costs exactly the button it would replace', () => {
+        // Every width from the first overflow down is answered with 2 or more, never 1.
+        for (let width = 60; width < 260; width += 1) {
+            expect(headerOverflowCount({ ...markdown, paneWidth: width })).not.toBe(1);
+            expect(headerOverflowCount({ ...shell, paneWidth: width })).not.toBe(1);
+        }
+    });
+
+    it('folds only as deep as the width demands, from the ✕ inward', () => {
+        // A markdown pane at the register's own four widths. `headerChrome(5|4|3)` = 154/130/106.
+        expect(headerOverflowCount({ ...markdown, paneWidth: 168.64 })).toBe(2);
+        expect(headerOverflowCount({ ...markdown, paneWidth: 148.75 })).toBe(3);
+        expect(headerOverflowCount({ ...markdown, paneWidth: 130.77 })).toBe(3);
+        expect(headerOverflowCount({ ...markdown, paneWidth: 119.75 })).toBe(4);
+        expect(headerOverflowCount({ ...markdown, paneWidth: 109.81 })).toBe(4);
+        // A shell pane folds later, because its tail is two buttons shorter.
+        expect(headerOverflowCount({ ...shell, paneWidth: 130.77 })).toBe(0);
+        expect(headerOverflowCount({ ...shell, paneWidth: 119.75 })).toBe(2);
+    });
+
+    it('leaves the ✕ out of the fold entirely, however narrow the pane', () => {
+        // `buttons - 1` is the ceiling: at 1 px the survivors are the ••• and the ✕, and the
+        // arithmetic that produces them is `headerChrome(2)`.
+        expect(headerOverflowCount({ ...markdown, paneWidth: 1 })).toBe(5);
+        expect(headerOverflowCount({ ...shell, paneWidth: 1 })).toBe(3);
+    });
+
+    it('runs strictly BELOW S8 — a width that seats a badge never folds', () => {
+        // `badgeFit` only seats a badge when `headerChrome(all) + cost <= paneWidth`, which is
+        // the same inequality this returns 0 for. Checked over the whole ladder rather than
+        // asserted, because it is the property that keeps S8's measured thresholds intact.
+        for (let width = 60; width < 400; width += 0.5) {
+            const fit = badgeFit({ label: true, agent: true, branch: true, buttons: 4, paneWidth: width });
+            const cost =
+                (fit.label ? BADGE_COST.label : 0) +
+                (fit.agent ? BADGE_COST.agent : 0) +
+                (fit.branch ? BADGE_COST.branch : 0);
+            if (cost > 0) {
+                expect(headerOverflowCount({ buttons: 4, badgeCost: cost, paneWidth: width })).toBe(0);
+            }
+        }
+    });
+
+    it('treats an unmeasured width as "no fold", never as "fold everything"', () => {
+        // 0 is what the grid reports before its ResizeObserver has fired, and what jsdom always
+        // reports. Folding on it flashed the whole tail into a ••• for a frame on every mount.
+        expect(headerOverflowCount({ ...markdown, paneWidth: 0 })).toBe(0);
+        expect(headerOverflowCount({ ...markdown, paneWidth: undefined })).toBe(0);
+        expect(headerOverflowCount({ ...markdown, paneWidth: Number.NaN })).toBe(0);
+    });
+});
+
+describe('the pane header draws the fold (S40, owner-directed)', () => {
+    function renderHeader(paneWidth: number | undefined, type: 'shell' | 'markdown' = 'shell') {
+        render(
+            <PaneHeader
+                pane={testPane(PANE, { type, ...(type === 'markdown' ? { filePath: '/tmp/notes.md' } : {}) })}
+                focused
+                paneWidth={paneWidth}
+                onCopyDocument={vi.fn()}
+            />
+        );
+    }
+
+    it('is the Swift row, with no ••• at all, wherever the tail fits', () => {
+        renderHeader(300);
+        expect(screen.getByTestId(`pane-split-right-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-split-down-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-new-web-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-close-${PANE}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-overflow-${PANE}`)).toBeNull();
+    });
+
+    it('folds the globe and split-down into a ••• below the width they fit in', () => {
+        renderHeader(120);
+        expect(screen.getByTestId(`pane-split-right-${PANE}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-split-down-${PANE}`)).toBeNull();
+        expect(screen.queryByTestId(`pane-new-web-${PANE}`)).toBeNull();
+        // The two invariants: the ✕ survives, and the fold is reachable.
+        expect(screen.getByTestId(`pane-close-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-overflow-${PANE}`)).toBeTruthy();
+    });
+
+    it('puts every folded button in the ••• menu, in the row’s own order', () => {
+        renderHeader(120);
+        fireEvent.click(screen.getByTestId(`pane-overflow-${PANE}`));
+        const labels = screen.getAllByRole('menuitem').map((row) => row.textContent);
+        expect(labels).toEqual(['Split down (⌘⇧D)', 'New web pane (⇧-click splits down)']);
+    });
+
+    it('keeps the ✕ last: a markdown pane sheds its type buttons before its close', () => {
+        renderHeader(110, 'markdown');
+        expect(screen.getByTestId(`pane-close-${PANE}`)).toBeTruthy();
+        expect(screen.getByTestId(`pane-overflow-${PANE}`)).toBeTruthy();
+        expect(screen.queryByTestId(`pane-edit-toggle-${PANE}`)).toBeNull();
+        // …and `copy` is the last of the five to go, because it is first in the Swift's row.
+        expect(screen.getByTestId(`pane-copy-${PANE}`)).toBeTruthy();
+    });
+});
+
+/*
+ * SPACING-REVIEW S16, second half — **owner-directed divergence**, taken 2026-08-29.
+ *
+ * Making 160 a content box (above) restored the Swift's arithmetic and, with it, the Swift's
+ * consequence: the bar is anchored to the pane's TRAILING edge and grows leftward, so at the
+ * register's own 264 px reference pane with a live counter it grew off the pane's leading edge.
+ * Measured before: at a 263.55 px pane with `1/1602` up, a 312 px bar of which **56.45 px was
+ * clipped**, and the needle's first character painted **42.45 px outside the pane**. After: the
+ * bar is 247.55 px, sits 8 px inside the pane's leading edge, and the needle starts at pane + 22.
+ *
+ * The ceiling is the divergence — the Swift has none — and this test is what fails if it goes.
+ */
+describe('S16 — the bar may not outgrow its pane (owner-directed)', () => {
+    function renderBar(overrides: Record<string, unknown> = {}) {
+        render(
+            <PaneSearchOverlay
+                paneID={PANE}
+                needle=""
+                total={null}
+                selected={null}
+                onNeedleChange={vi.fn()}
+                onNext={vi.fn()}
+                onPrevious={vi.fn()}
+                onClose={vi.fn()}
+                {...overrides}
+            />
+        );
+        return screen.getByTestId(`pane-search-${PANE}`) as HTMLElement;
+    }
+
+    it('caps the bar at its own trailing inset mirrored on the leading edge', () => {
+        // The terminal mount has no override, so the inset is `right-2`'s 8 px.
+        expect(renderBar().style.maxWidth).toBe('calc(100% - 16px)');
+    });
+
+    it('mirrors the CONTENT mount’s 14 px inset instead, when it has one', () => {
+        // §S63 gave the content bar a 14 px inset to clear the document's scroller.
+        expect(renderBar({ right: 14, top: -16 }).style.maxWidth).toBe('calc(100% - 28px)');
+    });
+
+    it('lets the field yield inside that cap rather than pushing the needle off the pane', () => {
+        renderBar({ needle: 'x', total: 1602, selected: 0 });
+        const input = screen.getByTestId(`pane-search-input-${PANE}`) as HTMLInputElement;
+        // The 160 is still declared — it is the Swift's, and it is what a roomy pane measures.
+        expect(input.className).toContain('w-[160px]');
+        expect(input.style.boxSizing).toBe('content-box');
+        // …but it is now a ceiling: an `<input>`'s automatic minimum is its 20-character default
+        // size, which would have pinned the field open and overflowed the cap above.
+        expect(input.style.minWidth).toBe('0');
+        expect(input.parentElement?.className).toContain('min-w-0');
     });
 });

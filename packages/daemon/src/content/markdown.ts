@@ -499,16 +499,37 @@ export function renderMarkdownBody(source: string): string {
 /**
  * §3.9 verbatim, with `BASE` = base font size and `CODE = max(BASE - 1, 6)`.
  *
- * S42 — one OWNER-DIRECTED divergence from `MarkdownHTMLRenderer.swift:300`, which is a flat
- * `padding: 20px 28px`. The port transcribed it byte for byte and it is correct against the
- * shipped app; it is also the wrong metric for a multiplexer, where a preview usually lives in
- * a split. Measured: a 130.75 px pane gives the document a 123 px client width, and 28 + 28
- * leaves a **67 px** text column — four or five characters a line, with a fenced block's own
- * 16 px each side taking it to 35. `clamp(12px, 6%, 28px)` is identical to the Swift above
- * ~470 px of pane (28 px is the clamp's own ceiling and 6% reaches it there) and gives the
- * column back in a narrow split. The 20 px vertical is untouched.
+ * TWO OWNER-DIRECTED divergences live in this sheet — S42 and S51. Each is marked at the rule
+ * it changes as well as here; do not re-report either as drift.
  *
- * Owner-directed: do not re-report this as a divergence. The parity value is `20px 28px`.
+ * S42 — from `MarkdownHTMLRenderer.swift:300`, which is a flat `padding: 20px 28px`. The port
+ * transcribed it byte for byte and it is correct against the shipped app; it is also the wrong
+ * metric for a multiplexer, where a preview usually lives in a split. Measured: a 130.75 px pane
+ * gives the document a 123 px client width, and 28 + 28 leaves a **67 px** text column — four or
+ * five characters a line, with a fenced block's own 16 px each side taking it to 35.
+ * `clamp(12px, 6%, 28px)` is identical to the Swift above ~470 px of pane (28 px is the clamp's
+ * own ceiling and 6% reaches it there) and gives the column back in a narrow split. The 20 px
+ * vertical is untouched. The parity value is `20px 28px`.
+ *
+ * S51 — from `MarkdownHTMLRenderer.swift:444-452`, whose shared rule pads BOTH front-matter
+ * blocks `8px 10px`. The parity value is that padding on `pre.frontmatter-nested` as well as on
+ * `pre.frontmatter-raw`; the port transcribed it byte for byte. Inside a cell that already pads
+ * `6px 12px` (`:421-423`, transcribed below and untouched) that second box gave the value column
+ * two left edges. Measured on a fixture of three scalars and one single-key nested map: the
+ * scalar rows are **33.16 px** tall with their values at **x 107.25** (cell 95.25 + 12), while
+ * the nested row was **42.74 px — 9.58 px taller** with its text a further 10 px in at 117.25.
+ * With `padding: 0` the nested value shares the cell's box — one left edge at 107.25, and the row
+ * falls to 32.16, which is a scalar row's own height less the 1 px `border-bottom` that
+ * `tr:last-child` drops; the `<th>`'s line box sets it, as it does on every other row. The
+ * control settles that last clause rather than assuming it: measured with the same nested map
+ * moved OFF the last row, the nested row is **33.16 px — a scalar row exactly** — and the row
+ * that inherits last place is the 32.16 one.
+ *
+ * `margin` stays 0 rather than taking the register's optional `margin: 2px 0`: measured live, 2px
+ * is inert on a single-line map (the `<th>` line box is still the taller cell), it would
+ * re-introduce a second inset on a multi-line one, and 3px overshoots a scalar row by 0.58 px.
+ * The RAW block keeps the Swift's `8px 10px` — it is the malformed-YAML fallback, it stands
+ * outside any cell, and the padding is what makes it read as a styled block.
  */
 export function markdownStylesheet(baseFontSize: number): string {
     const base = baseFontSize;
@@ -635,13 +656,15 @@ table.frontmatter td {
 }
 pre.frontmatter-raw, pre.frontmatter-nested {
     margin: 0;
-    padding: 8px 10px;
     background: transparent;
     border: none;
     font-size: 0.85em;
     white-space: pre-wrap;
 }
-pre.frontmatter-raw { border-left: 3px solid #d1d9e0; padding-left: 10px; margin: 0 0 1.5em; }
+/* S51 (owner-directed): the nested value sits in the cell's own 6/12 box, not a second one. */
+pre.frontmatter-nested { padding: 0; }
+/* The malformed-YAML fallback keeps the Swift's 8/10 — it is a styled block, not a cell value. */
+pre.frontmatter-raw { padding: 8px 10px; border-left: 3px solid #d1d9e0; padding-left: 10px; margin: 0 0 1.5em; }
 .dark pre.frontmatter-raw { border-left-color: #3d444d; }
 .code-block { position: relative; }
 /* Margin on the wrapper, not the <pre>, so stacking matches a bare <pre>. */

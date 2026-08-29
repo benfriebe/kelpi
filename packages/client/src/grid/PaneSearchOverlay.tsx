@@ -163,6 +163,30 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
     const count = matchCountLabel(draft, total, selected);
     const empty = draft.length === 0;
 
+    /*
+     * §S16 — the bar may not outgrow the pane it floats in (OWNER-DIRECTED, 2026-08-29).
+     *
+     * `PaneSearchOverlay.swift:20-33` frames the `TextField` at a flat 160 and pads OUTSIDE it,
+     * so the BAR grows to hold the counter, and `PaneGridView.swift:354-355` simply clips
+     * whatever will not fit. The port reproduces both, and the pair has a consequence the
+     * shipped app shares: the bar is anchored to the pane's TRAILING edge, so it grows LEFTWARD
+     * — and past ~264 px of pane with a three-digit counter up the field's left edge is outside
+     * the pane. Measured at the 264.5 px pane this register uses as its reference, with a
+     * `2/303` counter: a 305 px bar of which 250 px survived, the needle you had just typed off
+     * the pane, and the well, the counter and the three chevrons all that was left on screen.
+     *
+     * So the bar takes a maximum width — its own trailing inset mirrored as a leading gutter —
+     * and the field is allowed to yield inside it (`min-w-0` on the field's wrapper, `minWidth:
+     * 0` below). Everything else is untouched: the 22 × 22 buttons never shrink, the counter
+     * keeps its reserve, and above the crossover the field is the Swift's flat 160 content box,
+     * so a roomy pane is byte-identical. What changes is only which end gets cut when there is
+     * not enough pane — the tail of the needle rather than its head.
+     *
+     * Owner-directed: do not re-report. The parity value is no maximum at all.
+     */
+    const inset = props.right ?? 8;
+    const maxWidth = `calc(100% - ${String(inset * 2)}px)`;
+
     const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
         if (event.key === 'Enter') {
             event.preventDefault();
@@ -210,6 +234,9 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                 // `ResizeBadge` uses (a SwiftUI shadow radius is ~half a CSS blur radius), not
                 // the heavier 0.35/12 px drop that was here.
                 boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                // §S16 (owner-directed): the ceiling, so the bar cannot grow off the pane's
+                // leading edge. See the block above `inset`.
+                maxWidth,
                 // §S9/§S63: the mount's own offsets, when it has any. `right-2 top-2` above is
                 // the default (and the terminal's), so a bar with no override is byte-identical.
                 ...(props.top === undefined ? {} : { top: props.top }),
@@ -219,7 +246,10 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
             // focus-on-press would pull the caret straight back out of the field.
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <div className="relative flex items-center">
+            {/* §S16 (owner-directed): `min-w-0` — a flex item's automatic minimum is its
+                content, so without this the wrapper refused to give ground and the bar's
+                `maxWidth` above would have been overflowed rather than honoured. */}
+            <div className="relative flex min-w-0 items-center">
                 <input
                     ref={inputRef}
                     data-testid={`${prefix}-input-${paneID}`}
@@ -252,6 +282,16 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                          * Swift's arithmetic without moving a single declared value.
                          */
                         boxSizing: 'content-box',
+                        /*
+                         * §S16 (owner-directed) — 160 is the column the Swift states, and it is
+                         * now also a CEILING rather than a floor. `width` above still sizes the
+                         * field wherever the pane can seat it (a roomy pane measures 160.00
+                         * exactly, as it did before), but a pane too narrow for the padded box
+                         * lets it shrink instead of pushing the needle off the pane's leading
+                         * edge. An `<input>`'s automatic minimum is its default 20-character
+                         * size, which would have pinned the field open.
+                         */
+                        minWidth: 0,
                         // L22/L40: `Color.primary.opacity(0.08)` (`PaneSearchOverlay.swift:27`) —
                         // an inset well tinted with the LABEL colour, so it is lighter than the
                         // header bar on dark and darker than it on light. `surfaceBackground`

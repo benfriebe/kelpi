@@ -315,10 +315,18 @@ printf '│ %-*s│\\n' $(( cols - 3 )) "full-width prompt box: type a message"
 printf '╰%s╯\\n' "$dash"
 `;
 
+/*
+ * The front matter carries all three value shapes the renderer distinguishes: plain scalars, a
+ * flow sequence of scalars (comma-joined into the cell, §L41), and a NESTED map, which is the
+ * only one that draws a `pre.frontmatter-nested` inside the cell. The nested key is SPACING-
+ * REVIEW S51's fixture: without it the table has no second left edge to pin.
+ */
 const MARKDOWN_FIXTURE = `---
 title: Audit Fixture
 author: ui-audit
 tags: [markdown, audit]
+nested:
+  key: value
 ---
 
 # Markdown pane fixture
@@ -969,6 +977,41 @@ async function widenForBadges(page, cli, recorder, paneID, minWidth) {
     if (width >= minWidth) return width;
     for (const ratio of ['0.7', '0.9']) {
         recorder.note(`pane ${paneID} is ${String(Math.round(width))}px — under S8's badge floor; widening to ${ratio}`);
+        await cli.run(['pane', 'resize', '--target', paneID, '--ratio', ratio, '--json']);
+        await sleep(1200);
+        width = await measure();
+        if (width >= minWidth) break;
+    }
+    return width;
+}
+
+/**
+ * Make room for a CONTROL a step is about to click, when a fit ladder can take it away.
+ *
+ * The sibling of `widenForBadges`, for the two owner-directed ladders taken 2026-08-29:
+ *
+ *  - **`S40`** — the pane header folds its trailing buttons into a `•••` from the ✕ inward below
+ *    the width where they fit, so the globe goes first (below ~130 px of pane on a four-button
+ *    header) and the markdown copy button last (below ~106 px). Every folded button is in the
+ *    `•••` menu, so nothing is lost — but a step that clicks the BUTTON needs the button.
+ *  - **`S43`** — a web pane's nav row sheds its dev-tools button below ~272 px of pane and its
+ *    element-pickup (scope) button below ~244 px, so the address bar stops collapsing to the
+ *    16 px stub it measured at every width from 239 px down. Both keep a context-menu route,
+ *    and again the steps here drive the button.
+ *
+ * By step 90 of a full run the grid is busy enough to reach all of those widths (`run-AE`
+ * measured a 194 px shell pane and a 134 px markdown pane), so a step that needs the control
+ * widens first. It adds no assertion and removes none: the click still has to work.
+ *
+ * Best-effort by construction, for the same reason `widenForBadges` is: `pane resize` refuses a
+ * pane with no split sibling, and a lone pane is already full width.
+ */
+async function widenForFit(page, cli, recorder, paneID, minWidth, reason) {
+    const measure = async () => (await page.box(`[data-pane-id="${paneID}"]`))?.width ?? 0;
+    let width = await measure();
+    if (width >= minWidth) return width;
+    for (const ratio of ['0.7', '0.9']) {
+        recorder.note(`pane ${paneID} is ${String(Math.round(width))}px — under ${reason}; widening to ${ratio}`);
         await cli.run(['pane', 'resize', '--target', paneID, '--ratio', ratio, '--json']);
         await sleep(1200);
         width = await measure();
@@ -3521,10 +3564,12 @@ function buildFlows(ctx) {
                     return;
                 }
                 /**
-                 * Divider hit strips are 10 px bands, and at a T-junction two of them overlap —
-                 * the centre of a full-height divider can sit underneath the perpendicular one,
-                 * whose element wins `elementFromPoint`. Walk down the bar until the point
-                 * really belongs to the divider we mean to drag, and say so if none does.
+                 * Divider hit strips are 14 px bands (`DIVIDER_HIT_INSET` = 6 either side of the
+                 * 2 px bar — SPACING-REVIEW S48, owner-directed; it was 10 px, the Swift's own
+                 * `inset(by: -4)`), and at a T-junction two of them overlap: the centre of a
+                 * full-height divider can sit underneath the perpendicular one, whose element
+                 * wins `elementFromPoint`. Walk down the bar until the point really belongs to
+                 * the divider we mean to drag, and say so if none does.
                  */
                 let grabY = vertical.y;
                 let owner = null;
@@ -3548,11 +3593,16 @@ function buildFlows(ctx) {
 
                 /**
                  * The T-junction itself (run-B m8). Where a perpendicular divider crosses this
-                 * one, both 10px grab strips cover the same square and the DOM hands the press
-                 * to whichever element paints last — grabbing the wrong divider means the drag
-                 * runs across its fixed axis and nothing moves. Press exactly on the crossing
-                 * and ask which divider took it; release without moving, so nothing commits.
+                 * one, both grab strips cover the same square and the DOM hands the press to
+                 * whichever element paints last — grabbing the wrong divider means the drag runs
+                 * across its fixed axis and nothing moves. Press exactly on the crossing and ask
+                 * which divider took it; release without moving, so nothing commits.
                  */
+                // Half the grab band, so "reaches the vertical divider's x" means what it says.
+                // Read off the measured strips rather than written down: it was 6 for the 10 px
+                // band and is 7 for S48's 14 px one, and a stale literal here does not fail —
+                // it silently reports "no T-junction in this layout" and skips the check.
+                const grabHalf = Math.max(...dividers.map((divider) => Math.min(divider.w, divider.h))) / 2;
                 const crossing = dividers.find(
                     (divider) =>
                         divider.id !== vertical.id &&
@@ -3561,8 +3611,8 @@ function buildFlows(ctx) {
                         divider.y > vertical.top &&
                         divider.y < vertical.top + vertical.height &&
                         // …and reaches (within a grab strip of) the vertical divider's x.
-                        vertical.x >= divider.x - divider.w / 2 - 6 &&
-                        vertical.x <= divider.x + divider.w / 2 + 6
+                        vertical.x >= divider.x - divider.w / 2 - grabHalf &&
+                        vertical.x <= divider.x + divider.w / 2 + grabHalf
                 );
                 if (crossing === undefined) {
                     recorder.note('no T-junction in this layout — the overlap check needs a crossing divider');
@@ -4315,7 +4365,54 @@ function buildFlows(ctx) {
                         inset.top === '20px',
                     `${String(inset?.left)} / ${String(inset?.right)} at a ${String(inset?.clientWidth)}px document \u2192 a ${String(inset?.column)}px column`
                 );
-                recorder.eyes('typography, code-block styling, table borders, front-matter presentation, and NO floating Copy chip over the first line (§M28 — the copy button is the pane header’s)');
+                /*
+                 * SPACING-REVIEW S51 — OWNER-DIRECTED divergence from
+                 * `MarkdownHTMLRenderer.swift:444-452`, whose shared rule pads BOTH front-matter
+                 * blocks `8px 10px`. The port transcribed it byte for byte, and inside a cell
+                 * that already pads 6/12 that second box gave the value column two left edges:
+                 * measured, the scalar values sat at x 107.25 (cell 95.25 + 12) and the nested
+                 * map's text 10 px further in at 117.25, in a row 9.58 px taller than theirs.
+                 *
+                 * The fixture's `nested:` key is what puts a `pre.frontmatter-nested` in the
+                 * table at all; the check is that every value in the column — scalar, joined
+                 * sequence and nested map alike — starts on the same edge, 12 px into its cell.
+                 */
+                const valueEdges = await page.evalInFrame(
+                    `[data-testid="content-iframe-${md.id}"]`,
+                    `(() => {
+                        const table = document.querySelector('table.frontmatter');
+                        if (table === null) return null;
+                        const rows = [];
+                        for (const tr of table.querySelectorAll('tr')) {
+                            const th = tr.querySelector('th');
+                            const td = tr.querySelector('td');
+                            if (th === null || td === null) continue;
+                            const nested = td.querySelector('pre.frontmatter-nested');
+                            const range = document.createRange();
+                            range.selectNodeContents(nested ?? td);
+                            const ink = range.getBoundingClientRect();
+                            rows.push({
+                                key: (th.textContent ?? '').trim(),
+                                kind: nested === null ? 'scalar' : 'nested',
+                                inset: Math.round((ink.x - td.getBoundingClientRect().x) * 100) / 100,
+                                rowHeight: Math.round(tr.getBoundingClientRect().height * 100) / 100,
+                                nestedPadding: nested === null ? null : getComputedStyle(nested).padding
+                            });
+                        }
+                        return { rows, edges: [...new Set(rows.map((row) => row.inset))] };
+                    })()`
+                );
+                recorder.note(`front-matter value edges: ${JSON.stringify(valueEdges)}`);
+                recorder.check(
+                    'the front-matter table has ONE value left edge, nested map included (S51, owner-directed)',
+                    valueEdges !== null &&
+                        valueEdges.rows.some((row) => row.kind === 'nested') &&
+                        valueEdges.edges.length === 1 &&
+                        valueEdges.edges[0] === 12 &&
+                        valueEdges.rows.every((row) => row.nestedPadding === null || row.nestedPadding === '0px'),
+                    JSON.stringify(valueEdges?.edges)
+                );
+                recorder.eyes('typography, code-block styling, table borders, front-matter presentation (the `nested:` row shares the scalars’ left edge and their row height — S51), and NO floating Copy chip over the first line (§M28 — the copy button is the pane header’s)');
             }
         },
         {
@@ -4760,6 +4857,9 @@ function buildFlows(ctx) {
                     recorder.check('a markdown pane to copy from', false, 'the markdown step produced none');
                     return;
                 }
+                // SPACING-REVIEW S40: `copy` is the LAST of a markdown header's five foldable
+                // buttons to go, but below ~106 px of pane even it is in the ••• menu.
+                await widenForFit(page, cli, recorder, state.mdPane, 200, "S40's header-fold threshold");
                 const present = await page.eval(
                     `(() => {
                         const button = document.querySelector('[data-testid="pane-copy-${state.mdPane}"]');
@@ -5186,6 +5286,9 @@ function buildFlows(ctx) {
                  * below drive the same wide pane they were written for.
                  */
                 const globeAnchor = String(web?.id);
+                // SPACING-REVIEW S40: the globe is the FIRST button a narrow header folds into
+                // its ••• (below ~130 px of pane on this four-button header).
+                await widenForFit(page, cli, recorder, globeAnchor, 160, "S40's header-fold threshold");
                 const anchorBefore = await page.box(`[data-testid="pane-body-${globeAnchor}"]`);
                 const paneIDsBefore = await domPaneIDs(page);
                 await page.click(`[data-testid="pane-new-web-${globeAnchor}"]`, { modifiers: MOD.shift });
@@ -5518,6 +5621,7 @@ function buildFlows(ctx) {
                 // pane. Same class of harness artefact as `widestShellPane`'s three callers.
                 const shell = await widestShellPane(page, cli);
                 recorder.check('there is a shell pane to send the batch to', shell !== null);
+                await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
 
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
@@ -5765,6 +5869,7 @@ function buildFlows(ctx) {
                 }
 
                 // A fresh batch: the pickup step above sent and tore its own down.
+                await widenForFit(page, cli, recorder, paneID, 280, "S43's scope-button shed threshold");
                 await page.click(`[data-testid="web-batch-toggle-${paneID}"]`);
                 await sleep(900);
                 await view.click('#hello');
@@ -15602,7 +15707,13 @@ function buildFlows(ctx) {
                                 badge: box('pane-agent-badge-${paneID}'),
                                 branch: box('pane-branch-${paneID}'),
                                 close: box('pane-close-${paneID}'),
-                                split: box('pane-split-right-${paneID}')
+                                split: box('pane-split-right-${paneID}'),
+                                // SPACING-REVIEW S40: the ••• the tail folds into below the
+                                // width where it stops fitting, and the two buttons that are
+                                // first into it.
+                                overflow: box('pane-overflow-${paneID}'),
+                                splitDown: box('pane-split-down-${paneID}'),
+                                globe: box('pane-new-web-${paneID}')
                             };
                         })()`
                     );
@@ -15686,10 +15797,20 @@ function buildFlows(ctx) {
                     (narrow?.close?.w ?? 0) === (wide?.close?.w ?? 0),
                     `close ${String(wide?.close?.w)}px → ${String(narrow?.close?.w)}px`
                 );
+                /*
+                 * A button that is still IN the row is still 20 px — that is what "the buttons
+                 * never shrink" means. SPACING-REVIEW S40 (owner-directed) added the one way a
+                 * button can leave it: below the width where the tail fits, the row folds from
+                 * the ✕ inward into a `•••`, so split-right may legitimately be absent here and
+                 * the `•••` present in its place. Either way nothing is drawn at a fraction of
+                 * its box, which is the claim.
+                 */
                 recorder.check(
-                    'and the split button keeps its size too',
-                    (narrow?.split?.w ?? 0) === (wide?.split?.w ?? 0),
-                    `split ${String(wide?.split?.w)}px → ${String(narrow?.split?.w)}px`
+                    'and the split button keeps its size too — or has folded into the ••• (S40)',
+                    narrow?.split === null || narrow?.split === undefined
+                        ? (narrow?.overflow?.w ?? 0) === (wide?.close?.w ?? 0)
+                        : (narrow?.split?.w ?? 0) === (wide?.split?.w ?? 0),
+                    `split ${String(wide?.split?.w)}px → ${String(narrow?.split?.w)}px, ••• ${narrow?.overflow === null || narrow?.overflow === undefined ? 'absent' : `${String(narrow.overflow.w)}px`}`
                 );
                 recorder.check(
                     'the buttons are still inside the header, not pushed past its right edge',
@@ -15723,7 +15844,19 @@ function buildFlows(ctx) {
                     // and 0 < 0 is false. Gone, or narrower than it was — either satisfies the
                     // priority TERM-102 names.
                     (tiny?.title?.w ?? 0) === 0 ||
-                    (tiny?.title?.w ?? 0) < (narrow?.title?.w ?? Number.POSITIVE_INFINITY);
+                    (tiny?.title?.w ?? 0) < (narrow?.title?.w ?? Number.POSITIVE_INFINITY) ||
+                    /*
+                     * …or it had ALREADY run out one squeeze earlier, which SPACING-REVIEW S40
+                     * (owner-directed, 2026-08-29) made a reachable state and this expression
+                     * did not anticipate. Folding the tail into a `•••` hands the freed space
+                     * back to the path, so the title is no longer monotonic across the squeezes:
+                     * measured on this very step, `narrow` (296 px) reads title 0 with a 112 px
+                     * label, and `tiny` (127 px) reads title **7 px** with no badges at all. The
+                     * ORDER TERM-102 names is intact and is exactly what those two reads show —
+                     * the path was gone before a single badge gave — so a path that was 0 at
+                     * `narrow` satisfies the claim however wide the fold has since made it.
+                     */
+                    (narrow?.title?.w ?? Number.POSITIVE_INFINITY) === 0;
                 recorder.check(
                     'the badges only start truncating once the path has run out (TERM-102)',
                     titleGaveWayFirst &&
@@ -15758,23 +15891,45 @@ function buildFlows(ctx) {
                     );
                 }
                 /*
-                 * …and dropping them is what keeps the ✕ on screen for as long as it can be.
+                 * …and the ✕ is on screen, full stop.
                  *
-                 * The claim is deliberately about the CAUSE rather than about the pixel: below
-                 * about 130 px of pane the four 20 px buttons plus the row's own 16 px of
-                 * padding do not fit at any badge count, and that residue is S40 — a
-                 * parity-but-cramped row the owner has not called. What S8 owns is that a BADGE
-                 * never contributes to it: at 130.75 px three empty 8 px stubs and their gaps
-                 * were pushing the ✕ 27.25 px past the pane edge, and now the same pane fits it
-                 * with 8 px to spare.
+                 * This assertion used to carry a `|| badgesDrawn === 0` escape, because S8 could
+                 * only prove that a BADGE never pushed the ✕ off the pane — the button row
+                 * itself was S40, a parity-but-cramped row the owner had not called. **The owner
+                 * called it (2026-08-29), so the escape is gone and the claim is the strong
+                 * one.** Below the width where its tail fits, the header now folds from the ✕
+                 * inward into a `•••` (`grid/PaneHeader.tsx` ▸ `headerOverflowCount`), so the ✕
+                 * survives to `headerChrome(2)` = **82 px** of header: the ••• and the ✕ with the
+                 * row's own 16 px of padding and two 4 px gaps. Measured before the fix at the
+                 * register's own widths, a markdown pane's ✕ landed 1.36 px past the header's
+                 * right edge at 168.64 px of pane, 21.25 past at 148.75, 39.23 at 130.77 and
+                 * 60.19 at 109.81; after, it is inside at every one of them.
+                 *
+                 * Below 82 px even the two survivors do not fit, and nothing can make them —
+                 * hence the floor rather than an unconditional claim.
                  */
                 const badgesDrawn = [tiny?.label, tiny?.badge, tiny?.branch].filter(
                     (chip) => chip !== null && chip !== undefined
                 ).length;
+                const OVERFLOW_FLOOR_PX = 82;
                 recorder.check(
-                    'no badge is pushing the close ✕ off the pane (S8; the button row itself is S40)',
-                    (tiny?.close?.right ?? 0) <= (tiny?.headerRight ?? 0) + 1 || badgesDrawn === 0,
-                    `close right ${String(tiny?.close?.right)} vs header right ${String(tiny?.headerRight)}, ${String(badgesDrawn)} badges drawn at ${String(tiny?.header)}px`
+                    'the close ✕ is inside the pane, the tail having folded into a ••• (S40, owner-directed)',
+                    (tiny?.close?.right ?? 0) <= (tiny?.headerRight ?? 0) + 1 ||
+                        (tiny?.header ?? 0) < OVERFLOW_FLOOR_PX,
+                    `close right ${String(tiny?.close?.right)} vs header right ${String(tiny?.headerRight)}, ${String(badgesDrawn)} badges and ${tiny?.overflow === null || tiny?.overflow === undefined ? 'no' : 'a'} ••• at ${String(tiny?.header)}px`
+                );
+                /*
+                 * …and what left the row is exactly what the fold takes, in its order: the globe
+                 * first, then split-down. A ••• that is drawn while both are still inline would
+                 * mean the fold fired without paying for itself (the ••• costs one button box).
+                 */
+                recorder.check(
+                    'a drawn ••• means the globe and split-down are the ones that left (S40)',
+                    tiny?.overflow === null || tiny?.overflow === undefined
+                        ? true
+                        : (tiny?.globe === null || tiny?.globe === undefined) &&
+                          (tiny?.splitDown === null || tiny?.splitDown === undefined),
+                    `••• ${tiny?.overflow === null || tiny?.overflow === undefined ? 'absent' : 'drawn'}, globe ${tiny?.globe === null || tiny?.globe === undefined ? 'folded' : 'inline'}, split-down ${tiny?.splitDown === null || tiny?.splitDown === undefined ? 'folded' : 'inline'}`
                 );
 
                 await cli.run(['pane', 'resize', '--target', paneID, '--ratio', '0.5', '--json']);
@@ -16015,32 +16170,59 @@ function buildFlows(ctx) {
                     stepped.text
                 );
                 /*
-                 * SPACING-REVIEW S16 — with a live counter up, the needle is still 160 pt wide.
+                 * SPACING-REVIEW S16 — with a live counter up, the needle is still 160 pt wide
+                 * *where the pane can seat it*, and the needle you typed is always ON the pane.
                  *
                  * `PaneSearchOverlay.swift:20-33` frames the TextField at 160 and applies the
                  * leading 8, the counter's trailing reserve and the vertical 5 OUTSIDE it, so
                  * the text column never moves and the BAR grows to hold the counter. Under
                  * Tailwind's global border-box the 160 was the outer box instead: empty it left
                  * 144 px of text, and a live counter took it to 119.
+                 *
+                 * The second claim is the OWNER-DIRECTED half (2026-08-29). Restoring the Swift's
+                 * arithmetic restored its consequence: the bar is anchored to the pane's TRAILING
+                 * edge and grows leftward, so a long counter grew it off the pane's leading edge
+                 * and the pane wrapper clipped exactly the part you were reading. Measured before
+                 * that fix at a 263.55 px pane with `1/1602` up: a 312 px bar, **56.45 px of it
+                 * clipped**, the needle's first character painted **42.45 px outside the pane**.
+                 * The bar now takes its trailing inset mirrored as a leading gutter, and the
+                 * field yields inside it — so 160 is a ceiling rather than a fixed width, and
+                 * this assertion is `<= 160` plus "the needle is inside the pane".
                  */
                 const field = await page.eval(
                     `(() => {
                         const input = document.querySelector('[data-testid="pane-search-input-${paneID}"]');
                         const bar = document.querySelector('[data-testid="pane-search-${paneID}"]');
+                        const pane = document.querySelector('[data-pane-id="${paneID}"]');
                         if (input === null || bar === null) return null;
                         const cs = getComputedStyle(input);
+                        const ir = input.getBoundingClientRect();
+                        const pr = pane === null ? null : pane.getBoundingClientRect();
                         return { boxSizing: cs.boxSizing,
                                  text: Math.round(parseFloat(cs.width) * 100) / 100,
-                                 outer: Math.round(input.getBoundingClientRect().width * 100) / 100,
+                                 outer: Math.round(ir.width * 100) / 100,
                                  reserve: cs.paddingRight,
+                                 max: getComputedStyle(bar).maxWidth,
+                                 pane: pr === null ? null : Math.round(pr.width * 100) / 100,
+                                 // Where the first typed character lands, against the pane's own
+                                 // left edge. Negative = off the pane, which is the defect.
+                                 needleStart: pr === null ? null
+                                     : Math.round((ir.left + parseFloat(cs.paddingLeft) - pr.left) * 100) / 100,
                                  bar: Math.round(bar.getBoundingClientRect().width * 100) / 100 };
                     })()`
                 );
                 recorder.note(`search field: ${JSON.stringify(field)}`);
                 recorder.check(
-                    'the terminal needle keeps its 160 pt of text with the counter up (S16)',
-                    field?.boxSizing === 'content-box' && field?.text === 160,
-                    `${String(field?.text)}px of text in a ${String(field?.outer)}px field, bar ${String(field?.bar)}px, counter reserving ${String(field?.reserve)}`
+                    'the terminal needle keeps its 160 pt of text wherever the pane seats it (S16)',
+                    field?.boxSizing === 'content-box' &&
+                        (field?.text ?? 0) > 0 &&
+                        (field?.text ?? 0) <= 160,
+                    `${String(field?.text)}px of text in a ${String(field?.outer)}px field, bar ${String(field?.bar)}px in a ${String(field?.pane)}px pane, counter reserving ${String(field?.reserve)}`
+                );
+                recorder.check(
+                    'and the needle you typed is on the pane, not off its leading edge (S16, owner-directed)',
+                    (field?.needleStart ?? -1) >= 0,
+                    `first character at pane + ${String(field?.needleStart)}px, bar capped at ${String(field?.max)}`
                 );
 
                 await page.key('Escape');
@@ -21291,6 +21473,47 @@ function buildFlows(ctx) {
                         ),
                     { ceilingMs: 500, stableMs: 150, intervalMs: 40 }
                 );
+                /*
+                 * SPACING-REVIEW S47 — OWNER-DIRECTED divergence from
+                 * `GroupHeaderRow.swift:174-193`, where `GroupEmptyRow` is `.padding(.vertical,
+                 * 6)` with no outer 2pt while every row and band around it has one.
+                 *
+                 * `WorkspaceListView.swift:291` is a `VStack(spacing: 0)`, so those outer
+                 * paddings ARE the list's rhythm and a row without one is on half the pitch.
+                 * Measured before the fix: band → placeholder 2.00 and placeholder → next row
+                 * 2.00, against 4.00 for every other adjacent pair. The empty group is settled
+                 * and on screen right here, which makes this the cheapest place to hold it.
+                 */
+                const pitch = JSON.parse(
+                    String(
+                        await page.eval(
+                            `(() => {
+                                const list = document.querySelector('[data-testid="sidebar-list"]');
+                                if (list === null) return JSON.stringify({ found: false });
+                                const items = [...list.children]
+                                    .filter((el) => el.getBoundingClientRect().height > 0)
+                                    .map((el) => ({ kind: el.getAttribute('data-testid'), r: el.getBoundingClientRect() }));
+                                const gaps = [];
+                                for (let i = 1; i < items.length; i++) {
+                                    gaps.push({ from: items[i - 1].kind, to: items[i].kind,
+                                                gap: Math.round((items[i].r.top - items[i - 1].r.bottom) * 100) / 100 });
+                                }
+                                return JSON.stringify({ found: items.some((it) => it.kind === 'group-empty'), gaps });
+                            })()`
+                        )
+                    )
+                );
+                recorder.note(`sidebar pitch: ${JSON.stringify(pitch.gaps)}`);
+                const placeholderGaps = (pitch.gaps ?? []).filter(
+                    (g) => g.from === 'group-empty' || g.to === 'group-empty'
+                );
+                recorder.check(
+                    'the empty-group placeholder is on the list’s uniform 4px pitch (S47, owner-directed)',
+                    pitch.found === true &&
+                        placeholderGaps.length > 0 &&
+                        placeholderGaps.every((gap) => gap.gap === 4),
+                    JSON.stringify(placeholderGaps)
+                );
                 const chevron = JSON.parse(
                     String(
                         await page.eval(
@@ -24451,7 +24674,14 @@ function buildFlows(ctx) {
                  *   S16  `PaneSearchOverlay.swift:20-33` frames the TextField at 160 and applies
                  *        the insets outside it, so the needle is 160 pt in every state and the
                  *        BAR grows to hold the counter. Border-box made 160 the outer box: a
-                 *        live `1/3` counter left 119 px of field.
+                 *        live `1/3` counter left 119 px of field. Its OWNER-DIRECTED half
+                 *        (2026-08-29) is the ceiling on the bar: restoring the Swift's
+                 *        arithmetic also restored the Swift's consequence, a trailing-anchored
+                 *        bar growing off the pane's LEADING edge, where the pane wrapper clips
+                 *        exactly the part you are reading. Measured before at a 263.55 px pane:
+                 *        a 291 px bar, 41.45 px of it clipped, the needle's first character
+                 *        27.45 px outside the pane. So 160 is now a ceiling, and the claim that
+                 *        matters is that the needle is ON the pane.
                  */
                 const barGeometry = await page.eval(
                     `(() => {
@@ -24482,6 +24712,11 @@ function buildFlows(ctx) {
                             inputOuter: Math.round(input.getBoundingClientRect().width * 100) / 100,
                             inputPaddingLeft: cs.paddingLeft,
                             inputPaddingRight: cs.paddingRight,
+                            // S16's owner-directed half: where the first typed character lands,
+                            // against the pane's own left edge. Negative = off the pane.
+                            barMaxWidth: getComputedStyle(bar).maxWidth,
+                            needleStart:
+                                Math.round((input.getBoundingClientRect().left + parseFloat(cs.paddingLeft) - pr.left) * 100) / 100,
                             count: document.querySelector('[data-testid="content-find-count-${mdPane}"]')?.innerText ?? ''
                         };
                     })()`
@@ -24513,9 +24748,16 @@ function buildFlows(ctx) {
                     `find bar ${String(barGeometry?.insetFromPaneRight)}px, copy menu ${copyInset === null ? 'not open' : `${String(copyInset)}px`}`
                 );
                 recorder.check(
-                    'the needle keeps its 160 px however long the counter gets (S16)',
-                    barGeometry?.inputBoxSizing === 'content-box' && barGeometry?.inputWidth === 160,
+                    'the needle keeps its 160 px of text wherever the pane seats it (S16)',
+                    barGeometry?.inputBoxSizing === 'content-box' &&
+                        (barGeometry?.inputWidth ?? 0) > 0 &&
+                        (barGeometry?.inputWidth ?? 0) <= 160,
                     `${String(barGeometry?.inputWidth)}px of text in a ${String(barGeometry?.inputOuter)}px box, counter "${String(barGeometry?.count)}" reserving ${String(barGeometry?.inputPaddingRight)}`
+                );
+                recorder.check(
+                    'and the needle you typed is on the pane, not off its leading edge (S16, owner-directed)',
+                    (barGeometry?.needleStart ?? -1) >= 0,
+                    `first character at pane + ${String(barGeometry?.needleStart)}px, bar capped at ${String(barGeometry?.barMaxWidth)}`
                 );
 
                 await page.key('Escape');

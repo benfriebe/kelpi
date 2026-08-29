@@ -3345,6 +3345,41 @@ function Shell(props: AppProps): ReactElement {
             );
         }
 
+        /*
+         * SPACING-REVIEW S43 (OWNER-DIRECTED, 2026-08-29) — the two chrome buttons a narrow web
+         * pane SHEDS, kept reachable here.
+         *
+         * `webpane/WebPane.tsx` ▸ `webChromeFit` drops the dev-tools button below ~272 px of
+         * pane and the element-pickup button below ~244 px, so the address bar stops collapsing
+         * to a 16 px stub. Shedding a control is only honest if it still has a route, and these
+         * two had none anywhere else in the client: the `web_*` bindable actions cover
+         * back/forward/reload/tabs/zoom/url and neither of these, and the web pane's own menus
+         * are bookmarks and element pickup's destination picker.
+         *
+         * Added at EVERY width, not only while shed: a menu whose contents change as a pane is
+         * dragged narrower is a worse affordance than a stable one, and this is also where the
+         * shipped app would have put them if it had them (`PaneHeaderView.swift:353-364` is the
+         * pane's own menu). A deliberate addition to that list, and the only one.
+         */
+        if (pane.type === 'web') {
+            items.push(
+                { id: 'sep-web', label: '', kind: 'separator' },
+                {
+                    id: 'web-batch-toggle',
+                    label: 'Element Pickup',
+                    onSelect: () => void webCommands.batchToggle(paneID)
+                },
+                {
+                    id: 'web-devtools',
+                    label: 'Toggle Developer Tools',
+                    // Only the shell can open dev tools; in a browser the row would lie, exactly
+                    // as the button it stands in for is disabled there.
+                    disabled: shellWindowID === null,
+                    onSelect: () => void webCommands.toggleDevTools(paneID, null)
+                }
+            );
+        }
+
         if (others.length > 0) {
             items.push(
                 { id: 'sep-move', label: '', kind: 'separator' },
@@ -3381,7 +3416,7 @@ function Shell(props: AppProps): ReactElement {
             onSelect: () => act.copyWorkingDirectory(paneID)
         });
         return items;
-    }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, workspace]);
+    }, [act, daemon.state.workspaces, paneByID, paneMenu, shellWindowID, startPaneRename, webCommands, workspace]);
 
     /**
      * The ••• title-bar menu (APP-052/APP-053/APP-054).

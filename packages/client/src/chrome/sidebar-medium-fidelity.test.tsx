@@ -123,6 +123,35 @@ describe('M1 — the group guide runs through the "No workspaces" placeholder', 
         );
     });
 
+    /**
+     * S47 (owner-directed) moved the placeholder onto the list's 4px pitch, and the rule rides
+     * the box: the segment used to begin 2.00px under its band where a one-member group's
+     * begins 4.00px under its own, so the two runs did not line up. The margins are the whole of
+     * that difference — `top`/`bottom` stay 0, because an unbridged segment spans its own box —
+     * so asserting them is asserting where the rule starts, with no box model to measure in.
+     */
+    it('starts where a one-member group’s rule starts, now the box is on the pitch (S47)', () => {
+        render(<Sidebar {...baseProps()} entries={withEmptyGroup('green')} />);
+        const placeholder = screen.getByTestId('group-empty');
+        const memberRow = rowFor(W2);
+        expect(placeholder.style.marginTop).toBe(memberRow.style.marginTop);
+        expect(placeholder.style.marginBottom).toBe(memberRow.style.marginBottom);
+        expect(placeholder.style.marginTop).toBe('2px');
+
+        // Both segments are unbridged — the placeholder has no sibling, W2 is squad's only
+        // member — so each spans its own box exactly, and equal margins put the two starts the
+        // same distance under their bands.
+        for (const guide of [
+            within(placeholder).getByTestId('group-guide'),
+            within(memberRow).getByTestId('group-guide')
+        ]) {
+            expect(guide.style.top).toBe('0px');
+            expect(guide.style.bottom).toBe('0px');
+            expect(guide.style.left).toBe('-6px');
+            expect(guide.style.width).toBe('1.5px');
+        }
+    });
+
     it('takes the group’s own colour — the same expression a child row’s does', () => {
         render(<Sidebar {...baseProps()} entries={withEmptyGroup('green')} />);
         const onRow = within(rowFor(W2)).getByTestId('group-guide');

@@ -189,7 +189,25 @@ export function gitFailureText(repoPath: string, message: string): string {
     return `Failed to run git diff in ${repoPath}:\n${message}`;
 }
 
-/** §5.4 verbatim, with `BASE` = base font size. */
+/**
+ * §5.4 verbatim, with `BASE` = base font size.
+ *
+ * S41 — one OWNER-DIRECTED divergence from `DiffHTMLRenderer.swift:298-315`, in the sticky file
+ * header's flex row. The Swift declares `display: flex; gap: 8px; padding: 6px 16px` and
+ * **nothing else** — no `min-width: 0`, no `text-overflow`, no `flex-shrink` — and the port
+ * transcribed it rule for rule, so the row is parity rather than drift. It is also the wrong
+ * rule set for a multiplexer, where a diff usually lives in a split: with no `min-width: 0` on
+ * `.file-path` nothing yields, so the whole cluster simply runs off the end and
+ * `overflow-x: hidden` (`:202`) cuts it. Measured at a **161 px** summary: the children ran to
+ * x 226 — 65 px past the summary's right edge — leaving `README.md  MODIFI` cut mid-word and
+ * `+2 −1` gone entirely. With `min-width: 0` + ellipsis on the path and `flex-shrink: 0` on the
+ * badge and the counts, the path is what gives and the two facts a narrow header is FOR — what
+ * happened to the file, and by how much — survive.
+ *
+ * Owner-directed: do not re-report this as a divergence. The parity value is a `.file-path`
+ * carrying neither `min-width` nor any overflow property, and a `.file-status` / `.diff-stats`
+ * carrying no `flex-shrink`.
+ */
 export function diffStylesheet(baseFontSize: number): string {
     return `html, body { margin: 0; padding: 0; }
 body {
@@ -238,11 +256,18 @@ details.file:first-child > summary { border-top: none; }
 .caret { display: inline-block; width: 10px; color: #8b949e; transition: transform 0.12s ease; }
 .caret::before { content: "\\25B6"; font-size: 9px; }   /* ▶ */
 details[open] > summary .caret { transform: rotate(90deg); }
-.file-path { font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
+/* S41 (owner-directed): min-width/overflow/text-overflow/white-space are the port's, not the
+   Swift's — they are what make the PATH the thing that yields in a narrow split. */
+.file-path {
+    font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .file-status {
     font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
     font-size: 10px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px;
+    /* S41 (owner-directed): the badge is a fixed fact, so it never gives ground. */
+    flex-shrink: 0;
 }
 .status-added    { background: rgba(46,160,67,0.18);  color: #1a7f37; }
 .dark .status-added    { color: #4ac26b; background: rgba(46,160,67,0.22); }
@@ -258,6 +283,8 @@ details[open] > summary .caret { transform: rotate(90deg); }
     margin-left: auto;
     font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px; display: inline-flex; gap: 8px;
+    /* S41 (owner-directed): +N −N is the other fixed fact, and it was the first thing lost. */
+    flex-shrink: 0;
 }
 .stat-add { color: #1a7f37; font-weight: 600; }   .dark .stat-add { color: #4ac26b; }
 .stat-del { color: #cf222e; font-weight: 600; }   .dark .stat-del { color: #ff7b72; }

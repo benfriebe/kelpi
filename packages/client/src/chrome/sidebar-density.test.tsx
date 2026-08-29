@@ -14,6 +14,7 @@ import {
     FOOTER_MENU_ESTIMATED_HEIGHT,
     FOOTER_MENU_ROW_HEIGHT,
     NAME_TRAILING_RESERVE_PX,
+    ROW_OUTER_GAP_PX,
     fitLabelChips
 } from './Sidebar';
 import type { ChromePane, ChromeSidebarEntry, ChromeWorkspace } from './types';
@@ -23,6 +24,8 @@ afterEach(cleanup);
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
 const W2 = 'aaaaaaaa-0000-4000-8000-000000000002';
 const G1 = 'cccccccc-0000-4000-8000-000000000001';
+/** S47's second group: expanded and EMPTY, so the "No workspaces" placeholder renders. */
+const G2 = 'cccccccc-0000-4000-8000-000000000002';
 
 function pane(id: string): ChromePane {
     return {
@@ -145,6 +148,78 @@ describe('S39 — chips fold into `+N` instead of clipping to stubs (owner-direc
             expect(chip.className).toContain('truncate');
             expect(chip.className).toContain('min-w-0');
         }
+    });
+});
+
+// ── S47: the empty-group placeholder's pitch (OWNER-DIRECTED divergence) ────────────
+
+/**
+ * SPACING-REVIEW S47 — **owner-directed divergence** from `GroupHeaderRow.swift:174-193`.
+ *
+ * `GroupEmptyRow` is `.padding(.vertical, 6)` and carries NO outer 2pt, where every workspace
+ * row (`WorkspaceRowView.swift:93-97`) and every group band (`GroupHeaderRow.swift:110`) does.
+ * The list is a `VStack(spacing: 0)` (`WorkspaceListView.swift:291`), so those outer paddings
+ * ARE the list's rhythm, and a row without one is on half the pitch of everything around it.
+ * The port transcribed the omission faithfully, which is why the row is parity rather than
+ * drift: measured live in a sandbox, band → placeholder **2.00 px** and placeholder → next row
+ * **2.00 px**, against **4.00 px** for row→row, row→band and band→row alike.
+ *
+ * jsdom has no box model, so what is asserted here is the input the pitch is made of — the two
+ * margins the placeholder really carries — and the arithmetic they force against a neighbour
+ * that carries the same. The pixels are settled by the lane's live probe (2.00 → 4.00 on both
+ * edges, at the 220 px default sidebar).
+ *
+ * This test exists so that a later parity sweep restoring `GroupEmptyRow`'s marginless box
+ * fails here first.
+ */
+describe('S47 — the empty-group placeholder sits on the list’s 4px pitch (owner-directed)', () => {
+    function withEmptyGroup(): ChromeSidebarEntry[] {
+        return [
+            ...entries(),
+            {
+                kind: 'group',
+                group: { id: G2, name: 'hollow', color: 'green', icon: null, isCollapsed: false },
+                workspaces: []
+            }
+        ];
+    }
+
+    it('carries `ROW_OUTER_GAP_PX` on both edges, exactly as a row and a band do', () => {
+        render(<Sidebar {...baseProps()} entries={withEmptyGroup()} />);
+        const placeholder = screen.getByTestId('group-empty');
+        expect(placeholder.style.marginTop).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+        expect(placeholder.style.marginBottom).toBe(`${String(ROW_OUTER_GAP_PX)}px`);
+    });
+
+    it('makes every adjacent pair in the list worth the same 2 × 2px', () => {
+        render(<Sidebar {...baseProps()} entries={withEmptyGroup()} />);
+        const items = [
+            ...screen.getAllByTestId('workspace-row'),
+            ...screen.getAllByTestId('group-header'),
+            screen.getByTestId('group-empty')
+        ];
+        for (const item of items) {
+            expect(Number.parseFloat(item.style.marginTop)).toBe(ROW_OUTER_GAP_PX);
+            expect(Number.parseFloat(item.style.marginBottom)).toBe(ROW_OUTER_GAP_PX);
+        }
+        // The gap between any two of them is the sum of the halves they each own — the list is
+        // a flex column (§WS-027), so nothing collapses.
+        const band = screen.getAllByTestId('group-header').at(-1) as HTMLElement;
+        const placeholder = screen.getByTestId('group-empty');
+        const pitch =
+            Number.parseFloat(band.style.marginBottom) + Number.parseFloat(placeholder.style.marginTop);
+        expect(pitch).toBe(2 * ROW_OUTER_GAP_PX);
+    });
+
+    it('moves nothing INSIDE the box — §L9’s padding and text origin are untouched', () => {
+        render(<Sidebar {...baseProps()} entries={withEmptyGroup()} />);
+        const placeholder = screen.getByTestId('group-empty');
+        expect(placeholder.className).toContain('py-1.5');
+        expect(placeholder.className).toContain('ml-6');
+        expect(placeholder.className).toContain('pl-5');
+        expect(placeholder.className).toContain('pr-4');
+        expect(placeholder.style.paddingTop).toBe('');
+        expect(placeholder.style.paddingBottom).toBe('');
     });
 });
 

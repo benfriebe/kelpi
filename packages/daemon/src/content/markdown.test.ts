@@ -411,6 +411,57 @@ describe('markdownStylesheet — the document inset (S42, owner-directed)', () =
     });
 });
 
+/**
+ * SPACING-REVIEW S51 — **owner-directed divergence**, the second (and last) in this stylesheet.
+ *
+ * `MarkdownHTMLRenderer.swift:444-452` pads BOTH front-matter blocks `8px 10px` and the port
+ * transcribed it byte for byte, so the row is parity rather than drift. Inside a cell that
+ * already pads `6px 12px` (`:421-423`, transcribed above and untouched) that second box gave the
+ * value column two left edges: measured live on three scalars and one single-key nested map, the
+ * scalar rows were **33.16 px** tall with their values at **x 107.25** (cell 95.25 + 12) while
+ * the nested row was **42.74 px — 9.58 px taller** with its text a further 10 px in at 117.25.
+ *
+ * With `padding: 0` the nested value sits in the cell's own box: one left edge at 107.25, and the
+ * row height falls to 32.16 — a scalar row's own height less the 1 px `border-bottom` that
+ * `tr:last-child` drops — because the `<th>`'s line box sets it, as it does on every other row.
+ * A control run with the same nested map moved OFF the last row measured it at **33.16 px, a
+ * scalar row exactly**, which is what settles the `tr:last-child` reading.
+ *
+ * The RAW block keeps the Swift's `8px 10px`: it is the malformed-YAML fallback, it stands
+ * outside any cell, and the padding is what makes it read as a styled block.
+ *
+ * This test exists so that a later parity sweep restoring `8px 10px` on the nested block fails
+ * here first.
+ */
+describe('markdownStylesheet — the front-matter nested block (S51, owner-directed)', () => {
+    it('gives the nested block no padding of its own, so the cell’s 6/12 is the only box', () => {
+        const sheet = markdownStylesheet(14);
+        expect(sheet).toContain('pre.frontmatter-nested { padding: 0; }');
+        // The shared rule must not hand it a padding again by the back door.
+        expect(sheet).not.toContain('pre.frontmatter-raw, pre.frontmatter-nested {\n    margin: 0;\n    padding: 8px 10px;');
+    });
+
+    it('leaves the malformed-YAML raw block on the Swift’s 8/10 styled treatment', () => {
+        const sheet = markdownStylesheet(14);
+        expect(sheet).toContain(
+            'pre.frontmatter-raw { padding: 8px 10px; border-left: 3px solid #d1d9e0; padding-left: 10px; margin: 0 0 1.5em; }'
+        );
+        expect(sheet).toContain('.dark pre.frontmatter-raw { border-left-color: #3d444d; }');
+    });
+
+    it('keeps the cell padding the Swift’s — S51 moves the block, not the table', () => {
+        const sheet = markdownStylesheet(14);
+        expect(sheet).toContain('padding: 6px 12px;');
+    });
+
+    it('still shares everything the two blocks are meant to share', () => {
+        const sheet = markdownStylesheet(14);
+        expect(sheet).toContain(
+            'pre.frontmatter-raw, pre.frontmatter-nested {\n    margin: 0;\n    background: transparent;\n    border: none;\n    font-size: 0.85em;\n    white-space: pre-wrap;\n}'
+        );
+    });
+});
+
 describe('fileLoadErrorMarkdown', () => {
     it('renders a read failure as a markdown blockquote (§3.11)', () => {
         const html = renderMarkdownBody(fileLoadErrorMarkdown('/tmp/x.md', 'ENOENT'));

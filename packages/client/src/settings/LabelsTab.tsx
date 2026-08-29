@@ -386,7 +386,28 @@ function ColorSwatch(props: SwatchProps): ReactElement {
             data-testid={props.testID}
             aria-label={props.ariaLabel}
             aria-pressed={props.selected}
-            className="h-4 w-4 shrink-0 rounded-full"
+            /*
+             * SPACING-REVIEW S50 (OWNER-DIRECTED) — a 20 px target that PAINTS the same 16 px disc.
+             *
+             * Ten of these wrap into two rows inside a 150 px track 4 px apart, and each was a
+             * 16 × 16 hit box. `SettingsIconButton` takes the row's own `h-5 w-5` + `-m-0.5`
+             * recipe unchanged, and a swatch CANNOT: here the box IS the picture, so a 20 px box
+             * draws a 20 px circle — the one thing this row forbids. Everything painted is
+             * therefore left exactly as it was (`h-4 w-4`, the disc, `outlineOffset: 1px` and the
+             * selection/hover ring), and the target is grown by the transparent overlay below.
+             *
+             * **Deviation from the register's `h-5 w-5` + `-m-0.5`, on measurement.** The first
+             * attempt kept the recipe and re-clipped the paint — `p-0.5` with
+             * `background-clip: content-box` and `outlineOffset: -1px`, which is geometrically
+             * exact (content radius 10 − 2 = 8; ring 18 px at radius 9 either way). It measured
+             * as 28 device pixels of difference per swatch, ≤16/255, on the four 45° arcs:
+             * clipping a background and painting a rounded one are two rasterizers, and they do
+             * not agree sub-pixel. That is a difference nobody would see and this lane still
+             * cannot claim, so the paint is not touched at all now.
+             *
+             * Owner-directed: do not re-report. The parity value is a 16 px hit box.
+             */
+            className="relative h-4 w-4 shrink-0 rounded-full"
             style={{
                 background: props.color,
                 outline: ring === null ? 'none' : `2px solid ${ring}`,
@@ -394,7 +415,20 @@ function ColorSwatch(props: SwatchProps): ReactElement {
             }}
             {...hoverProps}
             onClick={props.onClick}
-        />
+        >
+            {/*
+             * The 20 px target: 2 px of transparent bleed on every side, hit-tested and clicked
+             * through to the button that owns it. It paints nothing and it is out of flow, so
+             * the swatch's own box, the `gap-1` between swatches, the wrap point inside
+             * `LABEL_COL.bgColor` (§H26) and every column after it are all untouched. The bleed
+             * is exactly half the 4 px gap, so neighbouring targets abut and never overlap.
+             *
+             * Measured on a two-preset tab: hit box 15.5 × 15.5 → 19.5 × 19.5, the swatch's own
+             * rect unmoved at [483, 205.8, 16, 16] (and every one of the other nineteen likewise),
+             * and 477 040 px of the tab pixel-identical.
+             */}
+            <span aria-hidden style={{ position: 'absolute', inset: -2, borderRadius: '9999px' }} />
+        </button>
     );
 }
 

@@ -111,6 +111,39 @@ const CONTENT_TOP_PADDING = 4;
  */
 const FOOTER_PADDING_PX = 12;
 const FOOTER_GAP_PX = 6;
+
+/**
+ * SPACING-REVIEW S45 (OWNER-DIRECTED) — the multi-selection strip's Select All / Clear, hit box
+ * only.
+ *
+ * `WorkspaceListView.swift:834-849` is `HStack(spacing: 8)` of two `.buttonStyle(.borderless)`
+ * 11 pt buttons, and the port transcribed the stack exactly (§M6's 6/12 strip is correct and is
+ * untouched here). What it could not transcribe is the CELL a borderless AppKit button brings
+ * with it: measured, the two shipped as bare text runs — 49.34 × 15.40 and 27.52 × 15.40 at
+ * `padding: 0px` — which is the whole trailing cluster reading as three accent words at one
+ * uniform 8 px spacing rather than as two controls.
+ *
+ * The padding gives each one a box; the matching NEGATIVE margin hands every pixel of it back to
+ * the layout, so both buttons' margin boxes are still exactly their text boxes and nothing in
+ * the strip moves — Clear's right edge stays on x 208, which is §M6's own 12 px trailing inset,
+ * and the header stays 27.4 px tall rather than growing on a 19.4 px child.
+ *
+ * **Deviation from the register's suggestion, on measurement.** It asked for `2px 6px` with a
+ * `marginRight: -6` on Clear alone. Two things are wrong with that pair at this geometry: the
+ * one-sided margin leaves Select All's TEXT 12 px left of where it is today (the `flex-1`
+ * "N selected" span absorbs both new boxes), and 6 px of bleed on facing edges inside an 8 px
+ * gap makes the two hit boxes OVERLAP by 4 px — where the later sibling wins, so the right edge
+ * of "Select All" would quietly fire Clear. 4 px is the most the 8 px gap admits without that,
+ * and it still buys the ~19.4 px target height the row is actually asking for.
+ *
+ * Measured live at a 220 px sidebar with two workspaces and one selected: Select All
+ * 49.5 × 15.5 → 57.0 × 19.5 and Clear 27.5 × 15.5 → 35.5 × 19.5 hit boxes, both text runs
+ * unmoved to the sub-pixel, and the 440 × 56 picture of the strip pixel-identical (0 of
+ * 24 640 px differ).
+ *
+ * Owner-directed: do not re-report. The parity value is no padding on either.
+ */
+const SELECTION_ACTION_HIT_BOX = { padding: '2px 4px', margin: '-2px -4px' } as const;
 /**
  * How tall the footer's two-row chevron menu is. `ContextMenu` is a portal positioned by its
  * TOP edge, and this menu drops UPWARD from a bar that sits against the bottom of the window,
@@ -265,7 +298,13 @@ export const ROW_CORNER_RADIUS_PX = 7;
 export const GROUP_BAND_CORNER_RADIUS_PX = 8;
 export const ROW_ACTIVE_RING_PX = 1.5;
 export const ROW_SELECTION_RING_PX = 1;
-/** Each item's own outer vertical padding; two adjacent items are twice this apart. */
+/**
+ * Each item's own outer vertical padding; two adjacent items are twice this apart.
+ *
+ * Worn by workspace rows and group bands, which is the Swift's own set — and, since S47, by the
+ * empty-group placeholder too, which the Swift leaves without one. That is an OWNER-DIRECTED
+ * divergence and is marked at the placeholder itself.
+ */
 export const ROW_OUTER_GAP_PX = 2;
 /**
  * SPACING-REVIEW S18: what the name column owes the trailing ⌘N badge / collapse chevron.
@@ -1432,7 +1471,41 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                        `.foregroundStyle(theme.textTertiary)` (`GroupHeaderRow.swift:85-89`) —
                        the port drew it a point large, in the secondary colour, at the regular
                        stroke. Both apps SWAP the glyph rather than rotate it. */
-                    style={{ color: tokens.textTertiary }}
+                    style={{
+                        color: tokens.textTertiary,
+                        /*
+                         * SPACING-REVIEW S46 (OWNER-DIRECTED) — the hit box only.
+                         *
+                         * `GroupHeaderRow.swift:85-89` has no button here AT ALL: the chevron is
+                         * a plain `Image(systemName:)` and the toggle target is the whole band
+                         * (`:111-120`'s `.contentShape(Rectangle()).onTapGesture`). The port
+                         * draws a real `<button>` with `stopPropagation` instead, and that
+                         * button measured 11.00 × 11.00 with its right edge on x 203 — the
+                         * band's own content-box edge, i.e. ZERO clearance inside the padding
+                         * box. So the target size here is the port's own to choose; there is no
+                         * Swift number to depart from, only a Swift construction.
+                         *
+                         * `padding: 5` → a 21 × 21 target. `margin: -5` on all four sides rather
+                         * than the register's `marginRight: -5` alone, and both halves are
+                         * measured: with only the right margin the button's margin box grows to
+                         * 16 and the `flex-1` name span beside it LOSES 5 px, so a long group
+                         * name would ellipsise 5 px earlier — a visible change on exactly the
+                         * rows this row is not about. All four sides keep the margin box at
+                         * 11 × 11, so the name column, the 22 px glyph slot and the band's
+                         * 8/6 padding are all untouched.
+                         *
+                         * The 5 px of leftward bleed lands inside `NAME_TRAILING_RESERVE_PX`
+                         * (§S18's 22 px reserve), so it never reaches the name's own box.
+                         * Measured live: hit box 10.5 × 10.5 → 20.5 × 20.5, glyph unmoved at
+                         * [192.04, 144.79, 11.01, 11.01], and the 408 × 72 picture of the band
+                         * pixel-identical. The band-wide tap target is untouched — clicking
+                         * anywhere on the band still toggles, exactly as before.
+                         *
+                         * Owner-directed: do not re-report. The parity value is no padding.
+                         */
+                        padding: 5,
+                        margin: -5
+                    }}
                     onClick={(event) => {
                         event.stopPropagation();
                         props.onToggle(group.id);
@@ -4236,6 +4309,12 @@ export function Sidebar(props: SidebarProps): ReactElement {
                          * left edge on the 24px nesting indent, so `left: -6` lands on 18. No
                          * bridging either way — the placeholder is the group's only child, so
                          * there is no sibling segment to meet.
+                         *
+                         * S47 puts the segment where a one-member group's is, too: measured, the
+                         * rule used to start 2.00px under the band and now starts 4.00px under
+                         * it, which is exactly where the rule on a group's only WORKSPACE row
+                         * starts. `top`/`bottom` stay 0 — the outer margin is the row's, not the
+                         * overlay's, and an unbridged segment spans its own box.
                          */
                         const emptyGuideColor = guideColorFor(row.groupID);
                         return (
@@ -4261,7 +4340,28 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                  * is 16pt on both sides.
                                  */
                                 className="relative ml-6 py-1.5 pl-5 pr-4 text-[12px]"
-                                style={{ color: tokens.textTertiary }}
+                                /*
+                                 * SPACING-REVIEW S47 — OWNER-DIRECTED divergence from
+                                 * `GroupHeaderRow.swift:174-193`, where `GroupEmptyRow` is
+                                 * `.padding(.vertical, 6)` and carries NO outer 2pt, unlike the
+                                 * rows and bands around it. Parity value: no vertical margin.
+                                 *
+                                 * `WorkspaceListView.swift:291` is a `VStack(spacing: 0)`, so
+                                 * every gap in this list is the items' own outer padding and
+                                 * two neighbours that both carry it sit `2 * ROW_OUTER_GAP_PX`
+                                 * apart. The placeholder carried none, so it was the one row in
+                                 * the list on a different pitch: measured live, band →
+                                 * placeholder 2.00 and placeholder → next row 2.00, against
+                                 * 4.00 for row→row, row→band and band→row alike. The two
+                                 * margins here put it on the list's uniform 4px pitch; nothing
+                                 * inside the box moves (the 6/20/6/16 padding and §L9's 52px
+                                 * text origin are untouched).
+                                 */
+                                style={{
+                                    color: tokens.textTertiary,
+                                    marginTop: ROW_OUTER_GAP_PX,
+                                    marginBottom: ROW_OUTER_GAP_PX
+                                }}
                                 onContextMenu={(event) => {
                                     onGroupContextMenu(row.groupID, event);
                                 }}
@@ -4466,7 +4566,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             type="button"
                             /* M6: `.buttonStyle(.borderless)` at `:840-846` — an accent text
                                button, not the strip's own secondary body colour. */
-                            style={{ color: tokens.accent }}
+                            style={{ color: tokens.accent, ...SELECTION_ACTION_HIT_BOX }}
                             onClick={() => {
                                 setSelection(new Set(workspaceByID.keys()));
                             }}
@@ -4476,7 +4576,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     )}
                     <button
                         type="button"
-                        style={{ color: tokens.accent }}
+                        style={{ color: tokens.accent, ...SELECTION_ACTION_HIT_BOX }}
                         onClick={() => {
                             setSelection(EMPTY_SELECTION);
                         }}
@@ -4599,7 +4699,37 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         aria-expanded={menu !== null && menu.kind === 'footer'}
                         title="New Workspace options"
                         className="flex items-center"
-                        style={{ color: tokens.textSecondary }}
+                        style={{
+                            color: tokens.textSecondary,
+                            /*
+                             * SPACING-REVIEW S44 (OWNER-DIRECTED) — the hit box only.
+                             *
+                             * The 9 px glyph above is Swift-exact and stays; what the port has
+                             * no equivalent for is `.menuStyle(.borderlessButton)`, which on the
+                             * Swift side wraps that glyph in an AppKit menu CELL with its own
+                             * inset. A bare `<button>` is the glyph and nothing else, so this
+                             * footer's only route to New Group shipped as a 9.00 × 9.00 target —
+                             * measured, and the smallest control anywhere in the sidebar.
+                             *
+                             * `padding: 6` gives the cell back (21 × 21); `margin: -6` on ALL
+                             * four sides — not the register's `-6px 0` — hands the 12 px straight
+                             * back to the layout, so the button's MARGIN box is still 9 × 9 and
+                             * nothing around it moves. Horizontal matters as much as vertical
+                             * here: `-6px 0` would have pushed the glyph 6 px right of "New
+                             * Workspace" across the row's own `FOOTER_GAP_PX`, and the vertical
+                             * half keeps the 43.2 px footer from growing on a 21 px child.
+                             * Measured live at a 220 px sidebar: hit box 8.5 × 8.5 → 20.5 × 20.5,
+                             * glyph unmoved at [134.8, 770.4, 9, 9], and the 440 × 88 picture of
+                             * the whole footer row pixel-identical (0 of 38 720 px differ).
+                             *
+                             * The 6 px of leftward bleed lands exactly on `FOOTER_GAP_PX`, so
+                             * the two controls' hit boxes abut and neither overlaps the other.
+                             *
+                             * Owner-directed: do not re-report. The parity value is no padding.
+                             */
+                            padding: 6,
+                            margin: -6
+                        }}
                         onClick={toggleFooterMenu}
                     >
                         <ChromeIcon name="chevron-down" size={9} />

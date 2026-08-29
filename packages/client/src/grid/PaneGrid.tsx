@@ -835,8 +835,12 @@ interface DividerProps {
 }
 
 /**
- * The grab strip is `dividerHitRect` (a 10 px band: the 2 px bar plus 4 px into each
- * neighbour); the visible bar is drawn inside it at the exact `info.rect` offset.
+ * The grab strip is `dividerHitRect` (a 14 px band: the 2 px bar plus `DIVIDER_HIT_INSET` = 6 px
+ * into each neighbour); the visible bar is drawn inside it at the exact `info.rect` offset, so
+ * the bar's absolute position does not depend on the inset at all.
+ *
+ * SPACING-REVIEW S48 (owner-directed): the band was 10 px, `SplitDividerView.swift:21-25`'s own
+ * `inset(by: -4)`. `@nex/core`'s `DIVIDER_HIT_INSET` carries the reasoning and the parity value.
  */
 function Divider({ info, dragging, onPointerDown }: DividerProps): ReactElement {
     const hit = dividerHitRect(info.rect);

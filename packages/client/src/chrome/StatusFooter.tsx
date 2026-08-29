@@ -303,6 +303,37 @@ interface CountItemProps {
     readonly hoverBinding?: { readonly onMouseEnter: () => void; readonly onMouseLeave: () => void } | undefined;
 }
 
+/**
+ * SPACING-REVIEW S49 (OWNER-DIRECTED) — the count chips' hit box, and nothing else.
+ *
+ * `StatusBarView.swift:268-287` is `Button { countLabel }.buttonStyle(.plain)` with no padding of
+ * its own, over an `HStack(spacing: 4)` of 11 pt text — so the shipped target is the ~14 pt text
+ * band, and the port transcribed that exactly. Measured live: 67.74 / 65.44 / 68.73 × **15.40**
+ * at `padding: 0px`, centred in a fixed 24 px footer row (`:669`'s `h-6`), leaving a 4.8 px dead
+ * strip above and a 3.8 px one below every clickable count.
+ *
+ * `4px 0` fills that row: the band goes 15.4 → 23.4 px, and because the padding is symmetric and
+ * every ancestor from `footer-keep` up is `items-center`, the dot, the 14 px count slot and the
+ * word do not move by a sub-pixel. Nothing horizontal is touched, so §L50's 14 px stack and
+ * `bucketPopoverPlacement`'s chip-centre arithmetic (which reads `left`/`width` only) are both
+ * unaffected — including S31's five exact-equality placement assertions.
+ *
+ * `alignSelf: 'stretch'` — the register's other suggestion — was MEASURED and rejected: this
+ * chip's parents are content-sized (`footer-keep` is centred inside `footer-right`, which is
+ * centred inside the row), so stretching resolves to the 15.4 px line and buys nothing at all.
+ *
+ * Applied to the `<button>` branch ONLY. The inert `<span>` branch below is what a 0-count chip
+ * renders (§M22) and it is not a click target, so padding it would grow a box nobody can press.
+ * The two branches therefore differ in box height by 8 px and in painted position by nothing.
+ *
+ * Measured live with one running agent: the chip's box 67.74 × 15.40 → 67.74 × 23.40 and its
+ * probed hit area 67.5 × 15.5 → 67.5 × 22.5, chip content unmoved, and the 488 × 32 picture of
+ * the whole chip run pixel-identical (0 of 15 616 px differ).
+ *
+ * Owner-directed: do not re-report. The parity value is no padding.
+ */
+const COUNT_CHIP_HIT_BOX = { padding: '4px 0' } as const;
+
 function CountItem(props: CountItemProps): ReactElement {
     const color = bucketColor(props.bucket);
     const inert = props.count === 0;
@@ -342,7 +373,11 @@ function CountItem(props: CountItemProps): ReactElement {
                brightened for nothing at all before. Open counts as hovered, so the chip whose
                popover is up stays lit while the pointer is away in the panel. */
             data-hovered={props.hovered === true || props.open ? 'true' : 'false'}
-            style={{ color: hoverText(props.hovered === true || props.open, tokens.textSecondary) }}
+            style={{
+                color: hoverText(props.hovered === true || props.open, tokens.textSecondary),
+                // S49, owner-directed — the clickable branch fills the 24 px row. See the constant.
+                ...COUNT_CHIP_HIT_BOX
+            }}
             {...(props.hoverBinding ?? {})}
             onClick={props.onToggle}
         >

@@ -217,3 +217,48 @@ describe('renderDiffDocument', () => {
         }
     });
 });
+
+/*
+ * SPACING-REVIEW S41 — **owner-directed divergence**, and the only one in this stylesheet.
+ *
+ * `DiffHTMLRenderer.swift:298-315` declares the file header's flex row and nothing else: no
+ * `min-width: 0` on `.file-path`, no `text-overflow`, no `flex-shrink` on the badge or the
+ * counts. The port transcribed it rule for rule, so the row is parity rather than drift. It is
+ * also the wrong rule set in a split, because with nothing able to yield the whole cluster runs
+ * off the end and `overflow-x: hidden` cuts it. Measured live before the fix, at the register's
+ * own **161 px** summary: `.diff-stats` ended **65 px past** the summary's right edge (gone
+ * entirely) and the status badge 20 px past it (`MODIFIED` cut mid-word), while `.file-path` sat
+ * at its full 75.86 px having given up nothing. After, at the same 161 px: the badge and the
+ * counts are both inside, and the path is what yields.
+ *
+ * This test exists so that a later parity sweep re-reporting the Swift's own rule set — a path
+ * with no `min-width` and a badge with no `flex-shrink` — fails here first.
+ */
+describe('diffStylesheet — the file header’s fit (S41, owner-directed)', () => {
+    it('lets the PATH yield, with an ellipsis, and nothing else', () => {
+        const style = diffStylesheet(13);
+        expect(style).toContain('min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;');
+        // The parity value: a `.file-path` rule that is font declarations only.
+        expect(style).not.toContain(
+            ".file-path { font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }"
+        );
+    });
+
+    it('pins the status badge and the +N −N counts, which were the first things lost', () => {
+        const style = diffStylesheet(13);
+        // Two rules, one property each — asserted by count so neither can quietly go.
+        expect(style.match(/flex-shrink: 0;/g)?.length).toBe(2);
+        const status = style.slice(style.indexOf('.file-status {'), style.indexOf('.status-added'));
+        expect(status).toContain('flex-shrink: 0;');
+        const stats = style.slice(style.indexOf('.diff-stats {'), style.indexOf('.stat-add'));
+        expect(stats).toContain('flex-shrink: 0;');
+    });
+
+    it('leaves the row’s own Swift metrics exactly where §5.4 put them', () => {
+        const style = diffStylesheet(13);
+        expect(style).toContain('padding: 6px 16px;');
+        expect(style).toContain('gap: 8px;');
+        expect(style).toContain('margin-left: auto;');
+        expect(style).toContain('overflow-x: hidden;');
+    });
+});

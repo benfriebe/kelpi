@@ -33,8 +33,32 @@ export type PaneLayout = LeafLayout | SplitLayout | EmptyLayout;
 /** Logical px consumed by the divider between split children, in every split. */
 export const DIVIDER_THICKNESS = 2;
 
-/** Divider hit area inset (px per side) — a 2+4+4 = 10px grab strip. */
-export const DIVIDER_HIT_INSET = 4;
+/**
+ * Divider hit area inset (px per side) — a 2+6+6 = 14px grab strip.
+ *
+ * SPACING-REVIEW S48 — an OWNER-DIRECTED divergence from `SplitDividerView.swift:21-25`, which
+ * is `.contentShape(Rectangle().inset(by: -4))`, i.e. a 10 px band over the same 2 pt bar
+ * (`PaneLayout.swift:12`). The port transcribed that exactly and it measured exactly: a
+ * 10.00 × 764 grab strip over a 2.00 × 764 bar. It is also half the 20 px pointer-target floor,
+ * on the one control in the grid whose whole purpose is to be dragged.
+ *
+ * The VISIBLE bar does not change: `PaneGrid.tsx`'s `Divider` draws it at `left/top:
+ * DIVIDER_HIT_INSET` inside a strip positioned at `dividerHitRect`, so the bar's absolute
+ * position is `info.rect` whatever this constant is. Measured before/after on a live 2-pane
+ * split at a 1280 × 820 window: the strip 10 → 14 px wide, the 36 × 600 px picture of the bar
+ * and both neighbours' insets **pixel-identical** (0 of 21 600 px differ).
+ *
+ * The strip sits at `zIndex: 10` over its neighbours, so this spends 6 px rather than 4 of each
+ * pane's 8 px header inset on the drag handle. Measured on the same split rather than argued:
+ * the strip spans x 703 → 717, the nearest control on its left (`pane-close`) ends at 701 and the
+ * nearest on its right (`pane-status-dot`) starts at 719 — **2.00 px of clearance either side** —
+ * and all ten pane-header controls across both panes still resolve to themselves under
+ * `elementFromPoint`. A press at the strip's new outer edge starts and commits a drag (the
+ * divider moved 743 → 703 px).
+ *
+ * Owner-directed: do not re-report this as a divergence. The parity value is 4.
+ */
+export const DIVIDER_HIT_INSET = 6;
 
 /** Minimum drag distance (px) before a divider drag activates. */
 export const DIVIDER_MIN_DRAG_DISTANCE = 1;

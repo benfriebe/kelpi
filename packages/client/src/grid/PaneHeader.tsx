@@ -19,8 +19,11 @@ import {
     type KeyboardEvent,
     type MouseEvent,
     type PointerEvent,
-    type ReactElement
+    type ReactElement,
+    type RefObject
 } from 'react';
+
+import { ContextMenu, type MenuItemSpec } from '../chrome/ContextMenu';
 
 import { chromeElapsedLabel, useSecondsTicker } from './elapsed';
 import { Icon, type IconName, type IconWeight } from './icons';
@@ -129,6 +132,72 @@ export function badgeFit(input: BadgeFitInput): BadgeFit {
         cost -= BADGE_COST[key];
     }
     return fit;
+}
+
+/**
+ * §S40 — how many of the header's trailing buttons fold into the overflow `•••`
+ * (OWNER-DIRECTED divergence from `PaneHeaderView.swift:222-272`, taken 2026-08-29).
+ *
+ * The Swift draws its whole button tail unconditionally and lets `PaneGridView.swift:354-355`'s
+ * `.clipped()` cut whatever overruns; the port transcribed that exactly (`gap-1 px-2`, `h-5 w-5`,
+ * the pane wrapper's `overflow-hidden`), so the row is parity rather than drift. It is also the
+ * wrong trade in a multiplexer, because the control the clip reaches FIRST is the destructive
+ * one: measured, a markdown pane's six-button tail had +8 px of clearance at a 199 px header,
+ * **−1 at 169, −21 at 149 and −41 at 129** — the ✕ gone, then the globe with it. A real 4-pane
+ * grid at 1280 reaches those widths (`run-AE` step 94 measured a **134 px** markdown pane), so
+ * this is the ordinary case, not a pathological one.
+ *
+ * What folds, in order — `globe`, `split-down`, `split-right`, then the pane's own type buttons
+ * from the right — is the row read from the ✕ inward, with the ✕ itself never foldable. That
+ * ordering is a rule rather than a taste: the buttons that survive are always a PREFIX of the
+ * Swift's own row, so nothing ever moves sideways as a pane narrows — a control either stays
+ * where it is or leaves. And leaving is cheap here in a way §S8's dropped badges are not: every
+ * folded button is in the `•••` menu one click away, with the label and the chord hint it had.
+ *
+ * **The first fold is two buttons deep, and has to be.** The `•••` is itself a 20 px box plus a
+ * 4 px gap — exactly one button — so folding a single control costs precisely what it saves and
+ * hides one for nothing. The register named two (`globe` and `split-down`) for that reason;
+ * the arithmetic below re-derives it rather than hard-coding it.
+ *
+ * It engages strictly BELOW §S8: the badge cost passed in is what `badgeFit` has already seated,
+ * and `badgeFit` only seats a badge when `headerChrome(allButtons) + cost <= paneWidth` — which
+ * is the same inequality this returns 0 for. So at every width where a badge is drawn, this is
+ * provably a no-op, and §S8's measured thresholds (all three from 232 px, the label alone from
+ * 167, a markdown pane's lone branch to 216) are untouched.
+ *
+ * Owner-directed: do not re-report. The parity value is a tail that never folds, and a ✕ that
+ * is the first control off the pane rather than the last.
+ */
+export interface OverflowFitInput {
+    /** The pane's width; omitted (a standalone render) means "no fold", the pre-S40 behaviour. */
+    readonly paneWidth: number | undefined;
+    /** Every trailing button the header would draw, the close ✕ included. */
+    readonly buttons: number;
+    /** What `badgeFit` seated, in px — `BADGE_COST` summed over the badges still drawn. */
+    readonly badgeCost: number;
+}
+
+export function headerOverflowCount(input: OverflowFitInput): number {
+    const { paneWidth, buttons, badgeCost } = input;
+    /*
+     * A width of 0 is "not measured yet", not "fold everything". The grid computes pane frames
+     * from a `ResizeObserver` on its container, so the first render — and every render under
+     * jsdom, which has no layout at all — reports 0. Folding on that would flash the whole tail
+     * into a `•••` for one frame on every mount, and it did exactly that in the two
+     * `App.test.tsx` cases that click the markdown edit toggle and the diff refresh.
+     */
+    if (paneWidth === undefined || !Number.isFinite(paneWidth) || paneWidth <= 0) return 0;
+    // The ✕ never folds, so it is never a candidate.
+    const foldable = Math.max(buttons - 1, 0);
+    const fits = (folded: number): boolean =>
+        headerChrome(buttons - folded + (folded > 0 ? 1 : 0)) + badgeCost <= paneWidth;
+    if (fits(0)) return 0;
+    // 1 is skipped deliberately: one folded button plus the `•••` is the same box count as the
+    // button it replaced, so it buys nothing and hides a control for nothing.
+    for (let folded = 2; folded <= foldable; folded++) {
+        if (fits(folded)) return folded;
+    }
+    return foldable;
 }
 
 // ── display strings ─────────────────────────────────────────────────────────────────
@@ -410,6 +479,9 @@ interface HeaderButtonProps {
     readonly iconWeight?: IconWeight | undefined;
     /** Dimmed and inert, but still in the row: a control that vanishes reflows the header. */
     readonly disabled?: boolean | undefined;
+    /** §S40 — the `•••` needs its own box to anchor its menu under. */
+    readonly buttonRef?: RefObject<HTMLButtonElement | null> | undefined;
+    readonly expanded?: boolean | undefined;
     readonly onClick?: ((event: MouseEvent<HTMLButtonElement>) => void) | undefined;
 }
 
@@ -420,16 +492,20 @@ function HeaderButton({
     iconSize = 10,
     iconWeight = 'regular',
     disabled,
+    buttonRef,
+    expanded,
     onClick
 }: HeaderButtonProps): ReactElement {
     const off = disabled === true;
     return (
         <button
             type="button"
+            {...(buttonRef === undefined ? {} : { ref: buttonRef })}
             data-testid={testID}
             aria-label={label}
             title={label}
             disabled={off}
+            {...(expanded === undefined ? {} : { 'aria-haspopup': 'menu' as const, 'aria-expanded': expanded })}
             // L24: `.opacity(0.6)` and nothing else (`PaneHeaderView.swift:192`, `:205`, `:218`,
             // `:230`, `:241`, `:259`, `:271`) — the shipped header buttons carry no `.onHover`,
             // so they never brighten under the cursor. The port's `hover:opacity-100` was
@@ -530,6 +606,17 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
     const [renameDraft, setRenameDraft] = useState<string | null>(null);
     const renaming = renameDraft !== null;
 
+    /*
+     * §S40 — where the `•••` menu is open, if it is.
+     *
+     * State in this component is exactly what the file's own menu-stability rule allows: the
+     * header re-renders IN PLACE on the per-second agent tick rather than remounting, so an
+     * open menu survives it — and the menu itself is a `ContextMenu` portal, whose whole
+     * reason for existing is that lifetime (shell-ui.md §15, macOS #124/#227).
+     */
+    const [overflowAt, setOverflowAt] = useState<{ x: number; y: number } | null>(null);
+    const overflowRef = useRef<HTMLButtonElement | null>(null);
+
     // The context menu's "Rename…" is now the ONLY way in (M30 dropped the header's own pencil,
     // which the Swift never had): it reaches the field through a bumped token, and the effect
     // runs only on a CHANGE, so a re-render caused by an agent tick can never re-open it.
@@ -572,17 +659,123 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
      * The other five trailing buttons are the two type ones and the four shared ones.
      */
     const showCopyButton = pane.type === 'markdown' && pane.isEditing !== true && onCopyDocument !== undefined;
+    const buttonCount =
+        4 + (showCopyButton ? 1 : 0) + (pane.type === 'markdown' ? 1 : 0) + (pane.type === 'diff' ? 1 : 0);
     const fit = badgeFit({
         paneWidth,
         label: pane.label !== null && pane.label.length > 0 && pane.type !== 'markdown',
         agent: badge !== null,
         branch: pane.gitBranch !== null && pane.gitBranch.length > 0,
-        buttons:
-            4 +
-            (showCopyButton ? 1 : 0) +
-            (pane.type === 'markdown' ? 1 : 0) +
-            (pane.type === 'diff' ? 1 : 0)
+        buttons: buttonCount
     });
+
+    /*
+     * §S40 — the trailing button row, as data, so the fold has one list to read.
+     *
+     * Row order is `PaneHeaderView.swift:177-272`'s: the per-type buttons, then split-right,
+     * split-down, the globe, and the ✕ (which is not in this list — it never folds). Every entry
+     * carries both an `onClick` for the button and an `onSelect` for the `•••` menu row it
+     * becomes when it folds, because the two are not always the same gesture: the globe's button
+     * reads `event.shiftKey` to choose the split direction, and a menu row has no modifier.
+     */
+    const tail: readonly {
+        readonly key: string;
+        readonly testID: string;
+        readonly label: string;
+        readonly icon: IconName;
+        readonly onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+        readonly onSelect: () => void;
+    }[] = [
+        ...(showCopyButton
+            ? [
+                  {
+                      key: 'copy',
+                      testID: `pane-copy-${pane.id}`,
+                      // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim. It
+                      // was the one header tooltip the port had reworded — every other string in
+                      // this row is already the Swift's — and the rewrite also became the button's
+                      // accessible name, so a screen reader read a label the shipped app does not
+                      // have. Which two formats the menu then offers is the MENU's business.
+                      label: 'Copy whole file',
+                      icon: 'copy' as const,
+                      onClick: () => onCopyDocument(pane.id),
+                      onSelect: () => onCopyDocument(pane.id)
+                  }
+              ]
+            : []),
+        ...(pane.type === 'markdown'
+            ? [
+                  {
+                      key: 'edit',
+                      testID: `pane-edit-toggle-${pane.id}`,
+                      label: pane.isEditing === true ? 'Preview (⌘E)' : 'Edit (⌘E)',
+                      icon: (pane.isEditing === true ? 'eye' : 'pencil') as IconName,
+                      onClick: () => onToggleMarkdownEdit?.(pane.id),
+                      onSelect: () => onToggleMarkdownEdit?.(pane.id)
+                  }
+              ]
+            : []),
+        ...(pane.type === 'diff'
+            ? [
+                  {
+                      key: 'refresh',
+                      testID: `pane-refresh-${pane.id}`,
+                      label: 'Refresh diff',
+                      icon: 'refresh' as const,
+                      onClick: () => onRefreshDiff?.(pane.id),
+                      onSelect: () => onRefreshDiff?.(pane.id)
+                  }
+              ]
+            : []),
+        {
+            key: 'split-right',
+            testID: `pane-split-right-${pane.id}`,
+            label: 'Split right (⌘D)',
+            icon: 'split-right',
+            onClick: () => onSplitPane?.(pane.id, 'horizontal'),
+            onSelect: () => onSplitPane?.(pane.id, 'horizontal')
+        },
+        {
+            key: 'split-down',
+            testID: `pane-split-down-${pane.id}`,
+            label: 'Split down (⌘⇧D)',
+            icon: 'split-down',
+            onClick: () => onSplitPane?.(pane.id, 'vertical'),
+            onSelect: () => onSplitPane?.(pane.id, 'vertical')
+        },
+        {
+            key: 'new-web',
+            testID: `pane-new-web-${pane.id}`,
+            label: 'New web pane (⇧-click splits down)',
+            icon: 'globe',
+            onClick: (event) => onNewWebPane?.(pane.id, event.shiftKey ? 'vertical' : 'horizontal'),
+            onSelect: () => onNewWebPane?.(pane.id, 'horizontal')
+        }
+    ];
+
+    // §S40: fold from the ✕ inward. `tail` is in row order, so the survivors are its prefix.
+    const folded = headerOverflowCount({
+        paneWidth,
+        buttons: buttonCount,
+        badgeCost:
+            (fit.label ? BADGE_COST.label : 0) +
+            (fit.agent ? BADGE_COST.agent : 0) +
+            (fit.branch ? BADGE_COST.branch : 0)
+    });
+    const inlineTail = folded === 0 ? tail : tail.slice(0, Math.max(tail.length - folded, 0));
+    const overflowTail = folded === 0 ? [] : tail.slice(Math.max(tail.length - folded, 0));
+    const overflowItems: readonly MenuItemSpec[] = overflowTail.map((entry) => ({
+        id: entry.key,
+        label: entry.label,
+        onSelect: entry.onSelect
+    }));
+    // §S40: widening the pane un-folds the row, and a menu anchored to a `•••` that is no longer
+    // drawn would be a menu floating under nothing. `useDismissable` cannot see this — it
+    // watches for clicks and Escape, not for the button disappearing out from under it.
+    const overflowOpen = overflowAt !== null;
+    useEffect(() => {
+        if (overflowOpen && overflowItems.length === 0) setOverflowAt(null);
+    }, [overflowOpen, overflowItems.length]);
 
     return (
         <div
@@ -786,7 +979,11 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 />
             )}
 
-            {/* 9 — per-type buttons.
+            {/* 9–13 — the trailing button row.
+                The buttons themselves are declared as `tail` above (§S40 needs them as data so
+                the fold has one list to read); what follows is the record of what is NOT in it
+                and why, kept here where the row is drawn.
+
                 M30: no `A−` / `A+` pair. `PaneHeaderView.swift:177-273` is the complete per-type
                 block — markdown-copy, markdown-edit, diff-refresh — and the shipped app exposes
                 preview font size ONLY through ⌘= / ⌘- / ⌘0. The pair existed here partly because
@@ -800,35 +997,6 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
             {/* §TERM-103: the Swift's header copy menu — markdown, preview mode only (there is
                 no rendered document to copy while the editor is up). The menu is drawn by the
                 content frame; this asks it to open. */}
-            {showCopyButton ? (
-                <HeaderButton
-                    testID={`pane-copy-${pane.id}`}
-                    // L26: `.help("Copy whole file")` (`PaneHeaderView.swift:193`), verbatim. It
-                    // was the one header tooltip the port had reworded — every other string in
-                    // this row is already the Swift's — and the rewrite also became the button's
-                    // accessible name, so a screen reader read a label the shipped app does not
-                    // have. Which two formats the menu then offers is the MENU's business.
-                    label="Copy whole file"
-                    icon="copy"
-                    onClick={() => onCopyDocument(pane.id)}
-                />
-            ) : null}
-            {pane.type === 'markdown' ? (
-                <HeaderButton
-                    testID={`pane-edit-toggle-${pane.id}`}
-                    label={pane.isEditing ? 'Preview (⌘E)' : 'Edit (⌘E)'}
-                    icon={pane.isEditing ? 'eye' : 'pencil'}
-                    onClick={() => onToggleMarkdownEdit?.(pane.id)}
-                />
-            ) : null}
-            {pane.type === 'diff' ? (
-                <HeaderButton
-                    testID={`pane-refresh-${pane.id}`}
-                    label="Refresh diff"
-                    icon="refresh"
-                    onClick={() => onRefreshDiff?.(pane.id)}
-                />
-            ) : null}
             {/* No `.shell` branch, deliberately. `PaneHeaderView.swift:177-272`'s per-type block
                 is markdown-copy / markdown-edit / diff-refresh and then the shared tail; the
                 shipped app has no restart control anywhere (`grep -rn restartAgent Nex/` is
@@ -837,32 +1005,54 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 `restart-pane-agent` verb, its daemon channel and `PaneActions.onRestartAgent`
                 are untouched, so any client — or a later context-menu item — can still reach it. */}
 
-            {/* 10–13 — splits, new web pane, close.
-                M30: no rename button. `PaneHeaderView.swift:222-272` is split-right, split-down,
+            {/* M30: no rename button. `PaneHeaderView.swift:222-272` is split-right, split-down,
                 globe, close and nothing else; the shipped app's rename lives in the header's
                 CONTEXT menu (`:354-356`, "Rename…"), which the port already offers and drives
                 through `renameToken`. The pencil also sat immediately beside the markdown
                 edit-toggle's near-identical pencil, so the two glyphs read as one control
                 repeated. The inline field itself is unchanged — it is still the port's rename
-                affordance (TERM-112), just reached the way the Swift reaches it. */}
-            <HeaderButton
-                testID={`pane-split-right-${pane.id}`}
-                label="Split right (⌘D)"
-                icon="split-right"
-                onClick={() => onSplitPane?.(pane.id, 'horizontal')}
-            />
-            <HeaderButton
-                testID={`pane-split-down-${pane.id}`}
-                label="Split down (⌘⇧D)"
-                icon="split-down"
-                onClick={() => onSplitPane?.(pane.id, 'vertical')}
-            />
-            <HeaderButton
-                testID={`pane-new-web-${pane.id}`}
-                label="New web pane (⇧-click splits down)"
-                icon="globe"
-                onClick={(event) => onNewWebPane?.(pane.id, event.shiftKey ? 'vertical' : 'horizontal')}
-            />
+                affordance (TERM-112), just reached the way the Swift reaches it.
+
+                §S40 (owner-directed): the row above the ✕ is `tail`, drawn from its prefix. At
+                every width where the whole row fits this is the same JSX it always was, in the
+                same order; below it the trailing entries become the `•••` menu instead, so the
+                ✕ is the last control the pane loses rather than the first. */}
+            {inlineTail.map((entry) => (
+                <HeaderButton
+                    key={entry.key}
+                    testID={entry.testID}
+                    label={entry.label}
+                    icon={entry.icon}
+                    onClick={entry.onClick}
+                />
+            ))}
+            {overflowItems.length === 0 ? null : (
+                <HeaderButton
+                    buttonRef={overflowRef}
+                    testID={`pane-overflow-${pane.id}`}
+                    label="More pane actions"
+                    icon="ellipsis"
+                    expanded={overflowAt !== null}
+                    onClick={() => {
+                        if (overflowAt !== null) {
+                            setOverflowAt(null);
+                            return;
+                        }
+                        // Anchored under the button the way a native menu drops. `ContextMenu`
+                        // is a portal, so it needs viewport coordinates rather than a position
+                        // inside this header — the same anchoring `chrome/TopBar.tsx`'s own
+                        // ••• uses, and the same `ContextMenu` recipe, which means §N26's
+                        // overlay registration (a web pane's native page parks while the menu
+                        // is up) comes with it rather than being re-invented here.
+                        const box = overflowRef.current?.getBoundingClientRect();
+                        setOverflowAt(
+                            box === undefined
+                                ? { x: 8, y: 32 }
+                                : { x: Math.round(box.left), y: Math.round(box.bottom + 4) }
+                        );
+                    }}
+                />
+            )}
             {/* L25: the one button in the row that is not 10 pt regular — 9 pt semibold. */}
             <HeaderButton
                 testID={`pane-close-${pane.id}`}
@@ -872,6 +1062,15 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 iconWeight="semibold"
                 onClick={() => onClosePane?.(pane.id)}
             />
+            {overflowAt === null || overflowItems.length === 0 ? null : (
+                <ContextMenu
+                    x={overflowAt.x}
+                    y={overflowAt.y}
+                    items={overflowItems}
+                    label="More pane actions"
+                    onClose={() => setOverflowAt(null)}
+                />
+            )}
         </div>
     );
 }

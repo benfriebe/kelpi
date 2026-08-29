@@ -12,7 +12,7 @@ import {
 } from './frames.js';
 import { ratioAtPath, updatingSplitRatio } from './ratio.js';
 import type { Rect } from './types.js';
-import { DIVIDER_THICKNESS, EMPTY_LAYOUT, leaf, split } from './types.js';
+import { DIVIDER_HIT_INSET, DIVIDER_THICKNESS, EMPTY_LAYOUT, leaf, split } from './types.js';
 
 const A = 'AAAAAAAA-0000-0000-0000-000000000001';
 const B = 'BBBBBBBB-0000-0000-0000-000000000002';
@@ -127,15 +127,32 @@ describe('splitDividers', () => {
     });
 });
 
+/**
+ * SPACING-REVIEW S48 — the numbers below were 4 / 10 / 108 / 57, the Swift's own
+ * `.contentShape(Rectangle().inset(by: -4))`. They are 6 / 14 / 112 / 61 by the owner's
+ * direction; the constant carries the reasoning and the parity value.
+ */
 describe('divider hit area', () => {
-    it('insets the 2px bar by -4px per side, yielding a 10px grab strip', () => {
+    it('insets the 2px bar by -6px per side, yielding a 14px grab strip (S48, owner-directed)', () => {
         const hit = dividerHitRect({ x: 49, y: 0, width: DIVIDER_THICKNESS, height: 100 });
-        expect(hit).toEqual({ x: 45, y: -4, width: 10, height: 108 });
+        expect(hit).toEqual({ x: 43, y: -6, width: 14, height: 112 });
     });
 
-    it('extends a vertical split divider by 4px on each end', () => {
+    it('extends a vertical split divider by 6px on each end (S48, owner-directed)', () => {
         const hit = dividerHitRect({ x: 51, y: 24.5, width: 49, height: DIVIDER_THICKNESS });
-        expect(hit).toEqual({ x: 47, y: 20.5, width: 57, height: 10 });
+        expect(hit).toEqual({ x: 45, y: 18.5, width: 61, height: 14 });
+    });
+
+    /**
+     * The half the row insists on: the VISIBLE bar is unmoved. `PaneGrid`'s `Divider` positions
+     * the strip at `dividerHitRect` and then draws the bar at `+DIVIDER_HIT_INSET` inside it, so
+     * the bar lands back on `info.rect` for any inset at all. Asserted here rather than in the
+     * client because this is where the inset lives.
+     */
+    it('leaves the visible bar exactly on info.rect, whatever the inset (S48)', () => {
+        const bar = { x: 49, y: 0, width: DIVIDER_THICKNESS, height: 100 };
+        const hit = dividerHitRect(bar);
+        expect({ x: hit.x + DIVIDER_HIT_INSET, y: hit.y + DIVIDER_HIT_INSET }).toEqual({ x: bar.x, y: bar.y });
     });
 });
 

@@ -22,6 +22,7 @@ const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const W2 = 'AAAAAAAA-0000-4000-8000-000000000002';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const PANE_B = 'DDDDDDDD-0000-4000-8000-000000000002';
+const PANE_WEB = 'DDDDDDDD-0000-4000-8000-000000000003';
 const NOW = 1_755_500_000_000;
 
 interface FixtureOptions {
@@ -35,6 +36,8 @@ interface FixtureOptions {
     readonly agent?: boolean;
     /** A closed pane on the undo stack, so ⇧⌘T has something to pop. */
     readonly closed?: boolean;
+    /** A WEB pane in W1, so the menu grows §S43's two shed-control rows. */
+    readonly web?: boolean;
     /**
      * The daemon already has a search open on PANE_A. Built by dispatching the real reducers,
      * because the search fields ride the workspace envelope rather than a delta kind of their
@@ -70,6 +73,18 @@ function snapshotState(options: FixtureOptions = {}): JsonObject {
     }
     if (options.closed === true) {
         store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: PANE_B });
+    }
+    if (options.web === true) {
+        store.dispatch({
+            type: 'open-web-pane',
+            workspaceID: W1,
+            paneID: PANE_WEB,
+            tabID: 'FFFFFFFF-0000-4000-8000-000000000001',
+            url: 'https://example.com',
+            sourcePaneID: PANE_A,
+            direction: 'horizontal',
+            now: NOW
+        });
     }
     if (options.sync === true) {
         store.dispatch({ type: 'set-sync-input-active', workspaceID: W1, active: true });
@@ -606,5 +621,47 @@ describe('the shell’s Close request (N14)', () => {
         const gate = await screen.findByTestId('agent-delete-gate');
         expect(gate.dataset['activeAgents']).toBe('1');
         expect(h.commands()).toHaveLength(before);
+    });
+});
+
+/*
+ * SPACING-REVIEW S43's reachability half — **owner-directed**, 2026-08-29.
+ *
+ * `webpane/WebPane.tsx` ▸ `webChromeFit` SHEDS the dev-tools button below ~272 px of pane and
+ * the element-pickup button below ~244 px, so the address bar stops collapsing to a 16 px stub.
+ * Shedding is only honest if the verb still has a route, and these two had none: the bindable
+ * `web_*` actions cover back/forward/reload/tabs/zoom/url and neither of them.
+ *
+ * So the pane's own context menu carries both, at EVERY width — a menu whose contents change as
+ * a pane is dragged narrower would be a worse affordance than a stable one. A deliberate
+ * addition to `PaneHeaderView.swift:353-364`'s list, and the only one.
+ */
+describe('pane context menu — a web pane’s shed controls (S43, owner-directed)', () => {
+    it('carries Element Pickup and Toggle Developer Tools, and only for a web pane', () => {
+        setup({ web: true });
+        openPaneMenu(PANE_WEB);
+        const labels = menuLabels();
+        expect(labels).toContain('Element Pickup');
+        expect(labels).toContain('Toggle Developer Tools');
+        cleanup();
+
+        setup();
+        openPaneMenu();
+        expect(menuLabels()).not.toContain('Element Pickup');
+        expect(menuLabels()).not.toContain('Toggle Developer Tools');
+    });
+
+    it('reaches the same verb the shed button did', async () => {
+        const h = setup({ web: true });
+        openPaneMenu(PANE_WEB);
+        fireEvent.click(
+            screen.getByTestId('context-menu').querySelector('[data-menu-item="web-batch-toggle"]') as Element
+        );
+        await waitFor(() => {
+            expect(h.commands().at(-1)).toMatchObject({
+                command: 'web-batch-toggle',
+                pane_id: PANE_WEB
+            });
+        });
     });
 });

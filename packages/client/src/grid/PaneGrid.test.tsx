@@ -2,6 +2,8 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+    DIVIDER_HIT_INSET,
+    dividerHitRect,
     dropZoneOverlayRect,
     empty,
     leaf,
@@ -68,21 +70,42 @@ describe('PaneGrid frames', () => {
         }
     });
 
+    /**
+     * The inset was hard-coded 4 / 8 here until SPACING-REVIEW S48 (owner-directed) took
+     * `DIVIDER_HIT_INSET` to 6. It reads the constant now — and calls `dividerHitRect` outright —
+     * because the claim was never "4", it was "the strip is exactly the core's hit rect".
+     */
     it('places divider grab strips on the core hit rects', () => {
         renderGrid({ layout: NESTED, panes: [testPane('a'), testPane('b'), testPane('c')] });
         const infos = splitDividers(NESTED, BOUNDS);
         expect(infos.map((info) => info.id)).toEqual(['d', 'dR']);
         for (const info of infos) {
             const element = screen.getByTestId(`divider-${info.id}`);
-            expect(styleBox(element)).toEqual(
-                expectedBox({
-                    x: info.rect.x - 4,
-                    y: info.rect.y - 4,
-                    width: info.rect.width + 8,
-                    height: info.rect.height + 8
-                })
-            );
+            expect(styleBox(element)).toEqual(expectedBox(dividerHitRect(info.rect)));
             expect(element.getAttribute('data-direction')).toBe(info.direction);
+        }
+    });
+
+    /**
+     * S48's other half, and the half the row's whole claim rests on: growing the grab band must
+     * not move the VISIBLE bar. The bar is drawn at `+DIVIDER_HIT_INSET` inside a strip that
+     * starts at `-DIVIDER_HIT_INSET`, so its absolute box is `info.rect` for any inset at all.
+     */
+    it('draws the visible bar back on info.rect, whatever the grab inset is (S48)', () => {
+        renderGrid({ layout: NESTED, panes: [testPane('a'), testPane('b'), testPane('c')] });
+        for (const info of splitDividers(NESTED, BOUNDS)) {
+            const strip = screen.getByTestId(`divider-${info.id}`);
+            const bar = strip.firstElementChild as HTMLElement;
+            const hit = dividerHitRect(info.rect);
+            expect(bar.style.left).toBe(`${String(DIVIDER_HIT_INSET)}px`);
+            expect(bar.style.top).toBe(`${String(DIVIDER_HIT_INSET)}px`);
+            expect(bar.style.width).toBe(`${String(info.rect.width)}px`);
+            expect(bar.style.height).toBe(`${String(info.rect.height)}px`);
+            // …which lands it exactly back on the bar the layout asked for.
+            expect({ x: hit.x + DIVIDER_HIT_INSET, y: hit.y + DIVIDER_HIT_INSET }).toEqual({
+                x: info.rect.x,
+                y: info.rect.y
+            });
         }
     });
 

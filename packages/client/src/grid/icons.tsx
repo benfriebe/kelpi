@@ -20,6 +20,7 @@ export type IconName =
     | 'broadcast-off'
     | 'split-right'
     | 'split-down'
+    | 'ellipsis'
     | 'close'
     | 'pencil'
     | 'eye'
@@ -116,6 +117,18 @@ const PATHS: Record<IconName, ReactElement> = {
         <>
             <rect x="1.5" y="2" width="9" height="8" rx="1" />
             <path d="M1.5 6h9" />
+        </>
+    ),
+    /**
+     * §S40 — the overflow ••• the header folds its trailing buttons into below the width where
+     * they stop fitting. Filled dots on this file's own 12-unit grid, geometrically identical
+     * to `chrome/icons.tsx`'s `ellipsis`, so the two ••• menus in the app carry one glyph.
+     */
+    ellipsis: (
+        <>
+            <circle cx="2.6" cy="6" r="0.85" fill="currentColor" stroke="none" />
+            <circle cx="6" cy="6" r="0.85" fill="currentColor" stroke="none" />
+            <circle cx="9.4" cy="6" r="0.85" fill="currentColor" stroke="none" />
         </>
     ),
     close: <path d="m3 3 6 6M9 3l-6 6" />,

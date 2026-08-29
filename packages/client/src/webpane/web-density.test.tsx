@@ -1,5 +1,5 @@
 /**
- * The web pane's DENSITY pack — `docs/SPACING-REVIEW.md` S12, S28, S29, S34, S35, S36, S37.
+ * The web pane's DENSITY pack — `docs/SPACING-REVIEW.md` S12, S28, S29, S34, S35, S36, S37, S43.
  *
  * The register asks a different question from `docs/UI-FIDELITY.md`: not "does it look like the
  * shipped app" but "does it feel cramped". Every case below therefore asserts the *number* the
@@ -30,6 +30,12 @@ import type { CommandReply } from '../connection';
 import { BatchPanel } from './BatchPanel';
 import type { WebPaneCommands } from './commands';
 import { StoragePanel } from './StoragePanel';
+import {
+    WEB_CHROME_BUTTON_PX,
+    WEB_CHROME_GAP_PX,
+    WEB_URL_MIN_WIDTH_PX,
+    webChromeFit
+} from './WebPane';
 import { WebFindBar } from './WebFindBar';
 import type { WebBatchSession } from './state';
 
@@ -299,5 +305,90 @@ describe('web find field (S36)', () => {
         // The 160 px width and the 12 px mono face are §M38's and are untouched.
         expect(input.className).toContain('w-[160px]');
         expect(input.style.fontSize).toBe('12px');
+    });
+});
+
+/*
+ * SPACING-REVIEW S43 — **owner-directed divergence**, taken 2026-08-29.
+ *
+ * `WebPaneChrome.swift:149-218` is an `HStack(spacing: 6)` of fixed 22 × 22 buttons around a
+ * `WebURLBar().frame(maxWidth: .infinity)`, with no minimum on the bar and no overflow
+ * affordance; the port transcribed it exactly, so the row is parity rather than drift. Measured
+ * live before the fix, on the register's own sweep: a **528 px pane gave the URL input 258 px, a
+ * 338 px pane 68, and a 238 px pane 16 while the row was already at its overflow point**; at
+ * 168.64 px the row overflowed its content box by 63 px, with the scope button sliced in half
+ * and storage and dev tools entirely outside a pane that is `overflow-hidden`. After, at the
+ * same widths: 258 / 68 (byte-identical), **24.58 px of address at 238 with no overflow at all**,
+ * and 7 px of overflow at 168.64 instead of 63.
+ *
+ * These tests exist so a later parity sweep re-reporting "no minimum, every button drawn" fails
+ * here first, and so the release under the ladder — the half measurement forced — stays stated.
+ */
+describe('webChromeFit — the nav row’s fit (S43, owner-directed)', () => {
+    /** The row's content box at a given PANE width: `px-2` is 16 px of it. */
+    const content = (pane: number) => pane - 16;
+
+    it('draws every button, with the address at its floor, wherever the row fits', () => {
+        // 8 buttons × 22 + 8 gaps × 6 + the 60 px floor = 284 px of content ≈ a 300 px pane.
+        const needsAll = 8 * WEB_CHROME_BUTTON_PX + 8 * WEB_CHROME_GAP_PX + WEB_URL_MIN_WIDTH_PX;
+        expect(needsAll).toBe(284);
+        expect(webChromeFit(needsAll)).toEqual({
+            devtools: true,
+            scope: true,
+            urlMinWidth: WEB_URL_MIN_WIDTH_PX
+        });
+        // The register's own roomy widths are untouched.
+        expect(webChromeFit(content(528)).devtools).toBe(true);
+        expect(webChromeFit(content(338)).devtools).toBe(true);
+    });
+
+    it('sheds dev tools first, then element pickup — the register’s order', () => {
+        expect(webChromeFit(content(299))).toEqual({
+            devtools: false,
+            scope: true,
+            urlMinWidth: WEB_URL_MIN_WIDTH_PX
+        });
+        expect(webChromeFit(content(271))).toEqual({
+            devtools: false,
+            scope: false,
+            urlMinWidth: WEB_URL_MIN_WIDTH_PX
+        });
+    });
+
+    it('never sheds storage, bookmarks or new-tab — the three with no menu route', () => {
+        // Two flags and a number: the ladder cannot reach any other control by construction.
+        expect(Object.keys(webChromeFit(1)).sort()).toEqual(['devtools', 'scope', 'urlMinWidth']);
+    });
+
+    it('releases the 60 px floor once the ladder is exhausted (the stated deviation)', () => {
+        // A HARD floor is a net regression at the narrow end: at the register's own 169 px pane
+        // it takes the row's overflow from 71 px to 75, because the floor adds 60 where the form
+        // used to give up everything and the two sheds return only 56.
+        expect(webChromeFit(content(239)).urlMinWidth).toBe(0);
+        expect(webChromeFit(content(169)).urlMinWidth).toBe(0);
+        expect(webChromeFit(content(119)).urlMinWidth).toBe(0);
+    });
+
+    it('treats an unmeasured row as the pre-S43 row, never as a fully shed one', () => {
+        // jsdom lays nothing out and the first frame has not measured yet; a 0-width row must
+        // not read as "shed everything".
+        expect(webChromeFit(null)).toEqual({
+            devtools: true,
+            scope: true,
+            urlMinWidth: WEB_URL_MIN_WIDTH_PX
+        });
+        expect(webChromeFit(Number.NaN).devtools).toBe(true);
+    });
+
+    it('is monotonic — widening a pane never takes a control away', () => {
+        let sawShed = false;
+        for (let width = 60; width <= 600; width += 1) {
+            const fit = webChromeFit(content(width));
+            if (!fit.devtools) sawShed = true;
+            // Once a width draws dev tools, no wider width may hide it.
+            if (fit.devtools) expect(webChromeFit(content(width + 1)).devtools).toBe(true);
+            if (fit.scope) expect(webChromeFit(content(width + 1)).scope).toBe(true);
+        }
+        expect(sawShed).toBe(true);
     });
 });

@@ -305,6 +305,25 @@ describe('context menus (portal-based)', () => {
         expect(onToggleWorkspaceLabel).toHaveBeenCalledWith(W1, 'ops', true);
     });
 
+    /*
+     * §N37, on §N36(2)'s boundary: the empty Labels submenu is user-facing COPY, so it says
+     * "label" — the identifier under it (`no-labels`) and the props around it (`labelPresets`)
+     * keep "preset". Pinned on both halves so the word cannot come back either way.
+     */
+    it('captions an empty Labels submenu "No labels", never "preset"', () => {
+        render(<Sidebar {...noopProps()} entries={entries()} labelPresets={[]} />);
+        // delta (W4) is the row with no labels of its own, so with no presets defined the
+        // submenu has nothing to list.
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[1] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Labels'));
+        const submenu = screen.getByTestId('context-submenu');
+        // The caption is inert (no `data-menu-item`), so it is read off the text, not off
+        // `menuLabels`, which lists only the interactive rows.
+        expect(within(submenu).getByText('No labels')).toBeTruthy();
+        expect(within(submenu).queryByText('No presets')).toBeNull();
+        expect((submenu.textContent ?? '').toLowerCase()).not.toContain('preset');
+    });
+
     it('deletes only after the confirmation', () => {
         const onDeleteWorkspace = vi.fn();
         render(<Sidebar {...noopProps()} entries={entries()} onDeleteWorkspace={onDeleteWorkspace} />);

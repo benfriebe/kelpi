@@ -25,9 +25,15 @@
  *                placeholder, and the placeholder carries a Retry button onto the same path.
  */
 
-import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
-import { PANE_SURFACE_ATTR, releasePaneCaret, shouldGrabFocus, undoSurfaceAutoFocus } from '../app/pane-focus';
+import {
+    PANE_SURFACE_ATTR,
+    openEngineFocusWindow,
+    releasePaneCaret,
+    shouldGrabFocus,
+    undoSurfaceAutoFocus
+} from '../app/pane-focus';
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import { loadTerminalFonts, onTerminalFontsReady, terminalFontsReady } from './fonts';
 import { createTerminalIngest } from './ingest';
@@ -304,8 +310,24 @@ type PaneStatus = 'loading' | 'live' | 'error';
 function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     const { paneID, ptyApi, focused, visible, theme, className } = props;
 
+    /**
+     * The props every imperative path reads — and it is written in a LAYOUT effect on purpose
+     * (§N35 residual (b)).
+     *
+     * A passive effect runs after paint, so between the commit that gives this pane the ring and
+     * the effect that records it there is one frame in which the DOM says `data-focused="true"`
+     * and `latest.current.focused` still says `false`. Everything imperative reads the ref:
+     * `answerEngineGrab` is the one that costs something, because in that window it decides this
+     * pane is not entitled to its own caret and hands it to the arbiter's previous owner — the
+     * grid draws the ring on a pane the keyboard has just left. The window is real either way
+     * (the engine's `setTimeout(0)` backup grab lands inside it, and so does any sibling's
+     * hand-off), so the ref is written where the DOM is written: in the same commit, before
+     * anything can observe the two disagreeing.
+     *
+     * No dependency array: every commit republishes, which is what a "latest props" ref means.
+     */
     const latest = useRef(props);
-    useEffect(() => {
+    useLayoutEffect(() => {
         latest.current = props;
     });
 
@@ -636,33 +658,35 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
              * drawn elsewhere. So the undo stays armed for a short bounded window and answers
              * every grab in it.
              */
-            const hostDocument = host.ownerDocument;
-            let engineTookFrom: Element | null = hostDocument.activeElement;
             /*
-             * Who holds the caret while this engine is loading. `focusin`'s own `relatedTarget`
-             * would be the obvious source and is not portable enough to rest a caret on (jsdom
-             * leaves it null), so the owner is tracked instead: the last element to take focus
-             * from OUTSIDE this host, starting from whoever had it when the pane mounted. A
-             * wasm load is long enough that a person can start a sidebar rename inside it.
+             * Who holds the caret while this engine is loading is NOT this pane's question to
+             * answer on its own (§N35 residual (a)). It used to be: each pane kept its own
+             * `engineTookFrom`, seeded from `document.activeElement` and updated by a capture
+             * listener of its own, which on a multi-pane reload made every arming pane record
+             * every other arming pane's grab — so two undos handed the caret back and forth,
+             * ~50 synchronous `focusin`s inside one millisecond at three panes and worse at
+             * eight. `app/pane-focus.ts` now holds ONE owner for the whole window, refuses to
+             * record a caret that is inside a host still grabbing (that is the grab), and
+             * ignores an undo raised by its own hand-off. One listener, one answer, at most one
+             * hand-off per grab.
              */
-            const noteEngineGrab = (event: FocusEvent): void => {
-                const target = event.target;
-                if (target instanceof Element && !host.contains(target)) engineTookFrom = target;
-            };
-            hostDocument.addEventListener('focusin', noteEngineGrab, true);
+            const closeEngineFocusWindow = openEngineFocusWindow(host);
             /** Every grab this engine makes while the window is open, answered the same way. */
             const answerEngineGrab = (): void => {
                 if (cancelled) return;
                 // Entitled after all (the pane gained focus while its engine was loading):
                 // `shouldGrabFocus` passes trivially for a caret already inside this host.
+                // `latest` is written in a LAYOUT effect (§N35 residual (b)), so a pane that
+                // took the ring in this commit reads as focused here rather than one commit
+                // later — the window in which this handed the ring's own caret away.
                 if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) return;
-                undoSurfaceAutoFocus(host, engineTookFrom);
+                undoSurfaceAutoFocus(host);
             };
             let closeUndoWindow: (() => void) | null = null;
             void renderer.open(host).then(
                 () => {
                     if (cancelled) {
-                        hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                        closeEngineFocusWindow();
                         return;
                     }
                     setStatus('live');
@@ -670,7 +694,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                     // estimate is corrected here, before anything else can measure.
                     syncGeometry(true);
                     if (latest.current.focused && latest.current.visible && shouldGrabFocus(host)) renderer.focus();
-                    else undoSurfaceAutoFocus(host, engineTookFrom);
+                    else undoSurfaceAutoFocus(host);
                     // …and the engine's own delayed backup, and anything else it does while it
                     // finishes coming up. Bounded: after this the pane is live and every claim
                     // goes through the focus effect like any other.
@@ -682,11 +706,11 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                         closeUndoWindow = null;
                         clearTimeout(timer);
                         host.removeEventListener('focusin', answerEngineGrab);
-                        hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                        closeEngineFocusWindow();
                     };
                 },
                 (error: unknown) => {
-                    hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                    closeEngineFocusWindow();
                     if (cancelled) return;
                     // Seal the stream BEFORE the teardown: the daemon keeps sending, and a
                     // chunk that arrives between the rejection and the unsubscribe must not be
@@ -699,7 +723,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             teardown = () => {
                 // Idempotent: an engine still loading when the pane unmounts would otherwise
                 // leave these attached until its promise settles.
-                hostDocument.removeEventListener('focusin', noteEngineGrab, true);
+                closeEngineFocusWindow();
                 closeUndoWindow?.();
                 clearResizeTimer();
                 // A rebuilt engine re-attaches and is told its modes again; until then this

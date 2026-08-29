@@ -24,8 +24,10 @@ import { ScratchpadPane } from '../content/ScratchpadPane';
 import { contentState, createFakeContentApi } from '../content/testing';
 import {
     PANE_SURFACE_ATTR,
+    engineFocusWindowOwner,
     focusPaneSurface,
     isPaneSurfaceCaret,
+    openEngineFocusWindow,
     releaseFocusedPaneCaret,
     releasePaneCaret,
     shouldGrabFocus,
@@ -241,6 +243,114 @@ describe('undoSurfaceAutoFocus (§N35)', () => {
 
         undoSurfaceAutoFocus(arriving.host, stolenFrom);
         expect(document.activeElement).not.toBe(arriving.area);
+    });
+});
+
+/**
+ * §N35 residual (a) — the arbiter, in its own right.
+ *
+ * The storm the run-AK verifier measured was not a bug in the hand-off; it was a bug in the
+ * QUESTION. Every pane answered "who should hold the caret" for itself, so two panes coming up
+ * beside each other each nominated the other, and the two undos took turns. The rules below are
+ * the ones that make that unconstructible rather than merely rare.
+ */
+describe('the engine-autofocus arbiter (§N35 residual a)', () => {
+    it('starts from whoever holds the caret when the FIRST engine arms', () => {
+        const renaming = mountChromeField();
+        renaming.focus();
+        const arriving = mountFakeTerminal();
+
+        const close = openEngineFocusWindow(arriving.host);
+        expect(engineFocusWindowOwner()).toBe(renaming);
+        close();
+        // Closed, so there is no owner to consult: the last pane out turns the light off.
+        expect(engineFocusWindowOwner()).toBeNull();
+    });
+
+    it('adopts a claim from OUTSIDE the window — a rename begun during a wasm load', () => {
+        const arriving = mountFakeTerminal();
+        const close = openEngineFocusWindow(arriving.host);
+        expect(engineFocusWindowOwner()).toBeNull();
+
+        const renaming = mountChromeField();
+        renaming.focus();
+        expect(engineFocusWindowOwner()).toBe(renaming);
+
+        // …and the pane's own engine grabbing it gives it straight back, unasked.
+        arriving.area.focus();
+        undoSurfaceAutoFocus(arriving.host);
+        expect(document.activeElement).toBe(renaming);
+        close();
+    });
+
+    /** The rule the whole residual turns on: a grab is not an owner. */
+    it('never records a caret held INSIDE a host whose engine is still grabbing', () => {
+        const a = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000020');
+        const b = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000021');
+        const closeA = openEngineFocusWindow(a.host);
+        const closeB = openEngineFocusWindow(b.host);
+
+        // Both engines grab, in the order a reload produces.
+        a.area.focus();
+        b.area.focus();
+        expect(engineFocusWindowOwner()).toBeNull();
+
+        // So neither pane can be sent the other's caret: B's undo has nowhere to hand it but
+        // the ring (absent here), and A is never nominated.
+        undoSurfaceAutoFocus(b.host);
+        expect(document.activeElement).not.toBe(a.area);
+        closeA();
+        closeB();
+    });
+
+    it('…and once a pane’s window CLOSES its caret is an owner again (it is live now)', () => {
+        const live = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000022');
+        const arriving = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000023');
+        const closeLive = openEngineFocusWindow(live.host);
+        const closeArriving = openEngineFocusWindow(arriving.host);
+        closeLive();
+
+        live.area.focus();
+        expect(engineFocusWindowOwner()).toBe(live.area);
+        arriving.area.focus();
+        undoSurfaceAutoFocus(arriving.host);
+        expect(document.activeElement).toBe(live.area);
+        closeArriving();
+    });
+
+    /**
+     * The arbiter's own `focus()` raises a `focusin` the receiving pane cannot tell from its
+     * engine grabbing, so an undo that runs inside an undo is the recursion, one level down.
+     */
+    it('ignores an undo raised by its own hand-off — one hand-off per grab', () => {
+        const a = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000024');
+        const b = mountFakeTerminal('DDDDDDDD-0000-4000-8000-000000000025');
+        const closeA = openEngineFocusWindow(a.host);
+        const closeB = openEngineFocusWindow(b.host);
+        const answers: string[] = [];
+        // Exactly what a live pane does inside its window: answer every grab in its own host.
+        b.host.addEventListener('focusin', () => {
+            answers.push('b');
+            undoSurfaceAutoFocus(b.host);
+        });
+
+        a.area.focus();
+        // Named explicitly, because the ownership rule above will not nominate B: this is the
+        // re-entrancy guard on its own, with the hand-off forced.
+        undoSurfaceAutoFocus(a.host, b.area);
+
+        expect(answers).toEqual(['b']);
+        expect(document.activeElement).toBe(b.area);
+        closeA();
+        closeB();
+    });
+
+    it('is a no-op without a host, and closing twice is harmless', () => {
+        const close = openEngineFocusWindow(null);
+        expect(() => {
+            close();
+            close();
+        }).not.toThrow();
     });
 });
 

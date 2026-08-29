@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { useLayoutEffect, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -1134,6 +1135,217 @@ describe('TerminalPane — helpers', () => {
 
         const host = view.container.querySelector('[data-terminal-host]') as HTMLElement;
         expect(host.contains(document.activeElement)).toBe(true);
+    });
+});
+
+/**
+ * §N35's two residuals, filed by the run-AK verifier in the FIXED tree and closed here.
+ *
+ * (a) the storm: with three panes a reload logged ~50 synchronous `focusin` events inside one
+ *     millisecond where the pre-§N35 tree logged 3, because two unfocused panes each recorded
+ *     the OTHER's textarea as "who the engine took the caret from" and then handed it back and
+ *     forth. It settled correctly every time; its depth follows the pane count.
+ * (b) the one-commit window: `latest` was published in a passive effect, so a pane that took the
+ *     ring in this commit still read as unfocused until after paint — and an engine grab landing
+ *     in that window made the pane give its own caret away.
+ *
+ * Both are measured here in the units the live probe measures them in: `focusin` events raised,
+ * and which element holds the caret at the moment of the grab.
+ */
+describe('the engine-autofocus window, at scale (§N35 residuals)', () => {
+    /**
+     * Count every `focusin` in the document, with a breaker.
+     *
+     * The breaker is not the measurement — it is what keeps the pre-fix corner from running the
+     * stack out before the count can be read. A capture-phase `stopPropagation` at the document
+     * keeps the event from reaching the panes' own bubble-phase `answerEngineGrab`, which is the
+     * only thing that continues the recursion.
+     */
+    function watchFocusStorm(breaker = 120): {
+        total: () => number;
+        tripped: () => boolean;
+        stop: () => void;
+    } {
+        let total = 0;
+        let tripped = false;
+        const onFocusIn = (event: Event): void => {
+            total += 1;
+            if (total < breaker) return;
+            tripped = true;
+            event.stopPropagation();
+        };
+        document.addEventListener('focusin', onFocusIn, true);
+        return {
+            total: () => total,
+            tripped: () => tripped,
+            stop: () => document.removeEventListener('focusin', onFocusIn, true)
+        };
+    }
+
+    /** The grid's own pane wrapper: `data-pane-id` + `data-focused`, which is what the ring is. */
+    function paneShell(paneID: string, focused: boolean): HTMLElement {
+        const shell = document.createElement('div');
+        shell.setAttribute('data-pane-id', paneID);
+        shell.setAttribute('data-focused', focused ? 'true' : 'false');
+        document.body.appendChild(shell);
+        return shell;
+    }
+
+    /**
+     * A reload, in the shape that produced the storm: every pane remounts at once, the pane
+     * wearing the RING is still loading (its engine has built no focusable yet — the case
+     * `undoSurfaceAutoFocus` deliberately leaves alone), and every other pane's engine grabs the
+     * caret twice on the way up (`open()` plus its `setTimeout(0)` backup).
+     */
+    async function reloadWithPanes(
+        count: number
+    ): Promise<{ storm: ReturnType<typeof watchFocusStorm>; shells: HTMLElement[] }> {
+        const storm = watchFocusStorm();
+        const shells: HTMLElement[] = [];
+        // The ringed pane first, and WITHOUT the engine's auto-focus: on a reload it is the pane
+        // whose wasm has not landed yet that wears the ring, which is precisely why the losers
+        // had nowhere obviously right to put the caret and started trading it.
+        const ring = paneShell('pane-ring', true);
+        shells.push(ring);
+        render(
+            <TerminalPane
+                paneID="pane-ring"
+                ptyApi={createFakePtyApi()}
+                focused
+                visible
+                createRenderer={createFakeRendererFactory().factory}
+                measure={box(800, 340)}
+            />,
+            { container: ring }
+        );
+        for (let index = 0; index < count - 1; index += 1) {
+            const id = `pane-${String(index)}`;
+            const shell = paneShell(id, false);
+            shells.push(shell);
+            render(
+                <TerminalPane
+                    paneID={id}
+                    ptyApi={createFakePtyApi()}
+                    focused={false}
+                    visible
+                    createRenderer={createFakeRendererFactory({ autoFocusOnOpen: true }).factory}
+                    measure={box(800, 340)}
+                />,
+                { container: shell }
+            );
+        }
+        await settle();
+        // The engines' delayed backup grabs — the second half of every grab, and the half a
+        // one-shot undo never saw.
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1);
+        });
+        await settle();
+        return { storm, shells };
+    }
+
+    /**
+     * The claim is about GROWTH, not about a magic number: every grab is answered at most once,
+     * so the traffic a reload raises is a small multiple of the pane count. Six per pane is
+     * roomy for the two grabs each engine makes plus one hand-off apiece; the mutual recursion
+     * blows through it at any pane count and trips the breaker.
+     *
+     * Measured either side, same harness: **4 events at three panes and 14 at eight** with the
+     * arbiter; the breaker's own 120 at both counts without it.
+     */
+    const linearBound = (panes: number): number => 6 * panes;
+
+    it('answers each engine grab ONCE instead of trading the caret between panes (§N35 residual a)', async () => {
+        const { storm, shells } = await reloadWithPanes(3);
+        const total = storm.total();
+        const tripped = storm.tripped();
+        storm.stop();
+        for (const shell of shells) shell.remove();
+
+        // Pre-fix this is the breaker's own number: two unfocused panes hand the caret back and
+        // forth until something stops them.
+        expect(tripped).toBe(false);
+        expect(total).toBeLessThanOrEqual(linearBound(3));
+    });
+
+    /** The scaling case: the defect's depth followed the pane count, so the fix is measured there. */
+    it('…and the traffic still follows the pane count at EIGHT panes (§N35 residual a)', async () => {
+        const { storm, shells } = await reloadWithPanes(8);
+        const total = storm.total();
+        const tripped = storm.tripped();
+        storm.stop();
+        for (const shell of shells) shell.remove();
+
+        expect(tripped).toBe(false);
+        expect(total).toBeLessThanOrEqual(linearBound(8));
+    });
+
+    /**
+     * §N35 residual (b) — the one-commit window, made observable.
+     *
+     * `GrabProbe` is a sibling rendered after the pane, so its layout effect runs in the SAME
+     * commit, after the pane's own layout effects and before any passive effect. That is exactly
+     * the window: the DOM already says this pane wears the ring, and with `latest` published
+     * passively the pane's `answerEngineGrab` still reads `focused: false` and hands the caret
+     * it was just given to the arbiter's previous owner.
+     */
+    function GrabProbe({ armed, grab }: { armed: boolean; grab: () => void }): null {
+        useLayoutEffect(() => {
+            if (!armed) return;
+            grab();
+        });
+        return null;
+    }
+
+    it('keeps the caret when the pane takes the ring in the SAME commit as the grab (§N35 residual b)', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory({ autoFocusOnOpen: true });
+        const chrome = document.createElement('input');
+        document.body.appendChild(chrome);
+        chrome.focus();
+
+        const shell = paneShell('pane-window', false);
+        const seen: (Element | null)[] = [];
+        const tree = (focused: boolean, armed: boolean): ReactElement => (
+            <>
+                <TerminalPane
+                    paneID="pane-window"
+                    ptyApi={pty}
+                    focused={focused}
+                    visible
+                    createRenderer={factory}
+                    measure={box(800, 340)}
+                />
+                <GrabProbe
+                    armed={armed}
+                    grab={() => {
+                        // The engine's backup grab, landing inside the commit that hands this
+                        // pane the ring.
+                        shell.querySelector('textarea')?.focus();
+                        seen.push(document.activeElement);
+                    }}
+                />
+            </>
+        );
+        const view = render(tree(false, false), { container: shell });
+        await settle();
+        // The unfocused pane's engine grabbed and the arbiter gave the caret back to chrome.
+        expect(document.activeElement).toBe(chrome);
+
+        // Now the pane takes the ring — the DOM ring and the grab land in one commit.
+        shell.setAttribute('data-focused', 'true');
+        view.rerender(tree(true, true));
+
+        const host = shell.querySelector('[data-terminal-host]') as HTMLElement;
+        const area = shell.querySelector('textarea');
+        expect(area).not.toBeNull();
+        // Read INSIDE the window, not after it: this is the state the grab produced, before any
+        // passive effect could paper over it.
+        expect(seen.at(-1)).toBe(area);
+        expect(host.contains(document.activeElement)).toBe(true);
+
+        chrome.remove();
+        shell.remove();
     });
 });
 

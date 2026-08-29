@@ -3552,7 +3552,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 label: `Label ${String(count)} Workspaces`,
                 submenu: [
                     ...(presets.length === 0 && freeform.length === 0
-                        ? [{ id: 'bulk-no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
+                        ? // §N37, on §N36(2)'s boundary: the user-facing concept is a LABEL.
+                          // "preset" stays in the identifiers around it (`bulk-no-labels`,
+                          // `presets`, `presetNames`) and out of the copy.
+                          [{ id: 'bulk-no-labels', label: 'No labels', kind: 'caption' } satisfies MenuItemSpec]
                         : []),
                     ...presets.map((preset) =>
                         labelRow(preset.name, resolveLabelStyle(preset.name, presets, bucket).background)
@@ -3759,7 +3762,9 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     label: 'Labels',
                     submenu: [
                         ...(presetItems.length + freeform.length === 0
-                            ? [{ id: 'no-labels', label: 'No presets', kind: 'caption' } satisfies MenuItemSpec]
+                            ? // §N37: the same boundary as the bulk submenu above — copy says
+                              // "label", identifiers keep "preset".
+                              [{ id: 'no-labels', label: 'No labels', kind: 'caption' } satisfies MenuItemSpec]
                             : [...presetItems, ...freeform]),
                         // shell-ui.md §5.7: the submenu offers existing presets only, so this is
                         // the way to CREATE or recolor one.

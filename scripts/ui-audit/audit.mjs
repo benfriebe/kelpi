@@ -18793,24 +18793,38 @@ function buildFlows(ctx) {
                  * "after a redraw" sample could be of a canvas nothing had redrawn.
                  */
                 /**
-                 * The canvas as it stood the instant BEFORE the write, so the settle below can
-                 * tell a repaint from a still life.
+                 * THE SETTLE SENTINEL — `run-AD`'s residual, decided on the pane's CONTENT.
                  *
-                 * `run-AD` filed this as a residual and it is closed here: the settle used to
-                 * sample the moment `cli.run(… clear)` returned and `break` on the FIRST sample
-                 * that satisfied §N18's predicate — and the ARRIVAL sample already satisfies it
-                 * whenever the live theme change worked. So "and a full-screen redraw comes back
-                 * in it too" could be decided by a canvas that had not redrawn at all. Measured
-                 * both ways inside one wave: the lane's scoped record has the two samples
-                 * differing (415 156 → 414 576) while the verifier's scoped run on the same
-                 * recipe reproduces them byte-identical (415 156 both), and the full-run-shaped
-                 * record is identical too (815 287 both) — so "the two samples differ" was a
-                 * race, not a property, and the assertion was weaker than its name.
+                 * The residual: the settle used to sample the moment `cli.run(… clear)` returned
+                 * and `break` on the FIRST sample that satisfied §N18's predicate — and the
+                 * ARRIVAL sample already satisfies it whenever the live theme change worked. So
+                 * "and a full-screen redraw comes back in it too" could be decided by a canvas
+                 * that had not redrawn at all.
                  *
-                 * `clear` CHANGES THE SCREEN — it marks every row dirty and wipes what the pane
-                 * had painted — so the change is the event, and the signature below is what
-                 * names it. §N18's predicate `cellAreaTookTheTheme` is untouched, byte for byte:
-                 * it is asked the same question about a strictly later canvas.
+                 * `run-AJ` tried to close it on the PIXELS — "wait until the histogram moves,
+                 * then assert" — and the verifier measured that shape UNDISCRIMINATING in both
+                 * directions, which is why it is not the shape here. With the `clear` suppressed
+                 * entirely the pixel loop still declared a transition (`the canvas changed by
+                 * sample 1 of 30`): what moved was one unit of colour on 18 device pixels of an
+                 * antialiased glyph edge, `96,165,149` → `95,164,149`. And a signature coarse
+                 * enough not to see that would miss the `clear` itself, which is nearly
+                 * invisible in this histogram — the pane is 415 156 of 416 000 px background and
+                 * zsh redraws the prompt straight afterwards, so the dominant colour, the
+                 * cleared count and the total are all unmoved across it. Fine → false
+                 * transition; coarse → false red. The instrument was the problem, not the loop.
+                 *
+                 * So the transition is decided on the pane's own CONTENT, through the DAEMON's
+                 * own read of its terminal: print a sentinel, prove it is on the screen, send
+                 * the `clear`, and settle on `nex pane capture` no longer containing it. That
+                 * read is a text buffer — no amount of subpixel drift can satisfy it, and no
+                 * amount of prompt redraw can hide a `clear` from it. THEN §N18's pixel question
+                 * is asked of the canvas that answered. `cellAreaTookTheTheme` is untouched,
+                 * byte for byte; what changed is only which canvases it is allowed to be asked
+                 * about — ones that provably post-date a clear that provably reached this
+                 * pane's screen.
+                 *
+                 * The pixel signature stays, DEMOTED TO A NOTE: "did the histogram move too?"
+                 * is a useful diagnostic and, on `run-AJ`'s measurement, decides nothing.
                  */
                 const canvasSignature = (sample) =>
                     JSON.stringify([
@@ -18819,40 +18833,108 @@ function buildFlows(ctx) {
                         sample?.cleared ?? null,
                         sample?.total ?? null
                     ]);
+                /*
+                 * One line of text this step owns, printed into the probe pane over the CLI so
+                 * nothing here depends on focus (exactly as the `clear` below does not). It
+                 * lands on the screen twice — the echoed command line and the command's output
+                 * — and a `clear` takes both, because it wipes the viewport `pane capture`
+                 * reads.
+                 */
+                const CLEAR_SENTINEL = 'NEX-AUDIT-CLEAR-SENTINEL';
+                const captureProbe = async () => {
+                    if (probePaneID === '') return '';
+                    try {
+                        return await cli.ok(['pane', 'capture', '--target', probePaneID]);
+                    } catch {
+                        return '';
+                    }
+                };
+                if (probePaneID !== '') {
+                    await cli.run(['pane', 'send', '--target', probePaneID, `echo ${CLEAR_SENTINEL}`]);
+                }
+                const seededCapture =
+                    probePaneID === ''
+                        ? ''
+                        : await captureUntil(cli, probePaneID, (text) => text.includes(CLEAR_SENTINEL), {
+                              ceilingMs: 8000,
+                              intervalMs: 150
+                          });
+                const sentinelSeeded = seededCapture.includes(CLEAR_SENTINEL);
+                /*
+                 * A PRECONDITION, asserted like every other precondition in this step (§N25's
+                 * rule: never a silent sample, never a skip). It is also what stops the gate
+                 * being vacuous — "the sentinel is gone" proves nothing about a sentinel that
+                 * was never there, so a failed seed fails the redraw measurement too, below.
+                 */
+                recorder.check(
+                    'the sentinel is on the probe pane’s screen before the clear — so its leaving is an event',
+                    sentinelSeeded,
+                    sentinelSeeded
+                        ? `${CLEAR_SENTINEL} × ${String(seededCapture.split(CLEAR_SENTINEL).length - 1)} in the daemon’s capture`
+                        : `absent from ${String(seededCapture.length)} captured chars`
+                );
                 const beforeClear = await sampleCanvas();
                 const beforeClearSignature = canvasSignature(beforeClear);
                 if (probePaneID !== '') await cli.run(['pane', 'send', '--target', probePaneID, 'clear']);
-                let paintedAfterRedraw = beforeClear;
-                let redrawVerdict = cellAreaTookTheTheme(beforeClear);
-                let redrew = false;
-                let samplesTaken = 0;
-                // Settle-wait on the VALUE (the machine is loaded), not on a fixed sleep — and
-                // only a sample that PROVABLY post-dates the clear is allowed to decide it.
-                for (let attempt = 0; attempt < 30; attempt++) {
-                    const sample = await sampleCanvas();
-                    samplesTaken += 1;
-                    if (canvasSignature(sample) !== beforeClearSignature) {
-                        // The screen moved: this canvas is one the clear produced.
-                        redrew = true;
-                        paintedAfterRedraw = sample;
-                        redrawVerdict = cellAreaTookTheTheme(sample);
-                        if (redrawVerdict.ok) break;
+                /*
+                 * The settle, on the DAEMON's own read. `pane capture` without `--scrollback`
+                 * is the visible viewport as the terminal itself holds it, so this loop is
+                 * immune to the pixel noise that defeated `run-AJ`'s.
+                 */
+                let sentinelLeft = false;
+                let capturesTaken = 0;
+                for (let attempt = 0; attempt < 30 && sentinelSeeded; attempt++) {
+                    const capture = await captureProbe();
+                    capturesTaken += 1;
+                    if (!capture.includes(CLEAR_SENTINEL)) {
+                        sentinelLeft = true;
+                        break;
                     }
                     // DURATION-ASSERTION: the SAMPLING INTERVAL of the retry, not a wait — this
                     // loop is already the settle the rest of this lane is about.
                     await sleep(400);
                 }
-                if (!redrew) {
-                    // A pane that never repainted has not answered the question, and saying so
-                    // is the point of the tightening: the old loop would have passed here on the
-                    // arrival canvas.
+                /*
+                 * The canvas that answered: sampled only after the clear was PROVEN to have
+                 * reached this pane's screen. §N18's predicate decides it; the loop around it
+                 * exists only so the client's next paint can land, and every canvas it can see
+                 * post-dates the proven clear.
+                 */
+                let paintedAfterRedraw = beforeClear;
+                let redrawVerdict = cellAreaTookTheTheme(beforeClear);
+                let canvasSamples = 0;
+                let pixelsMoved = false;
+                if (sentinelLeft) {
+                    for (let attempt = 0; attempt < 12; attempt++) {
+                        const sample = await sampleCanvas();
+                        canvasSamples += 1;
+                        paintedAfterRedraw = sample;
+                        redrawVerdict = cellAreaTookTheTheme(sample);
+                        if (canvasSignature(sample) !== beforeClearSignature) pixelsMoved = true;
+                        if (redrawVerdict.ok) break;
+                        // DURATION-ASSERTION: the SAMPLING INTERVAL of the retry, not a wait.
+                        await sleep(400);
+                    }
+                } else {
+                    // A clear that cannot be shown to have reached the screen has not answered
+                    // the question, and saying so is the point: the old loop would have passed
+                    // here on the arrival canvas, and `run-AJ`'s would have passed on 18 px of
+                    // antialiasing.
                     redrawVerdict = {
                         ok: false,
-                        why: `the clear never changed the canvas in ${String(samplesTaken)} samples — ${redrawVerdict.why}`
+                        why: sentinelSeeded
+                            ? `the sentinel never left the screen in ${String(capturesTaken)} captures — the clear did not reach this pane`
+                            : 'the sentinel never reached the screen, so no clear could be proven'
                     };
                 }
                 recorder.note(
-                    `the clear's own transition: ${redrew ? `the canvas changed by sample ${String(samplesTaken)} of 30` : 'NEVER — the canvas is byte-identical to the pre-clear sample'}` +
+                    `the clear's own transition, on the daemon's own read: ${
+                        sentinelLeft
+                            ? `the sentinel left the screen by capture ${String(capturesTaken)} of 30, and the canvas answered on sample ${String(canvasSamples)} of 12`
+                            : sentinelSeeded
+                              ? `NEVER — the sentinel is still on screen after ${String(capturesTaken)} captures`
+                              : 'UNDECIDABLE — the sentinel never reached the screen'
+                    } · the pixel signature ${pixelsMoved ? 'also moved' : 'did NOT move'} across it (diagnostic only: run-AJ measured it undiscriminating in both directions)` +
                         ` · pre-clear ${JSON.stringify(beforeClear.cleared ?? beforeClear.topOpaque?.[0] ?? null)}`
                 );
                 /*

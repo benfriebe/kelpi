@@ -148,6 +148,31 @@ describe('bulk context menu', () => {
         expect(onSetBulkLabel).toHaveBeenLastCalledWith([W1, W2], 'ops', true);
     });
 
+    /*
+     * §N37, on §N36(2)'s boundary: the bulk submenu's empty caption is user-facing COPY, so it
+     * says "label". The identifier under it (`bulk-no-labels`) and the `labelPresets` prop keep
+     * "preset" — this pins the copy on both halves so the word cannot come back.
+     */
+    it('captions an empty bulk Labels submenu "No labels", never "preset"', () => {
+        render(
+            <Sidebar
+                {...base()}
+                entries={[
+                    { kind: 'workspace', workspace: workspace(W1, 'alpha') },
+                    { kind: 'workspace', workspace: workspace(W2, 'beta') }
+                ]}
+                labelPresets={[]}
+                selectedWorkspaceIDs={new Set([W1, W2])}
+            />
+        );
+        fireEvent.contextMenu(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
+        fireEvent.mouseEnter(screen.getByText('Label 2 Workspaces'));
+        const submenu = screen.getByTestId('context-submenu');
+        expect(within(submenu).getByText('No labels')).toBeTruthy();
+        expect(within(submenu).queryByText('No presets')).toBeNull();
+        expect((submenu.textContent ?? '').toLowerCase()).not.toContain('preset');
+    });
+
     it('moves the selection into a group atomically, dimming a group they all already share', () => {
         const onMoveWorkspaces = vi.fn();
         openBulkMenu({ onMoveWorkspaces });

@@ -82,20 +82,26 @@ if (appPath.endsWith('.app')) {
 
 // ── 3. find the running pair ────────────────────────────────────────────────────────
 
-const pgrep = (pattern) => {
+// ps, not pgrep: macOS pgrep -f silently fails to match long argv strings (measured — the
+// running daemon's ~200-char command line matches `ps | grep` and not `pgrep -f`, even with a
+// short pattern). A matcher that can silently return nothing is exactly what this script
+// cannot be built on.
+const psMatch = (pattern, alsoRequire) => {
     try {
-        return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' })
-            .trim()
+        const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+        return out
             .split('\n')
-            .filter(Boolean)
-            .map(Number)
-            .filter((pid) => pid !== process.pid);
+            .map((line) => line.trim())
+            .filter((line) => line.includes(pattern) && (alsoRequire === undefined || line.includes(alsoRequire)))
+            .map((line) => Number(line.split(/\s+/)[0]))
+            .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
     } catch {
         return [];
     }
 };
-const appPids = appPath.endsWith('.app') ? pgrep(`${appPath}/Contents/MacOS/`) : [];
-const daemonPids = pgrep(daemonPattern);
+const appPids = appPath.endsWith('.app') ? psMatch(`${appPath}/Contents/MacOS/`) : [];
+// `start --foreground` filters out transient CLI invocations running through the same bundle.
+const daemonPids = psMatch(daemonPattern, 'start --foreground');
 
 log(`running app pids: ${appPids.join(', ') || '(none)'}`);
 log(`running daemon pids: ${daemonPids.join(', ') || '(none)'}`);

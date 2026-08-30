@@ -107,13 +107,17 @@ describe('the app icon', () => {
         expect(alphaAt(64, 64)).toBe(255);
     });
 
-    it('paints the glyph and the accent dot, not a flat tile', () => {
+    it('paints the kelpie line art, not a flat tile', () => {
         const canvas = appIconPixels(256);
         const colours = new Set<string>();
+        let white = 0;
         for (let index = 0; index < canvas.rgba.length; index += 4) {
             colours.add(`${String(canvas.rgba[index])},${String(canvas.rgba[index + 1])},${String(canvas.rgba[index + 2])}`);
+            if ((canvas.rgba[index] as number) >= 250 && (canvas.rgba[index + 2] as number) >= 250) white += 1;
         }
+        // Anti-aliased strokes over a gradient produce many shades; the stroke cores stay white.
         expect(colours.size).toBeGreaterThan(20);
+        expect(white).toBeGreaterThan(500);
     });
 
     it('encodes to a PNG', () => {

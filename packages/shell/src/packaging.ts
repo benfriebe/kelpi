@@ -14,6 +14,7 @@
  * Nothing here imports Electron.
  */
 
+import { kelpieArt } from './app-icon-art.js';
 import { encodePng } from './icon.js';
 import { RESOURCE_NAMES } from './resources.js';
 
@@ -233,17 +234,36 @@ export function nodeRuntimeIssues(probe: NodeRuntimeProbe, targetArch: string): 
 
 // ── the app icon ────────────────────────────────────────────────────────────────────
 
-/** Matches the window's `backgroundColor`, so the icon and the app read as one thing. */
-const TILE_TOP: Rgba = [0x2b, 0x2b, 0x34, 0xff];
-const TILE_BOTTOM: Rgba = [0x15, 0x15, 0x19, 0xff];
-const TILE_EDGE: Rgba = [0x3d, 0x3d, 0x49, 0xff];
-const GLYPH: Rgba = [0xe8, 0xe8, 0xee, 0xff];
-const ACCENT: Rgba = [0x4f, 0xa4, 0x6b, 0xff];
+/**
+ * The designed icon: the kelpie head from `assets/kelpi-icon.svg` (white line art on black),
+ * stroked onto the same rounded tile the placeholder used. The drawing itself is data in
+ * `app-icon-art-data.ts`; `app-icon-art.ts` flattens it into polylines once per process.
+ *
+ * The tile keeps a whisper of gradient and rim over the design's flat black so the icon still
+ * reads as an object on a dark Dock, but it stays close enough to #000 that the mark and its
+ * background look like the source drawing, not a re-interpretation of it.
+ */
+const TILE_TOP: Rgba = [0x16, 0x16, 0x1a, 0xff];
+const TILE_BOTTOM: Rgba = [0x04, 0x04, 0x06, 0xff];
+const TILE_EDGE: Rgba = [0x33, 0x33, 0x3b, 0xff];
+const GLYPH: Rgba = [0xff, 0xff, 0xff, 0xff];
 
 /** Everything below is in a 0..1 square, so one description renders at every icon size. */
 const TILE_INSET = 0.055;
 const TILE_RADIUS = 0.215;
-const STROKE = 0.052;
+
+/**
+ * The source canvas maps onto this central span of the icon. The drawing frames itself with
+ * its own margins inside its square, so this only has to pull it clear of the tile's edge.
+ */
+const GLYPH_SPAN = 0.84;
+
+/**
+ * The floor on the stroke's device width. The nominal stroke is ~10px at 1024 and scales down
+ * linearly, which at the 16px and 32px ICNS variants would leave sub-half-pixel lines that
+ * dissolve into grey mush; a one-pixel floor keeps the mark legible in a Finder list instead.
+ */
+const MIN_STROKE_PX = 1;
 
 function clamp01(value: number): number {
     return value < 0 ? 0 : value > 1 ? 1 : value;
@@ -295,12 +315,56 @@ interface Canvas {
 }
 
 /**
+ * Stroke the kelpie onto a `size`-px canvas: a max-blended coverage buffer, one round-capped
+ * capsule per polyline segment.
+ *
+ * Stamping (iterate segments, touch only each segment's bounding box) rather than the tile's
+ * per-pixel SDF loop, because the drawing has a few thousand segments: evaluating all of them
+ * at every pixel of a 1024² canvas is billions of distance calls, while stamping is bounded by
+ * stroke area. Max-blending makes overlapping caps idempotent, which is also what makes a
+ * chain of capsules an *exact* round-joined stroke rather than a darkened approximation.
+ */
+function stampKelpie(size: number): Float32Array {
+    const art = kelpieArt();
+    const coverage = new Float32Array(size * size);
+    const span = GLYPH_SPAN * size;
+    const inset = ((1 - GLYPH_SPAN) / 2) * size;
+    const width = Math.max(art.strokeWidth * span, MIN_STROKE_PX);
+    const reach = width / 2 + 1;
+    for (const line of art.polylines) {
+        for (let at = 0; at + 1 < line.length; at += 1) {
+            const from = line[at] as { x: number; y: number };
+            const to = line[at + 1] as { x: number; y: number };
+            const ax = inset + from.x * span;
+            const ay = inset + from.y * span;
+            const bx = inset + to.x * span;
+            const by = inset + to.y * span;
+            const minX = Math.max(0, Math.floor(Math.min(ax, bx) - reach));
+            const maxX = Math.min(size - 1, Math.ceil(Math.max(ax, bx) + reach));
+            const minY = Math.max(0, Math.floor(Math.min(ay, by) - reach));
+            const maxY = Math.min(size - 1, Math.ceil(Math.max(ay, by) + reach));
+            for (let py = minY; py <= maxY; py += 1) {
+                for (let px = minX; px <= maxX; px += 1) {
+                    // Everything here is in device pixels, so the AA ramp is one pixel wide.
+                    const distance = segmentDistance(px + 0.5, py + 0.5, ax, ay, bx, by, width);
+                    const alpha = clamp01(0.5 - distance);
+                    if (alpha <= 0) continue;
+                    const offset = py * size + px;
+                    if (alpha > (coverage[offset] as number)) coverage[offset] = alpha;
+                }
+            }
+        }
+    }
+    return coverage;
+}
+
+/**
  * Draw the app icon at `size` px.
  *
- * A dark rounded tile with a light prompt chevron, a cursor underscore and a small green
- * "agent running" dot — the same three ideas as the tray glyph, at a size where they can
- * breathe. Anti-aliasing comes from signed distance fields rather than supersampling, because
- * the largest ICNS variant is 1024², and a 4× supersample of that is a 67 MB buffer.
+ * The kelpie mark in white line art on a near-black rounded tile — the shipped drawing from
+ * `assets/kelpi-icon.svg`, not a placeholder. Anti-aliasing comes from signed distance fields
+ * rather than supersampling, because the largest ICNS variant is 1024², and a 4× supersample
+ * of that is a 67 MB buffer.
  */
 export function appIconPixels(size: number): Canvas {
     if (!Number.isInteger(size) || size <= 0) throw new Error(`appIconPixels: bad size ${String(size)}`);
@@ -309,6 +373,7 @@ export function appIconPixels(size: number): Canvas {
     const pixel = 1 / size;
 
     const coverage = (distance: number): number => clamp01(0.5 - distance / pixel);
+    const glyph = stampKelpie(size);
 
     for (let py = 0; py < size; py += 1) {
         for (let px = 0; px < size; px += 1) {
@@ -324,17 +389,8 @@ export function appIconPixels(size: number): Canvas {
             const edge = Math.abs(tile + 0.012) - 0.006;
             color = mix(color, TILE_EDGE, coverage(edge) * 0.9);
 
-            // Prompt chevron `>` …
-            const upper = segmentDistance(x, y, 0.3, 0.35, 0.45, 0.5, STROKE);
-            const lower = segmentDistance(x, y, 0.3, 0.65, 0.45, 0.5, STROKE);
-            // … and the cursor underscore.
-            const bar = segmentDistance(x, y, 0.53, 0.645, 0.72, 0.645, STROKE);
-            const glyph = Math.min(upper, lower, bar);
-            color = mix(color, GLYPH, coverage(glyph));
-
-            // The status dot the tray icon paints when an agent is running.
-            const dot = Math.hypot(x - 0.755, y - 0.245) - 0.055;
-            color = mix(color, ACCENT, coverage(dot));
+            // The kelpie, already anti-aliased by the stamp pass.
+            color = mix(color, GLYPH, glyph[py * size + px] as number);
 
             const offset = (py * size + px) * 4;
             rgba[offset] = color[0];

@@ -13,11 +13,11 @@
  *
  *     node scripts/make-icon.mjs [--out <dir>]        # default: out/staging
  *
- * This is a **placeholder**, and deliberately labelled as one: a dark rounded tile with a
- * prompt chevron, a cursor bar and the green "agent running" dot. It exists so a packaged
- * build never silently ships the default Electron icon (which is what makes a build look like
- * a prototype in the Dock). Replacing it with a designed icon means dropping a real `.icns`
- * in and pointing `forge.config.cjs` at it — nothing else depends on this file's contents.
+ * The drawing is the designed Kelpi mark: the kelpie head from `assets/kelpi-icon.svg`,
+ * white line art on a near-black rounded tile. The SVG is the editable source; its path data
+ * is restated in `src/app-icon-art-data.ts` (a unit test keeps the copy honest) and stroked
+ * by the rasteriser in `src/packaging.ts`, so the icon is still rendered rather than shipped
+ * as a binary. To change the icon, edit the SVG and re-extract the data module.
  */
 
 import { createRequire } from 'node:module';

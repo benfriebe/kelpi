@@ -166,13 +166,13 @@ export function handleInstallHooks(args: string[]): void {
         case 'skipped':
             break; // no bundled skill in this build: nothing to say
         case 'unchanged':
-            printLine(`  nex-agentic skill already up to date (${result.skill.path})`);
+            printLine(`  kelpi-agentic skill already up to date (${result.skill.path})`);
             break;
         case 'failed':
             break; // reported as a warning below
         default:
             printLine(
-                `  ${dryRun ? 'would install' : 'installed'} the nex-agentic skill to ${result.skill.path}`
+                `  ${dryRun ? 'would install' : 'installed'} the kelpi-agentic skill to ${result.skill.path}`
             );
     }
     if (result.codex.action === 'skipped') {
@@ -199,9 +199,9 @@ export function handleInstallHooks(args: string[]): void {
     if (!dryRun) {
         // Routing, in one line: hooks run a bare `kelpi`, and inside Kelpi panes that resolves
         // and routes automatically (the pane env carries the bundled CLI on PATH plus an
-        // injected NEX_SOCKET) — the shared default socket only matters in plain terminals.
+        // injected KELPI_SOCKET) — the shared default socket only matters in plain terminals.
         printLine(
-            'Inside Kelpi panes, hook routing is automatic; the default /tmp/nex.sock only matters for plain terminals.'
+            'Inside Kelpi panes, hook routing is automatic; the default /tmp/kelpi.sock only matters for plain terminals.'
         );
     }
     exit(0);

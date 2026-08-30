@@ -62,9 +62,9 @@ describe.skipIf(!RUNNABLE)('compat: workspace worktrees', () => {
         return JSON.parse(result.stdout) as CreateReply;
     }
 
-    /** `<home>/nex/worktrees/<repo-dir-name>` — the default `worktreeBasePath` template. */
+    /** `<home>/kelpi/worktrees/<repo-dir-name>` — the default `worktreeBasePath` template. */
     function worktreeBase(): string {
-        return path.join(kelpi.home, 'nex', 'worktrees', path.basename(repo));
+        return path.join(kelpi.home, 'kelpi', 'worktrees', path.basename(repo));
     }
 
     beforeEach(async () => {

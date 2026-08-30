@@ -167,7 +167,7 @@ export function stageCli({ stagingDir, cliDist = CLI_DIST, version }) {
     const compatLauncher = path.join(outDir, 'nex');
     writeFileSync(compatLauncher, cliLauncherScript(version === undefined ? {} : { version }), 'utf8');
     chmodSync(compatLauncher, 0o755);
-    // `skills/` rides along beside the bundle: `kelpi install-hooks` looks for the nex-agentic
+    // `skills/` rides along beside the bundle: `kelpi install-hooks` looks for the kelpi-agentic
     // SKILL.md there first (`packages/cli/src/install/skill.ts`), which is how the packaged app
     // ships the skill the Swift bundle carried in Contents/Resources/skills.
     const skills = path.join(path.dirname(cliDist), 'resources', 'skills');

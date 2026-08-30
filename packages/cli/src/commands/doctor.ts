@@ -50,7 +50,7 @@ export async function handleDoctor(args: string[]): Promise<void> {
     const checks: DoctorCheck[] = [];
     const facts: PingFacts = {};
 
-    checks.push(transportCheck(transport, env()['NEX_SOCKET'] !== undefined));
+    checks.push(transportCheck(transport, env()['KELPI_SOCKET'] !== undefined || env()['NEX_SOCKET'] !== undefined));
     checks.push(
         await reachabilityCheck(transport, {
             socketExists: nodeDoctorDeps.socketExists,

@@ -1,10 +1,11 @@
 /**
  * The control-socket transport (cli.md §5) — one JSON line out, read-until-EOF back.
  *
- * Transport selection is `NEX_SOCKET`: absent (or anything not starting with `tcp:`) is the
- * hardcoded Unix socket `/tmp/nex.sock`; `tcp:<host>:<port>` is TCP to a 127.0.0.1-bound
- * listener. A malformed `tcp:` value falls back to the Unix path SILENTLY — that is the
- * shipped behavior and scripts depend on it not being an error.
+ * Transport selection is `KELPI_SOCKET` (with the pre-rename `NEX_SOCKET` honoured): absent
+ * (or anything not starting with `tcp:`) is the Unix socket `/tmp/kelpi.sock`, falling back to
+ * the pre-rename `/tmp/nex.sock` when only that one exists; `tcp:<host>:<port>` is TCP to a
+ * 127.0.0.1-bound listener. A malformed `tcp:` value falls back to the Unix path SILENTLY —
+ * that is the shipped behavior and scripts depend on it not being an error.
  *
  * Failures are classified into `TransportFailure` and stashed in a module global that
  * `printTransportFailure` renders as an `Error:`/`Warning:` + `Repair:` pair. The global is
@@ -20,6 +21,7 @@
  *     SIGINT that closes the socket so the daemon releases the held reply handle.
  */
 
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import util from 'node:util';
@@ -28,12 +30,22 @@ import { replyTimeoutSeconds, silentRequested } from './env.js';
 import { errLine, exit } from './io.js';
 import type { JsonObject } from './json.js';
 
-export const UNIX_SOCKET_PATH = '/tmp/nex.sock';
+export const UNIX_SOCKET_PATH = '/tmp/kelpi.sock';
+/** The pre-rename socket. A daemon that has not been restarted since the cutover still owns it. */
+export const LEGACY_UNIX_SOCKET_PATH = '/tmp/nex.sock';
 
 export type Transport = { readonly kind: 'unix'; readonly path: string } | { readonly kind: 'tcp'; readonly host: string; readonly port: number };
 
-export function resolveTransport(env: NodeJS.ProcessEnv): Transport {
-    const raw = env['NEX_SOCKET'];
+/**
+ * `KELPI_SOCKET` wins, the pre-rename `NEX_SOCKET` is honoured, and the unix default prefers
+ * `/tmp/kelpi.sock` — falling back to `/tmp/nex.sock` only when the new path does not exist and
+ * the old one does (a daemon from before the cutover, not yet restarted).
+ */
+export function resolveTransport(
+    env: NodeJS.ProcessEnv,
+    socketExists: (path: string) => boolean = (candidate) => fs.existsSync(candidate)
+): Transport {
+    const raw = env['KELPI_SOCKET'] ?? env['NEX_SOCKET'];
     if (raw !== undefined && raw.startsWith('tcp:')) {
         const rest = raw.slice(4);
         const colon = rest.indexOf(':');
@@ -45,6 +57,9 @@ export function resolveTransport(env: NodeJS.ProcessEnv): Transport {
                 if (port >= 0 && port <= 65535) return { kind: 'tcp', host, port };
             }
         }
+    }
+    if (!socketExists(UNIX_SOCKET_PATH) && socketExists(LEGACY_UNIX_SOCKET_PATH)) {
+        return { kind: 'unix', path: LEGACY_UNIX_SOCKET_PATH };
     }
     return { kind: 'unix', path: UNIX_SOCKET_PATH };
 }
@@ -99,12 +114,12 @@ export function describeTransportFailure(failure: TransportFailure, command: str
         case 'unixSocketMissing':
             return [
                 `${command}: cannot reach Kelpi — socket ${failure.path} does not exist.`,
-                'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
+                'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set KELPI_SOCKET=tcp:<host>:<port>.'
             ];
         case 'unixConnectRefused':
             return [
                 `${command}: socket ${failure.path} exists but connect was refused — Kelpi is not listening (likely stale socket from a previous crash).`,
-                `Restart Kelpi (panes and workspaces are persisted to ~/Library/Application Support/nexd/nex.db so they will be restored). If the file remains after Kelpi quits, remove it with \`rm ${failure.path}\`.`
+                `Restart Kelpi (panes and workspaces are persisted to ~/Library/Application Support/kelpid/kelpi.db so they will be restored). If the file remains after Kelpi quits, remove it with \`rm ${failure.path}\`.`
             ];
         case 'unixConnectFailed':
             return [
@@ -113,13 +128,13 @@ export function describeTransportFailure(failure: TransportFailure, command: str
             ];
         case 'tcpResolveFailed':
             return [
-                `${command}: cannot resolve host "${failure.host}" (from NEX_SOCKET).`,
-                'Check the hostname in NEX_SOCKET. From a dev container the usual value is `tcp:host.docker.internal:<port>`.'
+                `${command}: cannot resolve host "${failure.host}" (from KELPI_SOCKET / NEX_SOCKET).`,
+                'Check the hostname in KELPI_SOCKET. From a dev container the usual value is `tcp:host.docker.internal:<port>`.'
             ];
         case 'tcpConnectFailed':
             return [
                 `${command}: TCP connect to ${failure.host}:${String(failure.port)} failed (errno ${String(failure.errno)}: ${failure.message}).`,
-                `Confirm Kelpi has \`tcp-port = ${String(failure.port)}\` set in ~/.config/nex/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
+                `Confirm Kelpi has \`tcp-port = ${String(failure.port)}\` set in ~/.config/kelpi/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
             ];
         case 'createSocketFailed':
             return [

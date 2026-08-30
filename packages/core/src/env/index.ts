@@ -3,8 +3,12 @@
 export {
     DEFAULT_PROFILE_NAME,
     FALLBACK_PATH,
+    KELPI_PANE_ID_ENV_KEY,
+    KELPI_PROFILE_ENV_KEY,
+    KELPI_SOCKET_ENV_KEY,
     NEX_PANE_ID_ENV_KEY,
     NEX_PROFILE_ENV_KEY,
+    NEX_SOCKET_ENV_KEY,
     RESERVED_ENV_KEYS,
     buildPanePath,
     effectiveProfileName,

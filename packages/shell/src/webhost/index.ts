@@ -22,7 +22,7 @@
  * Every **non-visual** verb works with no window at all: open, navigate, back, forward, reload,
  * url, the whole actuator surface (click, type, the `q-` reads, wait, select, scroll, hover,
  * key), `exec`, `capture` in all five modes, the console pipeline, the element picker, cookies,
- * find and zoom. That is the surface `nex-agentic` drives, and it is exercised end-to-end by
+ * find and zoom. That is the surface `kelpi-agentic` drives, and it is exercised end-to-end by
  * `packages/shell/scripts/web-smoke.mjs` against the **real Swift CLI**.
  *
  * Views are therefore born in an off-screen holder window (see `./tab.ts` for why one exists at

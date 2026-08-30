@@ -43,13 +43,13 @@ afterEach(() => {
 });
 
 describe('resolveConfigPath', () => {
-    it('defaults to ~/.config/nex/config', () => {
-        expect(resolveConfigPath({}, '/Users/test')).toBe('/Users/test/.config/nex/config');
+    it('defaults to ~/.config/kelpi/config', () => {
+        expect(resolveConfigPath({}, '/Users/test')).toBe('/Users/test/.config/kelpi/config');
     });
 
     it('honours KELPID_CONFIG_PATH, tilde included', () => {
         expect(resolveConfigPath({ KELPID_CONFIG_PATH: '~/alt/config' }, '/Users/test')).toBe('/Users/test/alt/config');
-        expect(resolveConfigPath({ KELPID_CONFIG_PATH: '  ' }, '/Users/test')).toBe('/Users/test/.config/nex/config');
+        expect(resolveConfigPath({ KELPID_CONFIG_PATH: '  ' }, '/Users/test')).toBe('/Users/test/.config/kelpi/config');
     });
 });
 

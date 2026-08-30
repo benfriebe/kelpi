@@ -93,7 +93,7 @@ Options:
   --install-dir <dir>  Where --link puts the symlink (default /usr/local/bin,
                        or \$KELPI_INSTALL_DIR). Never uses sudo: an unwritable
                        directory prints the command to run by hand.
-  --skill-source <dir> Directory holding the bundled nex-agentic SKILL.md
+  --skill-source <dir> Directory holding the bundled kelpi-agentic SKILL.md
                        (default: beside this binary; skipped when absent).
   --dry-run            Report what would change; write nothing.
   --json               Print one structured result object instead of progress.
@@ -104,8 +104,8 @@ matcher-less, so resumed sessions bind too — and SessionEnd) and four Codex
 hooks with --agent codex (Codex has no SessionEnd or Notification event;
 PermissionRequest carries the approval signal). An existing file is copied to
 <file>.kelpi-backup before it changes; a file that is not valid JSON is refused,
-never overwritten. The bundled nex-agentic skill is copied to
-<claude-dir>/skills/nex-agentic/ when this build carries one.
+never overwritten. The bundled kelpi-agentic skill is copied to
+<claude-dir>/skills/kelpi-agentic/ when this build carries one.
 
 Codex problems never fail the run: exit code follows the Claude half.
 

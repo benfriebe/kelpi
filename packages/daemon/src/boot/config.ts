@@ -46,7 +46,7 @@ export function resolveConfigPath(lookup: ConfigLookup = {}): string {
     if (override !== undefined && override.length > 0) {
         return path.resolve(expandTilde(override, home));
     }
-    return path.join(home, '.config', 'nex', 'config');
+    return path.join(home, '.config', 'kelpi', 'config');
 }
 
 /** File contents, or `''` for "no config" — a missing/unreadable file is never fatal. */

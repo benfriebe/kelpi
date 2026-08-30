@@ -1,6 +1,10 @@
 /**
  * Spawn-time environment composition - the ONLY point where profile env reaches a PTY.
- * Spec: docs/current/config-keybindings.md §9.1–9.3, workspace-feature.md §3.4.
+ *
+ * Panes are addressed by `KELPI_*` variables, with `NEX_*` duplicates injected beside them:
+ * hooks, skills and CLIs written before the Kelpi rename (the shipped Swift `nex` included)
+ * read the old names, and a duplicate env var costs nothing. The `KELPI_*` names are canonical;
+ * the `NEX_*` names are the compatibility surface.
  */
 
 import type { Profile } from '../config/profiles.js';
@@ -8,12 +12,19 @@ import type { Profile } from '../config/profiles.js';
 /** The built-in baseline profile; `profileName == null` resolves to it. */
 export const DEFAULT_PROFILE_NAME = 'default';
 
+export const KELPI_PROFILE_ENV_KEY = 'KELPI_PROFILE';
+export const KELPI_PANE_ID_ENV_KEY = 'KELPI_PANE_ID';
+export const KELPI_SOCKET_ENV_KEY = 'KELPI_SOCKET';
+
+/** Pre-rename names, still injected and still honoured on the read side. */
 export const NEX_PROFILE_ENV_KEY = 'NEX_PROFILE';
 export const NEX_PANE_ID_ENV_KEY = 'NEX_PANE_ID';
 export const NEX_SOCKET_ENV_KEY = 'NEX_SOCKET';
 
 /** Built-ins always win; a profile line defining any of these is silently ignored. */
 export const RESERVED_ENV_KEYS: ReadonlySet<string> = new Set([
+    KELPI_PANE_ID_ENV_KEY,
+    KELPI_SOCKET_ENV_KEY,
     NEX_PANE_ID_ENV_KEY,
     NEX_SOCKET_ENV_KEY,
     'PATH'
@@ -48,9 +59,9 @@ export function isDefinedProfile(profiles: readonly Profile[], name: string): bo
 }
 
 /**
- * `resolveEnv(name)`: the named profile's vars plus a canonical `NEX_PROFILE` marker
- * merged LAST, so a config line spoofing `NEX_PROFILE` loses. An undefined profile
- * resolves to just the marker.
+ * `resolveEnv(name)`: the named profile's vars plus canonical `KELPI_PROFILE` / `NEX_PROFILE`
+ * markers merged LAST, so a config line spoofing either loses. An undefined profile resolves
+ * to just the markers.
  */
 export function resolveProfileEnv(
     profiles: readonly Profile[],
@@ -58,6 +69,7 @@ export function resolveProfileEnv(
 ): Record<string, string> {
     const found = profiles.find((profile) => profile.name === name);
     const env: Record<string, string> = { ...(found?.env ?? {}) };
+    env[KELPI_PROFILE_ENV_KEY] = name;
     env[NEX_PROFILE_ENV_KEY] = name;
     return env;
 }
@@ -75,26 +87,29 @@ export interface MergedEnvInput {
     /** The fully composed PATH (see `buildPanePath`). */
     readonly path: string;
     /**
-     * `NEX_SOCKET` value routing this pane's `kelpi` CLI back to the daemon that spawned it
-     * (`tcp:127.0.0.1:<port>`). Both the port CLI and the shipped Swift CLI honor `tcp:` and
-     * silently fall back to `/tmp/nex.sock` for anything else, so this is the ONE form that
-     * routes correctly no matter which `kelpi` binary the pane's PATH resolves — the shared
-     * default socket may belong to another Kelpi entirely. Null/absent = no injection.
+     * `KELPI_SOCKET` / `NEX_SOCKET` value routing this pane's CLI back to the daemon that
+     * spawned it (`tcp:127.0.0.1:<port>`). Every CLI generation honors `tcp:` and silently
+     * falls back to its default socket for anything else, so this is the ONE form that routes
+     * correctly no matter which binary the pane's PATH resolves — the shared default socket
+     * may belong to another instance entirely. Null/absent = no injection.
      */
     readonly socketRoute?: string | null | undefined;
     readonly profileEnv: Readonly<Record<string, string>>;
 }
 
 /**
- * Ordering is contractual: `NEX_PANE_ID`, then `PATH`, then `NEX_SOCKET` (only when a route
- * is given), then the profile's vars sorted by key with the reserved keys filtered out.
+ * Ordering is contractual: `KELPI_PANE_ID`, `NEX_PANE_ID`, then `PATH`, then `KELPI_SOCKET`
+ * and `NEX_SOCKET` (only when a route is given), then the profile's vars sorted by key with
+ * the reserved keys filtered out.
  */
 export function mergedEnvVars(input: MergedEnvInput): EnvVar[] {
     const result: EnvVar[] = [
+        { key: KELPI_PANE_ID_ENV_KEY, value: input.paneID },
         { key: NEX_PANE_ID_ENV_KEY, value: input.paneID },
         { key: 'PATH', value: input.path }
     ];
     if (input.socketRoute !== undefined && input.socketRoute !== null && input.socketRoute !== '') {
+        result.push({ key: KELPI_SOCKET_ENV_KEY, value: input.socketRoute });
         result.push({ key: NEX_SOCKET_ENV_KEY, value: input.socketRoute });
     }
     for (const key of Object.keys(input.profileEnv).sort()) {

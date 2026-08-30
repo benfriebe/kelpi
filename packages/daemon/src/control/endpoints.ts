@@ -1,20 +1,28 @@
 /**
- * Where the control transport listens (wire-protocol.md §1, PLAN.md decisions).
+ * Where the control transport listens.
  *
- * `/tmp/nex.sock` is the production path — the shipped Swift CLI hardcodes it, so it is not
- * configurable from the daemon's side without breaking `kelpi`. The two env overrides exist
- * for development, where the real Swift app owns that socket on this machine:
+ * `/tmp/kelpi.sock` is the production path. The pre-rename `/tmp/nex.sock` — which the shipped
+ * Swift CLI hardcodes — is kept reachable via a symlink the boot path maintains (see
+ * `LEGACY_CONTROL_SOCKET_PATH`), never by a second listener. The two env overrides exist for
+ * development, where another instance owns the shared endpoints on this machine:
  *
- *   KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock   (CLI reaches it via NEX_SOCKET / a symlink)
- *   KELPID_TCP_PORT=19400                   (CLI reaches it via NEX_SOCKET=tcp:…)
+ *   KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock   (CLI reaches it via KELPI_SOCKET / a symlink)
+ *   KELPID_TCP_PORT=19400                     (CLI reaches it via KELPI_SOCKET=tcp:…)
  *
  * The env vars win over the config file's `tcp-port` so a dev daemon can always be pushed
- * off the shared endpoints without editing the user's `~/.config/nex/config`.
+ * off the shared endpoints without editing the user's `~/.config/kelpi/config`.
  */
 
 import { expandTilde } from '../lifecycle/rundir.js';
 
-export const DEFAULT_CONTROL_SOCKET_PATH = '/tmp/nex.sock';
+export const DEFAULT_CONTROL_SOCKET_PATH = '/tmp/kelpi.sock';
+/**
+ * The pre-rename socket. When the daemon owns the default path and this one is free (or a
+ * stale leftover of ours), it keeps a symlink here so pre-rename CLIs and the shipped Swift
+ * `nex` still reach us. A LIVE foreign socket at this path (the Swift app running) is never
+ * touched.
+ */
+export const LEGACY_CONTROL_SOCKET_PATH = '/tmp/nex.sock';
 export const SOCKET_PATH_ENV = 'KELPID_SOCKET_PATH';
 export const TCP_PORT_ENV = 'KELPID_TCP_PORT';
 

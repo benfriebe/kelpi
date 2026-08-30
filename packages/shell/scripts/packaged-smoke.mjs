@@ -387,8 +387,8 @@ function bundlePhase() {
             (version.stdout ?? '').trim() || (version.stderr ?? '').trim()
         );
         check(
-            'the nex-agentic skill rides along in the CLI payload',
-            fs.existsSync(path.join(cliDir, 'skills', 'nex-agentic', 'SKILL.md')),
+            'the kelpi-agentic skill rides along in the CLI payload',
+            fs.existsSync(path.join(cliDir, 'skills', 'kelpi-agentic', 'SKILL.md')),
             'install-hooks copies it into ~/.claude/skills/'
         );
         // And it is the whole CLI, installer included: a dry run against a scratch HOME must

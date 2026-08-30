@@ -26,12 +26,12 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
 - **Agent awareness**: lifecycle hooks from Claude Code and Codex CLI drive pane status, session
   ids and desktop notifications; `kelpi install-hooks` wires them and `kelpi doctor` verifies the
   whole chain.
-- **Graft**: git-worktree-backed workspaces (default base `~/nex/worktrees/<repo>`), with repo
+- **Graft**: git-worktree-backed workspaces (default base `~/kelpi/worktrees/<repo>`), with repo
   associations and status surfaced in the UI.
 - **A native shell**: menu bar, tray, dock badge, global hotkey, native notifications,
   hidden-titlebar window with inline traffic lights, an inspector, and Finder "Open With" for
   markdown.
-- **A settings system** over `~/.config/nex/config`: keybindings (with conflict detection),
+- **A settings system** over `~/.config/kelpi/config`: keybindings (with conflict detection),
   appearance, terminal themes, repositories, TCP exposure — edited live in the client, applied by
   the daemon as the settings authority.
 - **The `kelpi` CLI**: a single-file, dependency-free binary speaking the daemon's newline-JSON
@@ -43,19 +43,27 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
 
 ## Naming
 
-The product is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
-packages are `@kelpi/*`. The **wire and the disk keep their pre-Kelpi `nex` names** — they are
-compatibility contracts, not brand:
+Everything is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
+packages are `@kelpi/*`, the socket is `/tmp/kelpi.sock`, panes carry `KELPI_PANE_ID` /
+`KELPI_PROFILE` / `KELPI_SOCKET`, the config is `~/.config/kelpi/config`, the daemon's state is
+`~/Library/Application Support/kelpid/kelpi.db`, new worktrees go under `~/kelpi/worktrees/`, and
+the bundled Claude Code skill is `kelpi-agentic`.
 
-- `/tmp/nex.sock` — the CLI-compat control socket
-- `NEX_PANE_ID` / `NEX_PROFILE` / `NEX_SOCKET` — the pane environment contract
-- `~/.config/nex/config` — the settings file
-- `~/Library/Application Support/nexd/` — the daemon's run dir and database (`nex.db`)
-- `~/nex/worktrees/` — the default worktree base
-- `nex-agentic` — the bundled Claude Code skill
-- `/usr/local/bin/nex` — healed (never created) beside the primary `/usr/local/bin/kelpi`; a
-  `nex` compat launcher ships in the bundle so hooks that run a bare `nex` keep resolving, and
-  `kelpi install-hooks` migrates hook entries to the `kelpi` spelling when re-run
+The pre-rename `nex` names survive as a **compatibility surface**, migrated automatically:
+
+- On its first boot the daemon **copies** the pre-rename state over — `nexd/nex.db` (plus
+  `pane-geometry.json`) becomes `kelpid/kelpi.db`, and `~/.config/nex/config` becomes
+  `~/.config/kelpi/config`. Copy-only, the originals stay behind, and sandboxes (anything with
+  the env overrides set) never migrate.
+- The daemon keeps a **symlink at `/tmp/nex.sock`** pointing at `/tmp/kelpi.sock`, so the
+  shipped Swift `nex` and every pre-rename hook still connect. A live foreign socket there (the
+  Swift app running) is never touched.
+- Panes get **both** env spellings injected; the CLI reads `KELPI_*` first and falls back to
+  `NEX_*`, and its unix default falls back to `/tmp/nex.sock` when only a pre-cutover daemon is
+  running.
+- `/usr/local/bin/nex` is healed (never created) beside the primary `/usr/local/bin/kelpi`; a
+  `nex` compat launcher ships in the bundle, and `kelpi install-hooks` migrates hook entries to
+  the `kelpi` spelling when re-run.
 
 ## Quickstart
 
@@ -77,11 +85,11 @@ packages/daemon/dist/kelpid.js status
 kelpid is running (pid 77182)
   version: 0.1.0 (build 1)
   protocol: 1
-  control: /tmp/nex.sock
-  discovery: ~/Library/Application Support/nexd/run/daemon-v1.sock
+  control: /tmp/kelpi.sock
+  discovery: ~/Library/Application Support/kelpid/run/daemon-v1.sock
   http: http://127.0.0.1:59329
   url: http://127.0.0.1:59329/?token=8f3c…
-  run dir: ~/Library/Application Support/nexd/run
+  run dir: ~/Library/Application Support/kelpid/run
 ```
 
 Open the client with the `url` line, never the bare `http:` one — the WebSocket handshake is
@@ -106,23 +114,23 @@ killed.
 Anything that speaks the control protocol works, including `nc`:
 
 ```bash
-echo '{"command":"ping"}'           | nc -U /tmp/nex.sock
-echo '{"command":"workspace-list"}' | nc -U /tmp/nex.sock
+echo '{"command":"ping"}'           | nc -U /tmp/kelpi.sock
+echo '{"command":"workspace-list"}' | nc -U /tmp/kelpi.sock
 ```
 
-The CLI talks to whatever `NEX_SOCKET` names. Point it at a development daemon over TCP:
+The CLI talks to whatever `KELPI_SOCKET` names. Point it at a development daemon over TCP:
 
 ```bash
 # daemon: listen on loopback TCP as well as the unix socket
 KELPID_TCP_PORT=19400 packages/daemon/dist/kelpid.js start
 
 # CLI: reach it over that port
-NEX_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
-NEX_SOCKET=tcp:127.0.0.1:19400 kelpi pane send --target worker-1 "echo hello"
+KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
+KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi pane send --target worker-1 "echo hello"
 ```
 
 The same variable is how a dev container or a remote agent reaches the daemon
-(`NEX_SOCKET=tcp:host.docker.internal:19400`, or an SSH reverse tunnel).
+(`KELPI_SOCKET=tcp:host.docker.internal:19400`, or an SSH reverse tunnel).
 
 ### The `kelpi` CLI
 
@@ -166,22 +174,22 @@ hand — it never escalates on its own.
 
 ### Running a second daemon
 
-The production control socket is `/tmp/nex.sock`; `kelpid` refuses to steal a live socket.
+The production control socket is `/tmp/kelpi.sock`; `kelpid` refuses to steal a live socket.
 During development, give a daemon its own endpoints:
 
 ```bash
 KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock \
 KELPID_TCP_PORT=19400 \
-KELPID_DB_PATH=~/.local/share/kelpid-dev/nex.db \
+KELPID_DB_PATH=~/.local/share/kelpid-dev/kelpi.db \
 KELPID_RUN_DIR=~/.local/state/kelpid-dev \
 packages/daemon/dist/kelpid.js start --foreground
 ```
 
-`NEX_SOCKET` only selects a TCP endpoint (absent means the hardcoded `/tmp/nex.sock`), so TCP is
-how a CLI reaches a development daemon:
+`KELPI_SOCKET` only selects a TCP endpoint (absent means the default `/tmp/kelpi.sock`), so TCP
+is how a CLI reaches a development daemon:
 
 ```bash
-NEX_SOCKET=tcp:127.0.0.1:19400 kelpi workspace list
+KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi workspace list
 ```
 
 A development daemon has its own run dir, and therefore its own token — so ask that daemon for
@@ -205,7 +213,7 @@ the file costs one badly-wrapped first prompt per pane and nothing else.
 ## Importing from the legacy macOS app
 
 The pre-Kelpi Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the
-daemon owns a separate database (`~/Library/Application Support/nexd/nex.db`, or `KELPID_DB_PATH`)
+daemon owns a separate database (`~/Library/Application Support/kelpid/kelpi.db`, or `KELPID_DB_PATH`)
 so the two can run side by side. `kelpid import` copies the first into the second, once.
 
 The daemon must be stopped: it holds the whole state in memory and its next save would overwrite
@@ -410,7 +418,7 @@ node scripts/self-upgrade.mjs       # run the battery, package, and promote the 
 ```
 
 Beyond the unit suites, four **live** smokes boot real daemons on private paths (never
-`/tmp/nex.sock`) and assert what only a running system can prove:
+the shared `/tmp/kelpi.sock`) and assert what only a running system can prove:
 
 ```bash
 node packages/client/scripts/smoke.mjs           # HTTP + WS + delta + PTY round trip

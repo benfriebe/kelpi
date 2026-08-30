@@ -52,7 +52,7 @@ const root = persistent
 for (const sub of ['home', 'electron', 'work']) fs.mkdirSync(path.join(root, sub), { recursive: true });
 
 const socketPath = path.join(root, 'kelpid.sock');
-if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
+if (socketPath === '/tmp/kelpi.sock' || socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
     console.error('refusing a state dir that collides with a real endpoint');
     process.exit(1);
 }
@@ -134,7 +134,7 @@ const shell = startShell(sandbox, { repoRoot, packaged, verbose: false });
 clearBackgroundTaskPolicy(shell.child?.pid);
 console.log(`[dev-instance] shell up (${packaged ? 'packaged Kelpi.app' : 'dev electron'})`);
 console.log('[dev-instance]');
-console.log(`[dev-instance]   talk to it:   NEX_SOCKET=tcp:127.0.0.1:${String(controlPort)} kelpi pane list`);
+console.log(`[dev-instance]   talk to it:   KELPI_SOCKET=tcp:127.0.0.1:${String(controlPort)} kelpi pane list`);
 console.log(`[dev-instance]   run dir:      ${sandbox.runDir}`);
 console.log('[dev-instance]');
 console.log('[dev-instance] Ctrl-C to stop.');

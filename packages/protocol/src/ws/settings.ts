@@ -78,7 +78,7 @@ export interface WsGeneralSettings {
     readonly autoDetectRepos: boolean;
     /**
      * §13 Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
-     * `~/nex/worktrees/<repo>`. `<repo>` and `~` expand daemon-side at create time (SET-009),
+     * `~/kelpi/worktrees/<repo>`. `<repo>` and `~` expand daemon-side at create time (SET-009),
      * so this is the raw TEMPLATE — what the text field edits and the file stores.
      */
     readonly worktreeBasePath: string;
@@ -369,7 +369,7 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         globalHotkey: null,
         globalHotkeyHideOnRepress: true,
         autoDetectRepos: true,
-        worktreeBasePath: '~/nex/worktrees/<repo>',
+        worktreeBasePath: '~/kelpi/worktrees/<repo>',
         newWorkspacePlacement: 'end-of-list',
         newGroupPlacement: 'end-of-list',
         inheritGroupOnNewWorkspace: true,

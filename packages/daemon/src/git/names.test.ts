@@ -47,7 +47,7 @@ describe('resolvedWorktreeBasePath', () => {
 
     it('expands a non-leading <repo> to the repo directory name', () => {
         expect(resolvedWorktreeBasePath(DEFAULT_WORKTREE_BASE_PATH, '/Users/ben/code/myrepo', HOME)).toBe(
-            `${HOME}/nex/worktrees/myrepo`
+            `${HOME}/kelpi/worktrees/myrepo`
         );
     });
 
@@ -63,7 +63,7 @@ describe('resolvedWorktreeBasePath', () => {
                 home: HOME,
                 folderName: 'feature-x'
             })
-        ).toBe(`${HOME}/nex/worktrees/kelpi/feature-x`);
+        ).toBe(`${HOME}/kelpi/worktrees/kelpi/feature-x`);
     });
 });
 

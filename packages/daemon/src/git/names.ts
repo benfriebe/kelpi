@@ -10,7 +10,7 @@ import path from 'node:path';
 import { isGitCommandError } from './exec.js';
 
 /** Settings default; `<repo>` expands per `resolvedWorktreeBasePath`. */
-export const DEFAULT_WORKTREE_BASE_PATH = '~/nex/worktrees/<repo>';
+export const DEFAULT_WORKTREE_BASE_PATH = '~/kelpi/worktrees/<repo>';
 
 const REPO_TOKEN = '<repo>';
 

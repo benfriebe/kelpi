@@ -37,20 +37,20 @@ export interface PingFacts {
     protocol?: number | undefined;
     /** The daemon's CLI-compat socket is degraded (another Kelpi owns it); from `ping`. */
     compat?: { path: string; error: string } | undefined;
-    /** The `NEX_SOCKET` value the daemon injects into pane environments; from `ping`. */
+    /** The `KELPI_SOCKET` / `NEX_SOCKET` value the daemon injects into pane environments; from `ping`. */
     paneRoute?: string | undefined;
 }
 
 export function transportCheck(transport: Transport, fromEnv?: boolean): DoctorCheck {
     if (transport.kind === 'unix') {
         const provenance =
-            fromEnv === undefined ? '' : fromEnv ? ' (from NEX_SOCKET)' : ' (the default; NEX_SOCKET unset)';
+            fromEnv === undefined ? '' : fromEnv ? ' (from KELPI_SOCKET)' : ' (the default; KELPI_SOCKET unset)';
         return { name: 'transport', status: 'PASS', detail: `Unix socket at ${transport.path}${provenance}` };
     }
     return {
         name: 'transport',
         status: 'PASS',
-        detail: `TCP ${transport.host}:${String(transport.port)} (from NEX_SOCKET)`
+        detail: `TCP ${transport.host}:${String(transport.port)} (from KELPI_SOCKET)`
     };
 }
 
@@ -77,7 +77,7 @@ export async function reachabilityCheck(transport: Transport, deps: Reachability
             status: 'FAIL',
             detail: `cannot resolve host "${transport.host}"`,
             repair:
-                'Check the hostname in NEX_SOCKET. From a dev container use `tcp:host.docker.internal:<port>`.'
+                'Check the hostname in KELPI_SOCKET. From a dev container use `tcp:host.docker.internal:<port>`.'
         };
     }
     return { name: 'resolve', status: 'PASS', detail: 'hostname resolves' };
@@ -150,7 +150,7 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
  *     the Swift daemon and every port-pane event silently vanishes there;
  *   - the port daemon answered but its CLI-compat socket is DEGRADED (the Swift app owns
  *     it): plain-terminal `kelpi` commands are reaching the other app, panes are unaffected
- *     (their `NEX_SOCKET` is injected at spawn);
+ *     (their `KELPI_SOCKET` is injected at spawn);
  *   - everything is where it should be, in which case the pane route is printed so a user
  *     can see what their panes carry.
  */
@@ -165,16 +165,16 @@ export function routingCheck(facts: PingFacts): DoctorCheck {
             detail:
                 'the answering daemon is the Swift Nex app (no `protocol` field in its ping reply), not this CLI\'s own daemon.',
             repair:
-                'Inside new-Kelpi panes, commands route automatically (the pane env carries NEX_SOCKET). In plain terminals, set NEX_SOCKET=tcp:127.0.0.1:<port> to reach the new daemon, or quit the Swift app so it releases /tmp/nex.sock.'
+                'Inside Kelpi panes, commands route automatically (the pane env carries KELPI_SOCKET). In plain terminals, set KELPI_SOCKET=tcp:127.0.0.1:<port> to reach the daemon, or quit the Swift app so it releases /tmp/nex.sock.'
         };
     }
     if (facts.compat !== undefined) {
         return {
             name: 'routing',
             status: 'WARN',
-            detail: `this daemon's CLI-compat socket ${facts.compat.path} is degraded: ${facts.compat.error}. Plain-terminal \`kelpi\` commands on the default socket reach a DIFFERENT app; panes are unaffected${facts.paneRoute === undefined ? '' : ` (their injected NEX_SOCKET is ${facts.paneRoute})`}.`,
+            detail: `this daemon's CLI-compat socket ${facts.compat.path} is degraded: ${facts.compat.error}. Plain-terminal \`kelpi\` commands on the default socket reach a DIFFERENT app; panes are unaffected${facts.paneRoute === undefined ? '' : ` (their injected KELPI_SOCKET is ${facts.paneRoute})`}.`,
             repair:
-                'Quit the other Kelpi app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set NEX_SOCKET explicitly in plain terminals.'
+                'Quit the other Kelpi app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set KELPI_SOCKET explicitly in plain terminals.'
         };
     }
     return {
@@ -183,7 +183,7 @@ export function routingCheck(facts: PingFacts): DoctorCheck {
         detail:
             facts.paneRoute === undefined
                 ? 'compat socket serving; no pane route reported (older daemon)'
-                : `compat socket serving; panes carry NEX_SOCKET=${facts.paneRoute}`
+                : `compat socket serving; panes carry KELPI_SOCKET=${facts.paneRoute}`
     };
 }
 
@@ -194,10 +194,10 @@ export function resolveRunDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform,
     if (override !== undefined && override.length > 0) {
         return path.resolve(override.startsWith('~') ? path.join(home, override.slice(1)) : override);
     }
-    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'nexd', 'run');
+    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'kelpid', 'run');
     const xdg = env['XDG_RUNTIME_DIR']?.trim();
-    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(xdg), 'nexd');
-    return path.join(home, '.local', 'state', 'nexd', 'run');
+    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(xdg), 'kelpid');
+    return path.join(home, '.local', 'state', 'kelpid', 'run');
 }
 
 export interface DaemonRecord {

@@ -21,27 +21,27 @@ import {
 const HOME = '/Users/tester';
 
 describe('database location', () => {
-    it('uses ~/Library/Application Support/nexd on darwin', () => {
+    it('uses ~/Library/Application Support/kelpid on darwin', () => {
         expect(resolveDatabasePath({ env: {}, platform: 'darwin', home: HOME })).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'nexd', DATABASE_FILENAME)
+            path.join(HOME, 'Library', 'Application Support', 'kelpid', DATABASE_FILENAME)
         );
     });
 
     it('prefers XDG_DATA_HOME on linux', () => {
         expect(
             resolveDatabasePath({ env: { XDG_DATA_HOME: '/var/data' }, platform: 'linux', home: HOME })
-        ).toBe(path.join('/var/data', 'nexd', DATABASE_FILENAME));
+        ).toBe(path.join('/var/data', 'kelpid', DATABASE_FILENAME));
     });
 
-    it('falls back to ~/.local/share/nexd on linux', () => {
+    it('falls back to ~/.local/share/kelpid on linux', () => {
         expect(resolveDatabasePath({ env: {}, platform: 'linux', home: HOME })).toBe(
-            path.join(HOME, '.local', 'share', 'nexd', DATABASE_FILENAME)
+            path.join(HOME, '.local', 'share', 'kelpid', DATABASE_FILENAME)
         );
     });
 
     it('expands ~ in XDG_DATA_HOME', () => {
         expect(resolveDataDir({ env: { XDG_DATA_HOME: '~/data' }, platform: 'linux', home: HOME })).toBe(
-            path.join(HOME, 'data', 'nexd')
+            path.join(HOME, 'data', 'kelpid')
         );
     });
 
@@ -64,7 +64,7 @@ describe('database location', () => {
 
     it('ignores a blank KELPID_DB_PATH', () => {
         expect(resolveDatabasePath({ env: { [DB_PATH_ENV]: '   ' }, platform: 'darwin', home: HOME })).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'nexd', DATABASE_FILENAME)
+            path.join(HOME, 'Library', 'Application Support', 'kelpid', DATABASE_FILENAME)
         );
     });
 
@@ -73,7 +73,7 @@ describe('database location', () => {
             legacyMacAppDatabasePath(HOME)
         );
         expect(legacyMacAppDatabasePath(HOME)).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME)
+            path.join(HOME, 'Library', 'Application Support', 'Nex', 'nex.db')
         );
     });
 

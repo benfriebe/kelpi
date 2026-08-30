@@ -109,7 +109,7 @@ export interface RepoStatusReader {
 export interface RepoChannel {
     readonly store: RepoCommandStore;
     readonly git: RepoCommandGit;
-    /** Settings `worktreeBasePath` template (`~/nex/worktrees/<repo>`). */
+    /** Settings `worktreeBasePath` template (`~/kelpi/worktrees/<repo>`). */
     readonly worktreeBasePath: string;
     readonly uuid: () => string;
     /** Epoch **milliseconds** (the store stores repo `lastAccessedAt` in seconds). */

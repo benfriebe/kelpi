@@ -28,6 +28,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
     createDaemon,
     HTTP_HOST_ENV,
+    migrateLegacyState,
     readPortFile,
     resolveDaemonVersion,
     type DaemonInfo
@@ -73,7 +74,7 @@ export interface ParsedArgs {
     readonly error: string | undefined;
 }
 
-const USAGE = `kelpid — the New Kelpi daemon
+const USAGE = `kelpid — the Kelpi daemon
 
 Usage:
   kelpid start [--foreground]   Start the daemon (detached unless --foreground)
@@ -87,7 +88,7 @@ Usage:
 Import (one-time migration from the macOS app):
   kelpid import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]
 
-    --from   legacy database (default: ~/Library/Application Support/Kelpi/nex.db)
+    --from   legacy database (default: ~/Library/Application Support/Nex/nex.db)
     --to     daemon database (default: KELPID_DB_PATH, else the platform default)
     --force  replace a target that already holds workspaces; the existing database
              is copied aside as <target>.<timestamp>.bak first
@@ -108,27 +109,27 @@ authenticate and the client will say so):
 
 Environment:
   KELPID_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
-                     (default: ~/Library/Application Support/nexd/run, or
+                     (default: ~/Library/Application Support/kelpid/run, or
                       $XDG_RUNTIME_DIR/nexd on Linux)
-  KELPID_SOCKET_PATH   CLI-compat control socket (default: /tmp/nex.sock)
+  KELPID_SOCKET_PATH   CLI-compat control socket (default: /tmp/kelpi.sock; a /tmp/nex.sock symlink is maintained)
   KELPID_TCP_PORT      Control TCP listener on 127.0.0.1 (overrides config tcp-port)
   KELPID_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
   KELPID_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
-  KELPID_DB_PATH       SQLite database file (default: ~/Library/Application Support/nexd/nex.db)
+  KELPID_DB_PATH       SQLite database file (default: ~/Library/Application Support/kelpid/kelpi.db)
   KELPID_ALLOW_EPHEMERAL_STATE=1
                      Start even when that database cannot be opened. Nothing is
                      saved and every boot says so. Without it, an unusable
                      database is a hard startup failure — by design: a daemon
                      that silently stops persisting loses a day of work.
-  KELPID_CONFIG_PATH   Config file (default: ~/.config/nex/config)
+  KELPID_CONFIG_PATH   Config file (default: ~/.config/kelpi/config)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
   KELPID_VERSION       Override the reported version (packaging)
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching
 
-The \`kelpi\` CLI reaches the daemon over NEX_SOCKET:
-  NEX_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
+The \`kelpi\` CLI reaches the daemon over KELPI_SOCKET (NEX_SOCKET still honoured):
+  KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
 `;
 
 export function helpText(): string {
@@ -398,6 +399,10 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     }
 
     if (args.foreground) {
+        // The pre-rename state cutover: copy nexd/nex.db + ~/.config/nex/config into the Kelpi
+        // locations, once, before anything opens them. No-op with env overrides (sandboxes) or
+        // once the targets exist.
+        migrateLegacyState({ env, log: (line) => io.out(line) });
         const daemon = createDaemon({
             env,
             installSignalHandlers: true,
@@ -621,7 +626,7 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
             `Warning: the TCP control listener on port ${String(tcp.requested)} is not running${tcp.error === undefined ? '' : ` (${tcp.error})`}.`
         );
         io.err(
-            '  Repair: free the port or set a different `tcp-port` in ~/.config/nex/config, then restart kelpid. Unix-socket clients are unaffected.'
+            '  Repair: free the port or set a different `tcp-port` in ~/.config/kelpi/config, then restart kelpid. Unix-socket clients are unaffected.'
         );
     }
     return warnIfDegraded(io, probe) ? 1 : 0;

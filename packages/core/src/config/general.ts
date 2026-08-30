@@ -51,7 +51,7 @@ export interface GeneralSettings {
     readonly autoDetectRepos: boolean;
     /**
      * §13's Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
-     * `~/nex/worktrees/<repo>`. `<repo>` expands to the full repo path at the START of the
+     * `~/kelpi/worktrees/<repo>`. `<repo>` expands to the full repo path at the START of the
      * template and to the repo's directory NAME elsewhere; `~` expands too
      * (`@kelpi/daemon`'s `git/names.ts`, SET-009 — already implemented and tested there).
      *
@@ -115,7 +115,7 @@ export interface GeneralSettings {
 }
 
 /** `SettingsFeature.State.worktreeBasePath`'s shipped default. */
-export const DEFAULT_WORKTREE_BASE_PATH_TEMPLATE = '~/nex/worktrees/<repo>';
+export const DEFAULT_WORKTREE_BASE_PATH_TEMPLATE = '~/kelpi/worktrees/<repo>';
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
     focusFollowsMouse: false,

@@ -40,7 +40,7 @@ const value = (flag) => {
 const appPath =
     value('--app') ?? path.join(repoRoot, 'packages', 'shell', 'out', 'Kelpi-darwin-arm64', 'Kelpi.app');
 const runDir =
-    value('--run-dir') ?? path.join(os.homedir(), 'Library', 'Application Support', 'nexd', 'run');
+    value('--run-dir') ?? path.join(os.homedir(), 'Library', 'Application Support', 'kelpid', 'run');
 const dryRun = has('--dry-run');
 const noPackage = has('--no-package');
 const relaunchCmd = value('--relaunch-cmd') ?? `open "${appPath}"`;
@@ -144,9 +144,9 @@ const daemonPids = [
 
 log(`running app pids: ${appPids.join(', ') || '(none)'}`);
 log(`running daemon pids: ${daemonPids.join(', ') || '(none)'}`);
-const insideKelpi = process.env.NEX_PANE_ID !== undefined;
+const insideKelpi = process.env.KELPI_PANE_ID !== undefined || process.env.NEX_PANE_ID !== undefined;
 if (insideKelpi) {
-    log(`invoked from INSIDE a Kelpi pane (${process.env.NEX_PANE_ID}) — this session will be`);
+    log(`invoked from INSIDE a Kelpi pane (${process.env.KELPI_PANE_ID ?? process.env.NEX_PANE_ID}) — this session will be`);
     log('cut and then RESUMED by the restored pane (claude --resume). That is the expected dance.');
 }
 

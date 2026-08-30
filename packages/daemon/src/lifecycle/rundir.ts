@@ -16,7 +16,7 @@
  *   darwin → ~/Library/Application Support/nexd/run
  *   linux  → $XDG_RUNTIME_DIR/nexd, else ~/.local/state/kelpid/run
  *
- * Note this is NOT `/tmp/nex.sock`: that path stays the CLI-compat control socket (PLAN
+ * Note this is NOT `/tmp/kelpi.sock`: that path stays the CLI-compat control socket (PLAN
  * decisions) and is configured separately (`control/endpoints.ts`).
  */
 
@@ -53,12 +53,12 @@ export function resolveRunDir(lookup: RunDirLookup = {}): string {
     const override = env[RUN_DIR_ENV]?.trim();
     if (override !== undefined && override.length > 0) return path.resolve(expandTilde(override, home));
 
-    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'nexd', 'run');
+    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'kelpid', 'run');
 
     const xdg = env['XDG_RUNTIME_DIR']?.trim();
-    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(expandTilde(xdg, home)), 'nexd');
+    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(expandTilde(xdg, home)), 'kelpid');
 
-    return path.join(home, '.local', 'state', 'nexd', 'run');
+    return path.join(home, '.local', 'state', 'kelpid', 'run');
 }
 
 export interface RunPaths {

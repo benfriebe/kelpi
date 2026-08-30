@@ -149,7 +149,7 @@ describe('kelpid import — argument parsing', () => {
         expect(helpText()).toContain('kelpid import');
         expect(helpText()).toContain('--dry-run');
         expect(helpText()).toContain('kelpid stop && kelpid import && kelpid start');
-        expect(helpText()).toContain('~/Library/Application Support/Kelpi/nex.db');
+        expect(helpText()).toContain('~/Library/Application Support/Nex/nex.db');
     });
 
     it('exits 2 on a usage error', async () => {
@@ -183,7 +183,7 @@ describe('kelpid import — with no daemon running', () => {
         expect(await runKelpid(['import'], captured)).toBe(1);
 
         expect(captured.stdout[1]).toBe(
-            `  from: ${path.join(paths.home, 'Library', 'Application Support', 'Kelpi', 'nex.db')}`
+            `  from: ${path.join(paths.home, 'Library', 'Application Support', 'Nex', 'nex.db')}`
         );
         expect(captured.stderr.join('\n')).toContain('no legacy database at');
         expect(captured.stderr.join('\n')).toContain('Repair:');

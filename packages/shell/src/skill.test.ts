@@ -1,5 +1,5 @@
 /**
- * §APP-006 — the launch-time refresh of the bundled `nex-agentic` document.
+ * §APP-006 — the launch-time refresh of the bundled `kelpi-agentic` document.
  *
  * The first port of this step wrote into a real home because Electron's `app.getPath('home')`
  * ignores `$HOME`. Everything below therefore runs inside an `mkdtemp` root with a FAKE `HOME`,
@@ -41,11 +41,11 @@ let sourceDir = '';
 /** What the real home's document looked like before the test — it must not change. */
 let realHomeBefore: { path: string; contents: string | null } = { path: '', contents: null };
 
-const BUNDLED = '---\nname: nex-agentic\n---\n\n# bundled\n';
+const BUNDLED = '---\nname: kelpi-agentic\n---\n\n# bundled\n';
 
 function realHomeSkillFile(): string {
     const realHome = process.env['HOME'] ?? os.homedir();
-    return path.join(realHome, '.claude', 'skills', 'nex-agentic', SKILL_FILE);
+    return path.join(realHome, '.claude', 'skills', 'kelpi-agentic', SKILL_FILE);
 }
 
 function readIfPresent(file: string): string | null {
@@ -103,7 +103,7 @@ beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-skill-'));
     home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
-    sourceDir = path.join(root, 'bundle', 'skills', 'nex-agentic');
+    sourceDir = path.join(root, 'bundle', 'skills', 'kelpi-agentic');
     fs.mkdirSync(sourceDir, { recursive: true });
     fs.writeFileSync(path.join(sourceDir, SKILL_FILE), BUNDLED);
     const realFile = realHomeSkillFile();
@@ -120,7 +120,7 @@ afterEach(() => {
 describe('where the destination comes from', () => {
     it('reads $HOME out of the environment it is handed, and nothing else', () => {
         expect(resolveHomeDirectory({ HOME: '/Users/someone' })).toBe('/Users/someone');
-        expect(skillDestinationDir('/Users/someone')).toBe('/Users/someone/.claude/skills/nex-agentic');
+        expect(skillDestinationDir('/Users/someone')).toBe('/Users/someone/.claude/skills/kelpi-agentic');
     });
 
     it('refuses an empty or relative HOME rather than resolving one', () => {
@@ -135,10 +135,10 @@ describe('where the destination comes from', () => {
 
     it('takes the bundled document from the app’s resources, or the harness override', () => {
         expect(bundledSkillDir({ env: {}, resourcesPath: '/Apps/Kelpi.app/Contents/Resources' })).toBe(
-            '/Apps/Kelpi.app/Contents/Resources/cli/skills/nex-agentic'
+            '/Apps/Kelpi.app/Contents/Resources/cli/skills/kelpi-agentic'
         );
-        expect(bundledSkillDir({ env: { KELPI_SKILL_SOURCE: '/tmp/skills/nex-agentic' } })).toBe(
-            '/tmp/skills/nex-agentic'
+        expect(bundledSkillDir({ env: { KELPI_SKILL_SOURCE: '/tmp/skills/kelpi-agentic' } })).toBe(
+            '/tmp/skills/kelpi-agentic'
         );
         // A dev run carries no payload, and that is a skip rather than an error.
         expect(bundledSkillDir({ env: {} })).toBeNull();
@@ -160,7 +160,7 @@ describe('what it refuses to do', () => {
      * and it is never touched again — not overwritten, and not "helpfully" backed up either.
      */
     it('leaves an EDITED copy of its own installation alone once the hash stops matching', () => {
-        installOurs('---\nname: nex-agentic\n---\n\n# older\n');
+        installOurs('---\nname: kelpi-agentic\n---\n\n# older\n');
         const destFile = path.join(skillDestinationDir(home), SKILL_FILE);
         const edited = `${fs.readFileSync(destFile, 'utf8')}\n## my addition\n`;
         fs.writeFileSync(destFile, edited);
@@ -229,7 +229,7 @@ describe('adopting a copy `kelpi install-hooks` wrote', () => {
         expect(fs.readFileSync(path.join(destDir, SKILL_FILE), 'utf8')).toBe(BUNDLED);
 
         // …and now a newer bundle is allowed to land.
-        fs.writeFileSync(path.join(sourceDir, SKILL_FILE), '---\nname: nex-agentic\n---\n\n# next release\n');
+        fs.writeFileSync(path.join(sourceDir, SKILL_FILE), '---\nname: kelpi-agentic\n---\n\n# next release\n');
         expect(refresh()).toMatchObject({ action: 'updated', reason: 'stale' });
         expect(fs.readFileSync(path.join(destDir, SKILL_FILE), 'utf8')).toContain('next release');
     });
@@ -257,7 +257,7 @@ describe('adopting a copy `kelpi install-hooks` wrote', () => {
  * forever: one-time by construction, not by a flag anybody has to remember to set.
  */
 describe('migrating a drifted, unmarked copy — once', () => {
-    const DRIFTED = '# nex-agentic\n\nfrom some older build\n';
+    const DRIFTED = '# kelpi-agentic\n\nfrom some older build\n';
 
     it('backs the old bytes up, installs the bundle, and records ownership', () => {
         const destFile = installUnmarked(DRIFTED);
@@ -305,7 +305,7 @@ describe('migrating a drifted, unmarked copy — once', () => {
         const mine = `${BUNDLED}\n## my own additions\n`;
         fs.writeFileSync(destFile, mine);
         // …and a newer bundle arrives, so there is every reason to want to refresh.
-        fs.writeFileSync(path.join(sourceDir, SKILL_FILE), '---\nname: nex-agentic\n---\n\n# next release\n');
+        fs.writeFileSync(path.join(sourceDir, SKILL_FILE), '---\nname: kelpi-agentic\n---\n\n# next release\n');
 
         expect(refresh()).toMatchObject({ action: 'skipped', reason: 'user-modified' });
         expect(fs.readFileSync(destFile, 'utf8')).toBe(mine);
@@ -382,7 +382,7 @@ describe('what it does do', () => {
     });
 
     it('replaces its own stale installation, and the marker follows the new bytes', () => {
-        installOurs('---\nname: nex-agentic\n---\n\n# older\n');
+        installOurs('---\nname: kelpi-agentic\n---\n\n# older\n');
         expect(refresh()).toMatchObject({ action: 'updated', reason: 'stale' });
         const destDir = skillDestinationDir(home);
         expect(fs.readFileSync(path.join(destDir, SKILL_FILE), 'utf8')).toBe(BUNDLED);

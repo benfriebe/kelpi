@@ -10,7 +10,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { resetIO, setIO } from './io.js';
-import { describeTransportFailure, printTransportFailure, resolveTransport, setLastTransportFailure, UNIX_SOCKET_PATH } from './transport.js';
+import { describeTransportFailure, LEGACY_UNIX_SOCKET_PATH, printTransportFailure, resolveTransport, setLastTransportFailure, UNIX_SOCKET_PATH } from './transport.js';
+
+/** Deterministic socket probes: tests never consult the real /tmp. */
+const neither = () => false;
+const onlyLegacy = (path: string) => path === LEGACY_UNIX_SOCKET_PATH;
 
 afterEach(() => {
     resetIO();
@@ -19,9 +23,22 @@ afterEach(() => {
 
 describe('resolveTransport', () => {
     it('defaults to the hardcoded unix socket', () => {
-        expect(resolveTransport({})).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
-        expect(resolveTransport({ NEX_SOCKET: '' })).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
-        expect(resolveTransport({ NEX_SOCKET: '/tmp/other.sock' })).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+        expect(resolveTransport({}, neither)).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+        expect(resolveTransport({ NEX_SOCKET: '' }, neither)).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+        expect(resolveTransport({ NEX_SOCKET: '/tmp/other.sock' }, neither)).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+    });
+
+    it('falls back to the pre-rename socket only when it alone exists', () => {
+        expect(resolveTransport({}, onlyLegacy)).toEqual({ kind: 'unix', path: LEGACY_UNIX_SOCKET_PATH });
+        expect(resolveTransport({}, () => true)).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+    });
+
+    it('honours KELPI_SOCKET over NEX_SOCKET', () => {
+        expect(resolveTransport({ KELPI_SOCKET: 'tcp:127.0.0.1:1', NEX_SOCKET: 'tcp:127.0.0.1:2' })).toEqual({
+            kind: 'tcp',
+            host: '127.0.0.1',
+            port: 1
+        });
     });
 
     it('parses tcp:<host>:<port>', () => {
@@ -47,7 +64,7 @@ describe('resolveTransport', () => {
         // The host may not contain a colon: the split takes the FIRST colon only.
         ['tcp:host:12:34']
     ])('falls back to the unix socket for %j', (value) => {
-        expect(resolveTransport({ NEX_SOCKET: value })).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
+        expect(resolveTransport({ NEX_SOCKET: value }, neither)).toEqual({ kind: 'unix', path: UNIX_SOCKET_PATH });
     });
 });
 
@@ -59,7 +76,7 @@ describe('describeTransportFailure', () => {
         );
         expect(line).toBe('kelpi pane close: cannot reach Kelpi — socket /tmp/nex.sock does not exist.');
         expect(repair).toBe(
-            'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
+            'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set KELPI_SOCKET=tcp:<host>:<port>.'
         );
     });
 
@@ -74,7 +91,7 @@ describe('describeTransportFailure', () => {
             { kind: 'tcpResolveFailed', host: 'host.docker.internal' },
             'kelpi pane list'
         );
-        expect(resolveLine).toBe('kelpi pane list: cannot resolve host "host.docker.internal" (from NEX_SOCKET).');
+        expect(resolveLine).toBe('kelpi pane list: cannot resolve host "host.docker.internal" (from KELPI_SOCKET / NEX_SOCKET).');
         expect(resolveRepair).toContain('tcp:host.docker.internal:<port>');
 
         const [connectLine, connectRepair] = describeTransportFailure(

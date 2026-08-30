@@ -6,13 +6,14 @@
  * path … on first run MIGRATE by copying the legacy macOS path's file if present").
  *
  *   KELPID_DB_PATH set → that file, verbatim (`~` expanded; `:memory:` honoured)
- *   darwin          → ~/Library/Application Support/nexd/nex.db
- *   otherwise       → $XDG_DATA_HOME/nexd/nex.db, else ~/.local/share/nexd/nex.db
+ *   darwin          → ~/Library/Application Support/kelpid/kelpi.db
+ *   otherwise       → $XDG_DATA_HOME/kelpid/kelpi.db, else ~/.local/share/kelpid/kelpi.db
  *
- * `nexd`, not `Kelpi`: the directory keeps its pre-rename name — it is the live data of every
- * existing install — and stays distinct from the Swift app's `Nex` directory for the same
- * reason as ever: the two must run side by side without corrupting each other's state. Importing the legacy DB is a later utility
- * (PLAN.md M8) — `legacyMacAppDatabasePath()` is exported for it, and nothing here reads it.
+ * `kelpid`, not `Kelpi`: the daemon owns its own directory, distinct from any app-named one,
+ * so implementations can run side by side without corrupting each other's state. The pre-rename
+ * `nexd/nex.db` is migrated (copied) on boot by `boot/legacy-migration.ts`; the Swift app's own
+ * database is a different thing again — `legacyMacAppDatabasePath()` points at it for
+ * `kelpid import`, and nothing here reads it.
  *
  * Directories the daemon CREATES are made 0700 (the DB holds working directories, labels and
  * agent session ids). Directories that already exist are used exactly as they are — see
@@ -25,7 +26,7 @@ import path from 'node:path';
 
 export const DB_PATH_ENV = 'KELPID_DB_PATH';
 export const DB_DIR_MODE = 0o700;
-export const DATABASE_FILENAME = 'nex.db';
+export const DATABASE_FILENAME = 'kelpi.db';
 /** In-memory databases (tests) skip directory creation entirely. */
 export const MEMORY_DATABASE_PATH = ':memory:';
 
@@ -48,12 +49,12 @@ export function resolveDataDir(lookup: DatabaseLocationLookup = {}): string {
     const platform = lookup.platform ?? process.platform;
     const home = lookup.home ?? homedir();
 
-    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'nexd');
+    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'kelpid');
 
     const xdg = env['XDG_DATA_HOME']?.trim();
-    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(expandTilde(xdg, home)), 'nexd');
+    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(expandTilde(xdg, home)), 'kelpid');
 
-    return path.join(home, '.local', 'share', 'nexd');
+    return path.join(home, '.local', 'share', 'kelpid');
 }
 
 /** Absolute path of the database file. Does not create anything. */
@@ -129,7 +130,19 @@ export function prepareDatabaseFile(databasePath: string): string {
     return resolved;
 }
 
-/** The Swift app's database — the source for the M8 legacy import. Never opened by the daemon. */
+/** The Swift app's database — the source for `kelpid import`. Never opened by the daemon. */
 export function legacyMacAppDatabasePath(home: string = homedir()): string {
-    return path.join(home, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME);
+    return path.join(home, 'Library', 'Application Support', 'Nex', 'nex.db');
+}
+
+/** The pre-rename daemon data directory (`nexd/nex.db`) — the boot migration's source. */
+export const LEGACY_DATABASE_FILENAME = 'nex.db';
+export function legacyDataDir(lookup: DatabaseLocationLookup = {}): string {
+    const env = lookup.env ?? process.env;
+    const platform = lookup.platform ?? process.platform;
+    const home = lookup.home ?? homedir();
+    if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'nexd');
+    const xdg = env['XDG_DATA_HOME']?.trim();
+    if (xdg !== undefined && xdg.length > 0) return path.join(path.resolve(expandTilde(xdg, home)), 'nexd');
+    return path.join(home, '.local', 'share', 'nexd');
 }

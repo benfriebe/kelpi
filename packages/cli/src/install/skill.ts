@@ -1,8 +1,8 @@
 /**
- * The bundled `nex-agentic` Claude Code skill (CLI-146).
+ * The bundled `kelpi-agentic` Claude Code skill (CLI-146).
  *
- * `install-hooks.sh` copied `Contents/Resources/skills/nex-agentic/SKILL.md` into
- * `~/.claude/skills/nex-agentic/` whenever the app bundle carried one, and `CLIInstallService`
+ * `install-hooks.sh` copied `Contents/Resources/skills/kelpi-agentic/SKILL.md` into
+ * `~/.claude/skills/kelpi-agentic/` whenever the app bundle carried one, and `CLIInstallService`
  * re-copied it on launch when the contents had drifted. Both halves exist here: this module is
  * the copy, `kelpi install-hooks` runs it, and the file lives in `packages/cli/resources/` so a
  * checkout has it too — the CLI is the artifact that ships the skill now, not the app.
@@ -14,9 +14,9 @@
  *
  * Where the source comes from, in order:
  *   1. `--skill-source <dir>` — a directory containing `SKILL.md` (what the tests use);
- *   2. `<dir of the running bundle>/skills/nex-agentic` — the packaged app's
+ *   2. `<dir of the running bundle>/skills/kelpi-agentic` — the packaged app's
  *      `Contents/Resources/cli/skills/…`, staged beside `kelpi.js`;
- *   3. `<bundle dir>/../resources/skills/nex-agentic` — a workspace checkout, where the bundle is
+ *   3. `<bundle dir>/../resources/skills/kelpi-agentic` — a workspace checkout, where the bundle is
  *      `packages/cli/dist/kelpi.js` and the resource sits at `packages/cli/resources/…`.
  *
  * None of them found means "this build carries no skill", which is a skip and not an error — the
@@ -27,14 +27,14 @@ import path from 'node:path';
 
 import type { InstallFs } from './fs.js';
 
-export const SKILL_NAME = 'nex-agentic';
+export const SKILL_NAME = 'kelpi-agentic';
 export const SKILL_FILE = 'SKILL.md';
 
 export type SkillAction = 'created' | 'updated' | 'unchanged' | 'skipped' | 'failed';
 
 export interface SkillOutcome {
     readonly action: SkillAction;
-    /** Where it went (`<claude-dir>/skills/nex-agentic/SKILL.md`). */
+    /** Where it went (`<claude-dir>/skills/kelpi-agentic/SKILL.md`). */
     readonly path: string;
     /** Where it came from, when one was found. */
     readonly source?: string;

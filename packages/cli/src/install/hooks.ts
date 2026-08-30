@@ -62,7 +62,7 @@ export interface InstallHooksResult {
     readonly command: string;
     readonly claude: TargetOutcome;
     readonly codex: TargetOutcome;
-    /** The bundled `nex-agentic` skill (`./skill.ts`); `skipped` when the build has none. */
+    /** The bundled `kelpi-agentic` skill (`./skill.ts`); `skipped` when the build has none. */
     readonly skill: SkillOutcome;
     readonly warnings: readonly string[];
     readonly notes: readonly string[];
@@ -76,7 +76,7 @@ export interface InstallHooksOptions {
     /** What the hooks will invoke — `kelpi`, or an absolute path. See `./self.ts`. */
     readonly commandPrefix: string;
     readonly dryRun: boolean;
-    /** `--skill-source`: a directory holding the `nex-agentic` SKILL.md. */
+    /** `--skill-source`: a directory holding the `kelpi-agentic` SKILL.md. */
     readonly skillSource?: string | undefined;
     /** The running CLI bundle, so the skill can be found beside it. */
     readonly executable?: string | null | undefined;
@@ -184,7 +184,7 @@ export function installHooks(options: InstallHooksOptions, fsys: InstallFs): Ins
         fsys
     );
     if (skill.action === 'failed') {
-        warnings.push(`could not install the nex-agentic skill (${skill.reason ?? 'unknown error'}).`);
+        warnings.push(`could not install the kelpi-agentic skill (${skill.reason ?? 'unknown error'}).`);
     }
 
     // §"Configure Codex CLI hooks": last, and only when the directory is there. An absent

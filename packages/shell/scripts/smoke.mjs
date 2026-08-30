@@ -98,15 +98,15 @@ function readIfPresent(file) {
 }
 
 const realHome = process.env.HOME ?? os.homedir();
-const realHomeSkillDir = path.join(realHome, '.claude', 'skills', 'nex-agentic');
+const realHomeSkillDir = path.join(realHome, '.claude', 'skills', 'kelpi-agentic');
 const realHomeSkillFile = path.join(realHomeSkillDir, 'SKILL.md');
 const realHomeSkillBefore = readIfPresent(realHomeSkillFile);
 const realHomeMarkerBefore = readIfPresent(path.join(realHomeSkillDir, '.kelpi-skill.json'));
 
 /** The document the app ships — what a heal or an install has to land, byte for byte. */
-const bundledSkillFile = path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic', 'SKILL.md');
+const bundledSkillFile = path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'kelpi-agentic', 'SKILL.md');
 /** The bytes an older build (or a hand edit) left behind, in the fixtures that carry one. */
-const DRIFTED_SKILL = '# nex-agentic\n\nlast month\n';
+const DRIFTED_SKILL = '# kelpi-agentic\n\nlast month\n';
 
 const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
 
@@ -310,7 +310,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
      * absence to assert, and a smoke phase that installed nothing would be indistinguishable
      * from one where the step never ran.
      */
-    const installedSkill = path.join(home, '.claude', 'skills', 'nex-agentic');
+    const installedSkill = path.join(home, '.claude', 'skills', 'kelpi-agentic');
     fs.mkdirSync(installedSkill, { recursive: true });
     const skillFile = path.join(installedSkill, 'SKILL.md');
     const skillMarkerFile = path.join(installedSkill, '.kelpi-skill.json');
@@ -319,7 +319,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
     if (skill === 'marked-edited') {
         // The marker records the hash of what this app INSTALLED; the document on disk is that
         // plus the user's own line, so the two disagree — which is the whole test.
-        const installed = readIfPresent(bundledSkillFile) ?? '# nex-agentic\n';
+        const installed = readIfPresent(bundledSkillFile) ?? '# kelpi-agentic\n';
         skillFixtureBytes = `${installed}\n## my own notes — hands off\n`;
         skillMarkerBytes = `${JSON.stringify(
             {
@@ -346,7 +346,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
         // The unpackaged shell has no `Contents/Resources/cli/skills`, so the launch step is
         // pointed at the checkout's copy — the same escape hatch `--skill-source` gives the CLI.
         // It only names a SOURCE; the destination still comes from the HOME above.
-        KELPI_SKILL_SOURCE: path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic'),
+        KELPI_SKILL_SOURCE: path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'kelpi-agentic'),
         KELPID_RUN_DIR: path.join(root, 'run'),
         KELPID_SOCKET_PATH: socketPath,
         KELPID_TCP_PORT: String(await freePort()),

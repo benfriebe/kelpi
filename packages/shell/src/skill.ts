@@ -1,8 +1,8 @@
 /**
- * §APP-006 — refreshing the bundled `nex-agentic` document at launch.
+ * §APP-006 — refreshing the bundled `kelpi-agentic` document at launch.
  *
- * The Swift app re-copies `Contents/Resources/skills/nex-agentic/SKILL.md` into
- * `~/.claude/skills/nex-agentic/` on every launch, but only when the destination directory
+ * The Swift app re-copies `Contents/Resources/skills/kelpi-agentic/SKILL.md` into
+ * `~/.claude/skills/kelpi-agentic/` on every launch, but only when the destination directory
  * already exists (it never creates one on the user's behalf) and only when the bytes differ
  * (`CLIInstallService.swift:163-191`).
  *
@@ -172,7 +172,7 @@ export function resolveHomeDirectory(env: NodeJS.ProcessEnv): string | null {
     return trimmed;
 }
 
-/** `<home>/.claude/skills/nex-agentic` — where `kelpi install-hooks` puts it too. */
+/** `<home>/.claude/skills/kelpi-agentic` — where `kelpi install-hooks` puts it too. */
 export function skillDestinationDir(home: string): string {
     return path.join(home, '.claude', 'skills', BUNDLED_SKILL_NAME);
 }

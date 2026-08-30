@@ -77,10 +77,10 @@ export function packagedCliDir(resourcesPath: string): string {
 }
 
 /** The bundled Claude Code skill's name — `kelpi install-hooks` is what installs it. */
-export const BUNDLED_SKILL_NAME = 'nex-agentic';
+export const BUNDLED_SKILL_NAME = 'kelpi-agentic';
 
 /**
- * `Contents/Resources/cli/skills/nex-agentic` — staged beside the CLI bundle by
+ * `Contents/Resources/cli/skills/kelpi-agentic` — staged beside the CLI bundle by
  * `scripts/stage-resources.mjs`, because `kelpi install-hooks` looks for it there first.
  */
 export function packagedSkillDir(resourcesPath: string): string {

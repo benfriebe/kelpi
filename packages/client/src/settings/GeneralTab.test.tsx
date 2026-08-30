@@ -57,7 +57,7 @@ describe('Settings ▸ General', () => {
     it('writes the worktree base path on commit', () => {
         const bound = renderTab();
         const input = screen.getByTestId('worktree-base-path-input') as HTMLInputElement;
-        expect(input.value).toBe('~/nex/worktrees/<repo>');
+        expect(input.value).toBe('~/kelpi/worktrees/<repo>');
         fireEvent.change(input, { target: { value: '<repo>/.worktrees' } });
         expect(bound.writes).toEqual([]);
         fireEvent.blur(input);

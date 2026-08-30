@@ -32,22 +32,27 @@ export function envValue(name: string): string | undefined {
     return current[name];
 }
 
-/** The caller pane, or a silent `exit(0)` when `NEX_PANE_ID` is unset. */
+/** `KELPI_PANE_ID`, falling back to the pre-rename `NEX_PANE_ID` (older daemons inject only that). */
+function paneIDValue(): string | undefined {
+    return current['KELPI_PANE_ID'] ?? current['NEX_PANE_ID'];
+}
+
+/** The caller pane, or a silent `exit(0)` when no pane id is set. */
 export function requirePaneID(): string {
-    const value = current['NEX_PANE_ID'];
+    const value = paneIDValue();
     if (value === undefined) exit(0);
     return value;
 }
 
-/** `NEX_PANE_ID` when set AND non-empty — the label-scoping hint. */
+/** The pane id when set AND non-empty — the label-scoping hint. */
 export function originPaneID(): string | undefined {
-    const value = current['NEX_PANE_ID'];
+    const value = paneIDValue();
     return value !== undefined && value.length > 0 ? value : undefined;
 }
 
-/** `NEX_PANE_ID` when set, empty string included (`open` / `md` / `diff` forward this). */
+/** The pane id when set, empty string included (`open` / `md` / `diff` forward this). */
 export function rawPaneID(): string | undefined {
-    return current['NEX_PANE_ID'];
+    return paneIDValue();
 }
 
 /** `$HOME`, falling back to the passwd-database home directory (the Swift fallback). */

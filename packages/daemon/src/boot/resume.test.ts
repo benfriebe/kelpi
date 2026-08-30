@@ -182,10 +182,12 @@ describe('spawnRestoredPanes', () => {
         });
 
         expect(pty.spawns[0]?.env).toEqual([
+            ['KELPI_PANE_ID', P1],
             ['NEX_PANE_ID', P1],
             ['PATH', '/usr/bin:/bin'],
             ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work'],
-            ['NEX_PROFILE', 'work']
+            ['KELPI_PROFILE', 'work'],
+        ['NEX_PROFILE', 'work']
         ]);
     });
 

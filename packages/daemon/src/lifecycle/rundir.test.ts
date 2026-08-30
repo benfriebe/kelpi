@@ -31,21 +31,21 @@ function mode(target: string): number {
 }
 
 describe('run dir resolution', () => {
-    it('uses ~/Library/Application Support/nexd/run on darwin', () => {
+    it('uses ~/Library/Application Support/kelpid/run on darwin', () => {
         expect(resolveRunDir({ env: {}, platform: 'darwin', home: HOME })).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'nexd', 'run')
+            path.join(HOME, 'Library', 'Application Support', 'kelpid', 'run')
         );
     });
 
     it('prefers XDG_RUNTIME_DIR on linux', () => {
         expect(resolveRunDir({ env: { XDG_RUNTIME_DIR: '/run/user/501' }, platform: 'linux', home: HOME })).toBe(
-            '/run/user/501/nexd'
+            '/run/user/501/kelpid'
         );
     });
 
     it('falls back to ~/.local/state/kelpid/run on linux without XDG_RUNTIME_DIR', () => {
         expect(resolveRunDir({ env: {}, platform: 'linux', home: HOME })).toBe(
-            path.join(HOME, '.local', 'state', 'nexd', 'run')
+            path.join(HOME, '.local', 'state', 'kelpid', 'run')
         );
     });
 
@@ -56,7 +56,7 @@ describe('run dir resolution', () => {
             );
         }
         expect(resolveRunDir({ env: { KELPID_RUN_DIR: '  ' }, platform: 'darwin', home: HOME })).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'nexd', 'run')
+            path.join(HOME, 'Library', 'Application Support', 'kelpid', 'run')
         );
     });
 

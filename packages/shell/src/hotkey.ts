@@ -39,7 +39,14 @@ export const CONFIG_PATH_ENV = 'KELPID_CONFIG_PATH';
 export function resolveConfigPath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
     const override = env[CONFIG_PATH_ENV]?.trim();
     if (override !== undefined && override.length > 0) return path.resolve(expandTilde(override, home));
-    return path.join(home, '.config', 'nex', 'config');
+    const preferred = path.join(home, '.config', 'kelpi', 'config');
+    // Pre-cutover fallback: the daemon migrates the file on ITS first boot, and the shell can
+    // read the hotkey before that has happened.
+    if (!fs.existsSync(preferred)) {
+        const legacy = path.join(home, '.config', 'nex', 'config');
+        if (fs.existsSync(legacy)) return legacy;
+    }
+    return preferred;
 }
 
 /**

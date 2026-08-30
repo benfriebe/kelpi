@@ -1,38 +1,38 @@
 ---
-name: nex-agentic
+name: kelpi-agentic
 description: >
-  Use the Nex terminal multiplexer and its CLI to orchestrate multi-agent
+  Use the Kelpi terminal multiplexer and its CLI to orchestrate multi-agent
   development workflows. Enables spawning named child panes, starting Claude
   agents in them, farming out parallel work, coordinating results via markdown
   files and direct pane messaging, AND driving / observing a web app from an
-  agent via the `nex web` pane (open URL, capture page text or screenshot,
+  agent via the `kelpi web` pane (open URL, capture page text or screenshot,
   drain console buffer, arm element picker to paste structured payloads into
   an agent pane). Trigger when: the user asks to "spawn agents", "fan out
-  work", "create worker panes", "orchestrate panes", "use nex to coordinate",
+  work", "create worker panes", "orchestrate panes", "use kelpi to coordinate",
   "multi-agent", "farm out tasks", or any variation of parallelizing work
-  across Nex panes. Also trigger when an agent needs to "drive the browser",
+  across Kelpi panes. Also trigger when an agent needs to "drive the browser",
   "watch the page console", "capture a screenshot of the app", "pick an
   element from the page", or coordinate with the web pane in any way.
 ---
 
-# Nex Agentic Development Skill
+# Kelpi Agentic Development Skill
 
-Orchestrate multi-agent development workflows using the Nex terminal
+Orchestrate multi-agent development workflows using the Kelpi terminal
 multiplexer. Spawn named child panes, start Claude agents in them, distribute
 work, and collect results.
 
 ## Prerequisites
 
-You must be running inside a Nex pane. Verify with:
+You must be running inside a Kelpi pane. Verify with:
 
 ```bash
-nex pane id
+kelpi pane id
 ```
 
-Exit 0 with the pane UUID on stdout means you're in Nex; exit 1 with
-empty output means you're not, and every other `nex` command below will
+Exit 0 with the pane UUID on stdout means you're in Kelpi; exit 1 with
+empty output means you're not, and every other `kelpi` command below will
 silently no-op. This command is purely local (no socket, no shell `$`
-expansion) so it allowlists cleanly as `Bash(nex pane id)`.
+expansion) so it allowlists cleanly as `Bash(kelpi pane id)`.
 
 ## Required up-front questions
 
@@ -74,44 +74,44 @@ Once chosen, the worker-start command shape is:
 
 ```bash
 # Headless
-nex pane send --target worker-1 claude -p --permission-mode <mode> "<prompt>"
+kelpi pane send --target worker-1 claude -p --permission-mode <mode> "<prompt>"
 
 # Interactive
-nex pane send --target worker-1 claude --permission-mode <mode>
+kelpi pane send --target worker-1 claude --permission-mode <mode>
 sleep 2
-nex pane send --target worker-1 "<prompt>"
+kelpi pane send --target worker-1 "<prompt>"
 ```
 
-## Nex CLI Reference
+## Kelpi CLI Reference
 
-The `nex` CLI communicates with the Nex app over a Unix socket at `/tmp/nex.sock`.
+The `kelpi` CLI communicates with the Kelpi app over a Unix socket at `/tmp/kelpi.sock`.
 
 ### Pane Commands
 
 ```bash
-# Split a pane (creates a new pane alongside). Works from outside Nex
+# Split a pane (creates a new pane alongside). Works from outside Kelpi
 # via --target (UUID = global, label needs scope) or --workspace.
 # Request/response: prints the new pane id, exits non-zero on failure.
-nex pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
 
-# Create a new pane (alias for horizontal split). Works from outside Nex
+# Create a new pane (alias for horizontal split). Works from outside Kelpi
 # via --workspace (or --target's workspace). Request/response: prints the
 # new pane id, exits non-zero on failure.
-nex pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
+kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--json]
 
 # Close current pane
-nex pane close
+kelpi pane close
 
 # Set a label on a pane (visible as pill badge in title bar). Without
 # --target, renames the calling pane; with --target, renames any pane.
-nex pane name [--target <name-or-uuid>] [--workspace <name-or-uuid>] <label>
+kelpi pane name [--target <name-or-uuid>] [--workspace <name-or-uuid>] <label>
 
 # Resize a pane against its immediate split sibling. Set an exact share
 # with --ratio, or nudge with --grow/--shrink (default step 0.05). The
 # key use is keeping the coordinator prominent after a fan-out (below):
 # it addresses the pane by name, so it does NOT depend on focus the way
 # `layout select main-*` does. Effective share clamps to [0.1, 0.9].
-nex pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
+kelpi pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
 
 # Send text to another pane (typed into its PTY + Enter)
 # Label resolution is scoped to the sender's own workspace by default.
@@ -120,44 +120,44 @@ nex pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio 
 # `--bare` writes the text without appending Enter — pair with
 # `pane send-key` for compositional flows (autocomplete with `tab`,
 # escape sequences, partial input, paste-safe structured content).
-nex pane send [--bare] [--json] --target <label-or-uuid> [--workspace <name-or-uuid>] <command...>
+kelpi pane send [--bare] [--json] --target <label-or-uuid> [--workspace <name-or-uuid>] <command...>
 
 # List panes (read-only inventory — use for reconciliation)
-nex pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
+kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
 
 # Read another pane's terminal contents as text (viewport, or full
 # scrollback with --scrollback). WITHOUT --target it captures the CALLING
 # pane — always pass --target to read a worker. The target is flag-only:
-# a bare `nex pane capture <uuid>` is rejected, not treated as --target.
-nex pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+# a bare `kelpi pane capture <uuid>` is rejected, not treated as --target.
+kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
 
 # Move a pane so it docks against another pane (CLI form of GUI
 # drag-drop). --below stacks the target under the anchor; --above /
 # --left-of / --right-of are the other edges. Both panes resolve within
 # the same workspace. Pairs with `pane resize` for full layout control.
-nex pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--json]
+kelpi pane move --target <name-or-uuid> (--above|--below|--left-of|--right-of) <anchor> [--workspace <name-or-uuid>] [--json]
 
 # Move the calling pane toward its neighbour (directional form).
-nex pane move <left|right|up|down>
+kelpi pane move <left|right|up|down>
 
 # Move a pane to another workspace (creates it with --create).
-nex pane move-to-workspace --to-workspace <name-or-uuid> [--create]
+kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
 
 # List workspace groups and their ordered member workspaces
-nex group list [--json] [--no-header]
+kelpi group list [--json] [--no-header]
 
 # List every workspace (grouped + top-level) with its parent group
-nex workspace list [--json] [--no-header]
+kelpi workspace list [--json] [--no-header]
 
-# Print current pane's UUID (local; no socket). Exit 1 if not in Nex.
-nex pane id
+# Print current pane's UUID (local; no socket). Exit 1 if not in Kelpi.
+kelpi pane id
 ```
 
 ### Keep the layout readable (grid + prominent coordinator)
 
-`nex pane split` always bisects the target pane 50/50 with no
+`kelpi pane split` always bisects the target pane 50/50 with no
 rebalancing. So if you loop the **same** split direction against the
-same pane — `for w in ...; do nex pane split --direction horizontal;
+same pane — `for w in ...; do kelpi pane split --direction horizontal;
 done` — the 1st worker takes half, the 2nd a quarter, the 3rd an
 eighth… after 4-5 workers the panes are unreadable slivers. Do NOT do
 that. Instead, after spawning the workers, reflow with the built-in
@@ -165,27 +165,27 @@ tmux-style layouts:
 
 ```bash
 # Balanced grid — panes stay roughly square, not thin columns.
-nex layout select tiled
+kelpi layout select tiled
 
 # Or: one large "main" pane + the rest tiled beside it.
-nex layout select main-vertical    # main on the left, workers stacked right
-nex layout select main-horizontal  # main on top,    workers in a row below
+kelpi layout select main-vertical    # main on the left, workers stacked right
+kelpi layout select main-horizontal  # main on top,    workers in a row below
 ```
 
 **Caveat — which pane becomes "main".** `layout select main-*` makes
 the **currently focused** pane the large "main" pane, and every
-`nex pane split` moves focus to the pane it just created. So right
+`kelpi pane split` moves focus to the pane it just created. So right
 after the spawn loop the focused pane is the *last worker*, not the
 coordinator — running `main-vertical` then would enlarge a worker, and
-there is no `nex pane focus` CLI to re-focus the coordinator first.
+there is no `kelpi pane focus` CLI to re-focus the coordinator first.
 
-The focus-independent lever is `nex pane resize`, which addresses the
+The focus-independent lever is `kelpi pane resize`, which addresses the
 pane **by name**. `--ratio` is the pane's *share* of its split, so use
 a value **> 0.5** to make the coordinator the larger side:
 
 ```bash
-nex layout select tiled                              # balanced grid first
-nex pane resize --target coordinator --ratio 0.65    # coordinator > its sibling
+kelpi layout select tiled                              # balanced grid first
+kelpi pane resize --target coordinator --ratio 0.65    # coordinator > its sibling
 ```
 
 **What resize does and doesn't do.** `pane resize` only rebalances the
@@ -204,22 +204,22 @@ the whole grid the way a `main-*` layout's root split does. So:
 (`--grow` / `--shrink` to nudge, `--ratio` to set exactly) without
 touching the GUI. The effective share clamps to `[0.1, 0.9]`.
 
-### `nex doctor` — when CLI commands stop working
+### `kelpi doctor` — when CLI commands stop working
 
-If `nex` commands suddenly start failing with `Error: nex …: cannot reach
-Nex …` or `no response from Nex`, run `nex doctor` first.
+If `kelpi` commands suddenly start failing with `Error: kelpi …: cannot reach
+Kelpi …` or `no response from Kelpi`, run `kelpi doctor` first.
 It runs seven named checks and prints `[PASS|FAIL|WARN] <name>: <detail>`
 plus a concrete repair line for any failure:
 
 - `transport` — Unix socket path or TCP destination in use.
 - `socket` / `resolve` — file exists on disk (Unix) or hostname resolves (TCP).
 - `ping` — round-trip a `ping` command and parse the JSON reply.
-- `process` — scans the process list (`ps`) for `Nex.app`. If `ping` failed
-  but the process is up, the app is wedged (restart it); if no process, Nex
+- `process` — scans the process list (`ps`) for `Kelpi.app`. If `ping` failed
+  but the process is up, the app is wedged (restart it); if no process, Kelpi
   isn't running.
-- `version` — CLI version vs running-app version. Warn on drift (rebuild Nex).
+- `version` — CLI version vs running-app version. Warn on drift (rebuild Kelpi).
 - `hooks` — the user-level Claude Code hook config (`~/.claude/settings.json`
-  plus `settings.local.json`) still carries every nex hook, and the
+  plus `settings.local.json`) still carries every kelpi hook, and the
   `SessionStart` entry fires for resumed sessions. Warn on drift: a stale
   matcher means `claude --continue` / `--resume` panes never bind their
   session id, so scripts that gate on `agent_session_id != null` silently
@@ -229,23 +229,23 @@ plus a concrete repair line for any failure:
   issue #101). Skipped when no `~/.codex` directory exists; WARN-only.
   Doctor cannot see codex's hook *trust* state — if the wiring passes but
   codex panes never change status, run `/hooks` inside codex and trust
-  the nex hooks.
+  the kelpi hooks.
 
 Pass `--json` for a machine-readable report. Exits non-zero only when a
 check FAILs; WARNs are reported but leave the exit code 0. Use this as
 the first triage step before restarting the app.
 
 Every CLI error now emits an `Error: …\nRepair: …` pair pointing at the
-matching repair step. Fire-and-forget commands (`nex event …`, hooks)
+matching repair step. Fire-and-forget commands (`kelpi event …`, hooks)
 print a `Warning: …` to stderr but still exit 0 so Claude Code Stop
-hooks etc. don't break — set `NEX_SILENT=1` to suppress entirely.
-`nex event …` (the Claude Code hook entrypoint) suppresses the warning
-by default to avoid stderr spam when Nex is closed; set
-`NEX_VERBOSE_HOOKS=1` to surface them again.
+hooks etc. don't break — set `KELPI_SILENT=1` to suppress entirely.
+`kelpi event …` (the Claude Code hook entrypoint) suppresses the warning
+by default to avoid stderr spam when Kelpi is closed; set
+`KELPI_VERBOSE_HOOKS=1` to surface them again.
 
 ### `pane list` — reconcile with live state
 
-`pane list` is Nex's read-only pane inventory. Use it whenever a coordinator
+`pane list` is Kelpi's read-only pane inventory. Use it whenever a coordinator
 needs to know what panes actually exist right now — panes can be closed by
 the user, crash, or be moved between workspaces. `pane send` exits non-zero
 with a structured error on a missing/ambiguous target, but checking
@@ -254,16 +254,16 @@ a clearer message.
 
 ```bash
 # Human-readable (default)
-nex pane list
+kelpi pane list
 
 # JSON for scripts — stable shape, exit code encodes success
-nex pane list --json
+kelpi pane list --json
 
-# Only panes in the current pane's workspace (requires NEX_PANE_ID)
-nex pane list --current
+# Only panes in the current pane's workspace (requires KELPI_PANE_ID)
+kelpi pane list --current
 
 # Only panes in a named workspace
-nex pane list --workspace nex
+kelpi pane list --workspace kelpi
 ```
 
 The default table's `ID` column prints the full pane UUID, so you can
@@ -280,30 +280,30 @@ optional `group_id` and `group_name` (both absent for top-level workspaces),
 
 Exit codes: `0` on success (including empty list), `1` on usage error,
 transport failure, or `ok: false` from the server. Empty output with
-exit `1` and `"upgrade required"` on stderr means the running Nex is
+exit `1` and `"upgrade required"` on stderr means the running Kelpi is
 older than v0.20 and doesn't support `pane list`.
 
 Common recipes:
 
 ```bash
 # All labels of your workers
-nex pane list --json | jq -r '.[].label | select(startswith("worker-"))'
+kelpi pane list --json | jq -r '.[].label | select(startswith("worker-"))'
 
 # Which workers are still alive?
-alive=$(nex pane list --json | jq -r '.[].label')
+alive=$(kelpi pane list --json | jq -r '.[].label')
 for w in worker-1 worker-2 worker-3; do
   echo "$alive" | grep -qx "$w" && echo "$w: alive" || echo "$w: gone"
 done
 
 # Agent status across a fan-out
-nex pane list --json | jq -r '.[] | select(.label | startswith("worker-"))
+kelpi pane list --json | jq -r '.[] | select(.label | startswith("worker-"))
   | "\(.label)\t\(.status)"'
 
 # Find a specific pane's UUID before a `pane send`
-uuid=$(nex pane list --json | jq -r '.[] | select(.label == "build") | .id')
+uuid=$(kelpi pane list --json | jq -r '.[] | select(.label == "build") | .id')
 
 # Find my workspace's group (`top-level` means it has no parent group)
-nex pane list --json | jq -r --arg pane "$NEX_PANE_ID" \
+kelpi pane list --json | jq -r --arg pane "$KELPI_PANE_ID" \
   '.[] | select(.id == $pane) | .group_name // "top-level"'
 ```
 
@@ -315,10 +315,10 @@ their sidebar order.
 
 ```bash
 # Human-readable group table
-nex group list
+kelpi group list
 
 # JSON for scripts; an empty state is []
-nex group list --json
+kelpi group list --json
 ```
 
 Each JSON group includes `id`, `name`, optional `color`, and `workspaces`.
@@ -333,10 +333,10 @@ are still listed.
 
 ```bash
 # Human-readable table (ID, NAME, GROUP, PANES, ACTIVE)
-nex workspace list
+kelpi workspace list
 
 # JSON for scripts; an empty state is []
-nex workspace list --json
+kelpi workspace list --json
 ```
 
 Each JSON entry includes `id`, `name`, `color`, `pane_count`, `is_active`,
@@ -347,29 +347,29 @@ workspace). The `group_name` field matches the one on `pane list`, so
 ### Event Commands (Agent Lifecycle)
 
 ```bash
-nex event start                    # Signal agent started
-nex event stop                     # Signal agent stopped
-nex event error --message "..."    # Signal error
-nex event notification --title "..." --body "..."  # Desktop notification
-nex event session-start            # Attach the pane to a Claude session id (SessionStart hook)
-nex event session-end              # Detach the session id so an exited session isn't resumed (SessionEnd hook)
-nex event start --agent codex      # Same lifecycle verbs, fired from Codex CLI hooks (issue #101)
+kelpi event start                    # Signal agent started
+kelpi event stop                     # Signal agent stopped
+kelpi event error --message "..."    # Signal error
+kelpi event notification --title "..." --body "..."  # Desktop notification
+kelpi event session-start            # Attach the pane to a Claude session id (SessionStart hook)
+kelpi event session-end              # Detach the session id so an exited session isn't resumed (SessionEnd hook)
+kelpi event start --agent codex      # Same lifecycle verbs, fired from Codex CLI hooks (issue #101)
 ```
 
 `session-start` / `session-end` read the `session_id` from the hook's
 stdin JSON and are wired to Claude Code's `SessionStart` / `SessionEnd`
 hooks by `install-hooks.sh`. `session-end` clears the pane's tracked
-session id (only when it still matches the ending session) so Nex does
+session id (only when it still matches the ending session) so Kelpi does
 not `claude --resume` a session that has already exited.
 
-On `stop` / `notification`, `nex event` also reads the hook payload's
+On `stop` / `notification`, `kelpi event` also reads the hook payload's
 `background_tasks` array — Claude Code's live snapshot of the
 `run_in_background` shells and background subagents still in flight — and
-forwards the running count to Nex. While that count is non-zero the pane
+forwards the running count to Kelpi. While that count is non-zero the pane
 stays **running** (not "waiting for input") and the synthetic
 "waiting" notification is suppressed, so a pane whose turn ended but
 still has background work in flight reads correctly. The count shows in
-`nex pane list --json` as `background_tasks` and in the pane header as
+`kelpi pane list --json` as `background_tasks` and in the pane header as
 "· N running". No extra hook wiring is needed — it rides on the existing
 `Stop` / `Notification` hooks.
 
@@ -383,7 +383,7 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
   attached right now (codex has no SessionEnd, so its session id and
   kind persist after codex exits).
 - Run codex workers in their **own** panes. Codex hooks inherit
-  `NEX_PANE_ID`, so a claude agent shelling out to `codex exec` inside
+  `KELPI_PANE_ID`, so a claude agent shelling out to `codex exec` inside
   its own pane overwrites that pane's session id and kind with the
   throwaway codex session's.
 
@@ -406,11 +406,11 @@ to these verbs with `--agent codex`. `pane list --json` then reports an
 #                       won't create one, to avoid orphaning it on failure)
 # The reply adds `worktree_path` + `branch`; the create runs with a longer
 # read timeout so a slow `git fetch` isn't a spurious failure.
-nex workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name>] [--profile <name>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
+kelpi workspace create [--name "..."] [--path /dir] [--color blue|green|red|yellow|purple|orange|pink|gray] [--group <name>] [--profile <name>] [--worktree <name> [--branch <name>] [--repo <path>] [--update-main]] [--json]
 
 # Assign or clear a workspace's profile (fire-and-forget). Applies to the
-# NEXT pane spawned in the workspace; existing panes keep their env.
-nex workspace profile <name-or-id> (<profile> | --clear)
+# KELPIT pane spawned in the workspace; existing panes keep their env.
+kelpi workspace profile <name-or-id> (<profile> | --clear)
 
 # Delete one or more workspaces by name-or-id (request/response). Deletes
 # outright — no CLI prompt — closing any remaining panes. Refuses to
@@ -433,13 +433,13 @@ nex workspace profile <name-or-id> (<profile> | --clear)
 #                     `worktree_error?` — or `error` on failure.
 # Exit code reflects DELETES only: a prune that git refuses is a Warning,
 # not a failure, so the command still exits 0 if the workspace was deleted.
-nex workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
+kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]
 ```
 
 ### Workspace Profiles (multi-account env injection)
 
 A workspace profile is a named env-var set defined in
-`~/.config/nex/config`, one variable per line (repeated lines with the
+`~/.config/kelpi/config`, one variable per line (repeated lines with the
 same name merge, later lines win). Manage them by hand in the config
 file or via **Settings → Profiles** (both write the same lines):
 
@@ -451,7 +451,7 @@ profile = personal:CLAUDE_CONFIG_DIR=~/.claude-accounts/personal
 Assign one to a workspace (`workspace create --profile`, `workspace
 profile`, the inspector picker, or the sidebar context menu) and every
 pane PTY spawned in that workspace from then on gets those vars plus
-`NEX_PROFILE=<name>`. The flagship use case is running multiple Claude
+`KELPI_PROFILE=<name>`. The flagship use case is running multiple Claude
 Code accounts side by side — one workspace per `CLAUDE_CONFIG_DIR` —
 and the injection survives restart: restored panes respawn with the
 profile env, so auto-resumed agent sessions (`claude --resume`) stay
@@ -459,11 +459,11 @@ on their workspace's account.
 
 The built-in **`default` profile** is the baseline: a workspace with no
 explicit assignment is on `default`, so every pane always carries
-`NEX_PROFILE` (`default` unless assigned). It always exists (virtual
+`KELPI_PROFILE` (`default` unless assigned). It always exists (virtual
 until customized), can't be renamed or deleted in Settings, and adding
 vars to it (Settings → Profiles or `profile = default:KEY=value` lines)
 applies them to every unassigned workspace. Selecting `default` in the
-UI, `nex workspace profile <ws> default`, and `--clear` are equivalent.
+UI, `kelpi workspace profile <ws> default`, and `--clear` are equivalent.
 
 Rules worth knowing:
 
@@ -474,15 +474,15 @@ Rules worth knowing:
   with a profile up front (the New Workspace sheet's Profile picker or
   `workspace create --profile`) spawn their first pane already on it.
 - Profile definitions are re-read from the config file on every spawn,
-  so editing values applies to new panes without restarting Nex.
+  so editing values applies to new panes without restarting Kelpi.
 - Profile names cannot contain `:` or `=`; values may contain both.
   Quotes in values are literal (no stripping). A leading `~` in the
   value is tilde-expanded.
-- `NEX_PANE_ID` and `PATH` are reserved — profile entries for them are
+- `KELPI_PANE_ID` and `PATH` are reserved — profile entries for them are
   ignored.
 - Assigning a profile with no definitions in the config is allowed
   (`workspace create --profile` works before the config lines exist);
-  panes then get only `NEX_PROFILE=<name>` and a warning is logged.
+  panes then get only `KELPI_PROFILE=<name>` and a warning is logged.
 - `workspace profile` is fire-and-forget: an unknown or ambiguous
   workspace name is a silent no-op (same semantics as `workspace
   move`). UUIDs always win over names.
@@ -491,8 +491,8 @@ Rules worth knowing:
 
 Open a file in the right pane type — handy for surfacing a worker's
 output (a rendered report, a diff, an HTML artifact) to the human
-without leaving Nex. Relative paths resolve against the caller's cwd,
-and the pane lands in the caller's workspace (via `NEX_PANE_ID`).
+without leaving Kelpi. Relative paths resolve against the caller's cwd,
+and the pane lands in the caller's workspace (via `KELPI_PANE_ID`).
 
 ```bash
 # Generic opener: a URL/hostname opens a web pane; otherwise routes a
@@ -505,28 +505,28 @@ and the pane lands in the caller's workspace (via `NEX_PANE_ID`).
 #   anything else                           → usage error, no pane
 # Explicit paths (./x, /x, ~/x) and existing files stay local, so
 # `./google.com` is a file; a bare word (README) or an unknown/file-type
-# TLD (notes.txt, foo.museum) is NOT a host — use `nex web open` for those.
+# TLD (notes.txt, foo.museum) is NOT a host — use `kelpi web open` for those.
 # --here reuses the calling pane (markdown route only). Request/response
 # on the web/URL route (prints `open ok: <pane-uuid>`); fire-and-forget
 # on the markdown route.
-nex open [--here] <path-or-url>
+kelpi open [--here] <path-or-url>
 
 # Always open a markdown preview pane, whatever the extension. The
-# escape hatch for forcing markdown on a file `nex open` would reject
+# escape hatch for forcing markdown on a file `kelpi open` would reject
 # (a .log, a .txt) or render as web (a .html you want to read as source).
-nex md [--here] <file>
+kelpi md [--here] <file>
 
 # Open a git diff pane for the cwd repo (or scoped to <path>). Refreshes
 # on focus and via the header refresh button.
-nex diff [<path>]
+kelpi diff [<path>]
 ```
 
-So a worker that just wrote `report.html` can `nex open report.html`
-to render it in a web pane, or `nex open summary.md` to drop a
+So a worker that just wrote `report.html` can `kelpi open report.html`
+to render it in a web pane, or `kelpi open summary.md` to drop a
 live-reloading markdown preview beside the terminal — no manual
 `file://` or pane-type juggling. The same command also opens a live
-site: `nex open localhost:3000` or `nex open example.com` drops the
-app into a web pane without reaching for the longer `nex web open`.
+site: `kelpi open localhost:3000` or `kelpi open example.com` drops the
+app into a web pane without reaching for the longer `kelpi web open`.
 
 ### Web Pane Commands
 
@@ -554,60 +554,60 @@ lowest layer that solves your problem; `exec` is the escape hatch.
 # Use `web navigate` to redirect an existing pane, or `web tab-new` for a new tab.
 # `open`, `navigate`, and `tab-new` resolve LOCAL FILE PATHS: an explicit path
 # (./x, ../x, /x, ~/x) or a bare name matching a file-with-extension in the cwd
-# becomes a file:// URL, so `nex web open report.html` works without hand-building
+# becomes a file:// URL, so `kelpi web open report.html` works without hand-building
 # file://. Bare hostnames (example.com) and single-label hosts (app, api) stay
 # URLs — use ./name to force a local path.
-nex web open [--private] <url>
+kelpi web open [--private] <url>
 
 # Redirect the active tab of an existing web pane to <url>
-nex web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
+kelpi web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]
 
 # Read the active tab's URL + title
-nex web url --target <name-or-uuid> [--workspace <name-or-uuid>]
+kelpi web url --target <name-or-uuid> [--workspace <name-or-uuid>]
 
 # Navigate
-nex web back    --target <name-or-uuid>
-nex web forward --target <name-or-uuid>
-nex web reload  --target <name-or-uuid> [--hard]
+kelpi web back    --target <name-or-uuid>
+kelpi web forward --target <name-or-uuid>
+kelpi web reload  --target <name-or-uuid> [--hard]
 
 # Capture page state into a JSON reply
-nex web capture --target <name-or-uuid> --mode meta|text|screenshot
+kelpi web capture --target <name-or-uuid> --mode meta|text|screenshot
 
 # Multi-tab
-nex web tabs       --target <name-or-uuid> [--json] [--no-header]
-nex web tab-new    --target <name-or-uuid> [<url>] [--no-focus]
-nex web tab-close  --target <name-or-uuid> <ref>   # UUID or numeric index
-nex web tab-select --target <name-or-uuid> <ref>
+kelpi web tabs       --target <name-or-uuid> [--json] [--no-header]
+kelpi web tab-new    --target <name-or-uuid> [<url>] [--no-focus]
+kelpi web tab-close  --target <name-or-uuid> <ref>   # UUID or numeric index
+kelpi web tab-select --target <name-or-uuid> <ref>
 
 # Drain the per-pane console ring buffer (since-cursor, level filter, clear)
-nex web console --target <name-or-uuid> [--since N] [--level error|warn|info|log|debug] [--clear] [--json]
+kelpi web console --target <name-or-uuid> [--since N] [--level error|warn|info|log|debug] [--clear] [--json]
 
 # Arm the element picker. With --send-to, the next click pastes a
 # sanitised payload (selector, xpath, tag, outer_html, attributes,
 # rect, surrounding text, url) into the named pane via `pane send`.
 # Default is paste-only — pass --submit if the receiving pane should
 # auto-execute (rarely what you want for an agent prompt).
-nex web inspect --target <name-or-uuid> [--send-to <pane>] [--submit] [--disarm]
-nex web inspect-result --target <name-or-uuid> [--clear] [--json]
+kelpi web inspect --target <name-or-uuid> [--send-to <pane>] [--submit] [--disarm]
+kelpi web inspect-result --target <name-or-uuid> [--clear] [--json]
 
 # Toggle private mode (rebuilds the coordinator; live JS state lost)
-nex web private on|off --target <name-or-uuid>
+kelpi web private on|off --target <name-or-uuid>
 
 # Cookies (per-pane data store)
-nex web cookies list   --target <name-or-uuid> [--json]
-nex web cookies clear  --target <name-or-uuid> [--domain X] [--all]
-nex web cookies delete <name> --target <name-or-uuid> [--domain X]
+kelpi web cookies list   --target <name-or-uuid> [--json]
+kelpi web cookies clear  --target <name-or-uuid> [--domain X] [--all]
+kelpi web cookies delete <name> --target <name-or-uuid> [--domain X]
 ```
 
 #### Action verbs
 
 ```bash
-nex web click  --target <X> <selector> [--double] [--right] [--at x,y] [--json]
-nex web type   --target <X> <selector> <text> [--submit] [--no-replace] [--json]
-nex web select --target <X> <selector> <value-or-label> [--json]
-nex web scroll --target <X> <selector> [--top|--bottom|--smooth] [--json]
-nex web hover  --target <X> <selector> [--json]
-nex web key    --target <X> <key-name> [--selector <sel>] [--json]
+kelpi web click  --target <X> <selector> [--double] [--right] [--at x,y] [--json]
+kelpi web type   --target <X> <selector> <text> [--submit] [--no-replace] [--json]
+kelpi web select --target <X> <selector> <value-or-label> [--json]
+kelpi web scroll --target <X> <selector> [--top|--bottom|--smooth] [--json]
+kelpi web hover  --target <X> <selector> [--json]
+kelpi web key    --target <X> <key-name> [--selector <sel>] [--json]
 ```
 
 - `click` always synthesises a full pointerdown → mousedown →
@@ -633,11 +633,11 @@ nex web key    --target <X> <key-name> [--selector <sel>] [--json]
 #### Query verbs
 
 ```bash
-nex web text   --target <X> <selector> [--max-bytes N] [--json]
-nex web attr   --target <X> <selector> <attribute> [--json]
-nex web count  --target <X> <selector> [--json]
-nex web exists --target <X> <selector>                 # exit 0 = yes, 1 = no
-nex web dom    --target <X> <selector> [--max-bytes N] [--json]
+kelpi web text   --target <X> <selector> [--max-bytes N] [--json]
+kelpi web attr   --target <X> <selector> <attribute> [--json]
+kelpi web count  --target <X> <selector> [--json]
+kelpi web exists --target <X> <selector>                 # exit 0 = yes, 1 = no
+kelpi web dom    --target <X> <selector> [--max-bytes N] [--json]
 ```
 
 - `text` clips at 1MB by default and reports `truncated` in the
@@ -651,7 +651,7 @@ nex web dom    --target <X> <selector> [--max-bytes N] [--json]
 #### Wait
 
 ```bash
-nex web wait --target <X>
+kelpi web wait --target <X>
     (--selector <sel> | --url-match <substring-or-regex>)
     [--for visible|hidden|exists|count=N|text=X]
     [--timeout 10]
@@ -676,7 +676,7 @@ Conditions:
 | `url-match` (default with `--url-match`) | `location.href` matches the substring or regex |
 
 Exit 0 on match (prints `matched <condition> in <N> ms`); exit 1
-on timeout (`nex web wait: timeout` to stderr; `waited_ms` is in
+on timeout (`kelpi web wait: timeout` to stderr; `waited_ms` is in
 the `--json` envelope).
 
 #### Selector forms
@@ -702,7 +702,7 @@ When you need to compose several actuator calls plus custom JS
 logic in one CLI invocation, reach for `exec`:
 
 ```bash
-nex web exec --target <X> (--file <path> | <js>) [--timeout 30] [--json]
+kelpi web exec --target <X> (--file <path> | <js>) [--timeout 30] [--json]
 ```
 
 The author script runs inside an async wrapper with three aliases
@@ -710,9 +710,9 @@ bound:
 
 | Alias | Resolves to |
 |---|---|
-| `$` | `__nexAct.find` (single element by selector) |
-| `$$` | `__nexAct.findAll` |
-| `nex` | the full `__nexAct` namespace (`nex.click`, `nex.type`, `nex.wait`, ...) |
+| `$` | `__kelpiAct.find` (single element by selector) |
+| `$$` | `__kelpiAct.findAll` |
+| `kelpi` | the full `__kelpiAct` namespace (`kelpi.click`, `kelpi.type`, `kelpi.wait`, ...) |
 
 A single trailing expression returns its value implicitly. Source
 containing `return` / `throw` / `if` / `for` / `while` / `switch`
@@ -721,20 +721,20 @@ body mode where the author owns the explicit `return`.
 
 ```bash
 # Trivial one-liner
-nex web exec --target X 'document.title'
+kelpi web exec --target X 'document.title'
 
 # Reach into framework state
-nex web exec --target X 'window.__REDUX__.getState().cart.items.length'
+kelpi web exec --target X 'window.__REDUX__.getState().cart.items.length'
 
 # jQuery-style across the page
-nex web exec --target X '$$("li.product").map(e => e.dataset.sku)'
+kelpi web exec --target X '$$("li.product").map(e => e.dataset.sku)'
 
 # Compose actuator calls in one socket roundtrip
-nex web exec --target X '
-  await nex.wait({selector: "text:Add to order", for: "visible"});
-  await nex.click("text:Add to order");
-  await nex.wait({selector: "[role=alert]", for: "exists"});
-  return nex.text("[role=alert]").text;
+kelpi web exec --target X '
+  await kelpi.wait({selector: "text:Add to order", for: "visible"});
+  await kelpi.click("text:Add to order");
+  await kelpi.wait({selector: "[role=alert]", for: "exists"});
+  return kelpi.text("[role=alert]").text;
 '
 ```
 
@@ -742,7 +742,7 @@ Reply envelope matches every other actuator verb: `{ok:true,
 result:<json>}` on success; `{ok:false, error:<message>,
 js_error:{name, message, line, column}}` on a page-side exception.
 `--timeout` extends the CLI's socket read budget (default 30s) so
-exec scripts with embedded `nex.wait(...)` calls don't get cut
+exec scripts with embedded `kelpi.wait(...)` calls don't get cut
 off; the JS-side `wait` timeout is independent.
 
 All `web` verbs follow the same `--target` / `--workspace`
@@ -753,7 +753,7 @@ failure.
 
 **Known limitation.** `WKUserContentController` user-script injection
 is unreliable on `data:` URLs (opaque origin). Console capture, the
-element picker, and the actuator (`__nexAct.*`, hence every action /
+element picker, and the actuator (`__kelpiAct.*`, hence every action /
 query / wait / exec verb) rely on injected scripts, so reach for a
 real `http(s)://` or `file://` URL when validating those paths.
 Smoke tests can still use `data:` URLs for navigation, `capture
@@ -765,13 +765,13 @@ Smoke tests can still use `data:` URLs for navigation, `capture
   `pane capture` / `pane split` / `pane create` / `pane name` / `pane resize` /
   `pane move --target`:
   UUIDs are matched globally. Labels are scoped to the sender's own
-  workspace (via `NEX_PANE_ID`) unless `--workspace <name-or-id>` is
+  workspace (via `KELPI_PANE_ID`) unless `--workspace <name-or-id>` is
   passed; a bare label without either explicit or implicit scope is
   rejected, so coordinators can't silently route into the
   wrong workspace.
-- **Works from outside Nex**: `pane send` / `split` / `create` /
+- **Works from outside Kelpi**: `pane send` / `split` / `create` /
   `name` (like `send-key` / `close` / `capture`) no longer require
-  `NEX_PANE_ID`. From a plain shell, address a pane with a UUID `--target`,
+  `KELPI_PANE_ID`. From a plain shell, address a pane with a UUID `--target`,
   or `--target <label> --workspace <name-or-id>`; `create`/`split` also accept
   `--workspace` alone. These are request/response: success prints the resolved
   (or new) pane id, failure exits non-zero with an actionable error — so an
@@ -780,12 +780,12 @@ Smoke tests can still use `data:` URLs for navigation, `capture
 - **`--name` flag**: names the new pane at creation time so it can be
   immediately targeted by `pane send`.
 - **`--target` flag**: on `split`/`create`, specifies which existing pane to
-  split by name or UUID (defaults to the current pane via `NEX_PANE_ID`). This
+  split by name or UUID (defaults to the current pane via `KELPI_PANE_ID`). This
   lets a coordinator split any named pane, not just itself.
 - **Silent fallback vs. loud failure**: the fire-and-forget event hooks
-  (`nex event …`) still exit 0 when Nex is unreachable. The request/response
+  (`kelpi event …`) still exit 0 when Kelpi is unreachable. The request/response
   pane commands above instead exit non-zero with an `Error: …` / `Repair: …`
-  message when the target can't be resolved or Nex isn't running.
+  message when the target can't be resolved or Kelpi isn't running.
 - **`pane send` mechanics**: text is sent directly to the target pane's PTY
   followed by an Enter keypress. If a shell is running, the text executes as a
   shell command. If Claude is running in interactive mode, the text becomes a
@@ -797,8 +797,8 @@ Smoke tests can still use `data:` URLs for navigation, `capture
   the explicit two-step submit:
 
   ```bash
-  nex pane send     --target worker-1 "<prompt>"
-  nex pane send-key --target worker-1 enter
+  kelpi pane send     --target worker-1 "<prompt>"
+  kelpi pane send-key --target worker-1 enter
   ```
 
   `pane send-key` accepts `enter`, `return`, `tab`, `escape`/`esc`, `space`,
@@ -812,23 +812,23 @@ to land in every worker pane of the workspace at once, toggle tmux-style
 synchronise-input:
 
 ```bash
-nex pane sync on            # mirror keystrokes across this workspace
+kelpi pane sync on            # mirror keystrokes across this workspace
 # ... type in any pane; every other pane in the workspace gets the same input
-nex pane sync off           # back to per-pane input
+kelpi pane sync off           # back to per-pane input
 
-nex pane sync toggle        # flip without caring about the current state
-nex pane sync status --json # read-only snapshot, machine-readable
+kelpi pane sync toggle        # flip without caring about the current state
+kelpi pane sync status --json # read-only snapshot, machine-readable
 ```
 
 Opt a single pane out of the active sync group (handy for a coordinator
 pane you don't want broadcasting into):
 
 ```bash
-nex pane sync exclude --target coordinator
-nex pane sync include --target coordinator   # undo
+kelpi pane sync exclude --target coordinator
+kelpi pane sync include --target coordinator   # undo
 ```
 
-Scope defaults to the calling pane's workspace via `NEX_PANE_ID`. Pass
+Scope defaults to the calling pane's workspace via `KELPI_PANE_ID`. Pass
 `--workspace <name-or-uuid>` to target another workspace from an
 external script. New panes opened while sync is on auto-join the group;
 closed panes drop out automatically.
@@ -844,10 +844,10 @@ and collects results from markdown output files.
 
 ```bash
 # Name the coordinator pane
-nex pane name coordinator
+kelpi pane name coordinator
 
 # Create a shared communication directory
-mkdir -p .nex-tasks .nex-results
+mkdir -p .kelpi-tasks .kelpi-results
 ```
 
 #### Step 2: Write task files
@@ -856,8 +856,8 @@ Write a markdown file for each worker describing its task:
 
 ```bash
 # Write task files (use the Write tool, not echo)
-# .nex-tasks/worker-1.md
-# .nex-tasks/worker-2.md
+# .kelpi-tasks/worker-1.md
+# .kelpi-tasks/worker-2.md
 # etc.
 ```
 
@@ -865,22 +865,22 @@ Each task file should include:
 - Clear description of the work to do
 - Input files/context needed
 - Expected output format
-- Where to write results (e.g., `.nex-results/worker-1.md`)
+- Where to write results (e.g., `.kelpi-results/worker-1.md`)
 
 #### Step 3: Spawn named worker panes
 
 ```bash
 # Create named worker panes. Direction barely matters here — we reflow
 # into a clean grid immediately after, so don't hand-tune splits.
-nex pane split --name worker-1
-nex pane split --name worker-2
-nex pane split --name worker-3
+kelpi pane split --name worker-1
+kelpi pane split --name worker-2
+kelpi pane split --name worker-3
 
 # Reflow into a balanced grid, then keep the coordinator prominent.
 # (Do NOT rely on repeated same-direction splits — they collapse into
 # unreadable slivers. See "Keep the layout readable" above.)
-nex layout select tiled
-nex pane resize --target coordinator --ratio 0.65
+kelpi layout select tiled
+kelpi pane resize --target coordinator --ratio 0.65
 ```
 
 **Timing**: add a short delay (1-2 seconds) between spawning panes to allow
@@ -891,11 +891,11 @@ each surface to initialize before sending commands.
 ```bash
 # Send Claude commands to each worker
 sleep 2
-nex pane send --target worker-1 claude -p "Read .nex-tasks/worker-1.md and complete the task described. Write your results to .nex-results/worker-1.md"
+kelpi pane send --target worker-1 claude -p "Read .kelpi-tasks/worker-1.md and complete the task described. Write your results to .kelpi-results/worker-1.md"
 sleep 1
-nex pane send --target worker-2 claude -p "Read .nex-tasks/worker-2.md and complete the task described. Write your results to .nex-results/worker-2.md"
+kelpi pane send --target worker-2 claude -p "Read .kelpi-tasks/worker-2.md and complete the task described. Write your results to .kelpi-results/worker-2.md"
 sleep 1
-nex pane send --target worker-3 claude -p "Read .nex-tasks/worker-3.md and complete the task described. Write your results to .nex-results/worker-3.md"
+kelpi pane send --target worker-3 claude -p "Read .kelpi-tasks/worker-3.md and complete the task described. Write your results to .kelpi-results/worker-3.md"
 ```
 
 #### Step 5: Poll for results
@@ -908,14 +908,14 @@ WORKERS=(worker-1 worker-2 worker-3)
 while true; do
   all_done=true
   for w in "${WORKERS[@]}"; do
-    [ -f ".nex-results/$w.md" ] || { all_done=false; break; }
+    [ -f ".kelpi-results/$w.md" ] || { all_done=false; break; }
   done
   $all_done && break
 
   # Abort if any worker pane has vanished.
-  alive=$(nex pane list --json | jq -r '.[].label')
+  alive=$(kelpi pane list --json | jq -r '.[].label')
   for w in "${WORKERS[@]}"; do
-    if ! echo "$alive" | grep -qx "$w" && [ ! -f ".nex-results/$w.md" ]; then
+    if ! echo "$alive" | grep -qx "$w" && [ ! -f ".kelpi-results/$w.md" ]; then
       echo "worker $w disappeared before producing output" >&2
       exit 1
     fi
@@ -930,9 +930,9 @@ Then read each result file and synthesize.
 
 ```bash
 # Close worker panes when done
-nex pane send --target worker-1 exit
-nex pane send --target worker-2 exit
-nex pane send --target worker-3 exit
+kelpi pane send --target worker-1 exit
+kelpi pane send --target worker-2 exit
+kelpi pane send --target worker-3 exit
 ```
 
 ### Pattern 2: Direct Messaging Between Panes
@@ -942,14 +942,14 @@ files. Best for short, one-off commands.
 
 ```bash
 # From coordinator, run a build in a named pane
-nex pane split --name build
+kelpi pane split --name build
 sleep 2
-nex pane send --target build make build
+kelpi pane send --target build make build
 
 # Run tests in another pane
-nex pane split --name test
+kelpi pane split --name test
 sleep 2
-nex pane send --target test make test
+kelpi pane send --target test make test
 ```
 
 ### Pattern 3: Interactive Agent Swarm
@@ -958,19 +958,19 @@ Start multiple Claude agents in interactive mode that can message each other.
 
 ```bash
 # Coordinator creates workers
-nex pane split --name reviewer --direction vertical
-nex pane split --name coder --direction horizontal
+kelpi pane split --name reviewer --direction vertical
+kelpi pane split --name coder --direction horizontal
 
 sleep 2
 
 # Start Claude in each with role context
-nex pane send --target reviewer claude
+kelpi pane send --target reviewer claude
 sleep 2
-nex pane send --target reviewer "You are a code reviewer. Review any code written to .nex-results/code.md and write your review to .nex-results/review.md"
+kelpi pane send --target reviewer "You are a code reviewer. Review any code written to .kelpi-results/code.md and write your review to .kelpi-results/review.md"
 
-nex pane send --target coder claude
+kelpi pane send --target coder claude
 sleep 2
-nex pane send --target coder "You are a coder. Write code for the task in .nex-tasks/feature.md and save it to .nex-results/code.md"
+kelpi pane send --target coder "You are a coder. Write code for the task in .kelpi-tasks/feature.md and save it to .kelpi-results/code.md"
 ```
 
 ### Pattern 4: Agent driving / observing a web app via web pane
@@ -988,23 +988,23 @@ restaurant cart from a fresh session.
 ```bash
 # Open the menu in a private pane so the agent's exploration doesn't
 # pollute the user's real cart.
-nex web open --private https://example-restaurant.test
+kelpi web open --private https://example-restaurant.test
 WEB=<the-printed-uuid>
 
 # Wait for the menu to render, dismiss the table modal.
-nex web wait  --target $WEB --selector "text:Choose your table" --for visible
-nex web type  --target $WEB "css:input[type=text]" "5"
-nex web click --target $WEB "text:Confirm"
+kelpi web wait  --target $WEB --selector "text:Choose your table" --for visible
+kelpi web type  --target $WEB "css:input[type=text]" "5"
+kelpi web click --target $WEB "text:Confirm"
 
 # Wait for the first menu item to be tappable, then add it.
-nex web wait  --target $WEB --selector "text:Margherita" --for visible
-nex web click --target $WEB "text:Margherita"
-nex web wait  --target $WEB --selector "text:Add to order" --for visible
-nex web click --target $WEB "text:Add to order"
+kelpi web wait  --target $WEB --selector "text:Margherita" --for visible
+kelpi web click --target $WEB "text:Margherita"
+kelpi web wait  --target $WEB --selector "text:Add to order" --for visible
+kelpi web click --target $WEB "text:Add to order"
 
 # Verify the toast.
-nex web wait --target $WEB --selector "[role=alert]" --for exists
-nex web text --target $WEB "[role=alert]"
+kelpi web wait --target $WEB --selector "[role=alert]" --for exists
+kelpi web text --target $WEB "[role=alert]"
 # → "Margherita added to your order"
 ```
 
@@ -1012,18 +1012,18 @@ nex web text --target $WEB "[role=alert]"
 polls its console for errors, fixes the code, reloads, repeats.
 
 ```bash
-nex web open http://localhost:3000              # → prints `open ok: <web-uuid>`
-nex pane create --name dev-agent
+kelpi web open http://localhost:3000              # → prints `open ok: <web-uuid>`
+kelpi pane create --name dev-agent
 sleep 2
-nex pane send --target dev-agent claude --permission-mode acceptEdits
+kelpi pane send --target dev-agent claude --permission-mode acceptEdits
 
 # Agent prompt (typed into dev-agent):
 #   "Watch the console buffer of web pane <web-uuid>. Every 10s run
-#    `nex web console --target <web-uuid> --json --since $cursor`
+#    `kelpi web console --target <web-uuid> --json --since $cursor`
 #    (track the cursor between polls). When you see a JS error, open
 #    the relevant source file and propose a fix. After each edit,
-#    `nex web reload --target <web-uuid>` and
-#    `nex web wait --target <web-uuid> --selector '#app' --for visible`
+#    `kelpi web reload --target <web-uuid>` and
+#    `kelpi web wait --target <web-uuid> --selector '#app' --for visible`
 #    before re-checking the console."
 ```
 
@@ -1033,12 +1033,12 @@ state reads, or anything that would otherwise round-trip through
 the shell three times.
 
 ```bash
-nex web exec --target $WEB '
+kelpi web exec --target $WEB '
   // Add each available size to the cart until we hit 3 items.
   for (const size of ["Small", "Medium", "Large"]) {
-    await nex.click("text:" + size);
-    await nex.wait({selector: "[role=alert]", for: "exists", timeout: 3000});
-    await nex.wait({selector: "[role=alert]", for: "hidden"});
+    await kelpi.click("text:" + size);
+    await kelpi.wait({selector: "[role=alert]", for: "exists", timeout: 3000});
+    await kelpi.wait({selector: "[role=alert]", for: "hidden"});
     const count = $$("li.cart-item").length;
     if (count >= 3) break;
   }
@@ -1053,7 +1053,7 @@ code that rendered it. Still the right tool when the agent doesn't
 know the selector up front and a human is at the keyboard.
 
 ```bash
-nex web inspect --target <web-uuid> --send-to dev-agent
+kelpi web inspect --target <web-uuid> --send-to dev-agent
 # → next click on the web page pastes a fenced JSON block into
 #   dev-agent's PTY (paste-only by default; agent reads it as input
 #   but does NOT auto-submit unless --submit was passed)
@@ -1069,7 +1069,7 @@ smuggled into.
 change to gate a deploy.
 
 ```bash
-nex web capture --target <web-uuid> --mode screenshot
+kelpi web capture --target <web-uuid> --mode screenshot
 # → JSON reply contains either `png_base64` (small) or `path` to a
 #   PNG in the system temp dir (larger). The CLI prints the path.
 ```
@@ -1079,7 +1079,7 @@ in a private web pane so the agent's exploration doesn't pollute
 the user's real session.
 
 ```bash
-nex web open --private https://staging.example.com
+kelpi web open --private https://staging.example.com
 # Cookies + caches discarded on quit; tabs blank on restart.
 ```
 
@@ -1107,7 +1107,7 @@ When creating task files for workers, use this structure:
 - <file paths, data sources, or references the worker needs>
 
 ## Expected Output
-- Write results to: `.nex-results/<worker-name>.md`
+- Write results to: `.kelpi-results/<worker-name>.md`
 - Create/modify source files as described below
 
 ## Constraints
@@ -1137,7 +1137,7 @@ Workers should write results in this format:
 
 ## Practical Tips
 
-1. **Always name your coordinator pane first** (`nex pane name coordinator`)
+1. **Always name your coordinator pane first** (`kelpi pane name coordinator`)
    so workers can message back if needed.
 
 2. **Use `claude -p` for workers** (print mode). It runs non-interactively
@@ -1148,7 +1148,7 @@ Workers should write results in this format:
    initialize. A 1-2 second sleep between `pane split` and `pane send` prevents
    race conditions.
 
-4. **Use the `.nex-tasks/` and `.nex-results/` convention** for the shared
+4. **Use the `.kelpi-tasks/` and `.kelpi-results/` convention** for the shared
    communication directory. This keeps agent artifacts organized and
    `.gitignore`-able.
 
@@ -1167,10 +1167,10 @@ Workers should write results in this format:
    the next batch.
 
 9. **Reflow the layout after spawning; never loop a single split direction.**
-   `nex pane split` bisects 50/50 with no rebalancing, so repeated
+   `kelpi pane split` bisects 50/50 with no rebalancing, so repeated
    same-direction splits collapse into unreadable slivers. After the spawn
-   loop, run `nex layout select tiled` for a balanced grid, then
-   `nex pane resize --target coordinator --ratio 0.65` to keep the coordinator
+   loop, run `kelpi layout select tiled` for a balanced grid, then
+   `kelpi pane resize --target coordinator --ratio 0.65` to keep the coordinator
    prominent. Prefer `pane resize` over `layout select main-*` for the
    coordinator: `main-*` enlarges the *focused* pane, and focus sits on the
    last-spawned worker after the loop.
@@ -1181,16 +1181,16 @@ Here is a complete coordinator script you can adapt:
 
 ```bash
 #!/bin/bash
-# Nex multi-agent coordinator
+# Kelpi multi-agent coordinator
 set -e
 
 PROJECT_DIR="$(pwd)"
-TASK_DIR="$PROJECT_DIR/.nex-tasks"
-RESULT_DIR="$PROJECT_DIR/.nex-results"
+TASK_DIR="$PROJECT_DIR/.kelpi-tasks"
+RESULT_DIR="$PROJECT_DIR/.kelpi-results"
 WORKERS=("worker-1" "worker-2" "worker-3")
 
 # Setup
-nex pane name coordinator
+kelpi pane name coordinator
 mkdir -p "$TASK_DIR" "$RESULT_DIR"
 rm -f "$RESULT_DIR"/*.md  # Clean previous results
 
@@ -1199,7 +1199,7 @@ rm -f "$RESULT_DIR"/*.md  # Clean previous results
 # Spawn workers. Don't loop a single --direction: raw 50/50 splits
 # collapse into unreadable slivers. Spawn, then reflow into a grid.
 for worker in "${WORKERS[@]}"; do
-  nex pane split --name "$worker"
+  kelpi pane split --name "$worker"
   sleep 2
 done
 
@@ -1207,12 +1207,12 @@ done
 # `pane resize` addresses the coordinator by name, so it works even
 # though focus is on the last-spawned worker after the loop (unlike
 # `layout select main-*`, which enlarges whichever pane is focused).
-nex layout select tiled
-nex pane resize --target coordinator --ratio 0.65
+kelpi layout select tiled
+kelpi pane resize --target coordinator --ratio 0.65
 
 # Start agents
 for worker in "${WORKERS[@]}"; do
-  nex pane send --target "$worker" "cd $PROJECT_DIR && claude -p 'Read $TASK_DIR/$worker.md and complete the task. Write results to $RESULT_DIR/$worker.md'"
+  kelpi pane send --target "$worker" "cd $PROJECT_DIR && claude -p 'Read $TASK_DIR/$worker.md and complete the task. Write results to $RESULT_DIR/$worker.md'"
   sleep 1
 done
 
@@ -1226,7 +1226,7 @@ while true; do
   done
   $all_done && break
 
-  alive=$(nex pane list --json | jq -r '.[].label')
+  alive=$(kelpi pane list --json | jq -r '.[].label')
   for worker in "${WORKERS[@]}"; do
     if ! echo "$alive" | grep -qx "$worker" && [ ! -f "$RESULT_DIR/$worker.md" ]; then
       echo "worker $worker disappeared before producing output" >&2
@@ -1244,10 +1244,10 @@ echo "All workers complete. Results in $RESULT_DIR/"
 - If a worker fails, its result file won't appear. The coordinator should
   implement a timeout (e.g., 5 minutes) and report which workers didn't
   complete.
-- **Use `nex pane list` to detect dead workers** before timeout. If a
+- **Use `kelpi pane list` to detect dead workers** before timeout. If a
   worker's label no longer appears in the list, the pane was closed
   externally and its result file will never arrive — bail out instead of
   polling forever.
-- Workers can signal errors via `nex event error --message "description"`.
+- Workers can signal errors via `kelpi event error --message "description"`.
 - Workers can send desktop notifications via
-  `nex event notification --title "Done" --body "Task complete"`.
+  `kelpi event notification --title "Done" --body "Task complete"`.

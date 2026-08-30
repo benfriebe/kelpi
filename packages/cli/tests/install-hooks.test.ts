@@ -212,16 +212,16 @@ describe('kelpi install-hooks', () => {
         );
     });
 
-    it('installs the bundled nex-agentic skill it ships beside itself', async () => {
+    it('installs the bundled kelpi-agentic skill it ships beside itself', async () => {
         const d = dirs();
         const result = await runCLI(['install-hooks', '--json', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         const parsed = JSON.parse(result.stdout) as { skill: { action: string; path: string; source: string } };
-        // Found via `<dist>/../resources/skills/nex-agentic` — the checkout shape.
+        // Found via `<dist>/../resources/skills/kelpi-agentic` — the checkout shape.
         expect(parsed.skill.action).toBe('created');
-        expect(parsed.skill.source.endsWith('packages/cli/resources/skills/nex-agentic/SKILL.md')).toBe(true);
-        const installed = fs.readFileSync(path.join(d.claude, 'skills', 'nex-agentic', 'SKILL.md'), 'utf8');
-        expect(installed).toContain('name: nex-agentic');
+        expect(parsed.skill.source.endsWith('packages/cli/resources/skills/kelpi-agentic/SKILL.md')).toBe(true);
+        const installed = fs.readFileSync(path.join(d.claude, 'skills', 'kelpi-agentic', 'SKILL.md'), 'utf8');
+        expect(installed).toContain('name: kelpi-agentic');
         expect(installed).toBe(fs.readFileSync(parsed.skill.path, 'utf8'));
 
         // Second run: nothing to do, and it says so rather than rewriting.

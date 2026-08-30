@@ -175,15 +175,15 @@ describe('--dry-run', () => {
     });
 });
 
-describe('the bundled nex-agentic skill (CLI-146)', () => {
+describe('the bundled kelpi-agentic skill (CLI-146)', () => {
     function bundleSkill(body: string): string {
-        const dir = path.join(root, 'bundle', 'skills', 'nex-agentic');
+        const dir = path.join(root, 'bundle', 'skills', 'kelpi-agentic');
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, 'SKILL.md'), body, 'utf8');
         return dir;
     }
 
-    const destination = (): string => path.join(claudeDir, 'skills', 'nex-agentic', 'SKILL.md');
+    const destination = (): string => path.join(claudeDir, 'skills', 'kelpi-agentic', 'SKILL.md');
 
     it('is skipped, silently, when the build carries none', () => {
         const result = run();
@@ -192,7 +192,7 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
         expect(fs.existsSync(path.join(claudeDir, 'skills'))).toBe(false);
     });
 
-    it('is copied into <claude-dir>/skills/nex-agentic/', () => {
+    it('is copied into <claude-dir>/skills/kelpi-agentic/', () => {
         const source = bundleSkill('# Kelpi Agentic\n');
         const result = run({ skillSource: source });
         expect(result.skill.action).toBe('created');
@@ -220,8 +220,8 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
         // A perfectly good skill sits beside the "running bundle" — and must still be ignored,
         // because the caller named a directory and got told what happened to THAT one.
         const beside = path.join(root, 'Resources', 'cli');
-        fs.mkdirSync(path.join(beside, 'skills', 'nex-agentic'), { recursive: true });
-        fs.writeFileSync(path.join(beside, 'skills', 'nex-agentic', 'SKILL.md'), '# packaged\n');
+        fs.mkdirSync(path.join(beside, 'skills', 'kelpi-agentic'), { recursive: true });
+        fs.writeFileSync(path.join(beside, 'skills', 'kelpi-agentic', 'SKILL.md'), '# packaged\n');
         const empty = path.join(root, 'empty');
         fs.mkdirSync(empty, { recursive: true });
 
@@ -241,17 +241,17 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
     });
 
     it('finds a copy staged beside the running bundle, then one in the checkout', () => {
-        // The packaged-app shape: <dir of kelpi.js>/skills/nex-agentic/SKILL.md.
+        // The packaged-app shape: <dir of kelpi.js>/skills/kelpi-agentic/SKILL.md.
         const beside = path.join(root, 'Resources', 'cli');
-        fs.mkdirSync(path.join(beside, 'skills', 'nex-agentic'), { recursive: true });
-        fs.writeFileSync(path.join(beside, 'skills', 'nex-agentic', 'SKILL.md'), '# packaged\n');
+        fs.mkdirSync(path.join(beside, 'skills', 'kelpi-agentic'), { recursive: true });
+        fs.writeFileSync(path.join(beside, 'skills', 'kelpi-agentic', 'SKILL.md'), '# packaged\n');
         const found = findBundledSkill({ claudeDir, executable: path.join(beside, 'kelpi.js'), dryRun: true }, nodeInstallFs);
         expect(found?.contents).toBe('# packaged\n');
 
-        // The checkout shape: <dir of kelpi.js>/../resources/skills/nex-agentic/SKILL.md.
+        // The checkout shape: <dir of kelpi.js>/../resources/skills/kelpi-agentic/SKILL.md.
         const checkout = path.join(root, 'packages', 'cli');
-        fs.mkdirSync(path.join(checkout, 'resources', 'skills', 'nex-agentic'), { recursive: true });
-        fs.writeFileSync(path.join(checkout, 'resources', 'skills', 'nex-agentic', 'SKILL.md'), '# checkout\n');
+        fs.mkdirSync(path.join(checkout, 'resources', 'skills', 'kelpi-agentic'), { recursive: true });
+        fs.writeFileSync(path.join(checkout, 'resources', 'skills', 'kelpi-agentic', 'SKILL.md'), '# checkout\n');
         const fromCheckout = findBundledSkill(
             { claudeDir, executable: path.join(checkout, 'dist', 'kelpi.js'), dryRun: true },
             nodeInstallFs
@@ -266,11 +266,11 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
             '..',
             'resources',
             'skills',
-            'nex-agentic',
+            'kelpi-agentic',
             'SKILL.md'
         );
         expect(fs.existsSync(shipped)).toBe(true);
-        expect(fs.readFileSync(shipped, 'utf8')).toContain('name: nex-agentic');
+        expect(fs.readFileSync(shipped, 'utf8')).toContain('name: kelpi-agentic');
     });
 });
 

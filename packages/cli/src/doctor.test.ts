@@ -53,7 +53,7 @@ describe('transport / reachability', () => {
             detail: 'Unix socket at /tmp/nex.sock'
         });
         expect(transportCheck({ kind: 'tcp', host: '127.0.0.1', port: 19400 }).detail).toBe(
-            'TCP 127.0.0.1:19400 (from NEX_SOCKET)'
+            'TCP 127.0.0.1:19400 (from KELPI_SOCKET)'
         );
     });
 
@@ -132,7 +132,7 @@ describe('routing', () => {
         const check = routingCheck({ pid: 99, version: '0.32.0', build: '1' });
         expect(check.status).toBe('WARN');
         expect(check.detail).toContain('Swift Nex app');
-        expect(check.repair).toContain('NEX_SOCKET');
+        expect(check.repair).toContain('KELPI_SOCKET');
     });
 
     it('warns with the pane route when the compat socket is degraded', () => {
@@ -151,15 +151,15 @@ describe('routing', () => {
     it('passes and prints the pane route when everything is where it should be', () => {
         const check = routingCheck({ pid: 7, protocol: 1, paneRoute: 'tcp:127.0.0.1:50000' });
         expect(check).toMatchObject({ name: 'routing', status: 'PASS' });
-        expect(check.detail).toContain('NEX_SOCKET=tcp:127.0.0.1:50000');
+        expect(check.detail).toContain('KELPI_SOCKET=tcp:127.0.0.1:50000');
     });
 });
 
 describe('transport provenance', () => {
     it('says whether the unix default or NEX_SOCKET picked the endpoint', () => {
         const unix = { kind: 'unix', path: '/tmp/nex.sock' } as const;
-        expect(transportCheck(unix, false).detail).toContain('the default; NEX_SOCKET unset');
-        expect(transportCheck(unix, true).detail).toContain('(from NEX_SOCKET)');
+        expect(transportCheck(unix, false).detail).toContain('the default; KELPI_SOCKET unset');
+        expect(transportCheck(unix, true).detail).toContain('(from KELPI_SOCKET)');
         // No provenance flag (older callers): the old wording, byte-identical.
         expect(transportCheck(unix).detail).toBe('Unix socket at /tmp/nex.sock');
     });
@@ -235,9 +235,9 @@ describe('process (daemon-aware)', () => {
     });
 
     it('resolves the run dir per platform, with KELPID_RUN_DIR winning', () => {
-        expect(resolveRunDir({}, 'darwin', '/Users/t')).toBe('/Users/t/Library/Application Support/nexd/run');
-        expect(resolveRunDir({}, 'linux', '/home/t')).toBe('/home/t/.local/state/nexd/run');
-        expect(resolveRunDir({ XDG_RUNTIME_DIR: '/run/user/1' }, 'linux', '/home/t')).toBe('/run/user/1/nexd');
+        expect(resolveRunDir({}, 'darwin', '/Users/t')).toBe('/Users/t/Library/Application Support/kelpid/run');
+        expect(resolveRunDir({}, 'linux', '/home/t')).toBe('/home/t/.local/state/kelpid/run');
+        expect(resolveRunDir({ XDG_RUNTIME_DIR: '/run/user/1' }, 'linux', '/home/t')).toBe('/run/user/1/kelpid');
         expect(resolveRunDir({ KELPID_RUN_DIR: '/custom/run' }, 'darwin', '/Users/t')).toBe('/custom/run');
     });
 

@@ -28,9 +28,9 @@ afterEach(() => {
 });
 
 describe('config location', () => {
-    it('is literally ~/.config/nex/config (no XDG lookup)', () => {
+    it('is literally ~/.config/kelpi/config (no XDG lookup)', () => {
         expect(resolveConfigPath({ env: { XDG_CONFIG_HOME: '/xdg' }, home: '/Users/x' })).toBe(
-            '/Users/x/.config/nex/config'
+            '/Users/x/.config/kelpi/config'
         );
     });
 

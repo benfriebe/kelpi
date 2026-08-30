@@ -53,9 +53,11 @@ describe('spawnEnvVars', () => {
         };
 
         expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'KELPI_PANE_ID', value: P1 },
             { key: 'NEX_PANE_ID', value: P1 },
             { key: 'PATH', value: '/opt/kelpi/helpers:/usr/bin' },
             { key: 'ALPHA', value: '2' },
+            { key: 'KELPI_PROFILE', value: 'default' },
             { key: 'NEX_PROFILE', value: 'default' },
             { key: 'ZED', value: '1' }
         ]);
@@ -72,10 +74,12 @@ describe('spawnEnvVars', () => {
         };
 
         expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'KELPI_PANE_ID', value: P1 },
             { key: 'NEX_PANE_ID', value: P1 },
             { key: 'PATH', value: '/usr/bin' },
             { key: 'CLAUDE_CONFIG_DIR', value: '/w' },
-            { key: 'NEX_PROFILE', value: 'work' }
+            { key: 'KELPI_PROFILE', value: 'work' },
+        { key: 'NEX_PROFILE', value: 'work' }
         ]);
     });
 
@@ -94,9 +98,11 @@ describe('spawnEnvVars', () => {
         };
 
         expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'KELPI_PANE_ID', value: P1 },
             { key: 'NEX_PANE_ID', value: P1 },
             { key: 'PATH', value: '/usr/bin' },
-            { key: 'NEX_PROFILE', value: 'ghost' }
+            { key: 'KELPI_PROFILE', value: 'ghost' },
+        { key: 'NEX_PROFILE', value: 'ghost' }
         ]);
         expect(logs).toHaveLength(1);
         expect(logs[0]).toContain('"ghost"');
@@ -117,9 +123,11 @@ describe('spawnEnvVars', () => {
         };
 
         expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
+            { key: 'KELPI_PANE_ID', value: P1 },
             { key: 'NEX_PANE_ID', value: P1 },
             { key: 'PATH', value: '/usr/bin' },
-            { key: 'NEX_PROFILE', value: 'default' }
+            { key: 'KELPI_PROFILE', value: 'default' },
+        { key: 'NEX_PROFILE', value: 'default' }
         ]);
         expect(logs).toEqual([]);
     });

@@ -1,10 +1,14 @@
 # Kelpi
 
 **Kelpi** (kelpi.sh) is a terminal multiplexer built for driving fleets of AI agents, with a
-**daemon + web client** architecture. The daemon (`kelpid`) owns the sessions: PTYs, terminal
-state, workspaces, layouts and agent tracking live in a headless Node process that survives app
-restarts and updates. Clients attach to it and render — an Electron shell on the desktop, or any
-browser over a tailnet. Closing the laptop lid or updating the app never kills an agent.
+**daemon + web client** architecture. It is a ground-up port of **Nex** — the macOS terminal
+multiplexer built on SwiftUI + libghostty — rebuilt around a daemon and renamed Kelpi, at full
+feature parity with the app it replaces.
+
+The daemon (`kelpid`) owns the sessions: PTYs, terminal state, workspaces, layouts and agent
+tracking live in a headless Node process that survives app restarts and updates. Clients attach
+to it and render — an Electron shell on the desktop, or any browser over a tailnet. Closing the
+laptop lid or updating the app never kills an agent.
 
 Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
 

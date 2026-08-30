@@ -113,7 +113,7 @@ ring buffer (default ~1MB/pane, spooling to disk optional later).
 ## Repo layout (pnpm workspace)
 
 ```
-new_nex/
+kelpi/
 ├─ ARCHITECTURE.md
 ├─ packages/
 │  ├─ protocol/         wire + WS message types, protocol version, zod schemas

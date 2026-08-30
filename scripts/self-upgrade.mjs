@@ -113,12 +113,17 @@ const psMatch = (pattern, alsoRequire) => {
         return [];
     }
 };
-// Pre-rename bundles this repo may still be running: the FIRST Kelpi promote has to stop the
-// Nex-named app/daemon it is replacing, which no Kelpi-shaped pattern can see. ONLY this
-// checkout's own out/ bundle — /Applications/Nex.app may be the Swift original, which this
-// script must never touch (same anchoring rule as `daemonPattern`).
+// Pre-rename bundles this repo may still be running: a promote has to stop the app/daemon it
+// is replacing even when that pair was launched under an old name — the Nex-branded bundle
+// (product rename), or this checkout's previous directory (`new_nex`, before it moved to
+// `kelpi`), whose path lives on in the running processes' argv after the directory itself is
+// renamed. ONLY this checkout's own out/ bundles — /Applications/Nex.app may be the Swift
+// original, which this script must never touch (same anchoring rule as `daemonPattern`).
+const previousCheckout = path.join(path.dirname(repoRoot), 'new_nex', 'packages', 'shell', 'out');
 const legacyAppPaths = [
-    path.join(repoRoot, 'packages', 'shell', 'out', 'Nex-darwin-arm64', 'Nex.app')
+    path.join(repoRoot, 'packages', 'shell', 'out', 'Nex-darwin-arm64', 'Nex.app'),
+    path.join(previousCheckout, 'Kelpi-darwin-arm64', 'Kelpi.app'),
+    path.join(previousCheckout, 'Nex-darwin-arm64', 'Nex.app')
 ].filter((candidate) => candidate !== appPath);
 
 const appPids = appPath.endsWith('.app')
@@ -128,10 +133,12 @@ const appPids = appPath.endsWith('.app')
       ]
     : [];
 // `start --foreground` filters out transient CLI invocations running through the same bundle.
+// The legacy match is directory-anchored (not entry-file-anchored) so it sees both daemon
+// entry names, `nexd.js` and `kelpid.js`.
 const daemonPids = [
     ...psMatch(daemonPattern, 'start --foreground'),
     ...legacyAppPaths.flatMap((legacy) =>
-        psMatch(`${legacy}/Contents/Resources/daemon/nexd.js`, 'start --foreground')
+        psMatch(`${legacy}/Contents/Resources/daemon/`, 'start --foreground')
     )
 ];
 

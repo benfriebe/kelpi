@@ -1,126 +1,57 @@
 # Kelpi
 
-A ground-up port of [Nex](https://github.com/benfriebe/nex) — the macOS terminal multiplexer built
-on libghostty — to a **daemon + web client** architecture, renamed **Kelpi** (kelpi.sh) after the
-Australian herding dog, because a nex.ai already exists.
+**Kelpi** (kelpi.sh) is a terminal multiplexer built for driving fleets of AI agents, with a
+**daemon + web client** architecture. The daemon (`kelpid`) owns the sessions: PTYs, terminal
+state, workspaces, layouts and agent tracking live in a headless Node process that survives app
+restarts and updates. Clients attach to it and render — an Electron shell on the desktop, or any
+browser over a tailnet. Closing the laptop lid or updating the app never kills an agent.
 
-The daemon (`kelpid`) owns the sessions: PTYs, terminal state, workspaces, layouts and agent
-tracking live in a headless Node process that survives app restarts and updates. Clients (an
-Electron shell on the desktop, or any browser over a tailnet) attach to it and render. The
-existing `nex` CLI name and the Claude Code / Codex hooks keep working unchanged — the daemon
-speaks the same newline-JSON control protocol on the same socket.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
+
+## What Kelpi is today
+
+- **Workspaces, groups and panes** with a full layout tree (splits, focus, sidebar ordering,
+  collapse state), persisted to SQLite and restored across daemon restarts — panes come back, and
+  every pane with a tracked agent session resumes it (`claude --resume <id>` / `codex resume <id>`).
+- **A real terminal**: the vendored `ghostty-web` engine, with the Kitty keyboard protocol, mouse
+  reporting, IME/CJK composition, OSC 52 (writes behind a `clipboard-write` key that ships off,
+  reads refused), search highlighting, themes, and per-pane font/size. One accepted limitation:
+  the daemon's VT does not reflow on resize.
+- **Content panes** beyond the shell: markdown (edit/preview), scratchpad, diff, and web panes
+  (real Chromium via the shell, with console capture, screenshots, and an element picker).
+- **Agent awareness**: lifecycle hooks from Claude Code and Codex CLI drive pane status, session
+  ids and desktop notifications; `kelpi install-hooks` wires them and `kelpi doctor` verifies the
+  whole chain.
+- **Graft**: git-worktree-backed workspaces (default base `~/nex/worktrees/<repo>`), with repo
+  associations and status surfaced in the UI.
+- **A native shell**: menu bar, tray, dock badge, global hotkey, native notifications,
+  hidden-titlebar window with inline traffic lights, an inspector, and Finder "Open With" for
+  markdown.
+- **A settings system** over `~/.config/nex/config`: keybindings (with conflict detection),
+  appearance, terminal themes, repositories, TCP exposure — edited live in the client, applied by
+  the daemon as the settings authority.
+- **The `kelpi` CLI**: a single-file, dependency-free binary speaking the daemon's newline-JSON
+  control protocol — panes, workspaces, groups, events, web-pane control, doctor, install-hooks,
+  and the legacy importer. The shipped Swift `nex` CLI works against the same socket unchanged.
+- **Self-hosting tooling**: an impact-mapped verification battery, a promote flow that upgrades
+  the running instance from inside itself, a second full instance for development, and a
+  sub-second HMR loop.
 
 ## Naming
 
 The product is **Kelpi**: the app is `Kelpi.app`, the CLI is `kelpi`, the daemon is `kelpid`, the
-packages are `@kelpi/*`. The **wire and the disk keep their pre-rename names** — they are
-contracts with the shipped Swift app and with every existing install, and none of them spells the
-brand at a user:
+packages are `@kelpi/*`. The **wire and the disk keep their pre-Kelpi `nex` names** — they are
+compatibility contracts, not brand:
 
-- `/tmp/nex.sock` — the CLI-compat control socket the Swift ecosystem connects to
+- `/tmp/nex.sock` — the CLI-compat control socket
 - `NEX_PANE_ID` / `NEX_PROFILE` / `NEX_SOCKET` — the pane environment contract
 - `~/.config/nex/config` — the settings file
 - `~/Library/Application Support/nexd/` — the daemon's run dir and database (`nex.db`)
 - `~/nex/worktrees/` — the default worktree base
 - `nex-agentic` — the bundled Claude Code skill
-- `/usr/local/bin/nex` — healed (never created) beside the primary `/usr/local/bin/kelpi`, and a
-  `nex` compat launcher ships in the bundle, so every hook installed before the rename keeps
-  resolving; `kelpi install-hooks` migrates hook entries to the `kelpi` spelling when re-run
-
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model and [`PLAN.md`](PLAN.md) for the
-milestone plan. The parity campaign's records — the parity ledger, the behavioural contracts, the
-capability inventory, the audit runs — did their job and are retired from the repo: `docs/` is
-untracked (it still exists on disk beside this file, and the full pre-scrub history lives in the
-`new_nex-pre-docs-scrub-backup.git` mirror). Mentions of `docs/…` paths below refer to those
-retired local records.
-
-## Status
-
-**Wire parity, a 108-flow UI audit with nothing left failing on purpose, and 100% of the shipped
-app's feature surface accounted for — all ten domains complete, nothing left unimplemented, and
-every deliberate divergence carrying its argument in the ledger
-(`TERM-034`, reclassified divergent 2026-08-23 — the selection half of macOS text services; its sibling `TERM-033` closed 2026-08-22 the
-only way it could — a human session with a real Japanese input method,
-`docs/audit/ime-human-session/`).** The daemon, the web client, the Electron shell, content panes, web panes, graft, the
-`kelpi` CLI rewrite and the legacy `nex.db` importer are all built and green against the shipped Swift
-binary. The window has been driven end to end and photographed a dozen times over: the campaign
-opened with **17 defects + 6 nits, two of them blockers**, and stands at **no blockers — 1 accepted
-major (the daemon's VT does not reflow on resize), 1 minor, 2 nits, and 1 defect in the audit
-harness itself.** Every finding the re-audits
-added is now closed, including the two that survived three full runs: the status bar's
-`doc N +A -B`, which shipped with four passing unit tests and rendered **nothing** for a repo under
-a symlinked path (the association carries git's physical path and the pane its logical one), and a
-reattach flow that had been typing its marker into the wrong pane behind an open modal. The first
-was fixed in the daemon and proven on an audit step left **byte-identical** to the one that failed;
-the second was never a daemon defect at all. The footer row that replaced them — the left cluster
-painting over the system stats — is **closed** too, and so is what it was hiding: the same row
-starved from the other end, whose last tenth turned out to be a circular width measurement rather
-than the constant everyone blamed. The assertion that named it, byte-identical for three runs, now
-reads `192.9 → 0.0 px` and passes in two independent full runs. **Nothing in the harness fails on
-purpose any more.** What replaced it in the ledger is a defect in the *harness*: a cleanup that
-identifies the pane a split just made by its DOM position, against a grid that sorts panes by uuid
-on purpose — a coin flip that had been winning every run until this one.
-
-A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
-app — `docs/capabilities/`, **1490 scored items** across ten
-domains — found 285 behaviours with no port-side implementation at all. Eight burn-downs took that
-column to **zero** and coverage from 73.6% to **100% accounted**, while the audit grew to **108
-flows, 1042 assertions**. All ten domains now have no partials and no gaps left at all — the last
-open item, `TERM-034`, was reclassified divergent-by-design on the owner's decision (2026-08-23):
-its plumbing is AppKit's `NSTextInputClient`, which Electron does not expose for canvas text. Nothing on the list is
-work anybody plans to do. The last two entries that were *arguments* are what the eighth wave turned
-into code: the launch-time skill refresh now migrates a drifted `SKILL.md` exactly once — backing
-the old bytes up rather than destroying them the way the Swift does — and OSC 52 is implemented on
-the daemon's own VT, with writes behind a `clipboard-write` key that ships **off** and reads refused
-outright. The seventh wave before it put the shipped app's whole File
-menu in the menu bar, made `theme = <name>` resolve to a real terminal palette, and gave the legacy
-label→preset migration its one-shot marker. The sixth wave's subject was the window itself: a hidden
-title bar with the traffic lights drawn into the client's own 32 px strip, ⌘N opening the New
-Workspace sheet, a View menu with Toggle Inspector in it, an inspector that slides, and a
-"No workspace selected" state you can actually reach. The terminal engine is vendored (`ghostty-web 0.4.0-nex.2`
-= upstream v0.4.0 + two open PRs + one adaptation this repo wrote), which turned "engine-owned,
-unreachable" into a permanent audit step: composed CJK reaches the PTY exactly once, and the preedit
-is now marked text **on the cursor cell** — measured 0×0 px off a cell the terminal was told to move
-to, at two different cells. The Kitty keyboard protocol, which headed the gap list for three passes as "the only missing item a
-user would notice", was closed the same way the mouse gap was — by taking it off the engine: the
-daemon negotiates it off the VT stream and answers `CSI ? u` into the PTY, the client encodes the
-keys above the engine's own listener, and the legacy path is proven byte-identical on an audit step
-left unchanged. What is still open is ranked in that index's §2, and **nothing in it is a piece of
-work** — the list is now a refusal, a security decline and two things a browser cannot observe. The
-mouse-reporting
-gap that once headed it was closed by taking mouse reporting away from the engine and writing it
-into the port, byte-identically to ghostty's own encoder.
-
-The retired records, for anyone opening them on disk: `docs/PARITY.md` is the honest ledger (what
-is at parity, how it was proven, where the port deliberately differs, the remaining gaps);
-`docs/capabilities/` is the 1490-item capability inventory against `nex 0.32.0`, each item carrying
-the Swift source that defines it and the port-side file that answers it; `docs/audit/` holds the
-audit runs (`run-P` is the final one — 108 flows, 1042 assertions, 0 failed — with `run-O`,
-`run-N`, the scoped runs and the attempt post-mortems beside it, and the retention policy in its
-README); `docs/current/` is the per-subsystem behavioural contracts; `docs/compat-status.md`
-measures what the real, shipped Swift CLI can do against `kelpid`. [`PLAN.md`](PLAN.md) — still
-tracked — is the milestone lineage.
-
-Gates (2026-08-22): `pnpm check` **5008 passed**, 1 skipped; the compat suite 103/103 against
-**both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 58,
-web 46, terminal 19) and the packaged one too, **60/60** against a bundle repackaged from this tree,
-which also quits cleanly and leaves its daemon running; the terminal-renderer start stress
-**0 stranded in 48 panes**; the UI audit **1042 of 1042 assertions, 0 failed, 0 step errors, 0 renderer console
-errors** across **108 real user flows** (`run-P`). The assertion that named the open footer bug for three runs
-now **passes** — `192.9 → 0.0 px`, reproduced in four independent runs — so nothing in the harness is
-failing on purpose any more. The results that carry the most weight are again on steps that did
-**not** change: the terminal input matrix is assertion-for-assertion identical to the previous three
-runs' and still passes, and the reattach-after-relaunch flow is 11/11 with the window's whole title
-bar replaced underneath it. **Nothing is red.** The reds the two failed attempts carried turned out to be one
-harness defect with two faces — a coin-flip pane cleanup and a centre-aimed "focus" click that
-could land on a split button — both fixed, both asserted, with the diagnosis instrumentation
-(per-step state timeline, CLI invocation log, process logs) now part of every run's artefact
-(`docs/audit/run-O-attempts/`).
-Capability coverage against the shipped app is **100% accounted** across 1490 inventoried items
-(1324 implemented, 39 divergent by design with the argument recorded, 127 superseded by the
-architecture), up from 73.6% before the burn-downs, with all ten domains complete and the missing
-and partial columns both empty.
-Nothing here is called done without a screenshot that shows it.
+- `/usr/local/bin/nex` — healed (never created) beside the primary `/usr/local/bin/kelpi`; a
+  `nex` compat launcher ships in the bundle so hooks that run a bare `nex` keep resolving, and
+  `kelpi install-hooks` migrates hook entries to the `kelpi` spelling when re-run
 
 ## Quickstart
 
@@ -175,8 +106,7 @@ echo '{"command":"ping"}'           | nc -U /tmp/nex.sock
 echo '{"command":"workspace-list"}' | nc -U /tmp/nex.sock
 ```
 
-The shipped Swift CLI (`/Applications/Nex.app/Contents/Helpers/nex`) talks to whatever
-`NEX_SOCKET` names. Point it at a development daemon over TCP:
+The CLI talks to whatever `NEX_SOCKET` names. Point it at a development daemon over TCP:
 
 ```bash
 # daemon: listen on loopback TCP as well as the unix socket
@@ -192,10 +122,6 @@ The same variable is how a dev container or a remote agent reaches the daemon
 
 ### The `kelpi` CLI
 
-This repo also ships its own `kelpi` — a TypeScript rewrite of the Swift binary that speaks the
-same protocol, prints the same lines and exits with the same codes (it passes the same 103-test
-compat suite the shipped binary does):
-
 ```bash
 pnpm --filter @kelpi/cli build                          # → packages/cli/dist/kelpi.js
 node packages/cli/dist/kelpi.js install-hooks --link    # symlink + Claude/Codex hooks
@@ -203,16 +129,15 @@ kelpi doctor                                            # daemon-aware: checks k
 ```
 
 `dist/kelpi.js` is a single dependency-free file with a shebang, so it needs nothing installed
-beside it. [`packages/cli/README.md`](packages/cli/README.md) covers the two deliberate
-divergences (`web console --follow`, `web capture`'s flag set) and what `doctor` now checks.
+beside it. [`packages/cli/README.md`](packages/cli/README.md) covers the command surface and what
+`doctor` checks.
 
 ### Hooks: `kelpi install-hooks`
 
 Agent status, session ids and desktop notifications all come from lifecycle hooks that Claude
-Code and Codex CLI fire; without them a pane never leaves "idle". `kelpi install-hooks` is this
-repo's replacement for the Swift app's `scripts/install-hooks.sh` — it writes the five Claude
-hooks into `~/.claude/settings.json` and, when `~/.codex` exists, the four Codex hooks into
-`~/.codex/hooks.json`:
+Code and Codex CLI fire; without them a pane never leaves "idle". `kelpi install-hooks` writes
+the five Claude hooks into `~/.claude/settings.json` and, when `~/.codex` exists, the four Codex
+hooks into `~/.codex/hooks.json`:
 
 ```bash
 kelpi install-hooks --dry-run     # show what would change, write nothing
@@ -221,8 +146,8 @@ kelpi install-hooks --link        # …and symlink this CLI into /usr/local/bin 
 ```
 
 It **merges**: your own hooks survive, kelpi-managed ones are deduped by their flag-less base
-(so an old absolute-path install is replaced rather than left to double-fire), and a stale
-pre-v0.19 `"matcher": "startup"` SessionStart group is migrated to a matcher-less one so
+(so an old absolute-path or `nex`-spelled install is replaced rather than left to double-fire),
+and a stale `"matcher": "startup"` SessionStart group is migrated to a matcher-less one so
 `claude --resume` binds its session id again. An existing file is copied to `<file>.kelpi-backup`
 before it changes, and a file that is not valid JSON is refused rather than overwritten. A
 packaged `Kelpi.app` installs the symlink itself — on first launch it offers, on later launches
@@ -235,10 +160,10 @@ writes the absolute path, so the hooks fire either way. `--install-dir` / `KELPI
 move the symlink elsewhere, and an unwritable directory prints the `sudo` command to run by
 hand — it never escalates on its own.
 
-### Running beside the real Kelpi.app
+### Running a second daemon
 
-The production control socket is `/tmp/nex.sock`, which the Swift app owns while it is running —
-`kelpid` refuses to steal a live socket. During development, give the daemon its own endpoints:
+The production control socket is `/tmp/nex.sock`; `kelpid` refuses to steal a live socket.
+During development, give a daemon its own endpoints:
 
 ```bash
 KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock \
@@ -249,7 +174,7 @@ packages/daemon/dist/kelpid.js start --foreground
 ```
 
 `NEX_SOCKET` only selects a TCP endpoint (absent means the hardcoded `/tmp/nex.sock`), so TCP is
-how the shipped CLI reaches a development daemon:
+how a CLI reaches a development daemon:
 
 ```bash
 NEX_SOCKET=tcp:127.0.0.1:19400 kelpi workspace list
@@ -264,6 +189,8 @@ KELPID_RUN_DIR=~/.local/state/kelpid-dev open "$(packages/daemon/dist/kelpid.js 
 
 `kelpid --help` lists every environment override (run dir, control socket, TCP port, HTTP
 host/port, database, config file, client build directory, log file).
+`scripts/dev-instance.mjs` automates all of the above — it stands up a complete second Kelpi
+(daemon + client + helpers) on private endpoints, beside the one you are using.
 
 Beside the database the daemon keeps `pane-geometry.json`: the last grid (cols × rows) each
 pane was actually rendered at. It is a cache, not state — but it is what lets a restored pane's
@@ -271,11 +198,11 @@ shell be **born** at the size it will be shown at instead of at 80×24. The emul
 reflow, so a prompt printed at the wrong width stays wrong in every snapshot after it; deleting
 the file costs one badly-wrapped first prompt per pane and nothing else.
 
-## Importing from the macOS app
+## Importing from the legacy macOS app
 
-The Swift app keeps its state in `~/Library/Application Support/Kelpi/nex.db`; the daemon owns a
-separate database (`~/Library/Application Support/nexd/nex.db`, or `KELPID_DB_PATH`) so the two can
-run side by side during the port. `kelpid import` copies the first into the second, once.
+The pre-Kelpi Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the
+daemon owns a separate database (`~/Library/Application Support/nexd/nex.db`, or `KELPID_DB_PATH`)
+so the two can run side by side. `kelpid import` copies the first into the second, once.
 
 The daemon must be stopped: it holds the whole state in memory and its next save would overwrite
 whatever the import wrote. That is also the order that gets your sessions back:
@@ -287,20 +214,8 @@ kelpid start
 ```
 
 On that `start` the panes come back, and every pane that had an agent session resumes it —
-`claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent — exactly as
-a Kelpi.app restart would. Session ids that fail the shell-safety allowlist are skipped, and the
-report says which.
-
-```
-kelpid import
-  from: /Users/you/Library/Application Support/Kelpi/nex.db
-  to:   /Users/you/Library/Application Support/nexd/nex.db
-imported 12 workspace(s), 34 pane(s), 7 group(s), 3 repo(s)
-  agent session(s) to resume on the next start: 2
-  warnings:
-    regenerated 1 empty workspace slug(s) from name + id (legacy v3 rows)
-Next: `kelpid start` — panes are restored and agent sessions resume automatically.
-```
+`claude --resume <id>` or `codex resume <id>`, chosen by the pane's last-known agent. Session ids
+that fail the shell-safety allowlist are skipped, and the report says which.
 
 | flag | meaning |
 |------|---------|
@@ -309,10 +224,6 @@ Next: `kelpid start` — panes are restored and agent sessions resume automatica
 | `--force` | replace a target that already holds workspaces — the existing database is copied aside as `<target>.<timestamp>.bak` first |
 | `--dry-run` | print the report and write nothing (not even an empty database) |
 | `--json` | one JSON report on stdout; the two paths still go to stderr |
-
-The whole flow is verified end to end — fixture database → `import` → `start` → state read back
-over the real `kelpi` CLI, including both agent kinds resuming into their PTYs — recorded in
-`docs/PARITY.md` ▸ "Legacy import, end to end".
 
 Both paths are printed before anything is opened. The source is opened **read-only** and is never
 written, migrated or deleted, so importing twice — or importing into a scratch `--to` — is safe.
@@ -324,14 +235,8 @@ groups (order, collapse state, members), the sidebar order, panes of every type 
 scratchpad, diff, web) with their working directories, files, scratchpad contents and web tabs,
 plus the repo registry and its associations. What does not: live pane statuses (reset to idle —
 no PTY survives an import), private web-pane tabs (the private flag persists, the contents never
-do), and parked/recently-closed panes (the Swift app never persisted them either).
-
-Rows the Swift loader would silently drop — an unparseable UUID, an orphaned pane, a corrupt
-layout — are dropped the same way and *reported*: `skipped` names the table, id and reason, and
-`warnings` covers every fallback taken (unknown enum, undecodable JSON, regenerated slug,
-synthesized sidebar order). Tables the daemon does not own (`scheduledTask`, `workspaceFolder`)
-are listed as ignored and left alone, and a database whose migration ledger carries newer
-identifiers is read with a warning rather than refused.
+do), and parked/recently-closed panes. Undecodable rows are dropped and *reported*: `skipped`
+names the table, id and reason, and `warnings` covers every fallback taken.
 
 ## Install and run
 
@@ -371,33 +276,25 @@ open packages/shell/out/Kelpi-darwin-arm64/Kelpi.app
 Use `pnpm --filter @kelpi/shell package` for just the `.app` (no DMG/ZIP), and
 `pnpm --filter @kelpi/shell smoke:packaged` to verify a build end to end: it packages the app,
 launches it with a throwaway environment and asserts that it starts its own daemon, serves its
-own client, answers the shipped `kelpi` CLI, runs a real PTY, and leaves the daemon alive on quit.
-
-> **Green as of 2026-08-20: 47/47**, window included. It stopped at `did-finish-load` through
-> 2026-08-19 evening because `EnableCookieEncryption` was fused on: Chromium then wants the
-> cookie-store key out of the macOS login keychain before its network service will serve anything,
-> and on an ad-hoc-signed build that call blocks on an authorization dialog nothing can answer —
-> so no request is ever made and the window sits on an empty document, silently. The fuse now
-> travels with the signing identity (`docs/PARITY.md` ▸ Known gaps #9). **When you do the signing
-> work below**, the fuse comes back on and this smoke needs `--mock-keychain`, because its sandbox
-> `HOME` has no login keychain in it.
+own client, answers the CLI, runs a real PTY, and leaves the daemon alive on quit.
 
 Inside `Kelpi.app/Contents/Resources`:
 
 ```
 app.asar     the shell: dist/main.js + package.json, and nothing else
 daemon/      kelpid.js + node_modules/node-pty   ← outside the asar, on purpose
-client/      the built web UI                  ← outside the asar
-node         a Node 24 runtime for the daemon  ← outside the asar
+client/      the built web UI                    ← outside the asar
+cli/         the kelpi CLI + its launchers       ← outside the asar
+node         a Node 24 runtime for the daemon    ← outside the asar
 ```
 
-The three staged directories sit outside the archive because a plain `node` process — not
-Electron — executes the daemon: `node` cannot run a script inside an asar, and `dlopen` cannot
-load node-pty's `pty.node` out of one. On launch the shell finds its daemon at
+The staged directories sit outside the archive because a plain `node` process — not Electron —
+executes the daemon: `node` cannot run a script inside an asar, and `dlopen` cannot load
+node-pty's `pty.node` out of one. On launch the shell finds its daemon at
 `Resources/daemon/kelpid.js`, runs it under `Resources/node` (never `ELECTRON_RUN_AS_NODE`, which
 is fused off), and hands it `KELPID_CLIENT_DIR=…/Resources/client`. All three are overridable —
-`KELPID_ENTRY`, `KELPID_NODE`, `KELPID_CLIENT_DIR` — and a daemon that is *already* running is adopted
-as-is, so a packaged app and a development daemon coexist.
+`KELPID_ENTRY`, `KELPID_NODE`, `KELPID_CLIENT_DIR` — and a daemon that is *already* running is
+adopted as-is, so a packaged app and a development daemon coexist.
 
 Two things about the build worth knowing:
 
@@ -406,8 +303,7 @@ Two things about the build worth knowing:
   below.
 - **The icon is generated, not designed**: `src/packaging.ts` draws it and writes a real `.icns`,
   so a build never silently ships the stock Electron icon. Replacing it means dropping a designed
-  `.icns` in and pointing `packagerConfig.icon` at it. (macOS keeps the file's original name,
-  `electron.icns`, inside the bundle; `CFBundleIconFile` is what matters.)
+  `.icns` in and pointing `packagerConfig.icon` at it.
 
 Auto-update is wired but **off**, and off by default in every build: `update-electron-app` is
 loaded lazily behind `KELPI_AUTO_UPDATE=1`, so a packaged app makes no update request at all. It
@@ -420,7 +316,7 @@ Nothing in the current output is signed or notarized:
 
 | | today |
 |---|---|
-| Code signature | ad-hoc only (an arm64 requirement, applied automatically; identity `com.github.Electron`) |
+| Code signature | ad-hoc only (an arm64 requirement, applied automatically) |
 | Developer ID | none — `forge.config.cjs` has no `osxSign` block by default |
 | Notarization / stapling | none |
 | Bundled `node` | copied unsigned from the build machine |
@@ -429,7 +325,7 @@ Nothing in the current output is signed or notarized:
 
 In practice: the app runs on the machine that built it, and on any other Mac it is quarantined
 ("Kelpi is damaged and can't be opened") until someone runs
-`xattr -dr com.apple.quarantine /Applications/Nex.app`. Do not ship it to anyone yet.
+`xattr -dr com.apple.quarantine /Applications/Kelpi.app`. Do not ship it to anyone yet.
 
 The checklist for closing that gap, in order:
 
@@ -447,7 +343,7 @@ after any signing change, since a mis-signed bundle fails at launch, not at buil
 
 The daemon listens on loopback only. `tailscale serve` fronts that port with HTTPS at
 `https://<machine>.<tailnet>.ts.net`, reachable from any device on the tailnet (including a
-phone), with certificates handled for you. Verified against `tailscale` 1.98.10:
+phone), with certificates handled for you:
 
 ```bash
 # the HTTP port the daemon actually bound
@@ -461,7 +357,7 @@ Then open it with the daemon's token — the tailnet only decides *who can reach
 WebSocket handshake is still gated on the run dir's token:
 
 ```bash
-url=$(packages/daemon/dist/kelpid.js url)                                   # http://127.0.0.1:<port>/?token=…
+url=$(packages/daemon/dist/kelpid.js url)                                 # http://127.0.0.1:<port>/?token=…
 host=$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')     # <machine>.<tailnet>.ts.net
 open "https://$host/?${url#*\?}"
 ```
@@ -484,7 +380,7 @@ packages/
 │              content + web-pane + graft services, legacy nex.db importer
 ├─ client/     web UI: terminal rendering, pane grid, sidebar, settings, web-pane chrome
 ├─ shell/      Electron wrapper: tray, dock, notifications, web-pane host, packaging
-└─ cli/        the `kelpi` CLI, a TypeScript rewrite of the shipped Swift binary
+└─ cli/        the `kelpi` CLI
 ```
 
 ## Development
@@ -496,30 +392,37 @@ pnpm typecheck      # tsc -b protocol core daemon cli, then client + shell
 pnpm --filter @kelpi/daemon watch    # rebuild the bundle on change
 ```
 
+The verification tooling is tiered — the diff picks the tier, not optimism:
+
+```bash
+node scripts/verify.mjs             # scoped: exactly the tests + audit steps the diff touches
+node scripts/verify.mjs --full      # the full battery: typecheck, every suite, five smokes,
+                                    # a repackage, and the UI audit
+node scripts/dev-hmr.mjs            # sub-second inner loop against a sandboxed instance
+node scripts/dev-instance.mjs       # a complete second Kelpi beside the one you are using
+node scripts/self-upgrade.mjs       # run the battery, package, and promote the RUNNING
+                                    # instance to this tree's build (detached restart; panes
+                                    # and agent sessions come back and resume)
+```
+
 Beyond the unit suites, four **live** smokes boot real daemons on private paths (never
 `/tmp/nex.sock`) and assert what only a running system can prove:
 
 ```bash
-node packages/client/scripts/smoke.mjs      # 33 checks: HTTP + WS + delta + PTY round trip
-node packages/shell/scripts/smoke.mjs       # 29 checks: adopt-or-spawn, quit gate, daemon survives
-node packages/shell/scripts/web-smoke.mjs   # 46 checks: real Chromium, real CDP, real CLI
-node packages/shell/scripts/packaged-smoke.mjs   # 47 checks: the built Kelpi.app, end to end
+node packages/client/scripts/smoke.mjs           # HTTP + WS + delta + PTY round trip
+node packages/shell/scripts/smoke.mjs            # adopt-or-spawn, quit gate, daemon survives
+node packages/shell/scripts/web-smoke.mjs        # real Chromium, real CDP, real CLI
+node packages/shell/scripts/packaged-smoke.mjs   # the built Kelpi.app, end to end
 ```
 
-`terminal-smoke.mjs` (19 checks: font, columns, re-attach, re-boot) drives the same stack for
-terminal *fidelity*, and one more harness exists for the terminal's one intermittent failure:
+`terminal-smoke.mjs` drives the same stack for terminal *fidelity* (font, columns, re-attach,
+re-boot), and `renderer-start-stress.mjs` creates panes six-at-a-time across workspaces and
+requires that none is stranded on "terminal renderer failed to start".
+
+The compat harness drives a real CLI binary against a real daemon — either implementation:
 
 ```bash
-# run-F N1 — creates panes six-at-a-time across workspaces and requires that none is stranded
-# on "terminal renderer failed to start". `--faults <0..1>` plants the exact upstream error to
-# exercise the retry path on demand; `--client-dist <dir>` points it at another bundle.
-node packages/shell/scripts/renderer-start-stress.mjs --rounds 8 --panes 6 --workspaces 3
-```
-
-And the compat harness drives a real CLI binary against a real daemon — either implementation:
-
-```bash
-npx vitest run packages/daemon/tests/compat                                  # shipped Swift CLI
+npx vitest run packages/daemon/tests/compat                                  # the Swift nex CLI
 KELPI_COMPAT_CLI="$PWD/packages/cli/dist/kelpi.js" \
   npx vitest run packages/daemon/tests/compat                                # the TypeScript CLI
 ```

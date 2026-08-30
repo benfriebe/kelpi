@@ -73,7 +73,7 @@ describe('database location', () => {
             legacyMacAppDatabasePath(HOME)
         );
         expect(legacyMacAppDatabasePath(HOME)).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'Kelpi', DATABASE_FILENAME)
+            path.join(HOME, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME)
         );
     });
 

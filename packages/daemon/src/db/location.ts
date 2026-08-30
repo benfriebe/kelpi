@@ -131,5 +131,5 @@ export function prepareDatabaseFile(databasePath: string): string {
 
 /** The Swift app's database — the source for the M8 legacy import. Never opened by the daemon. */
 export function legacyMacAppDatabasePath(home: string = homedir()): string {
-    return path.join(home, 'Library', 'Application Support', 'Kelpi', DATABASE_FILENAME);
+    return path.join(home, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME);
 }

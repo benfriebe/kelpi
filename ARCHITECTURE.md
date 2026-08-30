@@ -114,17 +114,14 @@ ring buffer (default ~1MB/pane, spooling to disk optional later).
 
 ```
 new_nex/
-├─ ARCHITECTURE.md, PLAN.md
-├─ docs/
-│  ├─ current/          specs of the existing app (port contracts)
-│  └─ research/         stack + ghostty-web research
+├─ ARCHITECTURE.md
 ├─ packages/
 │  ├─ protocol/         wire + WS message types, protocol version, zod schemas
 │  ├─ core/             pure domain logic: layout tree, resolution rules, agent state machine
 │  ├─ daemon/           kelpid: PTY, VT state, store, sqlite, control + WS servers, static serving
 │  ├─ client/           web UI (React + Vite)
 │  ├─ shell/            Electron wrapper
-│  └─ cli/              TS rewrite of the kelpi CLI (phase 2; Swift CLI keeps working meanwhile)
+│  └─ cli/              the `kelpi` CLI
 └─ …
 ```
 

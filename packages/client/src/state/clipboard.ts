@@ -12,7 +12,7 @@
  *
  * ## Who actually writes it
  *
- * Two paths, and which one runs is decided by whether this page is inside a Nex shell window:
+ * Two paths, and which one runs is decided by whether this page is inside a Kelpi shell window:
  *
  *   - **inside the Electron shell** (`?shellWindow=…`) the MAIN process writes it, off its own
  *     status socket (`shell/src/status.ts` → Electron's `clipboard.writeText`). That is the
@@ -115,7 +115,7 @@ export function createClipboardWriteHandler(
         if (options.shellWindowID !== null) {
             // The shell's own status socket carries the same broadcast, and Electron's
             // main-process clipboard is not subject to the page's activation rules.
-            log(`clipboard: pane ${short} wrote ${size} (via the Nex shell)`);
+            log(`clipboard: pane ${short} wrote ${size} (via the Kelpi shell)`);
             options.onResult?.('shell', request);
             return 'shell';
         }

@@ -24,8 +24,8 @@
 export const DAEMON_PARAM = 'daemon';
 export const TOKEN_PARAM = 'token';
 
-export const DAEMON_STORAGE_KEY = 'nex.daemon-url';
-export const TOKEN_STORAGE_KEY = 'nex.token';
+export const DAEMON_STORAGE_KEY = 'kelpi.daemon-url';
+export const TOKEN_STORAGE_KEY = 'kelpi.token';
 
 /** The slice of `Storage` used here; `null` disables persistence (private mode, tests). */
 export interface StorageLike {
@@ -110,7 +110,7 @@ function resolveValue(
  * provably wrong (the daemon restarted with a new run dir, the URL was copied from another
  * machine, the token was truncated), and remembering it would poison **every future visit** —
  * an opened `?token=…` link would work once and then the stale value would win again on the
- * next plain reload. Clearing it makes the next `nexd url` link the source of truth.
+ * next plain reload. Clearing it makes the next `kelpid url` link the source of truth.
  */
 export function forgetStoredToken(storage: StorageLike | null = defaultStorage()): void {
     write(storage, TOKEN_STORAGE_KEY, undefined);

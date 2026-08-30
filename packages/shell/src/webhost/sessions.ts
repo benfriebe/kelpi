@@ -1,5 +1,5 @@
 /**
- * Per-pane storage partitions and the cookie surface behind `nex web cookies-*` (web-pane.md §6,
+ * Per-pane storage partitions and the cookie surface behind `kelpi web cookies-*` (web-pane.md §6,
  * §13.2).
  *
  * The rule that shapes everything: **the partition is sealed into a view at creation**. A pane's
@@ -8,9 +8,9 @@
  * (live JS state is expected to be lost, and the spec says so out loud).
  *
  * Partition choice:
- *   - persistent → one shared `persist:nex-web` partition, so a login survives a restart and is
+ *   - persistent → one shared `persist:kelpi-web` partition, so a login survives a restart and is
  *     visible to every non-private web pane, exactly like the Swift app's `default` data store;
- *   - private → `nex-web-private-<paneID>`, with **no** `persist:` prefix, which is Electron's
+ *   - private → `kelpi-web-private-<paneID>`, with **no** `persist:` prefix, which is Electron's
  *     in-memory partition. One per pane so two private panes cannot see each other's cookies,
  *     and everything in it dies with the process.
  *
@@ -22,11 +22,11 @@ import { session, type Session } from 'electron';
 import type { CookieRecord, CookieWrite, PaneStorage } from './dispatch.js';
 
 /** The shared persistent store for non-private panes. */
-export const PERSISTENT_PARTITION = 'persist:nex-web';
+export const PERSISTENT_PARTITION = 'persist:kelpi-web';
 
 /** No `persist:` prefix ⇒ in-memory: gone when the app exits (§6's "discarded on quit"). */
 export function privatePartition(paneID: string): string {
-    return `nex-web-private-${paneID}`;
+    return `kelpi-web-private-${paneID}`;
 }
 
 /** §13.2: matching everywhere strips exactly one leading dot. */

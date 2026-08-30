@@ -2,7 +2,7 @@
 // seams; the boot module composes them. Widening a seam is fine (add members), changing a
 // signature needs orchestrator sign-off because another agent may already be coding to it.
 
-import type { WireMessage } from '@nex/protocol';
+import type { WireMessage } from '@kelpi/protocol';
 
 import type { MouseFormat, MouseTrackingMode } from './term/mouse-modes.js';
 
@@ -144,7 +144,7 @@ export interface Persistence<Snapshot> {
 }
 
 /**
- * "Is my state actually being written?" — one answer, surfaced by `ping`, `nexd status` and the
+ * "Is my state actually being written?" — one answer, surfaced by `ping`, `kelpid status` and the
  * shutdown message.
  *
  * This exists because the alternative was observed in production: a daemon whose database could
@@ -204,10 +204,10 @@ export interface HandlerContext<State, Action, Event> {
           readonly host: string;
         } | null;
         /**
-         * The CLI-compat socket's bind failure (typically: another Nex owns `/tmp/nex.sock`),
+         * The CLI-compat socket's bind failure (typically: another Kelpi owns `/tmp/nex.sock`),
          * or null/absent while it is serving. A degraded compat socket is not a degraded
-         * daemon — panes still route here via their injected `NEX_SOCKET` — but `nex doctor`
-         * and `nexd status` must be able to say where plain-terminal commands are going.
+         * daemon — panes still route here via their injected `NEX_SOCKET` — but `kelpi doctor`
+         * and `kelpid status` must be able to say where plain-terminal commands are going.
          */
         readonly compat?: { readonly path: string; readonly error: string } | null;
         /** The `NEX_SOCKET` value injected into pane environments, or null when none is. */

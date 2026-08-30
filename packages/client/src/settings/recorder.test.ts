@@ -1,4 +1,4 @@
-import { DEFAULT_KEYBINDINGS } from '@nex/core/config';
+import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import { describe, expect, it } from 'vitest';
 
 import type { KeyEventLike } from '../chrome';

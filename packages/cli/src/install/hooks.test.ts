@@ -26,7 +26,7 @@ let claudeDir = '';
 let codexDir = '';
 
 beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-install-hooks-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-install-hooks-'));
     claudeDir = path.join(root, '.claude');
     codexDir = path.join(root, '.codex');
 });
@@ -40,7 +40,7 @@ function run(overrides: { dryRun?: boolean; commandPrefix?: string; skillSource?
         {
             claudeDir,
             codexDir,
-            commandPrefix: overrides.commandPrefix ?? 'nex',
+            commandPrefix: overrides.commandPrefix ?? 'kelpi',
             dryRun: overrides.dryRun ?? false,
             // Default: no skill source at all, so the hook cases stay about hooks. The skill
             // suite below opts in with a fixture directory.
@@ -193,11 +193,11 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
     });
 
     it('is copied into <claude-dir>/skills/nex-agentic/', () => {
-        const source = bundleSkill('# Nex Agentic\n');
+        const source = bundleSkill('# Kelpi Agentic\n');
         const result = run({ skillSource: source });
         expect(result.skill.action).toBe('created');
         expect(result.skill.source).toBe(path.join(source, 'SKILL.md'));
-        expect(fs.readFileSync(destination(), 'utf8')).toBe('# Nex Agentic\n');
+        expect(fs.readFileSync(destination(), 'utf8')).toBe('# Kelpi Agentic\n');
     });
 
     it('reports `unchanged` on a re-run, and `updated` when the bundled copy moved on', () => {
@@ -211,7 +211,7 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
     });
 
     it('writes nothing on a dry run', () => {
-        const source = bundleSkill('# Nex Agentic\n');
+        const source = bundleSkill('# Kelpi Agentic\n');
         expect(run({ skillSource: source, dryRun: true }).skill.action).toBe('created');
         expect(fs.existsSync(destination())).toBe(false);
     });
@@ -229,10 +229,10 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
             {
                 claudeDir,
                 codexDir,
-                commandPrefix: 'nex',
+                commandPrefix: 'kelpi',
                 dryRun: false,
                 skillSource: empty,
-                executable: path.join(beside, 'nex.js')
+                executable: path.join(beside, 'kelpi.js')
             },
             nodeInstallFs
         );
@@ -241,19 +241,19 @@ describe('the bundled nex-agentic skill (CLI-146)', () => {
     });
 
     it('finds a copy staged beside the running bundle, then one in the checkout', () => {
-        // The packaged-app shape: <dir of nex.js>/skills/nex-agentic/SKILL.md.
+        // The packaged-app shape: <dir of kelpi.js>/skills/nex-agentic/SKILL.md.
         const beside = path.join(root, 'Resources', 'cli');
         fs.mkdirSync(path.join(beside, 'skills', 'nex-agentic'), { recursive: true });
         fs.writeFileSync(path.join(beside, 'skills', 'nex-agentic', 'SKILL.md'), '# packaged\n');
-        const found = findBundledSkill({ claudeDir, executable: path.join(beside, 'nex.js'), dryRun: true }, nodeInstallFs);
+        const found = findBundledSkill({ claudeDir, executable: path.join(beside, 'kelpi.js'), dryRun: true }, nodeInstallFs);
         expect(found?.contents).toBe('# packaged\n');
 
-        // The checkout shape: <dir of nex.js>/../resources/skills/nex-agentic/SKILL.md.
+        // The checkout shape: <dir of kelpi.js>/../resources/skills/nex-agentic/SKILL.md.
         const checkout = path.join(root, 'packages', 'cli');
         fs.mkdirSync(path.join(checkout, 'resources', 'skills', 'nex-agentic'), { recursive: true });
         fs.writeFileSync(path.join(checkout, 'resources', 'skills', 'nex-agentic', 'SKILL.md'), '# checkout\n');
         const fromCheckout = findBundledSkill(
-            { claudeDir, executable: path.join(checkout, 'dist', 'nex.js'), dryRun: true },
+            { claudeDir, executable: path.join(checkout, 'dist', 'kelpi.js'), dryRun: true },
             nodeInstallFs
         );
         expect(fromCheckout?.contents).toBe('# checkout\n');
@@ -279,7 +279,7 @@ describe('a non-bare command prefix', () => {
         fs.mkdirSync(claudeDir, { recursive: true });
         fs.writeFileSync(settingsFile(), golden('expected-claude-fresh.json'), 'utf8');
 
-        const absolute = '/Users/dev/new_nex/packages/cli/dist/nex.js';
+        const absolute = '/Users/dev/new_nex/packages/cli/dist/kelpi.js';
         const result = run({ commandPrefix: absolute });
         expect(result.claude.action).toBe('merged');
         const written = read(settingsFile());

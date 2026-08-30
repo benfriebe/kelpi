@@ -98,18 +98,18 @@ export function describeTransportFailure(failure: TransportFailure, command: str
     switch (failure.kind) {
         case 'unixSocketMissing':
             return [
-                `${command}: cannot reach Nex — socket ${failure.path} does not exist.`,
-                'Is Nex running? Launch the app, then retry. If Nex is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
+                `${command}: cannot reach Kelpi — socket ${failure.path} does not exist.`,
+                'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
             ];
         case 'unixConnectRefused':
             return [
-                `${command}: socket ${failure.path} exists but connect was refused — Nex is not listening (likely stale socket from a previous crash).`,
-                `Restart Nex (panes and workspaces are persisted to ~/Library/Application Support/Nex/nex.db so they will be restored). If the file remains after Nex quits, remove it with \`rm ${failure.path}\`.`
+                `${command}: socket ${failure.path} exists but connect was refused — Kelpi is not listening (likely stale socket from a previous crash).`,
+                `Restart Kelpi (panes and workspaces are persisted to ~/Library/Application Support/nexd/nex.db so they will be restored). If the file remains after Kelpi quits, remove it with \`rm ${failure.path}\`.`
             ];
         case 'unixConnectFailed':
             return [
                 `${command}: connect to ${failure.path} failed (errno ${String(failure.errno)}: ${failure.message}).`,
-                'Run `nex doctor` for full IPC diagnostics.'
+                'Run `kelpi doctor` for full IPC diagnostics.'
             ];
         case 'tcpResolveFailed':
             return [
@@ -119,17 +119,17 @@ export function describeTransportFailure(failure: TransportFailure, command: str
         case 'tcpConnectFailed':
             return [
                 `${command}: TCP connect to ${failure.host}:${String(failure.port)} failed (errno ${String(failure.errno)}: ${failure.message}).`,
-                `Confirm Nex has \`tcp-port = ${String(failure.port)}\` set in ~/.config/nex/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
+                `Confirm Kelpi has \`tcp-port = ${String(failure.port)}\` set in ~/.config/nex/config and is running. If you're tunneling, check the SSH reverse tunnel is up.`
             ];
         case 'createSocketFailed':
             return [
                 `${command}: socket(2) failed (errno ${String(failure.errno)}: ${failure.message}).`,
-                'Process-level failure — check for FD exhaustion. Run `nex doctor` for diagnostics.'
+                'Process-level failure — check for FD exhaustion. Run `kelpi doctor` for diagnostics.'
             ];
         case 'emptyReply':
             return [
-                `${command}: no response from Nex for \`${failure.command}\` (connected, then peer closed before replying).`,
-                'Likely an older Nex that doesn\'t recognise the command, or the app is wedged. Run `nex doctor` to confirm. Restart Nex if the doctor reports the app pid is responsive but commands hang.'
+                `${command}: no response from Kelpi for \`${failure.command}\` (connected, then peer closed before replying).`,
+                'Likely an older Kelpi that doesn\'t recognise the command, or the app is wedged. Run `kelpi doctor` to confirm. Restart Kelpi if the doctor reports the app pid is responsive but commands hang.'
             ];
     }
 }
@@ -146,7 +146,7 @@ export function printTransportFailure(command: string, options: { readonly fireA
     errLine(`Repair: ${repair}`);
 }
 
-/** `nex event …` sets this so hooks never spam a user's terminal (cli.md §5.6). */
+/** `kelpi event …` sets this so hooks never spam a user's terminal (cli.md §5.6). */
 let suppressFireAndForgetWarnings = false;
 
 export function setSuppressFireAndForgetWarnings(value: boolean): void {
@@ -220,7 +220,7 @@ function encode(payload: JsonObject): string {
  * Write one line and close. Any transport failure prints a `Warning:` (unless suppressed)
  * and exits 0 — never a non-zero code, never a hang.
  */
-export async function sendJSON(payload: JsonObject, commandLabel = 'nex'): Promise<void> {
+export async function sendJSON(payload: JsonObject, commandLabel = 'kelpi'): Promise<void> {
     lastTransportFailure = null;
     const outcome = await connect();
     if (outcome.socket === undefined) {
@@ -248,7 +248,7 @@ export async function sendJSON(payload: JsonObject, commandLabel = 'nex'): Promi
 // ── request / response ──────────────────────────────────────────────────────────────
 
 export interface ReadOptions {
-    /** Seconds; defaults to `NEX_REPLY_TIMEOUT` or 5. */
+    /** Seconds; defaults to `KELPI_REPLY_TIMEOUT` or 5. */
     readonly timeoutSeconds?: number | undefined;
 }
 
@@ -256,7 +256,7 @@ export interface ReadOptions {
  * Send and read to EOF. `null` means transport failure (the caller prints the categorized
  * error and exits 1); an EMPTY string means "connected, sent, nothing came back", which each
  * caller renders in its own way (`pane send` treats it as success, everything else as
- * "this Nex is too old").
+ * "this Kelpi is too old").
  */
 export async function sendJSONAndReadReply(payload: JsonObject, options: ReadOptions = {}): Promise<string | null> {
     lastTransportFailure = null;
@@ -267,7 +267,7 @@ export async function sendJSONAndReadReply(payload: JsonObject, options: ReadOpt
     }
     const socket = outcome.socket;
     const timeoutMs = (options.timeoutSeconds ?? replyTimeoutSeconds()) * 1000;
-    const wireCommand = typeof payload['command'] === 'string' ? payload['command'] : 'nex';
+    const wireCommand = typeof payload['command'] === 'string' ? payload['command'] : 'kelpi';
 
     const reply = await new Promise<string | null>((resolve) => {
         const chunks: Buffer[] = [];

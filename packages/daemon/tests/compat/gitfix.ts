@@ -46,10 +46,10 @@ export function git(cwd: string, ...args: string[]): string {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
             ...process.env,
-            GIT_AUTHOR_NAME: 'nex',
-            GIT_AUTHOR_EMAIL: 'nex@example.com',
-            GIT_COMMITTER_NAME: 'nex',
-            GIT_COMMITTER_EMAIL: 'nex@example.com',
+            GIT_AUTHOR_NAME: 'kelpi',
+            GIT_AUTHOR_EMAIL: 'kelpi@example.com',
+            GIT_COMMITTER_NAME: 'kelpi',
+            GIT_COMMITTER_EMAIL: 'kelpi@example.com',
             GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_CONFIG_SYSTEM: '/dev/null'
         }
@@ -65,8 +65,8 @@ export function initRepo(dir: string, files: Readonly<Record<string, string>> = 
     fs.mkdirSync(dir, { recursive: true });
     git(dir, 'init', '--initial-branch=main');
     // Local identity + no signing: the DAEMON's git runs with the ambient env (see the header).
-    git(dir, 'config', 'user.name', 'nex');
-    git(dir, 'config', 'user.email', 'nex@example.com');
+    git(dir, 'config', 'user.name', 'kelpi');
+    git(dir, 'config', 'user.email', 'kelpi@example.com');
     git(dir, 'config', 'commit.gpgsign', 'false');
     const seeded = { 'README.md': '# fixture\n', ...files };
     for (const [name, contents] of Object.entries(seeded)) {

@@ -1,5 +1,5 @@
 /**
- * `nex workspace …` (cli.md §10).
+ * `kelpi workspace …` (cli.md §10).
  *
  * Three shapes of output live here and scripts depend on all three staying distinct:
  *   - `list` unwraps the array;
@@ -71,11 +71,11 @@ async function handleWorkspaceList(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const noHeader = popSwitch('--no-header', args);
     const group = parseFlag('--group', args);
-    rejectLeftoverArgs(args, 'nex workspace list', { usage: (write) => write(workspaceListUsage) });
+    rejectLeftoverArgs(args, 'kelpi workspace list', { usage: (write) => write(workspaceListUsage) });
 
     const payload: JsonObject = { command: 'workspace-list' };
     if (group !== null) payload['group'] = group;
-    const reply = await decodeReply(payload, 'nex workspace list');
+    const reply = await decodeReply(payload, 'kelpi workspace list');
     const workspaces = replyArray(reply, 'workspaces');
     if (asJSON) {
         printLine(stableStringify(workspaces));
@@ -99,7 +99,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     const repo = parseFlag('--repo', args);
     const updateMain = popSwitch('--update-main', args);
     const asJSON = popSwitch('--json', args);
-    rejectLeftoverArgs(args, 'nex workspace create', { usage: (write) => write(workspaceCreateUsage) });
+    rejectLeftoverArgs(args, 'kelpi workspace create', { usage: (write) => write(workspaceCreateUsage) });
 
     const payload: JsonObject = { command: 'workspace-create' };
     if (name !== null) payload['name'] = name;
@@ -119,7 +119,7 @@ async function handleWorkspaceCreate(args: string[]): Promise<void> {
     // default, and a slow-but-succeeding create must not read as a failure.
     const reply = await decodeReply(
         payload,
-        'nex workspace create',
+        'kelpi workspace create',
         worktree !== null ? { timeoutSeconds: 120 } : {}
     );
     if (asJSON) {
@@ -201,7 +201,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     if (bad !== undefined) {
         errLine(`Unknown option for workspace delete: ${bad}`);
         errLine(
-            'Usage: nex workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
+            'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
         );
         exit(1);
     }
@@ -210,7 +210,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     const ids = [...new Set(args)];
     if (ids.length === 0) {
         errLine(
-            'Usage: nex workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
+            'Usage: kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree] [--json]'
         );
         exit(1);
     }
@@ -220,7 +220,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
     for (const id of ids) {
         const reply = await decodeReplyAllowingFailure(
             { command: 'workspace-delete', name: id, force },
-            'nex workspace delete'
+            'kelpi workspace delete'
         );
         const ok = asBool(reply['ok']) ?? false;
         const workspaceName = asString(reply['workspace_name']) ?? id;
@@ -257,7 +257,7 @@ async function handleWorkspaceDelete(args: string[], options: DeleteOptions = {}
             record['error'] = error;
             const activeAgents = asInt(reply['active_agents']);
             if (activeAgents !== undefined) record['active_agents'] = activeAgents;
-            if (!asJSON) errLine(`nex workspace delete: ${error}`);
+            if (!asJSON) errLine(`kelpi workspace delete: ${error}`);
         }
         results.push(record);
     }
@@ -353,7 +353,7 @@ async function handleWorkspaceLabel(args: string[]): Promise<void> {
         errLine('workspace label: --style is not yet supported; set label colors in Settings ▸ Labels');
         exit(1);
     }
-    rejectLeftoverArgs(args, 'nex workspace label', { usage: (write) => write(workspaceLabelUsage) });
+    rejectLeftoverArgs(args, 'kelpi workspace label', { usage: (write) => write(workspaceLabelUsage) });
 
     const operations = [setValues.length > 0, addValues.length > 0, removeValues.length > 0, clear].filter(Boolean).length;
     if (operations !== 1) {
@@ -378,7 +378,7 @@ async function handleWorkspaceLabel(args: string[]): Promise<void> {
 
     const reply = await decodeReply(
         { command: 'workspace-label', name: nameOrID, label_op: op, label_values: values },
-        'nex workspace label'
+        'kelpi workspace label'
     );
     if (asJSON) {
         printLine(stableStringify(reply));

@@ -1,5 +1,5 @@
 /**
- * `nex pane *` against real PTYs: create / split / list / name / send / send-key / capture /
+ * `kelpi pane *` against real PTYs: create / split / list / name / send / send-key / capture /
  * resize / close, plus the target-resolution error matrix.
  *
  * The send → capture round-trips go through a real `/bin/sh` (the harness pins the shell so
@@ -37,24 +37,24 @@ interface ResizeReply extends PaneMutationReply {
     readonly target_share: number;
 }
 
-describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
-    let nex: CompatDaemon;
+describe.skipIf(!swiftCLIAvailable())('compat: kelpi pane', () => {
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     const listPanes = (workspace: string): Promise<PaneListEntryJSON[]> =>
-        nex.json<PaneListEntryJSON[]>(['pane', 'list', '--workspace', workspace, '--json']);
+        kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--workspace', workspace, '--json']);
 
     /** A workspace with one extra, labelled pane. Returns that pane's id. */
     async function seedPane(workspace: string, label: string): Promise<string> {
-        await nex.json(['workspace', 'create', '--name', workspace, '--json']);
-        const reply = await nex.json<PaneMutationReply>([
+        await kelpi.json(['workspace', 'create', '--name', workspace, '--json']);
+        const reply = await kelpi.json<PaneMutationReply>([
             'pane', 'create', '--workspace', workspace, '--name', label, '--json'
         ]);
         return reply.pane_id;
@@ -63,7 +63,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
     /** Poll a pane's captured screen until it contains `needle`. */
     async function captureUntil(paneID: string, needle: string): Promise<string> {
         const result = await eventually(
-            () => nex.run(['pane', 'capture', '--target', paneID, '--scrollback']),
+            () => kelpi.run(['pane', 'capture', '--target', paneID, '--scrollback']),
             (r) => r.code === 0 && r.stdout.includes(needle)
         );
         expect(result.code).toBe(0);
@@ -71,11 +71,11 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
     }
 
     it('creates a pane in another workspace with a label and a working directory', async () => {
-        const dir = path.join(nex.home, 'projects', 'demo');
+        const dir = path.join(kelpi.home, 'projects', 'demo');
         fs.mkdirSync(dir, { recursive: true });
-        await nex.json(['workspace', 'create', '--name', 'alpha', '--json']);
+        await kelpi.json(['workspace', 'create', '--name', 'alpha', '--json']);
 
-        const reply = await nex.json<PaneMutationReply>([
+        const reply = await kelpi.json<PaneMutationReply>([
             'pane', 'create', '--workspace', 'alpha', '--name', 'worker-1', '--path', dir, '--json'
         ]);
         // The pane-mutation printer strips `ok` and prints the REAL new pane id.
@@ -92,7 +92,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect(created?.working_directory).toBe(dir);
         expect(created?.workspace_id).toBe(reply.workspace_id);
         // A real PTY is behind it.
-        expect(nex.daemon.pty.has(reply.pane_id)).toBe(true);
+        expect(kelpi.daemon.pty.has(reply.pane_id)).toBe(true);
     }, 60_000);
 
     it('lists panes with full UUIDs, types, timestamps and an ABSENT agent_session_id', async () => {
@@ -115,7 +115,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect('label' in first).toBe(false);
 
         // Once a session binds, the key appears with the full id.
-        await nex.run(['event', 'start'], {
+        await kelpi.run(['event', 'start'], {
             paneID,
             stdin: JSON.stringify({ session_id: 'e1f2a3b4-c5d6-7890-abcd-ef1234567890' })
         });
@@ -123,14 +123,14 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect(bound?.agent_session_id).toBe('e1f2a3b4-c5d6-7890-abcd-ef1234567890');
 
         // `--current` scopes to the caller's own workspace.
-        const current = await nex.json<PaneListEntryJSON[]>(['pane', 'list', '--current', '--json'], { paneID });
+        const current = await kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--current', '--json'], { paneID });
         expect(current.map((pane) => pane.workspace_name)).toEqual(['alpha', 'alpha']);
     }, 60_000);
 
     it('round-trips `pane send` → shell → `pane capture`', async () => {
         const paneID = await seedPane('alpha', 'worker-1');
 
-        const sent = await nex.json<PaneMutationReply & { bare: boolean }>([
+        const sent = await kelpi.json<PaneMutationReply & { bare: boolean }>([
             'pane', 'send', '--target', paneID, '--json', 'echo', 'compat-hello'
         ]);
         expect(sent.pane_id).toBe(paneID);
@@ -144,12 +144,12 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect(screen).toMatch(/^compat-hello$/m);
 
         // Viewport-only capture (no --scrollback) still works and is a suffix of the screen.
-        const viewport = await nex.run(['pane', 'capture', '--target', paneID]);
+        const viewport = await kelpi.run(['pane', 'capture', '--target', paneID]);
         expect(viewport.code).toBe(0);
         expect(viewport.stdout).toContain('compat-hello');
 
         // `--lines N` tails the capture.
-        const tail = await nex.run(['pane', 'capture', '--target', paneID, '--lines', '1']);
+        const tail = await kelpi.run(['pane', 'capture', '--target', paneID, '--lines', '1']);
         expect(tail.code).toBe(0);
         expect(tail.stdout.split('\n').filter((line) => line.length > 0)).toHaveLength(1);
     }, 60_000);
@@ -157,16 +157,16 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
     it('composes `pane send --bare` with `pane send-key enter`', async () => {
         const paneID = await seedPane('alpha', 'worker-1');
 
-        const bare = await nex.json<{ bare: boolean }>([
+        const bare = await kelpi.json<{ bare: boolean }>([
             'pane', 'send', '--bare', '--target', paneID, '--json', 'echo bare-mode'
         ]);
         expect(bare.bare).toBe(true);
 
         // Nothing ran yet — `--bare` deliberately omits the Enter.
-        const beforeEnter = await nex.run(['pane', 'capture', '--target', paneID, '--scrollback']);
+        const beforeEnter = await kelpi.run(['pane', 'capture', '--target', paneID, '--scrollback']);
         expect(beforeEnter.stdout).not.toMatch(/^bare-mode$/m);
 
-        const key = await nex.run(['pane', 'send-key', '--target', paneID, 'enter']);
+        const key = await kelpi.run(['pane', 'send-key', '--target', paneID, 'enter']);
         expect(key.code).toBe(0);
         expect(key.stdout).toContain(`sent enter to ${paneID}`);
 
@@ -178,25 +178,25 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         await captureUntil(paneID, '$'); // wait for the first prompt
 
         // Type a command that must NEVER run, then interrupt the line.
-        await nex.json(['pane', 'send', '--bare', '--target', paneID, '--json', 'nex-compat-should-not-run']);
-        expect((await nex.run(['pane', 'send-key', '--target', paneID, 'ctrl-c'])).code).toBe(0);
-        await nex.json(['pane', 'send', '--target', paneID, '--json', 'echo', 'after-interrupt']);
+        await kelpi.json(['pane', 'send', '--bare', '--target', paneID, '--json', 'kelpi-compat-should-not-run']);
+        expect((await kelpi.run(['pane', 'send-key', '--target', paneID, 'ctrl-c'])).code).toBe(0);
+        await kelpi.json(['pane', 'send', '--target', paneID, '--json', 'echo', 'after-interrupt']);
 
         const screen = await captureUntil(paneID, 'after-interrupt');
         // The interrupted line was discarded by the line discipline: the shell never tried it.
-        expect(screen).not.toContain('nex-compat-should-not-run: ');
+        expect(screen).not.toContain('kelpi-compat-should-not-run: ');
         expect(screen).not.toMatch(/not found/);
     }, 60_000);
 
     it('renames, splits and resizes panes', async () => {
         const paneID = await seedPane('alpha', 'worker-1');
 
-        const renamed = await nex.json<PaneMutationReply>([
+        const renamed = await kelpi.json<PaneMutationReply>([
             'pane', 'name', '--target', paneID, '--json', 'coordinator'
         ]);
         expect(renamed).toMatchObject({ pane_id: paneID, label: 'coordinator' });
 
-        const split = await nex.json<PaneMutationReply>([
+        const split = await kelpi.json<PaneMutationReply>([
             'pane', 'split', '--target', paneID, '--direction', 'vertical', '--name', 'worker-2', '--json'
         ]);
         expect(split.pane_id).toMatch(UUID);
@@ -204,7 +204,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect(split.label).toBe('worker-2');
         expect((await listPanes('alpha')).map((pane) => pane.id)).toContain(split.pane_id);
 
-        const resized = await nex.json<ResizeReply>([
+        const resized = await kelpi.json<ResizeReply>([
             'pane', 'resize', '--target', paneID, '--ratio', '0.7', '--json'
         ]);
         expect(resized.pane_id).toBe(paneID);
@@ -212,21 +212,21 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         expect(resized.split_path).toMatch(/^d[LR]*$/);
 
         // --grow nudges by the default 0.05 step from the current share.
-        const grown = await nex.json<ResizeReply>(['pane', 'resize', '--target', paneID, '--grow', '--json']);
+        const grown = await kelpi.json<ResizeReply>(['pane', 'resize', '--target', paneID, '--grow', '--json']);
         expect(grown.target_share).toBeCloseTo(0.75, 6);
 
         // Share clamps to [0.1, 0.9] server-side.
-        const clamped = await nex.json<ResizeReply>(['pane', 'resize', '--target', paneID, '--ratio', '0.99', '--json']);
+        const clamped = await kelpi.json<ResizeReply>(['pane', 'resize', '--target', paneID, '--ratio', '0.99', '--json']);
         expect(clamped.target_share).toBeCloseTo(0.9, 6);
     }, 60_000);
 
     it('docks one pane against another with the adjacent `pane move` form', async () => {
         const paneID = await seedPane('alpha', 'worker-1');
-        const split = await nex.json<PaneMutationReply>([
+        const split = await kelpi.json<PaneMutationReply>([
             'pane', 'split', '--target', paneID, '--name', 'worker-2', '--json'
         ]);
 
-        const moved = await nex.json<PaneMutationReply & { anchor_id: string; zone: string }>([
+        const moved = await kelpi.json<PaneMutationReply & { anchor_id: string; zone: string }>([
             'pane', 'move', '--target', split.pane_id, '--below', paneID, '--json'
         ]);
         expect(moved).toMatchObject({
@@ -239,17 +239,17 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
 
         // The anchor must live in the moved pane's workspace — a cross-workspace or missing
         // anchor is one error, not a guess.
-        const stray = await nex.run(['pane', 'move', '--target', split.pane_id, '--below', 'nowhere', '--json']);
+        const stray = await kelpi.run(['pane', 'move', '--target', split.pane_id, '--below', 'nowhere', '--json']);
         expect(stray.code).toBe(1);
         expect(stray.stderr).toContain("no pane matching 'nowhere' in workspace 'alpha'");
     }, 60_000);
 
     it('refuses to resize the only pane in a workspace', async () => {
-        await nex.json(['workspace', 'create', '--name', 'solo', '--json']);
+        await kelpi.json(['workspace', 'create', '--name', 'solo', '--json']);
         const [only] = await listPanes('solo');
         expect(only).toBeDefined();
 
-        const result = await nex.run(['pane', 'resize', '--target', only!.id, '--ratio', '0.5', '--json']);
+        const result = await kelpi.run(['pane', 'resize', '--target', only!.id, '--ratio', '0.5', '--json']);
         expect(result.code).toBe(1);
         expect(result.stderr).toContain('has no sibling to resize against');
     }, 60_000);
@@ -257,34 +257,34 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
     it('closes a pane by target from outside any pane', async () => {
         const paneID = await seedPane('alpha', 'worker-1');
 
-        const closed = await nex.run(['pane', 'close', '--target', paneID]);
+        const closed = await kelpi.run(['pane', 'close', '--target', paneID]);
         expect(closed.code).toBe(0);
         expect(closed.stdout).toContain(`pane deleted: ${paneID}`);
         expect((await listPanes('alpha')).map((pane) => pane.id)).not.toContain(paneID);
         // The PTY is gone with it.
-        expect(nex.daemon.pty.has(paneID)).toBe(false);
+        expect(kelpi.daemon.pty.has(paneID)).toBe(false);
 
         // A label target needs a workspace scope; with one it resolves.
-        await nex.json(['pane', 'create', '--workspace', 'alpha', '--name', 'worker-2', '--json']);
-        const byLabel = await nex.run(['pane', 'close', '--target', 'worker-2', '--workspace', 'alpha']);
+        await kelpi.json(['pane', 'create', '--workspace', 'alpha', '--name', 'worker-2', '--json']);
+        const byLabel = await kelpi.run(['pane', 'close', '--target', 'worker-2', '--workspace', 'alpha']);
         expect(byLabel.code).toBe(0);
         expect(byLabel.stdout).toContain('(worker-2)');
     }, 60_000);
 
     it('refuses to capture a non-terminal pane', async () => {
-        const file = path.join(nex.home, 'notes.md');
+        const file = path.join(kelpi.home, 'notes.md');
         fs.writeFileSync(file, '# hello\n');
-        // `nex md` is fire-and-forget: it opens the pane in the active workspace.
-        expect((await nex.run(['md', file])).code).toBe(0);
+        // `kelpi md` is fire-and-forget: it opens the pane in the active workspace.
+        expect((await kelpi.run(['md', file])).code).toBe(0);
 
         const markdown = await eventually(
-            () => nex.json<PaneListEntryJSON[]>(['pane', 'list', '--json']),
+            () => kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--json']),
             (panes) => panes.some((pane) => pane.type === 'markdown')
         );
         const pane = markdown.find((entry) => entry.type === 'markdown');
         expect(pane?.file_path).toBe(file);
 
-        const result = await nex.run(['pane', 'capture', '--target', pane?.id ?? '']);
+        const result = await kelpi.run(['pane', 'capture', '--target', pane?.id ?? '']);
         expect(result.code).toBe(1);
         expect(result.stderr).toContain('pane is not a terminal (type: markdown)');
     }, 60_000);
@@ -303,7 +303,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         [
             'bare label with no scope at all',
             ['pane', 'send', '--target', 'worker-1', 'hi'],
-            "label 'worker-1' requires --workspace <name-or-id> when called from outside a Nex pane"
+            "label 'worker-1' requires --workspace <name-or-id> when called from outside a Kelpi pane"
         ],
         [
             'unknown workspace',
@@ -317,7 +317,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
         ]
     ])('rejects %s with exit 1 and a one-line reason', async (_label, args, expected) => {
         await seedPane('alpha', 'worker-1');
-        const result = await nex.run(args);
+        const result = await kelpi.run(args);
         expect(result.code).toBe(1);
         expect(result.stdout).toBe('');
         expect(result.stderr).toContain(expected);
@@ -325,9 +325,9 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane', () => {
 
     it('rejects an ambiguous label rather than guessing', async () => {
         await seedPane('alpha', 'twin');
-        await nex.json(['pane', 'create', '--workspace', 'alpha', '--name', 'twin', '--json']);
+        await kelpi.json(['pane', 'create', '--workspace', 'alpha', '--name', 'twin', '--json']);
 
-        const result = await nex.run(['pane', 'send', '--target', 'twin', '--workspace', 'alpha', 'hi']);
+        const result = await kelpi.run(['pane', 'send', '--target', 'twin', '--workspace', 'alpha', 'hi']);
         expect(result.code).toBe(1);
         expect(result.stderr).toContain("label 'twin' is ambiguous (2 matches); pass --workspace <name-or-id> to disambiguate");
     }, 60_000);

@@ -4,10 +4,10 @@
  * `install-hooks.sh` copied `Contents/Resources/skills/nex-agentic/SKILL.md` into
  * `~/.claude/skills/nex-agentic/` whenever the app bundle carried one, and `CLIInstallService`
  * re-copied it on launch when the contents had drifted. Both halves exist here: this module is
- * the copy, `nex install-hooks` runs it, and the file lives in `packages/cli/resources/` so a
+ * the copy, `kelpi install-hooks` runs it, and the file lives in `packages/cli/resources/` so a
  * checkout has it too — the CLI is the artifact that ships the skill now, not the app.
  *
- * The skill teaches an agent to drive `nex` itself (spawn worker panes, fan work out, read a
+ * The skill teaches an agent to drive `kelpi` itself (spawn worker panes, fan work out, read a
  * pane's output back, drive the web pane). It is a *document*, so "installing" it is one file
  * copy, and an unchanged copy is reported rather than rewritten — the same `unchanged` discipline
  * the hook files get, and for the same reason: a re-run should be able to say it did nothing.
@@ -15,9 +15,9 @@
  * Where the source comes from, in order:
  *   1. `--skill-source <dir>` — a directory containing `SKILL.md` (what the tests use);
  *   2. `<dir of the running bundle>/skills/nex-agentic` — the packaged app's
- *      `Contents/Resources/cli/skills/…`, staged beside `nex.js`;
+ *      `Contents/Resources/cli/skills/…`, staged beside `kelpi.js`;
  *   3. `<bundle dir>/../resources/skills/nex-agentic` — a workspace checkout, where the bundle is
- *      `packages/cli/dist/nex.js` and the resource sits at `packages/cli/resources/…`.
+ *      `packages/cli/dist/kelpi.js` and the resource sits at `packages/cli/resources/…`.
  *
  * None of them found means "this build carries no skill", which is a skip and not an error — the
  * shell script behaved the same way (`if [ -d "$SKILL_SRC" ]`).

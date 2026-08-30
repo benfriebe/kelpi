@@ -1,6 +1,6 @@
-# New Nex — Architecture
+# Kelpi — Architecture
 
-New Nex is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libghostty, at
+Kelpi is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + libghostty, at
 `/Users/ben/code/nex`) to a daemon + web-client architecture. The goals, in priority order:
 
 1. **Daemon-owned sessions**: PTYs, terminal state, workspaces, and agent tracking live in a
@@ -9,8 +9,8 @@ New Nex is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + lib
 2. **Attach from anywhere**: the desktop app on the same machine, a browser on a remote machine,
    or a phone — initially over localhost and tailnets (Tailscale handles authn + encryption;
    the daemon binds loopback + tailnet interfaces only).
-3. **CLI compatibility**: the existing `nex` CLI and its newline-JSON wire protocol keep working
-   unchanged. Claude Code / Codex hooks (`nex event …`) report to the daemon, so agent tracking no
+3. **CLI compatibility**: the existing `kelpi` CLI and its newline-JSON wire protocol keep working
+   unchanged. Claude Code / Codex hooks (`kelpi event …`) report to the daemon, so agent tracking no
    longer requires a GUI at all.
 4. **Ghostty-quality terminals**: rendering via `ghostty-web` (the libghostty-vt WASM core with an
    xterm.js-compatible API) in the client; server-side terminal state in the daemon so capture,
@@ -21,13 +21,13 @@ New Nex is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + lib
 ```
 ┌────────────────────────────── host machine ──────────────────────────────┐
 │                                                                          │
-│  nexd (daemon, Node)                                                     │
+│  kelpid (daemon, Node)                                                     │
 │  ├─ PTY manager (node-pty)          one PTY per shell pane               │
 │  ├─ Terminal state (ghostty-vt / headless VT + ring buffer per pane)     │
 │  ├─ Domain store (workspaces, groups, panes, layout, agents, labels)     │
 │  ├─ Persistence (SQLite)                                                 │
 │  ├─ Control listener: unix socket /tmp/nex.sock (+ optional TCP)         │
-│  │    └─ existing nex CLI protocol, byte-compatible                      │
+│  │    └─ existing kelpi CLI protocol, byte-compatible                      │
 │  └─ HTTP+WS listener: 127.0.0.1:<port> (+ tailnet bind)                  │
 │       ├─ serves the web client (static assets, versioned with daemon)    │
 │       └─ WS: state-sync channel + per-pane PTY streams                   │
@@ -39,7 +39,7 @@ New Nex is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + lib
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **The daemon is the app.** All product logic lives in `nexd`. Clients are views: they render
+- **The daemon is the app.** All product logic lives in `kelpid`. Clients are views: they render
   synced state and send commands. The web client is served BY the daemon, so UI and daemon logic
   always update atomically together and remote browsers are version-matched by construction.
 - **The Electron shell is deliberately thin** and rarely updated: window chrome, tray, dock badge,
@@ -50,9 +50,9 @@ New Nex is a ground-up port of the Nex terminal multiplexer (macOS SwiftUI + lib
 
 The daemon is **spawned on demand by the app (or CLI), detached**, so it survives its spawner.
 It is not a launchd service; its lifetime is tied to the login session (it exits when the login
-session ends, and on demand via `nexd stop`).
+session ends, and on demand via `kelpid stop`).
 
-- Socket paths are **protocol-versioned**: `~/Library/Application Support/NewNex/daemon/
+- Socket paths are **protocol-versioned**: `~/Library/Application Support/NewKelpi/daemon/
   daemon-v<PROTO>.sock` + `.token` + `.pid`. A client that speaks proto N connects to
   `daemon-v<N>.sock`, spawning the daemon if absent.
 - **App/daemon updates = side-by-side versioning, not hot handoff.** When a protocol bump ships,
@@ -67,7 +67,7 @@ session ends, and on demand via `nexd stop`).
   check happens in the WS **handshake**, not the HTTP upgrade: a browser cannot see why an
   upgrade was refused (every refusal reaches it as close 1006, indistinguishable from a network
   drop), so an unauthenticated socket is upgraded and then told `rejected` with a reason it can
-  show a human. `nexd url` prints the URL that carries the token.
+  show a human. `kelpid url` prints the URL that carries the token.
 
 ## Protocols
 
@@ -121,10 +121,10 @@ new_nex/
 ├─ packages/
 │  ├─ protocol/         wire + WS message types, protocol version, zod schemas
 │  ├─ core/             pure domain logic: layout tree, resolution rules, agent state machine
-│  ├─ daemon/           nexd: PTY, VT state, store, sqlite, control + WS servers, static serving
+│  ├─ daemon/           kelpid: PTY, VT state, store, sqlite, control + WS servers, static serving
 │  ├─ client/           web UI (React + Vite)
 │  ├─ shell/            Electron wrapper
-│  └─ cli/              TS rewrite of the nex CLI (phase 2; Swift CLI keeps working meanwhile)
+│  └─ cli/              TS rewrite of the kelpi CLI (phase 2; Swift CLI keeps working meanwhile)
 └─ …
 ```
 

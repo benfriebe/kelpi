@@ -8,7 +8,7 @@
  * gate is the browser's permission state.
  *
  * What the port MUST preserve:
- *   - **`nex-<paneID>` identity**: a newer notification for a pane REPLACES the older one.
+ *   - **`kelpi-<paneID>` identity**: a newer notification for a pane REPLACES the older one.
  *     The Web Notifications API does that natively through `tag`; the in-app toast fallback
  *     re-implements it by keying on the same string.
  *   - **Open → navigate**: clicking activates the client, switches to the notification's
@@ -20,7 +20,7 @@
  * host calls `requestNotificationPermission()` from a click and we post nothing until then.
  */
 
-import type { WsNotificationMessage } from '@nex/protocol';
+import type { WsNotificationMessage } from '@kelpi/protocol';
 
 import type { Toast } from './store';
 
@@ -101,7 +101,7 @@ export interface NotificationManager {
 
 /** The dedupe identity the daemon sends; recomputed here for OSC/synthetic paths. */
 export function dedupeKeyForPane(paneID: string): string {
-    return `nex-${paneID}`;
+    return `kelpi-${paneID}`;
 }
 
 export function createNotificationManager(options: NotificationManagerOptions = {}): NotificationManager {

@@ -3,15 +3,15 @@
  *
  * Every audit and unit test before that commit validated agent flows by injecting events with
  * the daemon's socket explicitly set. These tests take the hops a Claude Code hook actually
- * takes: a real PTY shell inside a real pane runs a bare `nex …` resolved purely from the
- * pane's own environment — the `NEXD_HELPERS_DIR` PATH prepend finds the CLI, the injected
+ * takes: a real PTY shell inside a real pane runs a bare `kelpi …` resolved purely from the
+ * pane's own environment — the `KELPID_HELPERS_DIR` PATH prepend finds the CLI, the injected
  * `NEX_SOCKET=tcp:…` routes it to THIS daemon — and the daemon's store must move. Nothing
  * here sets `NEX_SOCKET` on a command line, calls a dispatcher directly, or touches the
  * production `/tmp/nex.sock` (every daemon lives in a mkdtemp sandbox with its own compat
  * socket path and an ephemeral TCP port).
  *
  * The restart cases prove the resume contract the same way: the session id is bound by an
- * IN-PANE `nex event session-start`, the daemon is stopped and a second one booted on the
+ * IN-PANE `kelpi event session-start`, the daemon is stopped and a second one booted on the
  * same state, and the respawned pane's own shell runs the typed `claude --resume <id>` —
  * asserted through a fake `claude` shim on the pane PATH that logs its argv. `session-end`
  * through the same in-pane chain must prevent the next restart's resume (issue #178 parity).
@@ -27,7 +27,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createDaemon, type Daemon } from '../../src/boot/index.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
+const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 
 const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -41,28 +41,28 @@ afterEach(async () => {
 beforeAll(() => {
     // Normally present; a fresh clone's first `vitest run` self-heals rather than red-herrings.
     if (!fs.existsSync(cliBundle)) {
-        execSync('pnpm --filter @nex/cli build', { cwd: repoRoot, stdio: 'ignore' });
+        execSync('pnpm --filter @kelpi/cli build', { cwd: repoRoot, stdio: 'ignore' });
     }
 });
 
 interface Sandbox {
     readonly root: string;
     readonly home: string;
-    /** The pane-PATH dir: the real `nex` CLI + the fake `claude`, exactly what panes resolve. */
+    /** The pane-PATH dir: the real `kelpi` CLI + the fake `claude`, exactly what panes resolve. */
     readonly helpers: string;
     /** Where the fake `claude` logs one line of argv per invocation. */
     readonly claudeLog: string;
 }
 
 function sandbox(): Sandbox {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-routing-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-routing-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     const helpers = path.join(root, 'helpers');
     fs.mkdirSync(helpers, { recursive: true });
     fs.writeFileSync(
-        path.join(helpers, 'nex'),
+        path.join(helpers, 'kelpi'),
         `#!/bin/sh\nexec "${process.execPath}" "${cliBundle}" "$@"\n`,
         { mode: 0o755 }
     );
@@ -75,10 +75,10 @@ function sandbox(): Sandbox {
 
 function daemonFor(box: Sandbox): Daemon {
     const daemon = createDaemon({
-        env: { NEXD_HELPERS_DIR: box.helpers },
+        env: { KELPID_HELPERS_DIR: box.helpers },
         home: box.home,
         runDir: path.join(box.root, 'run'),
-        controlSocketPath: path.join(box.root, 'nex.sock'),
+        controlSocketPath: path.join(box.root, 'kelpi.sock'),
         dbPath: path.join(box.root, 'nex.db'),
         configPath: path.join(box.root, 'config'),
         httpPort: 0,
@@ -113,7 +113,7 @@ function settle(ms = 1_500): Promise<void> {
 const SESSION = 'dddddddd-0000-4000-8000-00000000abcd';
 
 describe('real-chain event routing', () => {
-    it('a bare in-pane `nex event` moves pane status: idle → running → waitingForInput', async () => {
+    it('a bare in-pane `kelpi event` moves pane status: idle → running → waitingForInput', async () => {
         const box = sandbox();
         const daemon = daemonFor(box);
         await daemon.start();
@@ -122,10 +122,10 @@ describe('real-chain event routing', () => {
         expect(pane.status).toBe('idle');
 
         await settle();
-        daemon.input.sendText(pane.id, 'nex event start', { bare: false });
+        daemon.input.sendText(pane.id, 'kelpi event start', { bare: false });
         expect(await until(() => firstPane(daemon).status === 'running')).toBe(true);
 
-        daemon.input.sendText(pane.id, 'nex event stop', { bare: false });
+        daemon.input.sendText(pane.id, 'kelpi event stop', { bare: false });
         expect(await until(() => firstPane(daemon).status === 'waitingForInput')).toBe(true);
 
         // Belt and braces: the pane's shell really carried the injected env (not just "some
@@ -148,7 +148,7 @@ describe('real-chain event routing', () => {
         await settle();
         first.input.sendText(
             pane.id,
-            `printf '{"session_id":"${SESSION}"}' | nex event session-start`,
+            `printf '{"session_id":"${SESSION}"}' | kelpi event session-start`,
             { bare: false }
         );
         expect(await until(() => firstPane(first).agentSessionID === SESSION)).toBe(true);
@@ -177,12 +177,12 @@ describe('real-chain event routing', () => {
         ).toBe(1);
 
         // The resumed session ends cleanly (SessionEnd hook, issue #178): the tracked id is
-        // cleared, so the NEXT restart must not resume it.
+        // cleared, so the KELPIT restart must not resume it.
         await settle();
         const paneNow = firstPane(second);
         second.input.sendText(
             paneNow.id,
-            `printf '{"session_id":"${SESSION}"}' | nex event session-end`,
+            `printf '{"session_id":"${SESSION}"}' | kelpi event session-end`,
             { bare: false }
         );
         expect(await until(() => firstPane(second).agentSessionID === null)).toBe(true);

@@ -1,7 +1,7 @@
 /**
  * The web-pane chrome's command surface.
  *
- * Every button in `./WebPane.tsx` is one control-protocol verb — the same ones `nex web …`
+ * Every button in `./WebPane.tsx` is one control-protocol verb — the same ones `kelpi web …`
  * sends — so the UI and the CLI cannot drift: a URL-bar submit IS `web-navigate`, the tab
  * strip's ✕ IS `web-tab-close`. They live here rather than on `CommandClient` because they are
  * a feature's vocabulary, not the transport's; `raw()` is public exactly so a feature can own
@@ -17,7 +17,7 @@
  * optimistic ack is normal for web verbs (web-pane.md §17.4).
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { CommandReply } from '../connection';
 
@@ -26,7 +26,7 @@ export interface WebCommandSender {
     raw(payload: JsonObject): Promise<CommandReply>;
 }
 
-/** The find bar's four operations (§10), the same set `__nexWebFind` exposes. */
+/** The find bar's four operations (§10), the same set `__kelpiWebFind` exposes. */
 export type WebFindOp = 'search' | 'next' | 'prev' | 'clear';
 
 /** ⌘= / ⌘- / ⌘0 (§4.2). The daemon turns these into ±0.1 / reset, and the host clamps. */
@@ -94,7 +94,7 @@ export interface WebPaneCommands {
     batchRemove(paneID: string, itemID: string): Promise<CommandReply>;
     batchComment(paneID: string, itemID: string, comment: string, tabID?: string | null): Promise<CommandReply>;
     batchFocus(paneID: string, itemID: string | null, origin: 'panel' | 'page'): Promise<CommandReply>;
-    /** `sendTo === null` queues the items for `nex web inspect-result` instead (WEB-135). */
+    /** `sendTo === null` queues the items for `kelpi web inspect-result` instead (WEB-135). */
     batchSend(paneID: string, sendTo: string | null): Promise<CommandReply>;
 
     // ── cookies / storage (§13.2) ───────────────────────────────────────────

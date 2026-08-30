@@ -208,14 +208,14 @@ describe('the post-package ad-hoc signature (N22)', () => {
     });
 
     it('re-signs the whole bundle ad-hoc and then proves the seal', () => {
-        const commands = adhocSignCommands('/out/Nex.app');
+        const commands = adhocSignCommands('/out/Kelpi.app');
         expect(commands.map((command) => [...command])).toEqual([
-            // --deep: the four renamed `Nex Helper*.app` bundles are broken too, not just the
+            // --deep: the four renamed `Kelpi Helper*.app` bundles are broken too, not just the
             // outer one. --force: there is a (stale) signature to replace.
-            ['codesign', '--force', '--deep', '--sign', '-', '/out/Nex.app'],
+            ['codesign', '--force', '--deep', '--sign', '-', '/out/Kelpi.app'],
             // The verify is the point of the exercise — a silent codesign success over a bundle
             // that still fails --strict would ship the same defect.
-            ['codesign', '--verify', '--strict', '/out/Nex.app']
+            ['codesign', '--verify', '--strict', '/out/Kelpi.app']
         ]);
     });
 });

@@ -4,7 +4,7 @@
  * **Why a registry rather than a boolean expression.** A web pane's page is a native
  * `WebContentsView` the Electron shell composites ON TOP of this document, so no z-index,
  * backdrop or `opacity` in here can get above it: a dialog drawn while a page is live is sliced
- * at the page's edge (`docs/audit/run-O/53-agent-lifecycle-quit-dialog.png` — "Quit Nex?" with
+ * at the page's edge (`docs/audit/run-O/53-agent-lifecycle-quit-dialog.png` — "Quit Kelpi?" with
  * Cancel entirely off-screen). The only fix is to park the view for as long as the modal is up,
  * which means the assembly has to KNOW a modal is up.
  *

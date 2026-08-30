@@ -14,14 +14,14 @@
  * `refresh` flag on it.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -82,8 +82,8 @@ describe('command palette jump', () => {
             scrolled.push(this);
         };
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const runtime = createNexRuntime({
+        const store = createKelpiStore();
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,
@@ -134,8 +134,8 @@ describe('command palette jump', () => {
             /* no layout in jsdom; the other test owns this clause */
         };
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const runtime = createNexRuntime({
+        const store = createKelpiStore();
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,
@@ -199,8 +199,8 @@ describe('command palette jump', () => {
             /* no layout in jsdom */
         };
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const runtime = createNexRuntime({
+        const store = createKelpiStore();
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,

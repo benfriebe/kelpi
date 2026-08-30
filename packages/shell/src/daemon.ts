@@ -2,9 +2,9 @@
  * Discover-or-spawn the daemon (ARCHITECTURE.md "Daemon lifecycle").
  *
  * The shell is a *client* of the daemon, not its owner. On launch it looks in the run dir
- * (`~/Library/Application Support/nexd/run`, or `NEXD_RUN_DIR`) for a daemon speaking this
+ * (`~/Library/Application Support/nexd/run`, or `KELPID_RUN_DIR`) for a daemon speaking this
  * protocol version; if one answers `ping` the shell simply adopts it — including a daemon
- * started by the `nex` CLI, by a previous run of the shell, or by a completely different
+ * started by the `kelpi` CLI, by a previous run of the shell, or by a completely different
  * client. Only when nothing answers does it spawn one, **detached**, so the daemon outlives
  * the app that started it.
  *
@@ -13,14 +13,14 @@
  * session running; that is the entire point of the architecture.
  *
  * Everything about the run dir — versioned paths, the 0600 token, the pid record, the liveness
- * probe, the detached spawn — is the daemon package's own lifecycle code (`@nex/daemon/
+ * probe, the detached spawn — is the daemon package's own lifecycle code (`@kelpi/daemon/
  * lifecycle`), so the shell cannot drift from the daemon's idea of where things live.
  */
 
 import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { readPortFile } from '@nex/daemon/boot/port';
+import { readPortFile } from '@kelpi/daemon/boot/port';
 import {
     probeDaemon,
     readPidRecord,
@@ -28,7 +28,7 @@ import {
     readToken,
     spawnDetached,
     type RunPaths
-} from '@nex/daemon/lifecycle';
+} from '@kelpi/daemon/lifecycle';
 
 import { log, warn } from './log.js';
 import {
@@ -40,16 +40,16 @@ import {
     packagedNodeBinary
 } from './resources.js';
 
-/** Where `nexd` lives, when it is not in the default dev/packaged locations. */
-export const ENTRY_ENV = 'NEXD_ENTRY';
+/** Where `kelpid` lives, when it is not in the default dev/packaged locations. */
+export const ENTRY_ENV = 'KELPID_ENTRY';
 /** The Node binary used to run the daemon script. */
-export const NODE_ENV_VAR = 'NEXD_NODE';
+export const NODE_ENV_VAR = 'KELPID_NODE';
 /** Append the detached daemon's output here (handed straight to `spawnDetached`). */
-export const LOG_FILE_ENV = 'NEXD_LOG_FILE';
+export const LOG_FILE_ENV = 'KELPID_LOG_FILE';
 /** The daemon's own name for "the directory holding the built web client" (`ws/http.ts`). */
-export const CLIENT_DIR_ENV = 'NEXD_CLIENT_DIR';
-/** The daemon's name for "the directory holding the bundled `nex` CLI" (`boot/compose.ts`). */
-export const HELPERS_DIR_ENV = 'NEXD_HELPERS_DIR';
+export const CLIENT_DIR_ENV = 'KELPID_CLIENT_DIR';
+/** The daemon's name for "the directory holding the bundled `kelpi` CLI" (`boot/compose.ts`). */
+export const HELPERS_DIR_ENV = 'KELPID_HELPERS_DIR';
 
 export const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const PROBE_TIMEOUT_MS = 750;
@@ -113,12 +113,12 @@ export interface EntryLookup {
 }
 
 /**
- * Candidate `nexd` entry scripts, in priority order:
+ * Candidate `kelpid` entry scripts, in priority order:
  *
- *   1. `NEXD_ENTRY` — the same override the daemon's own CLI honours (tests, odd layouts).
- *   2. `<appDir>/../daemon/dist/nexd.js` — the dev workspace: the shell package sits beside
- *      the daemon package, and `pnpm --filter @nex/daemon build` writes that bundle.
- *   3. `<resourcesPath>/daemon/nexd.js` — **the packaged app**. `forge.config.cjs` stages the
+ *   1. `KELPID_ENTRY` — the same override the daemon's own CLI honours (tests, odd layouts).
+ *   2. `<appDir>/../daemon/dist/kelpid.js` — the dev workspace: the shell package sits beside
+ *      the daemon package, and `pnpm --filter @kelpi/daemon build` writes that bundle.
+ *   3. `<resourcesPath>/daemon/kelpid.js` — **the packaged app**. `forge.config.cjs` stages the
  *      daemon payload (the bundle plus its `node_modules/node-pty`, which stays external to
  *      the bundle because it is native) into `Contents/Resources/daemon/`, deliberately
  *      OUTSIDE `app.asar`: `node` cannot execute a file inside an archive, and `dlopen` cannot
@@ -131,7 +131,7 @@ export function daemonEntryCandidates(lookup: EntryLookup = {}): readonly string
 
     const candidates: string[] = [];
     if (lookup.appDir !== undefined && lookup.appDir.length > 0) {
-        candidates.push(path.resolve(lookup.appDir, '..', 'daemon', 'dist', 'nexd.js'));
+        candidates.push(path.resolve(lookup.appDir, '..', 'daemon', 'dist', 'kelpid.js'));
     }
     if (lookup.resourcesPath !== undefined && lookup.resourcesPath.length > 0) {
         candidates.push(path.resolve(packagedDaemonEntry(lookup.resourcesPath)));
@@ -176,15 +176,15 @@ export function resolveNodeBinary(lookup: EntryLookup = {}): string | undefined 
 /**
  * The environment a daemon spawned by THIS shell inherits.
  *
- * One addition, and only in a packaged app: `NEXD_CLIENT_DIR` pointing at
+ * One addition, and only in a packaged app: `KELPID_CLIENT_DIR` pointing at
  * `Contents/Resources/client`. The daemon serves the web UI, and its own resolution of that
  * directory is env-only (`ws/http.ts` `resolveClientDistDir`) — deliberately, because the
  * daemon has no idea it is living inside an app bundle and `process.resourcesPath` is an
  * Electron concept. So the side that *does* know tells it, at spawn time, which keeps the
- * daemon free of packaging knowledge and keeps a headless `nexd` (installed from npm, running
+ * daemon free of packaging knowledge and keeps a headless `kelpid` (installed from npm, running
  * on a server) using its own rules.
  *
- * An explicit `NEXD_CLIENT_DIR` always wins — that is how a developer points a packaged app at
+ * An explicit `KELPID_CLIENT_DIR` always wins — that is how a developer points a packaged app at
  * a `vite build` output — and a Resources directory without an `index.html` is ignored rather
  * than passed on, since the daemon's "client not built" page is a better answer than a
  * configured-but-empty directory.
@@ -206,7 +206,7 @@ export function daemonSpawnEnv(env: NodeJS.ProcessEnv, lookup: EntryLookup = {})
         if (hasClientBuild(bundled)) result = { ...result, [CLIENT_DIR_ENV]: bundled };
     }
     // Same shape for the bundled CLI: the daemon prepends this directory to every pane's PATH
-    // so `nex event …` fired by a hook inside a pane resolves THIS app's CLI — not whatever
+    // so `kelpi event …` fired by a hook inside a pane resolves THIS app's CLI — not whatever
     // the user's rc files put first (on a machine also running the Swift app, the wrong one).
     const existingHelpers = env[HELPERS_DIR_ENV]?.trim();
     if (
@@ -299,14 +299,14 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     const entry = resolveDaemonEntry(lookup);
     if (entry === undefined) {
         throw new DaemonUnavailableError(
-            'No nexd daemon is running and no daemon bundle was found to start one.',
-            `Build it with \`pnpm --filter @nex/daemon build\`, or set ${ENTRY_ENV} to the daemon entry script. Looked at: ${daemonEntryCandidates(lookup).join(', ') || '(no candidates)'}`
+            'No kelpid daemon is running and no daemon bundle was found to start one.',
+            `Build it with \`pnpm --filter @kelpi/daemon build\`, or set ${ENTRY_ENV} to the daemon entry script. Looked at: ${daemonEntryCandidates(lookup).join(', ') || '(no candidates)'}`
         );
     }
     const nodeBinary = resolveNodeBinary(lookup);
     if (nodeBinary === undefined) {
         throw new DaemonUnavailableError(
-            'No Node binary was found to run the nexd daemon.',
+            'No Node binary was found to run the kelpid daemon.',
             `Install Node 24+ (so \`node\` is on PATH), or set ${NODE_ENV_VAR} to a Node binary.`
         );
     }
@@ -319,7 +319,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions = {}): Promise<D
     if (spawnEnv[HELPERS_DIR_ENV] !== env[HELPERS_DIR_ENV]) {
         log(`daemon helpers dir ${String(spawnEnv[HELPERS_DIR_ENV])} (from the app bundle)`);
     }
-    // `start --foreground` is what `nexd start` itself execs after detaching; going straight
+    // `start --foreground` is what `kelpid start` itself execs after detaching; going straight
     // to it skips a redundant process hop and gives us the daemon's real pid.
     const child = spawnDetached(entry, ['start', '--foreground'], {
         env: spawnEnv,

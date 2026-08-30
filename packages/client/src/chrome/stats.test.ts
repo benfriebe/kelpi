@@ -9,7 +9,7 @@
  * other breaks either the layout or the convention, so both are pinned here.
  */
 
-import { ZERO_SYSTEM_STATS, type WsSystemStats } from '@nex/protocol';
+import { ZERO_SYSTEM_STATS, type WsSystemStats } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {

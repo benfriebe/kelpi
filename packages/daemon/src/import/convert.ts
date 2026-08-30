@@ -21,8 +21,8 @@
  * anyway (`fromSnapshot`), done here so the report can mention it.
  */
 
-import { isSafeSessionID } from '@nex/core/agent';
-import { workspaceSidebarID, type WebTab } from '@nex/core/codec';
+import { isSafeSessionID } from '@kelpi/core/agent';
+import { workspaceSidebarID, type WebTab } from '@kelpi/core/codec';
 
 import type {
     LabelPreset,

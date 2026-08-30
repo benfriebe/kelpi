@@ -110,7 +110,7 @@ describe('the toggle (§GIT-046, §GIT-047, §GIT-049)', () => {
             const dot = screen.getByTestId(`graft-dot-${WT}`);
             expect(dot.getAttribute('data-status')).toBe(status);
             expect(dot.style.background).toBe(rgbOf(GRAFT_DOT_COLORS[status]));
-            const animated = dot.style.animation.includes('nex-graft-pulse');
+            const animated = dot.style.animation.includes('kelpi-graft-pulse');
             expect(animated).toBe(status === 'syncing');
         }
         // The two yellows are the same colour — the pulse is what distinguishes them.
@@ -273,7 +273,7 @@ describe('the swap dialog (§GIT-050 / §WS-144)', () => {
             expect(keep.dataset['default']).toBe('true');
             expect(screen.getByTestId('graft-swap-confirm').dataset['default']).toBe('false');
             expect(document.activeElement).toBe(keep);
-            expect(keep.style.border).toContain('var(--nex-accent');
+            expect(keep.style.border).toContain('var(--kelpi-accent');
             expect(keep.style.background).not.toBe('');
         });
 

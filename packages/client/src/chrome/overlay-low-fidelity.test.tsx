@@ -28,10 +28,10 @@ const ITEMS: readonly PaletteItem[] = [
         id: `ws:${W1}`,
         kind: 'workspace',
         icon: 'rectangle.stack',
-        title: 'nex-client',
+        title: 'kelpi-client',
         subtitle: '2 panes',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: null,
         workspaceColor: 'blue'
     },
@@ -39,10 +39,10 @@ const ITEMS: readonly PaletteItem[] = [
         id: `pane:${P1}`,
         kind: 'pane',
         icon: 'terminal',
-        title: '~/code/nex',
+        title: '~/code/kelpi',
         subtitle: 'zsh',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: P1,
         workspaceColor: 'blue'
     }
@@ -137,7 +137,7 @@ describe('the command palette rows (L99, L100)', () => {
         const icon = [...row.querySelectorAll('span')].find((node) => node.className.includes('text-center'));
         expect(icon?.className).toContain('w-4');
         expect(icon?.className).toContain('text-[12px]');
-        const stack = within(row).getByText('~/code/nex').parentElement as HTMLElement;
+        const stack = within(row).getByText('~/code/kelpi').parentElement as HTMLElement;
         expect(stack.className).toContain('gap-px');
     });
 
@@ -145,7 +145,7 @@ describe('the command palette rows (L99, L100)', () => {
         render(<CommandPalette {...paletteProps()} />);
         const neutral = within(rowFor('workspace')).getByText('workspace');
         expect(neutral.style.color).toBe(tokens.textTertiary);
-        const named = within(rowFor('pane')).getByText('nex-client');
+        const named = within(rowFor('pane')).getByText('kelpi-client');
         expect(named.style.color).toBe('rgba(255, 255, 255, 0.9)');
         expect(named.className).not.toContain('text-white');
     });
@@ -180,7 +180,7 @@ describe('graft chrome (L102, L103, L104)', () => {
                 onToggle={vi.fn()}
             />
         );
-        const style = document.getElementById('nex-graft-pulse-style');
+        const style = document.getElementById('kelpi-graft-pulse-style');
         expect(style?.textContent).toContain('opacity');
         // `.symbolEffect(.pulse)` is opacity only — a status marker never changes size (§H24).
         expect(style?.textContent).not.toContain('scale');
@@ -236,7 +236,7 @@ describe('the global focus ring (L96)', () => {
         const start = stylesheet.indexOf('@layer base {\n  :focus-visible {');
         expect(start).toBeGreaterThan(-1);
         const block = stylesheet.slice(start, stylesheet.indexOf('}', start));
-        expect(block).toContain('outline: 1px solid var(--nex-accent)');
+        expect(block).toContain('outline: 1px solid var(--kelpi-accent)');
         expect(block).toContain('outline-offset: 1px');
     });
 

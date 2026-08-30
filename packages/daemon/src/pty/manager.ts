@@ -48,7 +48,7 @@ export interface PtyManagerOptions {
 }
 
 /** Widened seam: everything `PtyManager` promises plus read-only introspection. */
-export interface NexPtyManager extends PtyManager {
+export interface KelpiPtyManager extends PtyManager {
     /** Live child pid, or undefined when the pane has no PTY. */
     pid(paneID: string): number | undefined;
     /** Number of live PTYs (terminal-surface.md §14 `activeSurfaceCount`). */
@@ -114,7 +114,7 @@ export function resolveShell(
     return FALLBACK_SHELL;
 }
 
-class PtyManagerImpl implements NexPtyManager {
+class PtyManagerImpl implements KelpiPtyManager {
     private readonly entries = new Map<string, PtyEntry>();
     private readonly syncGroups = new Map<string, Set<string>>();
     private readonly dataListeners = new Set<(paneID: string, data: Uint8Array) => void>();
@@ -433,6 +433,6 @@ function normalizeDimension(value: number, fallback: number): number {
     return floored > 0 ? floored : fallback;
 }
 
-export function createPtyManager(options: PtyManagerOptions = {}): NexPtyManager {
+export function createPtyManager(options: PtyManagerOptions = {}): KelpiPtyManager {
     return new PtyManagerImpl(options);
 }

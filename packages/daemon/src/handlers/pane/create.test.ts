@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { allPaneIDs } from '@nex/core/layout';
+import { allPaneIDs } from '@kelpi/core/layout';
 
 import { NOW, W1, W2, harness, seedSplit, seedWorkspace, testID } from './testing.js';
 
@@ -44,7 +44,7 @@ describe('pane-split', () => {
         expect(spawn?.cwd).toBe('/repo');
         expect(spawn?.env).toEqual([
             ['NEX_PANE_ID', NEW],
-            ['PATH', '/opt/nex/helpers:/usr/bin'],
+            ['PATH', '/opt/kelpi/helpers:/usr/bin'],
             ['NEX_PROFILE', 'default']
         ]);
         expect(h.term.attached).toEqual([{ paneID: NEW, cols: 80, rows: 24 }]);
@@ -114,7 +114,7 @@ describe('pane-split', () => {
         // Byte-for-byte from socket-handlers.md §4.1 (the em dash and backticks are contract).
         expect(reply.only()).toEqual({
             ok: false,
-            error: "workspace 'dev' has no pane to split — use `nex pane create --workspace dev`"
+            error: "workspace 'dev' has no pane to split — use `kelpi pane create --workspace dev`"
         });
     });
 
@@ -130,7 +130,7 @@ describe('pane-split', () => {
         const h = seeded();
         expect(h.run({ command: 'pane-split' }).only()).toEqual({
             ok: false,
-            error: 'pane split requires --target or --workspace when called from outside a Nex pane'
+            error: 'pane split requires --target or --workspace when called from outside a Kelpi pane'
         });
         expect(h.workspace(W1).panes).toHaveLength(1);
     });
@@ -139,7 +139,7 @@ describe('pane-split', () => {
         const h = seeded();
         expect(h.run({ command: 'pane-split', target: 'ghost' }).only()).toEqual({
             ok: false,
-            error: "label 'ghost' requires --workspace <name-or-id> when called from outside a Nex pane"
+            error: "label 'ghost' requires --workspace <name-or-id> when called from outside a Kelpi pane"
         });
     });
 
@@ -200,7 +200,7 @@ describe('pane-create', () => {
         const h = seeded();
         expect(h.run({ command: 'pane-create' }).only()).toEqual({
             ok: false,
-            error: 'pane create requires --target or --workspace when called from outside a Nex pane'
+            error: 'pane create requires --target or --workspace when called from outside a Kelpi pane'
         });
     });
 });

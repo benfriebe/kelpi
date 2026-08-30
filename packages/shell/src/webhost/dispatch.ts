@@ -20,7 +20,7 @@
  *     must use CDP `Runtime.evaluate {awaitPromise:true, returnByValue:true}`.
  */
 
-import type { JsonObject, JsonValue } from '@nex/protocol';
+import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
 import {
     DOM_CAPTURE_LIMIT,

@@ -25,21 +25,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { batchMarkerScript, buildInspectArm, inspectorScript } from './scripts.js';
 
 interface PageWindow {
-    __nexPost?: (channel: string, body: unknown) => void;
-    __nexBatchSetMarkers?: (items: readonly unknown[]) => boolean;
-    __nexBatchHighlight?: (id: string, scrollIntoView: boolean) => boolean;
-    __nexBatchUnfocus?: () => boolean;
-    __nexBatchHasOpenPopover?: boolean;
-    __nexInspectorEnable?: (nonce: string, sticky: boolean) => boolean;
-    __nexInspectorArmed?: () => boolean;
-    __nexBatchMarkersInstalled?: boolean;
-    __nexInspectorInstalled?: boolean;
-    __nexBridgeInstalled?: boolean;
+    __kelpiPost?: (channel: string, body: unknown) => void;
+    __kelpiBatchSetMarkers?: (items: readonly unknown[]) => boolean;
+    __kelpiBatchHighlight?: (id: string, scrollIntoView: boolean) => boolean;
+    __kelpiBatchUnfocus?: () => boolean;
+    __kelpiBatchHasOpenPopover?: boolean;
+    __kelpiInspectorEnable?: (nonce: string, sticky: boolean) => boolean;
+    __kelpiInspectorArmed?: () => boolean;
+    __kelpiBatchMarkersInstalled?: boolean;
+    __kelpiInspectorInstalled?: boolean;
+    __kelpiBridgeInstalled?: boolean;
 }
 
 const page = (): PageWindow => window as unknown as PageWindow;
 
-/** Posts the page made, in order — the `nexInspect` / `nexBatchMarker` channels. */
+/** Posts the page made, in order — the `kelpiInspect` / `kelpiBatchMarker` channels. */
 let posted: { channel: string; body: Record<string, unknown> }[] = [];
 
 /** The rect `#target` reports; moved between assertions to prove a re-anchor happened. */
@@ -57,7 +57,7 @@ function install(): void {
             bottom: targetRect.top + targetRect.height,
             toJSON: () => ({})
         }) as DOMRect;
-    page().__nexPost = (channel, body) => {
+    page().__kelpiPost = (channel, body) => {
         posted.push({ channel, body: body as Record<string, unknown> });
     };
     // The scripts are IIFE source strings; evaluating one IS installing it in this window.
@@ -67,13 +67,13 @@ function install(): void {
 }
 
 function badge(): HTMLElement {
-    const found = document.querySelector('[data-nex-batch-marker]');
+    const found = document.querySelector('[data-kelpi-batch-marker]');
     if (found === null) throw new Error('no badge rendered');
     return found as HTMLElement;
 }
 
 function popover(): HTMLElement | null {
-    return document.querySelector('[data-nex-batch-popover]');
+    return document.querySelector('[data-kelpi-batch-popover]');
 }
 
 beforeEach(() => {
@@ -82,11 +82,11 @@ beforeEach(() => {
     targetRect = { left: 100, top: 200, width: 40, height: 20 };
     Element.prototype.scrollIntoView = vi.fn();
     // A fresh window per test is not available here, so the install guards are reset instead.
-    page().__nexBatchMarkersInstalled = false;
-    page().__nexInspectorInstalled = false;
-    page().__nexBatchHasOpenPopover = false;
+    page().__kelpiBatchMarkersInstalled = false;
+    page().__kelpiInspectorInstalled = false;
+    page().__kelpiBatchHasOpenPopover = false;
     install();
-    page().__nexBatchSetMarkers?.([{ id: 'i1', selector: '#target', label: '1', comment: '' }]);
+    page().__kelpiBatchSetMarkers?.([{ id: 'i1', selector: '#target', label: '1', comment: '' }]);
 });
 
 afterEach(() => {
@@ -96,7 +96,7 @@ afterEach(() => {
 
 describe('WEB-139: the focus transients', () => {
     it('pulses the badge to 1.6× and settles it back after exactly 320 ms', () => {
-        page().__nexBatchHighlight?.('i1', false);
+        page().__kelpiBatchHighlight?.('i1', false);
         expect(badge().style.transform).toBe('scale(1.6)');
 
         // Still enlarged one tick before the deadline…
@@ -109,7 +109,7 @@ describe('WEB-139: the focus transients', () => {
     });
 
     it('scrolls a PANEL-origin focus to centre, and re-anchors 400 ms later', () => {
-        page().__nexBatchHighlight?.('i1', true);
+        page().__kelpiBatchHighlight?.('i1', true);
 
         const target = document.querySelector('#target') as HTMLElement;
         expect(target.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
@@ -127,7 +127,7 @@ describe('WEB-139: the focus transients', () => {
     });
 
     it('does not scroll a PAGE-origin focus — the element is already under the cursor', () => {
-        page().__nexBatchHighlight?.('i1', false);
+        page().__kelpiBatchHighlight?.('i1', false);
         const target = document.querySelector('#target') as HTMLElement;
         expect(target.scrollIntoView).not.toHaveBeenCalled();
 
@@ -139,7 +139,7 @@ describe('WEB-139: the focus transients', () => {
     });
 
     it('hides the badge and the ring for an element that has gone off-screen', () => {
-        page().__nexBatchHighlight?.('i1', false);
+        page().__kelpiBatchHighlight?.('i1', false);
         expect(badge().style.display).toBe('flex');
 
         targetRect = { left: -500, top: -500, width: 40, height: 20 };
@@ -153,9 +153,9 @@ describe('WEB-143: the picker suspends while the popover is open', () => {
     beforeEach(() => {
         // Arm the picker exactly the way the daemon does, then open a popover on the item.
         (0, eval)(buildInspectArm('NONCE', true));
-        expect(page().__nexInspectorArmed?.()).toBe(true);
-        page().__nexBatchHighlight?.('i1', false);
-        expect(page().__nexBatchHasOpenPopover).toBe(true);
+        expect(page().__kelpiInspectorArmed?.()).toBe(true);
+        page().__kelpiBatchHighlight?.('i1', false);
+        expect(page().__kelpiBatchHasOpenPopover).toBe(true);
         expect(popover()).not.toBeNull();
     });
 
@@ -163,7 +163,7 @@ describe('WEB-143: the picker suspends while the popover is open', () => {
         const other = document.querySelector('#other') as HTMLElement;
         other.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
 
-        const overlay = document.querySelector('[data-nex-inspector-overlay]') as HTMLElement | null;
+        const overlay = document.querySelector('[data-kelpi-inspector-overlay]') as HTMLElement | null;
         // Either no overlay was ever created, or the one that exists is hidden — both are "no
         // outline is drawn"; what must never happen is a visible box tracking the cursor.
         expect(overlay === null || overlay.style.display === 'none').toBe(true);
@@ -174,30 +174,30 @@ describe('WEB-143: the picker suspends while the popover is open', () => {
         const event = new MouseEvent('click', { bubbles: true, cancelable: true });
         other.dispatchEvent(event);
 
-        expect(posted.filter((entry) => entry.channel === 'nexInspect')).toHaveLength(0);
+        expect(posted.filter((entry) => entry.channel === 'kelpiInspect')).toHaveLength(0);
         // The page keeps its own click: the popover's buttons are ordinary DOM.
         expect(event.defaultPrevented).toBe(false);
         // And the picker is still armed — suspended, not disarmed.
-        expect(page().__nexInspectorArmed?.()).toBe(true);
+        expect(page().__kelpiInspectorArmed?.()).toBe(true);
     });
 
     it('gives Escape to the popover: the batch is not cancelled', () => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
         // A cancel would have posted `{cancelled:true}` on the inspect channel.
-        expect(posted.filter((entry) => entry.channel === 'nexInspect')).toHaveLength(0);
-        expect(page().__nexInspectorArmed?.()).toBe(true);
+        expect(posted.filter((entry) => entry.channel === 'kelpiInspect')).toHaveLength(0);
+        expect(page().__kelpiInspectorArmed?.()).toBe(true);
     });
 
     it('resumes the picker once the popover is dismissed', () => {
-        page().__nexBatchUnfocus?.();
-        expect(page().__nexBatchHasOpenPopover).toBe(false);
+        page().__kelpiBatchUnfocus?.();
+        expect(page().__kelpiBatchHasOpenPopover).toBe(false);
 
         const other = document.querySelector('#other') as HTMLElement;
         const event = new MouseEvent('click', { bubbles: true, cancelable: true });
         other.dispatchEvent(event);
 
-        const picks = posted.filter((entry) => entry.channel === 'nexInspect');
+        const picks = posted.filter((entry) => entry.channel === 'kelpiInspect');
         expect(picks).toHaveLength(1);
         expect(picks[0]?.body['selector']).toBe('#other');
         expect(event.defaultPrevented).toBe(true);

@@ -17,7 +17,7 @@ import {
 import { CommandPalette } from './CommandPalette';
 import { ContextMenu } from './ContextMenu';
 import type { PaletteItem } from './palette';
-import { makeKeyTrigger } from '@nex/core/config';
+import { makeKeyTrigger } from '@kelpi/core/config';
 
 afterEach(cleanup);
 

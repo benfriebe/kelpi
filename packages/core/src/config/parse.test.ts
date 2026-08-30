@@ -6,7 +6,7 @@ import { parseProfiles } from './profiles.js';
 import { parseConfigLine } from './lines.js';
 import { keyTriggerConfigString } from './keys.js';
 
-const REALISTIC_CONFIG = `# Nex config
+const REALISTIC_CONFIG = `# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 theme = Catppuccin Mocha
@@ -241,14 +241,14 @@ describe('parseProfiles', () => {
 });
 
 /**
- * §SET-215 / §SET-216: the built-in terminal themes and `NexTheme.named(id)`.
+ * §SET-215 / §SET-216: the built-in terminal themes and `KelpiTheme.named(id)`.
  *
  * The lookup is the whole of §SET-216 — a `theme = <anything else>` line has to select NOTHING,
  * so the terminal keeps whatever the user's own ghostty config resolved. That means the match
  * is exact, case included: these ids are case-sensitive theme FILENAMES.
  */
 describe('built-in terminal themes', () => {
-    it('ships the ten NexTheme built-ins, ids spelled as ghostty filenames', () => {
+    it('ships the ten KelpiTheme built-ins, ids spelled as ghostty filenames', () => {
         expect(BUILT_IN_TERMINAL_THEMES.map((theme) => theme.id)).toEqual([
             'Dracula',
             'Catppuccin Mocha',

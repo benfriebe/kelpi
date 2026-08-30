@@ -6,7 +6,7 @@
  * can open (no canvas 2D context), so they inject `createRenderer={fakeRendererFactory()}`.
  */
 
-import type { WsVtModes } from '@nex/protocol';
+import type { WsVtModes } from '@kelpi/protocol';
 
 import type { PtyStreamHandle, PtySubscription } from '../connection';
 import type {

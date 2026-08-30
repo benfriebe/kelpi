@@ -99,10 +99,10 @@ export interface SqlitePersistence extends Persistence<PersistedSnapshot> {
     /**
      * Write whatever is pending. True when the state on disk now matches memory (including
      * "nothing was pending"), false when the write failed or there was no DB to write to —
-     * which is what makes `nexd stop` able to refuse to claim a clean shutdown.
+     * which is what makes `kelpid stop` able to refuse to claim a clean shutdown.
      */
     flush(): boolean;
-    /** One honest answer to "is my state safe?" — what `ping` / `nexd status` report. */
+    /** One honest answer to "is my state safe?" — what `ping` / `kelpid status` report. */
     health(): PersistenceHealth;
     /** Last error handed to `onError`, for tests/diagnostics. */
     readonly lastError: unknown;
@@ -140,7 +140,7 @@ function repairFor(health: PersistenceHealth): string {
     switch (health.errno) {
         case 'EPERM':
         case 'EACCES':
-            return `Give this user write access to ${dir} (or point ${DB_PATH_ENV} at a directory it owns, e.g. ~/.local/share/nexd/nex.db). Refusing to start rather than running without persistence — your workspaces would not survive a restart.`;
+            return `Give this user write access to ${dir} (or point ${DB_PATH_ENV} at a directory it owns, e.g. ~/.local/share/kelpid/nex.db). Refusing to start rather than running without persistence — your workspaces would not survive a restart.`;
         case 'EROFS':
             return `${dir} is on a read-only filesystem. Point ${DB_PATH_ENV} at a writable location.`;
         case 'ENOTDIR':

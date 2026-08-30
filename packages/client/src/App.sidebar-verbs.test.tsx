@@ -11,14 +11,14 @@
  * `App.openflow.test.tsx`.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -65,7 +65,7 @@ function snapshotState(options: { group?: { id: string; name: string; members?: 
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     socket(): FakeWebSocket;
     commands(): Record<string, unknown>[];
     lastCommand(name: string): Record<string, unknown> | undefined;
@@ -75,8 +75,8 @@ interface Harness {
 
 function setup(): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -376,7 +376,7 @@ describe('the row delete’s active-agents gate (§WS-054 / §WS-108)', () => {
      * the half no component test can see: nothing is written locally here and no gesture is made
      * in Settings, yet the gate in front of a workspace with a running agent changes shape,
      * because a broadcast arrived from outside this client (another window's toggle, a
-     * hand-edited config file, `nex` writing the file).
+     * hand-edited config file, `kelpi` writing the file).
      */
     it('follows the daemon’s `settings-changed` broadcast, with no local write (§WS-110)', () => {
         const h = setup();

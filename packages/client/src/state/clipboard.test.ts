@@ -5,7 +5,7 @@
  *
  *   1. the DECODE + decision (`createClipboardWriteHandler`): who writes, what is logged, and
  *      what a malformed frame does — which must be "nothing", never "wipe the clipboard";
- *   2. the WIRING (`connectStore`): a real frame arriving on a real `NexConnection` reaches the
+ *   2. the WIRING (`connectStore`): a real frame arriving on a real `KelpiConnection` reaches the
  *      handler at all. That is the half that has been the actual bug in this port more than
  *      once — a tested decision nothing subscribes to.
  *
@@ -15,14 +15,14 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { NexConnection, completeHandshake, createFakeSocketFactory } from '../connection';
+import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { connectStore } from './bridge';
 import {
     createClipboardWriteHandler,
     parseClipboardWrite,
     type ClipboardWriteOutcome
 } from './clipboard';
-import { createNexStore } from './store';
+import { createKelpiStore } from './store';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
 const P1 = 'dddddddd-0000-4000-8000-000000000001';
@@ -87,7 +87,7 @@ describe('the clipboard write handler', () => {
         });
         expect(handle(frame())).toBe('shell');
         expect(writeText).not.toHaveBeenCalled();
-        expect(logs[0]).toContain('via the Nex shell');
+        expect(logs[0]).toContain('via the Kelpi shell');
     });
 
     it('writes through navigator.clipboard in a plain browser', async () => {
@@ -157,7 +157,7 @@ describe('the clipboard write handler', () => {
 describe('the bridge relays a daemon clipboard-write', () => {
     function harness(shellWindowID: string | null) {
         const sockets = createFakeSocketFactory();
-        const connection = new NexConnection({
+        const connection = new KelpiConnection({
             url: 'ws://daemon.test/ws',
             token: 't',
             socketFactory: sockets.factory,
@@ -166,7 +166,7 @@ describe('the bridge relays a daemon clipboard-write', () => {
         });
         const written: string[] = [];
         const logs: string[] = [];
-        const store = createNexStore();
+        const store = createKelpiStore();
         const dispose = connectStore({
             store,
             connection,
@@ -197,7 +197,7 @@ describe('the bridge relays a daemon clipboard-write', () => {
         completeHandshake(h.sockets.last());
         h.sockets.last().emit(frame() as never);
         expect(h.written).toEqual([]);
-        expect(h.logs[0]).toContain('via the Nex shell');
+        expect(h.logs[0]).toContain('via the Kelpi shell');
         h.dispose();
     });
 

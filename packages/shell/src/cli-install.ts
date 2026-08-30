@@ -1,8 +1,8 @@
 /**
- * The global `nex` CLI install and its self-heal (APP-003, APP-004, APP-005).
+ * The global `kelpi` CLI install and its self-heal (APP-003, APP-004, APP-005).
  *
  * Port of `Nex/Services/CLIInstallService.swift`. The problem it solves is the same one issue #39
- * described: the CLI lives inside the app bundle, `/usr/local/bin/nex` is how a shell (and every
+ * described: the CLI lives inside the app bundle, `/usr/local/bin/kelpi` is how a shell (and every
  * Claude Code hook) reaches it, and an app that updates itself leaves that entry pointing at last
  * month's build — or, if it was ever installed by *copying* the binary, at a file that never
  * changes again. A symlink into the running bundle cannot drift; the job here is to keep one
@@ -10,10 +10,10 @@
  *
  * Three rules carried over verbatim, because each one is someone's data:
  *
- *  1. **Opt-in is preserved.** `heal()` does nothing when `/usr/local/bin/nex` does not exist. A
+ *  1. **Opt-in is preserved.** `heal()` does nothing when `/usr/local/bin/kelpi` does not exist. A
  *     user who never installed the CLI does not get one because they launched the app.
- *  2. **Only an entry we can attribute to Nex is touched.** Anything else — a Homebrew binary
- *     called `nex`, a deliberate pin to a dev checkout — is left exactly as it is, with no
+ *  2. **Only an entry we can attribute to Kelpi is touched.** Anything else — a Homebrew binary
+ *     called `kelpi`, a deliberate pin to a dev checkout — is left exactly as it is, with no
  *     notification, because we cannot prove the user wanted ours there.
  *  3. **Never sudo, never silently.** An unwritable `/usr/local/bin` produces a notification and
  *     the exact command to run by hand (APP-005), deduped once per app version.
@@ -44,37 +44,52 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { CLI_LAUNCHER_MARKER } from './packaging.js';
-import { packagedCliLauncher } from './resources.js';
+import { packagedCliCompatLauncher, packagedCliLauncher } from './resources.js';
 
-/** Where the CLI goes. Same default as the Swift installer and `nex install-hooks --link`. */
-export const DEFAULT_CLI_LINK_PATH = '/usr/local/bin/nex';
+/** Where the CLI goes. Same default as the Swift installer and `kelpi install-hooks --link`. */
+export const DEFAULT_CLI_LINK_PATH = '/usr/local/bin/kelpi';
 
 /**
- * The link path for this run. `NEX_CLI_LINK_PATH` overrides it.
+ * The pre-rename command name. Every hook installed before the Kelpi rename runs a bare `nex`,
+ * so this link is HEALED whenever it exists (pointed at the compat launcher, which execs the
+ * same bundle) — but never created on a machine that never had one.
+ */
+export const LEGACY_CLI_LINK_PATH = '/usr/local/bin/nex';
+
+/**
+ * The link path for this run. `KELPI_CLI_LINK_PATH` overrides it.
  *
  * That override is not a user feature, it is a *testing* one, and it earns its place: without it
  * the only way to exercise this module against a real packaged app is to let it write to the
- * machine's actual `/usr/local/bin/nex`, which is the developer's own CLI. `packaged-smoke.mjs`
+ * machine's actual `/usr/local/bin/kelpi`, which is the developer's own CLI. `packaged-smoke.mjs`
  * points it at a path inside its sandbox and asserts the repair really happened.
  */
 export function resolveCliLinkPath(env: NodeJS.ProcessEnv): string {
-    const override = env['NEX_CLI_LINK_PATH']?.trim();
+    const override = env['KELPI_CLI_LINK_PATH']?.trim();
     return override !== undefined && override.length > 0 ? override : DEFAULT_CLI_LINK_PATH;
 }
 
 /**
- * Path tails that mean "this points into a Nex app bundle".
+ * Path tails that mean "this points into a Kelpi app bundle".
  *
  * `Contents/Helpers/nex` is the Swift app's layout and is accepted only for a *dangling* link —
  * a live one means a working Swift Nex is installed, and repointing it at this app would hijack
  * another application's CLI.
  */
-const PORT_CLI_SUFFIXES = ['/Contents/Resources/cli/nex', '/Contents/Resources/cli/nex.js'];
+const PORT_CLI_SUFFIXES = [
+    '/Contents/Resources/cli/kelpi',
+    '/Contents/Resources/cli/kelpi.js',
+    // Pre-rename port bundles: a link into a Nex.app-era `cli/nex` is still ours, and healing
+    // it is exactly the post-update drift this module exists for.
+    '/Contents/Resources/cli/nex',
+    '/Contents/Resources/cli/nex.js'
+];
 const LEGACY_CLI_SUFFIX = '.app/Contents/Helpers/nex';
 
 /**
  * The two strings a *compiled* Swift `nex` CLI carries, both of which must be present before a
- * regular Mach-O binary at the link path is attributed to Nex (APP-004).
+ * regular Mach-O binary at the link path is attributed to Kelpi (APP-004). They are the SWIFT
+ * app's strings, so they keep the `nex` spelling regardless of this product's name.
  *
  * Read off the shipped binary rather than guessed — `strings -n 6
  * /Applications/Nex.app/Contents/Helpers/nex` on 0.32.0 shows `NEX_PANE_ID` eleven times and
@@ -226,7 +241,7 @@ function isMachO(bytes: Buffer): boolean {
 }
 
 /**
- * Is this regular file a *compiled* Nex CLI — the pre-April-2025 `cp` installer's leftover?
+ * Is this regular file a *compiled* Kelpi CLI — the pre-April-2025 `cp` installer's leftover?
  *
  * Heuristic attribution, deliberately: see `SWIFT_CLI_MARKERS` for what is being traded and why
  * both markers plus the Mach-O check are required. The file is read, never run — a binary at an
@@ -244,13 +259,13 @@ export function carriesCompiledCliMarkers(file: string, fsys: CliFs): boolean {
 }
 
 /**
- * Is the entry at `linkPath` something a Nex installer produced?
+ * Is the entry at `linkPath` something a Kelpi installer produced?
  *
  * See the module note for why this is not a code-signature check. The regular-file arm has two
  * answers: our own launcher script (an exact marker it writes into itself) and — heuristically —
  * a compiled Swift CLI carrying both of `SWIFT_CLI_MARKERS`.
  */
-export function isNexManagedInstall(linkPath: string, fsys: CliFs): boolean {
+export function isKelpiManagedInstall(linkPath: string, fsys: CliFs): boolean {
     if (fsys.isSymlink(linkPath)) {
         const stored = fsys.readLink(linkPath);
         if (stored === null) return false;
@@ -280,7 +295,7 @@ export type CliInstallAction =
     | 'absent'
     /** Ours, but pointing at the wrong place (post-update drift, or an old copy). */
     | 'drifted'
-    /** Someone else's `nex`. Never touched, never reported to the user. */
+    /** Someone else's `kelpi`. Never touched, never reported to the user. */
     | 'foreign'
     /** No CLI payload in this app — a dev run, or a broken build. */
     | 'unavailable';
@@ -310,7 +325,7 @@ export function planCliInstall(options: PlanOptions, fsys: CliFs): CliInstallPla
     }
     if (!fsys.exists(linkPath)) return { ...base, action: 'absent' };
     if (fsys.isSymlink(linkPath) && fsys.readLink(linkPath) === target) return { ...base, action: 'ok' };
-    if (!isNexManagedInstall(linkPath, fsys)) return { ...base, action: 'foreign' };
+    if (!isKelpiManagedInstall(linkPath, fsys)) return { ...base, action: 'foreign' };
     return { ...base, action: 'drifted' };
 }
 
@@ -356,7 +371,7 @@ export function healCliSymlink(options: PlanOptions, fsys: CliFs): CliInstallRes
         case 'absent':
             return { kind: 'skipped', plan, reason: 'the global CLI is not installed (nothing to heal)' };
         case 'foreign':
-            return { kind: 'skipped', plan, reason: `${plan.linkPath} was not installed by Nex` };
+            return { kind: 'skipped', plan, reason: `${plan.linkPath} was not installed by Kelpi` };
         case 'unavailable':
             return { kind: 'skipped', plan, reason: 'this build carries no CLI payload' };
         case 'drifted':
@@ -379,7 +394,7 @@ export function installCliSymlink(options: PlanOptions, fsys: CliFs): CliInstall
             return {
                 kind: 'skipped',
                 plan,
-                reason: `${plan.linkPath} already exists and was not installed by Nex — remove it first, or install elsewhere`
+                reason: `${plan.linkPath} already exists and was not installed by Kelpi — remove it first, or install elsewhere`
             };
         case 'unavailable':
             return { kind: 'skipped', plan, reason: 'this build carries no CLI payload' };
@@ -398,7 +413,7 @@ export function installCliSymlink(options: PlanOptions, fsys: CliFs): CliInstall
  *   `heal`   — repair an existing install only; never offer (used once the user has been asked).
  *   `prompt` — heal, and offer to create one when there is none.
  *
- * `NEX_CLI_INSTALL=off|heal|prompt|auto` overrides; `auto` installs without asking, which is for
+ * `KELPI_CLI_INSTALL=off|heal|prompt|auto` overrides; `auto` installs without asking, which is for
  * a managed deployment rather than a person.
  */
 export type CliInstallMode = 'off' | 'heal' | 'prompt' | 'auto';
@@ -411,7 +426,7 @@ export interface ModeInputs {
 }
 
 export function resolveCliInstallMode(inputs: ModeInputs): CliInstallMode {
-    const override = inputs.env['NEX_CLI_INSTALL']?.trim().toLowerCase();
+    const override = inputs.env['KELPI_CLI_INSTALL']?.trim().toLowerCase();
     if (override === 'off' || override === 'heal' || override === 'prompt' || override === 'auto') return override;
     // A dev run (`electron .`) points at a checkout, not a bundle: there is nothing to install,
     // and offering would be offering to symlink someone's working tree into /usr/local/bin.
@@ -424,6 +439,28 @@ export function bundledCliLauncher(resourcesPath: string | undefined): string {
     if (resourcesPath === undefined || resourcesPath.length === 0) return '';
     const launcher = packagedCliLauncher(resourcesPath);
     return nodeCliFs.exists(launcher) ? launcher : '';
+}
+
+/** The bundled pre-rename `nex` compat launcher, or '' when this build carries none. */
+export function bundledCliCompatLauncher(resourcesPath: string | undefined): string {
+    if (resourcesPath === undefined || resourcesPath.length === 0) return '';
+    const launcher = packagedCliCompatLauncher(resourcesPath);
+    return nodeCliFs.exists(launcher) ? launcher : '';
+}
+
+/**
+ * Heal the pre-rename `/usr/local/bin/nex` link, when there is one.
+ *
+ * Strictly heal-only: hooks installed before the Kelpi rename run a bare `nex`, so an existing
+ * link keeps being repaired (pointed at this bundle's compat launcher) — but a machine that
+ * never opted into a `nex` CLI never grows one. A working Swift Nex's link stays foreign and
+ * untouched, exactly as before.
+ */
+export function healLegacyCliSymlink(resourcesPath: string | undefined): CliInstallResult | null {
+    const target = bundledCliCompatLauncher(resourcesPath);
+    if (target.length === 0) return null;
+    if (!nodeCliFs.exists(LEGACY_CLI_LINK_PATH)) return null;
+    return healCliSymlink({ linkPath: LEGACY_CLI_LINK_PATH, target }, nodeCliFs);
 }
 
 /** One-line log/summary of what happened, for the shell log and the tray dialog. */

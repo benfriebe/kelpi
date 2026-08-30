@@ -122,7 +122,7 @@ describe('file databases', () => {
     let dir = '';
 
     beforeEach(() => {
-        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-adapter-'));
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-adapter-'));
     });
 
     afterEach(() => {

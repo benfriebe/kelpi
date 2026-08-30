@@ -11,7 +11,7 @@
  * exclusions the reducer has already cleared, i.e. the prediction lies.
  */
 
-import { resolveWorkspaceStrict } from '@nex/core/resolve';
+import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
 import {

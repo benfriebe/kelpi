@@ -13,7 +13,7 @@ export function isLocalOrInternalHost(host: string): boolean {
     }
     if (lower.endsWith('.local') || lower.endsWith('.localhost')) return true;
     // RFC 1918 + link-local IPv4 (WEB-023). A LAN address is a dev server far more often than a
-    // TLS endpoint, and `https://192.168.1.5` fails in a way that reads as "Nex is broken"
+    // TLS endpoint, and `https://192.168.1.5` fails in a way that reads as "Kelpi is broken"
     // rather than "that box speaks http".
     if (isPrivateIPv4(lower)) return true;
     // Single-label hosts (no dot) are internal by construction.

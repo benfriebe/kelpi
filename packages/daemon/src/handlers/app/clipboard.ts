@@ -51,7 +51,7 @@ const IGNORE_REASONS: Record<string, string> = {
     selection: 'unsupported selection (only the clipboard selection is honoured)',
     'not-base64': 'payload is not base64',
     'too-large': 'payload over the size cap',
-    empty: 'empty payload (a clipboard CLEAR, which nex declines)'
+    empty: 'empty payload (a clipboard CLEAR, which kelpi declines)'
 };
 
 export function createClipboardWriteSink(deps: ClipboardWriteSinkDeps): ClipboardWriteSink {
@@ -62,7 +62,7 @@ export function createClipboardWriteSink(deps: ClipboardWriteSinkDeps): Clipboar
             // running in the pane, which in this architecture can be an agent or a shell on
             // another machine.
             deps.log(
-                `clipboard: OSC 52 READ refused for pane ${paneID} (selection ${describeSelection(request.selection)}) — nex never answers a clipboard read`
+                `clipboard: OSC 52 READ refused for pane ${paneID} (selection ${describeSelection(request.selection)}) — kelpi never answers a clipboard read`
             );
             return;
         }
@@ -76,7 +76,7 @@ export function createClipboardWriteSink(deps: ClipboardWriteSinkDeps): Clipboar
 
         if (!deps.enabled()) {
             deps.log(
-                `clipboard: OSC 52 write from pane ${paneID} dropped (${String(request.bytes)} bytes) — set \`${CLIPBOARD_WRITE_SETTING} = true\` in the nex config, or turn on Settings ▸ Workspaces ▸ “Let programs write the clipboard”, to allow it`
+                `clipboard: OSC 52 write from pane ${paneID} dropped (${String(request.bytes)} bytes) — set \`${CLIPBOARD_WRITE_SETTING} = true\` in the kelpi config, or turn on Settings ▸ Workspaces ▸ “Let programs write the clipboard”, to allow it`
             );
             return;
         }

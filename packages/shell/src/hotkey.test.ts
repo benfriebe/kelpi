@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { makeKeyTrigger, parseKeyTrigger } from '@nex/core/config';
+import { makeKeyTrigger, parseKeyTrigger } from '@kelpi/core/config';
 
 import {
     acceleratorForTrigger,
@@ -31,7 +31,7 @@ function registrarFor(accept: boolean): HotkeyRegistrar {
 const dirs: string[] = [];
 
 function configFile(contents: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-config-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-config-'));
     dirs.push(dir);
     const file = path.join(dir, 'config');
     fs.writeFileSync(file, contents);
@@ -47,9 +47,9 @@ describe('resolveConfigPath', () => {
         expect(resolveConfigPath({}, '/Users/test')).toBe('/Users/test/.config/nex/config');
     });
 
-    it('honours NEXD_CONFIG_PATH, tilde included', () => {
-        expect(resolveConfigPath({ NEXD_CONFIG_PATH: '~/alt/config' }, '/Users/test')).toBe('/Users/test/alt/config');
-        expect(resolveConfigPath({ NEXD_CONFIG_PATH: '  ' }, '/Users/test')).toBe('/Users/test/.config/nex/config');
+    it('honours KELPID_CONFIG_PATH, tilde included', () => {
+        expect(resolveConfigPath({ KELPID_CONFIG_PATH: '~/alt/config' }, '/Users/test')).toBe('/Users/test/alt/config');
+        expect(resolveConfigPath({ KELPID_CONFIG_PATH: '  ' }, '/Users/test')).toBe('/Users/test/.config/nex/config');
     });
 });
 
@@ -93,7 +93,7 @@ describe('acceleratorForTrigger', () => {
 describe('readGlobalHotkeySettings', () => {
     it('reads the trigger and the hide-on-repress default', () => {
         const file = configFile('global-hotkey = ctrl+alt+space\n');
-        const settings = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        const settings = readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file });
         expect(settings.configExists).toBe(true);
         expect(settings.accelerator).toBe('Control+Alt+Space');
         expect(settings.configString).toBe('ctrl+alt+space');
@@ -102,16 +102,16 @@ describe('readGlobalHotkeySettings', () => {
 
     it('honours global-hotkey-hide-on-repress = false', () => {
         const file = configFile('global-hotkey = super+shift+n\nglobal-hotkey-hide-on-repress = false\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(false);
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).hideOnRepress).toBe(false);
     });
 
     it('clears on none/unbind and ignores garbage', () => {
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: configFile('global-hotkey = none\n') }).trigger).toBeNull();
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: configFile('global-hotkey = wat+zzz\n') }).trigger).toBeNull();
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: configFile('global-hotkey = none\n') }).trigger).toBeNull();
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: configFile('global-hotkey = wat+zzz\n') }).trigger).toBeNull();
     });
 
     it('treats a missing file as no hotkey', () => {
-        const settings = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: '/nonexistent/nex/config' });
+        const settings = readGlobalHotkeySettings({ KELPID_CONFIG_PATH: '/nonexistent/kelpi/config' });
         expect(settings.configExists).toBe(false);
         expect(settings.accelerator).toBeNull();
         expect(settings.hideOnRepress).toBe(true);
@@ -205,32 +205,32 @@ describe('re-reading after a settings write', () => {
 
     it('picks up a hotkey the Settings recorder just wrote', () => {
         const file = configFile('focus-follows-mouse = true\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBeNull();
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).accelerator).toBeNull();
 
         // What `set-general-setting global-hotkey = …` leaves on disk.
         fs.writeFileSync(file, 'focus-follows-mouse = true\nglobal-hotkey = ctrl+alt+shift+k\n');
-        const after = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        const after = readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file });
         expect(after.configString).toBe('ctrl+alt+shift+k');
         expect(after.accelerator).toBe('Control+Alt+Shift+K');
     });
 
     it('picks up the ✕ clearing it', () => {
         const file = configFile('global-hotkey = ctrl+alt+space\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBe('Control+Alt+Space');
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).accelerator).toBe('Control+Alt+Space');
         fs.writeFileSync(file, 'global-hotkey = none\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).accelerator).toBeNull();
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).accelerator).toBeNull();
     });
 
     it('is free to fire on a settings write that changed something else', () => {
         const file = configFile('global-hotkey = ctrl+alt+space\n');
         const registry = registrar();
-        const first = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        const first = readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file });
         let current = swapGlobalHotkey(registry, null, first.accelerator, () => undefined).accelerator;
         expect(registry.registered).toEqual(['Control+Alt+Space']);
 
         // An unrelated key changes; the broadcast fires; the shell re-reads and re-swaps.
         fs.writeFileSync(file, 'global-hotkey = ctrl+alt+space\nshow-system-stats = false\n');
-        const second = readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file });
+        const second = readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file });
         current = swapGlobalHotkey(registry, current, second.accelerator, () => undefined).accelerator;
         expect(current).toBe('Control+Alt+Space');
         // Nothing was registered or unregistered a second time.
@@ -240,9 +240,9 @@ describe('re-reading after a settings write', () => {
 
     it('honours the repress flag changing under it', () => {
         const file = configFile('global-hotkey = ctrl+alt+space\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(true);
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).hideOnRepress).toBe(true);
         fs.writeFileSync(file, 'global-hotkey = ctrl+alt+space\nglobal-hotkey-hide-on-repress = false\n');
-        expect(readGlobalHotkeySettings({ NEXD_CONFIG_PATH: file }).hideOnRepress).toBe(false);
+        expect(readGlobalHotkeySettings({ KELPID_CONFIG_PATH: file }).hideOnRepress).toBe(false);
     });
 });
 
@@ -257,7 +257,7 @@ describe('re-reading after a settings write', () => {
  */
 describe('hotkeyStatusReport', () => {
     const configured = (contents: string) =>
-        readGlobalHotkeySettings({ NEXD_CONFIG_PATH: configFile(contents) });
+        readGlobalHotkeySettings({ KELPID_CONFIG_PATH: configFile(contents) });
 
     it('reports a rejected registration with the reason and the STILL-LIVE accelerator', () => {
         const settings = configured('global-hotkey = ctrl+alt+n\n');

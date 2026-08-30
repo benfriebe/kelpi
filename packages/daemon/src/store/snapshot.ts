@@ -6,15 +6,15 @@
  *
  * `PersistedSnapshot` is deliberately DB-agnostic: it is the exact set of fields that survive a
  * restart, in domain shapes. WP2.6 maps it onto the SQLite rows (JSON columns via
- * `@nex/core/codec`), so the transient-reset rules live here and only here.
+ * `@kelpi/core/codec`), so the transient-reset rules live here and only here.
  *
  * Division of labour on boot: `fromSnapshot` restores what the DB holds verbatim (statuses and
  * session ids included), and `applyLoadReset` performs the capture-then-clear step — resume
  * tuples first, then session ids nulled and non-idle statuses reset to idle.
  */
 
-import { captureResumeTuple, resetPaneAgentStateOnLoad, type ResumeTuple } from '@nex/core/agent';
-import { workspaceSidebarID, type IconRef, type SidebarID, type WebTab } from '@nex/core/codec';
+import { captureResumeTuple, resetPaneAgentStateOnLoad, type ResumeTuple } from '@kelpi/core/agent';
+import { workspaceSidebarID, type IconRef, type SidebarID, type WebTab } from '@kelpi/core/codec';
 import {
     DEFAULT_MARKDOWN_FONT_SIZE,
     type AgentKind,
@@ -22,8 +22,8 @@ import {
     type PaneLayout,
     type PaneStatus,
     type PaneType
-} from '@nex/core/layout';
-import type { WorkspaceColor } from '@nex/protocol';
+} from '@kelpi/core/layout';
+import type { WorkspaceColor } from '@kelpi/protocol';
 import type {
     DaemonState,
     LabelPreset,

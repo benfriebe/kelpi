@@ -2,11 +2,11 @@
  * Shared prop types for the pane grid.
  *
  * Every component here is props-driven: nothing in `grid/` reads the store, opens a socket
- * or sends a command. Assembly binds the callbacks to `CommandClient` / `NexRuntime`, which
+ * or sends a command. Assembly binds the callbacks to `CommandClient` / `KelpiRuntime`, which
  * keeps the grid renderable from a fixture in tests and reusable by the Electron shell.
  */
 
-import type { DropZone, Pane, Rect, SplitDirection } from '@nex/core/layout';
+import type { DropZone, Pane, Rect, SplitDirection } from '@kelpi/core/layout';
 import type { MouseEvent, ReactNode } from 'react';
 
 import type { DividerRatioCommit } from './divider';

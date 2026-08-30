@@ -2,7 +2,7 @@
  * The daemon as a whole: a real control socket, real PTYs, a real SQLite file.
  *
  * This is the WP2.8 acceptance run — every layer composed by `boot/compose.ts` exercised the
- * way the `nex` CLI exercises it (one JSON line in, one JSON line + EOF out), including the
+ * way the `kelpi` CLI exercises it (one JSON line in, one JSON line + EOF out), including the
  * bits only composition can get wrong: `pty.onData → term.feed` (without it `pane capture`
  * returns an empty screen), the merged handler tables, the agent-event → status path, the
  * workspace-delete running-agent guard, and the shutdown flush that makes the next boot see
@@ -14,7 +14,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createPersistence } from '../db/index.js';
@@ -35,14 +35,14 @@ afterEach(async () => {
 
 /** Short paths: a unix socket path is capped near 104 bytes on macOS. */
 function scratch(): { root: string; runDir: string; socketPath: string; dbPath: string; home: string; configPath: string } {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-it-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-it-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -119,7 +119,7 @@ async function boot(paths: ReturnType<typeof scratch>): Promise<{ daemon: Daemon
     return { daemon, info };
 }
 
-describe('nexd end to end', () => {
+describe('kelpid end to end', () => {
     it('answers the control protocol, drives real PTYs, and persists across a restart', async () => {
         const paths = scratch();
         const { daemon, info } = await boot(paths);
@@ -167,18 +167,18 @@ describe('nexd end to end', () => {
         const sent = await request(paths.socketPath, {
             command: 'pane-send',
             target: paneID,
-            text: 'echo hello-from-nexd'
+            text: 'echo hello-from-kelpid'
         });
         expect(sent).toMatchObject({ ok: true, pane_id: paneID });
 
         const captured = await eventually(
             () => request(paths.socketPath, { command: 'pane-capture', target: paneID, scrollback: true }),
-            (reply) => typeof reply['text'] === 'string' && reply['text'].includes('hello-from-nexd\n')
+            (reply) => typeof reply['text'] === 'string' && reply['text'].includes('hello-from-kelpid\n')
         );
         expect(captured['ok']).toBe(true);
         // The echoed command AND its output: proof that pty.onData reaches the VT.
-        expect(captured['text']).toContain('echo hello-from-nexd');
-        expect(String(captured['text'])).toMatch(/^hello-from-nexd$/m);
+        expect(captured['text']).toContain('echo hello-from-kelpid');
+        expect(String(captured['text'])).toMatch(/^hello-from-kelpid$/m);
 
         // ── pane-list schema ────────────────────────────────────────────────
         const listed = await request(paths.socketPath, { command: 'pane-list', workspace: 'agents' });

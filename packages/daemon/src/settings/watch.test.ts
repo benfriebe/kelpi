@@ -75,12 +75,12 @@ describe('watchConfigFile (injected watcher)', () => {
     it('watches the file itself when it exists', () => {
         const fake = fakeWatch();
         const watcher = watch({
-            path: '/cfg/nex/config',
+            path: '/cfg/kelpi/config',
             onChange: () => {},
             watch: fake.fn,
             exists: () => true
         });
-        expect(fake.attaches).toEqual(['/cfg/nex/config']);
+        expect(fake.attaches).toEqual(['/cfg/kelpi/config']);
         expect(watcher.mode).toBe('file');
     });
 
@@ -171,17 +171,17 @@ describe('watchConfigFile (injected watcher)', () => {
         const fake = fakeWatch();
         let calls = 0;
         watch({
-            path: '/cfg/nex/config',
+            path: '/cfg/kelpi/config',
             onChange: () => {
                 calls += 1;
             },
             debounceMs: 5,
             reattachDelayMs: 5,
             watch: fake.fn,
-            exists: (target) => target === '/cfg/nex'
+            exists: (target) => target === '/cfg/kelpi'
         });
         // The atomic-write temp file lands in the same directory; it is not our config.
-        fake.fire('rename', '.config.nex-1-1.tmp');
+        fake.fire('rename', '.config.kelpi-1-1.tmp');
         await tick(40);
         expect(calls).toBe(0);
         fake.fire('rename', 'config');
@@ -216,7 +216,7 @@ describe('watchConfigFile (real fs)', () => {
     const open: ConfigWatcher[] = [];
 
     const tmp = (): string => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-settings-watch-'));
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-settings-watch-'));
         roots.push(root);
         return root;
     };

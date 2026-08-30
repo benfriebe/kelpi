@@ -36,7 +36,7 @@ export function loadPackagingHelpers() {
         return require(compiled);
     } catch (error) {
         throw new Error(
-            `packaging helpers are not built (${compiled}). Run \`pnpm --filter @nex/shell build\` first.` +
+            `packaging helpers are not built (${compiled}). Run \`pnpm --filter @kelpi/shell build\` first.` +
                 `\n  cause: ${error instanceof Error ? error.message : String(error)}`
         );
     }

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ZERO_SYSTEM_STATS } from '@nex/protocol';
+import { ZERO_SYSTEM_STATS } from '@kelpi/protocol';
 
 import {
     StatusFooter,
@@ -32,7 +32,7 @@ function pane(overrides: Partial<ChromePane> = {}): ChromePane {
         type: 'shell',
         label: null,
         title: null,
-        workingDirectory: '/Users/test/code/nex',
+        workingDirectory: '/Users/test/code/kelpi',
         gitBranch: null,
         status: 'idle',
         agentSessionID: null,
@@ -109,7 +109,7 @@ describe('focused-pane context (§9.1)', () => {
                 focusedPane={pane({ gitBranch: 'main' })}
             />
         );
-        expect(screen.getByTestId('footer-cwd').textContent).toBe('~/code/nex');
+        expect(screen.getByTestId('footer-cwd').textContent).toBe('~/code/kelpi');
         expect(screen.getByTestId('footer-branch').textContent).toContain('main');
     });
 
@@ -192,7 +192,7 @@ describe('working-tree diff stats', () => {
         const stats = footerGitStats(
             [
                 association('/Users/test/code', DIRTY),
-                association('/Users/test/code/nex', {
+                association('/Users/test/code/kelpi', {
                     kind: 'dirty',
                     changedFiles: 1,
                     additions: 2,
@@ -200,17 +200,17 @@ describe('working-tree diff stats', () => {
                 }),
                 association('/Users/test/other', DIRTY)
             ],
-            '/Users/test/code/nex/packages'
+            '/Users/test/code/kelpi/packages'
         );
         expect(stats).toEqual({ changedFiles: 1, additions: 2, deletions: 3 });
     });
 
     it('is null outside every tracked worktree, and for a clean one', () => {
-        expect(footerGitStats([association('/Users/test/code/nex', DIRTY)], '/tmp/elsewhere')).toBeNull();
-        expect(footerGitStats([association('/Users/test/code/nex', CLEAN)], '/Users/test/code/nex')).toBeNull();
+        expect(footerGitStats([association('/Users/test/code/kelpi', DIRTY)], '/tmp/elsewhere')).toBeNull();
+        expect(footerGitStats([association('/Users/test/code/kelpi', CLEAN)], '/Users/test/code/kelpi')).toBeNull();
         // A sibling directory whose name merely starts the same way is NOT inside it.
         expect(
-            footerGitStats([association('/Users/test/code/nex', DIRTY)], '/Users/test/code/nex-other')
+            footerGitStats([association('/Users/test/code/kelpi', DIRTY)], '/Users/test/code/kelpi-other')
         ).toBeNull();
     });
 
@@ -220,7 +220,7 @@ describe('working-tree diff stats', () => {
                 summary={SUMMARY}
                 now={NOW}
                 focusedPane={pane()}
-                associations={[association('/Users/test/code/nex', DIRTY)]}
+                associations={[association('/Users/test/code/kelpi', DIRTY)]}
             />
         );
         const segment = screen.getByTestId('footer-git-stats');
@@ -239,7 +239,7 @@ describe('working-tree diff stats', () => {
                 summary={SUMMARY}
                 now={NOW}
                 focusedPane={pane({ workingDirectory: '/tmp/scratch' })}
-                associations={[association('/Users/test/code/nex', DIRTY)]}
+                associations={[association('/Users/test/code/kelpi', DIRTY)]}
             />
         );
         expect(screen.queryByTestId('footer-git-stats')).toBeNull();
@@ -256,7 +256,7 @@ describe('working-tree diff stats', () => {
 // strings, because two hand-typed strings are precisely what shipped last time.
 
 describe('a repository under a symlinked ancestor (N5)', () => {
-    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nex-footer-n5-')));
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-footer-n5-')));
     fs.mkdirSync(path.join(base, 'tree', 'repo', 'packages'), { recursive: true });
     fs.symlinkSync(path.join(base, 'tree'), path.join(base, 'link'), 'dir');
 
@@ -338,7 +338,7 @@ describe('canonical-path matching rules', () => {
     it('falls back to the literal comparison when neither side has a canonical form', () => {
         // An older daemon, or a path realpath could not resolve at all: the pre-N5 behaviour
         // is preserved rather than replaced, so nothing that used to work stops working.
-        expect(footerGitStats([association('/Users/test/code/nex', DIRTY)], '/Users/test/code/nex/x')).toEqual({
+        expect(footerGitStats([association('/Users/test/code/kelpi', DIRTY)], '/Users/test/code/kelpi/x')).toEqual({
             changedFiles: 3,
             additions: 27,
             deletions: 12
@@ -593,7 +593,7 @@ describe('system-stat gauges', () => {
         // palette instead of freezing whatever hex an imported theme happened to carry.
         expect(
             screen.getByTestId('stat-sparkline-cpu').querySelector('polyline')?.getAttribute('stroke')
-        ).toContain('--nex-fg-secondary');
+        ).toContain('--kelpi-fg-secondary');
     });
 
     it('honours the configured graph width', () => {
@@ -626,7 +626,7 @@ describe('the left cluster clips instead of overflowing (N6)', () => {
                 now={NOW}
                 homeDirectory="/Users/test"
                 focusedPane={pane({
-                    workingDirectory: '/Users/test/code/nex/packages/client/src/chrome/deeply/nested',
+                    workingDirectory: '/Users/test/code/kelpi/packages/client/src/chrome/deeply/nested',
                     gitBranch: 'feature/a-branch-name-long-enough-to-crowd-the-row',
                     status: 'running',
                     agentSessionID: 'session',
@@ -635,7 +635,7 @@ describe('the left cluster clips instead of overflowing (N6)', () => {
                 })}
                 associations={[
                     {
-                        worktreePath: '/Users/test/code/nex',
+                        worktreePath: '/Users/test/code/kelpi',
                         status: { kind: 'dirty', changedFiles: 2, additions: 5, deletions: 5 }
                     }
                 ]}

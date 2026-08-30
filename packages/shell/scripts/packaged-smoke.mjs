@@ -4,17 +4,17 @@
  *
  * `scripts/smoke.mjs` proves the shell works when it is run out of the workspace: `electron .`,
  * with the daemon bundle sitting two directories away and `node` on `PATH`. None of that is
- * true inside `Nex.app`, and every one of the differences is a way for a build to be broken in
+ * true inside `Kelpi.app`, and every one of the differences is a way for a build to be broken in
  * a way no unit test can see:
  *
- *   1. `electron-forge package` produces `Nex.app` — with the fuses actually flipped in the
+ *   1. `electron-forge package` produces `Kelpi.app` — with the fuses actually flipped in the
  *      binary, and an `app.asar` holding the bundle and nothing else;
  *   2. `Contents/Resources` carries the three staged payloads: the daemon (bundle **plus** the
  *      node-pty tree its `require` resolves to), the built client, and a Node 24 runtime;
  *   3. launched with a private environment and NOTHING pointing at any of them, the app finds
  *      its own daemon entry, runs it under its own `node`, and hands it its own client build;
  *   4. that daemon really works: it serves the packaged client bytes over HTTP, answers the
- *      **shipped `nex` CLI**, and spawns a real PTY — which is the only proof that node-pty
+ *      **shipped `kelpi` CLI**, and spawns a real PTY — which is the only proof that node-pty
  *      loaded its native module from inside the bundle;
  *   5. quitting the app leaves the daemon running, exactly as in the dev flow.
  *
@@ -27,7 +27,7 @@
  *   node packages/shell/scripts/packaged-smoke.mjs [options]
  *
  *     --no-build     trust the existing daemon/client/shell bundles instead of rebuilding
- *     --no-package   reuse the existing out/Nex-darwin-<arch>/Nex.app instead of repackaging
+ *     --no-package   reuse the existing out/Kelpi-darwin-<arch>/Kelpi.app instead of repackaging
  *     --verbose      stream the app's output to stderr as it runs
  *     --keep-logs    print the captured output at the end even when everything passed
  *     --clean-app    delete the packaged app when finished (default: keep it — it is the
@@ -62,20 +62,20 @@ const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  */
 const packagingHelpers = () => createRequire(import.meta.url)(path.join(shellRoot, 'dist', 'packaging.cjs'));
 const repoRoot = path.resolve(shellRoot, '..', '..');
-const daemonBundle = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonBundle = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const clientBundle = path.join(repoRoot, 'packages', 'client', 'dist', 'index.html');
-const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
+const cliBundle = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 const shellBundle = path.join(shellRoot, 'dist', 'main.js');
 
 const PROTOCOL_VERSION = 1;
 /** Forge writes `out/<productName>-<platform>-<arch>/<productName>.app`. */
-const appDir = path.join(shellRoot, 'out', `Nex-${process.platform}-${process.arch}`);
-const appPath = path.join(appDir, 'Nex.app');
+const appDir = path.join(shellRoot, 'out', `Kelpi-${process.platform}-${process.arch}`);
+const appPath = path.join(appDir, 'Kelpi.app');
 const resourcesPath = path.join(appPath, 'Contents', 'Resources');
-const appBinary = path.join(appPath, 'Contents', 'MacOS', 'Nex');
+const appBinary = path.join(appPath, 'Contents', 'MacOS', 'Kelpi');
 
 /** The shipped Swift CLI: the one client of the control protocol we did not write. */
-const NEX_CLI = process.env.NEX_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';
+const KELPI_CLI = process.env.KELPI_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';
 
 const argv = new Set(process.argv.slice(2));
 const options = {
@@ -88,7 +88,7 @@ const options = {
 };
 
 /** What `forge.config.cjs` saw, so the fuse expectation matches the build that just ran. */
-const signingIdentity = (process.env.NEX_MACOS_IDENTITY ?? '').trim();
+const signingIdentity = (process.env.KELPI_MACOS_IDENTITY ?? '').trim();
 
 // ── tiny test harness (same shape as scripts/smoke.mjs) ─────────────────────────────
 
@@ -227,12 +227,12 @@ function processExecutable(pid) {
 
 async function ensureBuilds() {
     const steps = [
-        { name: 'daemon', output: daemonBundle, args: ['--filter', '@nex/daemon', 'build'] },
-        { name: 'client', output: clientBundle, args: ['--filter', '@nex/client', 'build'] },
+        { name: 'daemon', output: daemonBundle, args: ['--filter', '@kelpi/daemon', 'build'] },
+        { name: 'client', output: clientBundle, args: ['--filter', '@kelpi/client', 'build'] },
         // The CLI is staged into Contents/Resources/cli so the app can install it
         // (`src/cli-install.ts`); an unbuilt one fails `stage-resources.mjs`, not the launch.
-        { name: 'cli', output: cliBundle, args: ['--filter', '@nex/cli', 'build'] },
-        { name: 'shell', output: shellBundle, args: ['--filter', '@nex/shell', 'build'] }
+        { name: 'cli', output: cliBundle, args: ['--filter', '@kelpi/cli', 'build'] },
+        { name: 'shell', output: shellBundle, args: ['--filter', '@kelpi/shell', 'build'] }
     ];
     for (const step of steps) {
         if (!options.build && fs.existsSync(step.output)) continue;
@@ -308,7 +308,7 @@ function bundlePhase() {
 
     // ── the daemon payload, outside the asar ─────────────────────────────────────
     const daemonDir = path.join(resourcesPath, 'daemon');
-    const entry = path.join(daemonDir, 'nexd.js');
+    const entry = path.join(daemonDir, 'kelpid.js');
     check('the daemon bundle is staged outside the asar', fs.existsSync(entry), entry);
     check('its sourcemap came too', fs.existsSync(`${entry}.map`));
 
@@ -323,7 +323,7 @@ function bundlePhase() {
         );
     }
 
-    // The resolution chain nexd actually uses: `require('node-pty')` from `<payload>/nexd.js`
+    // The resolution chain kelpid actually uses: `require('node-pty')` from `<payload>/kelpid.js`
     // walks up to `<payload>/node_modules/node-pty`, whose loader then computes
     // `prebuilds/<platform>-<arch>/pty.node` relative to its own `lib/`.
     const ptyRoot = path.join(daemonDir, 'node_modules', 'node-pty');
@@ -352,11 +352,11 @@ function bundlePhase() {
     check('the client build is staged', fs.existsSync(path.join(resourcesPath, 'client', 'index.html')));
 
     // ── the CLI payload ──────────────────────────────────────────────────────────
-    // `/usr/local/bin/nex` is a symlink into this directory (`src/cli-install.ts`), so both
+    // `/usr/local/bin/kelpi` is a symlink into this directory (`src/cli-install.ts`), so both
     // files have to be there and the launcher has to be executable by a plain shell.
     const cliDir = path.join(resourcesPath, 'cli');
-    const launcher = path.join(cliDir, 'nex');
-    if (check('the CLI is staged beside the app', fs.existsSync(path.join(cliDir, 'nex.js')))) {
+    const launcher = path.join(cliDir, 'kelpi');
+    if (check('the CLI is staged beside the app', fs.existsSync(path.join(cliDir, 'kelpi.js')))) {
         let launcherExecutable = false;
         try {
             fs.accessSync(launcher, fs.constants.X_OK);
@@ -369,13 +369,13 @@ function bundlePhase() {
         check(
             'the launcher carries the install-attribution marker',
             marker.includes('nex-cli-launcher'),
-            'src/cli-install.ts refuses to touch /usr/local/bin/nex without it'
+            'src/cli-install.ts refuses to touch /usr/local/bin/kelpi without it'
         );
-        // The real proof: exec the launcher exactly as a symlinked /usr/local/bin/nex would,
+        // The real proof: exec the launcher exactly as a symlinked /usr/local/bin/kelpi would,
         // through a symlink from a scratch directory, with NOTHING on PATH but /usr/bin:/bin —
         // so a pass means it found the app's own Node rather than a developer's.
         const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'nexcli-'));
-        const linked = path.join(scratch, 'nex');
+        const linked = path.join(scratch, 'kelpi');
         fs.symlinkSync(launcher, linked);
         const version = spawnSync(linked, ['--version'], {
             encoding: 'utf8',
@@ -383,7 +383,7 @@ function bundlePhase() {
         });
         check(
             'the bundled CLI runs through a symlink with no Node on PATH',
-            version.status === 0 && /^nex \S+/.test((version.stdout ?? '').trim()),
+            version.status === 0 && /^kelpi \S+/.test((version.stdout ?? '').trim()),
             (version.stdout ?? '').trim() || (version.stderr ?? '').trim()
         );
         check(
@@ -393,7 +393,7 @@ function bundlePhase() {
         );
         // And it is the whole CLI, installer included: a dry run against a scratch HOME must
         // report the write it would make without touching anything.
-        const dry = spawnSync(linked, ['install-hooks', '--dry-run', '--command', 'nex'], {
+        const dry = spawnSync(linked, ['install-hooks', '--dry-run', '--command', 'kelpi'], {
             encoding: 'utf8',
             env: { PATH: '/usr/bin:/bin', HOME: scratch }
         });
@@ -433,11 +433,11 @@ function bundlePhase() {
     );
     check(
         'the bundle id is distinct from the shipped Swift app',
-        /<key>CFBundleIdentifier<\/key>\s*<string>com\.benfriebe\.newnex<\/string>/.test(plist)
+        /<key>CFBundleIdentifier<\/key>\s*<string>com\.benfriebe\.kelpi<\/string>/.test(plist)
     );
 
     // ── Finder "Open With" (CONT-123) ────────────────────────────────────────────
-    // Both halves are required: the document type puts Nex in the menu, and the imported UTI is
+    // Both halves are required: the document type puts Kelpi in the menu, and the imported UTI is
     // what tells LaunchServices that `.md` IS that type. Without the import the type matches
     // nothing and `app.on('open-file')` can never fire from Finder.
     check(
@@ -492,11 +492,11 @@ async function fusePhase() {
             : 'cookie encryption is off (an ad-hoc build must not block on the login keychain)',
         cookieActual === cookieExpected,
         cookieActual === cookieExpected
-            ? `NEX_MACOS_IDENTITY ${signingIdentity === '' ? 'unset' : 'set'}`
+            ? `KELPI_MACOS_IDENTITY ${signingIdentity === '' ? 'unset' : 'set'}`
             : cookieActual
-              ? 'the fuse is ON but this build is ad-hoc signed (NEX_MACOS_IDENTITY unset) — it will hang ' +
+              ? 'the fuse is ON but this build is ad-hoc signed (KELPI_MACOS_IDENTITY unset) — it will hang ' +
                 'the browser process on a login-keychain authorization dialog and never load its window'
-              : 'the fuse is OFF but NEX_MACOS_IDENTITY is set — repackage so the signed build gets it ' +
+              : 'the fuse is OFF but KELPI_MACOS_IDENTITY is set — repackage so the signed build gets it ' +
                 '(if you only exported the variable for this run, the app it is checking was built without it)'
     );
 }
@@ -505,7 +505,7 @@ async function fusePhase() {
 
 /**
  * A throwaway environment with **nothing** pointing at the daemon, the client or Node: no
- * `NEXD_ENTRY`, no `NEXD_NODE`, no `NEXD_CLIENT_DIR`. Everything the app needs, it has to find
+ * `KELPID_ENTRY`, no `KELPID_NODE`, no `KELPID_CLIENT_DIR`. Everything the app needs, it has to find
  * inside its own bundle — which is the whole point of the launch phase.
  */
 async function makeSandbox() {
@@ -515,10 +515,10 @@ async function makeSandbox() {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(userData, { recursive: true });
 
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
-    const cliLinkPath = path.join(root, 'usr', 'local', 'bin', 'nex');
-    if (cliLinkPath === '/usr/local/bin/nex') throw new Error('refusing to touch the real CLI symlink');
+    const cliLinkPath = path.join(root, 'usr', 'local', 'bin', 'kelpi');
+    if (cliLinkPath === '/usr/local/bin/kelpi') throw new Error('refusing to touch the real CLI symlink');
     fs.writeFileSync(path.join(root, 'config'), '');
 
     const httpPort = await freePort();
@@ -526,25 +526,25 @@ async function makeSandbox() {
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: socketPath,
-        NEXD_TCP_PORT: String(controlPort),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: path.join(root, 'config'),
-        NEXD_HTTP_PORT: String(httpPort),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        // The CLI self-heal, aimed inside the sandbox. `NEX_CLI_LINK_PATH` exists for exactly
-        // this: the real link is /usr/local/bin/nex — the developer's own CLI — and the launch
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: socketPath,
+        KELPID_TCP_PORT: String(controlPort),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: path.join(root, 'config'),
+        KELPID_HTTP_PORT: String(httpPort),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        // The CLI self-heal, aimed inside the sandbox. `KELPI_CLI_LINK_PATH` exists for exactly
+        // this: the real link is /usr/local/bin/kelpi — the developer's own CLI — and the launch
         // phase must never write there. `heal` (not `prompt`) also keeps the first-launch offer
         // from opening a dialog nobody is going to click.
-        NEX_CLI_INSTALL: 'heal',
-        NEX_CLI_LINK_PATH: cliLinkPath
+        KELPI_CLI_INSTALL: 'heal',
+        KELPI_CLI_LINK_PATH: cliLinkPath
     };
 
     // A stale install to repair: a symlink into a bundle that is not there any more, which is
-    // what a moved or updated Nex.app leaves behind (APP-003).
+    // what a moved or updated Kelpi.app leaves behind (APP-003).
     fs.mkdirSync(path.dirname(cliLinkPath), { recursive: true });
-    fs.symlinkSync(path.join(root, 'Gone.app', 'Contents', 'Resources', 'cli', 'nex'), cliLinkPath);
+    fs.symlinkSync(path.join(root, 'Gone.app', 'Contents', 'Resources', 'cli', 'kelpi'), cliLinkPath);
 
     return {
         root,
@@ -552,9 +552,9 @@ async function makeSandbox() {
         env,
         cliLinkPath,
         userData,
-        runDir: env.NEXD_RUN_DIR,
-        runSocket: path.join(env.NEXD_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
-        pidFile: path.join(env.NEXD_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.pid`),
+        runDir: env.KELPID_RUN_DIR,
+        runSocket: path.join(env.KELPID_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
+        pidFile: path.join(env.KELPID_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.pid`),
         httpPort,
         controlPort,
         base: `http://127.0.0.1:${String(httpPort)}`,
@@ -572,7 +572,7 @@ function startApp(sandbox) {
     if (options.mockKeychain) args.push('--use-mock-keychain');
     const child = spawn(appBinary, args, {
         cwd: sandbox.home,
-        // A bare object, NOT `{...process.env}`: an inherited NEXD_* from the developer's shell
+        // A bare object, NOT `{...process.env}`: an inherited KELPID_* from the developer's shell
         // would quietly invalidate the entire phase.
         env: { ...sandbox.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -633,7 +633,7 @@ function startApp(sandbox) {
 /** The shipped CLI, pointed at the sandbox daemon over TCP (its only non-hardcoded transport). */
 function cli(sandbox, args, timeoutMs = 20_000) {
     return new Promise((resolve) => {
-        const child = spawn(NEX_CLI, args, {
+        const child = spawn(KELPI_CLI, args, {
             cwd: sandbox.home,
             env: {
                 PATH: sandbox.env.PATH,
@@ -681,7 +681,7 @@ async function launchPhase() {
         const spawned = await app.waitForLine(/daemon spawned/, 'the daemon-spawned line');
         check(
             'it starts the daemon from its own Resources',
-            spawned.includes(`entry=${path.join(resourcesPath, 'daemon', 'nexd.js')}`),
+            spawned.includes(`entry=${path.join(resourcesPath, 'daemon', 'kelpid.js')}`),
             spawned.trim()
         );
         check(
@@ -769,7 +769,7 @@ async function launchPhase() {
          * the menu was deliberately not built, so a launch that never installed a menu at all
          * could not pass this by accident.
          */
-        const packagedMenu = await app.waitForLine(/menu: Nex /, 'the application menu');
+        const packagedMenu = await app.waitForLine(/menu: Kelpi /, 'the application menu');
         check(
             'a packaged build has NO Debug ▸ Seed Test Group row',
             !packagedMenu.includes('Seed Test Group'),
@@ -788,7 +788,7 @@ async function launchPhase() {
         const healedTo = fs.existsSync(sandbox.cliLinkPath) ? fs.readlinkSync(sandbox.cliLinkPath) : '(gone)';
         check(
             'the app healed the stale CLI symlink to its own bundle',
-            healedTo === path.join(resourcesPath, 'cli', 'nex'),
+            healedTo === path.join(resourcesPath, 'cli', 'kelpi'),
             healedTo
         );
         check(
@@ -817,23 +817,23 @@ async function launchPhase() {
         });
         check(
             'and the healed link runs the CLI',
-            healedCli.status === 0 && (healedCli.stdout ?? '').startsWith('nex '),
+            healedCli.status === 0 && (healedCli.stdout ?? '').startsWith('kelpi '),
             (healedCli.stdout ?? '').trim() || (healedCli.stderr ?? '').trim()
         );
 
         // ── the shipped CLI drives it, and a real PTY runs ───────────────────────
-        if (fs.existsSync(NEX_CLI)) {
+        if (fs.existsSync(KELPI_CLI)) {
             const doctor = await cli(sandbox, ['doctor', '--json']);
             const ping = JSON.parse(doctor.stdout).checks.find((entry) => entry.name === 'ping');
-            check('the shipped nex CLI gets a ping round-trip', ping?.status === 'pass', ping?.detail);
+            check('the shipped kelpi CLI gets a ping round-trip', ping?.status === 'pass', ping?.detail);
 
             const workspace = await cli(sandbox, ['workspace', 'create', '--name', 'packaged', '--json']);
             const workspaceID = JSON.parse(workspace.stdout || '{}').workspace_id;
-            check('`nex workspace create` works against the packaged daemon', workspace.code === 0 && typeof workspaceID === 'string');
+            check('`kelpi workspace create` works against the packaged daemon', workspace.code === 0 && typeof workspaceID === 'string');
 
             const pane = await cli(sandbox, ['pane', 'create', '--workspace', 'packaged', '--name', 'w1', '--json']);
             const paneID = JSON.parse(pane.stdout || '{}').pane_id;
-            check('`nex pane create` spawns a pane', pane.code === 0 && typeof paneID === 'string', paneID);
+            check('`kelpi pane create` spawns a pane', pane.code === 0 && typeof paneID === 'string', paneID);
 
             // The real proof that node-pty loaded its native module out of the app bundle:
             // bytes went through a pty, a shell ran, and the output came back.
@@ -852,12 +852,12 @@ async function launchPhase() {
 
             const list = await cli(sandbox, ['pane', 'list', '--json']);
             check(
-                '`nex pane list` sees it',
+                '`kelpi pane list` sees it',
                 list.code === 0 && JSON.parse(list.stdout).some((entry) => entry.id === paneID),
                 `${String(JSON.parse(list.stdout || '[]').length)} panes`
             );
         } else {
-            skip('the shipped nex CLI drives the packaged daemon', `${NEX_CLI} is not installed`);
+            skip('the shipped kelpi CLI drives the packaged daemon', `${KELPI_CLI} is not installed`);
             const pane = await controlCommand(sandbox.runSocket, { command: 'pane-create', name: 'w1' });
             check('a pane can still be created over the control socket', pane?.ok === true, JSON.stringify(pane));
         }

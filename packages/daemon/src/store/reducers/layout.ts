@@ -13,7 +13,7 @@ import {
     predefinedLayoutIndex,
     previousPaneID,
     rebuildLayout
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 import type { DaemonState, DomainAction, WorkspaceState } from '../types.js';
 import { findVisiblePane, restoreZoomIfNeeded, setFocus, updateWorkspace } from './helpers.js';
 

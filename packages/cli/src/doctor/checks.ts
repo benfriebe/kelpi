@@ -6,10 +6,10 @@
  * actually proves the wire works).
  *
  * **`process` is daemon-aware.** The Swift check grepped `ps` for
- * `Nex.app/Contents/MacOS/Nex` and FAILed when the app was gone, which is wrong in the new
- * world: a healthy `nexd` is the normal case and there may be no `.app` at all. It now
+ * `Kelpi.app/Contents/MacOS/Kelpi` and FAILed when the app was gone, which is wrong in the new
+ * world: a healthy `kelpid` is the normal case and there may be no `.app` at all. It now
  * accepts, in order: a live pid record in the daemon run dir (`daemon-v<N>.pid`, cross-checked
- * with `kill(pid, 0)`), a `nexd` / `nexd.js` process in `ps`, or the Swift app. Only when NONE
+ * with `kill(pid, 0)`), a `kelpid` / `kelpid.js` process in `ps`, or the Swift app. Only when NONE
  * of those exist is it a FAIL. TCP still SKIPs — the daemon is on another host.
  *
  * **`version` compares identities, and the protocol first.** CLI and daemon are separate
@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { PROTOCOL_VERSION } from '@nex/protocol';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 import { asInt, asString, parseJsonObject } from '../json.js';
 import type { ProcessResult } from '../proc.js';
@@ -35,7 +35,7 @@ export interface PingFacts {
     version?: string | undefined;
     build?: string | undefined;
     protocol?: number | undefined;
-    /** The daemon's CLI-compat socket is degraded (another Nex owns it); from `ping`. */
+    /** The daemon's CLI-compat socket is degraded (another Kelpi owns it); from `ping`. */
     compat?: { path: string; error: string } | undefined;
     /** The `NEX_SOCKET` value the daemon injects into pane environments; from `ping`. */
     paneRoute?: string | undefined;
@@ -66,7 +66,7 @@ export async function reachabilityCheck(transport: Transport, deps: Reachability
                 name: 'socket',
                 status: 'FAIL',
                 detail: `Unix socket file ${transport.path} does not exist.`,
-                repair: 'Is Nex running? Launch the Nex app and re-run `nex doctor`.'
+                repair: 'Is Kelpi running? Launch the Kelpi app and re-run `kelpi doctor`.'
             };
         }
         return { name: 'socket', status: 'PASS', detail: 'socket file exists' };
@@ -95,11 +95,11 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
             return {
                 name: 'ping',
                 status: 'FAIL',
-                detail: 'nex doctor: transport failure (no diagnostic captured).',
-                repair: 'Re-run with more verbose tooling, or restart Nex.'
+                detail: 'kelpi doctor: transport failure (no diagnostic captured).',
+                repair: 'Re-run with more verbose tooling, or restart Kelpi.'
             };
         }
-        const [line, repair] = describeTransportFailure(failure, 'nex doctor');
+        const [line, repair] = describeTransportFailure(failure, 'kelpi doctor');
         return { name: 'ping', status: 'FAIL', detail: line, repair };
     }
     if (reply.length === 0) {
@@ -107,8 +107,8 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
             name: 'ping',
             status: 'FAIL',
             detail:
-                'connected, but Nex closed the connection before replying — likely a pre-ping (<v0.26) Nex, or the app is wedged.',
-            repair: 'Rebuild and relaunch Nex if you\'re on a recent main; if `ping` still fails, restart the app.'
+                'connected, but Kelpi closed the connection before replying — likely a pre-ping (<v0.26) Kelpi, or the app is wedged.',
+            repair: 'Rebuild and relaunch Kelpi if you\'re on a recent main; if `ping` still fails, restart the app.'
         };
     }
     const json = parseJsonObject(reply);
@@ -117,7 +117,7 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
             name: 'ping',
             status: 'FAIL',
             detail: `received malformed reply (${String(Buffer.byteLength(reply, 'utf8'))} bytes).`,
-            repair: 'Restart Nex. If reproducible, file an issue with the raw bytes.'
+            repair: 'Restart Kelpi. If reproducible, file an issue with the raw bytes.'
         };
     }
     facts.pid = asInt(json['pid']);
@@ -149,7 +149,7 @@ export function pingCheck(reply: string | null, facts: PingFacts): DoctorCheck {
  *     because a port CLI dialing the default socket on a machine running both apps reaches
  *     the Swift daemon and every port-pane event silently vanishes there;
  *   - the port daemon answered but its CLI-compat socket is DEGRADED (the Swift app owns
- *     it): plain-terminal `nex` commands are reaching the other app, panes are unaffected
+ *     it): plain-terminal `kelpi` commands are reaching the other app, panes are unaffected
  *     (their `NEX_SOCKET` is injected at spawn);
  *   - everything is where it should be, in which case the pane route is printed so a user
  *     can see what their panes carry.
@@ -165,16 +165,16 @@ export function routingCheck(facts: PingFacts): DoctorCheck {
             detail:
                 'the answering daemon is the Swift Nex app (no `protocol` field in its ping reply), not this CLI\'s own daemon.',
             repair:
-                'Inside new-Nex panes, commands route automatically (the pane env carries NEX_SOCKET). In plain terminals, set NEX_SOCKET=tcp:127.0.0.1:<port> to reach the new daemon, or quit the Swift app so it releases /tmp/nex.sock.'
+                'Inside new-Kelpi panes, commands route automatically (the pane env carries NEX_SOCKET). In plain terminals, set NEX_SOCKET=tcp:127.0.0.1:<port> to reach the new daemon, or quit the Swift app so it releases /tmp/nex.sock.'
         };
     }
     if (facts.compat !== undefined) {
         return {
             name: 'routing',
             status: 'WARN',
-            detail: `this daemon's CLI-compat socket ${facts.compat.path} is degraded: ${facts.compat.error}. Plain-terminal \`nex\` commands on the default socket reach a DIFFERENT app; panes are unaffected${facts.paneRoute === undefined ? '' : ` (their injected NEX_SOCKET is ${facts.paneRoute})`}.`,
+            detail: `this daemon's CLI-compat socket ${facts.compat.path} is degraded: ${facts.compat.error}. Plain-terminal \`kelpi\` commands on the default socket reach a DIFFERENT app; panes are unaffected${facts.paneRoute === undefined ? '' : ` (their injected NEX_SOCKET is ${facts.paneRoute})`}.`,
             repair:
-                'Quit the other Nex app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set NEX_SOCKET explicitly in plain terminals.'
+                'Quit the other Kelpi app to let this daemon reclaim the compat socket (it retries on "Restart Socket Server"), or set NEX_SOCKET explicitly in plain terminals.'
         };
     }
     return {
@@ -187,10 +187,10 @@ export function routingCheck(facts: PingFacts): DoctorCheck {
     };
 }
 
-// ── the daemon run dir (a local mirror of lifecycle/rundir.ts, no @nex/daemon dependency) ──
+// ── the daemon run dir (a local mirror of lifecycle/rundir.ts, no @kelpi/daemon dependency) ──
 
 export function resolveRunDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
-    const override = env['NEXD_RUN_DIR']?.trim();
+    const override = env['KELPID_RUN_DIR']?.trim();
     if (override !== undefined && override.length > 0) {
         return path.resolve(override.startsWith('~') ? path.join(home, override.slice(1)) : override);
     }
@@ -229,7 +229,10 @@ export interface ProcessDeps {
     isAlive(pid: number): boolean;
 }
 
-/** `ps` rows whose comm ends with the Swift app's executable path. */
+/**
+ * `ps` rows whose comm ends with a Kelpi (or Nex) app executable path. The `Nex` form covers
+ * both the shipped Swift app and pre-rename port bundles — the doctor keeps seeing them.
+ */
 function swiftAppPids(psOutput: string): number[] {
     const pids: number[] = [];
     for (const line of psOutput.split('\n')) {
@@ -239,12 +242,14 @@ function swiftAppPids(psOutput: string): number[] {
         const pid = Number.parseInt(trimmed.slice(0, separator), 10);
         const comm = trimmed.slice(separator + 1).trim();
         if (!Number.isInteger(pid)) continue;
-        if (comm.endsWith('Nex.app/Contents/MacOS/Nex')) pids.push(pid);
+        if (comm.endsWith('Kelpi.app/Contents/MacOS/Kelpi') || comm.endsWith('Nex.app/Contents/MacOS/Nex')) {
+            pids.push(pid);
+        }
     }
     return pids;
 }
 
-/** `ps` rows whose command line runs `nexd` or `nexd.js` (a bundled daemon under node). */
+/** `ps` rows whose command line runs `kelpid` or `kelpid.js` (a bundled daemon under node). */
 function daemonPids(psOutput: string, selfPid: number): number[] {
     const pids: number[] = [];
     for (const line of psOutput.split('\n')) {
@@ -254,9 +259,19 @@ function daemonPids(psOutput: string, selfPid: number): number[] {
         const pid = Number.parseInt(trimmed.slice(0, separator), 10);
         if (!Number.isInteger(pid) || pid === selfPid) continue;
         const command = trimmed.slice(separator + 1);
+        // `nexd` forms stay recognised: during the rename transition the running daemon may
+        // still be a pre-rename bundle, and a doctor that cannot see it would misdiagnose.
         const runsDaemon = command
             .split(/\s+/)
-            .some((token) => token === 'nexd' || token.endsWith('/nexd') || token.endsWith('/nexd.js'));
+            .some(
+                (token) =>
+                    token === 'kelpid' ||
+                    token.endsWith('/kelpid') ||
+                    token.endsWith('/kelpid.js') ||
+                    token === 'nexd' ||
+                    token.endsWith('/nexd') ||
+                    token.endsWith('/nexd.js')
+            );
         if (runsDaemon) pids.push(pid);
     }
     return pids;
@@ -267,7 +282,7 @@ export async function processCheck(transport: Transport, deps: ProcessDeps, fact
         return {
             name: 'process',
             status: 'SKIP',
-            detail: 'skipped (TCP transport — running Nex is on a remote host).'
+            detail: 'skipped (TCP transport — running Kelpi is on a remote host).'
         };
     }
 
@@ -276,13 +291,13 @@ export async function processCheck(transport: Transport, deps: ProcessDeps, fact
     const liveRecord = record !== null && deps.isAlive(record.pid) ? record : null;
 
     // `ps -axo pid=,comm=` for the app (exact executable path) and `pid=,command=` for the
-    // daemon (a bundled `nexd.js` runs under node, so `comm` is just the node binary).
+    // daemon (a bundled `kelpid.js` runs under node, so `comm` is just the node binary).
     const comm = await deps.run('/bin/ps', ['-axo', 'pid=,comm=']);
     const full = await deps.run('/bin/ps', ['-axo', 'pid=,command=']);
     const appPids = swiftAppPids(comm.stdout);
-    const nexdPids = daemonPids(full.stdout, process.pid);
+    const kelpidPids = daemonPids(full.stdout, process.pid);
 
-    const known = new Set<number>(nexdPids);
+    const known = new Set<number>(kelpidPids);
     for (const pid of appPids) known.add(pid);
     if (liveRecord !== null) known.add(liveRecord.pid);
 
@@ -290,9 +305,9 @@ export async function processCheck(transport: Transport, deps: ProcessDeps, fact
         return {
             name: 'process',
             status: 'FAIL',
-            detail: 'no running nexd or Nex.app process found',
+            detail: 'no running kelpid or Kelpi.app process found',
             repair:
-                'Start the daemon (`nexd start`) or launch Nex from /Applications, then re-run `nex doctor`.'
+                'Start the daemon (`kelpid start`) or launch Kelpi from /Applications, then re-run `kelpi doctor`.'
         };
     }
     const pids = [...known].sort((left, right) => left - right);
@@ -300,19 +315,19 @@ export async function processCheck(transport: Transport, deps: ProcessDeps, fact
         return {
             name: 'process',
             status: 'WARN',
-            detail: `found pids [${pids.join(', ')}], but ping replied from pid ${String(facts.pid)} — multiple Nex instances?`,
+            detail: `found pids [${pids.join(', ')}], but ping replied from pid ${String(facts.pid)} — multiple Kelpi instances?`,
             repair: 'Quit the stale instances (`kill <pid>`) and keep one running.'
         };
     }
     if (liveRecord !== null) {
-        const extra = appPids.length > 0 ? `; Nex.app pids: ${appPids.join(', ')}` : '';
+        const extra = appPids.length > 0 ? `; Kelpi.app pids: ${appPids.join(', ')}` : '';
         return {
             name: 'process',
             status: 'PASS',
-            detail: `nexd running (pid ${String(liveRecord.pid)}, protocol ${String(liveRecord.protocol)})${extra}`
+            detail: `kelpid running (pid ${String(liveRecord.pid)}, protocol ${String(liveRecord.protocol)})${extra}`
         };
     }
-    const label = nexdPids.length > 0 ? 'nexd running' : 'Nex.app running';
+    const label = kelpidPids.length > 0 ? 'kelpid running' : 'Kelpi.app running';
     return { name: 'process', status: 'PASS', detail: `${label} (pids: ${pids.join(', ')})` };
 }
 
@@ -333,20 +348,20 @@ export function versionCheck(cli: CliIdentity, facts: PingFacts): DoctorCheck {
         return {
             name: 'version',
             status: 'WARN',
-            detail: `CLI speaks protocol ${String(cli.protocol)}; nexd ${daemonVersion} speaks protocol ${String(facts.protocol)}.`,
+            detail: `CLI speaks protocol ${String(cli.protocol)}; kelpid ${daemonVersion} speaks protocol ${String(facts.protocol)}.`,
             repair:
-                'Protocol drift, not just version drift: rebuild both sides from the same checkout (`pnpm --filter @nex/cli build`, `pnpm --filter @nex/daemon build`) so they speak the same wire.'
+                'Protocol drift, not just version drift: rebuild both sides from the same checkout (`pnpm --filter @kelpi/cli build`, `pnpm --filter @kelpi/daemon build`) so they speak the same wire.'
         };
     }
     const daemonBuild = facts.build;
     if (daemonVersion === cli.version && (daemonBuild === undefined || daemonBuild === cli.build)) {
-        return { name: 'version', status: 'PASS', detail: `CLI ${cli.version} matches nexd ${daemonVersion}` };
+        return { name: 'version', status: 'PASS', detail: `CLI ${cli.version} matches kelpid ${daemonVersion}` };
     }
     const daemonIdentity = daemonBuild === undefined ? daemonVersion : `${daemonVersion} (build ${daemonBuild})`;
     return {
         name: 'version',
         status: 'WARN',
-        detail: `CLI is ${cli.version} (build ${cli.build}); nexd is ${daemonIdentity}.`,
+        detail: `CLI is ${cli.version} (build ${cli.build}); kelpid is ${daemonIdentity}.`,
         repair:
             'Advisory only — the CLI and the daemon are separate artifacts and the wire protocol matches. Rebuild both from one checkout if they are meant to be the same release.'
     };

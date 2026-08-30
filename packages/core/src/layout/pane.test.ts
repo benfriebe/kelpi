@@ -19,7 +19,7 @@ const A = 'AAAAAAAA-0000-0000-0000-000000000001';
 function samplePane(): Pane {
     return makePane({
         id: A,
-        workingDirectory: '/Users/ben/code/nex',
+        workingDirectory: '/Users/ben/code/kelpi',
         createdAt: 1_700_000_000,
         lastActivityAt: 1_700_000_100
     });

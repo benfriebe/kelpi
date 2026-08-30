@@ -20,7 +20,7 @@
  * showing.
  */
 
-import type { WsSettingsSnapshot, WsTransportStatus } from '@nex/protocol';
+import type { WsSettingsSnapshot, WsTransportStatus } from '@kelpi/protocol';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
 
 import { clientKeyBindings, tokens, withAlpha, type ChromeBucket } from '../chrome';
@@ -315,7 +315,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): ReactElement | nul
                         <KeybindingsTab
                             bindings={bindings}
                             actions={props.actions}
-                            configPath={paths.nexConfig}
+                            configPath={paths.kelpiConfig}
                             globalHotkey={props.settings.general.globalHotkey}
                             globalHotkeyHideOnRepress={props.settings.general.globalHotkeyHideOnRepress}
                             globalHotkeyError={props.globalHotkeyError}

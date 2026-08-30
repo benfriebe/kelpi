@@ -98,7 +98,7 @@ describe('§N30 — a navigation must not move the keyboard', () => {
 
     describe('a deliberate claim cancels the pending handoff', () => {
         it('when the client hands the page the keyboard mid-load (WEB-043)', () => {
-            // `nex web open` is exactly this race: the pane is created, the client focuses it
+            // `kelpi web open` is exactly this race: the pane is created, the client focuses it
             // (`focus-view`), and the page loads — all at once. Undoing the client's own handoff
             // would leave the ring on the new pane and the keyboard in the renderer.
             const gate = guard();

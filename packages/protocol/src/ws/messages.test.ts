@@ -25,7 +25,7 @@ describe('client-sync protocol envelope', () => {
             type: 'hello',
             protocolVersion: WS_PROTOCOL_VERSION,
             token: 'abc',
-            client: { kind: 'browser', name: 'nex-web', version: '0.1.0' },
+            client: { kind: 'browser', name: 'kelpi-web', version: '0.1.0' },
             resumeFromSeq: 12
         };
         expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
@@ -48,7 +48,7 @@ describe('client-sync protocol envelope', () => {
                 workspaceID: 'W',
                 title: 'Claude',
                 body: 'waiting for input',
-                dedupeKey: 'nex-A'
+                dedupeKey: 'kelpi-A'
             },
             { type: 'pane-exit', paneID: 'A', exitCode: 0 },
             { type: 'resync-required', reason: 'seq-gap' }
@@ -140,7 +140,7 @@ describe('client-sync protocol envelope', () => {
 describe('web-pane host channel (M6)', () => {
     it('round-trips every host frame in both directions', () => {
         const messages: (WsClientMessage | WsServerMessage)[] = [
-            { type: 'host-register', role: 'web-pane', name: 'nex-shell' },
+            { type: 'host-register', role: 'web-pane', name: 'kelpi-shell' },
             { type: 'host-unregister', role: 'web-pane' },
             { type: 'host-rpc-reply', id: 'r1', reply: { ok: true, matched: true } },
             {
@@ -198,7 +198,7 @@ describe('web-pane host channel (M6)', () => {
             token: 'tok',
             client: {
                 kind: 'electron',
-                name: 'nex-shell',
+                name: 'kelpi-shell',
                 capabilities: ['web-pane-host'],
                 windowID: 'WIN'
             }
@@ -206,7 +206,7 @@ describe('web-pane host channel (M6)', () => {
         const register: WsClientMessage = {
             type: 'host-register',
             role: 'web-pane',
-            name: 'nex-shell',
+            name: 'kelpi-shell',
             windowID: 'WIN'
         };
         expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
@@ -218,7 +218,7 @@ describe('web-pane host channel (M6)', () => {
             type: 'hello',
             protocolVersion: WS_PROTOCOL_VERSION,
             token: 'tok',
-            client: { kind: 'electron', name: 'nex-shell', capabilities: ['web-pane-host'] }
+            client: { kind: 'electron', name: 'kelpi-shell', capabilities: ['web-pane-host'] }
         };
         expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
     });

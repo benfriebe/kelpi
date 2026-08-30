@@ -12,7 +12,7 @@
  *     control socket and the WS command channel so a CLI and a browser cannot drift;
  *   - the listeners: the CLI-compat control socket (`/tmp/nex.sock` + optional TCP, per
  *     PLAN.md's compatibility decision), the protocol-versioned run-dir control socket
- *     (`daemon-v<N>.sock`, what `nexd status` / clients discover), and the HTTP+WS server on a
+ *     (`daemon-v<N>.sock`, what `kelpid status` / clients discover), and the HTTP+WS server on a
  *     port remembered in the run dir;
  *   - the boot ordering from app-state-core.md §12.3 / agent-lifecycle.md §6.1: load →
  *     capture resume tuples → clear ids/statuses → spawn PTYs → settle ~2 s → type resume →
@@ -24,9 +24,9 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { newUUID } from '@nex/core/codec';
-import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@nex/protocol';
-import type { ResumeTuple } from '@nex/core/agent';
+import { newUUID } from '@kelpi/core/codec';
+import { SYSTEM_STATS_INTERVAL_MS, WS_TRANSPORT_CHANGED_MESSAGE } from '@kelpi/protocol';
+import type { ResumeTuple } from '@kelpi/core/agent';
 
 import { createContentService, type ContentService } from '../content/index.js';
 import {
@@ -84,7 +84,7 @@ import {
     createPtyManager,
     createTerminalInput,
     withSpawnGate,
-    type NexPtyManager
+    type KelpiPtyManager
 } from '../pty/index.js';
 import { createEditorResolver } from '../content/external-editor.js';
 import type { ControlDispatcher, PersistenceHealth, TerminalInput } from '../seams.js';
@@ -97,7 +97,7 @@ import {
     visiblePane,
     workspaceContainingVisiblePane,
     type DaemonState,
-    type NexStore
+    type KelpiStore
 } from '../store/index.js';
 import {
     createPaneBranchWatch,
@@ -140,26 +140,26 @@ import { readPortFile, writePortFile } from './port.js';
 import { spawnRestoredPanes, typeResumeCommands, type ResumeOutcome } from './resume.js';
 import { resolveDaemonVersion, type DaemonVersion } from './version.js';
 
-export const HTTP_PORT_ENV = 'NEXD_HTTP_PORT';
-export const HTTP_HOST_ENV = 'NEXD_HTTP_HOST';
+export const HTTP_PORT_ENV = 'KELPID_HTTP_PORT';
+export const HTTP_HOST_ENV = 'KELPID_HTTP_HOST';
 /**
- * Directory holding the bundled `nex` CLI, prepended to every pane's PATH. Set by the shell
- * at daemon-spawn time (mirroring `NEXD_CLIENT_DIR`): the daemon has no idea it lives inside
- * an app bundle, so the side that knows tells it. Without it a pane's `nex` is whatever the
+ * Directory holding the bundled `kelpi` CLI, prepended to every pane's PATH. Set by the shell
+ * at daemon-spawn time (mirroring `KELPID_CLIENT_DIR`): the daemon has no idea it lives inside
+ * an app bundle, so the side that knows tells it. Without it a pane's `kelpi` is whatever the
  * user's rc files resolve — which on a machine also running the Swift app is the WRONG one.
  */
-export const HELPERS_DIR_ENV = 'NEXD_HELPERS_DIR';
+export const HELPERS_DIR_ENV = 'KELPID_HELPERS_DIR';
 
 /**
  * Opt in to running WITHOUT persistence (`1` / `true` / `yes`).
  *
  * Default behaviour is a hard refusal to start when the database cannot be opened, because the
  * alternative is what shipped: a daemon that ran all day against an unopenable
- * `NEXD_DB_PATH=/tmp/nexd-dev.db`, reported itself healthy, and lost every workspace. Anyone who
+ * `KELPID_DB_PATH=/tmp/kelpid-dev.db`, reported itself healthy, and lost every workspace. Anyone who
  * genuinely wants a throw-away daemon (a read-only container, a scratch instance) says so here
  * and gets a loud warning on every boot instead.
  */
-export const ALLOW_EPHEMERAL_STATE_ENV = 'NEXD_ALLOW_EPHEMERAL_STATE';
+export const ALLOW_EPHEMERAL_STATE_ENV = 'KELPID_ALLOW_EPHEMERAL_STATE';
 
 /** Broadcast to every attached client when the daemon stops being able to save (P0). */
 export const PERSISTENCE_DEGRADED_EVENT = 'persistence-degraded';
@@ -203,7 +203,7 @@ export function persistenceDegradedEvent(health: PersistenceHealth): Record<stri
 export interface DaemonOptions {
     readonly env?: NodeJS.ProcessEnv | undefined;
     readonly home?: string | undefined;
-    /** Run directory override (otherwise `NEXD_RUN_DIR` / the platform default). */
+    /** Run directory override (otherwise `KELPID_RUN_DIR` / the platform default). */
     readonly runDir?: string | undefined;
     /** CLI-compat control socket. Same precedence as the config file: env still wins. */
     readonly controlSocketPath?: string | undefined;
@@ -240,7 +240,7 @@ export interface DaemonOptions {
     readonly now?: (() => number) | undefined;
     /** Id source for handlers + the fresh-install workspace (tests). */
     readonly uuid?: (() => string) | undefined;
-    /** Install SIGTERM/SIGINT handlers. `nexd start` sets it; tests do not. */
+    /** Install SIGTERM/SIGINT handlers. `kelpid start` sets it; tests do not. */
     readonly installSignalHandlers?: boolean | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
     readonly onLog?: ((message: string) => void) | undefined;
@@ -249,7 +249,7 @@ export interface DaemonOptions {
 export interface DaemonInfo {
     readonly pid: number;
     readonly version: DaemonVersion;
-    /** The CLI-compat control socket (`nex` talks to this one). */
+    /** The CLI-compat control socket (`kelpi` talks to this one). */
     readonly socketPath: string;
     /** The protocol-versioned run-dir socket clients discover. */
     readonly runSocketPath: string;
@@ -263,7 +263,7 @@ export interface DaemonInfo {
     readonly runDir: string;
     /** How the persisted state came back (`ok` / `empty` / `unreadable`). */
     readonly loadStatus: 'ok' | 'empty' | 'unreadable';
-    /** Is state actually reaching the disk? Printed by `nexd start --foreground`. */
+    /** Is state actually reaching the disk? Printed by `kelpid start --foreground`. */
     readonly persistence: PersistenceHealth;
     readonly workspaces: number;
     readonly resumeTuples: number;
@@ -275,8 +275,8 @@ export interface Daemon {
     /** Resolves when the resume pipeline finished (and saves were un-gated). */
     readonly restored: Promise<ResumeOutcome>;
     readonly info: DaemonInfo | undefined;
-    readonly store: NexStore;
-    readonly pty: NexPtyManager;
+    readonly store: KelpiStore;
+    readonly pty: KelpiPtyManager;
     readonly term: TerminalStateServiceImpl;
     readonly input: TerminalInput;
     readonly persistence: SqlitePersistence;
@@ -284,7 +284,7 @@ export interface Daemon {
     persistenceHealth(): PersistenceHealth;
     /** M5: markdown/diff/scratchpad content, watchers and edit buffers. */
     readonly content: ContentService;
-    /** M8: the config-file settings authority (nex + ghostty), watched and write-through. */
+    /** M8: the config-file settings authority (kelpi + ghostty), watched and write-through. */
     readonly settings: SettingsService;
     /** M6: the web-pane runtime (host RPC seam, console buffers, picker arms). */
     readonly webPanes: WebPaneService;
@@ -378,13 +378,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     let ws: WsServer | undefined;
     // Every persistence failure is surfaced twice: `onError` for the log, `onDegraded` for the
     // things that must not be missed — a loud line, a client-visible event, and the flag `ping`
-    // and `nexd status` report. Silence here is the P0 this whole path exists to prevent.
+    // and `kelpid status` report. Silence here is the P0 this whole path exists to prevent.
     const persistence = createPersistence({
         path: dbPath,
         onError: (error, phase) => report(error, `persistence ${phase}`),
         onDegraded: (health) => {
             log(
-                `WARNING: nexd cannot save state — ${health.path}: ${health.error ?? 'unknown error'} (phase ${health.phase ?? 'open'}, ${String(health.failedSaves)} failed save(s)). Workspaces, panes and agent sessions created from here on will NOT survive a restart.`
+                `WARNING: kelpid cannot save state — ${health.path}: ${health.error ?? 'unknown error'} (phase ${health.phase ?? 'open'}, ${String(health.failedSaves)} failed save(s)). Workspaces, panes and agent sessions created from here on will NOT survive a restart.`
             );
             // `ws` may not exist yet (an open failure happens before the server is built); the
             // start-time gate below covers that window by refusing to start at all.
@@ -547,7 +547,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     /**
      * The footer's system-stat gauges (APP-078…085). The Swift app samples in the VIEW; a
      * browser tab cannot read host counters and two clients must not double-sample one
-     * machine, so the daemon samples once and broadcasts (`@nex/protocol` `ws/stats.ts`).
+     * machine, so the daemon samples once and broadcasts (`@kelpi/protocol` `ws/stats.ts`).
      *
      * The loop is gated on `show-system-stats` AND at least one attached client — AGNT-107's
      * "skipped entirely when the toggle is off", extended by the only honest translation of a
@@ -605,7 +605,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     const webPanes = createWebPaneService({
         store,
         paste: (paneID, text, pasteOptions) => {
-            // `nex web inspect --send-to`: a picked element lands in a shell pane's PTY, bare
+            // `kelpi web inspect --send-to`: a picked element lands in a shell pane's PTY, bare
             // unless the arm asked for `--submit` (web-pane.md §11.3).
             input.sendText(paneID, text, { bare: !pasteOptions.submit });
         },
@@ -663,10 +663,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     let runControl: ControlServer | undefined;
     let compatControl: ControlServer | undefined;
     /**
-     * Why the CLI-compat socket is not serving (typically: another Nex — the Swift app — owns
+     * Why the CLI-compat socket is not serving (typically: another Kelpi — the Swift app — owns
      * `/tmp/nex.sock`), or null while it is. A degraded compat socket never takes the daemon
      * down: panes reach it via their injected `NEX_SOCKET`, and this is what `ping` reports so
-     * `nex doctor` can say where plain-terminal commands are going instead.
+     * `kelpi doctor` can say where plain-terminal commands are going instead.
      */
     let compatDegraded: string | null = null;
     /** True when the compat path IS the run-dir path, so `runControl` owns the configured TCP. */
@@ -713,7 +713,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * that one carries what the FILE says, this one carries what the LISTENER did.
      */
     const applyTcpPortSetting = async (port: number): Promise<void> => {
-        // An env override (`NEXD_TCP_PORT`, or an explicit `tcpPort` option) OUTRANKS the config
+        // An env override (`KELPID_TCP_PORT`, or an explicit `tcpPort` option) OUTRANKS the config
         // file at boot — `resolveControlEndpoints` says so — and it has to keep outranking it
         // afterwards. Without this guard the first unrelated Settings write would read
         // `tcp-port = 0` out of the file and tear down a listener the operator asked for on the
@@ -774,7 +774,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
      * then finds nothing and binds cleanly.
      */
     /**
-     * The CLI-compat listener is best-effort: on a machine where another Nex (the Swift app)
+     * The CLI-compat listener is best-effort: on a machine where another Kelpi (the Swift app)
      * owns `/tmp/nex.sock`, refusing to boot would take every pane, hook and client down with
      * it — the one outcome worse than a missing convenience socket. The daemon stays fully
      * alive on its run-dir socket + pane-route TCP; the failure is remembered for `ping`,
@@ -1248,7 +1248,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             repoWatch.dispose();
             branchWatch.dispose();
             // §5 quit flush: unwind every graft session (2 s cap) so a clean quit never leaves
-            // a `nex-graft-active` breadcrumb behind — anything slower falls back to the
+            // a `kelpi-graft-active` breadcrumb behind — anything slower falls back to the
             // orphan-recovery banner on the next launch.
             try {
                 await graft.shutdown();
@@ -1263,7 +1263,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // A shutdown DURING the restore window deliberately writes nothing — the DB must
             // keep the session ids the resume never got to use (§6.1 step 5).
             //
-            // The result matters: `nexd stop` used to print a clean stop over a database that
+            // The result matters: `kelpid stop` used to print a clean stop over a database that
             // had never been written. A failed final flush is the LAST chance to say so.
             const flushed = persistence.flush();
             // Only meaningful for a daemon that actually served: a `start()` that REFUSED
@@ -1273,7 +1273,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             if (!flushed && served) {
                 const health = persistence.health();
                 log(
-                    `ERROR: nexd shut down WITHOUT saving state — ${health.path}: ${health.error ?? 'the database was never opened'}. Everything created in this session is lost.`
+                    `ERROR: kelpid shut down WITHOUT saving state — ${health.path}: ${health.error ?? 'the database was never opened'}. Everything created in this session is lost.`
                 );
             }
             // A spawn still waiting for a client's geometry must not start a shell into a
@@ -1281,7 +1281,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             // would be born a moment later) and the pane would outlive the process.
             spawnGate.close();
             await pty.killAll();
-            // The last-known pane grids are what the NEXT boot spawns at, so they have to
+            // The last-known pane grids are what the KELPIT boot spawns at, so they have to
             // survive this one (`pty/geometry.ts`); the write is debounced and may be pending.
             geometry.close();
             await Promise.all([
@@ -1292,7 +1292,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             persistence.close();
             // The token and the port file stay: both are stable across restarts by design.
             clearRunFiles(paths);
-            log(served && persistence.health().degraded ? 'nexd stopped (state NOT saved)' : 'nexd stopped');
+            log(served && persistence.health().degraded ? 'kelpid stopped (state NOT saved)' : 'kelpid stopped');
         })();
         return stopped;
     };
@@ -1307,7 +1307,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 }
                 void stop().then(
                     // A shutdown that could not write state is a failed shutdown, and the exit
-                    // code is the only thing a supervisor (or a `nexd start --foreground` in a
+                    // code is the only thing a supervisor (or a `kelpid start --foreground` in a
                     // terminal) ever reads.
                     () => process.exit(persistence.health().degraded ? 1 : 0),
                     () => process.exit(1)
@@ -1419,7 +1419,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         // server's TCP port. That listener is always on — the configured `tcp-port` when this
         // path IS the compat path, an ephemeral loopback port otherwise — because `tcp:` is
         // the only NEX_SOCKET form both CLIs honor (anything else silently falls back to the
-        // shared `/tmp/nex.sock`, which may belong to another Nex entirely). A busy RUN-DIR
+        // shared `/tmp/nex.sock`, which may belong to another Kelpi entirely). A busy RUN-DIR
         // socket stays fatal: that is the "a daemon of this protocol is already running" case
         // the discover-or-spawn flow depends on.
         runControl = createControlServer({
@@ -1446,7 +1446,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 ...(endpoints.tcpPort !== undefined ? { tcpPort: endpoints.tcpPort } : {}),
                 ...(onError !== undefined ? { onError } : {})
             });
-            // Best-effort by design: another Nex owning `/tmp/nex.sock` degrades this socket,
+            // Best-effort by design: another Kelpi owning `/tmp/nex.sock` degrades this socket,
             // it does not take the daemon down (`startCompat`).
             await startCompat(compatControl);
         }
@@ -1552,7 +1552,7 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             resumeTuples: loaded.tuples.length
         };
         log(
-            `nexd listening: control ${compatDegraded === null ? info.socketPath : `${paths.socket} (compat ${info.socketPath} degraded)`}, ` +
+            `kelpid listening: control ${compatDegraded === null ? info.socketPath : `${paths.socket} (compat ${info.socketPath} degraded)`}, ` +
                 `pane route ${paneRouteValue() ?? 'none'}, http ${info.url}`
         );
         return info;

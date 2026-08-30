@@ -36,7 +36,7 @@ interface Fixture {
 const dirs: string[] = [];
 
 function fixture(options: { fileBody?: string; watch?: boolean } = {}): Fixture {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-content-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-content-'));
     dirs.push(dir);
     const file = path.join(dir, 'note.md');
     fs.writeFileSync(file, options.fileBody ?? '# Title\n\nbody\n');
@@ -494,7 +494,7 @@ describe('diff panes: cancellation and rescoping', () => {
     }
 
     function slowFixture(): SlowFixture {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-content-slow-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-content-slow-'));
         dirs.push(dir);
         const store = harness(seededState(W1, SHELL));
         const calls: PendingDiff[] = [];
@@ -686,12 +686,12 @@ describe('assetPath', () => {
 
     it('rejects traversal, absolute paths, NUL bytes and directories', async () => {
         const f = fixture();
-        const outside = path.join(f.dir, '..', 'nex-content-outside.txt');
+        const outside = path.join(f.dir, '..', 'kelpi-content-outside.txt');
         fs.writeFileSync(outside, 'secret');
         try {
             openMarkdown(f);
-            expect(f.service.assetPath(MD, '../nex-content-outside.txt')).toBeNull();
-            expect(f.service.assetPath(MD, 'img/../../nex-content-outside.txt')).toBeNull();
+            expect(f.service.assetPath(MD, '../kelpi-content-outside.txt')).toBeNull();
+            expect(f.service.assetPath(MD, 'img/../../kelpi-content-outside.txt')).toBeNull();
             expect(f.service.assetPath(MD, '/etc/passwd')).toBeNull();
             expect(f.service.assetPath(MD, 'a\0b')).toBeNull();
             expect(f.service.assetPath(MD, '')).toBeNull();
@@ -704,7 +704,7 @@ describe('assetPath', () => {
 
     it('rejects a symlink that escapes the file directory', async () => {
         const f = fixture();
-        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-outside-'));
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-outside-'));
         dirs.push(outsideDir);
         const secret = path.join(outsideDir, 'secret.txt');
         fs.writeFileSync(secret, 'secret');

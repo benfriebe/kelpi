@@ -17,7 +17,7 @@ import {
 const roots: string[] = [];
 
 function tmpRepo(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-graft-crumb-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-graft-crumb-'));
     roots.push(dir);
     fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
     return dir;
@@ -137,7 +137,7 @@ describe('decodeBreadcrumb tolerance', () => {
 });
 
 describe('file IO', () => {
-    it('writes to <root>/.git/nex-graft-active and round-trips', () => {
+    it('writes to <root>/.git/kelpi-graft-active and round-trips', () => {
         const repo = tmpRepo();
         expect(breadcrumbPath(repo)).toBe(path.join(repo, '.git', BREADCRUMB_FILENAME));
         writeBreadcrumb(repo, CRUMB);

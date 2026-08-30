@@ -6,7 +6,7 @@
  * port is the *contract*, not the Carbon call:
  *
  *   - the trigger is read from the shared config file (`global-hotkey = ctrl+alt+space`),
- *     parsed by the same `@nex/core/config` parser the daemon and the old Swift app use, so
+ *     parsed by the same `@kelpi/core/config` parser the daemon and the old Swift app use, so
  *     the file stays hand-editable and compatible;
  *   - `global-hotkey-hide-on-repress` (default true) makes a second press HIDE the app when
  *     it is already frontmost, instead of re-raising it (§8.2);
@@ -14,7 +14,7 @@
  *     the previous one is only dropped once the OS accepted it, so a rejected hotkey never
  *     costs the user their working one.
  *
- * `NEXD_CONFIG_PATH` is honoured exactly as the daemon honours it (`daemon/src/boot/config.ts`)
+ * `KELPID_CONFIG_PATH` is honoured exactly as the daemon honours it (`daemon/src/boot/config.ts`)
  * so a test/dev shell never reads the developer's real config.
  *
  * This module is pure (fs + string translation only); `./main.ts` owns `globalShortcut`.
@@ -30,12 +30,12 @@ import {
     keyTriggerConfigString,
     parseGeneralSettings,
     type KeyTrigger
-} from '@nex/core/config';
-import { expandTilde } from '@nex/daemon/lifecycle';
+} from '@kelpi/core/config';
+import { expandTilde } from '@kelpi/daemon/lifecycle';
 
-export const CONFIG_PATH_ENV = 'NEXD_CONFIG_PATH';
+export const CONFIG_PATH_ENV = 'KELPID_CONFIG_PATH';
 
-/** `~/.config/nex/config`, or `NEXD_CONFIG_PATH`. Never creates anything. */
+/** `~/.config/nex/config`, or `KELPID_CONFIG_PATH`. Never creates anything. */
 export function resolveConfigPath(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
     const override = env[CONFIG_PATH_ENV]?.trim();
     if (override !== undefined && override.length > 0) return path.resolve(expandTilde(override, home));

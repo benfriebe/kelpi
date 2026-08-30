@@ -8,14 +8,14 @@
  * dispatcher is silent (a ⌘D behind the sheet must not split a pane).
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from '../App';
 import { createFakeSocketFactory, type FakeWebSocket } from '../connection';
-import { createNexRuntime, createNexStore } from '../state';
+import { createKelpiRuntime, createKelpiStore } from '../state';
 import { createFakeRendererFactory } from '../terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -64,11 +64,11 @@ interface Harness {
 
 function setup(input: SettingsInput = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,
@@ -404,7 +404,7 @@ describe('the other tabs on the wire', () => {
         ]);
     });
 
-    /** SET-024: a preset is a nex-config write and must not touch the ghostty file at all. */
+    /** SET-024: a preset is a kelpi-config write and must not touch the ghostty file at all. */
     it('applies a chrome preset through set-general-setting only', () => {
         const h = setup();
         openTab('appearance');
@@ -417,7 +417,7 @@ describe('the other tabs on the wire', () => {
         expect(sent(h, 'set-ghostty-setting')).toEqual([]);
     });
 
-    /** SET-081: the recorder writes `global-hotkey` into the nex config like any other key. */
+    /** SET-081: the recorder writes `global-hotkey` into the kelpi config like any other key. */
     it('records a global hotkey from the Keybindings tab', () => {
         const h = setup();
         openTab('keybindings');

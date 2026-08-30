@@ -33,8 +33,8 @@ function richSnapshot(): PersistedSnapshot {
         workspaces: [
             {
                 id: W1,
-                name: 'nex',
-                slug: 'nex-a4e8a251',
+                name: 'kelpi',
+                slug: 'kelpi-a4e8a251',
                 color: 'purple',
                 icon: { kind: 'system', name: 'star.fill' },
                 profileName: 'work',
@@ -60,7 +60,7 @@ function richSnapshot(): PersistedSnapshot {
                         id: P_SHELL,
                         label: 'coordinator',
                         type: 'shell',
-                        workingDirectory: '/Users/test/code/nex',
+                        workingDirectory: '/Users/test/code/kelpi',
                         createdAt: 1_755_500_000,
                         lastActivityAt: 1_755_500_800,
                         agentSessionID: 'f0e1d2c3-session',
@@ -76,13 +76,13 @@ function richSnapshot(): PersistedSnapshot {
                         id: P_MARKDOWN,
                         label: null,
                         type: 'markdown',
-                        workingDirectory: '/Users/test/code/nex',
+                        workingDirectory: '/Users/test/code/kelpi',
                         createdAt: 1_755_500_100,
                         lastActivityAt: 1_755_500_100,
                         agentSessionID: null,
                         agentKind: null,
                         status: 'idle',
-                        filePath: '/Users/test/code/nex/PLAN.md',
+                        filePath: '/Users/test/code/kelpi/PLAN.md',
                         scratchpadContent: null,
                         webTabs: null,
                         webActiveTabID: null,
@@ -109,7 +109,7 @@ function richSnapshot(): PersistedSnapshot {
                     {
                         id: A1,
                         repoID: R1,
-                        worktreePath: '/Users/test/code/nex',
+                        worktreePath: '/Users/test/code/kelpi',
                         branchName: 'main',
                         isAutoDetected: true
                     }
@@ -167,7 +167,7 @@ function richSnapshot(): PersistedSnapshot {
                         id: P_DIFF,
                         label: null,
                         type: 'diff',
-                        workingDirectory: '/Users/test/code/nex',
+                        workingDirectory: '/Users/test/code/kelpi',
                         createdAt: 1_755_400_200,
                         lastActivityAt: 1_755_400_200,
                         agentSessionID: null,
@@ -202,9 +202,9 @@ function richSnapshot(): PersistedSnapshot {
         repos: [
             {
                 id: R1,
-                path: '/Users/test/code/nex',
-                name: 'nex',
-                remoteURL: 'https://github.com/user/nex.git',
+                path: '/Users/test/code/kelpi',
+                name: 'kelpi',
+                remoteURL: 'https://github.com/user/kelpi.git',
                 lastAccessedAt: 1_755_200_000.75,
                 isAutoDiscovered: true
             }
@@ -227,7 +227,7 @@ let tempDir = '';
 let persistence: SqlitePersistence | null = null;
 
 beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-db-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-db-'));
 });
 
 afterEach(() => {
@@ -260,8 +260,8 @@ describe('save → load round trip', () => {
             workspaces: [
                 makeWorkspaceState({
                     id: W1,
-                    name: 'nex',
-                    slug: 'nex-a4e8a251',
+                    name: 'kelpi',
+                    slug: 'kelpi-a4e8a251',
                     color: 'blue',
                     createdAt: 1_755_500_000,
                     layout: { kind: 'leaf', paneID: P_SHELL },
@@ -565,7 +565,7 @@ describe('debounce + flush (§5.2)', () => {
         vi.advanceTimersByTime(SAVE_DEBOUNCE_MS - 1);
         expect(workspaceNames(file)).toEqual([]);
         vi.advanceTimersByTime(1);
-        expect(workspaceNames(file)).toEqual(['nex', 'web']);
+        expect(workspaceNames(file)).toEqual(['kelpi', 'web']);
     });
 
     it('flush() writes the pending snapshot synchronously (SIGTERM path)', () => {
@@ -575,12 +575,12 @@ describe('debounce + flush (§5.2)', () => {
 
         store.scheduleSave(richSnapshot());
         store.flush();
-        expect(workspaceNames(file)).toEqual(['nex', 'web']);
+        expect(workspaceNames(file)).toEqual(['kelpi', 'web']);
         expect(store.hasPendingSave()).toBe(false);
 
         // The cancelled timer must not fire a second write.
         vi.advanceTimersByTime(SAVE_DEBOUNCE_MS * 2);
-        expect(workspaceNames(file)).toEqual(['nex', 'web']);
+        expect(workspaceNames(file)).toEqual(['kelpi', 'web']);
     });
 
     it('flush() with nothing pending is a no-op', () => {
@@ -596,7 +596,7 @@ describe('debounce + flush (§5.2)', () => {
         const store = createPersistence({ path: file });
         store.scheduleSave(richSnapshot());
         store.close();
-        expect(workspaceNames(file)).toEqual(['nex', 'web']);
+        expect(workspaceNames(file)).toEqual(['kelpi', 'web']);
 
         store.scheduleSave(richSnapshot());
         expect(store.hasPendingSave()).toBe(false);
@@ -614,7 +614,7 @@ describe('unknown tables, columns and appState keys are preserved', () => {
             CREATE TABLE "scheduledTask" ("id" TEXT PRIMARY KEY NOT NULL, "name" TEXT NOT NULL, "workspaceName" TEXT NOT NULL);
             CREATE TABLE "workspaceFolder" ("id" TEXT PRIMARY KEY NOT NULL, "name" TEXT NOT NULL);
         `);
-        seed.run('INSERT INTO "scheduledTask" ("id","name","workspaceName") VALUES (?,?,?)', 'T1', 'nightly', 'nex');
+        seed.run('INSERT INTO "scheduledTask" ("id","name","workspaceName") VALUES (?,?,?)', 'T1', 'nightly', 'kelpi');
         seed.run('INSERT INTO "workspaceFolder" ("id","name") VALUES (?,?)', 'F1', 'archive');
         // The live schema carries this extra column on `workspace`.
         seed.exec('ALTER TABLE "workspace" ADD COLUMN "folderID" TEXT REFERENCES "workspaceFolder"("id") ON DELETE SET NULL');

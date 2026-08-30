@@ -1,5 +1,5 @@
 /**
- * The control transport: the newline-JSON `{"command":…}` protocol the existing `nex` CLI
+ * The control transport: the newline-JSON `{"command":…}` protocol the existing `kelpi` CLI
  * and the agent hooks speak (wire-protocol.md §1–§4).
  *
  * Per connection: buffer bytes until `\n` (port note 2 — the Swift server reads 4096-byte
@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import net, { type AddressInfo, type ListenOptions, type Server, type Socket } from 'node:net';
 import path from 'node:path';
 
-import { createLineBuffer, dispatchSequence, errorReply, isReplyCommand, parseWireLine, type SynthesizedSessionStart, type WireMessage } from '@nex/protocol';
+import { createLineBuffer, dispatchSequence, errorReply, isReplyCommand, parseWireLine, type SynthesizedSessionStart, type WireMessage } from '@kelpi/protocol';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
 import { probeControlPing } from './probe.js';
@@ -82,7 +82,7 @@ export interface ControlServer {
      * §AGNT-003: drop ONLY the TCP listener, leaving the Unix socket serving.
      *
      * The asymmetry is the point — a `tcp-port` change must never take the transport every
-     * local `nex` command, hook and client depends on offline for the duration of a rebind.
+     * local `kelpi` command, hook and client depends on offline for the duration of a rebind.
      * Idempotent, and a no-op when TCP was never configured.
      *
      * Resolves as soon as the listening handle is down: connections already accepted on that
@@ -332,9 +332,9 @@ export function createControlServer(options: ControlServerOptions): ControlServe
      *
      * A port already in use is NOT fatal. It used to tear the Unix socket down and abort
      * `start()`, which meant one `tcp-port = 19400` left over from a dev container took the
-     * whole daemon with it — every `nex` command, every hook, every client. The Swift app kept
+     * whole daemon with it — every `kelpi` command, every hook, every client. The Swift app kept
      * serving its Unix socket and raised `tcpPortStartFailed` for the Settings pane to show, and
-     * so does this: the failure is recorded on `tcpStatus`, `ping` reports it, `nexd status`
+     * so does this: the failure is recorded on `tcpStatus`, `ping` reports it, `kelpid status`
      * prints it, and Settings ▸ Network says which port is unavailable and why.
      */
     const bindTcp = async (port: number | undefined): Promise<void> => {

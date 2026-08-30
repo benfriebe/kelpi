@@ -11,14 +11,14 @@
  * fake renderer, same `push()` for the live edit.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { DEFAULT_TERMINAL_THEME } from './terminal';
 import { createFakeRendererFactory } from './terminal/testing';
 
@@ -84,7 +84,7 @@ function settingsPayload(input: ThemeInput = {}): Record<string, unknown> {
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     readonly renderers: ReturnType<typeof createFakeRendererFactory>;
     socket(): FakeWebSocket;
     push(input: ThemeInput): void;
@@ -92,8 +92,8 @@ interface Harness {
 
 function setup(input: ThemeInput = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -131,7 +131,7 @@ function setup(input: ThemeInput = {}): Harness {
 
 /** The provider's own div — `applyToDocument` stamps `<html>` too, so it is named explicitly. */
 function themeRoot(): HTMLElement {
-    const element = document.querySelector('div[data-nex-theme]');
+    const element = document.querySelector('div[data-kelpi-theme]');
     if (element === null) throw new Error('no theme container rendered');
     return element as HTMLElement;
 }
@@ -159,13 +159,13 @@ describe('a resolved terminal theme reaches the panes', () => {
         expect(theme['brightWhite']).toBe(DEFAULT_TERMINAL_THEME.brightWhite);
     });
 
-    it('publishes the palette as --nex-term-* on the theme container', () => {
+    it('publishes the palette as --kelpi-term-* on the theme container', () => {
         setup({ name: 'Nord', palette: NORD_PALETTE, backgroundColor: '#2e3440' });
         const style = themeRoot().style;
-        expect(style.getPropertyValue('--nex-term-fg')).toBe('#d8dee9');
-        expect(style.getPropertyValue('--nex-term-red')).toBe('#bf616a');
+        expect(style.getPropertyValue('--kelpi-term-fg')).toBe('#d8dee9');
+        expect(style.getPropertyValue('--kelpi-term-red')).toBe('#bf616a');
         // The pane FILL stays the background at the ghostty opacity (§APP-012), not the raw hex.
-        expect(style.getPropertyValue('--nex-term-bg')).toContain('46, 52, 64');
+        expect(style.getPropertyValue('--kelpi-term-bg')).toContain('46, 52, 64');
     });
 
     it('re-themes a pane that is ALREADY on screen when the config changes', () => {
@@ -176,7 +176,7 @@ describe('a resolved terminal theme reaches the panes', () => {
         h.push({ name: 'Nord', palette: NORD_PALETTE, backgroundColor: '#2e3440' });
         const after = appliedTheme(h);
         expect(after['foreground']).toBe('#d8dee9');
-        expect(themeRoot().style.getPropertyValue('--nex-term-fg')).toBe('#d8dee9');
+        expect(themeRoot().style.getPropertyValue('--kelpi-term-fg')).toBe('#d8dee9');
         // One renderer throughout: the pane was re-themed, not rebuilt.
         expect(h.renderers.instances).toHaveLength(1);
         expect(h.renderers.last().disposed).toBe(false);
@@ -187,7 +187,7 @@ describe('a resolved terminal theme reaches the panes', () => {
         expect(appliedTheme(h)['foreground']).toBe('#d8dee9');
         h.push({});
         expect(appliedTheme(h)['foreground']).toBe(DEFAULT_TERMINAL_THEME.foreground);
-        expect(themeRoot().style.getPropertyValue('--nex-term-fg')).toBe('');
+        expect(themeRoot().style.getPropertyValue('--kelpi-term-fg')).toBe('');
     });
 
     it('keeps the preset — and changes nothing — when the name does not resolve', () => {
@@ -195,7 +195,7 @@ describe('a resolved terminal theme reaches the panes', () => {
         const theme = appliedTheme(h);
         expect(theme['foreground']).toBe(DEFAULT_TERMINAL_THEME.foreground);
         expect(String(theme['background']).toLowerCase()).toBe('#0a0a0c');
-        expect(themeRoot().style.getPropertyValue('--nex-term-fg')).toBe('');
+        expect(themeRoot().style.getPropertyValue('--kelpi-term-fg')).toBe('');
     });
 
     it('is unbothered by a daemon that never sends the field at all', () => {

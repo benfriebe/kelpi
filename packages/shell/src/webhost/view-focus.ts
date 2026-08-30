@@ -62,7 +62,7 @@
  * `NSClickGestureRecognizer` recognises a **primary-button click and nothing else** — typing
  * into a `WKWebView` moves no ring in the shipped app. So `mouseDown` is the whole gesture set
  * here: keyboard input is deliberately NOT presence. Adding it would be a port-only behaviour,
- * and it would fire on an agent's `nex web` typing as readily as on a user's.
+ * and it would fire on an agent's `kelpi web` typing as readily as on a user's.
  *
  * ## No swallow window, deliberately
  *
@@ -76,7 +76,7 @@
 import { log } from '../log.js';
 
 /**
- * Env-gated trace of the RAW signals, ahead of every guard (`NEX_WEB_FOCUS_TRACE=1`).
+ * Env-gated trace of the RAW signals, ahead of every guard (`KELPI_WEB_FOCUS_TRACE=1`).
  *
  * This exists because of how the first N29 fix failed. It keyed on `focus`, passed every
  * automated check, and still did nothing under the owner's finger — and no instrument anywhere
@@ -85,7 +85,7 @@ import { log } from '../log.js';
  * trace ahead of the guards makes the raw arrival a fact rather than an inference.
  */
 export function traceFocus(message: string): void {
-    if (process.env['NEX_WEB_FOCUS_TRACE'] !== '1') return;
+    if (process.env['KELPI_WEB_FOCUS_TRACE'] !== '1') return;
     // Through `log`, not `process.stdout` directly: a shell launched by a harness whose reader
     // dies would otherwise take an uncaught EPIPE, which is the exact failure `log.ts` exists to
     // swallow. A diagnostic must never be able to bring down the app it is diagnosing.

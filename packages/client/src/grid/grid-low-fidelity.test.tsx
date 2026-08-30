@@ -57,8 +57,8 @@ describe('pane search overlay — LOW-POLISH', () => {
      */
     it('sets the field into the bar rather than punching it through', () => {
         const { input } = renderBar();
-        expect(input.style.background).toBe('color-mix(in srgb, var(--nex-fg, #E6E6EA) 8%, transparent)');
-        expect(input.style.background).not.toContain('--nex-surface-bg');
+        expect(input.style.background).toBe('color-mix(in srgb, var(--kelpi-fg, #E6E6EA) 8%, transparent)');
+        expect(input.style.background).not.toContain('--kelpi-surface-bg');
         expect(input.style.borderRadius).toBe('5px');
         expect(input.style.paddingTop).toBe('5px');
         expect(input.style.paddingBottom).toBe('5px');
@@ -216,12 +216,12 @@ describe('pane header — LOW-POLISH', () => {
         );
         const zoom = screen.getByTestId('pane-zoom-badge-a');
         const sync = screen.getByTestId('pane-sync-badge-a');
-        expect(zoom.style.color).toBe('var(--nex-orange, #D08237)');
+        expect(zoom.style.color).toBe('var(--kelpi-orange, #D08237)');
         expect(sync.style.color).toBe(zoom.style.color);
-        // The hard-coded hex is gone, and so is the collision with `--nex-agent`.
+        // The hard-coded hex is gone, and so is the collision with `--kelpi-agent`.
         expect(zoom.getAttribute('style')).not.toContain('#D08237;');
-        expect(sync.style.color).not.toContain('--nex-agent');
-        expect(screen.getByTestId('pane-agent-badge-a').style.color).toContain('--nex-agent');
+        expect(sync.style.color).not.toContain('--kelpi-agent');
+        expect(screen.getByTestId('pane-agent-badge-a').style.color).toContain('--kelpi-agent');
     });
 
     /**
@@ -260,7 +260,7 @@ describe('pane header — LOW-POLISH', () => {
     it('shows no tooltip on the truncated path', () => {
         render(
             <PaneHeader
-                pane={testPane('a', { workingDirectory: '/Users/ben/code/nex/packages/client/src/grid' })}
+                pane={testPane('a', { workingDirectory: '/Users/ben/code/kelpi/packages/client/src/grid' })}
                 focused
                 homeDirectory="/Users/ben"
             />

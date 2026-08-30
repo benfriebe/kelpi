@@ -7,9 +7,9 @@
  * failure is silent because there is nobody to tell.
  */
 
-import { epochSecondsFromUnixMillis, workspaceSidebarID } from '@nex/core/codec';
-import { currentPaneShare, dropZoneForWireEdge, enclosingSplitPath, resizePaneShare } from '@nex/core/layout';
-import { makeSlug, resolvePaneInWorkspace, resolveWorkspaceLenient } from '@nex/core/resolve';
+import { epochSecondsFromUnixMillis, workspaceSidebarID } from '@kelpi/core/codec';
+import { currentPaneShare, dropZoneForWireEdge, enclosingSplitPath, resizePaneShare } from '@kelpi/core/layout';
+import { makeSlug, resolvePaneInWorkspace, resolveWorkspaceLenient } from '@kelpi/core/resolve';
 
 import type { CommandHandler } from '../../seams.js';
 import {

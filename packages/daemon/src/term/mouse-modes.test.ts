@@ -171,8 +171,8 @@ describe('TerminalStateServiceImpl — OSC 0 / OSC 2 titles (§TERM-147)', () =>
         const titles: string[] = [];
         const service = makeService({ onTitleChange: (_, title) => titles.push(title) });
         service.attach('p', 20, 5);
-        await write(service, 'p', '\x1b]2;zsh — nex\x1b\\');
-        expect(titles).toEqual(['zsh — nex']);
+        await write(service, 'p', '\x1b]2;zsh — kelpi\x1b\\');
+        expect(titles).toEqual(['zsh — kelpi']);
     });
 
     it('reports a cleared title as the empty string (the caller decides what null means)', async () => {

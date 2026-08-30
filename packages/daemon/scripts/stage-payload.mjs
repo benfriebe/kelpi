@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
  * Stage the daemon's *runtime payload* — everything a packaged app has to carry so that a
- * detached `nexd` can run from inside an application bundle instead of from the workspace.
+ * detached `kelpid` can run from inside an application bundle instead of from the workspace.
  *
- * `scripts/bundle.mjs` produces one file (`dist/nexd.js`) plus one unbundled native module
+ * `scripts/bundle.mjs` produces one file (`dist/kelpid.js`) plus one unbundled native module
  * (node-pty, which cannot be inlined). This script lays those two things out in the shape the
  * shell's packaged lookup expects, so the Electron package step only has to copy one directory
  * into `Contents/Resources/daemon`:
  *
  *     <outDir>/
- *     ├─ nexd.js                                    the esbuild bundle (mode 0755)
- *     ├─ nexd.js.map                                its sourcemap (stack traces from a shipped app)
+ *     ├─ kelpid.js                                    the esbuild bundle (mode 0755)
+ *     ├─ kelpid.js.map                                its sourcemap (stack traces from a shipped app)
  *     ├─ payload.json                               manifest: what was staged, and from where
  *     └─ node_modules/
  *        └─ node-pty/
@@ -21,10 +21,10 @@
  *
  * ## Why exactly that layout (the resolution chain, verified against node-pty 1.1.0)
  *
- * 1. `dist/nexd.js` is an ES module whose banner builds `require` from
+ * 1. `dist/kelpid.js` is an ES module whose banner builds `require` from
  *    `createRequire(import.meta.url)`; `src/pty/spawner.ts` calls `require('node-pty')` lazily
  *    on first spawn. CJS resolution walks up from the *importing file*, so from
- *    `<outDir>/nexd.js` the first candidate is `<outDir>/node_modules/node-pty` — which is why
+ *    `<outDir>/kelpid.js` the first candidate is `<outDir>/node_modules/node-pty` — which is why
  *    `node_modules/` sits beside the bundle rather than anywhere else.
  * 2. node-pty's `lib/utils.js` `loadNativeModule('pty')` walks `build/Release`, `build/Debug`,
  *    `prebuilds/${process.platform}-${process.arch}` — each tried relative to `lib/`'s parent
@@ -45,10 +45,10 @@
  * or programmatically (this is what the shell's Forge config does, via a child process, so the
  * ESM/CJS boundary between the two packages never has to be crossed):
  *
- *     import { stageDaemonPayload } from '@nex/daemon/scripts/stage-payload.mjs';
+ *     import { stageDaemonPayload } from '@kelpi/daemon/scripts/stage-payload.mjs';
  *
- * It refuses to run when `dist/nexd.js` is missing — build the bundle first
- * (`pnpm --filter @nex/daemon build`), because a payload staged from a stale or absent bundle
+ * It refuses to run when `dist/kelpid.js` is missing — build the bundle first
+ * (`pnpm --filter @kelpi/daemon build`), because a payload staged from a stale or absent bundle
  * is the kind of thing that only shows up as a broken app three steps later.
  */
 
@@ -61,8 +61,8 @@ const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /** The bundle + sourcemap `scripts/bundle.mjs` writes. */
-export const BUNDLE_NAME = 'nexd.js';
-export const SOURCEMAP_NAME = 'nexd.js.map';
+export const BUNDLE_NAME = 'kelpid.js';
+export const SOURCEMAP_NAME = 'kelpid.js.map';
 /** Written next to the payload so a packaged app can be inspected without guessing. */
 export const MANIFEST_NAME = 'payload.json';
 
@@ -180,7 +180,7 @@ export function stageDaemonPayload({
     const bundle = path.join(distDir, BUNDLE_NAME);
     if (!existsSync(bundle)) {
         throw new Error(
-            `daemon bundle not found at ${bundle} — run \`pnpm --filter @nex/daemon build\` before staging the payload`
+            `daemon bundle not found at ${bundle} — run \`pnpm --filter @kelpi/daemon build\` before staging the payload`
         );
     }
 
@@ -207,7 +207,7 @@ export function stageDaemonPayload({
             // app bundle (the absolute build-machine paths would be noise).
             native_module: path.relative(target, nodePty.nativeModule),
             spawn_helper: path.relative(target, nodePty.spawnHelper),
-            resolved_from: 'require("node-pty") in nexd.js → <payload>/node_modules/node-pty'
+            resolved_from: 'require("node-pty") in kelpid.js → <payload>/node_modules/node-pty'
         }
     };
     writeFileSync(path.join(target, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -251,10 +251,10 @@ const USAGE = `stage-payload — lay out the daemon's runtime payload for packag
 
   node scripts/stage-payload.mjs --out <dir> [--platform darwin] [--arch arm64] [--no-clean]
 
-Writes <dir>/nexd.js (+ .map), <dir>/node_modules/node-pty (JS + the one prebuild that
+Writes <dir>/kelpid.js (+ .map), <dir>/node_modules/node-pty (JS + the one prebuild that
 platform/arch needs) and <dir>/payload.json. Build the bundle first:
 
-  pnpm --filter @nex/daemon build
+  pnpm --filter @kelpi/daemon build
 `;
 
 const invokedDirectly = process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -269,7 +269,7 @@ if (invokedDirectly) {
         const manifest = stageDaemonPayload(options);
         process.stdout.write(
             `staged daemon payload → ${manifest.dir}\n` +
-                `  nexd.js         ${String(manifest.entry_bytes)} bytes${manifest.sourcemap ? ' (+ sourcemap)' : ''}\n` +
+                `  kelpid.js         ${String(manifest.entry_bytes)} bytes${manifest.sourcemap ? ' (+ sourcemap)' : ''}\n` +
                 `  node-pty        ${manifest.node_pty.version ?? '?'} — ${manifest.node_pty.native_module}\n`
         );
     } catch (error) {

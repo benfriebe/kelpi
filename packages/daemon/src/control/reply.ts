@@ -17,7 +17,7 @@
 
 import type { Socket } from 'node:net';
 
-import { serializeReply } from '@nex/protocol';
+import { serializeReply } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../seams.js';
 

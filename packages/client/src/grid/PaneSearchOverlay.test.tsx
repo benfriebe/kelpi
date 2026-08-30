@@ -136,7 +136,7 @@ describe('PaneSearchOverlay', () => {
      * exactly what a user of the shipped app has in their fingers, so the glyph is asserted
      * against the action rather than against the intuition.
      */
-    it('puts NEXT under the up chevron and PREVIOUS under the down one, in that order', () => {
+    it('puts KELPIT under the up chevron and PREVIOUS under the down one, in that order', () => {
         const handlers = setup();
         fireEvent.change(screen.getByTestId(`pane-search-input-${PANE}`), { target: { value: 'x' } });
 
@@ -174,7 +174,7 @@ describe('PaneSearchOverlay', () => {
     it('draws the field in 12 px monospace, with the body’s leading, past the global input reset', () => {
         setup();
         const input = screen.getByTestId(`pane-search-input-${PANE}`) as HTMLInputElement;
-        expect(input.style.fontFamily).toContain('--nex-font-mono');
+        expect(input.style.fontFamily).toContain('--kelpi-font-mono');
         expect(input.style.fontSize).toBe('12px');
         expect(input.className).not.toContain('leading-none');
     });

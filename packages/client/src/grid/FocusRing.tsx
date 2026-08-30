@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, type ReactElement } from 'react';
 
-import type { PaneStatus } from '@nex/core/layout';
+import type { PaneStatus } from '@kelpi/core/layout';
 
 import { tokens } from './tokens';
 

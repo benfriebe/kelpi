@@ -17,7 +17,7 @@
  * The shipped macOS app honours OSC 52 **unconditionally and in both directions**:
  * `GhosttyApp.swift:114-123` clears the general pasteboard and sets the string for every write
  * ghostty raises, and `confirm_read_clipboard_cb` (`:106-112`) auto-confirms every read
- * ("Nex never shows a paste-confirmation dialog", terminal-surface.md §12.2). ghostty's own
+ * ("Kelpi never shows a paste-confirmation dialog", terminal-surface.md §12.2). ghostty's own
  * defaults are `clipboard-write = allow` / `clipboard-read = ask`, and the Swift app answers the
  * ask with yes.
  *

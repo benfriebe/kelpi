@@ -20,7 +20,7 @@
  * carried by `pane-upserted` so notification/indicator consumers can subscribe narrowly.
  */
 
-import type { Pane } from '@nex/core/layout';
+import type { Pane } from '@kelpi/core/layout';
 import { syncedPaneIDs } from './derived.js';
 import type {
     DaemonState,

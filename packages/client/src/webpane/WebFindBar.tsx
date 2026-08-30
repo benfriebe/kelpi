@@ -176,7 +176,7 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
                         // Face and size INLINE, for the reason the terminal bar states: inline is
                         // the authority for the value, and it stays so now that S1/S17 has moved
                         // `input { font: inherit }` into `@layer base` and the classes also land.
-                        fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                        fontFamily: 'var(--kelpi-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
                         fontSize: 12,
                         paddingRight: count === null ? undefined : `${String(count.length * 7 + 12)}px`
                     }}
@@ -199,7 +199,7 @@ export function WebFindBar(props: WebFindBarProps): ReactElement {
                 )}
             </div>
             {/*
-              * Up is NEXT, down is PREVIOUS, matching `PaneSearchOverlay.swift:48-66` (the
+              * Up is KELPIT, down is PREVIOUS, matching `PaneSearchOverlay.swift:48-66` (the
               * shipped app draws ONE find bar for terminal, markdown and web panes, and that is
               * how its chevrons are wired). The port's terminal bar follows the same order, so
               * the two find surfaces step the same way under the same glyph.

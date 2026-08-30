@@ -11,7 +11,7 @@
  * millisecond-magnitude input outright.
  */
 
-export type EpochSeconds = number & { readonly __brand: 'nex.EpochSeconds' };
+export type EpochSeconds = number & { readonly __brand: 'kelpi.EpochSeconds' };
 
 /**
  * Any |value| at or above this in SECONDS lands past the year 5138 — in practice it is a

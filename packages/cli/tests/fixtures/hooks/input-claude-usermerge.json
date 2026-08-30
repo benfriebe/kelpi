@@ -27,7 +27,7 @@
           },
           {
             "type": "command",
-            "command": "notify.sh && nex event stop"
+            "command": "notify.sh && kelpi event stop"
           }
         ]
       }

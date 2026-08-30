@@ -1,8 +1,8 @@
 /**
- * The `nexd` CLI surface: argument parsing, and the three verbs against a run directory that
+ * The `kelpid` CLI surface: argument parsing, and the three verbs against a run directory that
  * really does (or does not) have a daemon in it.
  *
- * `nexd stop` is deliberately NOT exercised against the in-process daemon: the daemon's pid
+ * `kelpid stop` is deliberately NOT exercised against the in-process daemon: the daemon's pid
  * IS the test runner's pid, so the SIGTERM would kill vitest. Its parsing and its
  * "not running" branch are covered instead.
  */
@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from './boot/index.js';
 import { openSqliteDatabase } from './db/index.js';
-import { helpText, parseNexdArgs, resolveEntry, runNexd, type CliIO } from './main.js';
+import { helpText, parseKelpidArgs, resolveEntry, runKelpid, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
 
@@ -26,14 +26,14 @@ afterEach(async () => {
 });
 
 function scratch(): { root: string; runDir: string; socketPath: string; dbPath: string; home: string; configPath: string } {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-cli-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-cli-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -59,70 +59,70 @@ function io(env: NodeJS.ProcessEnv = {}): Captured {
     };
 }
 
-describe('parseNexdArgs', () => {
+describe('parseKelpidArgs', () => {
     it('defaults to help and recognises the verbs', () => {
-        expect(parseNexdArgs([]).command).toBe('help');
-        expect(parseNexdArgs(['start']).command).toBe('start');
-        expect(parseNexdArgs(['stop']).command).toBe('stop');
-        expect(parseNexdArgs(['status']).command).toBe('status');
-        expect(parseNexdArgs(['url']).command).toBe('url');
-        expect(parseNexdArgs(['--help']).command).toBe('help');
-        expect(parseNexdArgs(['--version']).command).toBe('version');
+        expect(parseKelpidArgs([]).command).toBe('help');
+        expect(parseKelpidArgs(['start']).command).toBe('start');
+        expect(parseKelpidArgs(['stop']).command).toBe('stop');
+        expect(parseKelpidArgs(['status']).command).toBe('status');
+        expect(parseKelpidArgs(['url']).command).toBe('url');
+        expect(parseKelpidArgs(['--help']).command).toBe('help');
+        expect(parseKelpidArgs(['--version']).command).toBe('version');
     });
 
     it('parses the flags each verb takes', () => {
-        expect(parseNexdArgs(['start', '--foreground']).foreground).toBe(true);
-        expect(parseNexdArgs(['start', '-f']).foreground).toBe(true);
-        expect(parseNexdArgs(['start', '--no-detach']).foreground).toBe(true);
-        expect(parseNexdArgs(['status', '--json']).json).toBe(true);
-        expect(parseNexdArgs(['stop', '--timeout', '250']).timeoutMs).toBe(250);
+        expect(parseKelpidArgs(['start', '--foreground']).foreground).toBe(true);
+        expect(parseKelpidArgs(['start', '-f']).foreground).toBe(true);
+        expect(parseKelpidArgs(['start', '--no-detach']).foreground).toBe(true);
+        expect(parseKelpidArgs(['status', '--json']).json).toBe(true);
+        expect(parseKelpidArgs(['stop', '--timeout', '250']).timeoutMs).toBe(250);
     });
 
     it('rejects an unknown argument and a malformed timeout', () => {
-        expect(parseNexdArgs(['restart']).error).toBe('unknown argument: restart');
-        expect(parseNexdArgs(['stop', '--timeout', 'soon']).error).toBe('--timeout needs a millisecond value');
+        expect(parseKelpidArgs(['restart']).error).toBe('unknown argument: restart');
+        expect(parseKelpidArgs(['stop', '--timeout', 'soon']).error).toBe('--timeout needs a millisecond value');
     });
 
     it('documents every env override in --help', async () => {
         const captured = io();
-        expect(await runNexd(['--help'], captured)).toBe(0);
+        expect(await runKelpid(['--help'], captured)).toBe(0);
         for (const key of [
-            'NEXD_RUN_DIR',
-            'NEXD_SOCKET_PATH',
-            'NEXD_TCP_PORT',
-            'NEXD_HTTP_PORT',
-            'NEXD_HTTP_HOST',
-            'NEXD_DB_PATH',
-            'NEXD_CONFIG_PATH',
-            'NEXD_CLIENT_DIR',
-            'NEXD_LOG_FILE',
-            'NEXD_ENTRY',
+            'KELPID_RUN_DIR',
+            'KELPID_SOCKET_PATH',
+            'KELPID_TCP_PORT',
+            'KELPID_HTTP_PORT',
+            'KELPID_HTTP_HOST',
+            'KELPID_DB_PATH',
+            'KELPID_CONFIG_PATH',
+            'KELPID_CLIENT_DIR',
+            'KELPID_LOG_FILE',
+            'KELPID_ENTRY',
             'NEX_SOCKET'
         ]) {
             expect(helpText()).toContain(key);
         }
-        expect(captured.stdout.join('\n')).toContain('nexd start');
+        expect(captured.stdout.join('\n')).toContain('kelpid start');
         // The URL verb is only useful if it is discoverable from --help.
-        expect(helpText()).toContain('nexd url');
-        expect(helpText()).toContain('open "$(nexd url)"');
+        expect(helpText()).toContain('kelpid url');
+        expect(helpText()).toContain('open "$(kelpid url)"');
     });
 
     it('exits 2 on a usage error, printing the reason and the usage', async () => {
         const captured = io();
-        expect(await runNexd(['nope'], captured)).toBe(2);
+        expect(await runKelpid(['nope'], captured)).toBe(2);
         expect(captured.stderr[0]).toBe('unknown argument: nope');
     });
 
     it('prints the daemon version', async () => {
-        const captured = io({ NEXD_VERSION: '9.9.9' });
-        expect(await runNexd(['--version'], captured)).toBe(0);
+        const captured = io({ KELPID_VERSION: '9.9.9' });
+        expect(await runKelpid(['--version'], captured)).toBe(0);
         expect(captured.stdout).toEqual(['9.9.9']);
     });
 });
 
 describe('resolveEntry', () => {
-    it('prefers NEXD_ENTRY, else this module', () => {
-        expect(resolveEntry({ NEXD_ENTRY: '/opt/nex/nexd.js' })).toBe('/opt/nex/nexd.js');
+    it('prefers KELPID_ENTRY, else this module', () => {
+        expect(resolveEntry({ KELPID_ENTRY: '/opt/kelpi/kelpid.js' })).toBe('/opt/kelpi/kelpid.js');
         expect(resolveEntry({})).toMatch(/main\.(ts|js)$/);
     });
 });
@@ -130,29 +130,29 @@ describe('resolveEntry', () => {
 describe('with no daemon running', () => {
     it('reports status as not running (exit 1) and stop as a no-op (exit 0)', async () => {
         const paths = scratch();
-        const env = { NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath };
+        const env = { KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath };
 
         const status = io(env);
-        expect(await runNexd(['status'], status)).toBe(1);
-        expect(status.text()).toContain('nexd is not running');
+        expect(await runKelpid(['status'], status)).toBe(1);
+        expect(status.text()).toContain('kelpid is not running');
 
         const json = io(env);
-        expect(await runNexd(['status', '--json'], json)).toBe(1);
+        expect(await runKelpid(['status', '--json'], json)).toBe(1);
         expect(JSON.parse(json.stdout[0] as string)).toMatchObject({ running: false, pid: null });
 
         const stop = io(env);
-        expect(await runNexd(['stop'], stop)).toBe(0);
-        expect(stop.stdout).toEqual(['nexd is not running']);
+        expect(await runKelpid(['stop'], stop)).toBe(0);
+        expect(stop.stdout).toEqual(['kelpid is not running']);
     });
 
     it('fails `url` with a hint on stderr and nothing on stdout', async () => {
         const paths = scratch();
-        const url = io({ NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath });
-        expect(await runNexd(['url'], url)).toBe(1);
-        // `open "$(nexd url)"` must never be handed a diagnostic string.
+        const url = io({ KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath });
+        expect(await runKelpid(['url'], url)).toBe(1);
+        // `open "$(kelpid url)"` must never be handed a diagnostic string.
         expect(url.stdout).toEqual([]);
-        expect(url.stderr.join('\n')).toContain('nexd is not running');
-        expect(url.stderr.join('\n')).toContain('nexd start');
+        expect(url.stderr.join('\n')).toContain('kelpid is not running');
+        expect(url.stderr.join('\n')).toContain('kelpid start');
     });
 });
 
@@ -171,16 +171,16 @@ describe('with a daemon running', () => {
         });
         cleanups.push(() => daemon.stop());
         const info = await daemon.start();
-        const env = { NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath };
+        const env = { KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath };
 
         const status = io(env);
-        expect(await runNexd(['status'], status)).toBe(0);
-        expect(status.text()).toContain(`nexd is running (pid ${String(process.pid)})`);
+        expect(await runKelpid(['status'], status)).toBe(0);
+        expect(status.text()).toContain(`kelpid is running (pid ${String(process.pid)})`);
         expect(status.text()).toContain(paths.socketPath);
         expect(status.text()).toContain(`http://127.0.0.1:${String(info.httpPort)}`);
 
         const json = io(env);
-        expect(await runNexd(['status', '--json'], json)).toBe(0);
+        expect(await runKelpid(['status', '--json'], json)).toBe(0);
         expect(JSON.parse(json.stdout[0] as string)).toMatchObject({
             running: true,
             pid: process.pid,
@@ -192,7 +192,7 @@ describe('with a daemon running', () => {
 
         // `start` must never spawn a second daemon over a live one.
         const start = io(env);
-        expect(await runNexd(['start'], start)).toBe(0);
+        expect(await runKelpid(['start'], start)).toBe(0);
         expect(start.stdout[0]).toContain('already running');
 
         // The whole point of the fix: every path that mentions a port also hands over a URL
@@ -203,7 +203,7 @@ describe('with a daemon running', () => {
         expect(start.stdout).toContain(`  url: ${expected}`);
 
         const url = io(env);
-        expect(await runNexd(['url'], url)).toBe(0);
+        expect(await runKelpid(['url'], url)).toBe(0);
         expect(url.stdout).toEqual([expected]);
         expect(url.stderr).toEqual([]);
 
@@ -212,8 +212,8 @@ describe('with a daemon running', () => {
     }, 30_000);
 
     /**
-     * The P0's CLI half. A daemon that could not save answered `nexd status` with a clean bill
-     * of health and `nexd stop` with "stopped", over a database of zero bytes. Both must fail.
+     * The P0's CLI half. A daemon that could not save answered `kelpid status` with a clean bill
+     * of health and `kelpid stop` with "stopped", over a database of zero bytes. Both must fail.
      */
     it('reports a degraded daemon as unhealthy rather than pretending', async () => {
         const paths = scratch();
@@ -230,7 +230,7 @@ describe('with a daemon running', () => {
         cleanups.push(() => daemon.stop());
         await daemon.start();
         await daemon.restored;
-        const env = { NEXD_RUN_DIR: paths.runDir, NEXD_SOCKET_PATH: paths.socketPath };
+        const env = { KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath };
 
         // Break the file under the running daemon (a second connection drops a table the save
         // writes into — a chmod cannot do it, SQLite holds the descriptor), then run the real
@@ -249,14 +249,14 @@ describe('with a daemon running', () => {
         expect(daemon.persistenceHealth().degraded).toBe(true);
 
         const status = io(env);
-        expect(await runNexd(['status'], status)).toBe(1);
-        expect(status.stdout.join('\n')).toContain('nexd is running');
+        expect(await runKelpid(['status'], status)).toBe(1);
+        expect(status.stdout.join('\n')).toContain('kelpid is running');
         expect(status.stdout.join('\n')).toContain('persistence: DEGRADED');
         expect(status.stderr.join('\n')).toContain('state is NOT being saved');
         expect(status.stderr.join('\n')).toContain(paths.dbPath);
 
         const json = io(env);
-        expect(await runNexd(['status', '--json'], json)).toBe(1);
+        expect(await runKelpid(['status', '--json'], json)).toBe(1);
         expect(JSON.parse(json.stdout[0] as string)).toMatchObject({
             // Snake_case, like every other key in this object.
             running: true,
@@ -265,7 +265,7 @@ describe('with a daemon running', () => {
 
         // Adopting a broken daemon is not a successful `start` either.
         const start = io(env);
-        expect(await runNexd(['start'], start)).toBe(1);
+        expect(await runKelpid(['start'], start)).toBe(1);
         expect(start.stderr.join('\n')).toContain('state is NOT being saved');
     }, 30_000);
 });

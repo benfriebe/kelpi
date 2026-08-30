@@ -16,7 +16,7 @@
  * instance with its own tmp everything.
  */
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import WebSocket from 'ws';
 
 import type { DaemonInfo } from '../../src/boot/index.js';
@@ -44,7 +44,7 @@ export interface FakeWebHost {
     readonly notifies: readonly HostNotify[];
     /**
      * Standing auto-responder for a verb: the reply is computed from the call, so a test can
-     * `await nex.run([...])` directly instead of racing the CLI with a manual `answer`.
+     * `await kelpi.run([...])` directly instead of racing the CLI with a manual `answer`.
      * Registering a verb twice replaces the responder.
      */
     on(verb: string, handler: (call: HostCall) => JsonRecord): void;

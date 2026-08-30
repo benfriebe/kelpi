@@ -1,11 +1,11 @@
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TOKEN_STORAGE_KEY, type StorageLike } from '../app/config';
-import { NexConnection, completeHandshake, createFakeSocketFactory } from '../connection';
-import { connectStore, createNexRuntime, isTokenRejection } from './bridge';
+import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
+import { connectStore, createKelpiRuntime, isTokenRejection } from './bridge';
 import { createNotificationManager } from './notifications';
-import { createNexStore, type NexStoreApi } from './store';
+import { createKelpiStore, type KelpiStoreApi } from './store';
 
 const HOME = '/Users/test';
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -47,9 +47,9 @@ function memoryStorage(initial: Record<string, string> = {}): StorageLike & { re
     };
 }
 
-function harness(store: NexStoreApi = createNexStore(), tokenStorage: StorageLike | null = null) {
+function harness(store: KelpiStoreApi = createKelpiStore(), tokenStorage: StorageLike | null = null) {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 't',
         socketFactory: sockets.factory,
@@ -133,10 +133,10 @@ describe('store bridge', () => {
             workspaceID: W1,
             title: 'alpha',
             body: 'Agent is waiting for input',
-            dedupeKey: `nex-${P1}`
+            dedupeKey: `kelpi-${P1}`
         });
 
-        expect(h.toasts).toEqual([`nex-${P1}`]);
+        expect(h.toasts).toEqual([`kelpi-${P1}`]);
     });
 
     /**
@@ -150,7 +150,7 @@ describe('store bridge', () => {
 
         h.sockets.last().emit({
             type: 'persistence-degraded',
-            path: '/tmp/nexd-dev.db',
+            path: '/tmp/kelpid-dev.db',
             phase: 'open',
             error: "EPERM: operation not permitted, chmod '/tmp'",
             errno: 'EPERM',
@@ -163,13 +163,13 @@ describe('store bridge', () => {
         expect(toasts[0]?.id).toBe('persistence-degraded');
         expect(toasts[0]?.title).toContain('not being saved');
         // Both the path and the reason reach the screen — that is what makes it actionable.
-        expect(toasts[0]?.body).toContain('/tmp/nexd-dev.db');
+        expect(toasts[0]?.body).toContain('/tmp/kelpid-dev.db');
         expect(toasts[0]?.body).toContain('EPERM');
 
         // A repeat broadcast replaces rather than stacks.
         h.sockets.last().emit({
             type: 'persistence-degraded',
-            path: '/tmp/nexd-dev.db',
+            path: '/tmp/kelpid-dev.db',
             phase: 'save',
             error: 'attempt to write a readonly database',
             errno: null,
@@ -181,7 +181,7 @@ describe('store bridge', () => {
 
     it('makes a token rejection terminal, explains it, and forgets the stored token', () => {
         const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
-        const h = harness(createNexStore(), storage);
+        const h = harness(createKelpiStore(), storage);
         h.connection.connect();
         h.sockets.last().open();
 
@@ -190,7 +190,7 @@ describe('store bridge', () => {
             type: 'rejected',
             code: 'unauthorized',
             reason: 'bad-token',
-            message: "invalid or missing daemon token — open the client via 'nexd url'",
+            message: "invalid or missing daemon token — open the client via 'kelpid url'",
             protocolVersion: 1
         });
         h.sockets.last().serverClose(4003, 'bad-token');
@@ -198,7 +198,7 @@ describe('store bridge', () => {
         const state = h.store.getState();
         expect(state.ui.connection).toBe('rejected');
         // The daemon's own sentence reaches the UI, repair instructions included.
-        expect(state.ui.connectionError).toContain('nexd url');
+        expect(state.ui.connectionError).toContain('kelpid url');
         // No retry loop: this is the defect — a browser cannot see an upgrade's 401, so a
         // refusal that keeps redialling is both invisible and endless.
         vi.advanceTimersByTime(60_000);
@@ -209,7 +209,7 @@ describe('store bridge', () => {
 
     it('connects again once a good token arrives', () => {
         const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'stale' });
-        const h = harness(createNexStore(), storage);
+        const h = harness(createKelpiStore(), storage);
         h.connection.connect();
         h.sockets.last().open();
         h.sockets.last().emit({
@@ -221,7 +221,7 @@ describe('store bridge', () => {
         });
         h.sockets.last().serverClose(4003, 'bad-token');
 
-        // What opening a fresh `nexd url` link does.
+        // What opening a fresh `kelpid url` link does.
         h.connection.connect(undefined, 'fresh');
         expect(h.sockets.sockets).toHaveLength(2);
         expect(h.sockets.last().url).toContain('token=fresh');
@@ -232,7 +232,7 @@ describe('store bridge', () => {
 
     it('keeps retrying a transient server-error rejection and keeps the token', () => {
         const storage = memoryStorage({ [TOKEN_STORAGE_KEY]: 'keep-me' });
-        const h = harness(createNexStore(), storage);
+        const h = harness(createKelpiStore(), storage);
         h.connection.connect();
         h.sockets.last().open();
         h.sockets.last().emit({
@@ -280,7 +280,7 @@ describe('store bridge', () => {
     });
 });
 
-describe('nex runtime', () => {
+describe('kelpi runtime', () => {
     beforeEach(() => {
         vi.useFakeTimers();
     });
@@ -290,8 +290,8 @@ describe('nex runtime', () => {
 
     function runtimeHarness() {
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const runtime = createNexRuntime({
+        const store = createKelpiStore();
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 't',
             socketFactory: sockets.factory,
@@ -327,7 +327,7 @@ describe('nex runtime', () => {
         // run-B L3: clicking the row you are already on was a total no-op — the store
         // short-circuits an unchanged id and the report deduped against its own last payload —
         // so once something else (a CLI `workspace create`) had moved the daemon's answer, no
-        // click could pull it back and `nex workspace list` named the wrong one forever.
+        // click could pull it back and `kelpi workspace list` named the wrong one forever.
         const h = runtimeHarness();
         h.runtime.activateWorkspace(W1);
         h.runtime.activateWorkspace(W1);

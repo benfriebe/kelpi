@@ -49,15 +49,15 @@ export interface ChromeSettings {
     readonly sparklineColor: string;
     readonly sparklineWidth: number;
     /**
-     * The four search-highlight colours (TERM-021 / SET-219's `NexGhosttyDefaults`).
+     * The four search-highlight colours (TERM-021 / SET-219's `KelpiGhosttyDefaults`).
      *
-     * The Swift app shipped them as a Nex-managed **ghostty defaults file** laid UNDER the
+     * The Swift app shipped them as a Kelpi-managed **ghostty defaults file** laid UNDER the
      * user's own `~/.config/ghostty/config`, so libghostty resolved `search-background` and
      * friends with the user's value winning. There is no libghostty here and no layering
      * mechanism to lay anything under: every search highlight in this port is drawn by us —
      * the injected markdown/diff find script, the web pane's find script, and the terminal
-     * search reveal — so the Swift file's *purpose* (a Nex default the user can override)
-     * becomes four nex-config keys with exactly the Swift hexes as their defaults.
+     * search reveal — so the Swift file's *purpose* (a Kelpi default the user can override)
+     * becomes four kelpi-config keys with exactly the Swift hexes as their defaults.
      *
      * Same discipline as every other key here: an unparseable value keeps the default.
      */
@@ -249,7 +249,7 @@ export function parseChromeSettings(contents: string): ChromeSettings {
             }
             // The four search-highlight colours. Unlike `sparkline-color` an empty value is NOT
             // meaningful here (there is no "adaptive" search highlight to fall back to), so a
-            // blank line keeps the Nex default exactly as a malformed one does.
+            // blank line keeps the Kelpi default exactly as a malformed one does.
             case 'search-match-color': {
                 const hex = parseChromeHex(value);
                 if (hex !== null) settings = { ...settings, searchMatchColor: hex };

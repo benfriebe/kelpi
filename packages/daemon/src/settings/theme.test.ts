@@ -1,16 +1,16 @@
 /**
  * §APP-014 — `theme = <name>` resolved to a real palette, and the note when it cannot be.
  *
- * The fixtures below are the shipped app's own file format, not an invention: `nex 0.32.0`
+ * The fixtures below are the shipped app's own file format, not an invention: `kelpi 0.32.0`
  * carries the ten built-in themes as ghostty theme FILES inside its bundle
- * (`Nex.app/Contents/Resources/ghostty/themes/<id>`, pointed at by `GHOSTTY_RESOURCES_DIR`),
+ * (`Kelpi.app/Contents/Resources/ghostty/themes/<id>`, pointed at by `GHOSTTY_RESOURCES_DIR`),
  * each written as `palette = N=#hex` lines plus `background` / `foreground` / `cursor-color` /
  * `cursor-text` / `selection-background` / `selection-foreground`. That is exactly what
  * libghostty resolved for the Swift app and exactly what this module has to read.
  *
  * **Every path in this file is inside a `mkdtemp`.** `themeSearchDirs` takes `home` and `env`,
  * the tests pass a fake home, and the "nothing outside the sandbox" test asserts it by
- * recording every path the resolver asks for — so a machine with Ghostty (or Nex) installed
+ * recording every path the resolver asks for — so a machine with Ghostty (or Kelpi) installed
  * cannot make these tests pass for the wrong reason, and the developer's real
  * `~/.config/ghostty` is never read.
  */
@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_WS_TERMINAL_THEME } from '@nex/protocol';
+import { DEFAULT_WS_TERMINAL_THEME } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildSettingsSnapshot, createSettingsService, type SettingsService } from './service.js';
@@ -34,7 +34,7 @@ import {
 
 // ── fixtures ────────────────────────────────────────────────────────────────────────
 
-/** `Nex.app/Contents/Resources/ghostty/themes/Nord`, transcribed. */
+/** `Kelpi.app/Contents/Resources/ghostty/themes/Nord`, transcribed. */
 const NORD = `palette = 0=#3b4252
 palette = 1=#bf616a
 palette = 2=#a3be8c
@@ -77,7 +77,7 @@ const roots: string[] = [];
 const services: SettingsService[] = [];
 
 function tmpRoot(): string {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-theme-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-theme-'));
     roots.push(root);
     return root;
 }
@@ -199,12 +199,12 @@ describe('themeSearchDirs', () => {
             ghosttyPath: '/Users/x/xdg/ghostty/config'
         });
         expect(dirs).toContain('/Users/x/xdg/ghostty/themes');
-        // The shipped app's own mechanism: `nex 0.32.0` exports GHOSTTY_RESOURCES_DIR at
-        // `Nex.app/Contents/Resources/ghostty`, whose `themes/` holds the ten built-ins.
+        // The shipped app's own mechanism: `kelpi 0.32.0` exports GHOSTTY_RESOURCES_DIR at
+        // `Kelpi.app/Contents/Resources/ghostty`, whose `themes/` holds the ten built-ins.
         expect(dirs).toContain('/opt/ghostty/share/themes');
     });
 
-    it('is replaced entirely by NEXD_GHOSTTY_THEME_DIRS — the test/sandbox seam', () => {
+    it('is replaced entirely by KELPID_GHOSTTY_THEME_DIRS — the test/sandbox seam', () => {
         const dirs = themeSearchDirs({
             env: { [GHOSTTY_THEME_DIRS_ENV]: '~/a: /b/c :' },
             home: '/Users/x',
@@ -237,7 +237,7 @@ describe('resolveGhosttyTheme', () => {
      *
      * Whether `catppuccin latte` also opens that file is the filesystem's business, not this
      * module's: APFS is case-insensitive by default and ext4 is not, and libghostty had exactly
-     * the same property. §SET-216's case-sensitive gate is the NEX config key's (an exact match
+     * the same property. §SET-216's case-sensitive gate is the KELPI config key's (an exact match
      * against the ten built-ins, covered in `service.test.ts`), which is a different question
      * from what `open(2)` does.
      */
@@ -389,8 +389,8 @@ describe('buildSettingsSnapshot with a theme resolver', () => {
         );
     });
 
-    /** §SET-216: a nex `theme` key that is not one of the ten never reaches the lookup. */
-    it('does not look up a non-built-in name from the NEX config', () => {
+    /** §SET-216: a kelpi `theme` key that is not one of the ten never reaches the lookup. */
+    it('does not look up a non-built-in name from the KELPI config', () => {
         const asked: (string | null)[] = [];
         buildSettingsSnapshot('theme = My Custom Theme\n', '', {
             resolveTheme: (name) => {
@@ -412,7 +412,7 @@ describe('createSettingsService (theme files on disk)', () => {
         const home = tmpRoot();
         const themes = path.join(home, '.config', 'ghostty', 'themes');
         fs.mkdirSync(themes, { recursive: true });
-        const configPath = path.join(home, 'nex-config');
+        const configPath = path.join(home, 'kelpi-config');
         const ghosttyPath = path.join(home, '.config', 'ghostty', 'config');
         fs.writeFileSync(configPath, options.config ?? '', 'utf8');
         fs.writeFileSync(ghosttyPath, options.ghostty ?? '', 'utf8');
@@ -442,8 +442,8 @@ describe('createSettingsService (theme files on disk)', () => {
         expect(snapshot.appearance.terminalTheme.error).toBeNull();
     });
 
-    /** §SET-105: the NEX config's key is the fallback, and it resolves the same way. */
-    it('resolves the nex config’s `theme` key when ghostty names none', () => {
+    /** §SET-105: the KELPI config's key is the fallback, and it resolves the same way. */
+    it('resolves the kelpi config’s `theme` key when ghostty names none', () => {
         const f = service({ config: 'theme = Nord\n' });
         fs.writeFileSync(path.join(f.themes, 'Nord'), NORD, 'utf8');
         expect(f.service.reload().appearance.terminalTheme.palette.background).toBe('#2e3440');

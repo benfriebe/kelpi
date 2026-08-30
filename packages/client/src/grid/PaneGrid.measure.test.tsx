@@ -25,7 +25,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { leaf, split } from '@nex/core/layout';
+import { leaf, split } from '@kelpi/core/layout';
 
 import { PaneGrid } from './PaneGrid';
 import { installFakeResizeObserver } from '../terminal/testing';

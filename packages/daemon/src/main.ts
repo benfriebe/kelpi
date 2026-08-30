@@ -1,18 +1,18 @@
 /**
- * `nexd` — the New Nex daemon entrypoint.
+ * `kelpid` — the New Kelpi daemon entrypoint.
  *
- *   nexd start [--foreground]   spawn (or become) the daemon
- *   nexd stop                   ask the running daemon to shut down cleanly
- *   nexd status [--json]        ping it over the control socket
- *   nexd url                    print the URL a browser should open (token included)
+ *   kelpid start [--foreground]   spawn (or become) the daemon
+ *   kelpid stop                   ask the running daemon to shut down cleanly
+ *   kelpid status [--json]        ping it over the control socket
+ *   kelpid url                    print the URL a browser should open (token included)
  *
  * `url` exists because the WS handshake is token-gated: opening a bare
  * `http://127.0.0.1:<port>` loads the client, which then fails to authenticate and shows a
  * rejection. Every path that prints a port therefore prints the ready-to-open URL beside it,
- * and `nexd url` prints that one line alone so it can be piped into `open`.
+ * and `kelpid url` prints that one line alone so it can be piped into `open`.
  *
  * The daemon is started on demand and **detached** (ARCHITECTURE.md "Daemon lifecycle"): it
- * outlives its spawner, so closing the terminal that ran `nexd start` — or quitting the app —
+ * outlives its spawner, so closing the terminal that ran `kelpid start` — or quitting the app —
  * never kills an agent. `--foreground` is the same daemon in this process, which is what the
  * detached child itself runs, and what you want under a supervisor or in a container.
  *
@@ -46,49 +46,49 @@ import {
     type RunPaths
 } from './lifecycle/index.js';
 
-export const ENTRY_ENV = 'NEXD_ENTRY';
-export const LOG_FILE_ENV = 'NEXD_LOG_FILE';
+export const ENTRY_ENV = 'KELPID_ENTRY';
+export const LOG_FILE_ENV = 'KELPID_LOG_FILE';
 
-/** How long `nexd start` waits for the detached child to answer `ping`. */
+/** How long `kelpid start` waits for the detached child to answer `ping`. */
 export const START_TIMEOUT_MS = 15_000;
-/** How long `nexd stop` waits for the daemon to disappear after SIGTERM. */
+/** How long `kelpid stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type NexdCommand = 'start' | 'stop' | 'status' | 'url' | 'import' | 'help' | 'version';
+export type KelpidCommand = 'start' | 'stop' | 'status' | 'url' | 'import' | 'help' | 'version';
 
 export interface ParsedArgs {
-    readonly command: NexdCommand;
+    readonly command: KelpidCommand;
     readonly foreground: boolean;
     readonly json: boolean;
     readonly timeoutMs: number | undefined;
     /** `import --from`: the legacy Swift database. Defaults to the Mac app's path. */
     readonly from: string | undefined;
-    /** `import --to`: the daemon database. Defaults to this environment's `NEXD_DB_PATH`. */
+    /** `import --to`: the daemon database. Defaults to this environment's `KELPID_DB_PATH`. */
     readonly to: string | undefined;
     /** `import --force`: replace a populated target (after backing it up). */
     readonly force: boolean;
     /** `import --dry-run`: report only, write nothing. */
     readonly dryRun: boolean;
-    /** Set when parsing failed; `runNexd` prints it and exits 2. */
+    /** Set when parsing failed; `runKelpid` prints it and exits 2. */
     readonly error: string | undefined;
 }
 
-const USAGE = `nexd — the New Nex daemon
+const USAGE = `kelpid — the New Kelpi daemon
 
 Usage:
-  nexd start [--foreground]   Start the daemon (detached unless --foreground)
-  nexd stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
-  nexd status [--json]        Ping the daemon and report version, pid and ports
-  nexd url                    Print the client URL (with the token) and nothing else
-  nexd import [options]       Import the Swift app's nex.db into the daemon's database
-  nexd --version              Print the daemon version
-  nexd --help                 This message
+  kelpid start [--foreground]   Start the daemon (detached unless --foreground)
+  kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
+  kelpid status [--json]        Ping the daemon and report version, pid and ports
+  kelpid url                    Print the client URL (with the token) and nothing else
+  kelpid import [options]       Import the Swift app's nex.db into the daemon's database
+  kelpid --version              Print the daemon version
+  kelpid --help                 This message
 
 Import (one-time migration from the macOS app):
-  nexd import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]
+  kelpid import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]
 
-    --from   legacy database (default: ~/Library/Application Support/Nex/nex.db)
-    --to     daemon database (default: NEXD_DB_PATH, else the platform default)
+    --from   legacy database (default: ~/Library/Application Support/Kelpi/nex.db)
+    --to     daemon database (default: KELPID_DB_PATH, else the platform default)
     --force  replace a target that already holds workspaces; the existing database
              is copied aside as <target>.<timestamp>.bak first
     --dry-run  print the report and write nothing
@@ -97,38 +97,38 @@ Import (one-time migration from the macOS app):
   the import is refused while one is running against the target, and --force does
   not override that. Recommended flow:
 
-    nexd stop && nexd import && nexd start
+    kelpid stop && kelpid import && kelpid start
 
   Panes come back on that start, and any pane that had an agent session resumes it
-  (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Nex.app restart would.
+  (\`claude --resume <id>\` / \`codex resume <id>\`) just as a Kelpi.app restart would.
 
 Open the web client (the token is required — a bare http://127.0.0.1:<port> cannot
 authenticate and the client will say so):
-  open "$(nexd url)"
+  open "$(kelpid url)"
 
 Environment:
-  NEXD_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
+  KELPID_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
                      (default: ~/Library/Application Support/nexd/run, or
                       $XDG_RUNTIME_DIR/nexd on Linux)
-  NEXD_SOCKET_PATH   CLI-compat control socket (default: /tmp/nex.sock)
-  NEXD_TCP_PORT      Control TCP listener on 127.0.0.1 (overrides config tcp-port)
-  NEXD_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
-  NEXD_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
-  NEXD_DB_PATH       SQLite database file (default: ~/Library/Application Support/nexd/nex.db)
-  NEXD_ALLOW_EPHEMERAL_STATE=1
+  KELPID_SOCKET_PATH   CLI-compat control socket (default: /tmp/nex.sock)
+  KELPID_TCP_PORT      Control TCP listener on 127.0.0.1 (overrides config tcp-port)
+  KELPID_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
+  KELPID_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
+  KELPID_DB_PATH       SQLite database file (default: ~/Library/Application Support/nexd/nex.db)
+  KELPID_ALLOW_EPHEMERAL_STATE=1
                      Start even when that database cannot be opened. Nothing is
                      saved and every boot says so. Without it, an unusable
                      database is a hard startup failure — by design: a daemon
                      that silently stops persisting loses a day of work.
-  NEXD_CONFIG_PATH   Config file (default: ~/.config/nex/config)
-  NEXD_CLIENT_DIR    Directory holding the built web client
-  NEXD_LOG_FILE      Append the detached daemon's stdout/stderr here
-  NEXD_VERSION       Override the reported version (packaging)
-  NEXD_BUILD         Override the reported build (packaging)
-  NEXD_ENTRY         Executable/script re-spawned by \`nexd start\` when detaching
+  KELPID_CONFIG_PATH   Config file (default: ~/.config/nex/config)
+  KELPID_CLIENT_DIR    Directory holding the built web client
+  KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
+  KELPID_VERSION       Override the reported version (packaging)
+  KELPID_BUILD         Override the reported build (packaging)
+  KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching
 
-The \`nex\` CLI reaches the daemon over NEX_SOCKET:
-  NEX_SOCKET=tcp:127.0.0.1:19400 nex pane list
+The \`kelpi\` CLI reaches the daemon over NEX_SOCKET:
+  NEX_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
 `;
 
 export function helpText(): string {
@@ -150,8 +150,8 @@ function parseValue(raw: string | undefined): string | undefined {
     return trimmed;
 }
 
-export function parseNexdArgs(argv: readonly string[]): ParsedArgs {
-    let command: NexdCommand | undefined;
+export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
+    let command: KelpidCommand | undefined;
     let foreground = false;
     let json = false;
     let timeoutMs: number | undefined;
@@ -255,7 +255,7 @@ export interface CliIO {
 
 function defaultIO(): CliIO {
     /*
-     * Writes never throw, and a dead pipe never kills the daemon. `nexd start --foreground`
+     * Writes never throw, and a dead pipe never kills the daemon. `kelpid start --foreground`
      * under a supervisor (the audit harness, a crashed probe script, a terminal that closed)
      * has stdout/stderr as pipes whose reader can die first — from then on every write raises
      * EPIPE, and an uncaught EPIPE would take a healthy daemon down with the process that was
@@ -266,13 +266,13 @@ function defaultIO(): CliIO {
         // Under the audit harness the daemon must not outlive its supervisor: a dead stdout
         // pipe or a reparent to pid 1 means the harness was hard-killed, so take the graceful
         // SIGTERM path (flush + socket teardown) instead of lingering as an orphan. A user's
-        // daemon (packaged, or `nexd start` from a terminal) never carries the marker.
-        if (process.env['NEX_HARNESS'] === '1') process.kill(process.pid, 'SIGTERM');
+        // daemon (packaged, or `kelpid start` from a terminal) never carries the marker.
+        if (process.env['KELPI_HARNESS'] === '1') process.kill(process.pid, 'SIGTERM');
     };
     for (const stream of [process.stdout, process.stderr]) {
         if (stream.listenerCount('error') === 0) stream.on('error', supervisorGone);
     }
-    if (process.env['NEX_HARNESS'] === '1') {
+    if (process.env['KELPI_HARNESS'] === '1') {
         const watchdog = setInterval(() => {
             if (process.ppid === 1) supervisorGone();
         }, 10_000);
@@ -303,8 +303,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * The script/binary `nexd start` re-spawns when it detaches. In the shipped bundle that is
- * `dist/nexd.js` (this very file); `NEXD_ENTRY` overrides it for packaging layouts where the
+ * The script/binary `kelpid start` re-spawns when it detaches. In the shipped bundle that is
+ * `dist/kelpid.js` (this very file); `KELPID_ENTRY` overrides it for packaging layouts where the
  * daemon is launched through a wrapper.
  */
 export function resolveEntry(env: NodeJS.ProcessEnv): string {
@@ -367,7 +367,7 @@ function warnIfDegraded(io: CliIO, probe: DaemonProbe, headline?: string, repair
     if (health === undefined || !health.degraded) return false;
     io.err(
         headline ??
-            'Warning: nexd is running WITHOUT working persistence — state is NOT being saved.'
+            'Warning: kelpid is running WITHOUT working persistence — state is NOT being saved.'
     );
     if (health.path !== undefined) io.err(`  db: ${health.path}`);
     if (health.error !== undefined) io.err(`  error: ${health.error}`);
@@ -375,7 +375,7 @@ function warnIfDegraded(io: CliIO, probe: DaemonProbe, headline?: string, repair
         io.err(`  failed saves: ${String(health.failedSaves)}`);
     }
     io.err(
-        `  Repair: ${repair ?? 'fix the database path, then `nexd stop && nexd start`. Restarting NOW loses everything created since it started.'}`
+        `  Repair: ${repair ?? 'fix the database path, then `kelpid stop && kelpid start`. Restarting NOW loses everything created since it started.'}`
     );
     return true;
 }
@@ -387,7 +387,7 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     const existing = await probeDaemon(paths, { timeoutMs: 500 });
     if (existing.alive) {
         io.out(
-            `nexd already running (pid ${existing.pid === undefined ? 'unknown' : String(existing.pid)}) on ${paths.socket}`
+            `kelpid already running (pid ${existing.pid === undefined ? 'unknown' : String(existing.pid)}) on ${paths.socket}`
         );
         // The point of `start` is usually "give me something to open", whether or not this
         // invocation is the one that started it.
@@ -401,7 +401,7 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
         const daemon = createDaemon({
             env,
             installSignalHandlers: true,
-            onError: (error, context) => io.err(`nexd error [${context}]: ${error.message}`),
+            onError: (error, context) => io.err(`kelpid error [${context}]: ${error.message}`),
             onLog: (message) => io.out(message)
         });
         let info;
@@ -409,20 +409,20 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
             info = await daemon.start();
         } catch (error) {
             const failure = error as NodeJS.ErrnoException & { repair?: string };
-            io.err(`nexd failed to start: ${failure.message}`);
+            io.err(`kelpid failed to start: ${failure.message}`);
             if (failure.code === 'ENEXDPERSIST') {
                 // Refusing to start beats running memory-only: the repair text names the file,
                 // the errno and the way out (including the opt-in for a throw-away daemon).
-                io.err(`Repair: ${failure.repair ?? 'point NEXD_DB_PATH at a writable file.'}`);
+                io.err(`Repair: ${failure.repair ?? 'point KELPID_DB_PATH at a writable file.'}`);
                 io.err(
-                    'To run anyway, without saving anything, set NEXD_ALLOW_EPHEMERAL_STATE=1.'
+                    'To run anyway, without saving anything, set KELPID_ALLOW_EPHEMERAL_STATE=1.'
                 );
             }
             if (failure.code === 'ECONTROLBUSY') {
                 // Only the RUN-DIR socket is fatal now (a daemon of this protocol is already
                 // running there); a busy CLI-compat socket merely degrades (`startCompat`).
                 io.err(
-                    `Repair: a live daemon already owns this run dir's socket — use it (\`nexd status\`), or point NEXD_RUN_DIR at a different run dir for a second daemon.`
+                    `Repair: a live daemon already owns this run dir's socket — use it (\`kelpid status\`), or point KELPID_RUN_DIR at a different run dir for a second daemon.`
                 );
             }
             await daemon.stop();
@@ -444,14 +444,14 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     const alive = await waitForDaemon(paths, args.timeoutMs ?? START_TIMEOUT_MS);
     if (!alive) {
         io.err(
-            `nexd did not answer on ${paths.socket} within ${String(args.timeoutMs ?? START_TIMEOUT_MS)}ms (spawned pid ${String(child.pid)})`
+            `kelpid did not answer on ${paths.socket} within ${String(args.timeoutMs ?? START_TIMEOUT_MS)}ms (spawned pid ${String(child.pid)})`
         );
-        io.err(`Repair: run \`nexd start --foreground\` to see why, or set ${LOG_FILE_ENV} and retry.`);
+        io.err(`Repair: run \`kelpid start --foreground\` to see why, or set ${LOG_FILE_ENV} and retry.`);
         return 1;
     }
     const record = readPidRecord(paths);
     const port = record?.http_port ?? readPortFile(paths);
-    io.out(`nexd started (pid ${String(record?.pid ?? child.pid)})`);
+    io.out(`kelpid started (pid ${String(record?.pid ?? child.pid)})`);
     io.out(`  control: ${resolveControlEndpoints(env).socketPath}`);
     io.out(`  discovery: ${paths.socket}`);
     if (port !== undefined) io.out(`  http: ${httpURL(env, port)}`);
@@ -468,26 +468,26 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
 
     if (!probe.alive) {
         if (pid !== undefined && isProcessAlive(pid)) {
-            io.err(`nexd (pid ${String(pid)}) is not answering on ${paths.socket}; sending SIGTERM anyway`);
+            io.err(`kelpid (pid ${String(pid)}) is not answering on ${paths.socket}; sending SIGTERM anyway`);
         } else {
-            io.out('nexd is not running');
+            io.out('kelpid is not running');
             return 0;
         }
     }
     if (pid === undefined) {
-        io.err(`nexd is running on ${paths.socket} but its pid is unknown; cannot stop it`);
+        io.err(`kelpid is running on ${paths.socket} but its pid is unknown; cannot stop it`);
         return 1;
     }
 
     // Asked BEFORE the SIGTERM, because after it there is nobody left to ask — and a daemon
     // that never managed to write is exactly the one whose "stopped cleanly" is a lie. This is
-    // the observed P0: `nexd stop` printed a clean stop over a database of zero bytes.
+    // the observed P0: `kelpid stop` printed a clean stop over a database of zero bytes.
     const degraded = probe.persistence?.degraded === true;
 
     try {
         process.kill(pid, 'SIGTERM');
     } catch (error) {
-        io.err(`failed to signal nexd (pid ${String(pid)}): ${(error as Error).message}`);
+        io.err(`failed to signal kelpid (pid ${String(pid)}): ${(error as Error).message}`);
         return 1;
     }
 
@@ -499,12 +499,12 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
                 warnIfDegraded(
                     io,
                     probe,
-                    `nexd (pid ${String(pid)}) exited, but it was NOT saving state — everything from that session is gone.`,
-                    'fix the database path (the errno above says why), then `nexd start`.'
+                    `kelpid (pid ${String(pid)}) exited, but it was NOT saving state — everything from that session is gone.`,
+                    'fix the database path (the errno above says why), then `kelpid start`.'
                 );
                 return 1;
             }
-            io.out(`nexd stopped (pid ${String(pid)})`);
+            io.out(`kelpid stopped (pid ${String(pid)})`);
             return 0;
         }
         await sleep(100);
@@ -515,7 +515,7 @@ async function commandStop(io: CliIO, args: ParsedArgs): Promise<number> {
     } catch {
         // It exited between the check and the signal — that is the outcome we wanted.
     }
-    io.err(`nexd (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
+    io.err(`kelpid (pid ${String(pid)}) did not exit within ${String(timeoutMs)}ms; sent SIGKILL`);
     return 1;
 }
 
@@ -580,17 +580,17 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
     }
 
     if (!probe.alive) {
-        io.out(`nexd is not running (${probe.reason ?? 'no socket'})`);
+        io.out(`kelpid is not running (${probe.reason ?? 'no socket'})`);
         if (probe.stalePidRecord) io.out(`  stale pid record: ${paths.pid}`);
         io.out(`  run dir: ${paths.dir}`);
         return 1;
     }
 
-    io.out(`nexd is running (pid ${probe.pid === undefined ? 'unknown' : String(probe.pid)})`);
+    io.out(`kelpid is running (pid ${probe.pid === undefined ? 'unknown' : String(probe.pid)})`);
     io.out(`  version: ${probe.version ?? 'unknown'} (build ${probe.build ?? 'unknown'})`);
     io.out(`  protocol: ${String(paths.protocol)}`);
     // A degraded compat socket is not a degraded daemon — panes route via their injected
-    // NEX_SOCKET — but this line is where a user learns their plain-terminal `nex` commands
+    // NEX_SOCKET — but this line is where a user learns their plain-terminal `kelpi` commands
     // on the default socket are reaching a DIFFERENT app (typically the Swift one).
     io.out(
         probe.compat === undefined
@@ -621,14 +621,14 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
             `Warning: the TCP control listener on port ${String(tcp.requested)} is not running${tcp.error === undefined ? '' : ` (${tcp.error})`}.`
         );
         io.err(
-            '  Repair: free the port or set a different `tcp-port` in ~/.config/nex/config, then restart nexd. Unix-socket clients are unaffected.'
+            '  Repair: free the port or set a different `tcp-port` in ~/.config/nex/config, then restart kelpid. Unix-socket clients are unaffected.'
         );
     }
     return warnIfDegraded(io, probe) ? 1 : 0;
 }
 
 /**
- * `nexd url` — stdout is exactly the URL and nothing else, so `open "$(nexd url)"` works and
+ * `kelpid url` — stdout is exactly the URL and nothing else, so `open "$(kelpid url)"` works and
  * anything diagnostic goes to stderr.
  */
 async function commandUrl(io: CliIO): Promise<number> {
@@ -637,15 +637,15 @@ async function commandUrl(io: CliIO): Promise<number> {
     const probe = await probeDaemon(paths, { timeoutMs: 1000 });
 
     if (!probe.alive) {
-        io.err(`nexd is not running (${probe.reason ?? 'no socket'})`);
-        io.err('Repair: start it with `nexd start`, then run `nexd url` again.');
+        io.err(`kelpid is not running (${probe.reason ?? 'no socket'})`);
+        io.err('Repair: start it with `kelpid start`, then run `kelpid url` again.');
         return 1;
     }
 
     const url = runDirClientURL(env, paths);
     if (url === undefined) {
-        io.err(`nexd is running but ${paths.dir} has no HTTP port or token to build a URL from`);
-        io.err('Repair: restart it (`nexd stop` then `nexd start`) so it rewrites the run dir.');
+        io.err(`kelpid is running but ${paths.dir} has no HTTP port or token to build a URL from`);
+        io.err('Repair: restart it (`kelpid stop` then `kelpid start`) so it rewrites the run dir.');
         return 1;
     }
 
@@ -654,7 +654,7 @@ async function commandUrl(io: CliIO): Promise<number> {
 }
 
 /**
- * `nexd import` — the one-time migration from the macOS app's database.
+ * `kelpid import` — the one-time migration from the macOS app's database.
  *
  * Three things this function owns that `import/` deliberately does not:
  *   - resolving the two default paths (they come from the environment, not the importer);
@@ -666,7 +666,7 @@ async function commandUrl(io: CliIO): Promise<number> {
  *
  * "Running against the target" is judged from THIS environment: the run dir it names is probed,
  * and the answer only matters when the target is also the database that environment resolves.
- * A daemon started with a different `NEXD_RUN_DIR` is invisible here — the same blind spot every
+ * A daemon started with a different `KELPID_RUN_DIR` is invisible here — the same blind spot every
  * other verb has, and the reason `--to` a foreign path only warns.
  */
 async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
@@ -677,7 +677,7 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
 
     // With --json stdout carries the report alone, so the announcement goes to stderr.
     const announce = args.json ? io.err : io.out;
-    announce(`nexd import${args.dryRun ? ' (dry run)' : ''}`);
+    announce(`kelpid import${args.dryRun ? ' (dry run)' : ''}`);
     announce(`  from: ${from}`);
     announce(`  to:   ${to}`);
 
@@ -696,11 +696,11 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
         // "Running against the target" = the daemon this environment describes owns that file.
         if (nodePath.resolve(to) === nodePath.resolve(resolveDatabasePath({ env, home }))) {
             return fail(
-                `nexd is running (pid ${pid}) and owns ${to}`,
-                'Stop it first — `nexd stop`, then `nexd import`, then `nexd start`. --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save.'
+                `kelpid is running (pid ${pid}) and owns ${to}`,
+                'Stop it first — `kelpid stop`, then `kelpid import`, then `kelpid start`. --force does not override this: a running daemon holds the state in memory and would overwrite the import on its next save.'
             );
         }
-        io.err(`Warning: nexd is running (pid ${pid}), but ${to} is not the database it opened; importing anyway.`);
+        io.err(`Warning: kelpid is running (pid ${pid}), but ${to} is not the database it opened; importing anyway.`);
     }
 
     let report: ImportReport;
@@ -739,13 +739,13 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     io.out(
         report.dryRun
             ? 'Nothing was written. Re-run without --dry-run to import.'
-            : 'Next: `nexd start` — panes are restored and agent sessions resume automatically.'
+            : 'Next: `kelpid start` — panes are restored and agent sessions resume automatically.'
     );
     return 0;
 }
 
 function printInfo(io: CliIO, info: DaemonInfo): void {
-    io.out(`nexd running (pid ${String(info.pid)})`);
+    io.out(`kelpid running (pid ${String(info.pid)})`);
     io.out(`  control: ${info.socketPath}`);
     io.out(`  discovery: ${info.runSocketPath}`);
     if (info.tcpPort !== undefined) io.out(`  control tcp: 127.0.0.1:${String(info.tcpPort)}`);
@@ -759,8 +759,8 @@ function printInfo(io: CliIO, info: DaemonInfo): void {
 }
 
 /** The whole CLI as a function: returns the process exit code. */
-export async function runNexd(argv: readonly string[], io: CliIO = defaultIO()): Promise<number> {
-    const args = parseNexdArgs(argv);
+export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()): Promise<number> {
+    const args = parseKelpidArgs(argv);
     if (args.error !== undefined) {
         io.err(args.error);
         io.err(USAGE);
@@ -798,12 +798,12 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-    void runNexd(process.argv.slice(2)).then(
+    void runKelpid(process.argv.slice(2)).then(
         (code) => {
             if (code !== 0) process.exitCode = code;
         },
         (error: unknown) => {
-            process.stderr.write(`nexd: ${error instanceof Error ? error.message : String(error)}\n`);
+            process.stderr.write(`kelpid: ${error instanceof Error ? error.message : String(error)}\n`);
             process.exitCode = 1;
         }
     );

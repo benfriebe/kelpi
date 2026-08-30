@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event stop --agent codex"
+            "command": "kelpi event stop --agent codex"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event notification --agent codex"
+            "command": "kelpi event notification --agent codex"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-start --agent codex"
+            "command": "kelpi event session-start --agent codex"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event start --agent codex"
+            "command": "kelpi event start --agent codex"
           }
         ]
       }

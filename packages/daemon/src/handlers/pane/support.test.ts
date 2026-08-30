@@ -54,7 +54,7 @@ describe('spawnEnvVars', () => {
 
         expect(spawnEnvVars(ctx, P1, h.workspace(W1))).toEqual([
             { key: 'NEX_PANE_ID', value: P1 },
-            { key: 'PATH', value: '/opt/nex/helpers:/usr/bin' },
+            { key: 'PATH', value: '/opt/kelpi/helpers:/usr/bin' },
             { key: 'ALPHA', value: '2' },
             { key: 'NEX_PROFILE', value: 'default' },
             { key: 'ZED', value: '1' }

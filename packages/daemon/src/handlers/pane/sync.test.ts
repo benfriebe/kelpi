@@ -211,7 +211,7 @@ describe('pane-sync-exclude', () => {
         const h = trio();
         expect(h.run({ command: 'pane-sync-exclude', target: 'ghost', excluded: true }).only()).toEqual({
             ok: false,
-            error: "label 'ghost' requires --workspace <name-or-id> when called from outside a Nex pane"
+            error: "label 'ghost' requires --workspace <name-or-id> when called from outside a Kelpi pane"
         });
         expect(h.workspace(W1).syncInputExcluded).toEqual([]);
     });

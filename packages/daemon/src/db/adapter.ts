@@ -160,7 +160,7 @@ export function wrapSqliteDatabase(handle: RawDatabase): SqlDatabase {
         transaction(body) {
             if (depth > 0) {
                 savepointCounter += 1;
-                const name = `nex_sp_${String(savepointCounter)}`;
+                const name = `kelpi_sp_${String(savepointCounter)}`;
                 handle.exec(`SAVEPOINT ${name}`);
                 depth += 1;
                 try {

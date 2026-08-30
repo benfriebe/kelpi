@@ -19,7 +19,7 @@ import {
 const dirs: string[] = [];
 
 function tempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-daemon-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-daemon-'));
     dirs.push(dir);
     return dir;
 }
@@ -29,22 +29,22 @@ afterEach(() => {
 });
 
 describe('daemonEntryCandidates', () => {
-    it('lets NEXD_ENTRY win outright', () => {
+    it('lets KELPID_ENTRY win outright', () => {
         expect(
-            daemonEntryCandidates({ env: { NEXD_ENTRY: '/opt/nexd.js' }, appDir: '/app', resourcesPath: '/res' })
-        ).toEqual(['/opt/nexd.js']);
+            daemonEntryCandidates({ env: { KELPID_ENTRY: '/opt/kelpid.js' }, appDir: '/app', resourcesPath: '/res' })
+        ).toEqual(['/opt/kelpid.js']);
     });
 
     it('looks beside the shell package first, then the packaged Resources hook', () => {
         expect(daemonEntryCandidates({ env: {}, appDir: '/repo/packages/shell', resourcesPath: '/app/Resources' })).toEqual([
-            '/repo/packages/daemon/dist/nexd.js',
-            '/app/Resources/daemon/nexd.js'
+            '/repo/packages/daemon/dist/kelpid.js',
+            '/app/Resources/daemon/kelpid.js'
         ]);
     });
 
     it('ignores an empty override', () => {
-        expect(daemonEntryCandidates({ env: { NEXD_ENTRY: '   ' }, appDir: '/repo/packages/shell' })).toEqual([
-            '/repo/packages/daemon/dist/nexd.js'
+        expect(daemonEntryCandidates({ env: { KELPID_ENTRY: '   ' }, appDir: '/repo/packages/shell' })).toEqual([
+            '/repo/packages/daemon/dist/kelpid.js'
         ]);
     });
 });
@@ -54,10 +54,10 @@ describe('resolveDaemonEntry', () => {
         const root = tempDir();
         const resources = path.join(root, 'Resources', 'daemon');
         fs.mkdirSync(resources, { recursive: true });
-        fs.writeFileSync(path.join(resources, 'nexd.js'), '// bundle');
+        fs.writeFileSync(path.join(resources, 'kelpid.js'), '// bundle');
         expect(
             resolveDaemonEntry({ env: {}, appDir: path.join(root, 'shell'), resourcesPath: path.join(root, 'Resources') })
-        ).toBe(path.join(resources, 'nexd.js'));
+        ).toBe(path.join(resources, 'kelpid.js'));
     });
 
     it('is undefined when nothing is on disk', () => {
@@ -66,8 +66,8 @@ describe('resolveDaemonEntry', () => {
 });
 
 describe('resolveNodeBinary', () => {
-    it('honours NEXD_NODE', () => {
-        expect(resolveNodeBinary({ env: { NEXD_NODE: '/usr/local/bin/node24' } })).toBe('/usr/local/bin/node24');
+    it('honours KELPID_NODE', () => {
+        expect(resolveNodeBinary({ env: { KELPID_NODE: '/usr/local/bin/node24' } })).toBe('/usr/local/bin/node24');
     });
 
     it('prefers a Node shipped in the app bundle', () => {
@@ -101,7 +101,7 @@ describe('daemonSpawnEnv', () => {
         });
     });
 
-    it('leaves an explicit NEXD_CLIENT_DIR alone — that is how a dev points at a vite build', () => {
+    it('leaves an explicit KELPID_CLIENT_DIR alone — that is how a dev points at a vite build', () => {
         const resources = resourcesWithClient();
         const env = { [CLIENT_DIR_ENV]: '/work/client/dist' };
         expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
@@ -123,14 +123,14 @@ describe('daemonSpawnEnv', () => {
         expect(daemonSpawnEnv(env, { resourcesPath: resources })).toBe(env);
     });
 
-    /** A packaged `Contents/Resources` with a CLI payload (the `nex` launcher) in it. */
+    /** A packaged `Contents/Resources` with a CLI payload (the `kelpi` launcher) in it. */
     function addCliPayload(resources: string): string {
         fs.mkdirSync(path.join(resources, 'cli'), { recursive: true });
-        fs.writeFileSync(path.join(resources, 'cli', 'nex'), '#!/bin/sh\n');
+        fs.writeFileSync(path.join(resources, 'cli', 'kelpi'), '#!/bin/sh\n');
         return path.join(resources, 'cli');
     }
 
-    it('tells a daemon it starts where the bundled nex CLI is (pane PATH routing)', () => {
+    it('tells a daemon it starts where the bundled kelpi CLI is (pane PATH routing)', () => {
         const resources = resourcesWithClient();
         const cliDir = addCliPayload(resources);
         expect(daemonSpawnEnv({ PATH: '/usr/bin' }, { resourcesPath: resources })).toEqual({
@@ -140,7 +140,7 @@ describe('daemonSpawnEnv', () => {
         });
     });
 
-    it('leaves an explicit NEXD_HELPERS_DIR alone', () => {
+    it('leaves an explicit KELPID_HELPERS_DIR alone', () => {
         const resources = resourcesWithClient();
         addCliPayload(resources);
         const env = { [CLIENT_DIR_ENV]: '/work/client/dist', [HELPERS_DIR_ENV]: '/work/cli' };

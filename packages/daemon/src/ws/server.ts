@@ -37,13 +37,13 @@ import type { RepoChannel } from './repos.js';
 import type { GraftChannel } from './graft.js';
 import { createTerminalSearchChannel, type TerminalSearchBackend } from './search.js';
 import { createPaneStreamHub, type PaneStreamHub } from './streams.js';
-import type { WsTransportStatus } from '@nex/protocol';
+import type { WsTransportStatus } from '@kelpi/protocol';
 
 import {
     createSyncHub,
     type AgentChannel,
     type ContentChannel,
-    type NexDomainStore,
+    type KelpiDomainStore,
     type SettingsChannel,
     type SyncHub,
     type SyncPresence,
@@ -58,7 +58,7 @@ export interface WsServerAddress {
 }
 
 export interface WsServerOptions {
-    readonly store: NexDomainStore;
+    readonly store: KelpiDomainStore;
     /** Client `command` messages go here — the same dispatcher the control socket uses. */
     readonly dispatcher: ControlDispatcher;
     readonly pty: PtyManager;

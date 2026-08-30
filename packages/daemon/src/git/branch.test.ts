@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import { createPaneBranchWatch, type PaneBranchWatchService } from './branch.js';
 
 const HOME = '/Users/test';
@@ -10,7 +10,7 @@ const P2 = 'DDDDDDDD-0000-4000-8000-000000000002';
 const NOW = 1_755_500_000_000;
 
 interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly watch: PaneBranchWatchService;
     /** Every `git rev-parse` this run has made, in order. */
     readonly calls: readonly string[];
@@ -66,7 +66,7 @@ function harness(options: { cacheTtlMs?: number } = {}): Harness {
     };
 }
 
-function setDirectory(store: NexStore, paneID: string, directory: string): void {
+function setDirectory(store: KelpiStore, paneID: string, directory: string): void {
     store.dispatch({ type: 'pane-directory-changed', paneID, directory, now: NOW });
 }
 

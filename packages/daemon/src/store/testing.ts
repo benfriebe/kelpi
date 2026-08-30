@@ -4,8 +4,8 @@
  * builds the same fixtures.
  */
 
-import { workspaceSidebarID } from '@nex/core/codec';
-import { createStore, type NexStore } from './store.js';
+import { workspaceSidebarID } from '@kelpi/core/codec';
+import { createStore, type KelpiStore } from './store.js';
 import { emptyDaemonState, type DaemonState, type DomainAction, type DomainEvent } from './types.js';
 
 export const HOME = '/Users/test';
@@ -29,7 +29,7 @@ export function nextPaneID(): string {
 export const NOW = 1_755_500_000_000; // epoch ms
 
 export interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     /** Every event batch the store has emitted, flattened. */
     readonly events: DomainEvent[];
     /** Event batches, unflattened (one entry per dispatch that changed something). */

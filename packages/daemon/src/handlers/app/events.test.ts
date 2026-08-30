@@ -83,7 +83,7 @@ describe('stop', () => {
                 workspaceID: W1,
                 title: 'w1',
                 body: 'Agent is waiting for input',
-                dedupeKey: `nex-${P1}`
+                dedupeKey: `kelpi-${P1}`
             },
             { type: 'attention-request', paneID: P1, workspaceID: W1 }
         ]);
@@ -142,7 +142,7 @@ describe('notification', () => {
                 workspaceID: W1,
                 title: 'Claude',
                 body: 'Approve Bash?',
-                dedupeKey: `nex-${P1}`
+                dedupeKey: `kelpi-${P1}`
             }
         ]);
     });
@@ -186,7 +186,7 @@ describe('error', () => {
                 workspaceID: W1,
                 title: 'Agent Error',
                 body: 'boom',
-                dedupeKey: `nex-${P1}`
+                dedupeKey: `kelpi-${P1}`
             }
         ]);
     });

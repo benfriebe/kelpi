@@ -4,12 +4,12 @@
  *
  * This exists because of a defect the second capability re-score found (00-INDEX gap #6): four
  * actions — `open_web_pane`, `rename_workspace`, `new_group`, `open_diff` — were catalogued in
- * `NEX_ACTIONS`, round-tripped through the config file, rendered their shortcut inside a menu,
+ * `KELPI_ACTIONS`, round-tripped through the config file, rendered their shortcut inside a menu,
  * and did **nothing** when pressed, because `App.tsx`'s registry had no entry for them. Nothing
  * failed; the gap was found by hand-diffing two lists a year after the fact. That is the class
  * of bug this file exists to make impossible, and the reason it is a *completeness* test rather
  * than four more behaviour tests: the four are wired now, and the next action someone adds to
- * `NEX_ACTIONS` is the one that would otherwise repeat the story.
+ * `KELPI_ACTIONS` is the one that would otherwise repeat the story.
  *
  * It reads the SOURCE rather than the object because the registry is built inside a component's
  * `useMemo` and is not exported — the same trade `app/smoke-contract.test.ts` makes for
@@ -22,7 +22,7 @@
  * went unwired, fix the parse — do not delete the assertion.
  */
 
-import { NEX_ACTIONS, type NexAction } from '@nex/core/config';
+import { KELPI_ACTIONS, type KelpiAction } from '@kelpi/core/config';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,9 +66,9 @@ function wiredActions(): string[] {
 }
 
 describe('App.tsx key-action registry', () => {
-    it('wires every action in NEX_ACTIONS', () => {
+    it('wires every action in KELPI_ACTIONS', () => {
         const wired = new Set(wiredActions());
-        const missing = NEX_ACTIONS.filter((action: NexAction) => !wired.has(action));
+        const missing = KELPI_ACTIONS.filter((action: KelpiAction) => !wired.has(action));
         expect(
             missing,
             `these actions are bindable and would do nothing when pressed: ${missing.join(', ')}`
@@ -80,7 +80,7 @@ describe('App.tsx key-action registry', () => {
         // because `KeyActionRegistry` is a `Partial<Record<…>>` keyed by a union, and an
         // object literal with an unknown key is caught by TS *today* but not by a spread or a
         // computed key, which is how the registry acquires entries in practice.
-        const catalogued = new Set<string>(NEX_ACTIONS);
+        const catalogued = new Set<string>(KELPI_ACTIONS);
         const stray = wiredActions().filter((action) => !catalogued.has(action));
         expect(stray, `not bindable actions: ${stray.join(', ')}`).toEqual([]);
     });
@@ -97,7 +97,7 @@ describe('App.tsx key-action registry', () => {
     it('parses the registry it claims to (guard against a silently empty parse)', () => {
         // Without this, a reformat that broke the regex would make every assertion above pass
         // vacuously — the failure mode the smoke-contract test guards the same way.
-        expect(wiredActions()).toHaveLength(NEX_ACTIONS.length);
-        expect(NEX_ACTIONS).toHaveLength(51);
+        expect(wiredActions()).toHaveLength(KELPI_ACTIONS.length);
+        expect(KELPI_ACTIONS).toHaveLength(51);
     });
 });

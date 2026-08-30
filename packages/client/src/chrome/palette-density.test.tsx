@@ -24,7 +24,7 @@ const ITEMS: readonly PaletteItem[] = [
         title: 'a-workspace-with-a-very-long-name-indeed',
         subtitle: '2 panes',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: null,
         workspaceColor: 'blue'
     },
@@ -32,10 +32,10 @@ const ITEMS: readonly PaletteItem[] = [
         id: `pane:${P1}`,
         kind: 'pane',
         icon: 'terminal',
-        title: '~/code/nex/packages/client/src/chrome',
+        title: '~/code/kelpi/packages/client/src/chrome',
         subtitle: '',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: P1,
         workspaceColor: 'blue'
     }

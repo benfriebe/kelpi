@@ -8,14 +8,14 @@
  * `focus-follows-mouse` turns a hover into a focus report.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { TERMINAL_FONT_FALLBACKS } from './terminal';
 import { createFakeRendererFactory } from './terminal/testing';
 
@@ -63,7 +63,7 @@ function settingsPayload(input: SettingsInput = {}): Record<string, unknown> {
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     readonly renderers: ReturnType<typeof createFakeRendererFactory>;
     socket(): FakeWebSocket;
     commands(): Record<string, unknown>[];
@@ -73,8 +73,8 @@ interface Harness {
 
 function setup(input: SettingsInput | null = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -178,28 +178,28 @@ describe('the key dispatcher is built from the synced keybind lines', () => {
 
 describe('appearance follows the ghostty config', () => {
     // `applyToDocument` stamps <html> as well, so the provider's own DIV has to be named
-    // explicitly — it is the one carrying the `--nex-*` custom properties for the tree.
+    // explicitly — it is the one carrying the `--kelpi-*` custom properties for the tree.
     const themeRoot = (): HTMLElement => {
-        const element = document.querySelector('div[data-nex-theme]');
+        const element = document.querySelector('div[data-kelpi-theme]');
         if (element === null) throw new Error('no theme container rendered');
         return element as HTMLElement;
     };
 
     it('picks the chrome bucket from the daemon’s luminance verdict, not the OS', () => {
         setup({ backgroundColor: '#ffffff', isDark: false });
-        expect(themeRoot().dataset['nexTheme']).toBe('light');
+        expect(themeRoot().dataset['kelpiTheme']).toBe('light');
     });
 
     it('flips live when the ghostty background changes', () => {
         const h = setup({ backgroundColor: '#ffffff', isDark: false });
-        expect(themeRoot().dataset['nexTheme']).toBe('light');
+        expect(themeRoot().dataset['kelpiTheme']).toBe('light');
         h.push({ backgroundColor: '#1a1b26', isDark: true });
-        expect(themeRoot().dataset['nexTheme']).toBe('dark');
+        expect(themeRoot().dataset['kelpiTheme']).toBe('dark');
     });
 
     it('tints every pane container with the background at the ghostty opacity', () => {
         setup({ backgroundColor: '#1a1b26', backgroundOpacity: 0.5, isDark: true });
-        expect(themeRoot().style.getPropertyValue('--nex-term-bg')).toBe('rgba(26, 27, 38, 0.5)');
+        expect(themeRoot().style.getPropertyValue('--kelpi-term-bg')).toBe('rgba(26, 27, 38, 0.5)');
         const pane = screen.getByTestId(`pane-${PANE_A}`).querySelector('[data-terminal-status]');
         expect((pane as HTMLElement).style.backgroundColor).toBe('rgba(26, 27, 38, 0.5)');
     });

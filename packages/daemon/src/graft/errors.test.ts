@@ -9,10 +9,10 @@ function gitFailure(stderr: string): GitCommandError {
 
 describe('GraftError', () => {
     it('carries the diagnostics the user needs in each kind', () => {
-        const active = GraftError.alreadyActive('/Users/ben/code/nex');
+        const active = GraftError.alreadyActive('/Users/ben/code/kelpi');
         expect(active.kind).toBe('alreadyActive');
-        expect(active.parentRepoRoot).toBe('/Users/ben/code/nex');
-        expect(active.message).toContain('/Users/ben/code/nex');
+        expect(active.parentRepoRoot).toBe('/Users/ben/code/kelpi');
+        expect(active.message).toContain('/Users/ben/code/kelpi');
 
         const busy = GraftError.repoBusy('merge in progress');
         expect(busy.kind).toBe('repoBusy');

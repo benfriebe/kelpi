@@ -10,7 +10,7 @@
  * Wiring: `boot/compose.ts` creates the service, pushes its appearance into the content
  * service (so markdown/diff re-render on a ghostty theme change) and broadcasts
  * `settings-changed`; `ws/sync.ts` puts the snapshot in `welcome` and exposes the mutation
- * verbs. Shape and reasoning: `@nex/protocol` `ws/settings.ts`.
+ * verbs. Shape and reasoning: `@kelpi/protocol` `ws/settings.ts`.
  */
 
 export {

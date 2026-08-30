@@ -8,14 +8,14 @@
  *     it was designed for; applying one switches to that mode AND overwrites the styling.
  *   - `ChromeStyleTheme` — `Nex/Theme/ChromeStyleTheme.swift`'s document: the per-appearance
  *     colour overrides (**both** buckets), the five sidebar knobs and the three sparkline
- *     fields, serialisable as a `.nextheme` file or a one-line `nex-theme:<base64>` code.
+ *     fields, serialisable as a `.nextheme` file or a one-line `kelpi-theme:<base64>` code.
  *
  * What the document deliberately does NOT carry, and why it matters on import: the recipient's
  * chrome appearance mode and their terminal background. A shared theme restyles the chrome; it
  * does not decide whether you work in the dark or repaint your terminal (`applyStyleTheme`,
  * SettingsFeature.swift:390-416).
  *
- * `version` is a compatibility gate, not decoration: a document from a newer Nex is REFUSED
+ * `version` is a compatibility gate, not decoration: a document from a newer Kelpi is REFUSED
  * with the exact Swift wording rather than decoded with its unknown fields silently dropped.
  */
 
@@ -181,7 +181,7 @@ export const BUILT_IN_CHROME_THEMES: readonly BuiltInChromeTheme[] = [
 export const CHROME_THEME_VERSION = 1;
 
 /** `ChromeStyleTheme.codePrefix`. */
-export const CHROME_THEME_CODE_PREFIX = 'nex-theme:';
+export const CHROME_THEME_CODE_PREFIX = 'kelpi-theme:';
 
 export interface ChromeStyleTheme {
     readonly version: number;
@@ -219,9 +219,9 @@ export function builtInStyleTheme(preset: BuiltInChromeTheme): ChromeStyleTheme 
 export class ChromeThemeError extends Error {}
 
 /** `ChromeStyleThemeError.message` — the two user-facing strings, verbatim. */
-export const INVALID_THEME_MESSAGE = "That doesn't look like a Nex theme.";
+export const INVALID_THEME_MESSAGE = "That doesn't look like a Kelpi theme.";
 export function unsupportedVersionMessage(version: number): string {
-    return `This theme was made with a newer version of Nex (v${String(version)}).`;
+    return `This theme was made with a newer version of Kelpi (v${String(version)}).`;
 }
 
 function readNumber(source: Record<string, unknown>, key: string, fallback: number): number {
@@ -273,7 +273,7 @@ export function chromeThemeFileJson(theme: ChromeStyleTheme): string {
     return `${JSON.stringify(sortKeys(theme), null, 2)}\n`;
 }
 
-/** `nex-theme:<base64(compact sorted-key JSON)>` (`shareCode()`). */
+/** `kelpi-theme:<base64(compact sorted-key JSON)>` (`shareCode()`). */
 export function chromeThemeShareCode(theme: ChromeStyleTheme): string {
     const json = JSON.stringify(sortKeys(theme));
     return `${CHROME_THEME_CODE_PREFIX}${base64Encode(json)}`;
@@ -297,7 +297,7 @@ export function parseChromeThemeCode(code: string): ChromeStyleTheme {
     if (!body.startsWith('{')) {
         const decoded = base64Decode(body);
         if (decoded !== null) {
-            // A version gate rejection must reach the user as ITS message, not as "not a Nex
+            // A version gate rejection must reach the user as ITS message, not as "not a Kelpi
             // theme" — so a decode that produced a real object is committed to here.
             return decodeChromeStyleTheme(parseJsonOrThrow(decoded));
         }

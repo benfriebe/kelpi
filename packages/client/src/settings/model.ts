@@ -14,9 +14,9 @@ import {
     keyTriggerDisplayString,
     triggersForAction,
     type KeyBindingMap,
-    type NexAction
-} from '@nex/core/config';
-import type { WsProfile } from '@nex/protocol';
+    type KelpiAction
+} from '@kelpi/core/config';
+import type { WsProfile } from '@kelpi/protocol';
 
 import { actionLabel, actionsInCategory, VISIBLE_CATEGORIES, type SettingsCategory } from './catalog';
 
@@ -30,7 +30,7 @@ export interface TriggerChip {
 }
 
 export interface KeybindingRow {
-    readonly action: NexAction;
+    readonly action: KelpiAction;
     readonly label: string;
     /** ALL bound triggers, `configString`-sorted (§13.1). */
     readonly triggers: readonly TriggerChip[];
@@ -43,7 +43,7 @@ export interface KeybindingSection {
     readonly rows: readonly KeybindingRow[];
 }
 
-function chips(bindings: KeyBindingMap, action: NexAction): TriggerChip[] {
+function chips(bindings: KeyBindingMap, action: KelpiAction): TriggerChip[] {
     return triggersForAction(bindings, action).map((trigger) => ({
         config: keyTriggerConfigString(trigger),
         display: keyTriggerDisplayString(trigger)
@@ -51,7 +51,7 @@ function chips(bindings: KeyBindingMap, action: NexAction): TriggerChip[] {
 }
 
 /** True when the action's trigger set is exactly its shipped default set. */
-export function isDefaultBinding(bindings: KeyBindingMap, action: NexAction): boolean {
+export function isDefaultBinding(bindings: KeyBindingMap, action: KelpiAction): boolean {
     const current = triggersForAction(bindings, action).map(keyTriggerConfigString);
     const shipped = triggersForAction(DEFAULT_KEYBINDINGS, action).map(keyTriggerConfigString);
     return current.length === shipped.length && current.every((value, index) => value === shipped[index]);

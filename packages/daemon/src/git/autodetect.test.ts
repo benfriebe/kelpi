@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import { createRepoAutoDetect, isPathInside, type RepoAutoDetectService } from './autodetect.js';
 import { stubGitService } from './testing.js';
 import type { GitService } from './service.js';
@@ -22,7 +22,7 @@ function ids(): () => string {
 }
 
 interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly detect: RepoAutoDetectService;
     readonly persists: () => number;
     setEnabled(value: boolean): void;
@@ -64,11 +64,11 @@ function harness(git: Partial<GitService> = {}, options: { enabled?: boolean } =
     };
 }
 
-function setPaneDirectory(store: NexStore, paneID: string, directory: string): void {
+function setPaneDirectory(store: KelpiStore, paneID: string, directory: string): void {
     store.dispatch({ type: 'pane-directory-changed', paneID, directory, now: NOW });
 }
 
-function associationsOf(store: NexStore, workspaceID = W1) {
+function associationsOf(store: KelpiStore, workspaceID = W1) {
     return store.getState().workspaces.find((workspace) => workspace.id === workspaceID)?.repoAssociations ?? [];
 }
 

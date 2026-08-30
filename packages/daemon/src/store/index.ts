@@ -12,7 +12,7 @@
 export * from './types.js';
 export * from './derived.js';
 export { applyDomainEvent, applyDomainEvents, deriveEvents } from './events.js';
-export { createStore, type NexStore } from './store.js';
+export { createStore, type KelpiStore } from './store.js';
 export {
     closePaneInWorkspace,
     normalizeURLInput,

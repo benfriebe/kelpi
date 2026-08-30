@@ -545,7 +545,7 @@ describe('drag & drop', () => {
         fireEvent.click(row); // the browser's synthetic click after the gesture
         expect(onActivateWorkspace).not.toHaveBeenCalled();
 
-        // …and the NEXT click is a normal activation again.
+        // …and the KELPIT click is a normal activation again.
         fireEvent.click(screen.getAllByTestId('workspace-row')[0] as HTMLElement);
         expect(onActivateWorkspace).toHaveBeenCalledTimes(1);
     });

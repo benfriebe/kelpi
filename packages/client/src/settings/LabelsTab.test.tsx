@@ -312,18 +312,18 @@ describe('the tab’s shape (H25/H26/H27)', () => {
         expect(row.dataset['hovered']).toBe('false');
         fireEvent.mouseEnter(row);
         expect(row.dataset['hovered']).toBe('true');
-        expect(row.style.background).toContain('--nex-selection-fill');
+        expect(row.style.background).toContain('--kelpi-selection-fill');
 
         const trigger = screen.getByTestId('label-color-ship-trigger');
         expect(trigger.style.outline).toBe('none');
         fireEvent.mouseEnter(trigger);
-        expect(trigger.style.outline).toContain('--nex-selection-stroke');
+        expect(trigger.style.outline).toContain('--kelpi-selection-stroke');
 
         fireEvent.click(trigger);
         const swatch = screen.getByTestId('label-flyover-bg-purple');
         expect(swatch.style.outline).toBe('none');
         fireEvent.mouseEnter(swatch);
-        expect(swatch.style.outline).toContain('--nex-selection-stroke');
+        expect(swatch.style.outline).toContain('--kelpi-selection-stroke');
     });
 });
 

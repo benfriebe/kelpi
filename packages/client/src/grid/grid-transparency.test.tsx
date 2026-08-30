@@ -3,7 +3,7 @@
  *
  * The defect the owner saw on the packaged app was `background-opacity = 0.85` rendering a
  * fully solid terminal pane, and the DOM's share of it was arithmetic rather than a wrong
- * colour: five elements each painted `--nex-bg`, alpha multiplies, and 1 − 0.15⁵ is 0.99992.
+ * colour: five elements each painted `--kelpi-bg`, alpha multiplies, and 1 − 0.15⁵ is 0.99992.
  * Two of those five live here.
  *
  * `PaneGridView.swift:104-118` is a bare `ZStack` over a `GeometryReader` — the grid paints
@@ -21,7 +21,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { empty, leaf, split } from '@nex/core/layout';
+import { empty, leaf, split } from '@kelpi/core/layout';
 
 import { PaneGrid, type PaneGridProps } from './PaneGrid';
 import { tokens } from './tokens';

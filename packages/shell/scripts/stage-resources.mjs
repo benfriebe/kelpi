@@ -12,7 +12,7 @@
  *             child process rather than imported, so the daemon package keeps sole ownership of
  *             its own payload and this script needs no knowledge of node-pty's internals.
  *   client/   `packages/client/dist` — the built web UI. The daemon serves it; the shell hands
- *             it over as `NEXD_CLIENT_DIR` at spawn time (`src/daemon.ts` `daemonSpawnEnv`).
+ *             it over as `KELPID_CLIENT_DIR` at spawn time (`src/daemon.ts` `daemonSpawnEnv`).
  *   node      a Node 24 runtime for the daemon. NOT Electron: docs/research/stack.md is
  *             explicit that `ELECTRON_RUN_AS_NODE` is the wrong answer here (it fights the fuse
  *             hardening and couples the daemon's lifetime to the app bundle), and option 1 of
@@ -23,7 +23,7 @@
  *
  * ## About the Node binary
  *
- * This copies **the Node that is running this script** (or `NEX_NODE_BINARY`). That is right
+ * This copies **the Node that is running this script** (or `KELPI_NODE_BINARY`). That is right
  * for a local `pnpm dist` and wrong for a release: a redistributed Node has to be the official
  * build for the target platform, and in a signed app it must be signed and given the
  * entitlements the app's own signature implies. The release checklist in the repo README says
@@ -51,7 +51,7 @@ const DAEMON_STAGER = path.join(repoRoot, 'packages', 'daemon', 'scripts', 'stag
 const CLIENT_DIST = path.join(repoRoot, 'packages', 'client', 'dist');
 const CLI_DIST = path.join(repoRoot, 'packages', 'cli', 'dist');
 
-/** The app's version, stamped into the CLI launcher so `nex --version` agrees with the app. */
+/** The app's version, stamped into the CLI launcher so `kelpi --version` agrees with the app. */
 function packageVersion() {
     try {
         return JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version;
@@ -66,7 +66,7 @@ function helpers() {
         return require(compiled);
     } catch (error) {
         throw new Error(
-            `packaging helpers are not built (${compiled}). Run \`pnpm --filter @nex/shell build\` first.` +
+            `packaging helpers are not built (${compiled}). Run \`pnpm --filter @kelpi/shell build\` first.` +
                 `\n  cause: ${error instanceof Error ? error.message : String(error)}`
         );
     }
@@ -84,7 +84,7 @@ export function stageDaemon({ stagingDir, platform, arch }) {
     if (result.status !== 0) {
         throw new Error(`staging the daemon payload failed:\n${result.stdout ?? ''}${result.stderr ?? ''}`);
     }
-    return { dir: outDir, entry: path.join(outDir, 'nexd.js'), log: (result.stdout ?? '').trim() };
+    return { dir: outDir, entry: path.join(outDir, 'kelpid.js'), log: (result.stdout ?? '').trim() };
 }
 
 // ── client build ────────────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export function stageClient({ stagingDir, clientDist = CLIENT_DIST }) {
     if (!existsSync(path.join(clientDist, 'index.html'))) {
         throw new Error(
             `the web client is not built (${path.join(clientDist, 'index.html')} is missing). ` +
-                'Run `pnpm --filter @nex/client build` first — a packaged app with no client would ' +
+                'Run `pnpm --filter @kelpi/client build` first — a packaged app with no client would ' +
                 'launch to the daemon\'s "client not built" page.'
         );
     }
@@ -115,15 +115,15 @@ export function probeNodeBinary(binary) {
     return { version, arch };
 }
 
-export function stageNode({ stagingDir, arch, binary = process.env['NEX_NODE_BINARY'] ?? process.execPath }) {
+export function stageNode({ stagingDir, arch, binary = process.env['KELPI_NODE_BINARY'] ?? process.execPath }) {
     const { nodeRuntimeIssues } = helpers();
-    if (!existsSync(binary)) throw new Error(`no Node binary at ${binary} (set NEX_NODE_BINARY)`);
+    if (!existsSync(binary)) throw new Error(`no Node binary at ${binary} (set KELPI_NODE_BINARY)`);
     const probe = probeNodeBinary(binary);
     const issues = nodeRuntimeIssues(probe, arch);
     if (issues.length > 0) {
         throw new Error(
             `refusing to bundle ${binary}: ${issues.join('; ')}. ` +
-                'Set NEX_NODE_BINARY to an official Node build for the target platform.'
+                'Set KELPI_NODE_BINARY to an official Node build for the target platform.'
         );
     }
     const target = path.join(stagingDir, 'node');
@@ -136,7 +136,7 @@ export function stageNode({ stagingDir, arch, binary = process.env['NEX_NODE_BIN
 // ── the CLI payload ─────────────────────────────────────────────────────────────────
 
 /**
- * `cli/` — the `nex` bundle plus the POSIX-sh launcher `/usr/local/bin/nex` points at.
+ * `cli/` — the `kelpi` bundle plus the POSIX-sh launcher `/usr/local/bin/kelpi` points at.
  *
  * It ships OUTSIDE the asar for the same reason the daemon does: that symlink is exec'd by a
  * plain shell, and neither `sh` nor `node` can read through an Electron archive. The launcher
@@ -146,28 +146,33 @@ export function stageNode({ stagingDir, arch, binary = process.env['NEX_NODE_BIN
  */
 export function stageCli({ stagingDir, cliDist = CLI_DIST, version }) {
     const { cliLauncherScript } = helpers();
-    const bundle = path.join(cliDist, 'nex.js');
+    const bundle = path.join(cliDist, 'kelpi.js');
     if (!existsSync(bundle)) {
         throw new Error(
-            `the CLI is not built (${bundle} is missing). Run \`pnpm --filter @nex/cli build\` first — ` +
-                'a packaged app without it could not install the `nex` command.'
+            `the CLI is not built (${bundle} is missing). Run \`pnpm --filter @kelpi/cli build\` first — ` +
+                'a packaged app without it could not install the `kelpi` command.'
         );
     }
     const outDir = path.join(stagingDir, 'cli');
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(outDir, { recursive: true });
-    cpSync(bundle, path.join(outDir, 'nex.js'), { dereference: true });
+    cpSync(bundle, path.join(outDir, 'kelpi.js'), { dereference: true });
     const map = `${bundle}.map`;
-    if (existsSync(map)) cpSync(map, path.join(outDir, 'nex.js.map'), { dereference: true });
-    const launcher = path.join(outDir, 'nex');
+    if (existsSync(map)) cpSync(map, path.join(outDir, 'kelpi.js.map'), { dereference: true });
+    const launcher = path.join(outDir, 'kelpi');
     writeFileSync(launcher, cliLauncherScript(version === undefined ? {} : { version }), 'utf8');
     chmodSync(launcher, 0o755);
-    // `skills/` rides along beside the bundle: `nex install-hooks` looks for the nex-agentic
+    // The pre-rename `nex` compat launcher: identical content, so healed legacy
+    // /usr/local/bin/nex links (and every hook that runs a bare `nex`) exec the same bundle.
+    const compatLauncher = path.join(outDir, 'nex');
+    writeFileSync(compatLauncher, cliLauncherScript(version === undefined ? {} : { version }), 'utf8');
+    chmodSync(compatLauncher, 0o755);
+    // `skills/` rides along beside the bundle: `kelpi install-hooks` looks for the nex-agentic
     // SKILL.md there first (`packages/cli/src/install/skill.ts`), which is how the packaged app
     // ships the skill the Swift bundle carried in Contents/Resources/skills.
     const skills = path.join(path.dirname(cliDist), 'resources', 'skills');
     if (existsSync(skills)) cpSync(skills, path.join(outDir, 'skills'), { recursive: true, dereference: true });
-    return { dir: outDir, launcher, bundle: path.join(outDir, 'nex.js'), skills: path.join(outDir, 'skills') };
+    return { dir: outDir, launcher, bundle: path.join(outDir, 'kelpi.js'), skills: path.join(outDir, 'skills') };
 }
 
 // ── the whole thing ─────────────────────────────────────────────────────────────────

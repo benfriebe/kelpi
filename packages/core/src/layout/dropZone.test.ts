@@ -32,7 +32,7 @@ describe('DropZone helpers', () => {
         expect(draggedPaneGoesFirst('bottom')).toBe(false);
     });
 
-    it('maps the wire edge names used by `nex pane move --target`', () => {
+    it('maps the wire edge names used by `kelpi pane move --target`', () => {
         expect(dropZoneForWireEdge('above')).toBe('top');
         expect(dropZoneForWireEdge('below')).toBe('bottom');
         expect(dropZoneForWireEdge('left-of')).toBe('left');

@@ -2,7 +2,7 @@
  * Bundle the Electron main process into `dist/main.js`, and the packaging helpers into
  * `dist/packaging.cjs`.
  *
- * Same reasoning as the daemon's bundler: `@nex/core`, `@nex/protocol` and `@nex/daemon`
+ * Same reasoning as the daemon's bundler: `@kelpi/core`, `@kelpi/protocol` and `@kelpi/daemon`
  * publish TypeScript source through their `exports` maps (they are workspace-internal), so
  * plain `tsc` output would not be runnable — esbuild resolves and inlines them.
  *
@@ -24,7 +24,7 @@
  * vitest already check, instead of a parallel JavaScript copy. It is NOT shipped: the packaged
  * `app.asar` contains `dist/main.js` only (`PACKAGED_APP_FILES`).
  *
- * Usage: `pnpm --filter @nex/shell build` (or `node scripts/bundle.mjs --watch`).
+ * Usage: `pnpm --filter @kelpi/shell build` (or `node scripts/bundle.mjs --watch`).
  */
 
 import { mkdirSync } from 'node:fs';

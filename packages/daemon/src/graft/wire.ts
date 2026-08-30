@@ -6,7 +6,7 @@
  * precision (the same formatting `workspace-list` uses).
  */
 
-import { formatWireTimestampFromDate, normalizeUUIDLoose } from '@nex/core/codec';
+import { formatWireTimestampFromDate, normalizeUUIDLoose } from '@kelpi/core/codec';
 
 import type { GraftOrphan, GraftSession } from './types.js';
 

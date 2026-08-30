@@ -32,7 +32,7 @@
 import { Menu, Notification, Tray, app, nativeImage, nativeTheme } from 'electron';
 import { WebSocket } from 'ws';
 
-import { type JsonObject, type WsDeltaEvent } from '@nex/protocol';
+import { type JsonObject, type WsDeltaEvent } from '@kelpi/protocol';
 
 import {
     AgentModel,
@@ -59,7 +59,7 @@ import {
     type IconIndicator,
     type TrayStatusPalette
 } from './icon.js';
-// §AGNT-073: the `nex-agent` category — its two actions and the index→action mapping.
+// §AGNT-073: the `kelpi-agent` category — its two actions and the index→action mapping.
 import { agentNotificationSpec, notificationActionID, notificationLogLine } from './notify.js';
 import {
     parseShellAction,
@@ -77,7 +77,7 @@ const BOUNCE_COOLDOWN_MS = 3_000;
 
 export interface StatusHost {
     /**
-     * Tray "Show Nex", a tray pane row's reveal, or a clicked notification.
+     * Tray "Show Kelpi", a tray pane row's reveal, or a clicked notification.
      *
      * Deliberately NOT the tray icon's own click: the shipped status item only toggles its
      * popover (`StatusBarController.swift:32-39,117-126`), so raising the window is always a
@@ -88,7 +88,7 @@ export interface StatusHost {
     isWindowFocused(): boolean;
     /** Tray "Start Daemon" — spawn/adopt and re-point this connection. */
     startDaemon(): void;
-    /** Tray "Quit Nex" (goes through the quit gate). */
+    /** Tray "Quit Kelpi" (goes through the quit gate). */
     quit(): void;
     /**
      * §APP-060: is the window assigned to every Mission Control desktop, and set it.
@@ -101,7 +101,7 @@ export interface StatusHost {
      */
     isVisibleOnAllWorkspaces?(): boolean;
     setVisibleOnAllWorkspaces?(value: boolean): void;
-    /** Tray "Install CLI" — links /usr/local/bin/nex at this bundle (`./cli-install.ts`). */
+    /** Tray "Install CLI" — links /usr/local/bin/kelpi at this bundle (`./cli-install.ts`). */
     installCLI?(): void;
     /** A notification's default action: activate, switch workspace, focus the pane. */
     revealPane?(workspaceID: string, paneID: string): void;
@@ -156,7 +156,7 @@ export interface StatusHost {
      * daemon opens files by PATH on its own machine — so the request travels client → daemon →
      * here, and the answer goes back out as an ordinary `open` control command
      * (`daemon/src/ws/desktop.ts`). `paneID` is the pane that asked, so the new markdown pane
-     * lands in that pane's workspace exactly as `nex md` would.
+     * lands in that pane's workspace exactly as `kelpi md` would.
      */
     promptOpenFile?(paneID: string | null): void;
     /** The ••• menu's "Check for Updates…" (APP-026). */
@@ -196,7 +196,7 @@ export interface StatusController {
     revealPane(workspaceID: string, paneID: string): boolean;
     /**
      * Ask the UI in this shell's window to run a menu item it owns (`menu-command`): ⌘O's
-     * picker entry point, "Nex Help". Returns false when the socket is not ready.
+     * picker entry point, "Kelpi Help". Returns false when the socket is not ready.
      */
     sendMenuRequest(command: string): boolean;
     /**
@@ -315,7 +315,7 @@ export function createStatusController(options: StatusOptions): StatusController
     /** In-flight `flush-saves-request` resolvers, keyed by the id we sent. */
     const pendingFlushes = new Map<string, (ok: boolean) => void>();
     let requestSeq = 0;
-    /** `nex-<paneID>` replace-on-repost identity (agent-lifecycle.md §7.5). */
+    /** `kelpi-<paneID>` replace-on-repost identity (agent-lifecycle.md §7.5). */
     const liveNotifications = new Map<string, Notification>();
 
     /**
@@ -443,7 +443,7 @@ export function createStatusController(options: StatusOptions): StatusController
         return Menu.buildFromTemplate([
             ...rows,
             { type: 'separator' },
-            { label: 'Show Nex', click: () => host.showWindow() },
+            { label: 'Show Kelpi', click: () => host.showWindow() },
             // §APP-060. A checkbox row rather than a submenu: it is one boolean, and the tray is
             // the only menu that still exists when the window is closed — which is exactly when
             // a user wants to change where the window will come back.
@@ -475,7 +475,7 @@ export function createStatusController(options: StatusOptions): StatusController
                 ? []
                 : ([{ label: 'Install CLI', click: () => host.installCLI?.() }] as const)),
             { type: 'separator' },
-            { label: 'Quit Nex', click: () => host.quit() }
+            { label: 'Quit Kelpi', click: () => host.quit() }
         ]);
     }
 
@@ -527,7 +527,7 @@ export function createStatusController(options: StatusOptions): StatusController
             // its button's action is `togglePopover`, which shows or closes the popover and
             // nothing else — no `activate`, no window raise (`StatusBarController.swift:32-39,
             // 117-126`). Raising the window stays a DELIBERATE choice inside the menu: the
-            // "Show Nex" row below, or any pane row (which reveals through `revealFromTray`).
+            // "Show Kelpi" row below, or any pane row (which reveals through `revealFromTray`).
             indicator = next;
             lastPaletteSignature = palette;
             // `handlers=` is MEASURED off the tray's own listener registry, not asserted: the
@@ -577,7 +577,7 @@ export function createStatusController(options: StatusOptions): StatusController
         // notification can only exist if we posted it, and one whose pane is no longer waiting
         // is stale whether or not the transition happened before we attached.
         for (const paneID of noLongerWaitingPanes(waiting, nextWaiting)) {
-            liveNotifications.get(`nex-${paneID}`)?.close();
+            liveNotifications.get(`kelpi-${paneID}`)?.close();
         }
         waiting = nextWaiting;
 
@@ -597,9 +597,9 @@ export function createStatusController(options: StatusOptions): StatusController
         if (!Notification.isSupported()) return;
         const paneID = readString(message, 'paneID');
         const workspaceID = readString(message, 'workspaceID');
-        const title = readString(message, 'title') ?? 'Nex';
+        const title = readString(message, 'title') ?? 'Kelpi';
         const body = readString(message, 'body') ?? '';
-        const key = readString(message, 'dedupeKey') ?? (paneID === undefined ? title : `nex-${paneID}`);
+        const key = readString(message, 'dedupeKey') ?? (paneID === undefined ? title : `kelpi-${paneID}`);
 
         // Replace-on-repost: close the pane's previous toast before showing the new one.
         liveNotifications.get(key)?.close();
@@ -610,7 +610,7 @@ export function createStatusController(options: StatusOptions): StatusController
             if (paneID !== undefined && workspaceID !== undefined) host.revealPane?.(workspaceID, paneID);
         };
 
-        // §AGNT-073: every agent notification carries the `nex-agent` category's action set,
+        // §AGNT-073: every agent notification carries the `kelpi-agent` category's action set,
         // built in one place so the two buttons are always the same two, in the same order.
         const spec = agentNotificationSpec({ title, body });
         const notification = new Notification({
@@ -672,7 +672,7 @@ export function createStatusController(options: StatusOptions): StatusController
             // The token rides in the hello as well as the bearer header — see `./hello.ts` for
             // why both halves matter now that the upgrade no longer refuses a bad token.
             next.send(
-                JSON.stringify(shellHello({ token: location.token, name: 'nex-shell', version: app.getVersion() }))
+                JSON.stringify(shellHello({ token: location.token, name: 'kelpi-shell', version: app.getVersion() }))
             );
         });
 

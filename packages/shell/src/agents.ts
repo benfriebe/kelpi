@@ -19,7 +19,7 @@
  * is what forward compatibility with an additive protocol means).
  */
 
-import type { JsonObject, JsonValue, WsDeltaEvent } from '@nex/protocol';
+import type { JsonObject, JsonValue, WsDeltaEvent } from '@kelpi/protocol';
 
 /** The two non-idle pane statuses. `idle` panes are simply absent from the mirror. */
 export type AgentPaneStatus = 'running' | 'waitingForInput';
@@ -419,12 +419,12 @@ export function trayMenuRows(counts: AgentCounts, connected = true): readonly Tr
 }
 
 export function trayTooltip(counts: AgentCounts, connected: boolean): string {
-    if (!connected) return 'Nex — daemon not reachable';
-    if (counts.waiting === 0 && counts.running === 0) return 'Nex — all clear';
+    if (!connected) return 'Kelpi — daemon not reachable';
+    if (counts.waiting === 0 && counts.running === 0) return 'Kelpi — all clear';
     const parts: string[] = [];
     if (counts.waiting > 0) parts.push(`${String(counts.waiting)} waiting`);
     if (counts.running > 0) parts.push(`${String(counts.running)} running`);
-    return `Nex — ${parts.join(', ')}`;
+    return `Kelpi — ${parts.join(', ')}`;
 }
 
 /**
@@ -493,6 +493,6 @@ export function quitConfirmDetail(counts: AgentCounts): string {
     return (
         `${plural(summary.agents, 'agent')} across ${plural(summary.workspaces, 'workspace')} ` +
         'are still active. They keep running in the background — quitting only closes this ' +
-        'window. Reopen Nex to attach again.'
+        'window. Reopen Kelpi to attach again.'
     );
 }

@@ -27,7 +27,7 @@
  * the metric is *stated*. The pixel readings quoted per block come from the live sandbox boots.
  */
 
-import { DEFAULT_WS_SETTINGS } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS } from '@kelpi/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -256,7 +256,7 @@ describe('S64 — the other two plain tabs take the same 10 px inset', () => {
             <KeybindingsTab
                 bindings={clientKeyBindings()}
                 actions={actions()}
-                configPath={DEFAULT_SETTINGS_PATHS.nexConfig}
+                configPath={DEFAULT_SETTINGS_PATHS.kelpiConfig}
             />
         );
         const row = screen.getAllByTestId(/^keybinding-row-/)[0] as HTMLElement;

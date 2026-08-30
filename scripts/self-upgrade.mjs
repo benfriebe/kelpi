@@ -38,17 +38,17 @@ const value = (flag) => {
 };
 
 const appPath =
-    value('--app') ?? path.join(repoRoot, 'packages', 'shell', 'out', 'Nex-darwin-arm64', 'Nex.app');
+    value('--app') ?? path.join(repoRoot, 'packages', 'shell', 'out', 'Kelpi-darwin-arm64', 'Kelpi.app');
 const runDir =
     value('--run-dir') ?? path.join(os.homedir(), 'Library', 'Application Support', 'nexd', 'run');
 const dryRun = has('--dry-run');
 const noPackage = has('--no-package');
 const relaunchCmd = value('--relaunch-cmd') ?? `open "${appPath}"`;
-// PATH-ANCHORED by default: a generic "nexd.js start" would also match sandbox daemons and —
+// PATH-ANCHORED by default: a generic "kelpid.js start" would also match sandbox daemons and —
 // in test invocations — the real one. The pattern must name the bundle whose daemon we own.
 const daemonPattern =
     value('--daemon-pattern') ??
-    (appPath.endsWith('.app') ? `${appPath}/Contents/Resources/daemon/nexd.js` : 'nexd.js start');
+    (appPath.endsWith('.app') ? `${appPath}/Contents/Resources/daemon/kelpid.js` : 'kelpid.js start');
 
 const log = (line) => console.log(`[self-upgrade] ${line}`);
 
@@ -70,7 +70,7 @@ if (!has('--skip-verify') && !dryRun) {
 
 if (!noPackage && !dryRun) {
     log('building + packaging the tree (skip with --no-package)…');
-    execSync('pnpm --filter @nex/daemon build && pnpm --filter @nex/client build && pnpm --filter @nex/cli build && pnpm --filter @nex/shell build', {
+    execSync('pnpm --filter @kelpi/daemon build && pnpm --filter @kelpi/client build && pnpm --filter @kelpi/cli build && pnpm --filter @kelpi/shell build', {
         cwd: repoRoot,
         stdio: 'inherit'
     });
@@ -113,15 +113,33 @@ const psMatch = (pattern, alsoRequire) => {
         return [];
     }
 };
-const appPids = appPath.endsWith('.app') ? psMatch(`${appPath}/Contents/MacOS/`) : [];
+// Pre-rename bundles this repo may still be running: the FIRST Kelpi promote has to stop the
+// Nex-named app/daemon it is replacing, which no Kelpi-shaped pattern can see. ONLY this
+// checkout's own out/ bundle — /Applications/Nex.app may be the Swift original, which this
+// script must never touch (same anchoring rule as `daemonPattern`).
+const legacyAppPaths = [
+    path.join(repoRoot, 'packages', 'shell', 'out', 'Nex-darwin-arm64', 'Nex.app')
+].filter((candidate) => candidate !== appPath);
+
+const appPids = appPath.endsWith('.app')
+    ? [
+          ...psMatch(`${appPath}/Contents/MacOS/`),
+          ...legacyAppPaths.flatMap((legacy) => psMatch(`${legacy}/Contents/MacOS/`))
+      ]
+    : [];
 // `start --foreground` filters out transient CLI invocations running through the same bundle.
-const daemonPids = psMatch(daemonPattern, 'start --foreground');
+const daemonPids = [
+    ...psMatch(daemonPattern, 'start --foreground'),
+    ...legacyAppPaths.flatMap((legacy) =>
+        psMatch(`${legacy}/Contents/Resources/daemon/nexd.js`, 'start --foreground')
+    )
+];
 
 log(`running app pids: ${appPids.join(', ') || '(none)'}`);
 log(`running daemon pids: ${daemonPids.join(', ') || '(none)'}`);
-const insideNex = process.env.NEX_PANE_ID !== undefined;
-if (insideNex) {
-    log(`invoked from INSIDE a Nex pane (${process.env.NEX_PANE_ID}) — this session will be`);
+const insideKelpi = process.env.NEX_PANE_ID !== undefined;
+if (insideKelpi) {
+    log(`invoked from INSIDE a Kelpi pane (${process.env.NEX_PANE_ID}) — this session will be`);
     log('cut and then RESUMED by the restored pane (claude --resume). That is the expected dance.');
 }
 
@@ -134,8 +152,8 @@ if (dryRun) {
 // ── 4. the detached restarter ───────────────────────────────────────────────────────
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const logFile = path.join(os.tmpdir(), `nex-self-upgrade-${stamp}.log`);
-const script = path.join(os.tmpdir(), `nex-self-upgrade-${stamp}.sh`);
+const logFile = path.join(os.tmpdir(), `kelpi-self-upgrade-${stamp}.log`);
+const script = path.join(os.tmpdir(), `kelpi-self-upgrade-${stamp}.sh`);
 
 const waitGone = (pid) => `
 i=0; while kill -0 ${pid} 2>/dev/null && [ $i -lt 30 ]; do sleep 0.5; i=$((i+1)); done
@@ -144,7 +162,7 @@ kill -0 ${pid} 2>/dev/null && kill -9 ${pid} 2>/dev/null`;
 fs.writeFileSync(
     script,
     `#!/bin/sh
-# nex self-upgrade restarter (${stamp}) — detached so it survives the daemon it kills.
+# kelpi self-upgrade restarter (${stamp}) — detached so it survives the daemon it kills.
 exec > "${logFile}" 2>&1
 echo "restarter: starting ($(date))"
 sleep 1

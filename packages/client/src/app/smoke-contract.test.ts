@@ -5,10 +5,10 @@
  * BUILT daemon and the BUILT client, without importing the workspace's TypeScript — so it
  * re-declares the PTY frame layout and the protocol version. That duplication is only safe if
  * something fails when the protocol moves, which is this file: it reads the script and asserts
- * every constant still matches `@nex/protocol`.
+ * every constant still matches `@kelpi/protocol`.
  */
 
-import { PTY_FRAME_HEADER_BYTES, PTY_FRAME_TYPES, WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { PTY_FRAME_HEADER_BYTES, PTY_FRAME_TYPES, WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,11 +49,11 @@ describe('smoke.mjs protocol constants', () => {
         // The Swift app owns /tmp/nex.sock on a dev machine. The socket the daemon is given
         // must be inside the throwaway root, and the guard that refuses the production path
         // must still be there.
-        expect(source).toContain("const socketPath = path.join(root, 'nexd.sock')");
-        expect(source).toContain('NEXD_SOCKET_PATH: socketPath');
+        expect(source).toContain("const socketPath = path.join(root, 'kelpid.sock')");
+        expect(source).toContain('KELPID_SOCKET_PATH: socketPath');
         expect(source).toContain('refusing to touch the production socket');
         // The run dir, database and HOME are throwaway too.
-        for (const variable of ['NEXD_RUN_DIR: runDir', 'NEXD_DB_PATH: path.join(root,', 'HOME: home']) {
+        for (const variable of ['KELPID_RUN_DIR: runDir', 'KELPID_DB_PATH: path.join(root,', 'HOME: home']) {
             expect(source).toContain(variable);
         }
     });

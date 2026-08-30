@@ -1,8 +1,8 @@
 /**
- * The `/usr/local/bin/nex` install and self-heal (APP-003, APP-004, APP-005).
+ * The `/usr/local/bin/kelpi` install and self-heal (APP-003, APP-004, APP-005).
  *
  * Every path here is under an `mkdtemp` root — including the "global" link path, which is a
- * parameter for exactly this reason. A test that used the real `/usr/local/bin/nex` would
+ * parameter for exactly this reason. A test that used the real `/usr/local/bin/kelpi` would
  * replace the CLI the developer running the suite is using.
  *
  * The cases are organised around the promises the module makes rather than its functions: it
@@ -25,7 +25,7 @@ import {
     describeCliInstall,
     healCliSymlink,
     installCliSymlink,
-    isNexManagedInstall,
+    isKelpiManagedInstall,
     nodeCliFs,
     planCliInstall,
     resolveCliInstallMode,
@@ -43,19 +43,19 @@ let linkPath = '';
 function makeBundle(name: string): string {
     const cliDir = path.join(root, name, 'Contents', 'Resources', 'cli');
     fs.mkdirSync(cliDir, { recursive: true });
-    fs.writeFileSync(path.join(cliDir, 'nex.js'), '#!/usr/bin/env node\n');
-    const launcher = path.join(cliDir, 'nex');
+    fs.writeFileSync(path.join(cliDir, 'kelpi.js'), '#!/usr/bin/env node\n');
+    const launcher = path.join(cliDir, 'kelpi');
     fs.writeFileSync(launcher, cliLauncherScript({ version: '0.1.0' }), { mode: 0o755 });
     return launcher;
 }
 
 beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-cli-install-'));
-    bundle = 'Nex.app';
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-cli-install-'));
+    bundle = 'Kelpi.app';
     target = makeBundle(bundle);
     binDir = path.join(root, 'usr', 'local', 'bin');
     fs.mkdirSync(binDir, { recursive: true });
-    linkPath = path.join(binDir, 'nex');
+    linkPath = path.join(binDir, 'kelpi');
 });
 
 afterEach(() => {
@@ -73,8 +73,8 @@ describe('the launcher is what makes attribution possible', () => {
         expect(script).toContain('nex-cli-launcher');
         expect(script).toContain('while [ -L "$target" ]');
         expect(script).toContain('exec "$dir/../node" "$bundle" "$@"');
-        expect(script).toContain('NEX_CLI_VERSION="${NEX_CLI_VERSION:-9.9.9}"');
-        expect(cliLauncherScript()).not.toContain('NEX_CLI_VERSION');
+        expect(script).toContain('KELPI_CLI_VERSION="${KELPI_CLI_VERSION:-9.9.9}"');
+        expect(cliLauncherScript()).not.toContain('KELPI_CLI_VERSION');
     });
 });
 
@@ -88,7 +88,7 @@ describe('drift repair (APP-003)', () => {
     });
 
     it('repoints a link left behind by a previous version of this app', () => {
-        const old = makeBundle('Nex-0.0.9.app');
+        const old = makeBundle('Kelpi-0.0.9.app');
         fs.symlinkSync(old, linkPath);
         expect(plan().action).toBe('drifted');
 
@@ -98,7 +98,7 @@ describe('drift repair (APP-003)', () => {
     });
 
     it('adopts a DANGLING link into a bundle that has been deleted', () => {
-        const ghost = path.join(root, 'Moved.app', 'Contents', 'Resources', 'cli', 'nex');
+        const ghost = path.join(root, 'Moved.app', 'Contents', 'Resources', 'cli', 'kelpi');
         fs.symlinkSync(ghost, linkPath);
         expect(fs.existsSync(ghost)).toBe(false);
         expect(heal().kind).toBe('linked');
@@ -131,7 +131,7 @@ describe('opt-in is preserved (APP-004)', () => {
     });
 
     it('leaves a LIVE symlink into someone else\'s tree alone', () => {
-        const homebrew = path.join(root, 'homebrew', 'Cellar', 'nex', 'bin', 'nex');
+        const homebrew = path.join(root, 'homebrew', 'Cellar', 'kelpi', 'bin', 'kelpi');
         fs.mkdirSync(path.dirname(homebrew), { recursive: true });
         fs.writeFileSync(homebrew, '#!/bin/sh\necho not us\n', { mode: 0o755 });
         fs.symlinkSync(homebrew, linkPath);
@@ -155,7 +155,7 @@ describe('opt-in is preserved (APP-004)', () => {
     });
 
     it('leaves a developer\'s pin to a checkout alone', () => {
-        const checkout = path.join(root, 'code', 'new_nex', 'packages', 'cli', 'dist', 'nex.js');
+        const checkout = path.join(root, 'code', 'new_nex', 'packages', 'cli', 'dist', 'kelpi.js');
         fs.mkdirSync(path.dirname(checkout), { recursive: true });
         fs.writeFileSync(checkout, '#!/usr/bin/env node\n', { mode: 0o755 });
         fs.symlinkSync(checkout, linkPath);
@@ -163,21 +163,21 @@ describe('opt-in is preserved (APP-004)', () => {
     });
 
     it('leaves an unattributable REGULAR file alone (the conservative divergence)', () => {
-        fs.writeFileSync(linkPath, 'some other nex binary', { mode: 0o755 });
-        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(false);
+        fs.writeFileSync(linkPath, 'some other kelpi binary', { mode: 0o755 });
+        expect(isKelpiManagedInstall(linkPath, nodeCliFs)).toBe(false);
         expect(heal().kind).toBe('skipped');
-        expect(fs.readFileSync(linkPath, 'utf8')).toBe('some other nex binary');
+        expect(fs.readFileSync(linkPath, 'utf8')).toBe('some other kelpi binary');
     });
 
     it('but DOES replace a copy of our own launcher (marker in the file)', () => {
         fs.writeFileSync(linkPath, cliLauncherScript({ version: '0.0.1' }), { mode: 0o755 });
-        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(true);
+        expect(isKelpiManagedInstall(linkPath, nodeCliFs)).toBe(true);
         expect(heal().kind).toBe('linked');
         expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
     });
 
     it('does nothing at all when this build has no CLI payload', () => {
-        const result = healCliSymlink({ linkPath, target: path.join(root, 'nothing', 'nex') }, nodeCliFs);
+        const result = healCliSymlink({ linkPath, target: path.join(root, 'nothing', 'kelpi') }, nodeCliFs);
         expect(result.kind).toBe('skipped');
         expect(result.plan.action).toBe('unavailable');
         expect(installCliSymlink({ linkPath, target: '' }, nodeCliFs).kind).toBe('skipped');
@@ -220,14 +220,14 @@ describe('a compiled CLI left by the old `cp` installer (APP-004)', () => {
 
     it('attributes a real shipped CLI binary and heals it into a symlink', () => {
         if (!fs.existsSync(SHIPPED_CLI)) {
-            // No Nex.app on this machine — the synthetic Mach-O cases below carry the logic;
+            // No Kelpi.app on this machine — the synthetic Mach-O cases below carry the logic;
             // this one is the reality check, and it is honest about not having run.
             expect(fs.existsSync(SHIPPED_CLI)).toBe(false);
             return;
         }
         fs.writeFileSync(linkPath, fs.readFileSync(SHIPPED_CLI), { mode: 0o600 });
         expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(true);
-        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(true);
+        expect(isKelpiManagedInstall(linkPath, nodeCliFs)).toBe(true);
         expect(plan().action).toBe('drifted');
         expect(heal().kind).toBe('linked');
         expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
@@ -246,7 +246,7 @@ describe('a compiled CLI left by the old `cp` installer (APP-004)', () => {
             fs.rmSync(linkPath, { force: true });
             fs.copyFileSync(machOFixture(`half-${only.slice(0, 5)}`, [only]), linkPath);
             expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
-            expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(false);
+            expect(isKelpiManagedInstall(linkPath, nodeCliFs)).toBe(false);
             expect(plan().action).toBe('foreign');
             expect(heal().kind).toBe('skipped');
             expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(false);
@@ -266,7 +266,7 @@ describe('a compiled CLI left by the old `cp` installer (APP-004)', () => {
             mode: 0o755
         });
         expect(carriesCompiledCliMarkers(linkPath, nodeCliFs)).toBe(false);
-        expect(isNexManagedInstall(linkPath, nodeCliFs)).toBe(false);
+        expect(isKelpiManagedInstall(linkPath, nodeCliFs)).toBe(false);
         expect(heal().kind).toBe('skipped');
         expect(fs.readFileSync(linkPath, 'utf8')).toContain('exec other-nex');
     });
@@ -296,7 +296,7 @@ describe('a compiled CLI left by the old `cp` installer (APP-004)', () => {
 
 describe('when it cannot write (APP-005)', () => {
     it('reports the manual command instead of escalating', () => {
-        const old = makeBundle('Nex-0.0.9.app');
+        const old = makeBundle('Kelpi-0.0.9.app');
         fs.symlinkSync(old, linkPath);
         fs.chmodSync(binDir, 0o500);
         try {
@@ -320,7 +320,7 @@ describe('when it cannot write (APP-005)', () => {
 });
 
 describe('launch policy', () => {
-    const env = (value?: string): NodeJS.ProcessEnv => (value === undefined ? {} : { NEX_CLI_INSTALL: value });
+    const env = (value?: string): NodeJS.ProcessEnv => (value === undefined ? {} : { KELPI_CLI_INSTALL: value });
 
     it('is off outside a packaged app — a checkout is not something to symlink', () => {
         expect(resolveCliInstallMode({ env: env(), isPackaged: false, alreadyPrompted: false })).toBe('off');
@@ -331,7 +331,7 @@ describe('launch policy', () => {
         expect(resolveCliInstallMode({ env: env(), isPackaged: true, alreadyPrompted: true })).toBe('heal');
     });
 
-    it('honours NEX_CLI_INSTALL, including from an unpackaged run (what the smokes set)', () => {
+    it('honours KELPI_CLI_INSTALL, including from an unpackaged run (what the smokes set)', () => {
         expect(resolveCliInstallMode({ env: env('off'), isPackaged: true, alreadyPrompted: false })).toBe('off');
         expect(resolveCliInstallMode({ env: env('AUTO'), isPackaged: false, alreadyPrompted: true })).toBe('auto');
         expect(resolveCliInstallMode({ env: env(' heal '), isPackaged: false, alreadyPrompted: false })).toBe('heal');
@@ -341,14 +341,14 @@ describe('launch policy', () => {
 });
 
 describe('the link path', () => {
-    it('is the one the Swift installer and `nex install-hooks --link` use', () => {
-        expect(DEFAULT_CLI_LINK_PATH).toBe('/usr/local/bin/nex');
+    it('is the one the Swift installer and `kelpi install-hooks --link` use', () => {
+        expect(DEFAULT_CLI_LINK_PATH).toBe('/usr/local/bin/kelpi');
         expect(resolveCliLinkPath({})).toBe(DEFAULT_CLI_LINK_PATH);
-        expect(resolveCliLinkPath({ NEX_CLI_LINK_PATH: '   ' })).toBe(DEFAULT_CLI_LINK_PATH);
+        expect(resolveCliLinkPath({ KELPI_CLI_LINK_PATH: '   ' })).toBe(DEFAULT_CLI_LINK_PATH);
     });
 
     it('can be aimed inside a sandbox, which is how the packaged smoke tests the heal', () => {
-        expect(resolveCliLinkPath({ NEX_CLI_LINK_PATH: '/tmp/box/bin/nex' })).toBe('/tmp/box/bin/nex');
+        expect(resolveCliLinkPath({ KELPI_CLI_LINK_PATH: '/tmp/box/bin/kelpi' })).toBe('/tmp/box/bin/kelpi');
     });
 });
 

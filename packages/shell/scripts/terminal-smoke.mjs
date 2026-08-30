@@ -5,7 +5,7 @@
  * 3038 structural tests passed while the first human look at the UI found tofu boxes, a prompt
  * filler running off the right edge and a re-attach that painted stacked copies of the prompt.
  * Nothing in jsdom can catch that: it has no canvas, no fonts and no window. This smoke boots
- * the REAL stack (a sandbox `nexd` + the real Electron shell), gives the shell a
+ * the REAL stack (a sandbox `kelpid` + the real Electron shell), gives the shell a
  * powerlevel10k-SHAPED zsh prompt — Nerd Font private-use glyphs, a full-width dotted filler,
  * a right-aligned timestamp — and then checks the three things that were wrong:
  *
@@ -23,7 +23,7 @@
  * It also screenshots every step, so a human can look — which is the actual acceptance bar.
  *
  * Isolation rules (non-negotiable — the production app owns the real socket on a dev machine):
- * every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/nexd.sock` and NEVER
+ * every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/kelpid.sock` and NEVER
  * `/tmp/nex.sock`, HOME is a throwaway (the fixture writes `.zshrc` there; the real `$HOME` is
  * never touched), Electron gets its own `--user-data-dir`, and every port is ephemeral.
  *
@@ -45,10 +45,10 @@ const repoRoot = path.resolve(shellRoot, '..', '..');
 const require = createRequire(path.join(shellRoot, 'package.json'));
 const WebSocket = require('ws');
 
-const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
-const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
+const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 
 const argv = process.argv.slice(2);
 const options = {
@@ -111,8 +111,8 @@ const FIXTURE_ZSHRC = [
     'zmodload -F zsh/datetime b:strftime 2>/dev/null',
     '',
     '# Nerd Font glyphs (private use area) + powerline separators.',
-    "typeset -g NEX_SEP=$'\\ue0b1' NEX_FOLDER=$'\\uf07b' NEX_BRANCH=$'\\ue0a0'",
-    "typeset -g NEX_CLOCK=$'\\uf017' NEX_OS=$'\\uf179' NEX_ARROW=$'\\ue0b0'",
+    "typeset -g KELPI_SEP=$'\\ue0b1' KELPI_FOLDER=$'\\uf07b' KELPI_BRANCH=$'\\ue0a0'",
+    "typeset -g KELPI_CLOCK=$'\\uf017' KELPI_OS=$'\\uf179' KELPI_ARROW=$'\\ue0b0'",
     '',
     '# A glyph probe line: any of these rendering as a box means the font never loaded.',
     'glyphs() {',
@@ -136,24 +136,24 @@ const FIXTURE_ZSHRC = [
     '  print -r -- "COLUMNS=$COLUMNS LINES=$LINES"',
     '}',
     '',
-    'nex_prompt_parts() {',
+    'kelpi_prompt_parts() {',
     '  local now',
     "  strftime -s now '%H:%M:%S' $EPOCHSECONDS 2>/dev/null || now='--:--:--'",
-    '  typeset -g NEX_LEFT="${NEX_ARROW} ${NEX_FOLDER} ${PWD/#$HOME/~} ${NEX_SEP} ${NEX_BRANCH} main "',
-    '  typeset -g NEX_RIGHT=" ${NEX_CLOCK} ${now} ${NEX_OS} "',
+    '  typeset -g KELPI_LEFT="${KELPI_ARROW} ${KELPI_FOLDER} ${PWD/#$HOME/~} ${KELPI_SEP} ${KELPI_BRANCH} main "',
+    '  typeset -g KELPI_RIGHT=" ${KELPI_CLOCK} ${now} ${KELPI_OS} "',
     '}',
-    'add-zsh-hook precmd nex_prompt_parts',
-    'nex_prompt_parts',
+    'add-zsh-hook precmd kelpi_prompt_parts',
+    'kelpi_prompt_parts',
     '',
-    'nex_fill() {',
-    '  local -i pad=$(( COLUMNS - ${#NEX_LEFT} - ${#NEX_RIGHT} ))',
+    'kelpi_fill() {',
+    '  local -i pad=$(( COLUMNS - ${#KELPI_LEFT} - ${#KELPI_RIGHT} ))',
     '  (( pad < 1 )) && return',
     '  print -rn -- "${(l:$pad::·:)}"',
     '}',
     '',
     "# %F{n} is zero-width to zsh's own arithmetic and PROMPT_SUBST re-evaluates the fill on",
     '# every draw, so the line is ALWAYS exactly $COLUMNS wide — the width oracle.',
-    "PROMPT='%F{39}${NEX_LEFT}%F{240}$(nex_fill)%F{108}${NEX_RIGHT}%f",
+    "PROMPT='%F{39}${KELPI_LEFT}%F{240}$(kelpi_fill)%F{108}${KELPI_RIGHT}%f",
     "%F{240}╰─%F{120}❯%f '",
     "RPROMPT=''",
     'export PAGER=cat'
@@ -169,7 +169,7 @@ async function makeSandbox() {
     fs.mkdirSync(userData, { recursive: true });
     fs.writeFileSync(path.join(home, '.zshrc'), FIXTURE_ZSHRC);
 
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
     fs.writeFileSync(path.join(root, 'config'), '');
 
@@ -192,15 +192,15 @@ async function makeSandbox() {
             // arithmetic would be the thing under test instead of the terminal.
             LANG: 'en_US.UTF-8',
             LC_ALL: 'en_US.UTF-8',
-            NEXD_RUN_DIR: path.join(root, 'run'),
-            NEXD_SOCKET_PATH: socketPath,
-            NEXD_TCP_PORT: String(controlPort),
-            NEXD_DB_PATH: path.join(root, 'nex.db'),
-            NEXD_CONFIG_PATH: path.join(root, 'config'),
-            NEXD_HTTP_PORT: String(httpPort),
-            NEXD_HTTP_HOST: '127.0.0.1',
-            NEXD_ENTRY: daemonEntry,
-            NEXD_CLIENT_DIR: clientDist
+            KELPID_RUN_DIR: path.join(root, 'run'),
+            KELPID_SOCKET_PATH: socketPath,
+            KELPID_TCP_PORT: String(controlPort),
+            KELPID_DB_PATH: path.join(root, 'nex.db'),
+            KELPID_CONFIG_PATH: path.join(root, 'config'),
+            KELPID_HTTP_PORT: String(httpPort),
+            KELPID_HTTP_HOST: '127.0.0.1',
+            KELPID_ENTRY: daemonEntry,
+            KELPID_CLIENT_DIR: clientDist
         },
         cleanup() {
             fs.rmSync(root, { recursive: true, force: true });
@@ -463,10 +463,10 @@ async function session(sandbox, label, size, { type }) {
 
 async function ensureBuilds() {
     const builds = [
-        ['@nex/daemon', daemonEntry, ['pnpm', ['--filter', '@nex/daemon', 'build']]],
-        ['@nex/client', path.join(clientDist, 'index.html'), ['pnpm', ['--filter', '@nex/client', 'build']]],
-        ['@nex/cli', cliEntry, ['pnpm', ['--filter', '@nex/cli', 'build']]],
-        ['@nex/shell', shellEntry, ['node', [path.join(shellRoot, 'scripts', 'bundle.mjs')]]]
+        ['@kelpi/daemon', daemonEntry, ['pnpm', ['--filter', '@kelpi/daemon', 'build']]],
+        ['@kelpi/client', path.join(clientDist, 'index.html'), ['pnpm', ['--filter', '@kelpi/client', 'build']]],
+        ['@kelpi/cli', cliEntry, ['pnpm', ['--filter', '@kelpi/cli', 'build']]],
+        ['@kelpi/shell', shellEntry, ['node', [path.join(shellRoot, 'scripts', 'bundle.mjs')]]]
     ];
     for (const [name, artefact, [command, args]] of builds) {
         if (!options.build && fs.existsSync(artefact)) continue;

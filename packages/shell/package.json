@@ -1,10 +1,10 @@
 {
-  "name": "@nex/shell",
+  "name": "@kelpi/shell",
   "version": "0.1.0",
   "private": true,
-  "description": "Thin Electron shell for New Nex: loads the daemon-served UI, adds native chrome.",
+  "description": "Thin Electron shell for New Kelpi: loads the daemon-served UI, adds native chrome.",
   "main": "dist/main.js",
-  "productName": "Nex",
+  "productName": "Kelpi",
   "scripts": {
     "build": "node scripts/bundle.mjs",
     "start": "electron .",
@@ -19,9 +19,9 @@
     "make": "electron-forge make"
   },
   "dependencies": {
-    "@nex/core": "workspace:*",
-    "@nex/daemon": "workspace:*",
-    "@nex/protocol": "workspace:*",
+    "@kelpi/core": "workspace:*",
+    "@kelpi/daemon": "workspace:*",
+    "@kelpi/protocol": "workspace:*",
     "update-electron-app": "^3.3.0",
     "ws": "^8.21.3"
   },

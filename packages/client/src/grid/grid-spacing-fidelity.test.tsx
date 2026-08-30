@@ -15,7 +15,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { leaf, split } from '@nex/core/layout';
+import { leaf, split } from '@kelpi/core/layout';
 
 import { PaneGrid } from './PaneGrid';
 import {
@@ -279,7 +279,7 @@ describe('S20 — the badge pill leaves the descender inside it', () => {
 describe('S30 — the header keeps all 24 px of its content band', () => {
     it('paints the divider with an inset shadow instead of a border', () => {
         const { header } = renderHeader(600);
-        expect(header.style.boxShadow).toBe('inset 0 -1px 0 var(--nex-border, #24242B)');
+        expect(header.style.boxShadow).toBe('inset 0 -1px 0 var(--kelpi-border, #24242B)');
         expect(header.style.borderBottom).toBe('');
         expect(header.style.height).toBe('24px');
     });

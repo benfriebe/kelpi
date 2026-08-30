@@ -18,7 +18,7 @@ import {
 const dirs: string[] = [];
 
 function tempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-resources-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-resources-'));
     dirs.push(dir);
     return dir;
 }
@@ -29,10 +29,10 @@ afterEach(() => {
 
 describe('the packaged Resources layout', () => {
     it('is the one forge.config.cjs stages and daemon.ts reads', () => {
-        expect(packagedDaemonEntry('/A/Contents/Resources')).toBe('/A/Contents/Resources/daemon/nexd.js');
+        expect(packagedDaemonEntry('/A/Contents/Resources')).toBe('/A/Contents/Resources/daemon/kelpid.js');
         expect(packagedClientDir('/A/Contents/Resources')).toBe('/A/Contents/Resources/client');
         expect(packagedNodeBinary('/A/Contents/Resources')).toBe('/A/Contents/Resources/node');
-        expect(packagedCliLauncher('/A/Contents/Resources')).toBe('/A/Contents/Resources/cli/nex');
+        expect(packagedCliLauncher('/A/Contents/Resources')).toBe('/A/Contents/Resources/cli/kelpi');
     });
 
     it('names each entry exactly once, so the Forge config has one thing to copy', () => {
@@ -52,10 +52,10 @@ describe('hasCliPayload', () => {
         expect(hasCliPayload(undefined)).toBe(false);
         expect(hasCliPayload('')).toBe(false);
         fs.mkdirSync(path.join(dir, 'cli'));
-        // The bundle alone is not enough: /usr/local/bin/nex points at the launcher.
-        fs.writeFileSync(path.join(dir, 'cli', 'nex.js'), '');
+        // The bundle alone is not enough: /usr/local/bin/kelpi points at the launcher.
+        fs.writeFileSync(path.join(dir, 'cli', 'kelpi.js'), '');
         expect(hasCliPayload(dir)).toBe(false);
-        fs.writeFileSync(path.join(dir, 'cli', 'nex'), '#!/bin/sh\n');
+        fs.writeFileSync(path.join(dir, 'cli', 'kelpi'), '#!/bin/sh\n');
         expect(hasCliPayload(dir)).toBe(true);
     });
 });

@@ -1,5 +1,5 @@
-import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@nex/protocol';
-import { enclosingSplitPath, ratioAtPath, type PaneLayout } from '@nex/core/layout';
+import { isWireCommand, WS_PROTOCOL_VERSION, type WireMessage } from '@kelpi/protocol';
+import { enclosingSplitPath, ratioAtPath, type PaneLayout } from '@kelpi/core/layout';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
@@ -63,7 +63,7 @@ function hello(overrides: Record<string, unknown> = {}): string {
         type: 'hello',
         protocolVersion: WS_PROTOCOL_VERSION,
         token: 'tok',
-        client: { kind: 'browser', name: 'nex-web' },
+        client: { kind: 'browser', name: 'kelpi-web' },
         ...overrides
     });
 }
@@ -129,7 +129,7 @@ describe('handshake', () => {
             message: BAD_TOKEN_MESSAGE
         });
         // The message has to tell a person what to do, not just what failed.
-        expect(BAD_TOKEN_MESSAGE).toContain('nexd url');
+        expect(BAD_TOKEN_MESSAGE).toContain('kelpid url');
         expect(transport.closes[0]?.code).toBe(WS_CLOSE_CODES.unauthorized);
         expect(session.ready).toBe(false);
     });
@@ -318,12 +318,12 @@ describe('reports', () => {
     });
 
     it('lets an unchanged visibility report pull the last-active workspace back (run-B L3)', () => {
-        // The audit's "the daemon and the window disagree indefinitely": a `nex workspace
+        // The audit's "the daemon and the window disagree indefinitely": a `kelpi workspace
         // create` from a terminal moves the daemon's last-active, and the window that is still
         // showing the OLD workspace then clicks its row — an unchanged report for this
         // connection, but the only signal the daemon gets. While `setActiveWorkspace` returned
         // early on its own value being unchanged, that click could never pull the answer back
-        // and `nex workspace list`'s ACTIVE column stayed wrong for the rest of the session.
+        // and `kelpi workspace list`'s ACTIVE column stayed wrong for the rest of the session.
         const f = fixture();
         const { session } = f.connect();
         session.handleMessage(hello());
@@ -813,7 +813,7 @@ describe('broadcast', () => {
             workspaceID: W1,
             title: 'dev',
             body: 'Agent is waiting for input',
-            dedupeKey: `nex-${f.paneID}`
+            dedupeKey: `kelpi-${f.paneID}`
         });
 
         expect(a.transport.ofType('notification')).toHaveLength(1);
@@ -846,7 +846,7 @@ describe('broadcast', () => {
             workspaceID: W1,
             title: 'dev',
             body: 'Agent is waiting for input',
-            dedupeKey: `nex-${f.paneID}`
+            dedupeKey: `kelpi-${f.paneID}`
         });
 
         expect(focused.transport.ofType('notification')).toHaveLength(0);
@@ -910,7 +910,7 @@ describe('hotkey-status relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         shell.session.handleMessage(report());
@@ -928,7 +928,7 @@ describe('hotkey-status relay', () => {
     it('replays the last report to a client that attaches afterwards', () => {
         const f = fixture();
         const shell = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         shell.session.handleMessage(report());
 
         const late = f.connect();
@@ -945,7 +945,7 @@ describe('hotkey-status relay', () => {
     it('replaces the remembered report, so a success clears a standing failure', () => {
         const f = fixture();
         const shell = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         shell.session.handleMessage(report());
         shell.session.handleMessage(
             report({ ok: true, error: null, accelerator: 'Control+Alt+N', source: 'settings' })
@@ -961,7 +961,7 @@ describe('hotkey-status relay', () => {
     it('drops a malformed report rather than remembering it', () => {
         const f = fixture();
         const shell = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         // No `ok` field: nothing can be concluded, and a stored bad frame would be re-sent to
         // every future client.
         shell.session.handleMessage(JSON.stringify({ type: 'hotkey-status', error: 'nope' }));
@@ -975,7 +975,7 @@ describe('hotkey-status relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
         shell.session.handleMessage(report({ source: 'whatever' }));
         expect(
@@ -998,7 +998,7 @@ describe('shell-activation relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: false, windowID: 'WIN-1' }));
@@ -1020,7 +1020,7 @@ describe('shell-activation relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: true }));
@@ -1030,7 +1030,7 @@ describe('shell-activation relay', () => {
     it('never replays activation to a client that attaches afterwards', () => {
         const f = fixture();
         const shell = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', active: false, windowID: 'WIN-1' }));
 
         const late = f.connect();
@@ -1042,7 +1042,7 @@ describe('shell-activation relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         shell.session.handleMessage(JSON.stringify({ type: 'shell-activation', windowID: 'WIN-1' }));
@@ -1066,7 +1066,7 @@ describe('workspace-selection relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         window.session.handleMessage(
@@ -1092,7 +1092,7 @@ describe('workspace-selection relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', selected: 1 }));
@@ -1111,7 +1111,7 @@ describe('workspace-selection relay', () => {
         );
 
         const late = f.connect();
-        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        late.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         expect(late.transport.ofType('workspace-selection')).toHaveLength(0);
     });
 
@@ -1119,7 +1119,7 @@ describe('workspace-selection relay', () => {
         const f = fixture();
         const shell = f.connect();
         const window = f.connect();
-        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'nex-shell' } }));
+        shell.session.handleMessage(hello({ client: { kind: 'electron', name: 'kelpi-shell' } }));
         window.session.handleMessage(hello());
 
         window.session.handleMessage(JSON.stringify({ type: 'workspace-selection', windowID: 'WIN-1' }));
@@ -1132,7 +1132,7 @@ describe('workspace-selection relay', () => {
 /**
  * §WS-156 / §APP-067 — the GUI's own workspace delete.
  *
- * The clause it exists for is the shipped app's asymmetry: `nex workspace delete` refuses at one
+ * The clause it exists for is the shipped app's asymmetry: `kelpi workspace delete` refuses at one
  * workspace, ⌘W on the last pane of the last one does not, and the window lands on "No workspace
  * selected". The port had one verb for both, so the GUI inherited the CLI's refusal.
  *

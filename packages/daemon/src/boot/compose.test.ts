@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { leaf } from '@nex/core/layout';
+import { leaf } from '@kelpi/core/layout';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { probeControlPing } from '../control/index.js';
@@ -37,14 +37,14 @@ interface Scratch {
 }
 
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-compose-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-compose-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -250,7 +250,7 @@ describe('createDaemon', () => {
         expect(info.socketPath).toBe(first.socketPath);
 
         // The degraded state travels the wire: a real `ping` over the run-dir socket decodes
-        // into the same facts `nexd status` and `nex doctor` print.
+        // into the same facts `kelpid status` and `kelpi doctor` print.
         const probed = await probeControlPing({ socketPath: intruder.paths.socket });
         expect(probed.alive).toBe(true);
         expect(probed.compat).toMatchObject({ path: first.socketPath });
@@ -270,7 +270,7 @@ describe('createDaemon', () => {
         const paths = scratch();
         const helpers = path.join(paths.root, 'helpers');
         fs.mkdirSync(helpers, { recursive: true });
-        const daemon = daemonFor(paths, { env: { NEXD_HELPERS_DIR: helpers } });
+        const daemon = daemonFor(paths, { env: { KELPID_HELPERS_DIR: helpers } });
         await daemon.start();
         await daemon.restored;
 
@@ -331,7 +331,7 @@ describe('createDaemon', () => {
      * so a Settings write has to move it NOW rather than being filed away for the next boot.
      *
      * Driven through the settings service (the same `set-general-setting` path Settings ▸
-     * General ▸ Network uses), against a daemon with no `NEXD_TCP_PORT` in its environment —
+     * General ▸ Network uses), against a daemon with no `KELPID_TCP_PORT` in its environment —
      * an env-supplied port deliberately outranks the file and is not re-bound (a dev container
      * asked for that port on the command line).
      */
@@ -340,7 +340,7 @@ describe('createDaemon', () => {
         fs.writeFileSync(paths.configPath, 'tcp-port = 0\n');
         const daemon = daemonFor(paths);
         await daemon.start();
-        // Read through the same accessor `ping`, `nexd status` and Settings ▸ Network read, so
+        // Read through the same accessor `ping`, `kelpid status` and Settings ▸ Network read, so
         // this asserts what those three report rather than which server object holds it.
         const tcp = (): { requested: number; bound: number | null } | null =>
             (daemon.ctx.controlTransport?.().tcp ?? null) as { requested: number; bound: number | null } | null;
@@ -373,7 +373,7 @@ describe('createDaemon', () => {
      */
     it('spawns a fresh install pane immediately when no window is expected', async () => {
         const paths = scratch();
-        // A CLI-only daemon: the compat suite, CI, `nexd start` on a headless box. There is
+        // A CLI-only daemon: the compat suite, CI, `kelpid start` on a headless box. There is
         // nobody to report a grid, so waiting for one would buy nothing and cost a second.
         const daemon = daemonFor(paths, { bootDeferWindowMs: 0 });
         await daemon.start();

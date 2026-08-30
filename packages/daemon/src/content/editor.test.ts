@@ -147,7 +147,7 @@ describe('writeFileAtomic', () => {
     });
 
     const tmpdir = (): string => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-editor-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-editor-'));
         dirs.push(dir);
         return dir;
     };

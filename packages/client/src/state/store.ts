@@ -19,7 +19,7 @@
  * daemon's derived helpers usable verbatim.
  */
 
-import { applyDomainEvents, type DaemonState, type DomainEvent } from '@nex/daemon/store';
+import { applyDomainEvents, type DaemonState, type DomainEvent } from '@kelpi/daemon/store';
 import {
     DEFAULT_WS_CHROME_SETTINGS,
     DEFAULT_WS_SETTINGS,
@@ -33,7 +33,7 @@ import {
     type WsSystemStats,
     type WsTerminalThemeResolution,
     type WsTransportStatus
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 import { create } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
@@ -42,7 +42,7 @@ import type { ConnectionStatus } from '../connection';
 // ── wire → mirror hydration ─────────────────────────────────────────────────────────
 
 /**
- * Delta kinds the daemon actually emits. `@nex/protocol`'s `WS_DELTA_KINDS` is now a
+ * Delta kinds the daemon actually emits. `@kelpi/protocol`'s `WS_DELTA_KINDS` is now a
  * transcription of the store's own `DomainEvent` union (reconciled in WP3.6 — it used to
  * predate the store and list shapes like `app-patch` that the daemon never sends), so the set
  * is imported rather than restated and the two cannot drift.
@@ -156,7 +156,7 @@ export interface DaemonSlice {
 }
 
 export interface Toast {
-    /** `nex-<paneID>` for pane notifications: a re-post REPLACES rather than stacks. */
+    /** `kelpi-<paneID>` for pane notifications: a re-post REPLACES rather than stacks. */
     readonly id: string;
     readonly kind: WsNotificationKind | 'info';
     readonly title: string;
@@ -244,7 +244,7 @@ export interface UiSlice {
     readonly toasts: readonly Toast[];
 }
 
-export interface NexActions {
+export interface KelpiActions {
     /**
      * A `welcome.settings` payload or a `settings-changed` broadcast. `undefined` (an older
      * daemon that sends no settings) leaves the defaults in place and stays unloaded.
@@ -291,7 +291,7 @@ export interface NexActions {
     clearToasts(): void;
 }
 
-export interface NexState extends NexActions {
+export interface KelpiState extends KelpiActions {
     readonly daemon: DaemonSlice;
     readonly ui: UiSlice;
     readonly settings: SettingsSlice;
@@ -577,7 +577,7 @@ function hydrateChromeSettings(raw: unknown): WsChromeSettings {
         sparklineColor: typeof raw['sparklineColor'] === 'string' ? raw['sparklineColor'] : fallback.sparklineColor,
         sparklineWidth: Math.round(number(raw['sparklineWidth'], 16, 80, fallback.sparklineWidth)),
         // SET-219's four search-highlight colours. They are read straight into a stylesheet and
-        // into the terminal palette, so a non-hex value falls back to the Nex default rather
+        // into the terminal palette, so a non-hex value falls back to the Kelpi default rather
         // than reaching a CSS parser as `undefined`.
         searchMatchColor: hexOr(raw['searchMatchColor'], fallback.searchMatchColor),
         searchMatchTextColor: hexOr(raw['searchMatchTextColor'], fallback.searchMatchTextColor),
@@ -650,12 +650,12 @@ function echoSurvives(echo: FocusEcho, previous: DaemonState, next: DaemonState)
     return before === after;
 }
 
-export type NexStoreApi = StoreApi<NexState>;
+export type KelpiStoreApi = StoreApi<KelpiState>;
 
-type SetState = NexStoreApi['setState'];
-type GetState = NexStoreApi['getState'];
+type SetState = KelpiStoreApi['setState'];
+type GetState = KelpiStoreApi['getState'];
 
-export function nexStateCreator(set: SetState, get: GetState): NexState {
+export function kelpiStateCreator(set: SetState, get: GetState): KelpiState {
     return {
         daemon: initialDaemonSlice(),
         ui: initialUiSlice(),
@@ -804,7 +804,7 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
 
         pushToast(toast) {
             const ui = get().ui;
-            // Replace-by-id: the daemon's `nex-<paneID>` dedupe identity applies to the in-app
+            // Replace-by-id: the daemon's `kelpi-<paneID>` dedupe identity applies to the in-app
             // fallback exactly as it does to a Web Notification's `tag`.
             const kept = ui.toasts.filter((existing) => existing.id !== toast.id);
             const toasts = [...kept, toast].slice(-MAX_TOASTS);
@@ -834,9 +834,9 @@ export function nexStateCreator(set: SetState, get: GetState): NexState {
 }
 
 /** A fresh, isolated store — one per test, and the seam any host can reuse. */
-export function createNexStore(): NexStoreApi {
-    return createStore<NexState>(nexStateCreator);
+export function createKelpiStore(): KelpiStoreApi {
+    return createStore<KelpiState>(kelpiStateCreator);
 }
 
 /** The app-wide store hook (assembly wires it to a connection via `state/bridge.ts`). */
-export const useNexStore = create<NexState>(nexStateCreator);
+export const useKelpiStore = create<KelpiState>(kelpiStateCreator);

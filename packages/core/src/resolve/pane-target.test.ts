@@ -115,7 +115,7 @@ describe('resolvePaneTarget - label targets', () => {
 
     it('refuses a bare label with no scope at all', () => {
         expect(error(resolvePaneTarget(state, { target: 'worker' }))).toBe(
-            "label 'worker' requires --workspace <name-or-id> when called from outside a Nex pane"
+            "label 'worker' requires --workspace <name-or-id> when called from outside a Kelpi pane"
         );
     });
 

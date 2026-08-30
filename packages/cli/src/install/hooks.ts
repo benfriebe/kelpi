@@ -1,5 +1,5 @@
 /**
- * `nex install-hooks` — the port of `scripts/install-hooks.sh`'s two hook sections
+ * `kelpi install-hooks` — the port of `scripts/install-hooks.sh`'s two hook sections
  * (CLI-145, CLI-147, AGNT-123, AGNT-124).
  *
  * The shell script's shape, kept:
@@ -16,7 +16,7 @@
  * Two things this adds to the shell script, both because a CLI is re-run more casually than a
  * script someone downloads:
  *
- *   - **A backup before the first write.** `<file>.nex-backup` is a copy of the bytes that were
+ *   - **A backup before the first write.** `<file>.kelpi-backup` is a copy of the bytes that were
  *     there, taken only when an existing file is actually about to change. A refusal (malformed
  *     JSON) writes nothing at all, so a backup from an earlier good run stays intact.
  *   - **`unchanged` instead of a rewrite.** The merge is idempotent, so a re-run that produces
@@ -35,10 +35,10 @@ import { installSkill, type SkillOutcome } from './skill.js';
 import { CLAUDE_HOOK_WIRINGS, CODEX_HOOK_WIRINGS, canonicalBases, hookPayload } from './spec.js';
 
 /** Suffix of the pre-write copy. Deterministic on purpose: a timestamped name is unfindable. */
-export const BACKUP_SUFFIX = '.nex-backup';
+export const BACKUP_SUFFIX = '.kelpi-backup';
 
 export const CODEX_TRUST_NOTE =
-    'Codex requires one-time hook trust — run /hooks inside codex to trust the nex hooks (repeat whenever hooks.json changes). Requires Codex CLI >= 0.142.';
+    'Codex requires one-time hook trust — run /hooks inside codex to trust the kelpi hooks (repeat whenever hooks.json changes). Requires Codex CLI >= 0.142.';
 
 export type InstallAction = 'created' | 'merged' | 'unchanged' | 'skipped' | 'failed';
 
@@ -73,7 +73,7 @@ export interface InstallHooksOptions {
     readonly claudeDir: string;
     /** Codex CLI's config directory (`~/.codex`). */
     readonly codexDir: string;
-    /** What the hooks will invoke — `nex`, or an absolute path. See `./self.ts`. */
+    /** What the hooks will invoke — `kelpi`, or an absolute path. See `./self.ts`. */
     readonly commandPrefix: string;
     readonly dryRun: boolean;
     /** `--skill-source`: a directory holding the `nex-agentic` SKILL.md. */

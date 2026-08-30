@@ -899,7 +899,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-zoom-badge-${pane.id}`}
                     // L27: `.orange` (`PaneHeaderView.swift:109,112`), as a token — the hex that
-                    // was here was the only colour in the grid outside `--nex-*`, so it ignored
+                    // was here was the only colour in the grid outside `--kelpi-*`, so it ignored
                     // the light/dark swap.
                     color={tokens.orange}
                     fill={12}
@@ -916,7 +916,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 <Badge
                     testID={`pane-sync-badge-${pane.id}`}
                     // L27: `.orange` too (`PaneHeaderView.swift:134,137`) — the SAME orange as
-                    // ZOOM. Painted with `--nex-agent` it was the agent amber, so a synced pane
+                    // ZOOM. Painted with `--kelpi-agent` it was the agent amber, so a synced pane
                     // read as a pane with an agent running in it.
                     color={tokens.orange}
                     fill={12}
@@ -999,7 +999,7 @@ function PaneHeaderImpl(props: PaneHeaderProps): ReactElement {
                 content frame; this asks it to open. */}
             {/* No `.shell` branch, deliberately. `PaneHeaderView.swift:177-272`'s per-type block
                 is markdown-copy / markdown-edit / diff-refresh and then the shared tail; the
-                shipped app has no restart control anywhere (`grep -rn restartAgent Nex/` is
+                shipped app has no restart control anywhere (`grep -rn restartAgent Kelpi/` is
                 empty), and a one-click restart of a live agent sitting between Split Down and
                 Close is a mis-click nobody asked for. The capability itself stays: the
                 `restart-pane-agent` verb, its daemon channel and `PaneActions.onRestartAgent`

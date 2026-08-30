@@ -21,7 +21,7 @@
  *     crash at any point in between is recoverable on the next launch.
  */
 
-import { newUUID, parseUUID } from '@nex/core/codec';
+import { newUUID, parseUUID } from '@kelpi/core/codec';
 
 import { describeRepoState, type GitService } from '../git/index.js';
 import {
@@ -46,7 +46,7 @@ export const GRAFT_SHUTDOWN_GRACE_MS = 2_000;
 
 /** The auto-stash message tag, so the stash is identifiable in `git stash list`. */
 export function stashMessageFor(associationID: string): string {
-    return `nex-graft:${associationID}`;
+    return `kelpi-graft:${associationID}`;
 }
 
 /** The git surface graft drives (a `GitService` satisfies it). */

@@ -55,7 +55,7 @@ const HAS_GIT = gitAvailable();
 const roots: string[] = [];
 
 function tmpDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nex-graft-${prefix}-`));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kelpi-graft-${prefix}-`));
     roots.push(dir);
     return dir;
 }
@@ -67,10 +67,10 @@ function git(cwd: string, ...args: string[]): string {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
             ...process.env,
-            GIT_AUTHOR_NAME: 'nex',
-            GIT_AUTHOR_EMAIL: 'nex@example.com',
-            GIT_COMMITTER_NAME: 'nex',
-            GIT_COMMITTER_EMAIL: 'nex@example.com',
+            GIT_AUTHOR_NAME: 'kelpi',
+            GIT_AUTHOR_EMAIL: 'kelpi@example.com',
+            GIT_COMMITTER_NAME: 'kelpi',
+            GIT_COMMITTER_EMAIL: 'kelpi@example.com',
             GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_CONFIG_SYSTEM: '/dev/null'
         }

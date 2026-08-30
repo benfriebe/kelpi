@@ -1,25 +1,25 @@
 /**
  * The CLI's own identity (cli.md §3.1, port note 9).
  *
- * The Swift binary walked symlinks to the enclosing `Nex.app/Contents/Info.plist` because the
+ * The Swift binary walked symlinks to the enclosing `Kelpi.app/Contents/Info.plist` because the
  * CLI and the app were one artifact; a bundled TS CLI has no bundle to walk, so the version is
  * compiled in and overridable at runtime by the packaging step. `"dev"` stays the unknown
- * fallback, and `nex --version` still prints `nex <version>`.
+ * fallback, and `kelpi --version` still prints `kelpi <version>`.
  *
  * `build` matters as much as `version` here: in the new architecture the CLI and the daemon
  * are SEPARATE artifacts, so doctor compares the whole identity (and, ahead of it, the wire
  * protocol number) rather than assuming one bundle shipped both. See `doctor/checks.ts`.
  */
 
-import { PROTOCOL_VERSION } from '@nex/protocol';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 /** Keep in step with `packages/cli/package.json`. */
 export const CLI_VERSION = '0.1.0';
-/** Stamped by the packaging step through `NEX_CLI_BUILD`; a local build is just "dev". */
+/** Stamped by the packaging step through `KELPI_CLI_BUILD`; a local build is just "dev". */
 export const CLI_BUILD = 'dev';
 
-export const VERSION_ENV = 'NEX_CLI_VERSION';
-export const BUILD_ENV = 'NEX_CLI_BUILD';
+export const VERSION_ENV = 'KELPI_CLI_VERSION';
+export const BUILD_ENV = 'KELPI_CLI_BUILD';
 
 function override(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
     const raw = env[key]?.trim();

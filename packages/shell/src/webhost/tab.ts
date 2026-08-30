@@ -8,11 +8,11 @@
  *     the scripts carry their own `window !== window.top` guards (`./scripts.ts`). The same
  *     sources are also evaluated once against the *current* document, because
  *     `addScriptToEvaluateOnNewDocument` only applies to documents created after the call.
- *   - **Host↔page messaging** is `Runtime.addBinding('nexPost')` + the bridge shim, and the
+ *   - **Host↔page messaging** is `Runtime.addBinding('kelpiPost')` + the bridge shim, and the
  *     main-frame check the Swift host got for free from `WKScriptMessage.frameInfo` is
  *     reconstructed here from `Runtime.executionContextCreated` (context → frame) plus
  *     `Page.frameNavigated` (which frame is the main one).
- *   - **Evaluation** is `Runtime.evaluate {awaitPromise:true, returnByValue:true}` — `__nexAct.wait`
+ *   - **Evaluation** is `Runtime.evaluate {awaitPromise:true, returnByValue:true}` — `__kelpiAct.wait`
  *     returns a Promise and a plain evaluate would serialise it as `{}` (§8.2's bug class).
  *   - **Console** is the CDP branch (`Runtime.consoleAPICalled` / `exceptionThrown`,
  *     `Log.entryAdded`, `Network.loadingFailed` / `responseReceived`) formatted by
@@ -142,7 +142,7 @@ export interface TabFactoryOptions {
     readonly sessionFor: (paneID: string, isPrivate: boolean) => Session;
     readonly events: TabEventSink;
     /**
-     * Replay a browser chord the page just swallowed into Nex's own renderer (`./keys.ts`).
+     * Replay a browser chord the page just swallowed into Kelpi's own renderer (`./keys.ts`).
      *
      * Without it the web-pane priority key layer is unreachable the moment a user clicks the
      * page: a `WebContentsView` is a separate renderer with its own keyboard focus, so ⌘F / ⌘L /
@@ -229,7 +229,7 @@ class ElectronTab implements HostTab {
     private readonly contents: WebContents;
     private readonly events: TabEventSink;
     private readonly onError: ((error: Error, context: string) => void) | undefined;
-    /** `./keys.ts`: replay a chord the page swallowed into Nex's own renderer. */
+    /** `./keys.ts`: replay a chord the page swallowed into Kelpi's own renderer. */
     private readonly forwardChord: ((chord: ForwardedChord) => void) | undefined;
 
     /** Resolves once the CDP session is enabled and the scripts are installed. */
@@ -499,11 +499,11 @@ class ElectronTab implements HostTab {
             contents.on('before-input-event', (event, input) => {
                 const chord = forwardedChord(input as unknown as ChordInput);
                 if (chord === null) return;
-                // Taken from the page and given to Nex — both halves matter: without the
+                // Taken from the page and given to Kelpi — both halves matter: without the
                 // `preventDefault` the page would ALSO act on it (⌘F would open Chromium's own
                 // find alongside ours).
                 event.preventDefault();
-                log(`web pane ${this.paneID}: forwarding meta${chord.shift ? '+shift' : ''}+${chord.code} to the Nex window`);
+                log(`web pane ${this.paneID}: forwarding meta${chord.shift ? '+shift' : ''}+${chord.code} to the Kelpi window`);
                 forward(chord);
             });
         }
@@ -635,7 +635,7 @@ class ElectronTab implements HostTab {
             // at "loading" forever on a dead host (`did-stop-loading` does fire, but only after
             // Chromium's own error page commits — this is the immediate, honest close).
             this.emitNavState(false);
-            // §WEB-029: replace Chromium's error page with Nex's own card — the failed address,
+            // §WEB-029: replace Chromium's error page with Kelpi's own card — the failed address,
             // the message and a Retry anchor. `lastAttemptedURL` is unchanged, so the URL bar
             // still shows where the user was going (the Swift's `baseURL` trick, by another
             // route). Best-effort: a card that cannot load leaves Chromium's page in place.
@@ -930,7 +930,7 @@ class ElectronTab implements HostTab {
     /**
      * WEB-043: give the page keyboard focus.
      *
-     * The pane's page is a separate renderer, so focus does not follow the Nex window's own
+     * The pane's page is a separate renderer, so focus does not follow the Kelpi window's own
      * focus ring — a pane focused by ⌘]/⌘[ or from the sidebar would keep typing into the
      * client until it was clicked. The URL-bar exemption is the CLIENT's (it only sends this
      * when no chrome text field has the caret), mirroring the Swift `claimFirstResponder`
@@ -973,7 +973,7 @@ class ElectronTab implements HostTab {
         try {
             result = await this.send('Runtime.evaluate', {
                 expression,
-                // The whole point (§8.2): `__nexAct.wait` returns a Promise.
+                // The whole point (§8.2): `__kelpiAct.wait` returns a Promise.
                 awaitPromise: true,
                 returnByValue: true,
                 // Lets an actuated click open a popup / start audio like a real one would.

@@ -7,7 +7,7 @@
  *
  * Right cluster = the system-stat gauges (APP-078…085), then the three global agent counts,
  * then a live `HH:MM` clock. The stats are sampled by the DAEMON in this architecture (§15 /
- * `@nex/protocol` `ws/stats.ts`): this renders the broadcast it is handed, in the enabled set's
+ * `@kelpi/protocol` `ws/stats.ts`): this renders the broadcast it is handed, in the enabled set's
  * canonical order, and renders nothing at all when the master toggle is off — the gauge row
  * simply is not there, exactly as `enabledStatKinds` returning `[]` produces in the Swift view.
  *
@@ -37,8 +37,8 @@ import {
 } from './theme';
 import { tokens } from './tokens';
 import type { ChromePane } from './types';
-import type { WorkspaceColor } from '@nex/daemon/store';
-import { SYSTEM_STATS_INTERVAL_MS, ZERO_SYSTEM_STATS, type WsSystemStats } from '@nex/protocol';
+import type { WorkspaceColor } from '@kelpi/daemon/store';
+import { SYSTEM_STATS_INTERVAL_MS, ZERO_SYSTEM_STATS, type WsSystemStats } from '@kelpi/protocol';
 
 export type AgentBucket = 'running' | 'waiting' | 'inactive';
 

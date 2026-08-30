@@ -6,13 +6,13 @@
  * dispatcher, the theme provider, the terminal font) is memoized on it.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { CommandClient, NexConnection } from '../connection';
+import { CommandClient, KelpiConnection } from '../connection';
 import { createFakeSocketFactory } from '../connection/testing';
 import { connectStore } from './bridge';
-import { createNexStore, hydrateSettings } from './store';
+import { createKelpiStore, hydrateSettings } from './store';
 
 const SETTINGS: WsSettingsSnapshot = {
     keybindLines: ['ctrl+alt+t=split_right'],
@@ -78,7 +78,7 @@ describe('hydrateSettings', () => {
 
 describe('the settings slice', () => {
     it('starts on the defaults, unloaded', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         expect(store.getState().settings).toEqual({
             value: DEFAULT_WS_SETTINGS,
             loaded: false,
@@ -88,14 +88,14 @@ describe('the settings slice', () => {
     });
 
     it('applySettings marks it loaded', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         store.getState().applySettings(SETTINGS);
         expect(store.getState().settings.loaded).toBe(true);
         expect(store.getState().settings.value).toEqual(SETTINGS);
     });
 
     it('stays unloaded (and on the defaults) for a daemon that sends nothing', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         store.getState().applySettings(undefined);
         expect(store.getState().settings).toEqual({
             value: DEFAULT_WS_SETTINGS,
@@ -105,7 +105,7 @@ describe('the settings slice', () => {
     });
 
     it('keeps object identity when an identical payload arrives again', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         store.getState().applySettings(SETTINGS);
         const first = store.getState().settings;
         store.getState().applySettings({ ...SETTINGS, general: { ...SETTINGS.general } });
@@ -113,7 +113,7 @@ describe('the settings slice', () => {
     });
 
     it('replaces the value when something actually changed', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         store.getState().applySettings(SETTINGS);
         store.getState().applySettings({ ...SETTINGS, keybindLines: [] });
         expect(store.getState().settings.value.keybindLines).toEqual([]);
@@ -121,7 +121,7 @@ describe('the settings slice', () => {
     });
 
     it('is untouched by snapshot and delta replay', () => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         store.getState().applySettings(SETTINGS);
         store.getState().applySnapshot(0, {
             workspaces: [],
@@ -138,13 +138,13 @@ describe('the settings slice', () => {
 
 describe('the bridge', () => {
     const setup = (): {
-        store: ReturnType<typeof createNexStore>;
+        store: ReturnType<typeof createKelpiStore>;
         sockets: ReturnType<typeof createFakeSocketFactory>;
         dispose(): void;
     } => {
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const connection = new NexConnection({
+        const store = createKelpiStore();
+        const connection = new KelpiConnection({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,
@@ -280,7 +280,7 @@ describe('the settings verbs', () => {
         dispose(): void;
     } => {
         const sockets = createFakeSocketFactory();
-        const connection = new NexConnection({
+        const connection = new KelpiConnection({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,

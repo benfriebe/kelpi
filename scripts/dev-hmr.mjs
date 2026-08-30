@@ -3,7 +3,7 @@
  * The sub-second UI inner loop: vite dev with hot-module-reload over a sandbox daemon.
  *
  * The client is a static SPA the daemon serves from `dist` — but its vite config already
- * carries a `/ws` proxy with `NEX_DAEMON_URL` override, so vite's dev server can serve the
+ * carries a `/ws` proxy with `KELPI_DAEMON_URL` override, so vite's dev server can serve the
  * SAME app with HMR while every WebSocket frame proxies to a real daemon. Edit a component,
  * watch the running UI patch itself in place: no build, no reload, state intact.
  *
@@ -35,13 +35,13 @@ const stateArg = (() => {
 const persistent = stateArg !== undefined;
 const root = persistent
     ? path.resolve(stateArg.replace(/^~(?=\/|$)/, os.homedir()))
-    : fs.mkdtempSync(path.join(os.tmpdir(), 'nex-hmr-'));
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-hmr-'));
 for (const sub of ['home', 'work']) fs.mkdirSync(path.join(root, sub), { recursive: true });
 const configPath = path.join(root, 'config');
 if (!fs.existsSync(configPath)) fs.writeFileSync(configPath, '');
 
 // The daemon needs built bundles once (vite serves the CLIENT from source thereafter).
-if (!fs.existsSync(path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'))) {
+if (!fs.existsSync(path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'))) {
     console.log('[dev-hmr] building (first run)…');
     await buildAll(repoRoot, { log: (line) => console.log(`[dev-hmr] ${line}`) });
 }
@@ -53,14 +53,14 @@ const sandbox = {
     env: {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         HOME: path.join(root, 'home'),
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: path.join(root, 'nexd.sock'),
-        NEXD_TCP_PORT: String(controlPort),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: configPath,
-        NEXD_HTTP_PORT: String(httpPort),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js')
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: path.join(root, 'kelpid.sock'),
+        KELPID_TCP_PORT: String(controlPort),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: configPath,
+        KELPID_HTTP_PORT: String(httpPort),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js')
     }
 };
 
@@ -68,14 +68,14 @@ const daemon = startDaemon(sandbox, { repoRoot });
 clearBackgroundTaskPolicy(daemon.child?.pid);
 await waitForHealthz(`http://127.0.0.1:${String(httpPort)}`);
 const token = (() => {
-    const runDir = sandbox.env.NEXD_RUN_DIR;
+    const runDir = sandbox.env.KELPID_RUN_DIR;
     const tokenFile = fs.readdirSync(runDir).find((entry) => entry.endsWith('.token'));
     return tokenFile === undefined ? '' : fs.readFileSync(path.join(runDir, tokenFile), 'utf8').trim();
 })();
 
 const vite = spawn('npx', ['vite', 'dev', '--port', '0'], {
     cwd: path.join(repoRoot, 'packages', 'client'),
-    env: { ...process.env, NEX_DAEMON_URL: `http://127.0.0.1:${String(httpPort)}` },
+    env: { ...process.env, KELPI_DAEMON_URL: `http://127.0.0.1:${String(httpPort)}` },
     stdio: ['ignore', 'pipe', 'pipe']
 });
 clearBackgroundTaskPolicy(vite.pid);

@@ -2,11 +2,11 @@
  * Where the control transport listens (wire-protocol.md §1, PLAN.md decisions).
  *
  * `/tmp/nex.sock` is the production path — the shipped Swift CLI hardcodes it, so it is not
- * configurable from the daemon's side without breaking `nex`. The two env overrides exist
+ * configurable from the daemon's side without breaking `kelpi`. The two env overrides exist
  * for development, where the real Swift app owns that socket on this machine:
  *
- *   NEXD_SOCKET_PATH=/tmp/nexd-dev.sock   (CLI reaches it via NEX_SOCKET / a symlink)
- *   NEXD_TCP_PORT=19400                   (CLI reaches it via NEX_SOCKET=tcp:…)
+ *   KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock   (CLI reaches it via NEX_SOCKET / a symlink)
+ *   KELPID_TCP_PORT=19400                   (CLI reaches it via NEX_SOCKET=tcp:…)
  *
  * The env vars win over the config file's `tcp-port` so a dev daemon can always be pushed
  * off the shared endpoints without editing the user's `~/.config/nex/config`.
@@ -15,14 +15,14 @@
 import { expandTilde } from '../lifecycle/rundir.js';
 
 export const DEFAULT_CONTROL_SOCKET_PATH = '/tmp/nex.sock';
-export const SOCKET_PATH_ENV = 'NEXD_SOCKET_PATH';
-export const TCP_PORT_ENV = 'NEXD_TCP_PORT';
+export const SOCKET_PATH_ENV = 'KELPID_SOCKET_PATH';
+export const TCP_PORT_ENV = 'KELPID_TCP_PORT';
 
 export interface ControlEndpoints {
     readonly socketPath: string;
     /** Absent = no TCP listener. */
     readonly tcpPort?: number | undefined;
-    /** Where each value came from (diagnostics / `nex doctor`). */
+    /** Where each value came from (diagnostics / `kelpi doctor`). */
     readonly source: { readonly socketPath: 'env' | 'config' | 'default'; readonly tcpPort: 'env' | 'config' | 'none' };
 }
 

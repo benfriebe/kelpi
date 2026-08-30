@@ -1,6 +1,6 @@
 /**
  * Library surface of the CLI package: the pure pieces other code (and the tests) reuse.
- * The executable entry point is `main.ts`, bundled to `dist/nex.js`.
+ * The executable entry point is `main.ts`, bundled to `dist/kelpi.js`.
  */
 
 export { run, configure } from './cli.js';

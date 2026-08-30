@@ -2,7 +2,7 @@
  * Settings ▸ Keybindings (config-keybindings.md §13.1, §13.2).
  *
  * The table is a **view of the config file**: rows come from the daemon's `keybindLines`
- * resolved through `@nex/core/config`, and every gesture is a `set-keybinding` /
+ * resolved through `@kelpi/core/config`, and every gesture is a `set-keybinding` /
  * `reset-keybindings` verb whose result arrives back as a `settings-changed` broadcast. There
  * is no local copy of the map to fall out of sync — a hand-edit and a click land in the same
  * place, which is the whole point of the daemon owning the file.
@@ -14,7 +14,7 @@
  * intercepted before it reaches anything.
  */
 
-import { keyTriggerConfigString, type KeyBindingMap, type NexAction } from '@nex/core/config';
+import { keyTriggerConfigString, type KeyBindingMap, type KelpiAction } from '@kelpi/core/config';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { tokens, withAlpha } from '../chrome';
@@ -46,14 +46,14 @@ export interface KeybindingsTabProps {
 }
 
 interface RecordingState {
-    readonly action: NexAction;
+    readonly action: KelpiAction;
     readonly message: string | null;
     /**
      * SET-091's other half: which action holds the combo that was refused, so the message can
      * be clicked through to that row's own recorder. `null` for a refusal with no owner (no
      * modifier) or when the holder is the global hotkey, which has no row.
      */
-    readonly conflictWith?: NexAction | null | undefined;
+    readonly conflictWith?: KelpiAction | null | undefined;
     /**
      * SET-090: the captured combo, shown for a beat before the row closes.
      *
@@ -99,7 +99,7 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
     const commit = props.actions.setKeybinding;
     const globalHotkeyRef = useRef(props.globalHotkey);
     globalHotkeyRef.current = props.globalHotkey;
-    const rowsRef = useRef(new Map<NexAction, HTMLElement>());
+    const rowsRef = useRef(new Map<KelpiAction, HTMLElement>());
 
     // The recorder owns the keyboard while it is open: capture phase + preventDefault, so the
     // browser's own ⌘D/⌘W never fire and the app's dispatcher (already gated by the overlay)
@@ -440,7 +440,7 @@ export function KeybindingsTab(props: KeybindingsTabProps): ReactElement {
  * triggers it keeps. Two writes, one visible result, and the file ends up with exactly the
  * `unbind` lines §5.3 would have produced.
  */
-function removeTrigger(props: KeybindingsTabProps, action: NexAction, config: string): void {
+function removeTrigger(props: KeybindingsTabProps, action: KelpiAction, config: string): void {
     const remaining = [...props.bindings.values()]
         .filter((binding) => binding.action === action)
         .map((binding) => keyTriggerConfigString(binding.trigger))

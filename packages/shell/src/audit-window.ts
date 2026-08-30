@@ -15,7 +15,7 @@
  *      safe turned out to be a measurement rather than a preference — see the table below, and
  *      note that the answer on this platform is currently "none of them".
  *
- * Both are **audit-only**. `NEX_AUDIT` is set by `scripts/ui-audit/audit.mjs` (and by nothing a
+ * Both are **audit-only**. `KELPI_AUDIT` is set by `scripts/ui-audit/audit.mjs` (and by nothing a
  * user or a packaged build ever runs), so with it unset this module returns the shipped defaults
  * and `createWindow` builds byte-identical options — `audit-window.test.ts` pins exactly that.
  *
@@ -113,23 +113,23 @@ export const OFFSCREEN_MARGIN = 400;
 /**
  * Read the policy out of the environment.
  *
- * The gate is `NEX_AUDIT=1` and only that. `NEX_HARNESS=1` is deliberately NOT enough: the web
+ * The gate is `KELPI_AUDIT=1` and only that. `KELPI_HARNESS=1` is deliberately NOT enough: the web
  * smoke and the packaging probes set it too, and they assert on a window a user would get.
  *
  * Inside an audit run:
- *   - throttling is off, unless `NEX_AUDIT_THROTTLE=1` asks for the shipped behaviour back (the
+ *   - throttling is off, unless `KELPI_AUDIT_THROTTLE=1` asks for the shipped behaviour back (the
  *     escape hatch that makes "is the flag doing anything?" a measurable question rather than an
  *     argument);
- *   - `NEX_AUDIT_WINDOW` picks the placement, and an unset/unknown value means `default`, so a
+ *   - `KELPI_AUDIT_WINDOW` picks the placement, and an unset/unknown value means `default`, so a
  *     typo degrades to today's behaviour instead of hiding the window somewhere unexpected.
  */
 export function auditWindowPolicy(env: Readonly<Record<string, string | undefined>>): AuditWindowPolicy {
-    if (env['NEX_AUDIT'] !== '1') return SHIPPED_WINDOW_POLICY;
-    const requested = env['NEX_AUDIT_WINDOW'] as AuditWindowPlacement | undefined;
+    if (env['KELPI_AUDIT'] !== '1') return SHIPPED_WINDOW_POLICY;
+    const requested = env['KELPI_AUDIT_WINDOW'] as AuditWindowPlacement | undefined;
     const placement = requested !== undefined && PLACEMENTS.includes(requested) ? requested : 'default';
     return {
         active: true,
-        backgroundThrottling: env['NEX_AUDIT_THROTTLE'] === '1',
+        backgroundThrottling: env['KELPI_AUDIT_THROTTLE'] === '1',
         placement
     };
 }
@@ -190,7 +190,7 @@ export function auditWindowBounds(
 /**
  * The line `createWindow` logs when the policy is active.
  *
- * Emitted only under `NEX_AUDIT`, so a shipped log is unchanged; the audit reads it back to prove
+ * Emitted only under `KELPI_AUDIT`, so a shipped log is unchanged; the audit reads it back to prove
  * the run it *thinks* was hidden actually was (and, via `actual`, what AppKit did with the origin
  * it was handed). Note that `shell.log` holds only the LAST shell's lines — `reattach-after-relaunch`
  * starts a second one — which is why `results.json`'s `meta.windowPlacement` states it for the

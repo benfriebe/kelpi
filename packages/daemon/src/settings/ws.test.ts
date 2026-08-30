@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_WS_SETTINGS, WS_PROTOCOL_VERSION, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, WS_PROTOCOL_VERSION, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher } from '../seams.js';
@@ -22,7 +22,7 @@ import { createSettingsService, type SettingsService } from './service.js';
 
 const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
 
-const PRESERVED = `# my nex config
+const PRESERVED = `# my kelpi config
 focus-follows-mouse = true
 
 # terminal
@@ -57,9 +57,9 @@ interface Fixture {
 }
 
 function fixture(options: { config?: string; ghostty?: string; withSettings?: boolean } = {}): Fixture {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-settings-ws-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-settings-ws-'));
     roots.push(root);
-    const configPath = path.join(root, 'nex-config');
+    const configPath = path.join(root, 'kelpi-config');
     const ghosttyPath = path.join(root, 'ghostty-config');
     if (options.config !== undefined) fs.writeFileSync(configPath, options.config, 'utf8');
     if (options.ghostty !== undefined) fs.writeFileSync(ghosttyPath, options.ghostty, 'utf8');
@@ -73,7 +73,7 @@ function fixture(options: { config?: string; ghostty?: string; withSettings?: bo
             // §APP-014: pin the theme lookup inside this tmp root. Without it, a machine with
             // Ghostty installed resolves `theme = Nord` out of the real app bundle and this
             // fixture's colours stop being the fixture's.
-            env: { NEXD_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
+            env: { KELPID_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
             home: root
         });
         services.push(settings);
@@ -108,7 +108,7 @@ function fixture(options: { config?: string; ghostty?: string; withSettings?: bo
                     type: 'hello',
                     protocolVersion: WS_PROTOCOL_VERSION,
                     token: 'tok',
-                    client: { kind: 'browser', name: 'nex-web' }
+                    client: { kind: 'browser', name: 'kelpi-web' }
                 })
             );
             return {
@@ -198,7 +198,7 @@ describe('set-keybinding', () => {
         client.send({ command: 'set-keybinding', action: 'split_right', trigger: 'ctrl+alt+t' });
         const after = f.read() ?? '';
         for (const line of [
-            '# my nex config',
+            '# my kelpi config',
             'focus-follows-mouse = true',
             '# terminal',
             'theme = Nord',
@@ -322,7 +322,7 @@ describe('the confirm-workspace-delete flag', () => {
         expect(settingsOf(reply).general.confirmWorkspaceDeleteWhenActive).toBe(false);
         expect(f.read()).toContain('confirm-workspace-delete = false');
         // Every unrelated line survives (§1.3).
-        expect(f.read()).toContain('# my nex config');
+        expect(f.read()).toContain('# my kelpi config');
         expect(f.read()).toContain('profile = work:CLAUDE_CONFIG_DIR=/tmp/work');
     });
 
@@ -358,7 +358,7 @@ describe('set-profiles', () => {
         const contents = f.read() ?? '';
         expect(contents).not.toContain('profile = work:');
         expect(contents).toContain('profile = personal:CLAUDE_CONFIG_DIR=~/p');
-        expect(contents).toContain('# my nex config');
+        expect(contents).toContain('# my kelpi config');
         expect(contents).toContain('keybind = super+d=split_down');
         expect(contents).toContain('theme = Nord');
     });
@@ -419,7 +419,7 @@ describe('settings-changed broadcast', () => {
 // ── set-ghostty-setting (SET-039…SET-041) ───────────────────────────────────────────
 
 /**
- * The one settings verb that writes a file Nex does not own. Everything below is about that
+ * The one settings verb that writes a file Kelpi does not own. Everything below is about that
  * boundary: only the five keys the daemon can read back are writable, `null` means REMOVE, and
  * a user's own ghostty lines survive untouched.
  */

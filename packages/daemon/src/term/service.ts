@@ -75,7 +75,7 @@ type TerminalReflowPolicy = NonNullable<NonNullable<ConstructorParameters<typeof
  *     LF and every CUP sets `isWrapped` on the current row whenever the previous row's last
  *     cell is not blank. That FABRICATES soft wraps: a line that happens to fill the width is
  *     glued to the next one, which corrupts everything downstream that joins wrapped rows —
- *     `serialize()` (so the replay a client renders), `capture()` (so `nex pane capture`),
+ *     `serialize()` (so the replay a client renders), `capture()` (so `kelpi pane capture`),
  *     `search()` and `cellText()`. Measured on 6.0.0: a full-width `AAAA…` followed by a hard
  *     newline and `short-b` serializes as the single line `AAAA…AAAAshort-b`.
  *   - `windowsPty: { backend, buildNumber }` — the maintained replacement, and the one used

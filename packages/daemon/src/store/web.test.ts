@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { createStore, emptyDaemonState, type NexStore } from './index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from './index.js';
 import { resolvedActiveTab, tabDisplayLabel } from './reducers/web.js';
 
 const HOME = '/Users/test';
@@ -19,7 +19,7 @@ const TAB1 = 'CCCCCCCC-0000-4000-8000-000000000001';
 const TAB2 = 'CCCCCCCC-0000-4000-8000-000000000002';
 const TAB3 = 'CCCCCCCC-0000-4000-8000-000000000003';
 
-function harness(): NexStore {
+function harness(): KelpiStore {
     const store = createStore(emptyDaemonState(HOME));
     store.dispatch({
         type: 'create-workspace',
@@ -40,13 +40,13 @@ function harness(): NexStore {
     return store;
 }
 
-function web(store: NexStore) {
+function web(store: KelpiStore) {
     const sidecar = store.getState().workspaces[0]?.webPanes[PANE];
     if (sidecar === undefined) throw new Error('missing sidecar');
     return sidecar;
 }
 
-function paneTitle(store: NexStore): string {
+function paneTitle(store: KelpiStore): string {
     return store.getState().workspaces[0]?.panes.find((pane) => pane.id === PANE)?.title ?? '';
 }
 
@@ -255,7 +255,7 @@ describe('active tab resolution (§17.2)', () => {
 
 describe('tab reorder (WEB-016)', () => {
     /** Three tabs in a known order, so a permutation is tellable from a truncation. */
-    function threeTabs(): NexStore {
+    function threeTabs(): KelpiStore {
         const store = harness();
         for (const [tabID, url] of [
             [TAB2, 'second.test'],
@@ -273,7 +273,7 @@ describe('tab reorder (WEB-016)', () => {
         return store;
     }
 
-    function order(store: NexStore): readonly string[] {
+    function order(store: KelpiStore): readonly string[] {
         return web(store).tabs.map((tab) => tab.id);
     }
 

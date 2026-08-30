@@ -11,7 +11,7 @@
  *   - a flag in FINAL position has no value: it returns null and is LEFT in argv, where the
  *     leftover check rejects it as an unknown option;
  *   - `--` tails exist only for `web click|type|select`;
- *   - `rejectLeftoverArgs` is what makes `nex pane capture <uuid>` fail loudly instead of
+ *   - `rejectLeftoverArgs` is what makes `kelpi pane capture <uuid>` fail loudly instead of
  *     silently capturing the caller (issue #237).
  *
  * All helpers mutate the argv array in place, exactly like the Swift `inout ArraySlice`.

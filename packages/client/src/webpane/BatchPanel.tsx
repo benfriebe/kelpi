@@ -398,10 +398,10 @@ export function BatchPanel(props: BatchPanelProps): ReactElement {
                     {/*
                      * The local queue survives as an EXPLICIT choice below the panes (the Swift
                      * picker has no such row — its `onSend(nil)` is reserved for exactly this —
-                     * but `nex web inspect-result` is a real port capability, so it keeps a
+                     * but `kelpi web inspect-result` is a real port capability, so it keeps a
                      * gesture; it simply stops being what "unselected" means).
                      */}
-                    <option value={BATCH_LOCAL_DESTINATION}>Queue locally (nex web inspect-result)</option>
+                    <option value={BATCH_LOCAL_DESTINATION}>Queue locally (kelpi web inspect-result)</option>
                 </select>
                 <button
                     type="button"

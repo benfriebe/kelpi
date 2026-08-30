@@ -18,14 +18,14 @@
  *      `close_pane`, on the very dispatcher `installKeyDispatcher` wires.
  *
  * Its own file rather than a describe in `chords.test.tsx` because the injected script installs
- * once per window (`__nexContentBridge`), and this one has to be installed with a SEED.
+ * once per window (`__kelpiContentBridge`), and this one has to be installed with a SEED.
  *
  * What no test here can reach: the native menu. A CDP- or jsdom-synthesised ⌘W never touches
  * AppKit's key-equivalent path, so "the menu no longer closes the window" is proven on the shell
  * side (`shell/src/menu.test.ts`) and finished by one keypress in the packaged app.
  */
 
-import { DEFAULT_KEYBINDINGS } from '@nex/core/config';
+import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import { cleanup, render } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -65,13 +65,13 @@ function press(init: KeyboardEventInit & { code: string }): KeyboardEvent {
 }
 
 /*
- * The script installs ONCE per window (`__nexContentBridge`), and this file's whole subject is a
+ * The script installs ONCE per window (`__kelpiContentBridge`), and this file's whole subject is a
  * script installed WITH a seed — so it is installed here, for the file, and the collector lives
  * as long as it does. Every test starts from an empty `posted`.
  */
 beforeAll(() => {
     document.body.innerHTML = '<div id="content"><p>hi</p></div>';
-    delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+    delete (window as unknown as Record<string, unknown>)['__kelpiContentBridge'];
     window.addEventListener('message', collect);
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
     new Function(contentBridgeScript(PANE, undefined, chordKeysForBindings(DEFAULT_KEYBINDINGS)))();

@@ -11,7 +11,7 @@ import {
 } from './bindings.js';
 import { parseKeybindOverrides } from './keybinds.js';
 import { keyTriggerConfigString, parseKeyTrigger } from './keys.js';
-import { MENU_BAR_ACTIONS, NEX_ACTIONS } from './actions.js';
+import { MENU_BAR_ACTIONS, KELPI_ACTIONS } from './actions.js';
 
 const trigger = (config: string) => {
     const parsed = parseKeyTrigger(config);
@@ -21,8 +21,8 @@ const trigger = (config: string) => {
 
 describe('the action table', () => {
     it('has the 51 bindable actions and the 16 menu-bar ones', () => {
-        expect(NEX_ACTIONS).toHaveLength(51);
-        expect(new Set(NEX_ACTIONS).size).toBe(51);
+        expect(KELPI_ACTIONS).toHaveLength(51);
+        expect(new Set(KELPI_ACTIONS).size).toBe(51);
         expect(MENU_BAR_ACTIONS.size).toBe(16);
     });
 });

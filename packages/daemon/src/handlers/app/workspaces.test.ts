@@ -181,9 +181,9 @@ describe('workspace-create (top level)', () => {
 
     it('reveals the new workspace to every attached client', () => {
         // run-B L3: the port's active workspace is per client, so the reducer marking the new
-        // workspace last-active only moved what `nex workspace list` calls ACTIVE — a
-        // `nex workspace create` from a terminal left every open window on the old workspace
-        // indefinitely, and the agent's next `nex pane create` landed somewhere invisible.
+        // workspace last-active only moved what `kelpi workspace list` calls ACTIVE — a
+        // `kelpi workspace create` from a terminal left every open window on the old workspace
+        // indefinitely, and the agent's next `kelpi pane create` landed somewhere invisible.
         // A create is broadcast as a reveal, which clients already act on (ws/sync.ts).
         const h = harness({ ids: [W1, P1] });
         h.reply({ command: 'workspace-create', name: 'dev' });
@@ -243,7 +243,7 @@ describe('workspace-create (worktree)', () => {
         command: 'workspace-create',
         name: 'feature-x',
         worktree: 'feature x',
-        repo: '/code/nex'
+        repo: '/code/kelpi'
     };
 
     it('adds the worktree, seeds the workspace from it, and replies late', async () => {
@@ -262,8 +262,8 @@ describe('workspace-create (worktree)', () => {
 
         expect(requests).toEqual([
             {
-                repoPath: '/code/nex',
-                worktreePath: `${HOME}/wt/nex/feature-x`,
+                repoPath: '/code/kelpi',
+                worktreePath: `${HOME}/wt/kelpi/feature-x`,
                 branchName: 'feature-x',
                 updateMain: false
             }
@@ -272,18 +272,18 @@ describe('workspace-create (worktree)', () => {
             ok: true,
             workspace_id: W1,
             workspace_name: 'feature-x',
-            worktree_path: `${HOME}/wt/nex/feature-x`,
+            worktree_path: `${HOME}/wt/kelpi/feature-x`,
             branch: 'feature-x'
         });
 
         const workspace = h.state().workspaces[0];
-        expect(workspace?.panes[0]?.workingDirectory).toBe(`${HOME}/wt/nex/feature-x`);
+        expect(workspace?.panes[0]?.workingDirectory).toBe(`${HOME}/wt/kelpi/feature-x`);
         expect(h.state().repos).toEqual([
-            expect.objectContaining({ path: '/code/nex', name: 'nex', isAutoDiscovered: false })
+            expect.objectContaining({ path: '/code/kelpi', name: 'kelpi', isAutoDiscovered: false })
         ]);
         expect(workspace?.repoAssociations).toEqual([
             expect.objectContaining({
-                worktreePath: `${HOME}/wt/nex/feature-x`,
+                worktreePath: `${HOME}/wt/kelpi/feature-x`,
                 branchName: 'feature-x',
                 isAutoDetected: false
             })
@@ -308,8 +308,8 @@ describe('workspace-create (worktree)', () => {
             type: 'add-repo',
             repo: {
                 id: R1,
-                path: '/code/nex',
-                name: 'nex',
+                path: '/code/kelpi',
+                name: 'kelpi',
                 remoteURL: null,
                 lastAccessedAt: NOW / 1000,
                 isAutoDiscovered: true
@@ -324,7 +324,7 @@ describe('workspace-create (worktree)', () => {
         expect(h.state().repos[0]?.isAutoDiscovered).toBe(false);
         const workspace = h.state().workspaces.find((entry) => entry.name === 'feature-x');
         expect(workspace?.repoAssociations[0]?.repoID).toBe(R1);
-        expect(workspace?.repoAssociations[0]?.worktreePath).toBe(`${HOME}/wt/nex/feature-x`);
+        expect(workspace?.repoAssociations[0]?.worktreePath).toBe(`${HOME}/wt/kelpi/feature-x`);
     });
 
     it('leaves an already-MANUAL repo alone (nothing to promote)', async () => {
@@ -337,9 +337,9 @@ describe('workspace-create (worktree)', () => {
             type: 'add-repo',
             repo: {
                 id: R1,
-                path: '/code/nex',
+                path: '/code/kelpi',
                 name: 'hand-named',
-                remoteURL: 'git@example.invalid:acme/nex.git',
+                remoteURL: 'git@example.invalid:acme/kelpi.git',
                 lastAccessedAt: NOW / 1000,
                 isAutoDiscovered: false
             }
@@ -352,7 +352,7 @@ describe('workspace-create (worktree)', () => {
             expect.objectContaining({
                 id: R1,
                 name: 'hand-named',
-                remoteURL: 'git@example.invalid:acme/nex.git',
+                remoteURL: 'git@example.invalid:acme/kelpi.git',
                 isAutoDiscovered: false
             })
         ]);
@@ -380,18 +380,18 @@ describe('workspace-create (worktree)', () => {
         h.send(worktreeRequest);
         await flush();
         // Rule 1: a template STARTING with <repo> expands to the repo's full path.
-        expect(requests[0]?.worktreePath).toBe('/code/nex/.worktrees/feature-x');
+        expect(requests[0]?.worktreePath).toBe('/code/kelpi/.worktrees/feature-x');
 
         // Same daemon, no restart: the next command sees the new template, and rules 2 + 3
         // (a non-leading <repo> is the repo's DIRECTORY NAME, `~` is home) apply to it.
         template = '~/wt/<repo>/nested';
         h.send({ ...worktreeRequest, name: 'second', worktree: 'second' });
         await flush();
-        expect(requests[1]?.worktreePath).toBe(`${HOME}/wt/nex/nested/second`);
+        expect(requests[1]?.worktreePath).toBe(`${HOME}/wt/kelpi/nested/second`);
 
         // And the workspace's first pane opens in whatever the template resolved to (§GIT-107).
         const second = h.state().workspaces.find((entry) => entry.name === 'second');
-        expect(second?.panes[0]?.workingDirectory).toBe(`${HOME}/wt/nex/nested/second`);
+        expect(second?.panes[0]?.workingDirectory).toBe(`${HOME}/wt/kelpi/nested/second`);
     });
 
     it('sanitizes an explicit branch and falls back to the worktree name', async () => {
@@ -416,8 +416,8 @@ describe('workspace-create (worktree)', () => {
             repos: [
                 {
                     id: id('9999aaaa', 1),
-                    path: '/code/nex',
-                    name: 'nex',
+                    path: '/code/kelpi',
+                    name: 'kelpi',
                     remoteURL: null,
                     lastAccessedAt: 1,
                     isAutoDiscovered: true
@@ -425,7 +425,7 @@ describe('workspace-create (worktree)', () => {
             ]
         };
         const h = harness({ initial: withRepo, git: stubGit() });
-        h.send({ ...worktreeRequest, repo: '/code/other/../nex/' });
+        h.send({ ...worktreeRequest, repo: '/code/other/../kelpi/' });
         await flush();
         expect(h.state().repos).toHaveLength(1);
         expect(h.state().workspaces[1]?.repoAssociations[0]?.repoID).toBe(id('9999aaaa', 1));
@@ -439,7 +439,7 @@ describe('workspace-create (worktree)', () => {
                         command: 'git worktree add',
                         exitCode: 128,
                         stderr: "Preparing worktree (new branch 'x')\nfatal: '/wt/x' already exists",
-                        cwd: '/code/nex'
+                        cwd: '/code/kelpi'
                     });
                 }
             })
@@ -458,7 +458,7 @@ describe('workspace-create (worktree)', () => {
         const h = harness({ git: stubGit() });
         expect(h.reply({ ...worktreeRequest, group: 'nope' })).toEqual({
             ok: false,
-            error: 'unknown group: nope — --worktree only supports existing groups; create it first (`nex group create`) or omit --group'
+            error: 'unknown group: nope — --worktree only supports existing groups; create it first (`kelpi group create`) or omit --group'
         });
         await flush();
         expect(h.state().groups).toHaveLength(0);
@@ -501,9 +501,9 @@ describe('workspace-create (worktree)', () => {
                 }
             })
         });
-        h.send({ command: 'workspace-create', worktree: 'x', path: '/code/nex' });
+        h.send({ command: 'workspace-create', worktree: 'x', path: '/code/kelpi' });
         await flush();
-        expect(requests[0]?.repoPath).toBe('/code/nex');
+        expect(requests[0]?.repoPath).toBe('/code/kelpi');
     });
 
     it('rejects worktree and branch names that sanitize away', () => {
@@ -551,7 +551,7 @@ describe('workspace-delete', () => {
     /**
      * §WS-156 / §APP-067 — the shipped app's own asymmetry.
      *
-     * `nex workspace delete` and the sidebar's Delete both refuse at one workspace; ⌘W on the
+     * `kelpi workspace delete` and the sidebar's Delete both refuse at one workspace; ⌘W on the
      * last pane of the last workspace does NOT, and the window lands on "No workspace selected".
      * The port had one verb for both, so the GUI inherited the CLI's refusal and the empty state
      * had no gesture that could reach it.

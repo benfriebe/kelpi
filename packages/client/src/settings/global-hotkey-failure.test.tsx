@@ -14,7 +14,7 @@
  * identical re-report must not re-render) live in `state/settings.test.ts`.
  */
 
-import { DEFAULT_KEYBINDINGS } from '@nex/core/config';
+import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

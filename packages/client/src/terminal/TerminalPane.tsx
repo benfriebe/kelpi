@@ -184,7 +184,7 @@ export interface TerminalPaneProps {
     readonly focused: boolean;
     /** On screen. False keeps the renderer alive but idle (workspace switch, zoom, tab hidden). */
     readonly visible: boolean;
-    /** Explicit palette; otherwise resolved from the `--nex-term-*` custom properties. */
+    /** Explicit palette; otherwise resolved from the `--kelpi-term-*` custom properties. */
     readonly theme?: TerminalTheme | undefined;
     /**
      * Fill painted behind the engine canvas. Defaults to the theme's background (an opaque
@@ -520,7 +520,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             if (cancelled) return;
             if (attempt < TERMINAL_START_ATTEMPTS) {
                 console.info(
-                    `[nex] terminal renderer ${phase === 'open' ? 'failed to start' : 'died'} for pane ${paneID} ` +
+                    `[kelpi] terminal renderer ${phase === 'open' ? 'failed to start' : 'died'} for pane ${paneID} ` +
                         `(attempt ${String(attempt)}/${String(TERMINAL_START_ATTEMPTS)}) — rebuilding on a fresh engine`,
                     error
                 );
@@ -534,10 +534,10 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
             }
             // Say WHY. The placeholder ("terminal renderer failed to start") is all a person
             // gets, and this rejection used to be swallowed — which is why the audit's first
-            // occurrence of it (run-F step 14, a pane revealed by `nex workspace create`)
+            // occurrence of it (run-F step 14, a pane revealed by `kelpi workspace create`)
             // arrived with zero renderer console output and no cause to chase.
             console.error(
-                `[nex] terminal renderer failed to start for pane ${paneID} after ` +
+                `[kelpi] terminal renderer failed to start for pane ${paneID} after ` +
                     `${String(attempt)} attempt(s)`,
                 error
             );
@@ -888,7 +888,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     //
     // Above us, unaffected: the app's own key dispatcher is a WINDOW capture listener
     // (`chrome/keys.ts` `installKeyDispatcher`), so it has already run and already consumed
-    // anything that is a Nex binding. A bound ⌘ chord can never reach this encoder.
+    // anything that is a Kelpi binding. A bound ⌘ chord can never reach this encoder.
     //
     // Nothing is intercepted while no application has negotiated the protocol: `keyboard.key()`
     // returns false for every event when the flags are zero, and for every key whose legacy
@@ -1050,7 +1050,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
     // The WINDOW is part of the answer, which is the half a browser makes easy to miss. AppKit
     // does not resign a view's first-responder status when its window stops being key, so
     // ghostty computes surface focus as `window.isKeyWindow && … && isFirstResponder`
-    // (`BaseTerminalController.syncFocusToSurfaceTree`) — a Nex window sent to the background
+    // (`BaseTerminalController.syncFocusToSurfaceTree`) — a Kelpi window sent to the background
     // has NO blinking cursor in it. `window` focus/blur is the browser's `isKeyWindow`, and
     // `document.hasFocus()` seeds it for a pane that mounts into an already-background window.
     //
@@ -1117,7 +1117,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
         restartRef.current?.();
     }, []);
 
-    const background = props.background ?? theme?.background ?? 'var(--nex-term-bg, #0A0A0C)';
+    const background = props.background ?? theme?.background ?? 'var(--kelpi-term-bg, #0A0A0C)';
 
 
     return (
@@ -1214,7 +1214,7 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 <div
                     role="status"
                     className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-xs"
-                    style={{ color: 'var(--nex-fg-secondary, #9A9AA0)' }}
+                    style={{ color: 'var(--kelpi-fg-secondary, #9A9AA0)' }}
                 >
                     <span>terminal renderer failed to start</span>
                     <button
@@ -1230,9 +1230,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                             // own text. It stays inline because 5/12 is this chip's stated value,
                             // not a utility step, and inline is where the value is asserted.
                             padding: '5px 12px',
-                            border: '1px solid var(--nex-border, #24242B)',
-                            color: 'var(--nex-accent, #6F9BD8)',
-                            backgroundColor: 'var(--nex-header-bg, #13131A)'
+                            border: '1px solid var(--kelpi-border, #24242B)',
+                            color: 'var(--kelpi-accent, #6F9BD8)',
+                            backgroundColor: 'var(--kelpi-header-bg, #13131A)'
                         }}
                     >
                         Retry

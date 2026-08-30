@@ -13,7 +13,7 @@ import { type ReactElement } from 'react';
 
 import {
     CommandClient,
-    NexConnection,
+    KelpiConnection,
     completeHandshake,
     createFakeSocketFactory
 } from '../connection';
@@ -40,7 +40,7 @@ interface Harness {
 
 function harness(): Harness {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

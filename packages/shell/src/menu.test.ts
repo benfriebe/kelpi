@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DEFAULT_KEYBIND_LINES } from '@nex/core/config';
+import { DEFAULT_KEYBIND_LINES } from '@kelpi/core/config';
 
 import {
     CHECK_FOR_UPDATES_LABEL,
@@ -194,7 +194,7 @@ describe('File menu (§APP-018 / §WS-151)', () => {
         /*
          * …and those five are not five literals someone chose here: each is the SHIPPED default
          * trigger for the action the row runs, read out of the binding map both the daemon and
-         * the client resolve (`@nex/core/config`). A default that moved and a menu that did not
+         * the client resolve (`@kelpi/core/config`). A default that moved and a menu that did not
          * would show a user a shortcut that no longer fires.
          *
          * (The map is read at BUILD time rather than per keystroke — a rebind moves the chord in
@@ -491,7 +491,7 @@ describe('File ▸ Close (N14)', () => {
     it('names the global the client installs (pinned on both sides)', () => {
         // `client/src/app/shell-close.ts` exports SHELL_CLOSE_GLOBAL and asserts the same
         // literal; the two packages cannot import each other, so a rename fails here.
-        expect(CLOSE_PANE_EXPRESSION).toContain('window.__nexShellClosePane()');
+        expect(CLOSE_PANE_EXPRESSION).toContain('window.__kelpiShellClosePane()');
         // `=== true`, so an older client (or a mangled global) reads as "not handled".
         expect(CLOSE_PANE_EXPRESSION).toContain('=== true');
     });
@@ -789,7 +789,7 @@ describe('the app menu’s Check for Updates… (§APP-026)', () => {
         const line = menuLogLine({ canCheckForUpdates: false });
         expect(line).toContain('Check for Updates…');
         expect(line).toContain('Preview Markdown… (⌘O)');
-        expect(line).toContain('Nex Help (⌘?)');
+        expect(line).toContain('Kelpi Help (⌘?)');
         expect(line).toContain('New Workspace (⌘N)');
         expect(line).toContain('View ▸ Toggle Sidebar (⌘⇧S)');
         expect(line).toContain('Toggle Inspector (⌘I)');

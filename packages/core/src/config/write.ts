@@ -4,7 +4,7 @@
  * Spec: docs/current/config-keybindings.md §1.3, §1.6.
  */
 
-import { NEX_ACTIONS, UNBIND_ACTION } from './actions.js';
+import { KELPI_ACTIONS, UNBIND_ACTION } from './actions.js';
 import { DEFAULT_KEYBINDINGS, actionForTrigger, triggersForAction } from './bindings.js';
 import type { KeyBindingMap } from './bindings.js';
 import { keyTriggerConfigString } from './keys.js';
@@ -87,7 +87,7 @@ function keybindLine(trigger: string, action: string): string {
  * an empty file in the same situation — the two writers genuinely differ; §14 spells the
  * keybinding half out as "empty file gets deleted by the keybinding writer".)
  *
- * Emission order is deterministic across launches: actions in `NEX_ACTIONS` order, and each
+ * Emission order is deterministic across launches: actions in `KELPI_ACTIONS` order, and each
  * action's triggers in `triggersForAction` order (sorted by `configString`).
  */
 export function writeKeybindings(contents: string | null, map: KeyBindingMap): string | null {
@@ -100,7 +100,7 @@ export function writeKeybindings(contents: string | null, map: KeyBindingMap): s
     const written = new Set<string>();
 
     // Pass 1: what the user changed about each action.
-    for (const action of NEX_ACTIONS) {
+    for (const action of KELPI_ACTIONS) {
         // (a) triggers now bound to this action that the defaults did not map to it.
         for (const trigger of triggersForAction(map, action)) {
             if (actionForTrigger(DEFAULT_KEYBINDINGS, trigger) === action) continue;
@@ -120,7 +120,7 @@ export function writeKeybindings(contents: string | null, map: KeyBindingMap): s
     // Pass 2: a default trigger rebound to a different action. Pass 1(a) already emitted it
     // while walking the NEW action, so this is a belt-and-braces sweep the spec spells out —
     // it only fires for a trigger pass 1 could not reach.
-    for (const action of NEX_ACTIONS) {
+    for (const action of KELPI_ACTIONS) {
         for (const trigger of triggersForAction(DEFAULT_KEYBINDINGS, action)) {
             const now = actionForTrigger(map, trigger);
             if (now === null || now === action) continue;

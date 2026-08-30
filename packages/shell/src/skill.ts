@@ -22,7 +22,7 @@
  *     changed it and the refresh declines, forever.
  *  3. **The copies that pre-date the marker are migrated ONCE, and nothing is destroyed doing
  *     it.** Rule 2 as first written declined an *unmarked* drifted copy too, which left every
- *     install made by `nex install-hooks` (it writes no marker) stranded on whatever bytes it
+ *     install made by `kelpi install-hooks` (it writes no marker) stranded on whatever bytes it
  *     had: the step could adopt an identical copy but never refresh a stale one, so the Swift's
  *     own primary case — "refresh a drifted copy" — never happened. It happens now, in the one
  *     shape that costs nothing if the guess is wrong: the drifted document is **moved aside** to
@@ -48,7 +48,7 @@ import { BUNDLED_SKILL_NAME, packagedSkillDir } from './resources.js';
 
 export const SKILL_FILE = 'SKILL.md';
 /** Written beside the document; it is what makes "we installed this" checkable later. */
-export const SKILL_MARKER_FILE = '.nex-skill.json';
+export const SKILL_MARKER_FILE = '.kelpi-skill.json';
 
 export interface SkillFs {
     /** File contents, or `null` for "not there / not readable" — never a throw. */
@@ -172,18 +172,18 @@ export function resolveHomeDirectory(env: NodeJS.ProcessEnv): string | null {
     return trimmed;
 }
 
-/** `<home>/.claude/skills/nex-agentic` — where `nex install-hooks` puts it too. */
+/** `<home>/.claude/skills/nex-agentic` — where `kelpi install-hooks` puts it too. */
 export function skillDestinationDir(home: string): string {
     return path.join(home, '.claude', 'skills', BUNDLED_SKILL_NAME);
 }
 
 /**
  * Where the bundled document comes from: the packaged app's `Contents/Resources/cli/skills/…`,
- * or `NEX_SKILL_SOURCE` for a harness driving an unpackaged build — the same escape hatch
+ * or `KELPI_SKILL_SOURCE` for a harness driving an unpackaged build — the same escape hatch
  * `--skill-source` gives the CLI, and what makes this step provable in a sandbox at all.
  */
 export function bundledSkillDir(options: SkillRefreshOptions): string | null {
-    const override = options.env['NEX_SKILL_SOURCE'];
+    const override = options.env['KELPI_SKILL_SOURCE'];
     if (typeof override === 'string' && override.trim() !== '') return override.trim();
     const resources = options.resourcesPath;
     if (typeof resources !== 'string' || resources === '') return null;
@@ -270,7 +270,7 @@ export interface SkillMarker {
     readonly version: string | null;
     readonly appVersion: string | null;
     readonly installedAt: string;
-    readonly by: 'nex-shell';
+    readonly by: 'kelpi-shell';
 }
 
 export function parseSkillMarker(raw: string | null): SkillMarker | null {
@@ -287,7 +287,7 @@ export function parseSkillMarker(raw: string | null): SkillMarker | null {
             version: typeof record['version'] === 'string' ? record['version'] : null,
             appVersion: typeof record['appVersion'] === 'string' ? record['appVersion'] : null,
             installedAt: typeof record['installedAt'] === 'string' ? record['installedAt'] : '',
-            by: 'nex-shell'
+            by: 'kelpi-shell'
         };
     } catch {
         return null;
@@ -303,7 +303,7 @@ function buildMarker(source: string, options: SkillRefreshOptions): SkillMarker 
         version: skillVersion(source),
         appVersion: options.appVersion ?? null,
         installedAt: (options.now?.() ?? new Date()).toISOString(),
-        by: 'nex-shell'
+        by: 'kelpi-shell'
     };
 }
 
@@ -338,11 +338,11 @@ export function refreshBundledSkill(options: SkillRefreshOptions, fsys: SkillFs 
         /*
          * Nothing to copy — and the moment to ADOPT the copy that is there.
          *
-         * Almost every installed copy in this port was written by `nex install-hooks`, which
+         * Almost every installed copy in this port was written by `kelpi install-hooks`, which
          * leaves no ownership marker, and without one the refresh below would decline forever:
          * the step would be inert for exactly the users it is for. A document that is byte-
          * identical to the bundled one cannot have been edited relative to this build, so
-         * recording the marker for it is safe, and it is what makes the NEXT release's refresh
+         * recording the marker for it is safe, and it is what makes the KELPIT release's refresh
          * possible. Best-effort: a marker that cannot be written costs nothing today.
          */
         const adopted = parseSkillMarker(fsys.readFile(markerFile));
@@ -386,7 +386,7 @@ export function refreshBundledSkill(options: SkillRefreshOptions, fsys: SkillFs 
         } else {
             /*
              * Rule 3 — the one-time migration. Nothing beside this document says who wrote it,
-             * and it is not the bundle's bytes: it is a copy `nex install-hooks` (or an older
+             * and it is not the bundle's bytes: it is a copy `kelpi install-hooks` (or an older
              * build) left, drifted, from before this app kept receipts. It is moved aside rather
              * than overwritten, so the Swift's "refresh a drifted copy" finally happens without
              * the Swift's cost if the copy turns out to have been precious. Once, because what

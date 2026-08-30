@@ -19,7 +19,7 @@
  * listener's `onError`, never as an unhandled rejection in an event handler.
  */
 
-import type { CommandClient, CommandReply, NexConnection } from '../connection';
+import type { CommandClient, CommandReply, KelpiConnection } from '../connection';
 import { isOkReply, replyError } from '../connection';
 import {
     CONTENT_UPDATED_MESSAGE,
@@ -84,7 +84,7 @@ export interface ContentApi {
 }
 
 export interface ContentClientOptions {
-    readonly connection: NexConnection;
+    readonly connection: KelpiConnection;
     readonly commands: CommandClient;
     readonly debounceMs?: number | undefined;
     readonly onError?: ((message: string, context: string) => void) | undefined;

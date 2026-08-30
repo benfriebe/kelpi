@@ -1,5 +1,5 @@
-import { DEFAULT_KEYBINDINGS } from '@nex/core/config';
-import type { WsProfile } from '@nex/protocol';
+import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
+import type { WsProfile } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { clientKeyBindings } from '../chrome';

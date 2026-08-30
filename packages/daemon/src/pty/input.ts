@@ -10,8 +10,8 @@
  * lists programmatic sends as explicitly not mirrored, hence `writeDirect`.
  */
 
-import { parseNamedKey, unknownNamedKeyError } from '@nex/protocol';
-import type { NamedKey } from '@nex/protocol';
+import { parseNamedKey, unknownNamedKeyError } from '@kelpi/protocol';
+import type { NamedKey } from '@kelpi/protocol';
 import type { PtyManager, TerminalInput, VtModes } from '../seams.js';
 
 export const BRACKETED_PASTE_START = '\x1b[200~';
@@ -85,7 +85,7 @@ const CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
 /**
  * The paste pipeline's filter half (§9.1, port note 2). Ghostty runs pasted text through
- * unsafe-paste protection before the envelope; Nex auto-confirms those prompts (§12.2), so
+ * unsafe-paste protection before the envelope; Kelpi auto-confirms those prompts (§12.2), so
  * the daemon does the filtering itself:
  *
  * 1. embedded `ESC[200~` / `ESC[201~` are removed — pasted text can never close (or fake)

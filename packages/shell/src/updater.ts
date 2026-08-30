@@ -28,12 +28,12 @@
 
 import { log, logError, warn } from './log.js';
 
-/** Opt in explicitly, per launch: `NEX_AUTO_UPDATE=1`. Anything else is off. */
-export const AUTO_UPDATE_ENV = 'NEX_AUTO_UPDATE';
+/** Opt in explicitly, per launch: `KELPI_AUTO_UPDATE=1`. Anything else is off. */
+export const AUTO_UPDATE_ENV = 'KELPI_AUTO_UPDATE';
 /** Override the `owner/name` the feed is derived from (otherwise: `package.json` repository). */
-export const AUTO_UPDATE_REPO_ENV = 'NEX_AUTO_UPDATE_REPO';
+export const AUTO_UPDATE_REPO_ENV = 'KELPI_AUTO_UPDATE_REPO';
 /** Poll interval, in the `ms`-parseable form update-electron-app wants (min 5 minutes). */
-export const AUTO_UPDATE_INTERVAL_ENV = 'NEX_AUTO_UPDATE_INTERVAL';
+export const AUTO_UPDATE_INTERVAL_ENV = 'KELPI_AUTO_UPDATE_INTERVAL';
 
 export const DEFAULT_UPDATE_INTERVAL = '1 hour';
 
@@ -47,7 +47,7 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
 /**
  * Read the flag. Deliberately strict: only an explicit truthy value enables it, so a stray
- * `NEX_AUTO_UPDATE=0` (or `=false`, or an empty string inherited from a shell) cannot turn on
+ * `KELPI_AUTO_UPDATE=0` (or `=false`, or an empty string inherited from a shell) cannot turn on
  * a network-touching background task.
  */
 export function readAutoUpdateSettings(env: NodeJS.ProcessEnv = process.env): AutoUpdateSettings {
@@ -125,7 +125,7 @@ export async function maybeStartAutoUpdate(
 // ── the manual check (APP-026) ──────────────────────────────────────────────────────
 
 /**
- * `Nex ▸ Check for Updates…`.
+ * `Kelpi ▸ Check for Updates…`.
  *
  * The Swift app used Sparkle and disabled the item whenever `canCheckForUpdates == false`
  * (`CheckForUpdatesView.swift:4-13`). Squirrel exposes no such flag, and — more importantly —

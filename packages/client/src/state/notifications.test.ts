@@ -1,4 +1,4 @@
-import type { WsNotificationMessage } from '@nex/protocol';
+import type { WsNotificationMessage } from '@kelpi/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -61,13 +61,13 @@ function message(overrides: Partial<WsNotificationMessage> = {}): WsNotification
 }
 
 describe('notification manager', () => {
-    it('posts a system notification tagged nex-<paneID>', () => {
+    it('posts a system notification tagged kelpi-<paneID>', () => {
         const api = fakeApi();
         const manager = createNotificationManager({ api });
 
         expect(manager.handle(message())).toBe('system');
         expect(api.posted[0]?.title).toBe('alpha');
-        expect(api.posted[0]?.init.tag).toBe(`nex-${PANE}`);
+        expect(api.posted[0]?.init.tag).toBe(`kelpi-${PANE}`);
         expect(api.posted[0]?.init.body).toBe('Agent is waiting for input');
     });
 
@@ -83,11 +83,11 @@ describe('notification manager', () => {
         // Two posts share the tag (the browser replaces the banner); our bookkeeping keeps one
         // live entry per pane, so `clear` can only ever close the newest.
         expect(api.posted.map((entry) => entry.init.tag)).toEqual([
-            `nex-${PANE}`,
-            `nex-${PANE}`,
-            `nex-${OTHER}`
+            `kelpi-${PANE}`,
+            `kelpi-${PANE}`,
+            `kelpi-${OTHER}`
         ]);
-        expect(manager.activeTags).toEqual([`nex-${PANE}`, `nex-${OTHER}`]);
+        expect(manager.activeTags).toEqual([`kelpi-${PANE}`, `kelpi-${OTHER}`]);
         expect(toasts).toEqual([]);
     });
 
@@ -102,7 +102,7 @@ describe('notification manager', () => {
         expect(manager.handle(message())).toBe('toast');
         expect(toasts).toEqual([
             {
-                id: `nex-${PANE}`,
+                id: `kelpi-${PANE}`,
                 kind: 'agent-waiting',
                 title: 'alpha',
                 body: 'Agent is waiting for input',
@@ -142,7 +142,7 @@ describe('notification manager', () => {
 
         expect(api.posted[0]?.notification.closed).toBe(true);
         expect(manager.activeTags).toEqual([]);
-        expect(dismissed).toEqual([`nex-${PANE}`]);
+        expect(dismissed).toEqual([`kelpi-${PANE}`]);
     });
 
     it('requests permission only when asked, and only while it is still default', async () => {

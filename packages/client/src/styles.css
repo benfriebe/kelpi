@@ -6,12 +6,12 @@
  * Three modules define token FALLBACKS of their own — `chrome/tokens.ts`, `grid/tokens.ts` and
  * `terminal/renderer.ts` — precisely so each renders correctly when mounted alone (unit tests,
  * a storybook, the Electron shell embedding one surface). This file is where they become one
- * palette: every `--nex-*` name any of them reads is defined here, in both appearances, so a
+ * palette: every `--kelpi-*` name any of them reads is defined here, in both appearances, so a
  * surface can never be half-themed.
  *
  * The chrome half is also written at runtime: `ThemeProvider applyToDocument` sets the resolved
- * `--nex-*` values (plus the `--nex-surface-bg` / `--nex-agent` aliases the grid uses) on
- * `documentElement` and stamps `data-nex-theme`. These blocks are therefore the *pre-hydration*
+ * `--kelpi-*` values (plus the `--kelpi-surface-bg` / `--kelpi-agent` aliases the grid uses) on
+ * `documentElement` and stamps `data-kelpi-theme`. These blocks are therefore the *pre-hydration*
  * state and the source of truth for the terminal tokens, which the provider does not own —
  * `terminal/renderer.ts` reads those off the DOM with `getComputedStyle`.
  *
@@ -53,172 +53,172 @@
   color-scheme: dark;
 
   /* chrome — shell-ui.md §2, dark column */
-  --nex-bg: #0a0a0c;
-  /* §N17: the GROUND. Same value as `--nex-bg` until `ThemeProvider` learns the window was
+  --kelpi-bg: #0a0a0c;
+  /* §N17: the GROUND. Same value as `--kelpi-bg` until `ThemeProvider` learns the window was
      created transparent, at which point it becomes `transparent` — see `chrome/theme.ts`.
      Defined per bucket here so the frame before the provider stamps is never the dark hex on
      a light chrome. */
-  --nex-window-fill: #0a0a0c;
-  --nex-sidebar-bg: #0c0c10;
-  --nex-surface: #101013;
-  --nex-surface-bg: #101013; /* grid/tokens.ts spelling */
-  --nex-header-bg: #13131a;
-  --nex-footer-bg: #0c0c10;
-  --nex-fg: #e6e6ea;
-  --nex-fg-secondary: #9a9aa0;
-  --nex-fg-tertiary: #6a6a72;
-  --nex-border: #24242b;
-  --nex-selection-fill: rgba(82, 118, 184, 0.24);
-  --nex-selection-stroke: #5276b8;
-  --nex-accent: #6f9bd8;
-  --nex-pane-focus: #6f9bd8;
-  --nex-status-running: #5fbe89;
-  --nex-status-waiting: #6f9bd8;
-  --nex-status-inactive: #8a8a92;
-  --nex-active-agent: #d3a329;
-  --nex-agent: #d3a329; /* grid/tokens.ts spelling */
+  --kelpi-window-fill: #0a0a0c;
+  --kelpi-sidebar-bg: #0c0c10;
+  --kelpi-surface: #101013;
+  --kelpi-surface-bg: #101013; /* grid/tokens.ts spelling */
+  --kelpi-header-bg: #13131a;
+  --kelpi-footer-bg: #0c0c10;
+  --kelpi-fg: #e6e6ea;
+  --kelpi-fg-secondary: #9a9aa0;
+  --kelpi-fg-tertiary: #6a6a72;
+  --kelpi-border: #24242b;
+  --kelpi-selection-fill: rgba(82, 118, 184, 0.24);
+  --kelpi-selection-stroke: #5276b8;
+  --kelpi-accent: #6f9bd8;
+  --kelpi-pane-focus: #6f9bd8;
+  --kelpi-status-running: #5fbe89;
+  --kelpi-status-waiting: #6f9bd8;
+  --kelpi-status-inactive: #8a8a92;
+  --kelpi-active-agent: #d3a329;
+  --kelpi-agent: #d3a329; /* grid/tokens.ts spelling */
   /* L27 — the pane header's ZOOM and SYNC badges (`PaneHeaderView.swift:109,134`, both
      `.orange`). One name for both, so they cannot drift into two ambers again. */
-  --nex-orange: #d08237;
-  --nex-group-band-opacity: 0.22;
+  --kelpi-orange: #d08237;
+  --kelpi-group-band-opacity: 0.22;
 
   /* terminal — terminal/renderer.ts DEFAULT_TERMINAL_THEME.
-     The foreground is ghostty's own default (#ffffff, src/config/Config.zig), not --nex-fg:
+     The foreground is ghostty's own default (#ffffff, src/config/Config.zig), not --kelpi-fg:
      the terminal body must not read dimmer than the pane header framing it (run-B L4). */
-  --nex-term-bg: #0a0a0c;
-  --nex-term-fg: #ffffff;
-  --nex-term-cursor: #ffffff;
-  --nex-term-cursor-accent: #0a0a0c;
-  --nex-term-selection-bg: #2a3550;
-  --nex-term-selection-fg: #e6e6ea;
-  --nex-term-black: #15151a;
-  --nex-term-red: #d9707a;
-  --nex-term-green: #5fbe89;
-  --nex-term-yellow: #d3a329;
-  --nex-term-blue: #6f9bd8;
-  --nex-term-magenta: #b18ad1;
-  --nex-term-cyan: #5fb3b3;
-  --nex-term-white: #c9c9d1;
-  --nex-term-bright-black: #4a4a55;
-  --nex-term-bright-red: #e88e96;
-  --nex-term-bright-green: #7fd4a3;
-  --nex-term-bright-yellow: #e5be55;
-  --nex-term-bright-blue: #8fb5e6;
-  --nex-term-bright-magenta: #c7a6e0;
-  --nex-term-bright-cyan: #7fcaca;
-  --nex-term-bright-white: #f2f2f6;
+  --kelpi-term-bg: #0a0a0c;
+  --kelpi-term-fg: #ffffff;
+  --kelpi-term-cursor: #ffffff;
+  --kelpi-term-cursor-accent: #0a0a0c;
+  --kelpi-term-selection-bg: #2a3550;
+  --kelpi-term-selection-fg: #e6e6ea;
+  --kelpi-term-black: #15151a;
+  --kelpi-term-red: #d9707a;
+  --kelpi-term-green: #5fbe89;
+  --kelpi-term-yellow: #d3a329;
+  --kelpi-term-blue: #6f9bd8;
+  --kelpi-term-magenta: #b18ad1;
+  --kelpi-term-cyan: #5fb3b3;
+  --kelpi-term-white: #c9c9d1;
+  --kelpi-term-bright-black: #4a4a55;
+  --kelpi-term-bright-red: #e88e96;
+  --kelpi-term-bright-green: #7fd4a3;
+  --kelpi-term-bright-yellow: #e5be55;
+  --kelpi-term-bright-blue: #8fb5e6;
+  --kelpi-term-bright-magenta: #c7a6e0;
+  --kelpi-term-bright-cyan: #7fcaca;
+  --kelpi-term-bright-white: #f2f2f6;
 
   /* type */
-  --nex-font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --nex-font-mono: "JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --kelpi-font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --kelpi-font-mono: "JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* The light column, twice: the media query is the pre-hydration answer, the attribute is what
    `ThemeProvider` stamps once it has resolved the appearance (and what an explicit "light"
    preference must win with, even on a dark OS). */
 @media (prefers-color-scheme: light) {
-  :root:not([data-nex-theme="dark"]) {
+  :root:not([data-kelpi-theme="dark"]) {
     color-scheme: light;
 
-    --nex-bg: #eae8e2;
-    --nex-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
-    --nex-sidebar-bg: #efeee9;
-    --nex-surface: #ffffff;
-    --nex-surface-bg: #ffffff;
-    --nex-header-bg: #f7f6f2;
-    --nex-footer-bg: #efeee9;
-    --nex-fg: #2b2b2e;
-    --nex-fg-secondary: #6b6c70;
-    --nex-fg-tertiary: #9a9a96;
-    --nex-border: #dedcd5;
-    --nex-selection-fill: rgba(94, 138, 196, 0.16);
-    --nex-selection-stroke: #5e8ac4;
-    --nex-accent: #5e8ac4;
-    --nex-pane-focus: #5e8ac4;
-    --nex-status-running: #4fa46b;
-    --nex-status-waiting: #5e8ac4;
-    --nex-status-inactive: #9a9a96;
-    --nex-active-agent: #a97c17;
-    --nex-agent: #a97c17;
+    --kelpi-bg: #eae8e2;
+    --kelpi-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
+    --kelpi-sidebar-bg: #efeee9;
+    --kelpi-surface: #ffffff;
+    --kelpi-surface-bg: #ffffff;
+    --kelpi-header-bg: #f7f6f2;
+    --kelpi-footer-bg: #efeee9;
+    --kelpi-fg: #2b2b2e;
+    --kelpi-fg-secondary: #6b6c70;
+    --kelpi-fg-tertiary: #9a9a96;
+    --kelpi-border: #dedcd5;
+    --kelpi-selection-fill: rgba(94, 138, 196, 0.16);
+    --kelpi-selection-stroke: #5e8ac4;
+    --kelpi-accent: #5e8ac4;
+    --kelpi-pane-focus: #5e8ac4;
+    --kelpi-status-running: #4fa46b;
+    --kelpi-status-waiting: #5e8ac4;
+    --kelpi-status-inactive: #9a9a96;
+    --kelpi-active-agent: #a97c17;
+    --kelpi-agent: #a97c17;
     /* L27 — the light column of the header orange, derived from #d08237 by the same
-       per-channel ratio that takes --nex-agent from #d3a329 to #a97c17. */
-    --nex-orange: #a8631f;
-    --nex-group-band-opacity: 0.3;
+       per-channel ratio that takes --kelpi-agent from #d3a329 to #a97c17. */
+    --kelpi-orange: #a8631f;
+    --kelpi-group-band-opacity: 0.3;
 
-    --nex-term-bg: #ffffff;
-    --nex-term-fg: #2b2b2e;
-    --nex-term-cursor: #2b2b2e;
-    --nex-term-cursor-accent: #ffffff;
-    --nex-term-selection-bg: #cfe0f5;
-    --nex-term-selection-fg: #2b2b2e;
-    --nex-term-black: #2b2b2e;
-    --nex-term-red: #d0453c;
-    --nex-term-green: #3f9457;
-    --nex-term-yellow: #b99413;
-    --nex-term-blue: #3d74c0;
-    --nex-term-magenta: #8158c8;
-    --nex-term-cyan: #3f8f8f;
-    --nex-term-white: #d8d6d0;
-    --nex-term-bright-black: #6b6c70;
-    --nex-term-bright-red: #e0655c;
-    --nex-term-bright-green: #4fa46b;
-    --nex-term-bright-yellow: #c8a52a;
-    --nex-term-bright-blue: #5e8ac4;
-    --nex-term-bright-magenta: #9a72dd;
-    --nex-term-bright-cyan: #4fa8a8;
-    --nex-term-bright-white: #ffffff;
+    --kelpi-term-bg: #ffffff;
+    --kelpi-term-fg: #2b2b2e;
+    --kelpi-term-cursor: #2b2b2e;
+    --kelpi-term-cursor-accent: #ffffff;
+    --kelpi-term-selection-bg: #cfe0f5;
+    --kelpi-term-selection-fg: #2b2b2e;
+    --kelpi-term-black: #2b2b2e;
+    --kelpi-term-red: #d0453c;
+    --kelpi-term-green: #3f9457;
+    --kelpi-term-yellow: #b99413;
+    --kelpi-term-blue: #3d74c0;
+    --kelpi-term-magenta: #8158c8;
+    --kelpi-term-cyan: #3f8f8f;
+    --kelpi-term-white: #d8d6d0;
+    --kelpi-term-bright-black: #6b6c70;
+    --kelpi-term-bright-red: #e0655c;
+    --kelpi-term-bright-green: #4fa46b;
+    --kelpi-term-bright-yellow: #c8a52a;
+    --kelpi-term-bright-blue: #5e8ac4;
+    --kelpi-term-bright-magenta: #9a72dd;
+    --kelpi-term-bright-cyan: #4fa8a8;
+    --kelpi-term-bright-white: #ffffff;
   }
 }
 
-:root[data-nex-theme="light"] {
+:root[data-kelpi-theme="light"] {
   color-scheme: light;
 
-  --nex-bg: #eae8e2;
-  --nex-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
-  --nex-sidebar-bg: #efeee9;
-  --nex-surface: #ffffff;
-  --nex-surface-bg: #ffffff;
-  --nex-header-bg: #f7f6f2;
-  --nex-footer-bg: #efeee9;
-  --nex-fg: #2b2b2e;
-  --nex-fg-secondary: #6b6c70;
-  --nex-fg-tertiary: #9a9a96;
-  --nex-border: #dedcd5;
-  --nex-selection-fill: rgba(94, 138, 196, 0.16);
-  --nex-selection-stroke: #5e8ac4;
-  --nex-accent: #5e8ac4;
-  --nex-pane-focus: #5e8ac4;
-  --nex-status-running: #4fa46b;
-  --nex-status-waiting: #5e8ac4;
-  --nex-status-inactive: #9a9a96;
-  --nex-active-agent: #a97c17;
-  --nex-agent: #a97c17;
+  --kelpi-bg: #eae8e2;
+  --kelpi-window-fill: #eae8e2; /* §N17 — the ground; see the dark block */
+  --kelpi-sidebar-bg: #efeee9;
+  --kelpi-surface: #ffffff;
+  --kelpi-surface-bg: #ffffff;
+  --kelpi-header-bg: #f7f6f2;
+  --kelpi-footer-bg: #efeee9;
+  --kelpi-fg: #2b2b2e;
+  --kelpi-fg-secondary: #6b6c70;
+  --kelpi-fg-tertiary: #9a9a96;
+  --kelpi-border: #dedcd5;
+  --kelpi-selection-fill: rgba(94, 138, 196, 0.16);
+  --kelpi-selection-stroke: #5e8ac4;
+  --kelpi-accent: #5e8ac4;
+  --kelpi-pane-focus: #5e8ac4;
+  --kelpi-status-running: #4fa46b;
+  --kelpi-status-waiting: #5e8ac4;
+  --kelpi-status-inactive: #9a9a96;
+  --kelpi-active-agent: #a97c17;
+  --kelpi-agent: #a97c17;
   /* L27 — see the media-query block above. */
-  --nex-orange: #a8631f;
-  --nex-group-band-opacity: 0.3;
+  --kelpi-orange: #a8631f;
+  --kelpi-group-band-opacity: 0.3;
 
-  --nex-term-bg: #ffffff;
-  --nex-term-fg: #2b2b2e;
-  --nex-term-cursor: #2b2b2e;
-  --nex-term-cursor-accent: #ffffff;
-  --nex-term-selection-bg: #cfe0f5;
-  --nex-term-selection-fg: #2b2b2e;
-  --nex-term-black: #2b2b2e;
-  --nex-term-red: #d0453c;
-  --nex-term-green: #3f9457;
-  --nex-term-yellow: #b99413;
-  --nex-term-blue: #3d74c0;
-  --nex-term-magenta: #8158c8;
-  --nex-term-cyan: #3f8f8f;
-  --nex-term-white: #d8d6d0;
-  --nex-term-bright-black: #6b6c70;
-  --nex-term-bright-red: #e0655c;
-  --nex-term-bright-green: #4fa46b;
-  --nex-term-bright-yellow: #c8a52a;
-  --nex-term-bright-blue: #5e8ac4;
-  --nex-term-bright-magenta: #9a72dd;
-  --nex-term-bright-cyan: #4fa8a8;
-  --nex-term-bright-white: #ffffff;
+  --kelpi-term-bg: #ffffff;
+  --kelpi-term-fg: #2b2b2e;
+  --kelpi-term-cursor: #2b2b2e;
+  --kelpi-term-cursor-accent: #ffffff;
+  --kelpi-term-selection-bg: #cfe0f5;
+  --kelpi-term-selection-fg: #2b2b2e;
+  --kelpi-term-black: #2b2b2e;
+  --kelpi-term-red: #d0453c;
+  --kelpi-term-green: #3f9457;
+  --kelpi-term-yellow: #b99413;
+  --kelpi-term-blue: #3d74c0;
+  --kelpi-term-magenta: #8158c8;
+  --kelpi-term-cyan: #3f8f8f;
+  --kelpi-term-white: #d8d6d0;
+  --kelpi-term-bright-black: #6b6c70;
+  --kelpi-term-bright-red: #e0655c;
+  --kelpi-term-bright-green: #4fa46b;
+  --kelpi-term-bright-yellow: #c8a52a;
+  --kelpi-term-bright-blue: #5e8ac4;
+  --kelpi-term-bright-magenta: #9a72dd;
+  --kelpi-term-bright-cyan: #4fa8a8;
+  --kelpi-term-bright-white: #ffffff;
 }
 
 /* ── base ──────────────────────────────────────────────────────────────────────── */
@@ -232,14 +232,14 @@ body,
 
 body {
   /* §N17 — the window GROUND, not the "window gaps" colour.
-     `--nex-window-fill` is `--nex-bg` until the shell creates the window transparent, then it
+     `--kelpi-window-fill` is `--kelpi-bg` until the shell creates the window transparent, then it
      is `transparent`: `RootChromeView.swift:32-39` paints its backdrop "only when the terminal
      is fully opaque", so at `background-opacity < 1` each pane's own fill is the ONE
      translucent layer over the desktop instead of one of five stacked ones. The `var()`
      fallback keeps the preset ground before `ThemeProvider` has stamped anything. */
-  background: var(--nex-window-fill, var(--nex-bg));
-  color: var(--nex-fg);
-  font-family: var(--nex-font-ui);
+  background: var(--kelpi-window-fill, var(--kelpi-bg));
+  color: var(--kelpi-fg);
+  font-family: var(--kelpi-font-ui);
   font-size: 13px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
@@ -301,7 +301,7 @@ input {
 }
 
 ::selection {
-  background: var(--nex-selection-fill);
+  background: var(--kelpi-selection-fill);
 }
 
 /*
@@ -322,7 +322,7 @@ input {
  */
 @layer base {
   :focus-visible {
-    outline: 1px solid var(--nex-accent);
+    outline: 1px solid var(--kelpi-accent);
     outline-offset: 1px;
   }
 }
@@ -330,7 +330,7 @@ input {
 /* Thin, theme-aware scrollbars. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--nex-border) transparent;
+  scrollbar-color: var(--kelpi-border) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -339,7 +339,7 @@ input {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: var(--nex-border);
+  background: var(--kelpi-border);
   border-radius: 5px;
 }
 
@@ -355,11 +355,11 @@ input {
  * shipped app never has. Scoped to this one element rather than relaxing the global rule, which
  * every other scroller in the app still wants.
  */
-[data-nex-web-tabstrip] {
+[data-kelpi-web-tabstrip] {
   scrollbar-width: none;
 }
 
-[data-nex-web-tabstrip]::-webkit-scrollbar {
+[data-kelpi-web-tabstrip]::-webkit-scrollbar {
   display: none;
 }
 
@@ -376,7 +376,7 @@ input {
  * 8 px on the left, and cost the text column 11 px of every line. The scratchpad's `wrap="off"`
  * took the same 11 px as a horizontal rail across its bottom.
  *
- * Scoped off the editor the same way `[data-nex-web-tabstrip]` above is scoped, and for the
+ * Scoped off the editor the same way `[data-kelpi-web-tabstrip]` above is scoped, and for the
  * same reason: every other scroller in the app still wants the themed 9 px bar.
  *
  * The one thing CSS cannot give back is the PAINT. Chromium picks its overlay scroller only
@@ -399,23 +399,23 @@ input {
  * L59 — the storage panel's in-flight indicator: the `ProgressView().controlSize(.small)
  * .scaleEffect(0.6)` in the 12×12 frame at `StoragePanel.swift:135-140`, beside the cookie count.
  */
-.nex-storage-spinner {
+.kelpi-storage-spinner {
   display: inline-block;
   width: 10px;
   height: 10px;
   border: 1.5px solid;
   border-radius: 50%;
-  animation: nex-storage-spin 800ms linear infinite;
+  animation: kelpi-storage-spin 800ms linear infinite;
 }
 
-@keyframes nex-storage-spin {
+@keyframes kelpi-storage-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nex-storage-spinner {
+  .kelpi-storage-spinner {
     animation-duration: 2400ms;
   }
 }
@@ -435,17 +435,17 @@ input {
  * bar to full width, holds 300 ms, then fades — because that half is timing, which survives the
  * port intact.
  */
-@keyframes nex-web-progress-sweep {
+@keyframes kelpi-web-progress-sweep {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(250%); }
 }
 
-.nex-web-progress {
-  animation: nex-web-progress-sweep 1.1s ease-in-out infinite;
+.kelpi-web-progress {
+  animation: kelpi-web-progress-sweep 1.1s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nex-web-progress {
+  .kelpi-web-progress {
     animation: none;
     width: 100%;
     opacity: 0.6;
@@ -463,14 +463,14 @@ input {
  *
  * The port used to emit an expanding `0 0 0 4px` box-shadow halo on a fully opaque dot, which
  * made every running workspace radar-ping and left it the most animated thing in the sidebar.
- * `--nex-dot-halo` went with the ring it drew; `--nex-dot-ring` stays, because the 1.5 px ring
+ * `--kelpi-dot-halo` went with the ring it drew; `--kelpi-dot-ring` stays, because the 1.5 px ring
  * is the Swift's `borderColor` stroke and is painted (not animated) for the whole cycle.
  *
  * The dot never changes SIZE: a status marker that breathes is read as "working", one that jumps
  * is read as a glitch. Reduced motion keeps the dot, at full opacity, and drops the fade — the
  * colour is the state, and the animation only draws the eye to it.
  */
-@keyframes nex-agent-dot-pulse {
+@keyframes kelpi-agent-dot-pulse {
   from { opacity: 1; }
   to { opacity: 0.35; }
 }
@@ -485,13 +485,13 @@ input {
  * across (a third too big beside a 22px avatar) and left the fill untouched where the Swift's
  * stroke eats into it. Two shadows, outer and inset, are that centred stroke exactly.
  */
-.nex-agent-dot-pulse {
-  box-shadow: 0 0 0 0.75px var(--nex-dot-ring), inset 0 0 0 0.75px var(--nex-dot-ring);
-  animation: nex-agent-dot-pulse 1s ease-in-out infinite alternate;
+.kelpi-agent-dot-pulse {
+  box-shadow: 0 0 0 0.75px var(--kelpi-dot-ring), inset 0 0 0 0.75px var(--kelpi-dot-ring);
+  animation: kelpi-agent-dot-pulse 1s ease-in-out infinite alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nex-agent-dot-pulse {
+  .kelpi-agent-dot-pulse {
     animation: none;
     opacity: 1;
   }
@@ -508,7 +508,7 @@ input {
  * animated: React unmounts the node, and holding a dead row alive to fade it out would put a
  * phantom in the drag geometry that §WS-093's measure gate has to trust.
  */
-@keyframes nex-sidebar-row-enter {
+@keyframes kelpi-sidebar-row-enter {
   0% { opacity: 0; transform: translateY(-6px) scale(0.97); }
   60% { opacity: 1; transform: translateY(1px) scale(1.005); }
   100% { opacity: 1; transform: none; }
@@ -568,45 +568,45 @@ input {
  * The exit is driven by `CommandPalette`'s own `PALETTE_TRANSITION_MS` mount-delay: an unmounted
  * component cannot animate, so the phase attribute is what tells CSS which direction to play.
  */
-@keyframes nex-palette-enter {
+@keyframes kelpi-palette-enter {
   from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: none; }
 }
 
-@keyframes nex-palette-exit {
+@keyframes kelpi-palette-exit {
   from { opacity: 1; transform: none; }
   to { opacity: 0; transform: translateY(-8px); }
 }
 
-@keyframes nex-palette-scrim-in {
+@keyframes kelpi-palette-scrim-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-@keyframes nex-palette-scrim-out {
+@keyframes kelpi-palette-scrim-out {
   from { opacity: 1; }
   to { opacity: 0; }
 }
 
-[data-palette-phase='entering'] .nex-palette-panel {
-  animation: nex-palette-enter 150ms ease-out both;
+[data-palette-phase='entering'] .kelpi-palette-panel {
+  animation: kelpi-palette-enter 150ms ease-out both;
 }
 
-[data-palette-phase='exiting'] .nex-palette-panel {
-  animation: nex-palette-exit 150ms ease-out both;
+[data-palette-phase='exiting'] .kelpi-palette-panel {
+  animation: kelpi-palette-exit 150ms ease-out both;
 }
 
-.nex-palette-scrim[data-palette-phase='entering'] {
-  animation: nex-palette-scrim-in 150ms ease-out both;
+.kelpi-palette-scrim[data-palette-phase='entering'] {
+  animation: kelpi-palette-scrim-in 150ms ease-out both;
 }
 
-.nex-palette-scrim[data-palette-phase='exiting'] {
-  animation: nex-palette-scrim-out 150ms ease-out both;
+.kelpi-palette-scrim[data-palette-phase='exiting'] {
+  animation: kelpi-palette-scrim-out 150ms ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-palette-phase] .nex-palette-panel,
-  .nex-palette-scrim[data-palette-phase] {
+  [data-palette-phase] .kelpi-palette-panel,
+  .kelpi-palette-scrim[data-palette-phase] {
     animation: none !important;
   }
 }

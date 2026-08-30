@@ -83,10 +83,10 @@ describe('sandboxing', () => {
 
         const document = srcdoc();
         expect(document).toContain('<h1>Doc</h1>');
-        expect(document).toContain('__nexContentBridge');
+        expect(document).toContain('__kelpiContentBridge');
         expect(document).toContain('.code-copy-btn');
         // The script goes inside the document, before its end tag.
-        expect(document.indexOf('__nexContentBridge')).toBeLessThan(document.lastIndexOf('</body>'));
+        expect(document.indexOf('__kelpiContentBridge')).toBeLessThan(document.lastIndexOf('</body>'));
     });
 });
 

@@ -12,9 +12,9 @@
  * ever killed by an update. The directory is 0700 and every file 0600 — the trust model is
  * "same UID on the same box".
  *
- * Locations: `NEXD_RUN_DIR` wins everywhere; otherwise
+ * Locations: `KELPID_RUN_DIR` wins everywhere; otherwise
  *   darwin → ~/Library/Application Support/nexd/run
- *   linux  → $XDG_RUNTIME_DIR/nexd, else ~/.local/state/nexd/run
+ *   linux  → $XDG_RUNTIME_DIR/nexd, else ~/.local/state/kelpid/run
  *
  * Note this is NOT `/tmp/nex.sock`: that path stays the CLI-compat control socket (PLAN
  * decisions) and is configured separately (`control/endpoints.ts`).
@@ -25,9 +25,9 @@ import fs from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { PROTOCOL_VERSION } from '@nex/protocol';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
-export const RUN_DIR_ENV = 'NEXD_RUN_DIR';
+export const RUN_DIR_ENV = 'KELPID_RUN_DIR';
 export const RUN_DIR_MODE = 0o700;
 export const RUN_FILE_MODE = 0o600;
 

@@ -21,7 +21,7 @@ const PANE_B = 'AAAAAAAA-0000-4000-8000-000000000002';
 const dirs: string[] = [];
 
 function tempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-geometry-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-geometry-'));
     dirs.push(dir);
     return dir;
 }

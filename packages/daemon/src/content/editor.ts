@@ -34,7 +34,7 @@ export function writeFileAtomic(filePath: string, text: string): void {
     tempCounter += 1;
     const temp = path.join(
         directory,
-        `.${path.basename(filePath)}.nex-${String(process.pid)}-${String(tempCounter)}.tmp`
+        `.${path.basename(filePath)}.kelpi-${String(process.pid)}-${String(tempCounter)}.tmp`
     );
     fs.writeFileSync(temp, text, 'utf8');
     try {

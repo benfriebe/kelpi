@@ -197,13 +197,13 @@ const REPO_STATE_MARKERS: readonly (readonly [string, RepoState])[] = [
 ];
 
 /** Prefix of the throw-away index files `writeTreeForWorktree` creates (port note 18). */
-export const GRAFT_TEMP_INDEX_PREFIX = 'nex-graft-index-';
+export const GRAFT_TEMP_INDEX_PREFIX = 'kelpi-graft-index-';
 
 /** A day: only temp indexes older than this are swept, so a live sync is never robbed. */
 const TEMP_INDEX_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Best-effort startup sweep of abandoned `nex-graft-index-*` files (a crashed sync leaks one).
+ * Best-effort startup sweep of abandoned `kelpi-graft-index-*` files (a crashed sync leaks one).
  * Only files older than a day are removed — another daemon may be mid-`write-tree` right now.
  * Returns the number of files deleted; never throws.
  */

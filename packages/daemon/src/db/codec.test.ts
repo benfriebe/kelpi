@@ -44,14 +44,14 @@ const TAB2 = '5F0C24D9-2222-4222-8222-222222222222';
 function workspaceRow(overrides: Partial<Record<string, unknown>> = {}): SqlRow {
     return {
         id: W1,
-        name: 'nex',
+        name: 'kelpi',
         color: 'blue',
         layoutJSON: `{"leaf":{"_0":"${P1}"}}`,
         focusedPaneID: P1,
         createdAt: 1_755_500_000.5,
         lastAccessedAt: 1_755_500_100.5,
         sortOrder: 0,
-        slug: 'nex-a4e8a251',
+        slug: 'kelpi-a4e8a251',
         labelsJSON: '["frontend","wip"]',
         icon: 'system:star.fill',
         profileName: 'work',
@@ -65,7 +65,7 @@ function paneRow(overrides: Partial<Record<string, unknown>> = {}): SqlRow {
         workspaceID: W1,
         label: 'coordinator',
         type: 'shell',
-        workingDirectory: '/Users/test/code/nex',
+        workingDirectory: '/Users/test/code/kelpi',
         createdAt: 1_755_500_000,
         lastActivityAt: 1_755_500_050,
         agentSessionID: 'abc-123',
@@ -125,8 +125,8 @@ describe('workspace row decoding', () => {
         expect(decoded).not.toBeNull();
         expect(decoded?.workspace).toEqual({
             id: W1,
-            name: 'nex',
-            slug: 'nex-a4e8a251',
+            name: 'kelpi',
+            slug: 'kelpi-a4e8a251',
             color: 'blue',
             icon: { kind: 'system', name: 'star.fill' },
             profileName: 'work',
@@ -195,7 +195,7 @@ describe('pane row decoding', () => {
             id: P1,
             label: 'coordinator',
             type: 'shell',
-            workingDirectory: '/Users/test/code/nex',
+            workingDirectory: '/Users/test/code/kelpi',
             createdAt: 1_755_500_000,
             lastActivityAt: 1_755_500_050,
             agentSessionID: 'abc-123',
@@ -348,8 +348,8 @@ describe('encoding (§5.4)', () => {
         const row = encodeWorkspaceRow(
             {
                 id: W1.toLowerCase(),
-                name: 'nex',
-                slug: 'nex-a4e8a251',
+                name: 'kelpi',
+                slug: 'kelpi-a4e8a251',
                 color: 'blue',
                 icon: { kind: 'emoji', grapheme: '🚀' },
                 profileName: null,
@@ -596,8 +596,8 @@ describe('snapshotFromRows assembly (§6.1)', () => {
 describe('snapshotToRows', () => {
     const workspace: PersistedWorkspace = {
         id: W1,
-        name: 'nex',
-        slug: 'nex-a4e8a251',
+        name: 'kelpi',
+        slug: 'kelpi-a4e8a251',
         color: 'blue',
         icon: null,
         profileName: null,
@@ -640,7 +640,7 @@ describe('snapshotToRows', () => {
             labelPresets: []
         });
         expect(rows.workspaces).toHaveLength(1);
-        expect(rows.workspaces[0]?.name).toBe('nex');
+        expect(rows.workspaces[0]?.name).toBe('kelpi');
         expect(rows.repos).toHaveLength(1);
         expect(rows.repos[0]?.name).toBe('repo');
     });

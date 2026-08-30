@@ -9,7 +9,7 @@ import {
     resolveShell,
     resolveSpawnCwd
 } from './manager.js';
-import type { NexPtyManager } from './manager.js';
+import type { KelpiPtyManager } from './manager.js';
 import type { PtyProcessHandle, PtySpawnRequest, PtySpawner } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ describe('PtyManager registry (§1.2)', () => {
     it('merges the caller env over the inherited env, ordered, with TERM defaults (§2.1)', () => {
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });
-        process.env['NEX_TEST_INHERITED'] = 'inherited';
+        process.env['KELPI_TEST_INHERITED'] = 'inherited';
 
         manager.spawn({
             paneID: 'pane-a',
@@ -180,12 +180,12 @@ describe('PtyManager registry (§1.2)', () => {
         });
 
         const env = spawned[0]?.request.env ?? {};
-        expect(env['NEX_TEST_INHERITED']).toBe('inherited');
+        expect(env['KELPI_TEST_INHERITED']).toBe('inherited');
         expect(env['NEX_PANE_ID']).toBe('PANE-A');
         expect(env['FOO']).toBe('two'); // later pair wins, matching the ordered overlay
         expect(env['TERM']).toBe(DEFAULT_TERM);
         expect(spawned[0]?.request.name).toBe(DEFAULT_TERM);
-        delete process.env['NEX_TEST_INHERITED'];
+        delete process.env['KELPI_TEST_INHERITED'];
     });
 
     it('lets a caller-supplied TERM win over the default', () => {
@@ -507,23 +507,23 @@ describe('kill escalation (§1.3, §15.18)', () => {
 // ---------------------------------------------------------------------------
 
 describe('real node-pty integration', () => {
-    const managers: NexPtyManager[] = [];
+    const managers: KelpiPtyManager[] = [];
     const tmpDirs: string[] = [];
 
-    function makeManager(options: Parameters<typeof createPtyManager>[0] = {}): NexPtyManager {
+    function makeManager(options: Parameters<typeof createPtyManager>[0] = {}): KelpiPtyManager {
         const manager = createPtyManager(options);
         managers.push(manager);
         return manager;
     }
 
     function makeTmpDir(): string {
-        const dir = mkdtempSync(join(tmpdir(), 'nex-pty-'));
+        const dir = mkdtempSync(join(tmpdir(), 'kelpi-pty-'));
         tmpDirs.push(dir);
         return dir;
     }
 
     /** Accumulates raw output per pane so assertions can poll for a marker. */
-    function sink(manager: NexPtyManager): Map<string, string> {
+    function sink(manager: KelpiPtyManager): Map<string, string> {
         const output = new Map<string, string>();
         manager.onData((paneID, data) => {
             output.set(paneID, (output.get(paneID) ?? '') + Buffer.from(data).toString('utf8'));
@@ -538,7 +538,7 @@ describe('real node-pty integration', () => {
             env: [
                 ['NEX_PANE_ID', paneID],
                 ['PS1', ''],
-                ['NEX_TEST_MARKER', 'marker-value']
+                ['KELPI_TEST_MARKER', 'marker-value']
             ] as ReadonlyArray<readonly [string, string]>,
             cols: 80,
             rows: 24,
@@ -572,7 +572,7 @@ describe('real node-pty integration', () => {
         const dir = makeTmpDir();
 
         manager.spawn(shellOpts('pane-1', dir));
-        manager.write('pane-1', 'printf "ENV[%s]\\n" "$NEX_TEST_MARKER"\r');
+        manager.write('pane-1', 'printf "ENV[%s]\\n" "$KELPI_TEST_MARKER"\r');
         await waitFor(() => (output.get('pane-1') ?? '').includes('ENV[marker-value]'));
 
         manager.write('pane-1', 'printf "CWD[%s]\\n" "$(pwd -P)"\r');

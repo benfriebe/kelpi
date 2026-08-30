@@ -6,7 +6,7 @@
  * (`group-reorder` / `group-sort` semantics, including the dangling-id preservation rule).
  */
 
-import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@nex/core/codec';
+import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
 import type { DaemonState, DomainAction, GroupSortKey, WorkspaceState } from '../types.js';
 import { clampIndex, seconds } from './helpers.js';
 import { indexOfEntry, sameEntry, sidebarAnchor } from './workspaces.js';

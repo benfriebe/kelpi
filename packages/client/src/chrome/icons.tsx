@@ -14,8 +14,8 @@
  *      symbol is. `emoji` icons render as themselves (native colors, never tinted).
  */
 
-import { normalizeIconEmoji } from '@nex/core/codec';
-import type { IconRef } from '@nex/daemon/store';
+import { normalizeIconEmoji } from '@kelpi/core/codec';
+import type { IconRef } from '@kelpi/daemon/store';
 import type { ReactElement } from 'react';
 
 // ── structural chrome icons ─────────────────────────────────────────────────────────

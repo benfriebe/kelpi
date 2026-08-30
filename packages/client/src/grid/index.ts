@@ -7,7 +7,7 @@
  *   `FocusRing.tsx` — focus visuals + the 600 ms focus-dwell timer
  *   `divider.ts`    — divider-drag maths and the ratio-commit shape
  *   `elapsed.ts`    — one shared 1 s ticker for every agent elapsed clock
- *   `tokens.ts`     — `var(--nex-*)` chrome tokens with dark-preset fallbacks
+ *   `tokens.ts`     — `var(--kelpi-*)` chrome tokens with dark-preset fallbacks
  *
  * Everything is props-driven: the grid never reads the store and never sends a command.
  * Assembly supplies `renderPane` (the terminal / content-pane body) and binds the callbacks

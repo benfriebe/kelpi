@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { JsonObject, WsDeltaEvent } from '@nex/protocol';
+import type { JsonObject, WsDeltaEvent } from '@kelpi/protocol';
 
 import {
     ALL_CLEAR_GLYPH,
@@ -207,9 +207,9 @@ describe('derivations', () => {
         expect(traySummaryLines(counts(0, 0))).toEqual(['All clear']);
         expect(traySummaryLines(counts(2, 1))).toEqual(['alpha — 1 waiting, 2 running']);
         expect(traySummaryLines(counts(2, 1), false)).toEqual(['Daemon not reachable']);
-        expect(trayTooltip(counts(2, 1), true)).toBe('Nex — 1 waiting, 2 running');
-        expect(trayTooltip(counts(0, 0), true)).toBe('Nex — all clear');
-        expect(trayTooltip(counts(0, 0), false)).toBe('Nex — daemon not reachable');
+        expect(trayTooltip(counts(2, 1), true)).toBe('Kelpi — 1 waiting, 2 running');
+        expect(trayTooltip(counts(0, 0), true)).toBe('Kelpi — all clear');
+        expect(trayTooltip(counts(0, 0), false)).toBe('Kelpi — daemon not reachable');
     });
 
     it('reports only the panes that newly entered waiting', () => {

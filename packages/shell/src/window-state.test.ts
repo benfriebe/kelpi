@@ -91,7 +91,7 @@ describe('stripIsGrabbable', () => {
 describe('window state file', () => {
     const dirs: string[] = [];
     const tempDir = (): string => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-state-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-state-'));
         dirs.push(dir);
         return dir;
     };

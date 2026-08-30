@@ -11,7 +11,7 @@
  *    the side effect on success; the reply handle is never load-bearing for a mutation.
  */
 
-import { type EpochSeconds, formatWireTimestamp, newUUID } from '@nex/core/codec';
+import { type EpochSeconds, formatWireTimestamp, newUUID } from '@kelpi/core/codec';
 import {
     buildPanePath,
     DEFAULT_PROFILE_NAME,
@@ -22,9 +22,9 @@ import {
     mergedEnvVars,
     normalizedAssignment,
     resolveProfileEnv
-} from '@nex/core/env';
-import type { Pane } from '@nex/core/layout';
-import { resolvePaneTarget } from '@nex/core/resolve';
+} from '@kelpi/core/env';
+import type { Pane } from '@kelpi/core/layout';
+import { resolvePaneTarget } from '@kelpi/core/resolve';
 
 import { DEFAULT_COLS, DEFAULT_ROWS } from '../../pty/index.js';
 import type { ReplyHandle } from '../../seams.js';
@@ -164,7 +164,7 @@ export function spawnEnvVars(
     /*
      * §SET-209. The marker is injected either way (that is the load-bearing half, and
      * `resolveProfileEnv` does it unconditionally), but a NON-`default` name with no `profile`
-     * lines behind it is almost always a typo in `nex workspace profile` or a profile the user
+     * lines behind it is almost always a typo in `kelpi workspace profile` or a profile the user
      * deleted from the config — and without a word it is indistinguishable from a working
      * assignment. An empty `default` is expected and is never warned about.
      */

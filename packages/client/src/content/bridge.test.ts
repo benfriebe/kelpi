@@ -32,14 +32,14 @@ describe('prepareContentDocument', () => {
         const prepared = prepareContentDocument(html, { paneID: PANE });
 
         expect(prepared.split('</body>')).toHaveLength(2);
-        expect(prepared.indexOf('__nexContentBridge')).toBeLessThan(prepared.lastIndexOf('</body>'));
+        expect(prepared.indexOf('__kelpiContentBridge')).toBeLessThan(prepared.lastIndexOf('</body>'));
     });
 
     it('still injects into a fragment the daemon did not wrap', () => {
         const prepared = prepareContentDocument('<h1>bare</h1>', { paneID: PANE, assetBase: '/pane-assets/x/' });
 
         expect(prepared).toContain('<base href="/pane-assets/x/">');
-        expect(prepared).toContain('__nexContentBridge');
+        expect(prepared).toContain('__kelpiContentBridge');
     });
 
     it('escapes an asset base rather than letting it close the tag', () => {
@@ -70,9 +70,9 @@ describe('prepareContentDocument', () => {
         expect(prepared).toContain('html{background-color:#0A0A0C;color-scheme:dark;}');
         // …and AFTER the daemon's stylesheet, so a same-specificity rule cannot outrank it.
         expect(prepared.indexOf('body { background-color: transparent; }')).toBeLessThan(
-            prepared.indexOf('data-nex-frame-base')
+            prepared.indexOf('data-kelpi-frame-base')
         );
-        expect(prepared.indexOf('data-nex-frame-base')).toBeLessThan(prepared.indexOf('</head>'));
+        expect(prepared.indexOf('data-kelpi-frame-base')).toBeLessThan(prepared.indexOf('</head>'));
     });
 
     it('takes the light color scheme when the document is light, and injects nothing without a color', () => {
@@ -81,12 +81,12 @@ describe('prepareContentDocument', () => {
             'html{background-color:#FFFFFF;color-scheme:light;}'
         );
         // No background = the caller CAN composite (a non-sandboxed embedder, a test fixture).
-        expect(prepareContentDocument(html, { paneID: PANE })).not.toContain('data-nex-frame-base');
+        expect(prepareContentDocument(html, { paneID: PANE })).not.toContain('data-kelpi-frame-base');
     });
 
     it('prepends the base style when the daemon sent a bare fragment with no head', () => {
         const prepared = prepareContentDocument('<h1>bare</h1>', { paneID: PANE, background: '#101013' });
-        expect(prepared.indexOf('data-nex-frame-base')).toBeLessThan(prepared.indexOf('<h1>bare</h1>'));
+        expect(prepared.indexOf('data-kelpi-frame-base')).toBeLessThan(prepared.indexOf('<h1>bare</h1>'));
         expect(frameBaseStyle('#101013', 'dark')).toContain('background-color:#101013');
     });
 

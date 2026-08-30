@@ -120,7 +120,7 @@ export interface WsGeneralSettings {
  * `key = value` line there; a hand-edit and a Settings click land in the same place, and two
  * attached windows cannot disagree about the palette.
  *
- * The `chrome-*` / `sidebar-*` keys are NEX-owned. Nothing here reaches the ghostty file: the
+ * The `chrome-*` / `sidebar-*` keys are KELPI-owned. Nothing here reaches the ghostty file: the
  * chrome palette is independent of the terminal theme by construction (SET-031).
  */
 export interface WsChromeSettings {
@@ -160,11 +160,11 @@ export interface WsChromeSettings {
     /**
      * The four search-highlight colours (SET-219 / TERM-021), each `#rrggbb`.
      *
-     * The Swift app wrote these as a Nex-managed ghostty defaults FILE loaded before the
+     * The Swift app wrote these as a Kelpi-managed ghostty defaults FILE loaded before the
      * user's own config, so libghostty resolved them with the user's value winning. Nothing in
      * this architecture draws a search highlight inside an engine — the markdown/diff find
      * script, the web pane's find script and the terminal search reveal are all ours — so the
-     * overridable-default idea becomes four nex-config keys carrying the Swift hexes as their
+     * overridable-default idea becomes four kelpi-config keys carrying the Swift hexes as their
      * defaults (`search-match-color` #f2d027, `search-match-text-color` #000000,
      * `search-match-current-color` #ff7a00, `search-match-current-text-color` #000000).
      */
@@ -339,7 +339,7 @@ export interface WsSettingsSnapshot {
     readonly general: WsGeneralSettings;
     readonly appearance: WsAppearanceSettings;
     /**
-     * Chrome styling + status-bar settings, parsed from the same nex config file. Additive:
+     * Chrome styling + status-bar settings, parsed from the same kelpi config file. Additive:
      * a daemon that predates it omits the field and `hydrateSettings` fills the defaults.
      */
     readonly chrome: WsChromeSettings;
@@ -351,7 +351,7 @@ export interface WsSettingsSnapshot {
     readonly profiles: readonly WsProfile[];
 }
 
-/** Matches the web client's `--nex-term-bg` fallback and the daemon's content-render default. */
+/** Matches the web client's `--kelpi-term-bg` fallback and the daemon's content-render default. */
 export const DEFAULT_SETTINGS_BACKGROUND = '#0a0a0c';
 
 /** What "neither config file exists" produces. */
@@ -408,7 +408,7 @@ export const WS_SETTINGS_CHANGED_MESSAGE = 'settings-changed';
  *
  * `set-ghostty-setting` is the odd one out and the boundary is deliberate: `background`,
  * `background-opacity`, `font-family`, `font-size` and `theme` are **ghostty's** keys, so they
- * are written to `~/.config/ghostty/config`, not to the nex config. Same preservation
+ * are written to `~/.config/ghostty/config`, not to the kelpi config. Same preservation
  * guarantee as every other writer (every unrelated line survives byte-for-byte), same
  * write-through-then-re-read discipline, and the same watcher fans the result back out.
  */
@@ -458,8 +458,8 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     'sparkline-style',
     'sparkline-color',
     'sparkline-width',
-    // SET-219 / TERM-021: the Swift app's Nex-managed ghostty search-highlight defaults, as
-    // four overridable nex keys (the Settings ▸ Appearance ▸ Search highlight rows write them).
+    // SET-219 / TERM-021: the Swift app's Kelpi-managed ghostty search-highlight defaults, as
+    // four overridable kelpi keys (the Settings ▸ Appearance ▸ Search highlight rows write them).
     'search-match-color',
     'search-match-text-color',
     'search-match-current-color',
@@ -477,7 +477,7 @@ export const WS_WRITABLE_GENERAL_KEYS = [
     // SET-012, the last of §13's six behaviour keys: the drop-into-a-collapsed-group rule.
     'expand-group-on-workspace-drop',
     // §TERM-046's OSC 52 gate. Not a Swift key either — ghostty owns `clipboard-write` there and
-    // the app ships it wide open; here it is a nex key that ships OFF, and the Settings ▸
+    // the app ships it wide open; here it is a kelpi key that ships OFF, and the Settings ▸
     // Workspaces toggle is what turns it on.
     'clipboard-write'
 ] as const;

@@ -4,7 +4,7 @@
  * §GIT-098/099/103).
  *
  * They are **WS-only** for the same reason `WS_ONLY_COMMANDS` is: these are direct-manipulation
- * gestures the `nex` CLI has no verb for, and inventing one would be a compatibility surface
+ * gestures the `kelpi` CLI has no verb for, and inventing one would be a compatibility surface
  * owed to the Swift CLI forever. They are matched before `decodeWireObject` in `sync.ts`.
  *
  * Unlike `WS_ONLY_COMMANDS` they are **asynchronous** — every one of them shells out to git —
@@ -50,7 +50,7 @@
 
 import path from 'node:path';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import {
     sanitizedGitName,

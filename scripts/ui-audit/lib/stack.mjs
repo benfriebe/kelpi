@@ -1,9 +1,9 @@
 /**
  * A throwaway full stack for the audit: a private daemon, a private shell, a private CLI.
  *
- * Isolation is non-negotiable — a developer machine is running the real Nex (and, right now,
- * the user's own dev stack on 19733/19734/9223 and /tmp/nexd-dev*). Every path lives under a
- * fresh `mkdtemp`, the control socket is `<tmp>/nexd.sock` and never `/tmp/nex.sock`, ports are
+ * Isolation is non-negotiable — a developer machine is running the real Kelpi (and, right now,
+ * the user's own dev stack on 19733/19734/9223 and /tmp/kelpid-dev*). Every path lives under a
+ * fresh `mkdtemp`, the control socket is `<tmp>/kelpid.sock` and never `/tmp/nex.sock`, ports are
  * ephemeral and explicitly re-drawn if they collide with the reserved dev ports, and Electron
  * gets its own `--user-data-dir`. The pattern is lifted from
  * `packages/shell/scripts/web-smoke.mjs`, which has the same constraints.
@@ -97,7 +97,7 @@ export function run(command, args, opts = {}) {
  *
  * Applied to EVERY child the harness makes — the dev shell, the packaged app, the daemon, each
  * build step, every CLI probe, and each shard's child process — and not only to the packaged
- * launch it was written for. A `nex` probe is a Node cold start and a run makes hundreds of them;
+ * launch it was written for. A `kelpi` probe is a Node cold start and a run makes hundreds of them;
  * `packageApp` is a minute of first-touch I/O over a 250 MB bundle. Both are the shape the policy
  * throttles, and leaving them inherited left the run's non-Electron half on the slow path for no
  * reason. It is one ~1 ms `taskpolicy` exec per child, best-effort.
@@ -165,9 +165,9 @@ function releaseChild(child) {
  */
 export async function buildAll(repoRoot, { log = () => {}, force = false } = {}) {
     const steps = [
-        ['daemon', ['pnpm', ['--filter', '@nex/daemon', 'build'], { cwd: repoRoot }]],
-        ['cli', ['pnpm', ['--filter', '@nex/cli', 'build'], { cwd: repoRoot }]],
-        ['client', ['pnpm', ['--filter', '@nex/client', 'build'], { cwd: repoRoot }]],
+        ['daemon', ['pnpm', ['--filter', '@kelpi/daemon', 'build'], { cwd: repoRoot }]],
+        ['cli', ['pnpm', ['--filter', '@kelpi/cli', 'build'], { cwd: repoRoot }]],
+        ['client', ['pnpm', ['--filter', '@kelpi/client', 'build'], { cwd: repoRoot }]],
         ['shell', ['node', [path.join(repoRoot, 'packages', 'shell', 'scripts', 'bundle.mjs')], { cwd: path.join(repoRoot, 'packages', 'shell') }]]
     ];
     const built = {};
@@ -203,8 +203,8 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
     fs.mkdirSync(userData, { recursive: true });
     fs.mkdirSync(work, { recursive: true });
 
-    const socketPath = path.join(root, 'nexd.sock');
-    if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/nexd-dev')) {
+    const socketPath = path.join(root, 'kelpid.sock');
+    if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
         throw new Error('refusing to touch a non-sandbox socket path');
     }
 
@@ -216,11 +216,11 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
     // the sandbox HOME, so an appearance step can read the exact file the daemon touched and a
     // stray resolution change can never point it at the developer's own.
     const ghosttyConfigPath = path.join(root, 'ghostty-config');
-    // `NEX_AUDIT_GHOSTTY_EXTRA` seeds extra lines BEFORE the shell starts. It exists for the
+    // `KELPI_AUDIT_GHOSTTY_EXTRA` seeds extra lines BEFORE the shell starts. It exists for the
     // one setting the shell can only act on at window creation: `background-opacity` decides
     // whether the BrowserWindow is transparent (APP-012 / SET-049), and no in-run gesture can
     // change that. Unset (the default) this is a no-op and the sandbox is byte-identical.
-    const extraGhostty = process.env['NEX_AUDIT_GHOSTTY_EXTRA'] ?? '';
+    const extraGhostty = process.env['KELPI_AUDIT_GHOSTTY_EXTRA'] ?? '';
     fs.writeFileSync(
         ghosttyConfigPath,
         `# audit sandbox ghostty config\nbackground = #0a0a0c\n${extraGhostty === '' ? '' : `${extraGhostty}\n`}`
@@ -230,36 +230,36 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
     const controlPort = await freePort();
     const debugPort = await freePort();
 
-    // What the packaged app stages at Resources/cli and hands over as NEXD_HELPERS_DIR: a
-    // `nex` the daemon prepends to every pane's PATH. With it, a bare `nex event …` typed (or
+    // What the packaged app stages at Resources/cli and hands over as KELPID_HELPERS_DIR: a
+    // `kelpi` the daemon prepends to every pane's PATH. With it, a bare `kelpi event …` typed (or
     // hook-fired) INSIDE a sandbox pane resolves this repo's CLI and routes via the pane's
     // injected NEX_SOCKET — the same chain a real install's Claude Code hooks take. Without
-    // it, in-pane `nex` resolution falls to the audit machine's own PATH (often the Swift
+    // it, in-pane `kelpi` resolution falls to the audit machine's own PATH (often the Swift
     // app's helper), which is exactly the ambiguity the routing fix exists to remove.
     const helpersDir = path.join(root, 'helpers');
     fs.mkdirSync(helpersDir, { recursive: true });
     fs.writeFileSync(
-        path.join(helpersDir, 'nex'),
-        `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js')}" "$@"\n`,
+        path.join(helpersDir, 'kelpi'),
+        `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js')}" "$@"\n`,
         { mode: 0o755 }
     );
 
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: socketPath,
-        NEXD_TCP_PORT: String(controlPort),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: configPath,
-        NEXD_GHOSTTY_CONFIG: ghosttyConfigPath,
-        NEXD_HTTP_PORT: String(httpPort),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'),
-        NEXD_HELPERS_DIR: helpersDir,
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: socketPath,
+        KELPID_TCP_PORT: String(controlPort),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: configPath,
+        KELPID_GHOSTTY_CONFIG: ghosttyConfigPath,
+        KELPID_HTTP_PORT: String(httpPort),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
+        KELPID_HELPERS_DIR: helpersDir,
         // Harness marker: a shell/daemon that sees this exits when its stdout pipe dies,
         // instead of orphaning a window when the harness (or a probe script) is hard-killed.
-        NEX_HARNESS: '1',
+        KELPI_HARNESS: '1',
         /*
          * Where every shell this sandbox ever launches puts its window
          * (`packages/shell/src/audit-window.ts`).
@@ -272,8 +272,8 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
          * is supposed to detect and this one would have hidden. `extraEnv` still wins where a
          * caller passes it, so nothing loses the ability to override.
          */
-        ...(auditWindow === undefined ? {} : { NEX_AUDIT_WINDOW: auditWindow }),
-        ...(clientDir === undefined ? {} : { NEXD_CLIENT_DIR: clientDir })
+        ...(auditWindow === undefined ? {} : { KELPI_AUDIT_WINDOW: auditWindow }),
+        ...(clientDir === undefined ? {} : { KELPID_CLIENT_DIR: clientDir })
     };
 
     return {
@@ -289,7 +289,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
         httpPort,
         controlPort,
         debugPort,
-        runDir: env.NEXD_RUN_DIR,
+        runDir: env.KELPID_RUN_DIR,
         base: `http://127.0.0.1:${String(httpPort)}`,
         cleanup() {
             fs.rmSync(root, { recursive: true, force: true });
@@ -300,7 +300,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
 // ── daemon ──────────────────────────────────────────────────────────────────────────
 
 /**
- * `packaged: true` runs the daemon the app *ships* — `Contents/Resources/daemon/nexd.js` under
+ * `packaged: true` runs the daemon the app *ships* — `Contents/Resources/daemon/kelpid.js` under
  * the bundled `Contents/Resources/node`, with the packaged `node-pty` behind every PTY — instead
  * of the working tree's `dist/`.
  *
@@ -310,7 +310,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
  * tree's build would have quietly re-introduced exactly the gap N22 is about.
  */
 export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = false }) {
-    const entry = packaged ? path.join(packagedResource(repoRoot, 'daemon'), 'nexd.js') : path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+    const entry = packaged ? path.join(packagedResource(repoRoot, 'daemon'), 'kelpid.js') : path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
     const runtime = packaged ? packagedResource(repoRoot, 'node') : process.execPath;
     const lines = [];
     const child = spawn(runtime, [entry, 'start', '--foreground'], {
@@ -378,7 +378,7 @@ function electronBinary(repoRoot) {
 }
 
 export function packagedApp(repoRoot) {
-    return path.join(repoRoot, 'packages', 'shell', 'out', `Nex-darwin-${process.arch}`, 'Nex.app');
+    return path.join(repoRoot, 'packages', 'shell', 'out', `Kelpi-darwin-${process.arch}`, 'Kelpi.app');
 }
 
 /** `Contents/Resources/<name>` — the payload `forge.config.cjs` stages beside `app.asar`. */
@@ -387,11 +387,11 @@ export function packagedResource(repoRoot, name) {
 }
 
 export function packagedBinary(repoRoot) {
-    return path.join(packagedApp(repoRoot), 'Contents', 'MacOS', 'Nex');
+    return path.join(packagedApp(repoRoot), 'Contents', 'MacOS', 'Kelpi');
 }
 
 /**
- * Repackage `Nex.app` from the bundles `buildAll` just produced.
+ * Repackage `Kelpi.app` from the bundles `buildAll` just produced.
  *
  * `--packaged` runs are only worth anything if the bundle under the debugger is the one this
  * working tree makes *now*; a run against yesterday's `out/` is a screenshot of yesterday's
@@ -399,8 +399,8 @@ export function packagedBinary(repoRoot) {
  * DMG on top of it would add a minute for nothing.
  */
 export async function packageApp(repoRoot, { log = () => {} } = {}) {
-    log('packaging Nex.app… (~1 min)');
-    const result = await run('pnpm', ['--filter', '@nex/shell', 'package'], { cwd: repoRoot });
+    log('packaging Kelpi.app… (~1 min)');
+    const result = await run('pnpm', ['--filter', '@kelpi/shell', 'package'], { cwd: repoRoot });
     if (result.code !== 0) {
         throw new Error(`packaging failed (exit ${String(result.code)}):\n${result.stdout}${result.stderr}`);
     }
@@ -423,14 +423,14 @@ export async function packageApp(repoRoot, { log = () => {} } = {}) {
 export async function assertPackagedSignature(repoRoot) {
     const appPath = packagedApp(repoRoot);
     if (!fs.existsSync(appPath)) {
-        throw new Error(`packaged app is missing: ${appPath} (run \`pnpm --filter @nex/shell package\`)`);
+        throw new Error(`packaged app is missing: ${appPath} (run \`pnpm --filter @kelpi/shell package\`)`);
     }
     const verify = await run('/usr/bin/codesign', ['--verify', '--strict', appPath]);
     if (verify.code !== 0) {
         throw new Error(
             `the packaged app's code signature is not valid, so CDP cannot attach to it (N22):\n` +
                 `  ${verify.stderr.trim().split('\n').join('\n  ')}\n` +
-                `Repackage it — \`pnpm --filter @nex/shell package\` — which now ad-hoc signs the\n` +
+                `Repackage it — \`pnpm --filter @kelpi/shell package\` — which now ad-hoc signs the\n` +
                 `finished bundle. (A run started without --no-build does this for you.)`
         );
     }
@@ -440,7 +440,7 @@ export async function assertPackagedSignature(repoRoot) {
 /**
  * Launch the shell with a remote-debugging port.
  *
- * `packaged: true` runs the real `Nex.app` binary (what a user double-clicks); the default runs
+ * `packaged: true` runs the real `Kelpi.app` binary (what a user double-clicks); the default runs
  * `electron .` against `packages/shell/dist/main.js`, which is the same main process with a
  * fresh bundle and no 90-second repackage between runs.
  */
@@ -448,7 +448,7 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
     const shellRoot = path.join(repoRoot, 'packages', 'shell');
     const binary = packaged ? packagedBinary(repoRoot) : electronBinary(repoRoot);
     if (packaged && !fs.existsSync(binary)) {
-        throw new Error(`packaged app is missing: ${binary} (run pnpm --filter @nex/shell package)`);
+        throw new Error(`packaged app is missing: ${binary} (run pnpm --filter @kelpi/shell package)`);
     }
     const args = packaged ? [] : ['.'];
     args.push(`--user-data-dir=${sandbox.userData}`, `--remote-debugging-port=${String(sandbox.debugPort)}`);
@@ -517,14 +517,14 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
 // ── the CLI, pointed at the sandbox daemon ──────────────────────────────────────────
 
 /**
- * The ported TypeScript CLI (`packages/cli/dist/nex.js`) over TCP.
+ * The ported TypeScript CLI (`packages/cli/dist/kelpi.js`) over TCP.
  *
  * TCP rather than the unix socket because `NEX_SOCKET` only overrides the *TCP* transport —
  * the unix path is hardcoded to `/tmp/nex.sock`, which is exactly the file the audit must not
  * touch.
  */
 export function makeCli(sandbox, { repoRoot }) {
-    const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
+    const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
     const invoke = (args, opts = {}) =>
         new Promise((resolve) => {
             const child = spawn(process.execPath, [entry, ...args], {
@@ -533,7 +533,7 @@ export function makeCli(sandbox, { repoRoot }) {
                     PATH: sandbox.env.PATH,
                     HOME: sandbox.home,
                     NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
-                    NEX_REPLY_TIMEOUT: '30',
+                    KELPI_REPLY_TIMEOUT: '30',
                     ...(opts.paneID === undefined ? {} : { NEX_PANE_ID: opts.paneID }),
                     ...opts.env
                 },
@@ -542,7 +542,7 @@ export function makeCli(sandbox, { repoRoot }) {
             // A CLI probe is a Node cold start, and the run makes hundreds of them. Under the
             // inherited DARWIN_BG policy that start is throttled I/O; clear it here too.
             clearBackgroundTaskPolicy(child.pid);
-            // `nex event` reads its hook payload (session_id, background_tasks) from stdin, so
+            // `kelpi event` reads its hook payload (session_id, background_tasks) from stdin, so
             // an agent-lifecycle flow has to be able to hand it one.
             if (opts.stdin !== undefined) {
                 child.stdin.end(opts.stdin);
@@ -564,7 +564,7 @@ export function makeCli(sandbox, { repoRoot }) {
         const result = await invoke(args, opts);
         // Every CLI invocation, when the audit asks for it: the run-O leak hunt needed to map
         // two orphan panes to the call that made them, and nothing had recorded the calls.
-        const logPath = process.env.NEX_AUDIT_CLI_LOG;
+        const logPath = process.env.KELPI_AUDIT_CLI_LOG;
         if (logPath !== undefined && logPath !== '') {
             try {
                 fs.appendFileSync(
@@ -583,7 +583,7 @@ export function makeCli(sandbox, { repoRoot }) {
         async ok(args, opts = {}) {
             const result = await logged(args, opts);
             if (result.code !== 0) {
-                throw new Error(`nex ${args.join(' ')} exited ${String(result.code)}\n${result.stdout}${result.stderr}`);
+                throw new Error(`kelpi ${args.join(' ')} exited ${String(result.code)}\n${result.stdout}${result.stderr}`);
             }
             return result.stdout;
         },
@@ -593,7 +593,7 @@ export function makeCli(sandbox, { repoRoot }) {
             try {
                 return JSON.parse(stdout);
             } catch {
-                throw new Error(`nex ${args.join(' ')} did not print JSON:\n${stdout}`);
+                throw new Error(`kelpi ${args.join(' ')} did not print JSON:\n${stdout}`);
             }
         }
     };

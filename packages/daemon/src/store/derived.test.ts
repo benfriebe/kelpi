@@ -1,4 +1,4 @@
-import { resolvePaneTarget, resolveWorkspaceLenient, workspaceContainingPane as resolveWorkspaceContainingPane } from '@nex/core/resolve';
+import { resolvePaneTarget, resolveWorkspaceLenient, workspaceContainingPane as resolveWorkspaceContainingPane } from '@kelpi/core/resolve';
 import { describe, expect, it } from 'vitest';
 import {
     buildPaneIndex,
@@ -47,7 +47,7 @@ describe('pane lookup', () => {
 });
 
 describe('resolveStateOf', () => {
-    it('feeds the @nex/core resolvers, flagging parked panes as unaddressable', () => {
+    it('feeds the @kelpi/core resolvers, flagging parked panes as unaddressable', () => {
         const h = harness(seededState());
         h.dispatch(
             {

@@ -44,7 +44,7 @@ export const GRAFT_DOT_COLORS: Readonly<Record<GraftSessionView['status'], strin
  * and the same rule §H24 already settled for the sidebar's agent dot ("it BREATHES, it does not
  * ping"; a status marker never changes SIZE).
  */
-const PULSE_KEYFRAMES = `@keyframes nex-graft-pulse {
+const PULSE_KEYFRAMES = `@keyframes kelpi-graft-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }
 }`;
@@ -52,7 +52,7 @@ const PULSE_KEYFRAMES = `@keyframes nex-graft-pulse {
 /** One `<style>` for the pulse, mounted once however many rows are on screen. */
 function usePulseKeyframes(): void {
     useEffect(() => {
-        const id = 'nex-graft-pulse-style';
+        const id = 'kelpi-graft-pulse-style';
         if (document.getElementById(id) !== null) return;
         const element = document.createElement('style');
         element.id = id;
@@ -149,7 +149,7 @@ export function GraftToggleButton(props: GraftToggleButtonProps): ReactElement {
                         top: -2,
                         right: -2,
                         background: GRAFT_DOT_COLORS[session.status],
-                        animation: session.status === 'syncing' ? 'nex-graft-pulse 1.1s ease-in-out infinite' : 'none'
+                        animation: session.status === 'syncing' ? 'kelpi-graft-pulse 1.1s ease-in-out infinite' : 'none'
                     }}
                 />
             )}

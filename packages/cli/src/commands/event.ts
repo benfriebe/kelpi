@@ -1,9 +1,9 @@
 /**
- * `nex event …` — the Claude Code / Codex hook entrypoint (cli.md §8).
+ * `kelpi event …` — the Claude Code / Codex hook entrypoint (cli.md §8).
  *
  * Three invariants this path must never break, because it fires on every agent turn on
- * machines where Nex may not even be running:
- *   - exit 0 on every transport problem, with warnings suppressed unless `NEX_VERBOSE_HOOKS`;
+ * machines where Kelpi may not even be running:
+ *   - exit 0 on every transport problem, with warnings suppressed unless `KELPI_VERBOSE_HOOKS`;
  *   - silent exit 0 when `NEX_PANE_ID` is unset (running outside a pane is not an error);
  *   - a typo'd `--agent` is LOUD (exit 1) — a silently-degraded agent kind is worse than a
  *     visible failure, because it would mislabel the pane and pick the wrong resume command.
@@ -90,7 +90,7 @@ export async function handleEvent(args: string[]): Promise<void> {
     const eventType = args.shift();
     if (eventType === undefined) {
         errLine(
-            'Usage: nex event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]'
+            'Usage: kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]'
         );
         exit(1);
     }
@@ -127,7 +127,7 @@ export async function handleEvent(args: string[]): Promise<void> {
                 else body = 'Waiting for approval';
             }
         } else if (stdinJSON !== null) {
-            // Guarded on stdin actually carrying JSON: a manual `nex event notification
+            // Guarded on stdin actually carrying JSON: a manual `kelpi event notification
             // --body x` must keep omitting the title so the server renders its neutral
             // "Agent" default.
             title ??= asString(stdinJSON['title']) ?? 'Claude Code';
@@ -158,5 +158,5 @@ export async function handleEvent(args: string[]): Promise<void> {
     // Only when non-zero, so the common no-background path is wire-identical to pre-#215.
     if (backgroundTaskCount > 0) payload['background_tasks'] = backgroundTaskCount;
 
-    await sendJSON(payload, `nex event ${eventType}`);
+    await sendJSON(payload, `kelpi event ${eventType}`);
 }

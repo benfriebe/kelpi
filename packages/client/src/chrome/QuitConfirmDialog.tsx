@@ -18,7 +18,7 @@
  * what the injected expression returns — including, when it returns a promise, what that promise
  * resolves to. So the page installs a global:
  *
- *     window.__nexQuitGate = { version, open(spec) → Promise<verdict>, dismiss() }
+ *     window.__kelpiQuitGate = { version, open(spec) → Promise<verdict>, dismiss() }
  *
  * `open` resolves `{response, checkboxChecked}` where `response` indexes `spec.buttons`, exactly
  * as `showMessageBox` reports it, so the main process's `response === 0` branch does not care
@@ -38,7 +38,7 @@ import { useModalPresence } from './modal-presence';
 import { tokens } from './tokens';
 
 /** The page-side global's name. Must match `shell/src/quit-prompt.ts`. */
-export const QUIT_GATE_GLOBAL = '__nexQuitGate';
+export const QUIT_GATE_GLOBAL = '__kelpiQuitGate';
 /** Bumped only when the shape below changes incompatibly; the shell probes for it. */
 export const QUIT_GATE_VERSION = 1;
 
@@ -86,7 +86,7 @@ export function normalizeQuitGateSpec(value: unknown): QuitGateSpec | null {
     if (buttons.length === 0) return null;
     const cancelId = readIndex(source['cancelId'], buttons.length, buttons.length - 1);
     return {
-        message: typeof source['message'] === 'string' ? source['message'] : 'Quit Nex?',
+        message: typeof source['message'] === 'string' ? source['message'] : 'Quit Kelpi?',
         detail: typeof source['detail'] === 'string' ? source['detail'] : '',
         buttons,
         // Both default to Cancel: the safe answer is the one a stray Return or Escape gives.
@@ -116,7 +116,7 @@ export interface InstallQuitGateOptions {
 }
 
 /**
- * Install `window.__nexQuitGate`. Returns the uninstall, which restores whatever was there
+ * Install `window.__kelpiQuitGate`. Returns the uninstall, which restores whatever was there
  * before (nothing, in practice — but a component that mounts twice must not leave a corpse).
  */
 export function installQuitGate(options: InstallQuitGateOptions): () => void {

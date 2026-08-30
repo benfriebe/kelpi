@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { NexConnection, completeHandshake, createFakeSocketFactory } from '../connection';
+import { KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { activationAppliesHere, isAppActive, parseShellActivation } from './activation';
 import { connectStore } from './bridge';
-import { createNexStore } from './store';
+import { createKelpiStore } from './store';
 
 const WINDOW_ID = 'WIN-1';
 
@@ -53,9 +53,9 @@ describe('shell-activation (§AGNT-056)', () => {
  */
 describe('the bridge applies a relayed activation', () => {
     const harness = (shellWindowID: string | null) => {
-        const store = createNexStore();
+        const store = createKelpiStore();
         const sockets = createFakeSocketFactory();
-        const connection = new NexConnection({
+        const connection = new KelpiConnection({
             url: 'ws://daemon.test/ws',
             token: 't',
             socketFactory: sockets.factory,

@@ -2,21 +2,21 @@
  * Assembly tests: the whole client against a scripted daemon socket.
  *
  * These are the jsdom half of WP3.6's acceptance — the other half is
- * `scripts/smoke.mjs`, which runs the same flows against a real `nexd`. What is checked here
+ * `scripts/smoke.mjs`, which runs the same flows against a real `kelpid`. What is checked here
  * is the wiring a live smoke cannot see from outside: that a snapshot paints the chrome, that
  * a pane's body is the right renderer for its type, that gestures and keystrokes leave as the
  * expected wire commands, and that the client tells the daemon what it is looking at.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { contentState } from './content/testing';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -74,7 +74,7 @@ function snapshotState(options: { markdown?: boolean; diff?: boolean; web?: bool
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     readonly renderers: FakeRendererFactory;
     socket(): FakeWebSocket;
     /** Parsed text frames the client sent. */
@@ -88,8 +88,8 @@ function setup(
     options: { markdown?: boolean; diff?: boolean; web?: boolean; snapshot?: boolean } = {}
 ): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -155,7 +155,7 @@ describe('connection states', () => {
                 type: 'rejected',
                 code: 'unauthorized',
                 reason: 'bad-token',
-                message: "invalid or missing daemon token — open the client via 'nexd url'",
+                message: "invalid or missing daemon token — open the client via 'kelpid url'",
                 protocolVersion: 1
             });
             h.socket().serverClose(4003, 'bad-token');
@@ -168,7 +168,7 @@ describe('connection states', () => {
         expect(error.textContent).toContain('invalid or missing daemon token');
         expect(error.className).toContain('text-[13px]');
         // And the splash names the one command that produces a working link.
-        expect(splash.textContent).toContain('nexd url');
+        expect(splash.textContent).toContain('kelpid url');
         expect(screen.getByTestId('connection-retry')).toBeTruthy();
     });
 
@@ -268,7 +268,7 @@ describe('pane bodies', () => {
         expect(screen.getByTestId(`web-page-${PANE_D}`)).toBeTruthy();
         // …but this client is a plain browser (no `?shellWindow=`), so nothing can paint the
         // page itself, and no geometry is reported for a view that will never be placed.
-        expect(screen.getByTestId(`web-external-${PANE_D}`).textContent).toContain('Open in the Nex app');
+        expect(screen.getByTestId(`web-external-${PANE_D}`).textContent).toContain('Open in the Kelpi app');
         expect(h.sent().some((message) => message['type'] === 'web-geometry-report')).toBe(false);
         // A single tab hides the strip (§16.4).
         expect(screen.queryByTestId(`web-tabs-${PANE_D}`)).toBeNull();
@@ -454,7 +454,7 @@ describe('gestures and keys become wire commands', () => {
     /**
      * TERM-077 / WS-109: ⌘W on the LAST pane deletes the workspace instead of leaving an empty
      * one behind, and with no running agents nothing is asked first — exactly what
-     * `NexCommands.handleClosePane` does.
+     * `KelpiCommands.handleClosePane` does.
      */
     it('deletes the workspace when ⌘W closes its last pane', async () => {
         const h = setup();

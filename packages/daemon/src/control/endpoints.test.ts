@@ -15,16 +15,16 @@ describe('control endpoints', () => {
         expect(endpoints.source).toEqual({ socketPath: 'default', tcpPort: 'none' });
     });
 
-    it('honors NEXD_SOCKET_PATH and NEXD_TCP_PORT', () => {
-        const endpoints = resolveControlEndpoints({ NEXD_SOCKET_PATH: '/tmp/nexd-dev.sock', NEXD_TCP_PORT: '19400' });
-        expect(endpoints.socketPath).toBe('/tmp/nexd-dev.sock');
+    it('honors KELPID_SOCKET_PATH and KELPID_TCP_PORT', () => {
+        const endpoints = resolveControlEndpoints({ KELPID_SOCKET_PATH: '/tmp/kelpid-dev.sock', KELPID_TCP_PORT: '19400' });
+        expect(endpoints.socketPath).toBe('/tmp/kelpid-dev.sock');
         expect(endpoints.tcpPort).toBe(19400);
         expect(endpoints.source).toEqual({ socketPath: 'env', tcpPort: 'env' });
     });
 
     it('expands a leading ~ in the socket path override', () => {
-        const endpoints = resolveControlEndpoints({ NEXD_SOCKET_PATH: '~/nexd.sock' });
-        expect(endpoints.socketPath).toBe(path.join(os.homedir(), 'nexd.sock'));
+        const endpoints = resolveControlEndpoints({ KELPID_SOCKET_PATH: '~/kelpid.sock' });
+        expect(endpoints.socketPath).toBe(path.join(os.homedir(), 'kelpid.sock'));
     });
 
     it('falls back to config values when the env is silent', () => {
@@ -35,22 +35,22 @@ describe('control endpoints', () => {
     });
 
     it('lets the env override the config file (dev daemon vs the running Swift app)', () => {
-        const endpoints = resolveControlEndpoints({ NEXD_TCP_PORT: '19400' }, { tcpPort: 19500 });
+        const endpoints = resolveControlEndpoints({ KELPID_TCP_PORT: '19400' }, { tcpPort: 19500 });
         expect(endpoints.tcpPort).toBe(19400);
         expect(endpoints.source.tcpPort).toBe('env');
     });
 
-    it('ignores a malformed or out-of-range NEXD_TCP_PORT', () => {
+    it('ignores a malformed or out-of-range KELPID_TCP_PORT', () => {
         for (const value of ['', '   ', 'abc', '-1', '70000', '80.5']) {
-            expect(resolveControlEndpoints({ NEXD_TCP_PORT: value }).tcpPort).toBeUndefined();
+            expect(resolveControlEndpoints({ KELPID_TCP_PORT: value }).tcpPort).toBeUndefined();
         }
     });
 
     it('accepts port 0 (ephemeral) as an explicit request', () => {
-        expect(resolveControlEndpoints({ NEXD_TCP_PORT: '0' }).tcpPort).toBe(0);
+        expect(resolveControlEndpoints({ KELPID_TCP_PORT: '0' }).tcpPort).toBe(0);
     });
 
-    it('ignores an empty NEXD_SOCKET_PATH', () => {
-        expect(resolveControlEndpoints({ NEXD_SOCKET_PATH: '  ' }).socketPath).toBe(DEFAULT_CONTROL_SOCKET_PATH);
+    it('ignores an empty KELPID_SOCKET_PATH', () => {
+        expect(resolveControlEndpoints({ KELPID_SOCKET_PATH: '  ' }).socketPath).toBe(DEFAULT_CONTROL_SOCKET_PATH);
     });
 });

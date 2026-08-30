@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NAMED_KEYS, unknownNamedKeyError } from '@nex/protocol';
-import type { NamedKey } from '@nex/protocol';
+import { NAMED_KEYS, unknownNamedKeyError } from '@kelpi/protocol';
+import type { NamedKey } from '@kelpi/protocol';
 import type { PtyManager, VtModes } from '../seams.js';
 import {
     BRACKETED_PASTE_END,
@@ -16,7 +16,7 @@ import {
     isUnknownNamedKeyError
 } from './input.js';
 import { FALLBACK_SHELL, createPtyManager } from './manager.js';
-import type { NexPtyManager } from './manager.js';
+import type { KelpiPtyManager } from './manager.js';
 import type { PtyProcessHandle } from './types.js';
 
 /** Minimal in-memory PTY for the "programmatic sends don't mirror" check. */
@@ -276,7 +276,7 @@ describe('sendText (§9.1: text-as-paste, then Enter-as-keystroke)', () => {
 });
 
 describe('real PTY input pipeline', () => {
-    const managers: NexPtyManager[] = [];
+    const managers: KelpiPtyManager[] = [];
     const dirs: string[] = [];
 
     const delay = (ms: number): Promise<void> =>
@@ -301,7 +301,7 @@ describe('real PTY input pipeline', () => {
     it('drives a real shell with sendText + sendNamedKey', { timeout: 20_000 }, async () => {
         const manager = createPtyManager();
         managers.push(manager);
-        const dir = mkdtempSync(join(tmpdir(), 'nex-input-'));
+        const dir = mkdtempSync(join(tmpdir(), 'kelpi-input-'));
         dirs.push(dir);
 
         let output = '';
@@ -336,7 +336,7 @@ describe('real PTY input pipeline', () => {
     it('ctrl-c interrupts the foreground command', { timeout: 20_000 }, async () => {
         const manager = createPtyManager();
         managers.push(manager);
-        const dir = mkdtempSync(join(tmpdir(), 'nex-input-'));
+        const dir = mkdtempSync(join(tmpdir(), 'kelpi-input-'));
         dirs.push(dir);
 
         let output = '';

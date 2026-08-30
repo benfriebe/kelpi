@@ -119,7 +119,7 @@ describe('wire + paste shapes', () => {
     it('formats the paste block as a directive plus a json fence (§11.4)', () => {
         const text = formatForPaste(result, NOW);
         const lines = text.split('\n');
-        expect(lines[0]).toBe('# nex inspect 2025-08-18T06:53:20.123Z');
+        expect(lines[0]).toBe('# kelpi inspect 2025-08-18T06:53:20.123Z');
         expect(lines[1]).toBe('```json');
         expect(text.trimEnd().endsWith('```')).toBe(true);
         const body = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)) as Record<

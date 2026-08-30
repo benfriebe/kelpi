@@ -51,7 +51,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { EditorResolver } from '../content/external-editor.js';
 import { formatEditorCommand } from '../content/external-editor.js';
@@ -61,7 +61,7 @@ import {
     type PaneHandlerContext
 } from '../handlers/pane/index.js';
 import { visiblePane, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
-import { newUUID } from '@nex/core/codec';
+import { newUUID } from '@kelpi/core/codec';
 
 export const DESKTOP_COMMANDS = [
     'shell-action',
@@ -87,7 +87,7 @@ export const SHELL_ACTION_EVENT = 'shell-action';
 export const TERMINAL_MARKDOWN_SUFFIX = '.md';
 
 /** Where a pasted image lands, exactly as `ClipboardImageHelper.swift:10-42` chose. */
-export const CLIPBOARD_IMAGE_DIR = 'nex-clipboard-images';
+export const CLIPBOARD_IMAGE_DIR = 'kelpi-clipboard-images';
 /** A pasted image bigger than this is refused rather than buffered (a 32 MB base64 line). */
 export const MAX_PASTE_IMAGE_BYTES = 24 * 1024 * 1024;
 
@@ -448,7 +448,7 @@ export function createDesktopChannel(options: DesktopChannelOptions): DesktopCha
     /**
      * TERM-043 — a pasted image becomes a temp file, and its path is typed.
      *
-     * `ClipboardImageHelper.swift:10-42` wrote `NSTemporaryDirectory()/nex-clipboard-images/
+     * `ClipboardImageHelper.swift:10-42` wrote `NSTemporaryDirectory()/kelpi-clipboard-images/
      * clipboard-<uuid>.png` and pasted the shell-escaped path; the same choice is made here, for
      * the same reason: the agent reading the file runs on the DAEMON's machine, so the bytes have
      * to land on the daemon's filesystem, not the browser's. That is also why the image travels

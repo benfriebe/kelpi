@@ -1,19 +1,19 @@
 /**
  * Agent lifecycle events (socket-handlers.md §3, agent-lifecycle.md §5 + §7).
  *
- * All six are fire-and-forget. Routing uses the parked-INCLUSIVE pane lookup (a `nex open
+ * All six are fire-and-forget. Routing uses the parked-INCLUSIVE pane lookup (a `kelpi open
  * --here` source shell keeps running its agent), and an event for a pane no workspace owns is
  * a total no-op.
  *
- * The state transition itself lives in `@nex/core/agent` (the store delegates to it); this
+ * The state transition itself lives in `@kelpi/core/agent` (the store delegates to it); this
  * module owns the *daemon* half: persistence triggers and the notification/attention matrix.
  * `notification` deliberately routes through the agent-stopped transition, so a permission
  * prompt arriving mid-background-work keeps the pane `running` while still notifying
  * (`agentNotification` is not background-suppressed; the synthetic stop notification is).
  */
 
-import { notificationDecision, type AgentEvent } from '@nex/core/agent';
-import type { WsNotificationKind } from '@nex/protocol';
+import { notificationDecision, type AgentEvent } from '@kelpi/core/agent';
+import type { WsNotificationKind } from '@kelpi/protocol';
 
 import { findPaneAnywhere, previewAgentEvent, workspaceByID } from '../../store/index.js';
 import { forCommand } from './common.js';
@@ -30,7 +30,7 @@ const NOTIFICATION_KIND: Readonly<Record<'stop' | 'agentNotification' | 'error',
 
 /** Dedup identity preserved from the Swift app: a re-post replaces the pane's previous one. */
 export function notificationDedupeKey(paneID: string): string {
-    return `nex-${paneID}`;
+    return `kelpi-${paneID}`;
 }
 
 export function applyAgentEvent(

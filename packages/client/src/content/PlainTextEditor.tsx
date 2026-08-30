@@ -386,7 +386,7 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
             data-pane-id={paneID}
             className="relative flex h-full w-full overflow-hidden"
             style={{
-                background: props.background ?? 'var(--nex-term-bg, #0A0A0C)',
+                background: props.background ?? 'var(--kelpi-term-bg, #0A0A0C)',
                 visibility: props.visible === false ? 'hidden' : 'visible'
             }}
             onMouseDownCapture={() => latest.current.onFocusRequest?.(paneID)}
@@ -417,7 +417,7 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                         // inside one pane. (Register U6 asks whether `NSRulerView`'s own
                         // `draw(_:)` contributes a hairline of its own; nothing in the subclass
                         // does, so parity is the default here and U6 stays the verifier's.)
-                        background: 'var(--nex-header-bg, #17171B)'
+                        background: 'var(--kelpi-header-bg, #17171B)'
                     }}
                 >
                     <div
@@ -436,7 +436,7 @@ export function PlainTextEditor(props: PlainTextEditorProps): ReactElement {
                                     ? (firstLine - 1) * EDITOR_LINE_PX
                                     : (wrapOffsets[firstLine - 1] ?? firstLine - 1) * EDITOR_LINE_PX),
                             paddingRight: GUTTER_TEXT_PADDING,
-                            color: 'var(--nex-fg-tertiary, #6A6A72)',
+                            color: 'var(--kelpi-fg-tertiary, #6A6A72)',
                             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                             fontSize: `${GUTTER_FONT_SIZE}px`,
                             // The numbers must ride the TEXT's line box, not their own, or the

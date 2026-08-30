@@ -89,12 +89,12 @@ function executableAt(candidate: string): boolean {
 
 /**
  * First `git` on `PATH`, or the bare name so `spawn` can still resolve it (and produce a
- * normal ENOENT if it truly is not installed). `NEX_GIT` overrides for tests / odd installs.
+ * normal ENOENT if it truly is not installed). `KELPI_GIT` overrides for tests / odd installs.
  */
 export function resolveGitExecutable(
     env: Readonly<Record<string, string | undefined>> = process.env
 ): string {
-    const override = env['NEX_GIT'];
+    const override = env['KELPI_GIT'];
     if (override !== undefined && override.length > 0) return override;
     const search = env['PATH'] ?? '';
     for (const entry of search.split(path.delimiter)) {

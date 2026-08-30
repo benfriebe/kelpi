@@ -1,5 +1,5 @@
 /**
- * `nex group …` (cli.md §11).
+ * `kelpi group …` (cli.md §11).
  *
  * `create` / `rename` / `delete` are fire-and-forget: exit 0 with no output whether or not the
  * argument resolved, so every assertion about them goes through a following `group list`.
@@ -18,7 +18,7 @@ import { groupReorderUsage, groupSortUsage, groupUsage } from '../usage.js';
 export async function handleGroup(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
-        errLine('Usage: nex group list|create|rename|delete|reorder|sort [...]');
+        errLine('Usage: kelpi group list|create|rename|delete|reorder|sort [...]');
         exit(1);
     }
     if (isHelpToken(action)) {
@@ -50,10 +50,10 @@ async function handleGroupList(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const noHeader = popSwitch('--no-header', args);
     if (args.length > 0) {
-        errLine('Usage: nex group list [--json] [--no-header]');
+        errLine('Usage: kelpi group list [--json] [--no-header]');
         exit(1);
     }
-    const reply = await decodeReply({ command: 'group-list' }, 'nex group list');
+    const reply = await decodeReply({ command: 'group-list' }, 'kelpi group list');
     const groups = replyArray(reply, 'groups');
     if (asJSON) {
         printLine(stableStringify(groups));
@@ -65,7 +65,7 @@ async function handleGroupList(args: string[]): Promise<void> {
 async function handleGroupCreate(args: string[]): Promise<void> {
     const name = args.shift();
     if (name === undefined) {
-        errLine('Usage: nex group create <name> [--color blue]');
+        errLine('Usage: kelpi group create <name> [--color blue]');
         exit(1);
     }
     const color = parseFlag('--color', args);
@@ -78,7 +78,7 @@ async function handleGroupRename(args: string[]): Promise<void> {
     const nameOrID = args.shift();
     const newName = args.shift();
     if (nameOrID === undefined || newName === undefined) {
-        errLine('Usage: nex group rename <name-or-id> <new-name>');
+        errLine('Usage: kelpi group rename <name-or-id> <new-name>');
         exit(1);
     }
     await sendJSON({ command: 'group-rename', name: nameOrID, new_name: newName });
@@ -87,7 +87,7 @@ async function handleGroupRename(args: string[]): Promise<void> {
 async function handleGroupDelete(args: string[]): Promise<void> {
     const nameOrID = args.shift();
     if (nameOrID === undefined) {
-        errLine('Usage: nex group delete <name-or-id> [--cascade]');
+        errLine('Usage: kelpi group delete <name-or-id> [--cascade]');
         exit(1);
     }
     const cascade = popSwitch('--cascade', args);
@@ -111,7 +111,7 @@ async function handleGroupReorder(args: string[]): Promise<void> {
         exit(1);
     }
     const asJSON = popSwitch('--json', args);
-    rejectLeftoverArgs(args, 'nex group reorder', { usage: (write) => write(groupReorderUsage) });
+    rejectLeftoverArgs(args, 'kelpi group reorder', { usage: (write) => write(groupReorderUsage) });
 
     // Comma- and/or space-separated, empties dropped.
     const order = orderRaw.split(/[, ]/).filter((token) => token.length > 0);
@@ -121,7 +121,7 @@ async function handleGroupReorder(args: string[]): Promise<void> {
     }
     const reply = await decodeReply(
         { command: 'group-reorder', name: nameOrID, order },
-        'nex group reorder'
+        'kelpi group reorder'
     );
     printGroupOrderReply(reply, asJSON);
 }
@@ -143,11 +143,11 @@ async function handleGroupSort(args: string[]): Promise<void> {
     }
     const descending = popSwitch('--desc', args);
     const asJSON = popSwitch('--json', args);
-    rejectLeftoverArgs(args, 'nex group sort', { usage: (write) => write(groupSortUsage) });
+    rejectLeftoverArgs(args, 'kelpi group sort', { usage: (write) => write(groupSortUsage) });
 
     const reply = await decodeReply(
         { command: 'group-sort', name: nameOrID, by, descending },
-        'nex group sort'
+        'kelpi group sort'
     );
     printGroupOrderReply(reply, asJSON);
 }

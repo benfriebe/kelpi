@@ -1,11 +1,11 @@
 /**
- * Browser-shortcut forwarding from an embedded page back to Nex's own window.
+ * Browser-shortcut forwarding from an embedded page back to Kelpi's own window.
  *
  * The problem this solves is structural to the port, and it has no equivalent in the Swift app.
- * There, a web pane is a `WKWebView` *inside* the app's window, and `NexCommands`' NSEvent
+ * There, a web pane is a `WKWebView` *inside* the app's window, and `KelpiCommands`' NSEvent
  * monitor sees ⌘F / ⌘L / ⌘T before the web view ever does. Here the page lives in a
  * `WebContentsView` — a **separate renderer with its own keyboard focus** — so the moment a user
- * clicks the page, every chord goes to the page and Nex's renderer never sees a keystroke. The
+ * clicks the page, every chord goes to the page and Kelpi's renderer never sees a keystroke. The
  * whole priority key layer (WEB-152/TERM-156) would be dead the instant it was needed.
  *
  * So the host intercepts exactly the chords that layer claims, cancels them in the page, and
@@ -14,7 +14,7 @@
  * ⌘K for its command palette keeps it.
  *
  * The set is deliberately the priority table **plus ⌘F**, because ⌘F over a web pane means
- * Nex's find bar (web-pane.md §10), not Chromium's.
+ * Kelpi's find bar (web-pane.md §10), not Chromium's.
  */
 
 /** The subset of Electron's `Input` shape this module reads. */
@@ -30,7 +30,7 @@ export interface ChordInput {
 }
 
 /**
- * A chord to replay in Nex's own window.
+ * A chord to replay in Kelpi's own window.
  *
  * `code` is the physical key (`KeyboardEvent.code`), which is what the client's dispatcher
  * matches on; `shift` is the only modifier that varies, because ⌘ is required by construction
@@ -69,15 +69,15 @@ const FORWARDED: ReadonlySet<string> = new Set([
     'Digit0'
 ]);
 
-/** Chords that only belong to Nex WITH shift (tab cycling); bare ⌘[ / ⌘] stay with the page. */
+/** Chords that only belong to Kelpi WITH shift (tab cycling); bare ⌘[ / ⌘] stay with the page. */
 const SHIFT_ONLY: ReadonlySet<string> = new Set(['BracketLeft', 'BracketRight']);
 
 /**
- * Should this keystroke be taken from the page and given to Nex?
+ * Should this keystroke be taken from the page and given to Kelpi?
  *
  * Rules, in order:
  *   - key-downs only (a forwarded key-up would double-fire the binding);
- *   - ⌘ held, and neither ⌃ nor ⌥ (those are the page's, and Nex claims none of them);
+ *   - ⌘ held, and neither ⌃ nor ⌥ (those are the page's, and Kelpi claims none of them);
  *   - the physical key is in the table above;
  *   - ⌘⇧[ / ⌘⇧] are ours, bare ⌘[ / ⌘] are not — the Swift app leaves those to focus prev/next,
  *     and inside a page they are back/forward, which the page may itself want (SET-189);

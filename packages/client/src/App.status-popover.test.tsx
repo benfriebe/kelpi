@@ -18,14 +18,14 @@
  * the element it was made on — the same way `App.reveal-paths.test.tsx` records `scrollIntoView`.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -79,14 +79,14 @@ afterEach(() => {
 });
 
 interface Harness {
-    readonly store: ReturnType<typeof createNexStore>;
+    readonly store: ReturnType<typeof createKelpiStore>;
     socket(): FakeWebSocket;
 }
 
 function mount(options: { localWaiter?: boolean } = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

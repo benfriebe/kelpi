@@ -1,4 +1,4 @@
-import { groupSidebarID } from '@nex/core/codec';
+import { groupSidebarID } from '@kelpi/core/codec';
 import { describe, expect, it } from 'vitest';
 import {
     groupByID,

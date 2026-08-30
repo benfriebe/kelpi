@@ -1,4 +1,4 @@
-import { DEFAULT_WS_SETTINGS } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS } from '@kelpi/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -128,7 +128,7 @@ describe('the Settings window', () => {
 
         fireEvent.mouseEnter(unselected);
         expect(unselected.dataset['hovered']).toBe('true');
-        expect(unselected.style.background).toContain('--nex-selection-fill');
+        expect(unselected.style.background).toContain('--kelpi-selection-fill');
 
         fireEvent.mouseLeave(unselected);
         expect(unselected.dataset['hovered']).toBe('false');
@@ -148,8 +148,8 @@ describe('the Settings window', () => {
         expect(close.style.background).toBe('transparent');
         fireEvent.mouseEnter(close);
         expect(close.dataset['hovered']).toBe('true');
-        expect(close.style.background).toContain('--nex-selection-fill');
-        expect(close.style.borderColor).toContain('--nex-selection-stroke');
+        expect(close.style.background).toContain('--kelpi-selection-fill');
+        expect(close.style.borderColor).toContain('--kelpi-selection-stroke');
     });
 
     // SET-004: the dialog has a toolbar strip of its own (the Swift window's toolbar), and it

@@ -1,5 +1,5 @@
 /**
- * Integration harness: the REAL bundled `dist/nex.js` driven as a child process against a fake
+ * Integration harness: the REAL bundled `dist/kelpi.js` driven as a child process against a fake
  * control server.
  *
  * The unit tests cover the pure halves (parsing, routing, renderers); this drives the binary a
@@ -8,7 +8,7 @@
  * exact bytes that reach the socket.
  *
  * The fake server is TCP on an ephemeral port, reached through `NEX_SOCKET`. **Never
- * `/tmp/nex.sock`**: that path is hardcoded in the CLI and belongs to whatever Nex is running
+ * `/tmp/nex.sock`**: that path is hardcoded in the CLI and belongs to whatever Kelpi is running
  * on the developer's machine, so a test that used it would talk to the user's real app.
  * The child's environment is built from scratch for the same reason — inheriting a real
  * `NEX_PANE_ID` would silently change what several commands do.
@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const CLI_BUNDLE = path.join(packageRoot, 'dist', 'nex.js');
+export const CLI_BUNDLE = path.join(packageRoot, 'dist', 'kelpi.js');
 
 let buildPromise: Promise<void> | null = null;
 
@@ -47,7 +47,7 @@ export interface ServerReply {
     readonly lines?: readonly object[];
     /** Keep the connection open after writing (the `--follow` stream). */
     readonly keepOpen?: boolean;
-    /** Write nothing at all and close — the "old Nex" empty-reply path. */
+    /** Write nothing at all and close — the "old Kelpi" empty-reply path. */
     readonly silent?: boolean;
 }
 
@@ -149,7 +149,7 @@ export interface RunOptions {
     readonly cwd?: string | undefined;
     readonly stdin?: string | undefined;
     readonly timeoutMs?: number | undefined;
-    /** Exec the bundle directly (shebang + mode 0755) instead of `node dist/nex.js`. */
+    /** Exec the bundle directly (shebang + mode 0755) instead of `node dist/kelpi.js`. */
     readonly direct?: boolean | undefined;
     /** Deliver SIGINT this long after spawn — the `--follow` Ctrl-C path. */
     readonly sigintAfterMs?: number | undefined;

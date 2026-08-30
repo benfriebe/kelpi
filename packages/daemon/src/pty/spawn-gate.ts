@@ -43,7 +43,7 @@
  */
 
 import type { GridSize } from './geometry.js';
-import type { NexPtyManager } from './manager.js';
+import type { KelpiPtyManager } from './manager.js';
 
 /** Why the deferred spawn finally ran. `null` size = "use your own fallback". */
 export type DeferredSpawnReason = 'geometry' | 'timeout' | 'demand';
@@ -221,9 +221,9 @@ export function createPaneSpawnGate(options: PaneSpawnGateOptions = {}): PaneSpa
  *    microseconds before the real one arrives. Boot reports geometry to the gate directly.
  *
  * Every other method is a plain delegation, written out rather than proxied so that a method
- * added to `NexPtyManager` later fails to compile here instead of quietly bypassing the gate.
+ * added to `KelpiPtyManager` later fails to compile here instead of quietly bypassing the gate.
  */
-export function withSpawnGate(pty: NexPtyManager, gate: PaneSpawnGate): NexPtyManager {
+export function withSpawnGate(pty: KelpiPtyManager, gate: PaneSpawnGate): KelpiPtyManager {
     return {
         spawn(opts): void {
             // A direct spawn supersedes anything the gate is holding for that pane.

@@ -4,11 +4,11 @@ import {
     decodeAckPayload,
     decodePtyFrame,
     encodePtyFrame
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PtyClient } from './pty';
-import { NexConnection } from './socket';
+import { KelpiConnection } from './socket';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './testing';
 
 const PANE = '11111111-2222-4333-8444-555555555555';
@@ -19,7 +19,7 @@ const decoder = new TextDecoder();
 
 function harness(options: { ackThresholdBytes?: number; ackIntervalMs?: number } = {}) {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 't',
         socketFactory: sockets.factory,

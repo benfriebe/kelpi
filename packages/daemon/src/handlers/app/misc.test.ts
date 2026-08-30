@@ -1,4 +1,4 @@
-import { WIRE_COMMANDS } from '@nex/protocol';
+import { WIRE_COMMANDS } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { DaemonState } from '../../store/index.js';
@@ -120,13 +120,13 @@ describe('diff', () => {
     it('opens a diff pane scoped to the target path and never reuses', () => {
         const h = harness({ initial: seeded(1), ids: [PNEW] });
         expect(
-            h.send({ command: 'diff', repo_path: '/code/nex', target_path: 'src/app.ts', pane_id: P1 })
+            h.send({ command: 'diff', repo_path: '/code/kelpi', target_path: 'src/app.ts', pane_id: P1 })
         ).toEqual([]);
         const workspace = h.state().workspaces[0];
         expect(workspace?.panes.map((pane) => pane.id)).toEqual([P1, PNEW]);
         expect(workspace?.panes[1]).toMatchObject({
             type: 'diff',
-            workingDirectory: '/code/nex',
+            workingDirectory: '/code/kelpi',
             // §CONT-131: a relative scope resolves against the CALLER pane's cwd, not the
             // daemon's. (The CLI absolutises first, so this is the raw-wire path.)
             filePath: '/Users/test/src/app.ts',
@@ -136,11 +136,11 @@ describe('diff', () => {
 
     it('scopes to the repo when no target path is given', () => {
         const h = harness({ initial: seeded(1), ids: [PNEW] });
-        h.send({ command: 'diff', repo_path: '/code/nex' });
+        h.send({ command: 'diff', repo_path: '/code/kelpi' });
         expect(h.state().workspaces[0]?.panes[1]).toMatchObject({
             filePath: null,
-            label: 'nex',
-            title: 'diff: nex'
+            label: 'kelpi',
+            title: 'diff: kelpi'
         });
     });
 });

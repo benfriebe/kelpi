@@ -3,7 +3,7 @@
  * Live smoke for the graft UI verbs, the repo registry verbs and repo auto-detect.
  *
  * The unit tests prove each piece against a stub. This proves the SYSTEM on real git: a real
- * repository with a real linked worktree, a real `nexd` on private paths, a real WebSocket
+ * repository with a real linked worktree, a real `kelpid` on private paths, a real WebSocket
  * client sending the same verbs the inspector sends, and — for auto-detect — a real PTY whose
  * shell reports a real OSC 7 after a real `cd`.
  *
@@ -18,7 +18,7 @@
  *   - a pane's OSC 7 auto-links its worktree, and leaving it auto-unlinks and GCs the repo.
  *
  * Isolation: everything lives under a fresh `mkdtemp` (the sandbox helper the UI audit uses),
- * the control socket is `<tmp>/nexd.sock` and never `/tmp/nex.sock`, ports are ephemeral and
+ * the control socket is `<tmp>/kelpid.sock` and never `/tmp/nex.sock`, ports are ephemeral and
  * never the developer's dev stack.
  *
  *   node packages/daemon/scripts/graft-repos-smoke.mjs [--no-build] [--keep] [--verbose]
@@ -148,7 +148,7 @@ function readToken(sandbox) {
     return fs.readFileSync(path.join(sandbox.runDir, chosen), 'utf8').trim();
 }
 
-const breadcrumbAt = (repo) => path.join(repo, '.git', 'nex-graft-active');
+const breadcrumbAt = (repo) => path.join(repo, '.git', 'kelpi-graft-active');
 
 // ── the run ─────────────────────────────────────────────────────────────────────────
 

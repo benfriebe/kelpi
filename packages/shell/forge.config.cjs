@@ -1,5 +1,5 @@
 /**
- * Electron Forge configuration — how `Nex.app` is built (M8 wave 7).
+ * Electron Forge configuration — how `Kelpi.app` is built (M8 wave 7).
  *
  * CommonJS on purpose: this package has no `"type": "module"`, and Forge loads a `.cjs` config
  * with `require` semantics. Everything with real logic in it lives in TypeScript instead
@@ -9,13 +9,13 @@
  *
  * ## What the finished bundle looks like
  *
- *     Nex.app/Contents/
- *     ├─ MacOS/Nex                  the Electron binary, with fuses flipped (below)
+ *     Kelpi.app/Contents/
+ *     ├─ MacOS/Kelpi                  the Electron binary, with fuses flipped (below)
  *     └─ Resources/
  *        ├─ app.asar                package.json + dist/main.js + its map, and nothing else
- *        ├─ daemon/                 nexd.js + node_modules/node-pty     ← outside the asar
+ *        ├─ daemon/                 kelpid.js + node_modules/node-pty     ← outside the asar
  *        ├─ client/                 the built web UI                    ← outside the asar
- *        ├─ cli/                    the `nex` CLI + its launcher        ← outside the asar
+ *        ├─ cli/                    the `kelpi` CLI + its launcher        ← outside the asar
  *        └─ node                    a Node 24 runtime for the daemon    ← outside the asar
  *
  * `src/resources.ts` is the single description of that layout: the app reads it back through
@@ -42,7 +42,7 @@
  * Nothing here is notarized by default; there is no `osxSign`/`osxNotarize` block, so `pnpm dist`
  * produces an ad-hoc-signed (arm64 requirement) app that Gatekeeper will quarantine on any machine
  * that did not build it. That gap, and the checklist for closing it, are written down in the repo
- * README ("Signing and notarization"). Setting `NEX_MACOS_IDENTITY` opts into `osxSign` with that
+ * README ("Signing and notarization"). Setting `KELPI_MACOS_IDENTITY` opts into `osxSign` with that
  * identity — the first half of the checklist, untested until someone with a Developer ID runs it.
  *
  * The ad-hoc signature is applied in `postPackage`, *after* the renames and `Info.plist` rewrites
@@ -79,7 +79,7 @@ function packagingHelpers() {
         return require(compiled);
     } catch (error) {
         throw new Error(
-            `the shell is not built (${compiled} is missing). Run \`pnpm --filter @nex/shell build\`,` +
+            `the shell is not built (${compiled} is missing). Run \`pnpm --filter @kelpi/shell build\`,` +
                 ' or `pnpm dist` from the repo root to build every package and package the app.' +
                 `\n  cause: ${error instanceof Error ? error.message : String(error)}`
         );
@@ -89,12 +89,12 @@ function packagingHelpers() {
 function assertBuilt() {
     const main = path.join(packageRoot, 'dist', 'main.js');
     if (!fs.existsSync(main)) {
-        throw new Error(`the shell bundle is missing (${main}). Run \`pnpm --filter @nex/shell build\`.`);
+        throw new Error(`the shell bundle is missing (${main}). Run \`pnpm --filter @kelpi/shell build\`.`);
     }
 }
 
 /** Ad-hoc by default; an identity in the environment opts into a real signature. */
-const signingIdentity = (process.env['NEX_MACOS_IDENTITY'] ?? '').trim();
+const signingIdentity = (process.env['KELPI_MACOS_IDENTITY'] ?? '').trim();
 
 /**
  * Cookie encryption travels with the signature — see `cookieEncryptionFuseEnabled` in
@@ -107,10 +107,10 @@ const cookieEncryption = packagingHelpers().cookieEncryptionFuseEnabled(signingI
 
 module.exports = {
     packagerConfig: {
-        // `productName` in package.json names the bundle (`Nex.app`); this is the id that keeps
+        // `productName` in package.json names the bundle (`Kelpi.app`); this is the id that keeps
         // it distinct from the shipped Swift app (`com.benfriebe.nex`) so both can be installed
         // at once during the port. Taking over the original id is a release-checklist item.
-        appBundleId: 'com.benfriebe.newnex',
+        appBundleId: 'com.benfriebe.kelpi',
         appCategoryType: 'public.app-category.developer-tools',
         icon: iconFile,
         asar: true,
@@ -128,10 +128,10 @@ module.exports = {
         derefSymlinks: true,
         overwrite: true,
         /**
-         * CONT-123 — Finder "Open With → Nex" for markdown, ported from `Nex/Info.plist:7-21,52-77`.
+         * CONT-123 — Finder "Open With → Kelpi" for markdown, ported from `Nex/Info.plist:7-21,52-77`.
          *
          * Two halves, both required. `CFBundleDocumentTypes` claims the type as an **Editor**
-         * with `LSHandlerRank: Alternate`, which is what puts Nex in *Open With* and makes it
+         * with `LSHandlerRank: Alternate`, which is what puts Kelpi in *Open With* and makes it
          * settable as the default WITHOUT hijacking whatever the user already uses.
          * `UTImportedTypeDeclarations` imports `net.daringfireball.markdown` — an identifier no
          * system framework declares — so LaunchServices knows the `md`/`markdown` extensions map
@@ -175,7 +175,7 @@ module.exports = {
         new MakerZIP({}, ['darwin']),
         new MakerDMG(
             {
-                name: 'Nex',
+                name: 'Kelpi',
                 icon: iconFile,
                 overwrite: true,
                 // LZFSE: smaller and much faster to produce than UDZO on Apple Silicon.
@@ -234,15 +234,16 @@ module.exports = {
         async postPackage(_forgeConfig, result) {
             const { RESOURCE_NAMES } = packagingHelpers();
             for (const appPath of result.outputPaths) {
-                const resources = path.join(appPath, 'Nex.app', 'Contents', 'Resources');
+                const resources = path.join(appPath, 'Kelpi.app', 'Contents', 'Resources');
                 if (!fs.existsSync(resources)) continue; // non-darwin layout; nothing to check
                 const required = [
                     path.join(resources, 'app.asar'),
-                    path.join(resources, RESOURCE_NAMES.daemon, 'nexd.js'),
+                    path.join(resources, RESOURCE_NAMES.daemon, 'kelpid.js'),
                     path.join(resources, RESOURCE_NAMES.daemon, 'node_modules', 'node-pty', 'package.json'),
                     path.join(resources, RESOURCE_NAMES.client, 'index.html'),
+                    path.join(resources, RESOURCE_NAMES.cli, 'kelpi'),
+                    path.join(resources, RESOURCE_NAMES.cli, 'kelpi.js'),
                     path.join(resources, RESOURCE_NAMES.cli, 'nex'),
-                    path.join(resources, RESOURCE_NAMES.cli, 'nex.js'),
                     path.join(resources, RESOURCE_NAMES.node)
                 ];
                 const missing = required.filter((file) => !fs.existsSync(file));
@@ -250,8 +251,10 @@ module.exports = {
                     throw new Error(`packaged app is incomplete — missing:\n  ${missing.join('\n  ')}`);
                 }
                 fs.accessSync(path.join(resources, RESOURCE_NAMES.node), fs.constants.X_OK);
-                // The launcher is exec'd directly by a shell through /usr/local/bin/nex, so a
+                // The launcher is exec'd directly by a shell through /usr/local/bin/kelpi, so a
                 // lost exec bit would only surface as "command not found" on a user's machine.
+                fs.accessSync(path.join(resources, RESOURCE_NAMES.cli, 'kelpi'), fs.constants.X_OK);
+                // The pre-rename compat launcher rides along for healed /usr/local/bin/nex links.
                 fs.accessSync(path.join(resources, RESOURCE_NAMES.cli, 'nex'), fs.constants.X_OK);
 
                 /**
@@ -264,7 +267,7 @@ module.exports = {
                  */
                 const { adhocSignRequired, adhocSignCommands } = packagingHelpers();
                 if (adhocSignRequired(signingIdentity, result.platform)) {
-                    for (const [command, ...args] of adhocSignCommands(path.join(appPath, 'Nex.app'))) {
+                    for (const [command, ...args] of adhocSignCommands(path.join(appPath, 'Kelpi.app'))) {
                         const signed = spawnSync(command, args, { encoding: 'utf8' });
                         if (signed.status !== 0) {
                             throw new Error(
@@ -274,7 +277,7 @@ module.exports = {
                     }
                     process.stdout.write('\n  ad-hoc signed and verified\n');
                 }
-                process.stdout.write(`\n  packaged ${path.join(appPath, 'Nex.app')}\n`);
+                process.stdout.write(`\n  packaged ${path.join(appPath, 'Kelpi.app')}\n`);
             }
         }
     }

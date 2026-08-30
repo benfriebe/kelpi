@@ -6,10 +6,10 @@
  * activeAgentCount), §3.6 (pane lookup across lanes).
  */
 
-import { isActiveAgentStatus } from '@nex/core/agent';
-import type { ResolveState } from '@nex/core/resolve';
-import { allPaneIDs, type Pane } from '@nex/core/layout';
-import { WORKSPACE_COLORS, type WorkspaceColor } from '@nex/protocol';
+import { isActiveAgentStatus } from '@kelpi/core/agent';
+import type { ResolveState } from '@kelpi/core/resolve';
+import { allPaneIDs, type Pane } from '@kelpi/core/layout';
+import { WORKSPACE_COLORS, type WorkspaceColor } from '@kelpi/protocol';
 import type { DaemonState, PaneLane, WorkspaceGroup, WorkspaceState } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ export function workspaceContainingVisiblePane(
     return state.workspaces.find((w) => w.panes.some((pane) => pane.id === paneID)) ?? null;
 }
 
-/** The projection @nex/core/resolve consumes (parked panes flagged, never addressable). */
+/** The projection @kelpi/core/resolve consumes (parked panes flagged, never addressable). */
 export function resolveStateOf(state: DaemonState): ResolveState {
     const panes: ResolveState['panes'] = state.workspaces.flatMap((workspace) => [
         ...workspace.panes.map((pane) => ({

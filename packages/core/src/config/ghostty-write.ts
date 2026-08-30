@@ -3,7 +3,7 @@
  *
  * The daemon READS five ghostty keys (`daemon/src/settings/ghostty.ts`) and now writes those
  * same five, because Settings ▸ Appearance has to be able to change a background, an opacity
- * and a font — and ghostty, not Nex, owns that file.
+ * and a font — and ghostty, not Kelpi, owns that file.
  *
  * The bar this has to clear is **preservation**: a user's ghostty config is a large, personal,
  * hand-maintained file full of keys this codebase deliberately does not understand. So the

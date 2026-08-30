@@ -26,9 +26,9 @@
  * the app" card — the pane is real daemon state either way.
  */
 
-import { parseKeyTrigger, type NexAction } from '@nex/core/config';
-import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@nex/core/layout';
-import type { JsonObject } from '@nex/protocol';
+import { parseKeyTrigger, type KelpiAction } from '@kelpi/core/config';
+import { PREDEFINED_LAYOUT_ORDER, type DropZone, type SplitDirection } from '@kelpi/core/layout';
+import type { JsonObject } from '@kelpi/protocol';
 import {
     activeAgentCount,
     layoutPaneOrder,
@@ -37,7 +37,7 @@ import {
     type PredefinedLayoutKind,
     type WorkspaceColor,
     type WorkspaceState
-} from '@nex/daemon/store';
+} from '@kelpi/daemon/store';
 import {
     useCallback,
     useEffect,
@@ -172,7 +172,7 @@ import {
     selectPane,
     selectVisibleWorkspaceIDs,
     recentlyClosedCount,
-    type NexRuntime,
+    type KelpiRuntime,
     type Toast
 } from './state';
 import {
@@ -212,7 +212,7 @@ import {
     type WebPaneTab
 } from './webpane';
 
-/** `@nex/core/layout`'s geometric drop zones → the wire's `pane-move-adjacent` vocabulary. */
+/** `@kelpi/core/layout`'s geometric drop zones → the wire's `pane-move-adjacent` vocabulary. */
 const WIRE_DROP_ZONE: Readonly<Record<DropZone, 'above' | 'below' | 'left-of' | 'right-of'>> = {
     top: 'above',
     bottom: 'below',
@@ -234,7 +234,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const EMPTY_WORKSPACE_SELECTION: ReadonlySet<string> = new Set<string>();
 
 export interface AppProps {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     /** What the connection screens name as the target (main.tsx passes the resolved one). */
     readonly target?: DaemonTarget | undefined;
     /** Engine override for tests; the app uses `VITE_TERMINAL_ENGINE`. */
@@ -254,7 +254,7 @@ export interface AppProps {
  * arrive (an older daemon, or the moment before `welcome`) the OS probe stands in, which is
  * what the client did before M8.
  *
- * `--nex-term-bg` is overridden here with the ghostty background AT THE GHOSTTY OPACITY:
+ * `--kelpi-term-bg` is overridden here with the ghostty background AT THE GHOSTTY OPACITY:
  * every pane fill in the tree (terminal, markdown, diff, scratchpad, the placeholder cards)
  * already resolves that variable, so one assignment tints all of them (§3.8).
  */
@@ -269,7 +269,7 @@ export function App(props: AppProps): ReactElement {
     const style = useMemo(() => {
         if (!settings.loaded) return undefined;
         return {
-            '--nex-term-bg': paneFill,
+            '--kelpi-term-bg': paneFill,
             /*
              * §APP-014: the resolved `theme = <name>` palette, as the terminal tokens.
              *
@@ -277,7 +277,7 @@ export function App(props: AppProps): ReactElement {
              * palette" for everything that reads a terminal colour out of CSS; the light/dark
              * preset defines them in `styles.css` and this overlays the theme's own values on
              * top — which is the same layering the engines get through `setTheme` below, so a
-             * canvas and the CSS around it cannot disagree. `--nex-term-bg` is NOT among them
+             * canvas and the CSS around it cannot disagree. `--kelpi-term-bg` is NOT among them
              * (see `terminalPaletteCssVars`): the pane fill is the background at the ghostty
              * OPACITY, and the theme reaches it daemon-side instead.
              */
@@ -343,14 +343,14 @@ function Shell(props: AppProps): ReactElement {
     const commands = runtime.commands;
     const { bucket, theme: chromeTheme } = useChromeTheme();
 
-    const nex = useStore(store);
-    const daemon = nex.daemon;
+    const kelpi = useStore(store);
+    const daemon = kelpi.daemon;
     /** The DAEMON's home, for `~/…` abbreviation (§APP-069) and §TERM-036's accessible name. */
     const daemonHome = daemon.info?.home ?? '';
-    const ui = nex.ui;
-    const settings = nex.settings.value;
+    const ui = kelpi.ui;
+    const settings = kelpi.settings.value;
     /** §SET-200/§SET-201: the shell's last global-hotkey registration outcome, or null. */
-    const hotkeyStatus = nex.settings.hotkeyStatus;
+    const hotkeyStatus = kelpi.settings.hotkeyStatus;
 
     const [sidebarVisible, setSidebarVisible] = useState(true);
     /**
@@ -605,7 +605,7 @@ function Shell(props: AppProps): ReactElement {
     // ── web panes ───────────────────────────────────────────────────────────────────
 
     /**
-     * Whether this client IS the page inside a Nex shell window (`?shellWindow=`). It decides
+     * Whether this client IS the page inside a Kelpi shell window (`?shellWindow=`). It decides
      * two things: whether web panes get real pixels (the shell moves a native view into the
      * hole the chrome leaves) and whether a reveal aimed at that window is ours to act on.
      * Read once — the marker cannot change without a reload.
@@ -696,7 +696,7 @@ function Shell(props: AppProps): ReactElement {
             // §WS-100: the SOCKET creation paths reach the sidebar here. The daemon reveals
             // every `workspace create` (and every notification "Open") to its clients, and this
             // is the client's `setActiveWorkspace` for that message — so it queues the reveal
-            // like the rest, which is what makes `nex workspace create` from a terminal scroll
+            // like the rest, which is what makes `kelpi workspace create` from a terminal scroll
             // the new row into view in an already-scrolled sidebar.
             activateWorkspaceAndReveal(target.workspaceID);
             const timer = setTimeout(() => {
@@ -715,10 +715,10 @@ function Shell(props: AppProps): ReactElement {
 
     // ── derived reads ───────────────────────────────────────────────────────────────
 
-    const workspace = useMemo(() => selectActiveWorkspace(nex), [nex]);
-    const focusedPaneID = useMemo(() => selectFocusedPaneID(nex), [nex]);
-    const filteredEntries = useMemo(() => selectFilteredSidebarEntries(nex), [nex]);
-    const agentSummary = useMemo(() => selectAgentSummary(nex), [nex]);
+    const workspace = useMemo(() => selectActiveWorkspace(kelpi), [kelpi]);
+    const focusedPaneID = useMemo(() => selectFocusedPaneID(kelpi), [kelpi]);
+    const filteredEntries = useMemo(() => selectFilteredSidebarEntries(kelpi), [kelpi]);
+    const agentSummary = useMemo(() => selectAgentSummary(kelpi), [kelpi]);
     /**
      * SET-011: the group the New Workspace form preselects when it was not opened scoped to one
      * — the active workspace's, while "Inherit group when creating a new workspace" is on
@@ -732,8 +732,8 @@ function Shell(props: AppProps): ReactElement {
         () =>
             !settings.general.inheritGroupOnNewWorkspace || workspace === null
                 ? null
-                : (selectGroupForWorkspace(nex, workspace.id)?.id ?? null),
-        [nex, settings.general.inheritGroupOnNewWorkspace, workspace]
+                : (selectGroupForWorkspace(kelpi, workspace.id)?.id ?? null),
+        [kelpi, settings.general.inheritGroupOnNewWorkspace, workspace]
     );
 
     /**
@@ -1314,7 +1314,7 @@ function Shell(props: AppProps): ReactElement {
              * anything else leaves an empty workspace showing the grid's "No panes" placeholder,
              * which is the state the sweep found. The alert only comes up when that workspace
              * still has running agents AND `confirm-workspace-delete` is on; with neither, ⌘W
-             * deletes silently, exactly as `NexCommands.handleClosePane` does.
+             * deletes silently, exactly as `KelpiCommands.handleClosePane` does.
              *
              * §WS-156: this is the ONE route that may reach zero workspaces, which is the Swift's
              * own asymmetry (the CLI and the sidebar's Delete both refuse at one) and the only
@@ -1734,7 +1734,7 @@ function Shell(props: AppProps): ReactElement {
              * SET-011's group inheritance is preserved and moves INTO the sheet: the picker opens
              * preselected on the active workspace's group (`inheritGroupID`, which the sidebar
              * already reads), which is the preselection `NewWorkspaceSheet.swift:66` makes. The
-             * wire verb is untouched, so `nex workspace create` still lands at top level.
+             * wire verb is untouched, so `kelpi workspace create` still lands at top level.
              */
             newWorkspace(): boolean {
                 setSidebarVisible(true);
@@ -2000,7 +2000,7 @@ function Shell(props: AppProps): ReactElement {
                     );
                 }
                 const typed = globalThis.prompt?.(
-                    `${OPEN_PANEL_MESSAGE} — type a path on the machine running nexd`
+                    `${OPEN_PANEL_MESSAGE} — type a path on the machine running kelpid`
                 );
                 const path = typed?.trim() ?? '';
                 if (path === '') return true;
@@ -2384,10 +2384,10 @@ function Shell(props: AppProps): ReactElement {
      * anchored to the bucket THIS render resolved, never to whatever the stylesheet currently
      * says.
      *
-     * Two things make that safe now (run-B L4). `ThemeProvider` stamps `data-nex-theme` in a
+     * Two things make that safe now (run-B L4). `ThemeProvider` stamps `data-kelpi-theme` in a
      * LAYOUT effect, which React flushes before this passive one, so the read sees this
      * commit's bucket rather than the previous one's; and the bucket's own preset is the
-     * fallback, so a host that defines no `--nex-term-*` variables still gets the right column
+     * fallback, so a host that defines no `--kelpi-term-*` variables still gets the right column
      * instead of the dark one. Before both, the first light→dark transition left the terminal
      * painting a `#2B2B2E` foreground on a `#0A0A0C` background — text that reads as SGR-dim.
      */
@@ -2468,10 +2468,10 @@ function Shell(props: AppProps): ReactElement {
     /**
      * SET-219 / TERM-021 — the user-overridable search-highlight palette.
      *
-     * The Swift app laid a Nex-managed ghostty defaults file UNDER the user's own config so
+     * The Swift app laid a Kelpi-managed ghostty defaults file UNDER the user's own config so
      * libghostty resolved `search-background` and friends with the user's value winning. There
      * is no libghostty here: every search highlight this app draws is ours, so the same four
-     * colours are nex-config keys and this is where they reach the two surfaces that paint a
+     * colours are kelpi-config keys and this is where they reach the two surfaces that paint a
      * match — the content panes' injected find script, and (below) the terminal's search
      * selection.
      */
@@ -2632,7 +2632,7 @@ function Shell(props: AppProps): ReactElement {
 
     const faviconRef = useRef<FaviconController | null>(null);
     useEffect(() => {
-        const controller = createFaviconController({ title: 'Nex' });
+        const controller = createFaviconController({ title: 'Kelpi' });
         faviconRef.current = controller;
         return () => {
             controller.dispose();
@@ -2723,7 +2723,7 @@ function Shell(props: AppProps): ReactElement {
                 const pane = webAct.focusedWebPane();
                 if (pane === null) return false;
                 // §WEB-013: the Swift reducer turns a single-tab close into `closePane` (the
-                // WIRE keeps refusing it and names `nex pane close` instead — a CLI that closes
+                // WIRE keeps refusing it and names `kelpi pane close` instead — a CLI that closes
                 // a pane when it was asked to close a tab is a different contract). So the GUI
                 // is where the last tab becomes a pane close, exactly as the reducer has it.
                 if (pane.tabCount <= 1 || pane.tabID === null) return act.closePane(pane.paneID);
@@ -2769,7 +2769,7 @@ function Shell(props: AppProps): ReactElement {
     /**
      * N14's named residual — ⌘W while a modal overlay owns the keyboard.
      *
-     * Before this, step 1 declined the chord, `__nexShellClosePane()` answered `false`, and the
+     * Before this, step 1 declined the chord, `__kelpiShellClosePane()` answered `false`, and the
      * shell's Close row did the only other thing it knows: it closed the WINDOW. The Swift is no
      * help as a spec — its monitor stands down for the palette too (`NexCommands.swift:200-203`)
      * and `CommandPaletteView.swift:92-105` binds only ↑ / ↓ / Escape, so what happens there is
@@ -2820,7 +2820,7 @@ function Shell(props: AppProps): ReactElement {
     }, [handBackPaneCaret, store, shellClose]);
 
     // The dispatcher is rebuilt whenever the daemon's `keybind` lines change: `clientKeyBindings`
-    // is the seam, `@nex/core/config` resolves the same overrides the daemon parsed, and the
+    // is the seam, `@kelpi/core/config` resolves the same overrides the daemon parsed, and the
     // store only mints a new settings object on a REAL change — so a `settings-changed` that
     // touched only the appearance does not re-install the listener.
     const keybindLines = settings.keybindLines;
@@ -2865,7 +2865,7 @@ function Shell(props: AppProps): ReactElement {
     }, [store, keybindLines, closeModalOverlay]);
 
     /**
-     * ⌘, opens Settings — the platform convention, and NOT a `NexAction`: the Swift app reaches
+     * ⌘, opens Settings — the platform convention, and NOT a `KelpiAction`: the Swift app reaches
      * it through the OS menu bar (there is no `open_settings` in §4's 51), so inventing one
      * would put a value in the config file the shipped app cannot parse. It therefore lives
      * outside the binding map and, to stay honest about that, yields whenever the user's own map
@@ -2969,7 +2969,7 @@ function Shell(props: AppProps): ReactElement {
              * stays where they were. Composing it out of `workspace-create` cannot inherit that,
              * because the daemon deliberately broadcasts a REVEAL for every workspace it creates
              * (`handlers/app/workspaces.ts` ▸ `revealCreatedWorkspace`, the run-B L3 fix, so a
-             * `nex workspace create` from a terminal cannot leave the window behind).
+             * `kelpi workspace create` from a terminal cannot leave the window behind).
              *
              * So the two reveals this gesture is about to cause are declined BEFORE they arrive
              * rather than undone afterwards — undoing loses the race, since the create's reply
@@ -3012,7 +3012,7 @@ function Shell(props: AppProps): ReactElement {
      */
     const bindings = useMemo(() => clientKeyBindings(keybindLines), [keybindLines]);
     const hint = useCallback(
-        (action: NexAction): string | undefined => shortcutForAction(bindings, action),
+        (action: KelpiAction): string | undefined => shortcutForAction(bindings, action),
         [bindings]
     );
 
@@ -3228,11 +3228,11 @@ function Shell(props: AppProps): ReactElement {
      * what the machine is doing (a 0 % CPU would be a fabrication).
      */
     const statsView = useMemo<SystemStatsView | null>(() => {
-        if (!nex.systemStats.loaded) return null;
+        if (!kelpi.systemStats.loaded) return null;
         return {
-            stats: nex.systemStats.stats,
-            history: nex.systemStats.history,
-            intervalMs: nex.systemStats.intervalMs,
+            stats: kelpi.systemStats.stats,
+            history: kelpi.systemStats.history,
+            intervalMs: kelpi.systemStats.intervalMs,
             showSystemStats: settings.chrome.showSystemStats,
             enabled: settings.chrome.enabledSystemStats,
             showGraphs: settings.chrome.showSystemStatGraphs,
@@ -3240,7 +3240,7 @@ function Shell(props: AppProps): ReactElement {
             graphColor: settings.chrome.sparklineColor,
             graphWidth: settings.chrome.sparklineWidth
         };
-    }, [nex.systemStats, settings.chrome]);
+    }, [kelpi.systemStats, settings.chrome]);
 
     // ── pane context menu (TERM-106…TERM-111) ───────────────────────────────────────
 
@@ -3435,7 +3435,7 @@ function Shell(props: AppProps): ReactElement {
                 label: inspectorVisible ? 'Hide Inspector' : 'Show Inspector',
                 onSelect: () => act.toggleInspector()
             },
-            { id: 'help', label: 'Nex Help', onSelect: () => setHelpOpen(true) }
+            { id: 'help', label: 'Kelpi Help', onSelect: () => setHelpOpen(true) }
         ];
         if (shellWindowID !== null) {
             items.push(
@@ -3507,7 +3507,7 @@ function Shell(props: AppProps): ReactElement {
      * and every other app-modal surface was missing: the shell's quit dialog, the graft swap
      * prompt, the agent-delete gate, every `ContextMenu`, the toast stack, the inspector's
      * sheets. All of them were therefore painted UNDER a live page —
-     * `docs/audit/run-O/53-agent-lifecycle-quit-dialog.png` is "Quit Nex?" sliced at the page's
+     * `docs/audit/run-O/53-agent-lifecycle-quit-dialog.png` is "Quit Kelpi?" sliced at the page's
      * left edge with **Cancel entirely off-screen**, and `run-O/83-graft-swap-prompt-prompt.png`
      * is the swap prompt cut to "Kee".
      *
@@ -3851,7 +3851,7 @@ function Shell(props: AppProps): ReactElement {
 
     return (
         <div
-            data-testid="nex-app"
+            data-testid="kelpi-app"
             data-connection={ui.connection}
             data-drop-active={dropActive ? 'true' : 'false'}
             /* `relative`: the connection banner and the toast stack position against the
@@ -4110,7 +4110,7 @@ function Shell(props: AppProps): ReactElement {
                             // enclosing split it is, so `pane-resize` cannot name it (§LAY-061);
                             // it goes by split path instead, which is what the layout model and
                             // Swift's own GUI use. Everything else keeps the pane spelling, so
-                            // a GUI drag and `nex pane resize` stay one pipeline.
+                            // a GUI drag and `kelpi pane resize` stay one pipeline.
                             if (commit.paneID === null) {
                                 act.setSplitRatioAtPath(splitPath, ratio);
                                 return;
@@ -4119,7 +4119,7 @@ function Shell(props: AppProps): ReactElement {
                         }}
                     />
                     )}
-                    {ready ? null : <ConnectionSplash runtime={runtime} state={nex} target={target} />}
+                    {ready ? null : <ConnectionSplash runtime={runtime} state={kelpi} target={target} />}
                 </div>
             </div>
 
@@ -4545,11 +4545,11 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
 // ── connection surfaces ─────────────────────────────────────────────────────────────
 
 const SPLASH_TITLE: Readonly<Record<string, string>> = {
-    idle: 'Connecting to nexd…',
-    connecting: 'Connecting to nexd…',
+    idle: 'Connecting to kelpid…',
+    connecting: 'Connecting to kelpid…',
     connected: 'Loading workspaces…',
-    reconnecting: 'Reconnecting to nexd…',
-    closed: 'Disconnected from nexd',
+    reconnecting: 'Reconnecting to kelpid…',
+    closed: 'Disconnected from kelpid',
     rejected: 'The daemon refused this connection'
 };
 
@@ -4558,10 +4558,10 @@ const SPLASH_HINT: Readonly<Record<string, string>> = {
     connecting: '',
     connected: 'the daemon accepted the handshake; waiting for the first state snapshot',
     reconnecting: 'the socket dropped — retrying with backoff',
-    closed: 'nothing is listening; start it with `nexd start`',
+    closed: 'nothing is listening; start it with `kelpid start`',
     // A rejection is almost always a missing/stale token, and there is exactly one command that
     // produces a working link — so name it rather than describing the problem in the abstract.
-    rejected: 'open this page from `nexd url`, which includes the daemon token'
+    rejected: 'open this page from `kelpid url`, which includes the daemon token'
 };
 
 /**
@@ -4623,7 +4623,7 @@ function NoWorkspaceSelected({ onCreate }: { readonly onCreate: () => void }): R
 }
 
 interface ConnectionSplashProps {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     readonly state: { readonly ui: { readonly connection: string; readonly connectionError: string | null } };
     readonly target: DaemonTarget;
 }
@@ -4688,7 +4688,7 @@ function ConnectionSplash({ runtime, state, target }: ConnectionSplashProps): Re
 interface ConnectionBannerProps {
     readonly status: string;
     readonly error: string | null;
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
 }
 
 /** The mirror is still on screen (and still true as of the drop); this says it may be stale. */
@@ -4721,7 +4721,7 @@ function ConnectionBanner({ status, error, runtime }: ConnectionBannerProps): Re
                       : 'Reconnecting…'}
             </span>
             {error === null ? null : (
-                // A refusal's text is the actionable part ("open the client via `nexd url`"),
+                // A refusal's text is the actionable part ("open the client via `kelpid url`"),
                 // so it is not dimmed into a footnote the way a transient socket error is.
                 <span data-testid="connection-banner-error" style={{ color: rejected ? '#E0655C' : chromeTokens.textTertiary }}>
                     {error}

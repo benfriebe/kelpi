@@ -26,7 +26,7 @@
  * asserted in `LabelsTab.test.tsx` too.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -105,8 +105,8 @@ describe('L79 — the grouped-form card is the SECTION’s, not the row’s', ()
         // Every band is padded the same, and every band after the first carries the hairline.
         expect(bands.map((band) => band.style.padding)).toEqual(['6px 10px', '6px 10px', '6px 10px']);
         expect(bands[0]?.style.borderTop).toBe('');
-        expect(bands[1]?.style.borderTop).toContain('--nex-border');
-        expect(bands[2]?.style.borderTop).toContain('--nex-border');
+        expect(bands[1]?.style.borderTop).toContain('--kelpi-border');
+        expect(bands[2]?.style.borderTop).toContain('--kelpi-border');
     });
 
     /** The inversion, stated as its own assertion: a ROW has neither fill nor radius. */
@@ -149,7 +149,7 @@ describe('L79 — the grouped-form card is the SECTION’s, not the row’s', ()
         expect(heading.className).toContain('text-[13px]');
         expect(heading.className).not.toContain('uppercase');
         expect(heading.className).not.toContain('tracking-wide');
-        expect(heading.style.color).toContain('--nex-fg');
+        expect(heading.style.color).toContain('--kelpi-fg');
         expect(heading.style.color).not.toContain('tertiary');
     });
 
@@ -342,7 +342,7 @@ describe('Settings ▸ Appearance', () => {
         // The name is the cell's LAST child — the swatch mock above it has spans of its own.
         const name = [...cell.children].at(-1) as HTMLElement;
         expect(name.textContent).toBe('Nord');
-        expect(name.style.color).toContain('--nex-fg');
+        expect(name.style.color).toContain('--kelpi-fg');
         expect(name.style.color).not.toContain('secondary');
     });
 });
@@ -409,11 +409,11 @@ describe('L85 — the web favourites row', () => {
             />
         );
         const title = screen.getByTestId('settings-favourite-title-f1');
-        expect(title.style.border).toContain('--nex-border');
+        expect(title.style.border).toContain('--kelpi-border');
         expect(title.style.border).not.toContain('transparent');
         expect(title.className).toContain('font-medium');
         const url = screen.getByTestId('settings-favourite-url-f1');
-        expect(url.style.color).toContain('--nex-fg-secondary');
+        expect(url.style.color).toContain('--kelpi-fg-secondary');
     });
 });
 
@@ -421,7 +421,7 @@ describe('L86 — the Repositories tab', () => {
     function renderRepos() {
         render(
             <RepositoriesTab
-                repos={[{ id: 'r1', name: 'nex', path: '/code/nex' }]}
+                repos={[{ id: 'r1', name: 'kelpi', path: '/code/kelpi' }]}
                 actions={actions()}
                 paths={DEFAULT_SETTINGS_PATHS}
                 autoDetectRepos={false}
@@ -445,7 +445,7 @@ describe('L86 — the Repositories tab', () => {
         const row = screen.getByTestId('repo-row-r1');
         expect(row.style.background).toBe('transparent');
         fireEvent.mouseEnter(row);
-        expect(row.style.background).toContain('--nex-selection-fill');
+        expect(row.style.background).toContain('--kelpi-selection-fill');
     });
 });
 
@@ -564,7 +564,7 @@ describe('L92 — the Profiles detail placeholder', () => {
         expect(title.textContent).toBe('No profile selected');
         expect(title.className).toContain('font-semibold');
         expect(title.className).toContain('text-[13px]');
-        expect(title.style.color).toContain('--nex-fg');
+        expect(title.style.color).toContain('--kelpi-fg');
         expect(title.style.color).not.toContain('secondary');
         const detail = screen.getByTestId('profile-detail-placeholder').querySelector('.max-w-\\[360px\\]');
         expect(detail).not.toBeNull();
@@ -580,7 +580,7 @@ describe('L92 — the Profiles detail placeholder', () => {
         );
         const title = screen.getByTestId('settings-favourites-empty-title');
         expect(title.className).not.toContain('font-semibold');
-        expect(title.style.color).toContain('--nex-fg-secondary');
+        expect(title.style.color).toContain('--kelpi-fg-secondary');
     });
 });
 

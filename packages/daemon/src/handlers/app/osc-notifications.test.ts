@@ -72,7 +72,7 @@ describe('the OSC notification sink', () => {
                 workspaceID: W1,
                 title: 'Agent',
                 body: 'needs your approval',
-                dedupeKey: `nex-${PANE_A}`
+                dedupeKey: `kelpi-${PANE_A}`
             }
         ]);
     });

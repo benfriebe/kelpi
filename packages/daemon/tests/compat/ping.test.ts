@@ -1,8 +1,8 @@
 /**
- * `ping`, the health surface the CLI actually exposes it through (`nex doctor`), and the
+ * `ping`, the health surface the CLI actually exposes it through (`kelpi doctor`), and the
  * honest failures for the command families that are stubbed until M6/M7.
  *
- * `nex doctor` is the only client-side consumer of `ping`: its third check does a full
+ * `kelpi doctor` is the only client-side consumer of `ping`: its third check does a full
  * round-trip through the same dispatch path a real command takes, so a green `ping` check
  * proves the control transport, the line framing, the reply allowlist and the reply-then-close
  * handshake all agree with the shipped binary.
@@ -25,18 +25,18 @@ interface DoctorReport {
 }
 
 describe.skipIf(!swiftCLIAvailable())('compat: ping / doctor', () => {
-    let nex: CompatDaemon;
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
-    it('answers `nex doctor` with a passing ping round-trip', async () => {
-        const result = await nex.run(['doctor', '--json']);
+    it('answers `kelpi doctor` with a passing ping round-trip', async () => {
+        const result = await kelpi.run(['doctor', '--json']);
         // A WARN never fails doctor — only a FAILed check does (cli.md §6.6).
         expect(result.code).toBe(0);
 
@@ -45,7 +45,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: ping / doctor', () => {
 
         const byName = new Map(report.checks.map((check) => [check.name, check]));
         expect(byName.get('transport')?.status).toBe('pass');
-        expect(byName.get('transport')?.detail).toContain(`127.0.0.1:${String(nex.port)}`);
+        expect(byName.get('transport')?.detail).toContain(`127.0.0.1:${String(kelpi.port)}`);
 
         // The check that matters: a real request/response through the daemon's dispatcher.
         const ping = byName.get('ping');
@@ -55,19 +55,19 @@ describe.skipIf(!swiftCLIAvailable())('compat: ping / doctor', () => {
         expect(ping?.detail).toContain(String(process.pid));
 
         // TCP transport ⇒ the CLI cannot inspect the "remote" process; that is a skip, not a
-        // failure, and it must stay one or `nex doctor` starts lying over SSH tunnels.
+        // failure, and it must stay one or `kelpi doctor` starts lying over SSH tunnels.
         expect(byName.get('process')?.status).toBe('skip');
 
         // Version drift between the 0.32.0 Swift CLI and this daemon is expected during the
         // port and is documented as WARN-only (PLAN.md "Doctor/process-check drift").
         const version = byName.get('version');
         expect(version?.status).toBe('warn');
-        expect(version?.detail).toContain(nex.info.version.version);
+        expect(version?.detail).toContain(kelpi.info.version.version);
     }, 60_000);
 
     it('reports ping as failed once the daemon is gone', async () => {
-        await nex.daemon.stop();
-        const result = await nex.run(['doctor', '--json']);
+        await kelpi.daemon.stop();
+        const result = await kelpi.run(['doctor', '--json']);
         expect(result.code).toBe(1);
         const report = JSON.parse(result.stdout) as DoctorReport;
         expect(report.ok).toBe(false);
@@ -77,38 +77,38 @@ describe.skipIf(!swiftCLIAvailable())('compat: ping / doctor', () => {
 });
 
 describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
-    let nex: CompatDaemon;
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     // The daemon owns web-pane STATE, so opening a pane and reading its tabs works with no
     // Electron shell attached at all — which is the headless half of M6.
     it.each([
         ['web open', ['web', 'open', 'https://example.com']],
-        // `nex open <url>` routes CLI-side to the same web-open verb.
+        // `kelpi open <url>` routes CLI-side to the same web-open verb.
         ['open <url>', ['open', 'https://example.com']]
     ])('%s creates a pane and prints its id', async (_label, args) => {
-        const result = await nex.run(args, { timeoutMs: 15_000 });
+        const result = await kelpi.run(args, { timeoutMs: 15_000 });
         expect(result.code).toBe(0);
         expect(result.stdout).toContain('open ok:');
         expect(result.stdout).toContain('https://example.com');
     }, 60_000);
 
     it('lists the new pane as type web, with its tab', async () => {
-        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const opened = await kelpi.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
         const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1];
         expect(paneID).toBeDefined();
 
-        const panes = await nex.json<{ id: string; type: string }[]>(['pane', 'list', '--json']);
+        const panes = await kelpi.json<{ id: string; type: string }[]>(['pane', 'list', '--json']);
         expect(panes.find((pane) => pane.id === paneID)?.type).toBe('web');
 
-        const tabs = await nex.json<{ url: string; active: boolean; index: number }[]>([
+        const tabs = await kelpi.json<{ url: string; active: boolean; index: number }[]>([
             'web',
             'tabs',
             '--target',
@@ -122,7 +122,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
     // Anything that needs a real browser fails with a stable, greppable string instead of
     // hanging the CLI on a read timeout.
     it('fails browser-bound verbs with "no web pane host connected"', async () => {
-        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const opened = await kelpi.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
         const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1] as string;
 
         for (const args of [
@@ -130,17 +130,17 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
             ['web', 'text', '--target', paneID, 'css:body'],
             ['web', 'reload', '--target', paneID]
         ]) {
-            const result = await nex.run(args, { timeoutMs: 15_000 });
+            const result = await kelpi.run(args, { timeoutMs: 15_000 });
             expect(result.code).toBe(1);
             expect(result.stderr).toContain('no web pane host connected');
         }
     }, 60_000);
 
     it('reads an empty console buffer and refuses to close the only tab', async () => {
-        const opened = await nex.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
+        const opened = await kelpi.run(['web', 'open', 'https://example.com'], { timeoutMs: 15_000 });
         const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1] as string;
 
-        const console_ = await nex.run(['web', 'console', '--target', paneID, '--json'], {
+        const console_ = await kelpi.run(['web', 'console', '--target', paneID, '--json'], {
             timeoutMs: 15_000
         });
         expect(console_.code).toBe(0);
@@ -154,14 +154,14 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
             follow: false
         });
 
-        const tabs = await nex.json<{ id: string }[]>([
+        const tabs = await kelpi.json<{ id: string }[]>([
             'web',
             'tabs',
             '--target',
             paneID,
             '--json'
         ]);
-        const closing = await nex.run(
+        const closing = await kelpi.run(
             ['web', 'tab-close', '--target', paneID, (tabs[0] as { id: string }).id],
             { timeoutMs: 15_000 }
         );
@@ -171,18 +171,18 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes (M6)', () => {
 });
 
 describe.skipIf(!swiftCLIAvailable())('compat: graft (M7)', () => {
-    let nex: CompatDaemon;
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     it('renders an empty `graft status --json` as an empty array, exit 0', async () => {
-        const result = await nex.run(['graft', 'status', '--json'], { timeoutMs: 15_000 });
+        const result = await kelpi.run(['graft', 'status', '--json'], { timeoutMs: 15_000 });
         expect(result.code).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual([]);
     }, 60_000);
@@ -190,14 +190,14 @@ describe.skipIf(!swiftCLIAvailable())('compat: graft (M7)', () => {
     it('reports the scope error verbatim when called with no scope at all', async () => {
         // No `--workspace`, no `--repo` and no NEX_PANE_ID: the daemon's error string is what
         // the shipped CLI prints, so it is contract.
-        const result = await nex.run(['graft', 'start'], { timeoutMs: 15_000 });
+        const result = await kelpi.run(['graft', 'start'], { timeoutMs: 15_000 });
         expect(result.code).toBe(1);
         expect(result.stderr).toContain('graft requires --workspace, --repo, or NEX_PANE_ID');
     }, 60_000);
 
     it('answers `graft stop --repo <unknown>` with "no active sessions"', async () => {
         // A repo filter that matches nothing is NOT an error (issue #231's orphan path).
-        const result = await nex.run(['graft', 'stop', '--repo', '/nope'], { timeoutMs: 15_000 });
+        const result = await kelpi.run(['graft', 'stop', '--repo', '/nope'], { timeoutMs: 15_000 });
         expect(result.code).toBe(0);
         expect(result.stdout).toContain('No active sessions in scope.');
     }, 60_000);

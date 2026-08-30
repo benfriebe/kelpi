@@ -5,7 +5,7 @@
  * (`● WorkspaceName · 3 panes`) and trailing controls. The dot rule is exact: any pane
  * `waitingForInput` → `statusWaiting`, else any `running` → `statusRunning`, else the
  * workspace's own color; no active workspace → `textTertiary` and the name falls back to
- * "Nex" with no pane count.
+ * "Kelpi" with no pane count.
  *
  * Three controls that have no macOS equivalent live here because a browser client needs them
  * in the chrome rather than a menu: the layout cycle/select control (`layout-cycle` /
@@ -13,8 +13,8 @@
  * piece of UI that tells a remote user the daemon link is down.
  */
 
-import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@nex/core/layout';
-import type { PredefinedLayoutKind, WorkspaceColor } from '@nex/daemon/store';
+import { PREDEFINED_LAYOUT_DISPLAY_NAMES, PREDEFINED_LAYOUT_ORDER } from '@kelpi/core/layout';
+import type { PredefinedLayoutKind, WorkspaceColor } from '@kelpi/daemon/store';
 import { useCallback, useLayoutEffect, useRef, useState, type ReactElement, type RefObject } from 'react';
 
 import type { ConnectionStatus } from '../connection';
@@ -369,7 +369,7 @@ export function TopBar(props: TopBarProps): ReactElement {
                 {/* `min-w-0` is what makes `.truncationMode(.tail)` real: a flex item's automatic
                     minimum is its min-content width, so a nowrap name would otherwise refuse to
                     shrink and simply overflow the reserve above. */}
-                <span className="min-w-0 max-w-[280px] truncate font-semibold">{props.workspaceName ?? 'Nex'}</span>
+                <span className="min-w-0 max-w-[280px] truncate font-semibold">{props.workspaceName ?? 'Kelpi'}</span>
                 {hasWorkspace ? (
                     <>
                         {/* L55: the separator is a member of the stack, so it gets the full 7 px

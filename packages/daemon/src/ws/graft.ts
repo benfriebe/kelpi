@@ -38,7 +38,7 @@
  * disk by design, and reporting it as interrupted would be a lie.
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import {
     errorText,

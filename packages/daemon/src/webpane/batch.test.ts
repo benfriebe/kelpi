@@ -120,7 +120,7 @@ describe('the paste payload (WEB-134)', () => {
             ],
             NOW
         );
-        expect(text.split('\n')[0]).toBe(`# nex inspect batch ${new Date(NOW).toISOString()} (2 items)`);
+        expect(text.split('\n')[0]).toBe(`# kelpi inspect batch ${new Date(NOW).toISOString()} (2 items)`);
         expect(text).toContain('```json');
         const body = JSON.parse(text.slice(text.indexOf('['), text.lastIndexOf(']') + 1)) as unknown[];
         expect(body).toHaveLength(2);
@@ -142,7 +142,7 @@ describe('the whole loop', () => {
 
         const started = webPaneGuiCommand(harness.service, harness.store, 'web-batch-toggle', WEB_PANE, {});
         const arm = host.answer({ ok: true }, 'inspect-arm');
-        // WEB-127: sticky, unlike `nex web inspect`'s single-shot arm.
+        // WEB-127: sticky, unlike `kelpi web inspect`'s single-shot arm.
         expect(arm.args).toMatchObject({ paneID: WEB_PANE, tabID: WEB_TAB, sticky: true });
         await expect(started).resolves.toMatchObject({ ok: true, armed: true, toggled: 'started' });
 
@@ -170,7 +170,7 @@ describe('the whole loop', () => {
         expect(harness.pasted).toHaveLength(1);
         expect(harness.pasted[0]?.paneID).toBe(SHELL_PANE);
         expect(harness.pasted[0]?.bare).toBe(true);
-        expect(harness.pasted[0]?.text).toContain('# nex inspect batch');
+        expect(harness.pasted[0]?.text).toContain('# kelpi inspect batch');
         expect(harness.pasted[0]?.text).toContain('#one');
         // Teardown: session gone, picker disarmed, markers cleared.
         expect(harness.service.batch.sessionOf(WEB_PANE)).toBeNull();
@@ -273,7 +273,7 @@ describe('the whole loop', () => {
 
     /**
      * §WEB-124 / §WEB-125. A batch the user has not sent is pending work, and a headless caller
-     * (`nex web inspect-result`) is entitled to it — comments included. `--clear` then cancels
+     * (`kelpi web inspect-result`) is entitled to it — comments included. `--clear` then cancels
      * the batch, which is where the "only when a batch exists" clause matters: an independently
      * armed single-shot picker must survive it.
      */

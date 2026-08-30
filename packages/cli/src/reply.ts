@@ -8,7 +8,7 @@
  * transport/empty/invalid-JSON stay fatal for the whole batch.
  *
  * The two commands with bespoke empty-reply handling (`pane send` treats it as success,
- * `send-key`/`resize`/`move`/`sync` as "this Nex is too old") call the raw send themselves and
+ * `send-key`/`resize`/`move`/`sync` as "this Kelpi is too old") call the raw send themselves and
  * then `parseReplyOrExit`; that split is a mixed-version compatibility shim the port keeps.
  */
 
@@ -23,9 +23,9 @@ export async function readReplyOrExit(payload: JsonObject, command: string, opti
         exit(1);
     }
     if (data.length === 0) {
-        errLine(`${command}: no response from Nex (upgrade required?)`);
+        errLine(`${command}: no response from Kelpi (upgrade required?)`);
         errLine(
-            'Repair: if the running Nex is recent, the app may be wedged — try `nex doctor` first, then restart Nex if needed.'
+            'Repair: if the running Kelpi is recent, the app may be wedged — try `kelpi doctor` first, then restart Kelpi if needed.'
         );
         exit(1);
     }

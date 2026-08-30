@@ -19,7 +19,7 @@ import {
 const dirs: string[] = [];
 
 function tempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-settings-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-settings-'));
     dirs.push(dir);
     return dir;
 }
@@ -100,7 +100,7 @@ describe('quitDialogSpec', () => {
         expect(spec.defaultId).toBe(1);
         expect(spec.cancelId).toBe(1);
         expect(spec.checkboxLabel).toBe("Don't ask again");
-        expect(spec.message).toBe('Quit Nex?');
+        expect(spec.message).toBe('Quit Kelpi?');
         expect(spec.detail).toContain('keep running in the background');
     });
 });

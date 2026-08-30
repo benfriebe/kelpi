@@ -107,7 +107,7 @@ afterEach(() => {
  *
  * `WebPaneChrome.swift:311-377` gives a pill one gesture, `.onTapGesture(perform: onSelect)`, and
  * `WorkspaceFeature.swift:1050-1062`'s `webPaneTabReorder` action has no call site anywhere in
- * the app — no view, no menu, no socket command reaches it (`grep -rn webPaneTabReorder Nex/`
+ * the app — no view, no menu, no socket command reaches it (`grep -rn webPaneTabReorder Kelpi/`
  * returns the case and its declaration, nothing else). So the port's pointer-drag was invented
  * here, and it is gone along with `reorder.ts`, the ghosted pill and the `grabbing` cursor.
  *
@@ -253,7 +253,7 @@ describe('the loading strip and the nav buttons (WEB-032/033/034)', () => {
         );
         const strip = (): HTMLElement | null => screen.queryByTestId(`web-progress-${PANE}`);
         expect(strip()?.getAttribute('data-phase')).toBe('loading');
-        expect(screen.getByTestId(`web-progress-bar-${PANE}`).className).toContain('nex-web-progress');
+        expect(screen.getByTestId(`web-progress-bar-${PANE}`).className).toContain('kelpi-web-progress');
 
         view.rerender(
             <WebPane
@@ -452,7 +452,7 @@ describe('focus handoff (WEB-043)', () => {
      *
      * Swift claims first responder from `makeNSView` (`WebPaneView.swift:335-340`), so a web
      * pane created focused types into its page from the first frame. The port seeded its
-     * "was focused" ref from the mount value, so `nex web open` / ⌘⇧O produced no claim at all
+     * "was focused" ref from the mount value, so `kelpi web open` / ⌘⇧O produced no claim at all
      * — and looked right only because the page's own load stole the keyboard (§N30's steal).
      * With that steal handed back, this claim has to be real.
      */
@@ -535,7 +535,7 @@ describe('focus handoff (WEB-043)', () => {
      * §N30's second residual (`run-AD`): the ORDERING, and the one the tab-set case above does
      * not reach. A pane born focused whose active tab arrives BLANK used to consume its gain on
      * the blank-tab guard and never claim once the URL landed — a tab filling in is not a focus
-     * change, so nothing re-armed it. `nex web open` is measured to deliver the tab with its URL
+     * change, so nothing re-armed it. `kelpi web open` is measured to deliver the tab with its URL
      * in one update, which is what kept this latent; the ordering is not a contract, and a client
      * that ADOPTS an existing blank tab reaches it with no daemon change at all.
      */

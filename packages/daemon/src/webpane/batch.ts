@@ -1,7 +1,7 @@
 /**
  * The batch "element pickup" session (web-pane.md §12; WEB-126…WEB-145).
  *
- * The single-shot picker (`nex web inspect`) arms once, takes one element and disarms. A *batch*
+ * The single-shot picker (`kelpi web inspect`) arms once, takes one element and disarms. A *batch*
  * keeps the picker armed (`sticky`), collects elements as the user clicks them, lets each one be
  * annotated, and finally pastes the whole set into a shell pane as one fenced JSON array.
  *
@@ -21,14 +21,14 @@
  *   - `lastTarget` is an in-session memory of the last destination, seeded ONLY from a real pane
  *     send — never from the local-queue branch, and re-validated by the client against the live
  *     pane list (WEB-132);
- *   - `formatBatchForPaste` is the payload (WEB-134): a `# nex inspect batch <ts> (N items)`
+ *   - `formatBatchForPaste` is the payload (WEB-134): a `# kelpi inspect batch <ts> (N items)`
  *     header over one pretty-printed, sorted-key JSON array whose entries carry the sanitised
  *     inspect fields plus the 4 KB-clamped comment.
  *
  * Transient, never persisted (§15.1) — a batch is a live editing session.
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import { clampField, INSPECT_LIMITS, type InspectResult } from './inspect.js';
 
@@ -223,13 +223,13 @@ function batchEntry(item: BatchItem): Record<string, unknown> {
 /**
  * `InspectPayloadSanitiser.formatBatchForPaste`: the header names the moment the batch was sent
  * and how many items it carries, then one fenced JSON array — one block an agent can lift whole,
- * rather than N separate `# nex inspect` directives it would have to stitch back together.
+ * rather than N separate `# kelpi inspect` directives it would have to stitch back together.
  */
 export function formatBatchForPaste(items: readonly BatchItem[], now: number): string {
     const timestamp = new Date(now).toISOString();
     const plural = items.length === 1 ? 'item' : 'items';
     const body = JSON.stringify(items.map(batchEntry), null, 2);
-    return `# nex inspect batch ${timestamp} (${String(items.length)} ${plural})\n\`\`\`json\n${body}\n\`\`\`\n`;
+    return `# kelpi inspect batch ${timestamp} (${String(items.length)} ${plural})\n\`\`\`json\n${body}\n\`\`\`\n`;
 }
 
 /** The wire/UI shape of one item (the client's panel row, WEB-129). */

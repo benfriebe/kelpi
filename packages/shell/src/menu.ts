@@ -163,7 +163,7 @@ export const CLOSE_ACCELERATOR = 'CommandOrControl+W';
  * renderer must never make a window unclosable.
  */
 export const CLOSE_PANE_EXPRESSION =
-    "(function () { try { return window.__nexShellClosePane() === true; } catch (error) { return false; } })()";
+    "(function () { try { return window.__kelpiShellClosePane() === true; } catch (error) { return false; } })()";
 
 /** How long the row waits for the page before falling back to closing the window. */
 export const CLOSE_ROUTE_TIMEOUT_MS = 500;
@@ -448,7 +448,7 @@ export interface AppMenuDeps {
 }
 
 /**
- * The macOS application ("Nex") submenu: Check for Updates… directly after About, exactly where
+ * The macOS application ("Kelpi") submenu: Check for Updates… directly after About, exactly where
  * Sparkle's item sat.
  */
 export function appMenuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
@@ -575,5 +575,5 @@ export function menuLogLine(options: {
 }): string {
     const updates = `${CHECK_FOR_UPDATES_LABEL} (${options.canCheckForUpdates ? 'enabled' : 'disabled'})`;
     const debug = options.isPackaged === undefined ? '' : ` · ${debugMenuLogFragment(options.isPackaged)}`;
-    return `menu: Nex ▸ ${updates} · ${FILE_MENU_LOG_FRAGMENT} · ${VIEW_MENU_LOG_FRAGMENT} · Help ▸ Nex Help (⌘?)${debug}`;
+    return `menu: Kelpi ▸ ${updates} · ${FILE_MENU_LOG_FRAGMENT} · ${VIEW_MENU_LOG_FRAGMENT} · Help ▸ Kelpi Help (⌘?)${debug}`;
 }

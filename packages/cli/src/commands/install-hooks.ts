@@ -1,8 +1,8 @@
 /**
- * `nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]`
+ * `kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]`
  *
  * The port's replacement for `/Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh`
- * (gap #1). It is what `nex doctor`'s two hook checks now name as the repair, so the two halves
+ * (gap #1). It is what `kelpi doctor`'s two hook checks now name as the repair, so the two halves
  * — the checker and the fixer — finally ship in the same artifact.
  *
  * Stream discipline (`../io.ts` rule 1): the progress lines are DATA about what was written, so
@@ -81,7 +81,7 @@ export function handleInstallHooks(args: string[]): void {
     const commandFlag = parseFlag('--command', args);
     const installDirFlag = parseFlag('--install-dir', args);
     const skillSourceFlag = parseFlag('--skill-source', args);
-    rejectLeftoverArgs(args, 'nex install-hooks', {
+    rejectLeftoverArgs(args, 'kelpi install-hooks', {
         positionalHint: 'this command takes options only',
         usage: (write) => {
             write(installHooksUsage);
@@ -91,8 +91,8 @@ export function handleInstallHooks(args: string[]): void {
     const home = homeDirectory();
     const claudeDir = claudeDirFlag ?? `${home}/.claude`;
     const codexDir = codexDirFlag ?? `${home}/.codex`;
-    // `NEX_INSTALL_DIR` is the same override the shell installer honoured.
-    const installDir = installDirFlag ?? envValue('NEX_INSTALL_DIR') ?? DEFAULT_INSTALL_DIR;
+    // `KELPI_INSTALL_DIR` is the same override the shell installer honoured.
+    const installDir = installDirFlag ?? envValue('KELPI_INSTALL_DIR') ?? DEFAULT_INSTALL_DIR;
     const pathValue = env()['PATH'];
 
     const self = resolveHookCommand(
@@ -100,18 +100,18 @@ export function handleInstallHooks(args: string[]): void {
         nodeInstallFs
     );
 
-    // --link runs FIRST when asked for: linking may be what puts `nex` on PATH, and the hook
-    // command is chosen after, so a fresh machine gets the bare `nex` on its very first run.
+    // --link runs FIRST when asked for: linking may be what puts `kelpi` on PATH, and the hook
+    // command is chosen after, so a fresh machine gets the bare `kelpi` on its very first run.
     let linkResult: LinkResult | null = null;
     if (link) {
         if (self.executable === null) {
-            errLine('nex install-hooks: cannot resolve this CLI\'s own path, so there is nothing to link.');
+            errLine('kelpi install-hooks: cannot resolve this CLI\'s own path, so there is nothing to link.');
             exit(1);
         }
         linkResult = linkCli({ installDir, target: self.executable, pathValue, dryRun }, nodeInstallFs);
     }
     const command =
-        commandFlag ?? (linkResult !== null && linkResult.ok && linkResult.onPath ? 'nex' : self.command);
+        commandFlag ?? (linkResult !== null && linkResult.ok && linkResult.onPath ? 'kelpi' : self.command);
 
     const result: InstallHooksResult = installHooks(
         {
@@ -154,7 +154,7 @@ export function handleInstallHooks(args: string[]): void {
         }
         if (!linkResult.onPath) {
             writeErr(
-                `Warning: ${installDir} is not on this shell's PATH. The hooks run bare 'nex' commands,\n` +
+                `Warning: ${installDir} is not on this shell's PATH. The hooks run bare 'kelpi' commands,\n` +
                     '  so they would fail in shells that cannot find it.\n'
             );
         }
@@ -197,11 +197,11 @@ export function handleInstallHooks(args: string[]): void {
             : 'Done. Restart any running agent sessions to pick up the new hooks.'
     );
     if (!dryRun) {
-        // Routing, in one line: hooks run a bare `nex`, and inside Nex panes that resolves
+        // Routing, in one line: hooks run a bare `kelpi`, and inside Kelpi panes that resolves
         // and routes automatically (the pane env carries the bundled CLI on PATH plus an
         // injected NEX_SOCKET) — the shared default socket only matters in plain terminals.
         printLine(
-            'Inside Nex panes, hook routing is automatic; the default /tmp/nex.sock only matters for plain terminals.'
+            'Inside Kelpi panes, hook routing is automatic; the default /tmp/nex.sock only matters for plain terminals.'
         );
     }
     exit(0);

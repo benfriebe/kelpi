@@ -10,7 +10,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CommandClient, NexConnection, completeHandshake, createFakeSocketFactory } from '../connection';
+import { CommandClient, KelpiConnection, completeHandshake, createFakeSocketFactory } from '../connection';
 import { createContentClient, type ContentClient } from './client';
 import { ScratchpadPane } from './ScratchpadPane';
 import { contentState } from './testing';
@@ -26,7 +26,7 @@ interface Harness {
 
 function harness(): Harness {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

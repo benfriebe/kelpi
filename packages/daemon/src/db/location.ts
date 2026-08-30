@@ -5,12 +5,13 @@
  * directory created on startup) and Port notes ("a headless daemon should choose an XDG-style
  * path … on first run MIGRATE by copying the legacy macOS path's file if present").
  *
- *   NEXD_DB_PATH set → that file, verbatim (`~` expanded; `:memory:` honoured)
+ *   KELPID_DB_PATH set → that file, verbatim (`~` expanded; `:memory:` honoured)
  *   darwin          → ~/Library/Application Support/nexd/nex.db
  *   otherwise       → $XDG_DATA_HOME/nexd/nex.db, else ~/.local/share/nexd/nex.db
  *
- * `nexd`, not `Nex`: the daemon owns its own file so it can run beside the Swift app during the
- * port without either corrupting the other's state. Importing the legacy DB is a later utility
+ * `nexd`, not `Kelpi`: the directory keeps its pre-rename name — it is the live data of every
+ * existing install — and stays distinct from the Swift app's `Nex` directory for the same
+ * reason as ever: the two must run side by side without corrupting each other's state. Importing the legacy DB is a later utility
  * (PLAN.md M8) — `legacyMacAppDatabasePath()` is exported for it, and nothing here reads it.
  *
  * Directories the daemon CREATES are made 0700 (the DB holds working directories, labels and
@@ -22,7 +23,7 @@ import fs from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-export const DB_PATH_ENV = 'NEXD_DB_PATH';
+export const DB_PATH_ENV = 'KELPID_DB_PATH';
 export const DB_DIR_MODE = 0o700;
 export const DATABASE_FILENAME = 'nex.db';
 /** In-memory databases (tests) skip directory creation entirely. */
@@ -92,7 +93,7 @@ function createdChain(first: string, leaf: string): string[] {
  * belongs to whoever made it — `/tmp` (root-owned, mode 1777), a home directory, a mount point,
  * a dir the user made for several tools to share — and chmod'ing it is either impossible or
  * rude. Doing it unconditionally is what silently disabled persistence for a whole day:
- * `NEXD_DB_PATH=/tmp/nexd-dev.db` → `chmod('/tmp', 0700)` → EPERM → thrown out of
+ * `KELPID_DB_PATH=/tmp/kelpid-dev.db` → `chmod('/tmp', 0700)` → EPERM → thrown out of
  * `createPersistence`'s open path → the daemon ran memory-only while reporting itself healthy.
  */
 export function ensureDatabaseDir(databasePath: string): string {
@@ -130,5 +131,5 @@ export function prepareDatabaseFile(databasePath: string): string {
 
 /** The Swift app's database — the source for the M8 legacy import. Never opened by the daemon. */
 export function legacyMacAppDatabasePath(home: string = homedir()): string {
-    return path.join(home, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME);
+    return path.join(home, 'Library', 'Application Support', 'Kelpi', DATABASE_FILENAME);
 }

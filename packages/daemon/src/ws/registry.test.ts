@@ -12,11 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type { RepoGitStatus } from '../git/index.js';
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import { handleRepoCommand, type RepoChannel, type RepoCommandGit } from './repos.js';
 
 const HOME = '/Users/test';
@@ -38,7 +38,7 @@ function stubGit(remote: string | null = 'git@example.invalid:acme/app.git'): Re
 }
 
 interface Fixture {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly channel: RepoChannel;
     readonly persists: () => number;
 }
@@ -173,7 +173,7 @@ describe('repo-rename (§GIT-072)', () => {
 });
 
 describe('repo-scan (§GIT-066, §GIT-067, §SET-053)', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-registry-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-registry-'));
     fs.mkdirSync(path.join(root, 'alpha', '.git'), { recursive: true });
     fs.mkdirSync(path.join(root, 'beta', '.git'), { recursive: true });
     fs.mkdirSync(path.join(root, 'plain'), { recursive: true });

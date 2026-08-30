@@ -1,5 +1,5 @@
 /**
- * `nex doctor [--json]` (cli.md §16) — eight checks, in order, with concrete repair tips.
+ * `kelpi doctor [--json]` (cli.md §16) — eight checks, in order, with concrete repair tips.
  * (`routing` is the eighth: where agent events actually go, on a machine that may be
  * running the Swift app on the same default socket — see `doctor/checks.ts` routingCheck.)
  *
@@ -41,8 +41,8 @@ export async function handleDoctor(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const extra = args[0];
     if (extra !== undefined) {
-        errLine(`nex doctor: unexpected argument: ${extra}`);
-        errLine('Usage: nex doctor [--json]');
+        errLine(`kelpi doctor: unexpected argument: ${extra}`);
+        errLine('Usage: kelpi doctor [--json]');
         exit(2);
     }
 

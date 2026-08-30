@@ -11,8 +11,8 @@
  * What it asserts, in order:
  *
  *   1. the shell claims the `web-pane-host` role over its own WS connection;
- *   2. `nex web open <url>` creates a pane daemon-side AND a live view host-side (proved by
- *      `nex web url` returning the page's *live* title);
+ *   2. `kelpi web open <url>` creates a pane daemon-side AND a live view host-side (proved by
+ *      `kelpi web url` returning the page's *live* title);
  *   3. the read surface: `capture --mode text`, `capture --mode screenshot` (a real PNG off an
  *      off-screen view), `exec`, and the actuator (`text`, `click`, `wait`, `exists`);
  *   4. the console pipeline: the page's `console.log` / `console.error` / `console.assert`, a
@@ -34,7 +34,7 @@
  *      `pane-open` replay, so the same pane is drivable again.
  *
  * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
- * machine): every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/nexd.sock`
+ * machine): every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/kelpid.sock`
  * and NEVER `/tmp/nex.sock`, the CLI is pointed at the sandbox daemon with
  * `NEX_SOCKET=tcp:127.0.0.1:<ephemeral>` (the same transport the compat harness uses), and
  * Electron gets its own `--user-data-dir`.
@@ -42,7 +42,7 @@
  *   node packages/shell/scripts/web-smoke.mjs [--no-build] [--verbose] [--keep-logs]
  *
  * Exit code 0 = every check passed. With no Swift CLI installed the run is SKIPPED (exit 0):
- * `NEX_COMPAT_CLI=/path/to/nex` points it at another copy.
+ * `KELPI_COMPAT_CLI=/path/to/kelpi` points it at another copy.
  */
 
 import { spawn } from 'node:child_process';
@@ -55,12 +55,12 @@ import { fileURLToPath } from 'node:url';
 
 const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(shellRoot, '..', '..');
-const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const PROTOCOL_VERSION = 1;
 
 /** The shipped Swift CLI — the whole point of this smoke. */
-const NEX_CLI = process.env.NEX_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';
+const KELPI_CLI = process.env.KELPI_COMPAT_CLI ?? '/Applications/Nex.app/Contents/Helpers/nex';
 
 const argv = new Set(process.argv.slice(2));
 const options = {
@@ -162,7 +162,7 @@ async function freePort() {
 function fixtureBody(port) {
     return {
         '/': `<!doctype html>
-<html><head><meta charset="utf-8"><title>Nex Web Smoke</title></head>
+<html><head><meta charset="utf-8"><title>Kelpi Web Smoke</title></head>
 <body>
   <h1 id="hello">Hello from the smoke page</h1>
   <button id="go">Go</button>
@@ -235,7 +235,7 @@ function writeLocalPage(root) {
 async function ensureBuilds() {
     if (options.build || !fs.existsSync(daemonEntry)) {
         process.stdout.write('building the daemon bundle…\n');
-        const result = await run('pnpm', ['--filter', '@nex/daemon', 'build']);
+        const result = await run('pnpm', ['--filter', '@kelpi/daemon', 'build']);
         if (result.code !== 0) throw new Error(`daemon build failed:\n${result.stdout}${result.stderr}`);
     }
     if (options.build || !fs.existsSync(shellEntry)) {
@@ -254,7 +254,7 @@ async function makeSandbox(label) {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(userData, { recursive: true });
 
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
 
     const configPath = path.join(root, 'config');
@@ -268,15 +268,15 @@ async function makeSandbox(label) {
     const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: socketPath,
-        NEXD_TCP_PORT: String(controlPort),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: configPath,
-        NEXD_HTTP_PORT: String(await freePort()),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: daemonEntry
-        // Deliberately NOT `NEXD_CLIENT_DIR`: the shell window must load the daemon's "client
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: socketPath,
+        KELPID_TCP_PORT: String(controlPort),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: configPath,
+        KELPID_HTTP_PORT: String(await freePort()),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        KELPID_ENTRY: daemonEntry
+        // Deliberately NOT `KELPID_CLIENT_DIR`: the shell window must load the daemon's "client
         // not built" page rather than the real UI. This smoke plays the client itself (see
         // `connectProbe`) and a second, genuine reporter would race it for the same pane's
         // geometry, making the placement assertions depend on whether the client happened to be
@@ -290,10 +290,10 @@ async function makeSandbox(label) {
         userData,
         controlPort,
         debugPort,
-        runDir: env.NEXD_RUN_DIR,
+        runDir: env.KELPID_RUN_DIR,
         socketPath,
-        base: `http://127.0.0.1:${env.NEXD_HTTP_PORT}`,
-        runSocket: path.join(env.NEXD_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
+        base: `http://127.0.0.1:${env.KELPID_HTTP_PORT}`,
+        runSocket: path.join(env.KELPID_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
         cleanup() {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -626,7 +626,7 @@ async function cdpCommand(target, method, params = {}) {
 function makeCli(sandbox) {
     const invoke = (args, opts = {}) =>
         new Promise((resolve, reject) => {
-            const child = spawn(NEX_CLI, args, {
+            const child = spawn(KELPI_CLI, args, {
                 cwd: opts.cwd ?? sandbox.home,
                 env: {
                     PATH: sandbox.env.PATH,
@@ -635,7 +635,7 @@ function makeCli(sandbox) {
                     // harness uses to reach a sandbox daemon without touching /tmp/nex.sock.
                     NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
                     // Screenshots and page loads are slower than a state read.
-                    NEX_REPLY_TIMEOUT: '30',
+                    KELPI_REPLY_TIMEOUT: '30',
                     ...opts.env
                 },
                 stdio: ['ignore', 'pipe', 'pipe']
@@ -659,12 +659,12 @@ function makeCli(sandbox) {
         async json(args, opts = {}) {
             const result = await invoke(args, opts);
             if (result.code !== 0) {
-                throw new Error(`nex ${args.join(' ')} exited ${String(result.code)}: ${result.stderr.trim()}`);
+                throw new Error(`kelpi ${args.join(' ')} exited ${String(result.code)}: ${result.stderr.trim()}`);
             }
             try {
                 return JSON.parse(result.stdout);
             } catch {
-                throw new Error(`nex ${args.join(' ')} printed non-JSON: ${result.stdout.slice(0, 400)}`);
+                throw new Error(`kelpi ${args.join(' ')} printed non-JSON: ${result.stdout.slice(0, 400)}`);
             }
         }
     };
@@ -672,7 +672,7 @@ function makeCli(sandbox) {
 
 function cliAvailable() {
     try {
-        fs.accessSync(NEX_CLI, fs.constants.X_OK);
+        fs.accessSync(KELPI_CLI, fs.constants.X_OK);
         return true;
     } catch {
         return false;
@@ -700,7 +700,7 @@ async function webPhase() {
 
         // ── open a pane ─────────────────────────────────────────────────────────────
         const opened = await cli.run(['web', 'open', `${fixture.base}/`]);
-        check('`nex web open` succeeds', opened.code === 0, `${opened.stdout.trim()} ${opened.stderr.trim()}`);
+        check('`kelpi web open` succeeds', opened.code === 0, `${opened.stdout.trim()} ${opened.stderr.trim()}`);
         const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1];
         if (paneID === undefined) throw new Error(`no pane id in: ${opened.stdout}`);
         const at = (...args) => ['--target', paneID, ...args];
@@ -711,7 +711,7 @@ async function webPhase() {
             'the live page title',
             async () => {
                 const result = await cli.run(['web', 'url', ...at()]);
-                return result.code === 0 && result.stdout.includes('Nex Web Smoke') ? result.stdout : false;
+                return result.code === 0 && result.stdout.includes('Kelpi Web Smoke') ? result.stdout : false;
             },
             30_000
         );
@@ -728,13 +728,13 @@ async function webPhase() {
         const exec = await cli.run(['web', 'exec', ...at(), 'document.title']);
         check(
             '`exec` evaluates in the page and returns the value',
-            exec.code === 0 && exec.stdout.trim() === 'Nex Web Smoke',
+            exec.code === 0 && exec.stdout.trim() === 'Kelpi Web Smoke',
             `${exec.stdout.trim()} ${exec.stderr.trim()}`
         );
 
-        const execAsync = await cli.run(['web', 'exec', ...at(), 'return await nex.text("css:#hello")']);
+        const execAsync = await cli.run(['web', 'exec', ...at(), 'return await kelpi.text("css:#hello")']);
         check(
-            '`exec` awaits a promise (nex/$ aliases resolve, not a pending Promise)',
+            '`exec` awaits a promise (kelpi/$ aliases resolve, not a pending Promise)',
             execAsync.code === 0 && execAsync.stdout.includes('Hello from the smoke page'),
             execAsync.stdout.slice(0, 160).trim()
         );
@@ -853,11 +853,11 @@ async function webPhase() {
             'the navigation to land',
             async () => {
                 const result = await cli.run(['web', 'url', ...at()]);
-                return result.stdout.includes('Nex Web Smoke') ? result.stdout : false;
+                return result.stdout.includes('Kelpi Web Smoke') ? result.stdout : false;
             },
             20_000
         );
-        check('the active tab actually navigated', back.includes('Nex Web Smoke'), back.trim());
+        check('the active tab actually navigated', back.includes('Kelpi Web Smoke'), back.trim());
 
         // ── file:// with a sibling asset ────────────────────────────────────────────
         const localTab = await cli.run(['web', 'tab-new', ...at(), localPage]);
@@ -876,7 +876,7 @@ async function webPhase() {
         await cli.run(['web', 'tab-select', ...at(), '0']);
         await waitFor(
             'the http tab to be active again',
-            async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Nex Web Smoke'),
+            async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Kelpi Web Smoke'),
             20_000
         );
         pass('`tab-select` switches the visible tab back');
@@ -932,11 +932,11 @@ async function webPhase() {
             'the pane to come back after the private rebuild',
             async () => {
                 const result = await cli.run(['web', 'url', ...at()]);
-                return result.code === 0 && result.stdout.includes('Nex Web Smoke') ? result.stdout : false;
+                return result.code === 0 && result.stdout.includes('Kelpi Web Smoke') ? result.stdout : false;
             },
             30_000
         );
-        check('the private flip destroys and rebuilds the pane against the other store', rebuilt.includes('Nex Web Smoke'), rebuilt.trim());
+        check('the private flip destroys and rebuilds the pane against the other store', rebuilt.includes('Kelpi Web Smoke'), rebuilt.trim());
         const privateCookies = await cli.json(['web', 'cookies', 'list', ...at(), '--json']);
         check(
             'the private partition cannot see the persistent one (the marker is gone)',
@@ -1067,7 +1067,7 @@ async function webPhase() {
 
                 // ── a NAVIGATION must not read as a click, live ────────────────────────
                 //
-                // Chromium focuses the newly committed widget, so `nex web navigate` on an
+                // Chromium focuses the newly committed widget, so `kelpi web navigate` on an
                 // embedded pane DOES take the keyboard (that is what N30 is filed for). Under the
                 // old focus-edge signal this needed a hold-and-cancel filter to stay quiet. It now
                 // needs nothing at all: a commit presses no mouse button. The assertion is kept
@@ -1202,7 +1202,7 @@ async function webPhase() {
                 await cli.run(['web', 'navigate', ...at(), `${fixture.base}/`]);
                 await waitFor(
                     'the pane to return to the smoke page',
-                    async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Nex Web Smoke'),
+                    async () => (await cli.run(['web', 'url', ...at()])).stdout.includes('Kelpi Web Smoke'),
                     20_000
                 );
             }
@@ -1292,7 +1292,7 @@ async function webPhase() {
 
 async function main() {
     if (!cliAvailable()) {
-        process.stdout.write(`skipped: the Swift nex CLI is not installed at ${NEX_CLI}\n`);
+        process.stdout.write(`skipped: the Swift kelpi CLI is not installed at ${KELPI_CLI}\n`);
         return;
     }
     await ensureBuilds();

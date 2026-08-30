@@ -11,14 +11,14 @@
  *      flag) and mirror it to the host as a fire-and-forget notification;
  *   4. **forward to the host and await** for anything that only exists in a real browser.
  *
- * That split is what makes the port work headlessly: `nex web open`, `nex web tabs` and
- * `nex web console` answer with no Electron shell attached (the pane exists, the buffers are
- * the daemon's), while `nex web click` fails honestly with `no web pane host connected`.
+ * That split is what makes the port work headlessly: `kelpi web open`, `kelpi web tabs` and
+ * `kelpi web console` answer with no Electron shell attached (the pane exists, the buffers are
+ * the daemon's), while `kelpi web click` fails honestly with `no web pane host connected`.
  * The per-verb policy is spelled out in `./HOST_PROTOCOL.md` §6.
  */
 
-import { resolvePaneTarget } from '@nex/core/resolve';
-import type { JsonObject, JsonValue } from '@nex/protocol';
+import { resolvePaneTarget } from '@kelpi/core/resolve';
+import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
 import { forCommand, uuidOut } from '../handlers/app/common.js';
 import { fail, ok, type AppContext, type AppDeps, type AppHandler } from '../handlers/app/context.js';
@@ -41,7 +41,7 @@ import { HOST_TIMEOUT_CAPTURE_MS, HOST_TIMEOUT_EXEC_MS, waitTimeoutMs } from './
 export const CAPTURE_MODES = ['meta', 'text', 'screenshot', 'dom', 'all'] as const;
 
 export const LAST_TAB_ERROR =
-    'cannot close the only tab in a web pane, use `nex pane close` to close the pane itself';
+    'cannot close the only tab in a web pane, use `kelpi pane close` to close the pane itself';
 export const ARM_FAILED_ERROR = 'failed to arm inspector for active tab';
 export const NO_ACTIVE_WORKSPACE_ERROR = 'no active workspace';
 export const COOKIE_SCOPE_ERROR = '--all and --domain are mutually exclusive';
@@ -152,7 +152,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
     };
 
     /**
-     * The shared actuator dispatch (§8.2): one host verb (`actuate`) carrying the `__nexAct`
+     * The shared actuator dispatch (§8.2): one host verb (`actuate`) carrying the `__kelpiAct`
      * method name plus its argument list, always against the pane's ACTIVE tab.
      */
     const actuate = (
@@ -189,7 +189,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
              * WEB-011: the GUI names the pane it splits off, and which way.
              *
              * The header globe (click = right, ⇧-click = down) and the pane context menu send
-             * `target` + `direction`; the CLI sends neither, so `nex web open` keeps splitting
+             * `target` + `direction`; the CLI sends neither, so `kelpi web open` keeps splitting
              * the FOCUSED pane exactly as Swift's `handleWebOpen` does. An anchor that is not a
              * visible pane of the routed workspace is ignored rather than honoured —
              * `openWebPane` splits ONE workspace's layout, so a cross-workspace anchor would
@@ -544,7 +544,7 @@ export function webHandlerEntries(deps: AppDeps): readonly (readonly [string, Ap
             // §WEB-124: the single-shot queue FIRST, then anything a batch is still holding —
             // each batch item stamped with its own comment, which is the only place a `comment`
             // field ever comes from. A batch the user has not sent yet is pending work, and
-            // `nex web inspect-result` is how a headless caller collects it.
+            // `kelpi web inspect-result` is how a headless caller collects it.
             const queued = service.inspect.queued(target.paneID).map(serializeInspectResult);
             const batch = service.batch.sessionOf(target.paneID);
             const pending = (batch?.items ?? []).map((item) =>

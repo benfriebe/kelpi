@@ -227,7 +227,7 @@ run('typecheck', 'pnpm typecheck');
 
 if (full) {
     run('root tests', 'npx vitest run');
-    run('shell tests', 'pnpm --filter @nex/shell test');
+    run('shell tests', 'pnpm --filter @kelpi/shell test');
     run('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest');
     run('packaged smoke (repackages + 61 checks)', 'pnpm run smoke:packaged', {
         cwd: path.join(repoRoot, 'packages', 'shell')

@@ -371,7 +371,7 @@ export const ENGINE_STARTUP_GATE_TIMEOUT_MS = 10_000;
 export const RESIZE_PAINT_HOLD_TIMEOUT_MS = 1_000;
 
 /**
- * Dark palette matching the chrome tokens (`--nex-bg` / `--nex-fg`). Hex only — see
+ * Dark palette matching the chrome tokens (`--kelpi-bg` / `--kelpi-fg`). Hex only — see
  * `TerminalTheme`.
  *
  * The foreground is **ghostty's own default** (`#FFFFFF`, `src/config/Config.zig`), not the
@@ -407,7 +407,7 @@ export const DEFAULT_TERMINAL_THEME: TerminalTheme = {
 
 /**
  * The light column of the same palette — the values `styles.css` defines under
- * `prefers-color-scheme: light` / `[data-nex-theme="light"]`, as data.
+ * `prefers-color-scheme: light` / `[data-kelpi-theme="light"]`, as data.
  *
  * It exists so the palette can be chosen from the RESOLVED chrome bucket instead of by reading
  * the DOM at a moment nobody controls. Reading CSS variables one commit too early is how the
@@ -449,28 +449,28 @@ export function terminalThemePreset(bucket: 'light' | 'dark'): TerminalTheme {
  * pattern as `grid/tokens.ts`, so assembly unifies the palette by defining them on `:root`.
  */
 export const TERMINAL_TOKEN_NAMES: Readonly<Record<keyof TerminalTheme, string>> = {
-    background: '--nex-term-bg',
-    foreground: '--nex-term-fg',
-    cursor: '--nex-term-cursor',
-    cursorAccent: '--nex-term-cursor-accent',
-    selectionBackground: '--nex-term-selection-bg',
-    selectionForeground: '--nex-term-selection-fg',
-    black: '--nex-term-black',
-    red: '--nex-term-red',
-    green: '--nex-term-green',
-    yellow: '--nex-term-yellow',
-    blue: '--nex-term-blue',
-    magenta: '--nex-term-magenta',
-    cyan: '--nex-term-cyan',
-    white: '--nex-term-white',
-    brightBlack: '--nex-term-bright-black',
-    brightRed: '--nex-term-bright-red',
-    brightGreen: '--nex-term-bright-green',
-    brightYellow: '--nex-term-bright-yellow',
-    brightBlue: '--nex-term-bright-blue',
-    brightMagenta: '--nex-term-bright-magenta',
-    brightCyan: '--nex-term-bright-cyan',
-    brightWhite: '--nex-term-bright-white'
+    background: '--kelpi-term-bg',
+    foreground: '--kelpi-term-fg',
+    cursor: '--kelpi-term-cursor',
+    cursorAccent: '--kelpi-term-cursor-accent',
+    selectionBackground: '--kelpi-term-selection-bg',
+    selectionForeground: '--kelpi-term-selection-fg',
+    black: '--kelpi-term-black',
+    red: '--kelpi-term-red',
+    green: '--kelpi-term-green',
+    yellow: '--kelpi-term-yellow',
+    blue: '--kelpi-term-blue',
+    magenta: '--kelpi-term-magenta',
+    cyan: '--kelpi-term-cyan',
+    white: '--kelpi-term-white',
+    brightBlack: '--kelpi-term-bright-black',
+    brightRed: '--kelpi-term-bright-red',
+    brightGreen: '--kelpi-term-bright-green',
+    brightYellow: '--kelpi-term-bright-yellow',
+    brightBlue: '--kelpi-term-bright-blue',
+    brightMagenta: '--kelpi-term-bright-magenta',
+    brightCyan: '--kelpi-term-bright-cyan',
+    brightWhite: '--kelpi-term-bright-white'
 };
 
 /**
@@ -577,7 +577,7 @@ export function estimateCellSize(fontSize: number, fontFamily: string): CellSize
  *         at K.write                 `new Uint8Array(memory.buffer).set(bytes, ptr)`
  *
  * That is run-F N1 — two occurrences in four full audit runs, always on a flow that reveals a
- * pane while another engine is still coming up (`nex pane split`, `nex workspace create`).
+ * pane while another engine is still coming up (`kelpi pane split`, `kelpi workspace create`).
  * Serializing the whole startup — load, `open()`, geometry, and the first flush — means a
  * second pane never instantiates while the first is mid-flight, which is the window the bug
  * lives in. The cost is nothing after the first pane: `init()` returns an already-resolved
@@ -640,7 +640,7 @@ export type EngineFaultKind = 'load' | 'open' | 'write';
  * A page-global hook the renderer consults, so a harness can make the N1 failure happen on
  * demand instead of waiting for a one-in-two run of the full audit.
  *
- * Nothing in the app installs it: the adapter reads `globalThis.__nexTerminalFaults` once per
+ * Nothing in the app installs it: the adapter reads `globalThis.__kelpiTerminalFaults` once per
  * renderer and holds `undefined` in every real session, so the cost in production is one
  * property read at construction. `packages/shell/scripts/renderer-start-stress.mjs` sets it
  * over CDP; returning a message plants that error, returning nothing lets the call through.
@@ -650,7 +650,7 @@ export interface EngineFaultHook {
 }
 
 function engineFaultHook(): EngineFaultHook | undefined {
-    const hook = (globalThis as { __nexTerminalFaults?: EngineFaultHook | undefined }).__nexTerminalFaults;
+    const hook = (globalThis as { __kelpiTerminalFaults?: EngineFaultHook | undefined }).__kelpiTerminalFaults;
     return hook !== undefined && typeof hook.fault === 'function' ? hook : undefined;
 }
 

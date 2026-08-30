@@ -2,7 +2,7 @@
  * `terminal-search` — the WS verb behind ⌘F over a terminal pane.
  *
  * WS-only for the usual reason (`WS_ONLY_COMMANDS`): a find bar is a direct-manipulation
- * gesture the `nex` CLI has no vocabulary for, and giving it a wire verb would be a
+ * gesture the `kelpi` CLI has no vocabulary for, and giving it a wire verb would be a
  * compatibility surface owed to the Swift CLI forever. It lives on its own channel rather than
  * inside `handleWsOnlyCommand` because, like the content verbs, it is **asynchronous** — the
  * buffer read has to flush `@xterm/headless`'s write queue first, or a needle typed a
@@ -38,12 +38,12 @@
  * you navigate (TERM-118).
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { TerminalMatch } from '../term/search.js';
 import { visiblePane, workspaceByID, workspaceContainingVisiblePane } from '../store/derived.js';
 import type { DaemonState, WorkspaceState } from '../store/types.js';
-import type { NexDomainStore } from './sync.js';
+import type { KelpiDomainStore } from './sync.js';
 
 export const TERMINAL_SEARCH_COMMANDS = ['terminal-search'] as const;
 export type TerminalSearchCommand = (typeof TERMINAL_SEARCH_COMMANDS)[number];
@@ -69,7 +69,7 @@ export interface TerminalSearchChannel {
 }
 
 export interface TerminalSearchChannelOptions {
-    readonly store: NexDomainStore;
+    readonly store: KelpiDomainStore;
     /**
      * `Partial` on purpose: `searchAsync` is a widening `TerminalStateServiceImpl` adds on top
      * of the `TerminalStateService` seam, and a daemon composed with a hand-rolled stub (tests,

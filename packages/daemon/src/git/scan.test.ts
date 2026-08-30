@@ -17,7 +17,7 @@ import { REPO_SCAN_MAX_DEPTH, scanForRepos } from './scan.js';
  *     deep/a/b/c/.git/           (depth 4 from the root — past the bound)
  *     plain/                     (no .git anywhere)
  */
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-scan-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-scan-'));
 
 function mkdirp(...parts: string[]): string {
     const target = path.join(root, ...parts);

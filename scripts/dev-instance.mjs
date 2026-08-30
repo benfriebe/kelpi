@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A full second Nex — daemon + shell + client — off the current tree, beside the running app.
+ * A full second Kelpi — daemon + shell + client — off the current tree, beside the running app.
  *
  * Self-hosting demands this: once the main instance hosts the session that develops it, a
  * candidate build needs somewhere to run that is not the ground under your feet. This gives it
@@ -11,8 +11,8 @@
  *
  *   node scripts/dev-instance.mjs                 # throwaway state, dev shell, builds first
  *   node scripts/dev-instance.mjs --no-build      # reuse the current dists
- *   node scripts/dev-instance.mjs --packaged      # run the packaged Nex.app instead
- *   node scripts/dev-instance.mjs --state ~/tmp/nex-candidate   # persistent state dir
+ *   node scripts/dev-instance.mjs --packaged      # run the packaged Kelpi.app instead
+ *   node scripts/dev-instance.mjs --state ~/tmp/kelpi-candidate   # persistent state dir
  *
  * Ctrl-C stops the instance. A throwaway state dir is deleted on exit; a --state dir is kept
  * (config and DB survive, so a candidate can be tested against accumulated state).
@@ -48,11 +48,11 @@ const persistent = stateDir !== undefined;
 
 const root = persistent
     ? path.resolve(stateDir.replace(/^~(?=\/|$)/, os.homedir()))
-    : fs.mkdtempSync(path.join(os.tmpdir(), 'nex-dev-instance-'));
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-dev-instance-'));
 for (const sub of ['home', 'electron', 'work']) fs.mkdirSync(path.join(root, sub), { recursive: true });
 
-const socketPath = path.join(root, 'nexd.sock');
-if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/nexd-dev')) {
+const socketPath = path.join(root, 'kelpid.sock');
+if (socketPath === '/tmp/nex.sock' || socketPath.startsWith('/tmp/kelpid-dev')) {
     console.error('refusing a state dir that collides with a real endpoint');
     process.exit(1);
 }
@@ -70,8 +70,8 @@ if (!fs.existsSync(ghosttyConfigPath)) {
 const helpersDir = path.join(root, 'helpers');
 fs.mkdirSync(helpersDir, { recursive: true });
 fs.writeFileSync(
-    path.join(helpersDir, 'nex'),
-    `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js')}" "$@"\n`,
+    path.join(helpersDir, 'kelpi'),
+    `#!/bin/sh\nexec "${process.execPath}" "${path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js')}" "$@"\n`,
     { mode: 0o755 }
 );
 
@@ -105,18 +105,18 @@ const sandbox = {
     env: {
         PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
         HOME: path.join(root, 'home'),
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: socketPath,
-        NEXD_TCP_PORT: String(controlPort),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: configPath,
-        NEXD_GHOSTTY_CONFIG: ghosttyConfigPath,
-        NEXD_HTTP_PORT: String(httpPort),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js'),
-        NEXD_HELPERS_DIR: helpersDir
-        // Deliberately NO NEX_HARNESS: this instance should outlive a crashed launcher the way
-        // the real one outlives its shell — kill it with Ctrl-C here, or `nexd stop` with the
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: socketPath,
+        KELPID_TCP_PORT: String(controlPort),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: configPath,
+        KELPID_GHOSTTY_CONFIG: ghosttyConfigPath,
+        KELPID_HTTP_PORT: String(httpPort),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        KELPID_ENTRY: path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js'),
+        KELPID_HELPERS_DIR: helpersDir
+        // Deliberately NO KELPI_HARNESS: this instance should outlive a crashed launcher the way
+        // the real one outlives its shell — kill it with Ctrl-C here, or `kelpid stop` with the
         // env above.
     },
     cleanup() {
@@ -132,9 +132,9 @@ console.log(`[dev-instance] daemon up: ${sandbox.base}  (control tcp ${String(co
 
 const shell = startShell(sandbox, { repoRoot, packaged, verbose: false });
 clearBackgroundTaskPolicy(shell.child?.pid);
-console.log(`[dev-instance] shell up (${packaged ? 'packaged Nex.app' : 'dev electron'})`);
+console.log(`[dev-instance] shell up (${packaged ? 'packaged Kelpi.app' : 'dev electron'})`);
 console.log('[dev-instance]');
-console.log(`[dev-instance]   talk to it:   NEX_SOCKET=tcp:127.0.0.1:${String(controlPort)} nex pane list`);
+console.log(`[dev-instance]   talk to it:   NEX_SOCKET=tcp:127.0.0.1:${String(controlPort)} kelpi pane list`);
 console.log(`[dev-instance]   run dir:      ${sandbox.runDir}`);
 console.log('[dev-instance]');
 console.log('[dev-instance] Ctrl-C to stop.');

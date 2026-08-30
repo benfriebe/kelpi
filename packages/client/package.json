@@ -1,5 +1,5 @@
 {
-  "name": "@nex/client",
+  "name": "@kelpi/client",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,9 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
-    "@nex/core": "workspace:*",
-    "@nex/daemon": "workspace:*",
-    "@nex/protocol": "workspace:*",
+    "@kelpi/core": "workspace:*",
+    "@kelpi/daemon": "workspace:*",
+    "@kelpi/protocol": "workspace:*",
     "ghostty-web": "^0.4.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^19.2.0",

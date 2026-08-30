@@ -8,8 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { leaf, split, type PaneLayout } from '@nex/core/layout';
-import type { ResumeTuple } from '@nex/core/agent';
+import { leaf, split, type PaneLayout } from '@kelpi/core/layout';
+import type { ResumeTuple } from '@kelpi/core/agent';
 import { describe, expect, it, vi } from 'vitest';
 
 import { GEOMETRY_FILE_NAME, createPaneGeometryStore } from '../pty/index.js';
@@ -242,7 +242,7 @@ describe('spawnRestoredPanes', () => {
      * all, and it is the half of the prompt-trail defect that needs no waiting.
      */
     it('spawns at the grid a PREVIOUS daemon recorded, read back off disk', () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-resume-geometry-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-resume-geometry-'));
         try {
             const file = path.join(dir, GEOMETRY_FILE_NAME);
             // Daemon 1: the client reports what the pane is actually rendered at.

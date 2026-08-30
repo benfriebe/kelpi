@@ -91,11 +91,11 @@ describe('resolveChromeTheme', () => {
 describe('CSS custom properties', () => {
     it('emits every token plus the grid aliases', () => {
         const vars = chromeThemeCssVars(presetChromeTheme('dark'));
-        expect(vars['--nex-bg']).toBe(DARK_CHROME_THEME.windowBackground);
-        expect(vars['--nex-fg']).toBe(DARK_CHROME_THEME.textPrimary);
-        expect(vars['--nex-group-band-opacity']).toBe('0.22');
-        expect(vars['--nex-surface-bg']).toBe(vars['--nex-surface']);
-        expect(vars['--nex-agent']).toBe(vars['--nex-active-agent']);
+        expect(vars['--kelpi-bg']).toBe(DARK_CHROME_THEME.windowBackground);
+        expect(vars['--kelpi-fg']).toBe(DARK_CHROME_THEME.textPrimary);
+        expect(vars['--kelpi-group-band-opacity']).toBe('0.22');
+        expect(vars['--kelpi-surface-bg']).toBe(vars['--kelpi-surface']);
+        expect(vars['--kelpi-agent']).toBe(vars['--kelpi-active-agent']);
     });
 
     it('the token fallbacks are the dark preset (drift guard)', () => {
@@ -115,17 +115,17 @@ describe('color helpers', () => {
     });
 
     /**
-     * A `var(--nex-x, #hex)` token used to pass through unchanged, so the alpha vanished and the
+     * A `var(--kelpi-x, #hex)` token used to pass through unchanged, so the alpha vanished and the
      * "tinted" surfaces (selected settings tab, selected profile row, armed key recorder) painted
      * a solid accent slab — run-B's "reads as selected text" nit. Mixing keeps the live variable,
      * so a user theme's accent still wins.
      */
     it('mixes a CSS variable rather than dropping its alpha', () => {
-        expect(withAlpha('var(--nex-accent, #6F9BD8)', 0.18)).toBe(
-            'color-mix(in srgb, var(--nex-accent, #6F9BD8) 18%, transparent)'
+        expect(withAlpha('var(--kelpi-accent, #6F9BD8)', 0.18)).toBe(
+            'color-mix(in srgb, var(--kelpi-accent, #6F9BD8) 18%, transparent)'
         );
-        expect(withAlpha('var(--nex-accent, #6F9BD8)', 0.125)).toBe(
-            'color-mix(in srgb, var(--nex-accent, #6F9BD8) 12.5%, transparent)'
+        expect(withAlpha('var(--kelpi-accent, #6F9BD8)', 0.125)).toBe(
+            'color-mix(in srgb, var(--kelpi-accent, #6F9BD8) 12.5%, transparent)'
         );
     });
 
@@ -166,8 +166,8 @@ describe('color helpers', () => {
 describe('chrome formatters', () => {
     it('abbreviates the home directory', () => {
         expect(homeAbbreviated('/Users/x', '/Users/x')).toBe('~');
-        expect(homeAbbreviated('/Users/x/code/nex', '/Users/x')).toBe('~/code/nex');
-        expect(homeAbbreviated('/opt/nex', '/Users/x')).toBe('/opt/nex');
+        expect(homeAbbreviated('/Users/x/code/kelpi', '/Users/x')).toBe('~/code/kelpi');
+        expect(homeAbbreviated('/opt/kelpi', '/Users/x')).toBe('/opt/kelpi');
         expect(homeAbbreviated('/Users/x/code', '')).toBe('/Users/x/code');
     });
 
@@ -213,11 +213,11 @@ describe('sidebarTintCssVars', () => {
             DARK_CHROME_THEME
         );
         expect(vars).toEqual({
-            '--nex-sidebar-intensity': '1.4',
-            '--nex-avatar-fill': '0.3',
-            '--nex-avatar-stroke': '0.6',
-            '--nex-group-fill': '0.25',
-            '--nex-group-stroke': '0.1'
+            '--kelpi-sidebar-intensity': '1.4',
+            '--kelpi-avatar-fill': '0.3',
+            '--kelpi-avatar-stroke': '0.6',
+            '--kelpi-group-fill': '0.25',
+            '--kelpi-group-stroke': '0.1'
         });
     });
 
@@ -228,9 +228,9 @@ describe('sidebarTintCssVars', () => {
      */
     it('resolves the -1 group-fill sentinel to the bucket’s preset band opacity', () => {
         const dark = sidebarTintCssVars({ ...DEFAULT_SIDEBAR_TINT }, DARK_CHROME_THEME);
-        expect(dark['--nex-group-fill']).toBe(String(DARK_CHROME_THEME.groupBandOpacity));
+        expect(dark['--kelpi-group-fill']).toBe(String(DARK_CHROME_THEME.groupBandOpacity));
         const light = sidebarTintCssVars({ ...DEFAULT_SIDEBAR_TINT }, LIGHT_CHROME_THEME);
-        expect(light['--nex-group-fill']).toBe(String(LIGHT_CHROME_THEME.groupBandOpacity));
+        expect(light['--kelpi-group-fill']).toBe(String(LIGHT_CHROME_THEME.groupBandOpacity));
     });
 });
 
@@ -238,8 +238,8 @@ describe('tintedColor', () => {
     it('multiplies the knob by the intensity, in CSS', () => {
         const expression = tintedColor('#6F9BD8', SIDEBAR_TINT_VARS.avatarFill, 0.2);
         expect(expression).toContain('#6F9BD8');
-        expect(expression).toContain('var(--nex-avatar-fill, 0.2)');
-        expect(expression).toContain('var(--nex-sidebar-intensity, 1)');
+        expect(expression).toContain('var(--kelpi-avatar-fill, 0.2)');
+        expect(expression).toContain('var(--kelpi-sidebar-intensity, 1)');
         // `color-mix` clamps its percentage to 0…100 by spec, which IS `min(1, value ×
         // intensity)` — so the Swift `effectiveOpacity` rule holds without a clamp of our own.
         expect(expression.startsWith('color-mix(in srgb,')).toBe(true);
@@ -247,7 +247,7 @@ describe('tintedColor', () => {
 
     it('carries the shipped default as the out-of-provider fallback', () => {
         expect(tintedColor('#fff', SIDEBAR_TINT_VARS.avatarStroke, 0.45)).toContain(
-            'var(--nex-avatar-stroke, 0.45)'
+            'var(--kelpi-avatar-stroke, 0.45)'
         );
     });
 });
@@ -255,30 +255,30 @@ describe('tintedColor', () => {
 // APP-012 / SET-049 — the window fill follows the ghostty opacity so a transparent Electron
 // window shows the desktop through everything the client does not paint opaquely.
 describe('chromeThemeCssVars windowOpacity', () => {
-    it('emits an opaque --nex-bg by default, byte for byte', () => {
+    it('emits an opaque --kelpi-bg by default, byte for byte', () => {
         const theme = presetChromeTheme('dark');
-        expect(chromeThemeCssVars(theme)['--nex-bg']).toBe(theme.windowBackground);
-        expect(chromeThemeCssVars(theme, {})['--nex-bg']).toBe(theme.windowBackground);
-        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--nex-bg']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme)['--kelpi-bg']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, {})['--kelpi-bg']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--kelpi-bg']).toBe(theme.windowBackground);
     });
 
     it('emits rgba below 1, and carries it to the alias the pane grid reads', () => {
         const theme = presetChromeTheme('dark');
         const vars = chromeThemeCssVars(theme, { windowOpacity: 0.85 });
-        expect(vars['--nex-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
-        expect(vars['--nex-bg']).toContain('rgba(');
+        expect(vars['--kelpi-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
+        expect(vars['--kelpi-bg']).toContain('rgba(');
         // Only the WINDOW fill gains alpha: the sidebar, header and surfaces stay opaque, which
         // is what keeps chrome legible over an arbitrary desktop.
-        expect(vars['--nex-sidebar-bg']).toBe(theme.sidebarBackground);
-        expect(vars['--nex-surface']).toBe(theme.surfaceBackground);
+        expect(vars['--kelpi-sidebar-bg']).toBe(theme.sidebarBackground);
+        expect(vars['--kelpi-surface']).toBe(theme.surfaceBackground);
     });
 
     it('clamps a nonsense opacity rather than emitting an invalid colour', () => {
         const theme = presetChromeTheme('dark');
-        expect(chromeThemeCssVars(theme, { windowOpacity: -3 })['--nex-bg']).toBe(
+        expect(chromeThemeCssVars(theme, { windowOpacity: -3 })['--kelpi-bg']).toBe(
             withAlpha(theme.windowBackground, 0)
         );
-        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--nex-bg']).toBe(
+        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--kelpi-bg']).toBe(
             theme.windowBackground
         );
     });
@@ -287,45 +287,45 @@ describe('chromeThemeCssVars windowOpacity', () => {
 /**
  * §N17 — the GROUND is a second, separate answer, and it is the one that stops alpha stacking.
  *
- * `--nex-bg` gaining alpha is not enough on its own: FIVE elements painted it — `<body>`, the
+ * `--kelpi-bg` gaining alpha is not enough on its own: FIVE elements painted it — `<body>`, the
  * app root, the grid container, every pane wrapper, every pane body — and alpha multiplies, so
- * 0.85 came out at 1 − 0.15⁵ = 0.99992 and the owner saw a solid pane. `--nex-window-fill` is
+ * 0.85 came out at 1 − 0.15⁵ = 0.99992 and the owner saw a solid pane. `--kelpi-window-fill` is
  * what the two GROUND elements paint instead, and below opacity 1 it paints nothing at all:
  * `RootChromeView.swift:32-39` skips its opaque backdrop entirely "with `background-opacity <
  * 1`", leaving each pane's own fill as the single translucent layer over the desktop.
  */
-describe('chromeThemeCssVars window ground (--nex-window-fill)', () => {
+describe('chromeThemeCssVars window ground (--kelpi-window-fill)', () => {
     it('is the window background, byte for byte, at the default opacity', () => {
         const theme = presetChromeTheme('dark');
-        expect(chromeThemeCssVars(theme)['--nex-window-fill']).toBe(theme.windowBackground);
-        expect(chromeThemeCssVars(theme, {})['--nex-window-fill']).toBe(theme.windowBackground);
-        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--nex-window-fill']).toBe(
+        expect(chromeThemeCssVars(theme)['--kelpi-window-fill']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, {})['--kelpi-window-fill']).toBe(theme.windowBackground);
+        expect(chromeThemeCssVars(theme, { windowOpacity: 1 })['--kelpi-window-fill']).toBe(
             theme.windowBackground
         );
         // A nonsense opacity is not a transparent window.
-        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--nex-window-fill']).toBe(
+        expect(chromeThemeCssVars(theme, { windowOpacity: Number.NaN })['--kelpi-window-fill']).toBe(
             theme.windowBackground
         );
     });
 
-    it('paints nothing below 1, while --nex-bg keeps its alpha for the gaps', () => {
+    it('paints nothing below 1, while --kelpi-bg keeps its alpha for the gaps', () => {
         const theme = presetChromeTheme('dark');
         const vars = chromeThemeCssVars(theme, { windowOpacity: 0.85 });
-        expect(vars['--nex-window-fill']).toBe('transparent');
+        expect(vars['--kelpi-window-fill']).toBe('transparent');
         // Deliberately two different answers: the gap colour still carries alpha, so a
-        // placeholder or a popover that reads `--nex-bg` is translucent rather than absent.
-        expect(vars['--nex-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
+        // placeholder or a popover that reads `--kelpi-bg` is translucent rather than absent.
+        expect(vars['--kelpi-bg']).toBe(withAlpha(theme.windowBackground, 0.85));
     });
 
     it('follows the light preset too, so the ground is never a dark hex on a light chrome', () => {
         const light = presetChromeTheme('light');
-        expect(chromeThemeCssVars(light)['--nex-window-fill']).toBe(light.windowBackground);
-        expect(chromeThemeCssVars(light, { windowOpacity: 0.5 })['--nex-window-fill']).toBe(
+        expect(chromeThemeCssVars(light)['--kelpi-window-fill']).toBe(light.windowBackground);
+        expect(chromeThemeCssVars(light, { windowOpacity: 0.5 })['--kelpi-window-fill']).toBe(
             'transparent'
         );
     });
 
     it('is a real token, so a component mounted without a provider still has a ground', () => {
-        expect(CHROME_TOKEN_FALLBACKS['--nex-window-fill']).toBe(CHROME_TOKEN_FALLBACKS['--nex-bg']);
+        expect(CHROME_TOKEN_FALLBACKS['--kelpi-window-fill']).toBe(CHROME_TOKEN_FALLBACKS['--kelpi-bg']);
     });
 });

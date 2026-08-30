@@ -148,7 +148,7 @@ export function resolvePaneTarget(
                 );
             } else {
                 return failure(
-                    `label '${target}' requires --workspace <name-or-id> when called from outside a Nex pane`
+                    `label '${target}' requires --workspace <name-or-id> when called from outside a Kelpi pane`
                 );
             }
 

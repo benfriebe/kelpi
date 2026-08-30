@@ -21,7 +21,7 @@ const VERSION = { version: '0.1.0', build: '42', protocol: 1 };
 const temporaries: string[] = [];
 
 function distDir(files: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-ws-http-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-ws-http-'));
     temporaries.push(dir);
     for (const [name, contents] of Object.entries(files)) {
         const target = path.join(dir, name);
@@ -65,12 +65,12 @@ describe('GET /healthz', () => {
 
 describe('static client serving', () => {
     it('serves index.html at the root', async () => {
-        const dir = distDir({ 'index.html': '<!doctype html><title>nex</title>' });
+        const dir = distDir({ 'index.html': '<!doctype html><title>kelpi</title>' });
         const app = createHttpApp({ version: VERSION, distDir: dir });
         const response = await app.request('/');
         expect(response.status).toBe(200);
         expect(response.headers.get('content-type')).toContain('text/html');
-        expect(await response.text()).toContain('<title>nex</title>');
+        expect(await response.text()).toContain('<title>kelpi</title>');
     });
 
     it('serves hashed assets immutably and the shell document no-cache', async () => {
@@ -98,26 +98,26 @@ describe('static client serving', () => {
     });
 
     it('serves the "client not built" page when the dist dir is absent', async () => {
-        const app = createHttpApp({ version: VERSION, distDir: path.join(os.tmpdir(), 'nexd-missing-client-dir') });
+        const app = createHttpApp({ version: VERSION, distDir: path.join(os.tmpdir(), 'kelpid-missing-client-dir') });
         const response = await app.request('/');
         expect(response.status).toBe(200);
-        expect(response.headers.get('x-nex-client')).toBe('not-built');
+        expect(response.headers.get('x-kelpi-client')).toBe('not-built');
         expect(await response.text()).toContain('client');
     });
 
     it('serves the "client not built" page when no dist dir is configured', async () => {
         const app = createHttpApp({ version: VERSION });
         const response = await app.request('/anything');
-        expect(response.headers.get('x-nex-client')).toBe('not-built');
+        expect(response.headers.get('x-kelpi-client')).toBe('not-built');
     });
 
     it('refuses to escape the dist dir', async () => {
         const dir = distDir({ 'index.html': 'SHELL' });
-        fs.writeFileSync(path.join(dir, '..', 'nexd-secret.txt'), 'secret');
+        fs.writeFileSync(path.join(dir, '..', 'kelpid-secret.txt'), 'secret');
         const app = createHttpApp({ version: VERSION, distDir: dir });
         const response = await app.request('/..%2Fnexd-secret.txt');
         expect(response.status).toBe(404);
-        fs.rmSync(path.join(dir, '..', 'nexd-secret.txt'), { force: true });
+        fs.rmSync(path.join(dir, '..', 'kelpid-secret.txt'), { force: true });
     });
 
     it('rejects traversal at the path resolver', () => {
@@ -212,7 +212,7 @@ describe('upgrade authentication', () => {
 
 describe('runDirToken', () => {
     it('reads the run dir token, and mints one on request', () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-ws-run-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-ws-run-'));
         temporaries.push(dir);
 
         expect(runDirToken({ dir })).toBeUndefined();
@@ -225,9 +225,9 @@ describe('runDirToken', () => {
 });
 
 describe('resolveClientDistDir', () => {
-    it('reads NEXD_CLIENT_DIR and absolutizes it', () => {
+    it('reads KELPID_CLIENT_DIR and absolutizes it', () => {
         expect(resolveClientDistDir({})).toBeUndefined();
-        expect(resolveClientDistDir({ NEXD_CLIENT_DIR: '  ' })).toBeUndefined();
-        expect(resolveClientDistDir({ NEXD_CLIENT_DIR: '/tmp/client' })).toBe(path.resolve('/tmp/client'));
+        expect(resolveClientDistDir({ KELPID_CLIENT_DIR: '  ' })).toBeUndefined();
+        expect(resolveClientDistDir({ KELPID_CLIENT_DIR: '/tmp/client' })).toBe(path.resolve('/tmp/client'));
     });
 });

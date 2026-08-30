@@ -235,7 +235,7 @@ export interface PingReply extends ReplySuccess {
     /** `"unknown"` when unavailable. */
     readonly version: string;
     readonly build: string;
-    /** The server process id — `nex doctor` uses it to tell who owns the socket. */
+    /** The server process id — `kelpi doctor` uses it to tell who owns the socket. */
     readonly pid: number;
 }
 
@@ -405,7 +405,7 @@ export interface WebQueryCountReply extends WebPaneReplyBase {
 }
 
 export interface WebQueryExistsReply extends WebPaneReplyBase {
-    /** `nex web exists` exits 0/1 from this field — the field name is load-bearing. */
+    /** `kelpi web exists` exits 0/1 from this field — the field name is load-bearing. */
     readonly found: boolean;
 }
 

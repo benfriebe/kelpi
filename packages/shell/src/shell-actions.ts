@@ -89,7 +89,7 @@ export const OPEN_FILE_EXTENSIONS = ['md', 'markdown'] as const;
  * Whether a file handed to us by Finder (or on argv) should become a markdown pane.
  *
  * The Swift delegate filtered before forwarding, and the filter matters: `open` opens whatever
- * path it is given AS MARKDOWN, so an unfiltered forward turns `open -a Nex.app photo.png` into
+ * path it is given AS MARKDOWN, so an unfiltered forward turns `open -a Kelpi.app photo.png` into
  * a pane rendering PNG bytes as markdown source.
  */
 export function isForwardableOpenPath(filePath: string): boolean {

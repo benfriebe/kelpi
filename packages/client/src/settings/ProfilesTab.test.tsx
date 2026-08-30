@@ -1,4 +1,4 @@
-import type { WsProfile } from '@nex/protocol';
+import type { WsProfile } from '@kelpi/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

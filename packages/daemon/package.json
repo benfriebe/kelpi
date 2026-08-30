@@ -1,5 +1,5 @@
 {
-  "name": "@nex/daemon",
+  "name": "@kelpi/daemon",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,18 +12,18 @@
   },
   "types": "./src/index.ts",
   "bin": {
-    "nexd": "./dist/nexd.js"
+    "kelpid": "./dist/kelpid.js"
   },
   "scripts": {
     "build": "node scripts/bundle.mjs",
     "watch": "node scripts/bundle.mjs --watch",
-    "start": "node scripts/bundle.mjs && node dist/nexd.js start --foreground",
-    "nexd": "node scripts/bundle.mjs && node dist/nexd.js"
+    "start": "node scripts/bundle.mjs && node dist/kelpid.js start --foreground",
+    "kelpid": "node scripts/bundle.mjs && node dist/kelpid.js"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
-    "@nex/core": "workspace:*",
-    "@nex/protocol": "workspace:*",
+    "@kelpi/core": "workspace:*",
+    "@kelpi/protocol": "workspace:*",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "hono": "^4.13.3",

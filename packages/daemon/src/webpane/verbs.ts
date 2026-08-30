@@ -3,7 +3,7 @@
  *
  * Verb names are the daemon↔host contract (`./HOST_PROTOCOL.md`), deliberately NOT the wire
  * command names: several `web-*` verbs collapse onto one host verb (every actuator verb is one
- * `actuate` call whose `method` names the `__nexAct` function), and the daemon adds lifecycle
+ * `actuate` call whose `method` names the `__kelpiAct` function), and the daemon adds lifecycle
  * verbs the CLI has no equivalent for (`pane-open`, `tab-select`, …).
  */
 
@@ -38,11 +38,11 @@ export type HostVerb = (typeof HOST_VERBS)[number];
 export const HOST_TIMEOUT_DEFAULT_MS = 5_000;
 /** A screenshot has to wait for pending screen updates, and `all` also serialises the DOM. */
 export const HOST_TIMEOUT_CAPTURE_MS = 20_000;
-/** `nex web exec` scripts routinely `await nex.wait(...)`; the CLI's own default is 30 s. */
+/** `kelpi web exec` scripts routinely `await kelpi.wait(...)`; the CLI's own default is 30 s. */
 export const HOST_TIMEOUT_EXEC_MS = 30_000;
 /** Slack added on top of a caller-supplied wait budget so the host answers first. */
 export const HOST_TIMEOUT_WAIT_SLACK_MS = 5_000;
-/** `__nexAct.wait`'s own default when `timeout_ms` is 0/absent (web-pane.md §7.4). */
+/** `__kelpiAct.wait`'s own default when `timeout_ms` is 0/absent (web-pane.md §7.4). */
 export const ACTUATOR_WAIT_DEFAULT_MS = 10_000;
 
 /** `web-wait`: honour the wire budget, padded so the host's own timeout lands first. */

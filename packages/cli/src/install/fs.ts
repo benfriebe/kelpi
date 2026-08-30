@@ -1,7 +1,7 @@
 /**
  * The one filesystem seam the installer runs through.
  *
- * Everything `nex install-hooks` touches lives under a directory the caller names
+ * Everything `kelpi install-hooks` touches lives under a directory the caller names
  * (`--claude-dir` / `--codex-dir` / `--install-dir`), and every one of those defaults to a path
  * in the *user's real home*. So the installer never calls `node:fs` directly: it calls this
  * interface, the production binding is at the bottom of the file, and tests bind a fixture root

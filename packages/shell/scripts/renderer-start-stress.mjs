@@ -18,7 +18,7 @@
  *         at K.write            ← GhosttyTerminal.write, straight into the shared heap
  *
  * The audit saw it twice in four full 35-step runs, always on a flow that reveals a pane while
- * another engine is coming up (`nex pane split`, `nex workspace create`). This script makes
+ * another engine is coming up (`kelpi pane split`, `kelpi workspace create`). This script makes
  * that flow the whole run: rounds of panes created **simultaneously** across several
  * workspaces, then torn down, then again — which is the same shape at ~20× the rate.
  *
@@ -28,7 +28,7 @@
  *      WASM instance. This is the mode that can reproduce the genuine defect, and the one that
  *      runs against a tree WITHOUT the fix (there is nothing in it the fix has to provide).
  *   2. **`--faults <rate>`** — plants the exact N1 error in a fraction of engine startups
- *      through the `globalThis.__nexTerminalFaults` seam the renderer reads (see
+ *      through the `globalThis.__kelpiTerminalFaults` seam the renderer reads (see
  *      `packages/client/src/terminal/renderer.ts`). Deterministic proof that the retry path
  *      turns the failure into a hiccup: with the fix a faulted pane comes up on attempt 2 or 3,
  *      without it the pane is stranded on the first fault.
@@ -40,7 +40,7 @@
  * it never fired.
  *
  * Isolation rules (non-negotiable — the production app owns the real socket on a dev machine):
- * every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/nexd.sock` and NEVER
+ * every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/kelpid.sock` and NEVER
  * `/tmp/nex.sock`, HOME is a throwaway, Electron gets its own `--user-data-dir`, and every port
  * is ephemeral.
  *
@@ -64,9 +64,9 @@ const repoRoot = path.resolve(shellRoot, '..', '..');
 const require = createRequire(path.join(shellRoot, 'package.json'));
 const WebSocket = require('ws');
 
-const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
-const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'nex.js');
+const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -124,9 +124,9 @@ async function makeSandbox() {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(userData, { recursive: true });
     // A bare prompt: this run is about engines starting, not about what they paint.
-    fs.writeFileSync(path.join(home, '.zshrc'), "PROMPT='nex %1~ $ '\n");
+    fs.writeFileSync(path.join(home, '.zshrc'), "PROMPT='kelpi %1~ $ '\n");
 
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
     fs.writeFileSync(path.join(root, 'config'), '');
 
@@ -151,15 +151,15 @@ async function makeSandbox() {
             TERM: 'xterm-256color',
             LANG: 'en_US.UTF-8',
             LC_ALL: 'en_US.UTF-8',
-            NEXD_RUN_DIR: path.join(root, 'run'),
-            NEXD_SOCKET_PATH: socketPath,
-            NEXD_TCP_PORT: String(controlPort),
-            NEXD_DB_PATH: path.join(root, 'nex.db'),
-            NEXD_CONFIG_PATH: path.join(root, 'config'),
-            NEXD_HTTP_PORT: String(httpPort),
-            NEXD_HTTP_HOST: '127.0.0.1',
-            NEXD_ENTRY: daemonEntry,
-            NEXD_CLIENT_DIR: clientDist
+            KELPID_RUN_DIR: path.join(root, 'run'),
+            KELPID_SOCKET_PATH: socketPath,
+            KELPID_TCP_PORT: String(controlPort),
+            KELPID_DB_PATH: path.join(root, 'nex.db'),
+            KELPID_CONFIG_PATH: path.join(root, 'config'),
+            KELPID_HTTP_PORT: String(httpPort),
+            KELPID_HTTP_HOST: '127.0.0.1',
+            KELPID_ENTRY: daemonEntry,
+            KELPID_CLIENT_DIR: clientDist
         },
         cleanup() {
             fs.rmSync(root, { recursive: true, force: true });
@@ -276,7 +276,7 @@ async function connectPage(port, consoleErrors, retryReasons) {
             const text = args.map((arg) => String(arg.value ?? arg.description ?? '')).join(' ');
             if (type === 'error' || type === 'warning') {
                 consoleErrors.push(`${type}: ${text}`);
-            } else if (text.includes('[nex] terminal renderer')) {
+            } else if (text.includes('[kelpi] terminal renderer')) {
                 // The `info` line a RECOVERED start logs. Kept so a run says WHY it retried —
                 // "0 stranded" is only meaningful next to the reason the retries fired.
                 retryReasons.push(text.replace(/pane [0-9A-Fa-f-]{8,}/, 'pane <id>'));
@@ -337,15 +337,15 @@ const PANE_PROBE = `(() => {
 })()`;
 
 /**
- * Install the fault hook. Renderers read `globalThis.__nexTerminalFaults` once, at construction,
+ * Install the fault hook. Renderers read `globalThis.__kelpiTerminalFaults` once, at construction,
  * so this has to be in place before the panes it is meant to hit are created — which it is:
  * every round creates its panes after this runs.
  */
 function faultInstaller(rate) {
     return `(() => {
         const state = { rate: ${String(rate)}, planted: 0, seen: 0 };
-        globalThis.__nexTerminalStress = state;
-        globalThis.__nexTerminalFaults = {
+        globalThis.__kelpiTerminalStress = state;
+        globalThis.__kelpiTerminalFaults = {
             fault(kind) {
                 // Only the first write of a startup, which is where the real RangeError lands
                 // (the queued replay flush at the end of the adapter's load()).
@@ -396,14 +396,14 @@ function jsonOr(text, fallback) {
 
 function ensureBuilds() {
     const builds = [
-        ['@nex/daemon', daemonEntry, ['pnpm', ['--filter', '@nex/daemon', 'build']]],
-        ['@nex/client', path.join(clientDist, 'index.html'), ['pnpm', ['--filter', '@nex/client', 'build']]],
-        ['@nex/cli', cliEntry, ['pnpm', ['--filter', '@nex/cli', 'build']]],
-        ['@nex/shell', shellEntry, ['node', [path.join(shellRoot, 'scripts', 'bundle.mjs')]]]
+        ['@kelpi/daemon', daemonEntry, ['pnpm', ['--filter', '@kelpi/daemon', 'build']]],
+        ['@kelpi/client', path.join(clientDist, 'index.html'), ['pnpm', ['--filter', '@kelpi/client', 'build']]],
+        ['@kelpi/cli', cliEntry, ['pnpm', ['--filter', '@kelpi/cli', 'build']]],
+        ['@kelpi/shell', shellEntry, ['node', [path.join(shellRoot, 'scripts', 'bundle.mjs')]]]
     ];
     for (const [name, artefact, [command, args]] of builds) {
         if (!options.build && fs.existsSync(artefact)) continue;
-        if (!fs.existsSync(artefact) && name === '@nex/client' && options.clientDist !== path.join(repoRoot, 'packages', 'client', 'dist')) {
+        if (!fs.existsSync(artefact) && name === '@kelpi/client' && options.clientDist !== path.join(repoRoot, 'packages', 'client', 'dist')) {
             throw new Error(`--client-dist ${clientDist} has no index.html; build it there first`);
         }
         process.stdout.write(`building ${name}…\n`);
@@ -526,7 +526,7 @@ async function main() {
             await sleep(1200);
         }
 
-        const stressState = options.faults > 0 ? await cdp.evaluate('globalThis.__nexTerminalStress ?? null') : null;
+        const stressState = options.faults > 0 ? await cdp.evaluate('globalThis.__kelpiTerminalStress ?? null') : null;
         if (options.outDir !== null) await cdp.screenshot(path.join(options.outDir, 'final.png'));
 
         /**
@@ -546,7 +546,7 @@ async function main() {
                     `${String(withButton)} carry a Retry button\n`
             );
             if (options.outDir !== null) await cdp.screenshot(path.join(options.outDir, 'placeholder-with-retry.png'));
-            await cdp.evaluate('globalThis.__nexTerminalFaults = undefined; true');
+            await cdp.evaluate('globalThis.__kelpiTerminalFaults = undefined; true');
             const clicked = await cdp.evaluate(`(() => {
                 const buttons = Array.from(document.querySelectorAll('[data-testid^="terminal-retry-"]'));
                 buttons.forEach((button) => button.click());

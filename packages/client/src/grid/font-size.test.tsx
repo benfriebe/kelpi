@@ -89,7 +89,7 @@ describe('font-size buttons', () => {
  * §H3 — the shipped app has no restart control. `PaneHeaderView.swift:177-272` is the complete
  * per-type button block (markdown-copy, markdown-edit, diff-refresh, then the shared
  * split/split/globe/close tail) and there is no `.shell` branch in it; `grep -rn restartAgent
- * Nex/` is empty. The `restart-pane-agent` verb and `PaneActions.onRestartAgent` stay — what
+ * Kelpi/` is empty. The `restart-pane-agent` verb and `PaneActions.onRestartAgent` stay — what
  * must not come back is a one-click restart of a live agent sitting next to Close.
  */
 describe('restart button', () => {

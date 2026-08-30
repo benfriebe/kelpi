@@ -8,7 +8,7 @@
  * existing store action, and answered on the connection that asked.
  */
 
-import { isWireCommand, WS_PROTOCOL_VERSION, type JsonObject } from '@nex/protocol';
+import { isWireCommand, WS_PROTOCOL_VERSION, type JsonObject } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher } from '../seams.js';

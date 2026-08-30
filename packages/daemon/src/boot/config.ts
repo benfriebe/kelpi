@@ -3,7 +3,7 @@
  *
  * Spec: docs/current/config-keybindings.md §1 (the file lives at literally `~/.config/nex/config`
  * with `~` expanded to `$HOME` — no XDG lookup), §1.5 (profiles), §10 (`tcp-port`).
- * Parsing itself is `@nex/core/config`; this module only does the IO and the "missing file is
+ * Parsing itself is `@kelpi/core/config`; this module only does the IO and the "missing file is
  * not an error" policy.
  *
  * Two consumers, two lifetimes:
@@ -13,7 +13,7 @@
  *    a watcher), which `createProfileReader` provides. Boot passes a single batch-cached read
  *    to the restore path instead, per app-state-core.md §12.3 step 7 ("cache per launch batch").
  *
- * `NEXD_CONFIG_PATH` overrides the location. It is additive (the Swift app has no such
+ * `KELPID_CONFIG_PATH` overrides the location. It is additive (the Swift app has no such
  * override) and exists so a dev daemon and tests never read the developer's real config.
  */
 
@@ -27,18 +27,18 @@ import {
     parseProfiles,
     type GeneralSettings,
     type Profile
-} from '@nex/core/config';
+} from '@kelpi/core/config';
 
 import { expandTilde } from '../lifecycle/rundir.js';
 
-export const CONFIG_PATH_ENV = 'NEXD_CONFIG_PATH';
+export const CONFIG_PATH_ENV = 'KELPID_CONFIG_PATH';
 
 export interface ConfigLookup {
     readonly env?: NodeJS.ProcessEnv | undefined;
     readonly home?: string | undefined;
 }
 
-/** `~/.config/nex/config`, or whatever `NEXD_CONFIG_PATH` names. Does not create anything. */
+/** `~/.config/nex/config`, or whatever `KELPID_CONFIG_PATH` names. Does not create anything. */
 export function resolveConfigPath(lookup: ConfigLookup = {}): string {
     const env = lookup.env ?? process.env;
     const home = lookup.home ?? homedir();

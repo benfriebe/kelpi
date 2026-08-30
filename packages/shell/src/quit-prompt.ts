@@ -33,7 +33,7 @@
  * `main.ts`), so the only channel from the main process into the page is
  * `webContents.executeJavaScript`, which resolves with what the injected expression returns —
  * including, when it returns a promise, what that promise resolves to. The page installs
- * `window.__nexQuitGate` (`client/src/chrome/QuitConfirmDialog.tsx`):
+ * `window.__kelpiQuitGate` (`client/src/chrome/QuitConfirmDialog.tsx`):
  *
  *     { version: number, open(spec): Promise<{response, checkboxChecked}>, dismiss(): void }
  *
@@ -44,7 +44,7 @@
 import type { QuitDialogSpec } from './settings.js';
 
 /** The page-side global. Versioned so an older page can be refused rather than half-driven. */
-export const QUIT_GATE_GLOBAL = '__nexQuitGate';
+export const QUIT_GATE_GLOBAL = '__kelpiQuitGate';
 export const QUIT_GATE_VERSION = 1;
 
 /**

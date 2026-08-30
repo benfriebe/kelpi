@@ -20,48 +20,48 @@ describe('the audit window policy is OFF unless the audit asks for it', () => {
         expect(auditWindowPolicy({}).active).toBe(false);
     });
 
-    it('ignores the placement and throttle knobs entirely without NEX_AUDIT', () => {
+    it('ignores the placement and throttle knobs entirely without KELPI_AUDIT', () => {
         // The load-bearing case: a user (or a packaged build) can have these set for any reason
         // and still get the window a shipped launch builds. Nothing here may leak into a release.
         const stray = auditWindowPolicy({
-            NEX_AUDIT_WINDOW: 'offscreen',
-            NEX_AUDIT_THROTTLE: '1',
-            NEX_HARNESS: '1'
+            KELPI_AUDIT_WINDOW: 'offscreen',
+            KELPI_AUDIT_THROTTLE: '1',
+            KELPI_HARNESS: '1'
         });
         expect(stray).toEqual(SHIPPED_WINDOW_POLICY);
     });
 
-    it('does not treat NEX_HARNESS as an audit run', () => {
-        // The web smoke and the packaging probes set NEX_HARNESS and assert on a user's window.
-        expect(auditWindowPolicy({ NEX_HARNESS: '1' })).toEqual(SHIPPED_WINDOW_POLICY);
+    it('does not treat KELPI_HARNESS as an audit run', () => {
+        // The web smoke and the packaging probes set KELPI_HARNESS and assert on a user's window.
+        expect(auditWindowPolicy({ KELPI_HARNESS: '1' })).toEqual(SHIPPED_WINDOW_POLICY);
     });
 
     it('only accepts the exact string "1"', () => {
-        for (const value of ['', '0', 'true', 'yes', 'NEX_AUDIT']) {
-            expect(auditWindowPolicy({ NEX_AUDIT: value })).toEqual(SHIPPED_WINDOW_POLICY);
+        for (const value of ['', '0', 'true', 'yes', 'KELPI_AUDIT']) {
+            expect(auditWindowPolicy({ KELPI_AUDIT: value })).toEqual(SHIPPED_WINDOW_POLICY);
         }
     });
 });
 
 describe('the audit window policy, when the audit does ask', () => {
     it('turns background throttling off', () => {
-        const policy = auditWindowPolicy({ NEX_AUDIT: '1' });
+        const policy = auditWindowPolicy({ KELPI_AUDIT: '1' });
         expect(policy.active).toBe(true);
         expect(policy.backgroundThrottling).toBe(false);
     });
 
     it('keeps an escape hatch back to the shipped throttling, so the flag stays measurable', () => {
-        const policy = auditWindowPolicy({ NEX_AUDIT: '1', NEX_AUDIT_THROTTLE: '1' });
+        const policy = auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_THROTTLE: '1' });
         expect(policy.backgroundThrottling).toBe(true);
         expect(policy.active).toBe(true);
     });
 
     it('reads the placement, and degrades an unknown value to the visible default', () => {
         for (const placement of ['hidden', 'offscreen', 'onscreen', 'default'] as const) {
-            expect(auditWindowPolicy({ NEX_AUDIT: '1', NEX_AUDIT_WINDOW: placement }).placement).toBe(placement);
+            expect(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: placement }).placement).toBe(placement);
         }
-        expect(auditWindowPolicy({ NEX_AUDIT: '1', NEX_AUDIT_WINDOW: 'sideways' }).placement).toBe('default');
-        expect(auditWindowPolicy({ NEX_AUDIT: '1' }).placement).toBe('default');
+        expect(auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'sideways' }).placement).toBe('default');
+        expect(auditWindowPolicy({ KELPI_AUDIT: '1' }).placement).toBe('default');
     });
 });
 
@@ -120,7 +120,7 @@ describe('audit window geometry', () => {
 describe('the audit window log line', () => {
     it('records what was asked for and what AppKit did with it', () => {
         const line = auditWindowLogLine(
-            auditWindowPolicy({ NEX_AUDIT: '1', NEX_AUDIT_WINDOW: 'offscreen' }),
+            auditWindowPolicy({ KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: 'offscreen' }),
             { x: 2856, y: 1729, width: 1280, height: 820 },
             { x: 2856, y: 1297, width: 1280, height: 820 }
         );

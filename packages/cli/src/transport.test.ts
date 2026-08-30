@@ -1,7 +1,7 @@
 /**
  * Transport selection and failure rendering (cli.md §5.4/§5.5).
  *
- * The `Error:`/`Repair:` pairs are what a user sees when the CLI cannot reach Nex, and they
+ * The `Error:`/`Repair:` pairs are what a user sees when the CLI cannot reach Kelpi, and they
  * are quoted in issue threads, so they are pinned verbatim. Transport selection matters just
  * as much: a malformed `tcp:` value must fall back to the Unix socket SILENTLY rather than
  * erroring, which is what keeps a typo in a dev container from breaking every hook fire.
@@ -55,16 +55,16 @@ describe('describeTransportFailure', () => {
     it('names the missing socket and points at the app', () => {
         const [line, repair] = describeTransportFailure(
             { kind: 'unixSocketMissing', path: '/tmp/nex.sock' },
-            'nex pane close'
+            'kelpi pane close'
         );
-        expect(line).toBe('nex pane close: cannot reach Nex — socket /tmp/nex.sock does not exist.');
+        expect(line).toBe('kelpi pane close: cannot reach Kelpi — socket /tmp/nex.sock does not exist.');
         expect(repair).toBe(
-            'Is Nex running? Launch the app, then retry. If Nex is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
+            'Is Kelpi running? Launch the app, then retry. If Kelpi is running but using TCP, set NEX_SOCKET=tcp:<host>:<port>.'
         );
     });
 
     it('calls out a stale socket file separately from a missing one', () => {
-        const [line] = describeTransportFailure({ kind: 'unixConnectRefused', path: '/tmp/nex.sock' }, 'nex doctor');
+        const [line] = describeTransportFailure({ kind: 'unixConnectRefused', path: '/tmp/nex.sock' }, 'kelpi doctor');
         expect(line).toContain('exists but connect was refused');
         expect(line).toContain('stale socket from a previous crash');
     });
@@ -72,23 +72,23 @@ describe('describeTransportFailure', () => {
     it('quotes the host for a resolve failure and the port for a connect failure', () => {
         const [resolveLine, resolveRepair] = describeTransportFailure(
             { kind: 'tcpResolveFailed', host: 'host.docker.internal' },
-            'nex pane list'
+            'kelpi pane list'
         );
-        expect(resolveLine).toBe('nex pane list: cannot resolve host "host.docker.internal" (from NEX_SOCKET).');
+        expect(resolveLine).toBe('kelpi pane list: cannot resolve host "host.docker.internal" (from NEX_SOCKET).');
         expect(resolveRepair).toContain('tcp:host.docker.internal:<port>');
 
         const [connectLine, connectRepair] = describeTransportFailure(
             { kind: 'tcpConnectFailed', host: '127.0.0.1', port: 19400, errno: 61, message: 'Connection refused' },
-            'nex pane list'
+            'kelpi pane list'
         );
-        expect(connectLine).toBe('nex pane list: TCP connect to 127.0.0.1:19400 failed (errno 61: Connection refused).');
+        expect(connectLine).toBe('kelpi pane list: TCP connect to 127.0.0.1:19400 failed (errno 61: Connection refused).');
         expect(connectRepair).toContain('`tcp-port = 19400`');
     });
 
     it('attributes an empty reply to the WIRE command, not the CLI label', () => {
-        const [line] = describeTransportFailure({ kind: 'emptyReply', command: 'pane-list' }, 'nex pane list');
+        const [line] = describeTransportFailure({ kind: 'emptyReply', command: 'pane-list' }, 'kelpi pane list');
         expect(line).toBe(
-            'nex pane list: no response from Nex for `pane-list` (connected, then peer closed before replying).'
+            'kelpi pane list: no response from Kelpi for `pane-list` (connected, then peer closed before replying).'
         );
     });
 });
@@ -98,7 +98,7 @@ describe('printTransportFailure', () => {
         const err: string[] = [];
         setIO({ out: () => undefined, err: (text) => err.push(text) });
         setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/nex.sock' });
-        printTransportFailure('nex pane list');
+        printTransportFailure('kelpi pane list');
         expect(err.join('').split('\n')[0]?.startsWith('Error: ')).toBe(true);
         expect(err.join('')).toContain('\nRepair: ');
     });
@@ -107,7 +107,7 @@ describe('printTransportFailure', () => {
         const err: string[] = [];
         setIO({ out: () => undefined, err: (text) => err.push(text) });
         setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/nex.sock' });
-        printTransportFailure('nex event stop', { fireAndForget: true });
+        printTransportFailure('kelpi event stop', { fireAndForget: true });
         expect(err.join('').startsWith('Warning: ')).toBe(true);
     });
 
@@ -115,7 +115,7 @@ describe('printTransportFailure', () => {
         const err: string[] = [];
         setIO({ out: () => undefined, err: (text) => err.push(text) });
         setLastTransportFailure(null);
-        printTransportFailure('nex pane list');
-        expect(err.join('')).toBe('nex pane list: transport failure (no diagnostic captured).\n');
+        printTransportFailure('kelpi pane list');
+        expect(err.join('')).toBe('kelpi pane list: transport failure (no diagnostic captured).\n');
     });
 });

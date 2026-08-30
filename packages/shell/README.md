@@ -1,4 +1,4 @@
-# @nex/shell — the Electron shell
+# @kelpi/shell — the Electron shell
 
 The desktop wrapper. It owns a window, a tray, a dock badge, a global hotkey and the quit
 dialog — and **no product logic**: the UI is loaded from the daemon's own HTTP server, so app
@@ -18,7 +18,7 @@ src/
 ├─ control.ts       a minimal control-protocol client (Finder "Open With" → daemon `open`)
 ├─ resources.ts     the packaged `Contents/Resources` layout — written by the build, read here
 ├─ packaging.ts     build-time only: the app icon + ICNS, the asar allowlist, Node-runtime checks
-├─ updater.ts       auto-update, off unless `NEX_AUTO_UPDATE=1` (and then only when packaged)
+├─ updater.ts       auto-update, off unless `KELPI_AUTO_UPDATE=1` (and then only when packaged)
 ├─ log.ts           `[shell] …` lines on stdout; the smoke asserts on them
 └─ webhost/         the web-pane host (M6): WebContentsViews + CDP behind the daemon's host RPC
    ├─ client.ts     its OWN daemon WebSocket, claiming the `web-pane-host` role
@@ -38,7 +38,7 @@ src/
 The daemon owns web-pane *state* and cannot render a page; this process can. `webhost/`
 connects as an ordinary WS client claiming `web-pane-host`
 (`packages/daemon/src/webpane/HOST_PROTOCOL.md`), mirrors the daemon's panes and tabs onto real
-`WebContentsView`s, and answers every verb that needs a live browser — the whole `nex web`
+`WebContentsView`s, and answers every verb that needs a live browser — the whole `kelpi web`
 surface: navigate/back/forward/reload, `capture` (meta/text/dom/screenshot/all), the actuator
 (`click`, `type`, `q-*`, `wait`, `select`, `scroll`, `hover`, `key`), `exec`, the element
 picker, cookies, find and zoom.
@@ -58,13 +58,13 @@ ignored and those clients keep drawing the placeholder card. Two consequences wo
   silently hangs until then, so each tab bootstraps with an `about:blank` load before the
   domains are enabled and the scripts are injected (`tab.ts`);
 - `webSecurity` stays **on**. Chromium already lets a `file://` document load sibling
-  subresources, which is the feature `nex web open ./page.html` needs; turning it off would buy
+  subresources, which is the feature `kelpi web open ./page.html` needs; turning it off would buy
   only cross-file `fetch` at the cost of making every page an agent visits same-origin-free.
 
 ## The rule that outranks everything else
 
 **The shell never stops the daemon.** Closing the window, ⌘Q, `app.quit()`, a SIGTERM — none
-of them signal `nexd`. Quitting the app leaves every PTY, agent and workspace running, and the
+of them signal `kelpid`. Quitting the app leaves every PTY, agent and workspace running, and the
 next launch attaches to exactly the sessions that were there. `scripts/smoke.mjs` asserts this
 by pinging the daemon after Electron has exited. Nothing in this package may grow a "stop the
 daemon" path; the tray's daemon item is *Start* (when none is running) or *Reconnect* (when one
@@ -73,9 +73,9 @@ is), never *Restart*.
 ## Running it
 
 ```bash
-pnpm --filter @nex/daemon build        # the shell spawns this bundle when nothing is running
-pnpm --filter @nex/shell build         # esbuild → dist/main.js (CJS, electron external)
-pnpm --filter @nex/shell start         # electron .
+pnpm --filter @kelpi/daemon build        # the shell spawns this bundle when nothing is running
+pnpm --filter @kelpi/shell build         # esbuild → dist/main.js (CJS, electron external)
+pnpm --filter @kelpi/shell start         # electron .
 ```
 
 With no daemon running it starts one, detached, and waits for it to answer. To point a
@@ -83,27 +83,27 @@ development shell at throwaway paths (the shipped Swift app owns `/tmp/nex.sock`
 machine, and the daemon's default run dir is shared):
 
 ```bash
-NEXD_RUN_DIR=/tmp/nexd-dev-run \
-NEXD_SOCKET_PATH=/tmp/nexd-dev.sock \
-NEXD_DB_PATH=/tmp/nexd-dev.db \
-NEXD_CONFIG_PATH=/tmp/nexd-dev-config \
-pnpm --filter @nex/shell start
+KELPID_RUN_DIR=/tmp/kelpid-dev-run \
+KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock \
+KELPID_DB_PATH=/tmp/kelpid-dev.db \
+KELPID_CONFIG_PATH=/tmp/kelpid-dev-config \
+pnpm --filter @kelpi/shell start
 ```
 
-Environment it reads: `NEXD_RUN_DIR` (which daemon to talk to), `NEXD_ENTRY` (the `nexd`
-script to spawn), `NEXD_NODE` (the Node binary to spawn it with), `NEXD_LOG_FILE` (where a
-spawned daemon's output goes), `NEXD_CONFIG_PATH` (the shared `nex` config, for
-`global-hotkey`), `NEX_AUTO_UPDATE` (off unless `1`; see `src/updater.ts`). Everything else it
-inherits and passes to the daemon it spawns — plus, in a packaged app only, `NEXD_CLIENT_DIR`
+Environment it reads: `KELPID_RUN_DIR` (which daemon to talk to), `KELPID_ENTRY` (the `kelpid`
+script to spawn), `KELPID_NODE` (the Node binary to spawn it with), `KELPID_LOG_FILE` (where a
+spawned daemon's output goes), `KELPID_CONFIG_PATH` (the shared `kelpi` config, for
+`global-hotkey`), `KELPI_AUTO_UPDATE` (off unless `1`; see `src/updater.ts`). Everything else it
+inherits and passes to the daemon it spawns — plus, in a packaged app only, `KELPID_CLIENT_DIR`
 pointing at the client build in its own Resources (an explicit one always wins).
 
 ## Packaging
 
 ```bash
 pnpm dist                              # from the repo root: all three bundles, then make
-pnpm --filter @nex/shell package       # just out/Nex-darwin-<arch>/Nex.app
-pnpm --filter @nex/shell make          # + out/make/Nex.dmg and the Squirrel-shaped ZIP
-pnpm --filter @nex/shell icon          # re-render out/staging/icon.icns on its own
+pnpm --filter @kelpi/shell package       # just out/Kelpi-darwin-<arch>/Kelpi.app
+pnpm --filter @kelpi/shell make          # + out/make/Kelpi.dmg and the Squirrel-shaped ZIP
+pnpm --filter @kelpi/shell icon          # re-render out/staging/icon.icns on its own
 ```
 
 `forge.config.cjs` is the whole configuration and its header is the long-form explanation. The
@@ -131,16 +131,16 @@ nothing in the log (`docs/PARITY.md` ▸ Known gaps #9). So it turns on in the s
 Developer ID, and `packaged-smoke.mjs` asserts that rule from the fuse wire in phase 1.
 
 Nothing is signed or notarized (ad-hoc only, as arm64 requires); the repo README's *Install and
-run* section carries the gap and the release checklist. `NEX_MACOS_IDENTITY` opts into `osxSign`.
+run* section carries the gap and the release checklist. `KELPI_MACOS_IDENTITY` opts into `osxSign`.
 
 ## Tests
 
 ```bash
-pnpm --filter @nex/shell test           # vitest, this package's own project
-pnpm --filter @nex/shell smoke          # the real thing: Electron + a private daemon
-pnpm --filter @nex/shell smoke:web      # the web-pane host, driven by the shipped Swift CLI
-pnpm --filter @nex/shell smoke:terminal # terminal fidelity: glyphs, columns, re-attach
-pnpm --filter @nex/shell smoke:packaged # electron-forge package, then launch the .app itself
+pnpm --filter @kelpi/shell test           # vitest, this package's own project
+pnpm --filter @kelpi/shell smoke          # the real thing: Electron + a private daemon
+pnpm --filter @kelpi/shell smoke:web      # the web-pane host, driven by the shipped Swift CLI
+pnpm --filter @kelpi/shell smoke:terminal # terminal fidelity: glyphs, columns, re-attach
+pnpm --filter @kelpi/shell smoke:packaged # electron-forge package, then launch the .app itself
 ```
 
 The unit tests cover the pure modules only (bounds clamp, badge/tray derivation, hotkey parse
@@ -162,7 +162,7 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   holder, and the pane must stay drivable throughout. Finally it asserts that quitting the shell
   releases the role (`no web pane host connected`) and that a fresh shell gets the daemon's
   `pane-open` replay.
-  With no Swift CLI installed it skips (exit 0); `NEX_COMPAT_CLI` points it at another copy.
+  With no Swift CLI installed it skips (exit 0); `KELPI_COMPAT_CLI` points it at another copy.
 - `scripts/terminal-smoke.mjs` is the one that would have caught what 3000 structural tests did
   not: how the terminal LOOKS. It gives a sandbox `$HOME` a powerlevel10k-shaped zsh prompt
   (Nerd Font private-use glyphs, a `$COLUMNS`-wide dotted filler, a right-aligned timestamp),
@@ -173,12 +173,12 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
   history must come back ONCE, at the width it was serialized for, and a daemon restart must
   spawn the shell at the remembered grid rather than 80×24. Screenshots every step with
   `--out <dir>` so a human can look, which is the real acceptance.
-- `scripts/packaged-smoke.mjs` covers everything that is only true inside `Nex.app`: it runs
+- `scripts/packaged-smoke.mjs` covers everything that is only true inside `Kelpi.app`: it runs
   `electron-forge package`, reads the asar header back to prove the allowlist held, reads the
   fuses out of the binary, then launches the **packaged** app with a private environment that
   names no daemon, no client and no Node — so all three have to come from its own Resources. It
   asserts the daemon process really is the bundled Node, that the served page is the staged
-  client byte for byte, that the shipped `nex` CLI gets a ping and can drive a real PTY (the only
+  client byte for byte, that the shipped `kelpi` CLI gets a ping and can drive a real PTY (the only
   proof node-pty loaded its native module from inside the bundle), that **the window really
   loaded the daemon-served client** (`did-finish-load` — the check that was red through run-F, and
   the one whose failure message carries the diagnosis), and that the daemon is still running after
@@ -188,7 +188,7 @@ that imports `electron` cannot load under plain Node, so the smokes cover it ins
 
 Note the shell is **not** part of the repo-root vitest projects or the root `typecheck` script
 (neither includes `packages/shell`, and the root config is not this package's to edit) —
-`pnpm --filter @nex/shell test` and `pnpm --filter @nex/shell typecheck` run them.
+`pnpm --filter @kelpi/shell test` and `pnpm --filter @kelpi/shell typecheck` run them.
 
 ## Security posture
 

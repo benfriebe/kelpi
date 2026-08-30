@@ -10,20 +10,20 @@
  * is the resync mechanism (`ws/sync.ts` refuses `resumeFromSeq` because `seq` is per daemon
  * process) — so a rejected batch redials, and the snapshot that follows REPLACES the mirror.
  *
- * `connectStore` is the minimal wiring; `createNexRuntime` assembles the whole client-side
+ * `connectStore` is the minimal wiring; `createKelpiRuntime` assembles the whole client-side
  * stack (connection + command RPC + PTY streams + store + notifications) with the report
  * ordering the port requires, and is what assembly should call.
  */
 
-import type { WsRejectedMessage } from '@nex/protocol';
+import type { WsRejectedMessage } from '@kelpi/protocol';
 
 import { forgetStoredToken, type StorageLike } from '../app/config';
-import { CommandClient, NexConnection, PtyClient, type NexConnectionOptions } from '../connection';
+import { CommandClient, KelpiConnection, PtyClient, type KelpiConnectionOptions } from '../connection';
 import { readShellWindowID } from '../webpane/shell-window';
 import { activationAppliesHere, parseShellActivation } from './activation';
 import { createClipboardWriteHandler, type ClipboardWriteHandlerOptions } from './clipboard';
 import { createNotificationManager, type NotificationManager } from './notifications';
-import { useNexStore, type NexStoreApi } from './store';
+import { useKelpiStore, type KelpiStoreApi } from './store';
 
 /**
  * A rejection that says "your token is wrong", in either dialect: the typed `reason` a current
@@ -34,8 +34,8 @@ export function isTokenRejection(message: WsRejectedMessage): boolean {
 }
 
 export interface StoreBridgeOptions {
-    readonly store: NexStoreApi;
-    readonly connection: NexConnection;
+    readonly store: KelpiStoreApi;
+    readonly connection: KelpiConnection;
     /** Optional: renders daemon notifications (Web Notifications + toast fallback). */
     readonly notifications?: NotificationManager | null | undefined;
     /** Dock-bounce equivalent (WP3.6 owns the favicon/title treatment). */
@@ -78,7 +78,7 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             // §SET-021: `transport` rides the handshake beside `settings`. It is what the
             // listeners actually DID, which only the daemon knows and the config file cannot say.
             store.getState().setDaemonIdentity(message.clientID, message.daemon, message.transport ?? null);
-            // M8: settings ride the handshake (see `@nex/protocol` `ws/settings.ts`), so they
+            // M8: settings ride the handshake (see `@kelpi/protocol` `ws/settings.ts`), so they
             // are in the store before the first snapshot renders — no light/dark flash, no
             // window where the key dispatcher is running on the shipped defaults.
             store.getState().applySettings(message.settings);
@@ -223,7 +223,7 @@ export function connectStore(options: StoreBridgeOptions): () => void {
             // only those get the terminal status here — a retryable refusal would otherwise
             // flash "rejected" before the reconnect flips it back. Either way the daemon's own
             // words become the connection error, and a token it refuses is forgotten so a
-            // stale one cannot wedge the NEXT visit as well.
+            // stale one cannot wedge the KELPIT visit as well.
             const state = store.getState();
             const terminal = message.code !== 'server-error';
             state.setConnectionStatus(terminal ? 'rejected' : state.ui.connection, message.message);
@@ -246,9 +246,9 @@ export function connectStore(options: StoreBridgeOptions): () => void {
 
 // ── the assembled runtime ───────────────────────────────────────────────────────────
 
-export interface NexRuntimeOptions extends NexConnectionOptions {
+export interface KelpiRuntimeOptions extends KelpiConnectionOptions {
     /** Defaults to the app-wide store; pass one for tests or a second surface. */
-    readonly store?: NexStoreApi | undefined;
+    readonly store?: KelpiStoreApi | undefined;
     readonly notifications?: NotificationManager | null | undefined;
     readonly onAttention?: ((target: { paneID: string; workspaceID: string }) => void) | undefined;
     /** Where the remembered token lives (see `StoreBridgeOptions.tokenStorage`). */
@@ -259,9 +259,9 @@ export interface NexRuntimeOptions extends NexConnectionOptions {
     readonly clipboard?: StoreBridgeOptions['clipboard'];
 }
 
-export interface NexRuntime {
-    readonly store: NexStoreApi;
-    readonly connection: NexConnection;
+export interface KelpiRuntime {
+    readonly store: KelpiStoreApi;
+    readonly connection: KelpiConnection;
     readonly commands: CommandClient;
     readonly pty: PtyClient;
     readonly notifications: NotificationManager | null;
@@ -283,9 +283,9 @@ export interface NexRuntime {
  * Connection + command RPC + PTY streams + store, wired the one way that is correct. Assembly
  * calls this once; everything else takes what it needs off the returned object.
  */
-export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
-    const store: NexStoreApi = options.store ?? useNexStore;
-    const connection = new NexConnection(options);
+export function createKelpiRuntime(options: KelpiRuntimeOptions = {}): KelpiRuntime {
+    const store: KelpiStoreApi = options.store ?? useKelpiStore;
+    const connection = new KelpiConnection(options);
     const commands = new CommandClient(connection);
     const pty = new PtyClient(connection);
 
@@ -319,7 +319,7 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
         return workspace?.panes.map((pane) => pane.id) ?? [];
     };
 
-    const runtime: NexRuntime = {
+    const runtime: KelpiRuntime = {
         store,
         connection,
         commands,
@@ -361,7 +361,7 @@ export function createNexRuntime(options: NexRuntimeOptions = {}): NexRuntime {
              * Invisible in the window, because the echo draws the ring where the user clicked
              * (`setFocusEcho` above), and `echoSurvives` keeps it until the DAEMON's value
              * changes — which is exactly what never happened. What it costs is everything that
-             * reads the daemon's answer instead of this window's: `nex pane list --json`'s
+             * reads the daemon's answer instead of this window's: `kelpi pane list --json`'s
              * `is_focused`, a second client, and above all a RELOAD, which restores the
              * daemon's focused pane and so came back on a pane the user had left.
              *

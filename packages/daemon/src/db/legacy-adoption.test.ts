@@ -3,11 +3,11 @@
 /**
  * Adoption smoke test against a REAL `nex.db` written by the Swift app.
  *
- * Skipped unless `NEXD_LEGACY_DB_FIXTURE` points at a copy of one (the file is personal data —
+ * Skipped unless `KELPID_LEGACY_DB_FIXTURE` points at a copy of one (the file is personal data —
  * paths, labels, session ids — so it is never committed). Run it before touching the codec:
  *
- *   cp ~/Library/Application\\ Support/Nex/nex.db* /tmp/legacy/
- *   NEXD_LEGACY_DB_FIXTURE=/tmp/legacy/nex.db npx vitest run packages/daemon/src/db
+ *   cp ~/Library/Application\\ Support/Kelpi/nex.db* /tmp/legacy/
+ *   KELPID_LEGACY_DB_FIXTURE=/tmp/legacy/nex.db npx vitest run packages/daemon/src/db
  *
  * The fixture is opened READ-ONLY with migrations disabled: this test proves the daemon can
  * *read* a live database, and must never modify one.
@@ -20,7 +20,7 @@ import { openSqliteDatabase } from './adapter.js';
 import { createPersistence } from './persistence.js';
 import { appliedMigrations, MIGRATION_IDENTIFIERS } from './schema.js';
 
-const fixture = process.env['NEXD_LEGACY_DB_FIXTURE'];
+const fixture = process.env['KELPID_LEGACY_DB_FIXTURE'];
 const available = fixture !== undefined && fixture.length > 0 && fs.existsSync(fixture);
 
 describe.skipIf(!available)('adopting a real Swift-written nex.db', () => {

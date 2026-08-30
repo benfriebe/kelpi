@@ -1,4 +1,4 @@
-import { WS_DELTA_KINDS } from '@nex/protocol';
+import { WS_DELTA_KINDS } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -136,7 +136,7 @@ describe('serializeDomainEvent', () => {
 
 describe('protocol conformance', () => {
     /**
-     * This list must match `@nex/protocol`'s `WS_DELTA_KINDS`: clients replay these events with
+     * This list must match `@kelpi/protocol`'s `WS_DELTA_KINDS`: clients replay these events with
      * the daemon's own `applyDomainEvents`, so a kind the protocol does not declare (or declares
      * and the store never emits) is a client that silently drops or mis-applies a delta. The
      * `satisfies` fails the build if a new `DomainEvent` kind appears without being listed.

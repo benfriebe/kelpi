@@ -229,7 +229,7 @@ describe('watchFile (real fs)', () => {
     });
 
     const tmpdir = (): string => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-watch-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-watch-'));
         dirs.push(dir);
         return dir;
     };

@@ -62,7 +62,7 @@ export function resolveProfileEnv(
     return env;
 }
 
-/** `helpersDir` is prepended so the bundled `nex` CLI shadows the app binary. */
+/** `helpersDir` is prepended so the bundled `kelpi` CLI shadows the app binary. */
 export function buildPanePath(helpersDir: string, inheritedPath?: string | null): string {
     const inherited = inheritedPath === null || inheritedPath === undefined || inheritedPath === ''
         ? FALLBACK_PATH
@@ -75,11 +75,11 @@ export interface MergedEnvInput {
     /** The fully composed PATH (see `buildPanePath`). */
     readonly path: string;
     /**
-     * `NEX_SOCKET` value routing this pane's `nex` CLI back to the daemon that spawned it
+     * `NEX_SOCKET` value routing this pane's `kelpi` CLI back to the daemon that spawned it
      * (`tcp:127.0.0.1:<port>`). Both the port CLI and the shipped Swift CLI honor `tcp:` and
      * silently fall back to `/tmp/nex.sock` for anything else, so this is the ONE form that
-     * routes correctly no matter which `nex` binary the pane's PATH resolves — the shared
-     * default socket may belong to another Nex entirely. Null/absent = no injection.
+     * routes correctly no matter which `kelpi` binary the pane's PATH resolves — the shared
+     * default socket may belong to another Kelpi entirely. Null/absent = no injection.
      */
     readonly socketRoute?: string | null | undefined;
     readonly profileEnv: Readonly<Record<string, string>>;

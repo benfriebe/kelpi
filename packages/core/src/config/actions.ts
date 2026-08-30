@@ -4,7 +4,7 @@
  * Raw values are the config-file vocabulary and must not change.
  */
 
-export const NEX_ACTIONS = [
+export const KELPI_ACTIONS = [
     // Pane Management
     'split_right',
     'split_down',
@@ -65,15 +65,15 @@ export const NEX_ACTIONS = [
     'web_zoom_reset'
 ] as const;
 
-export type NexAction = (typeof NEX_ACTIONS)[number];
+export type KelpiAction = (typeof KELPI_ACTIONS)[number];
 
 /** Config-file-only pseudo-action: removes a trigger from the map. */
 export const UNBIND_ACTION = 'unbind';
 export type UnbindAction = typeof UNBIND_ACTION;
 
-const ACTION_SET: ReadonlySet<string> = new Set<string>(NEX_ACTIONS);
+const ACTION_SET: ReadonlySet<string> = new Set<string>(KELPI_ACTIONS);
 
-export function isNexAction(value: string): value is NexAction {
+export function isKelpiAction(value: string): value is KelpiAction {
     return ACTION_SET.has(value);
 }
 
@@ -81,7 +81,7 @@ export function isNexAction(value: string): value is NexAction {
  * The 16 actions owned by the menu-bar dispatch layer (§4 "Menu-bar action set"); the
  * pane-shortcut monitor never consumes events for these.
  */
-export const MENU_BAR_ACTIONS: ReadonlySet<NexAction> = new Set<NexAction>([
+export const MENU_BAR_ACTIONS: ReadonlySet<KelpiAction> = new Set<KelpiAction>([
     'new_workspace',
     'open_file',
     'open_web_pane',

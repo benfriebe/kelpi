@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { leaf } from '@nex/core/layout';
+import { leaf } from '@kelpi/core/layout';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createPersistence, openSqliteDatabase, APP_STATE_LABEL_PRESETS_MIGRATED } from '../db/index.js';
@@ -228,7 +228,7 @@ describe('runLabelPresetMigration', () => {
 
 describe('the marker in the database', () => {
     function scratchDir(): string {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-labelmig-'));
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-labelmig-'));
         cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
         return root;
     }
@@ -286,7 +286,7 @@ describe('createDaemon', () => {
     }
 
     function scratch(): Scratch {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-labelmig-boot-'));
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-labelmig-boot-'));
         cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
         const home = path.join(root, 'home');
         fs.mkdirSync(home, { recursive: true });
@@ -300,7 +300,7 @@ describe('createDaemon', () => {
             env: {},
             home: paths.home,
             runDir: path.join(paths.root, 'run'),
-            controlSocketPath: path.join(paths.root, 'nex.sock'),
+            controlSocketPath: path.join(paths.root, 'kelpi.sock'),
             dbPath: paths.dbPath,
             configPath: path.join(paths.root, 'config'),
             httpPort: 0,

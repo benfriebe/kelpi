@@ -188,7 +188,7 @@ describe('the find bar', () => {
      * wires `chevron.up` to next and `chevron.down` to previous (`PaneSearchOverlay.swift:48-66`).
      * The glyph is what has to agree, so the glyph is what is read.
      */
-    it('puts NEXT under the up chevron and PREVIOUS under the down one, in that order', () => {
+    it('puts KELPIT under the up chevron and PREVIOUS under the down one, in that order', () => {
         const fake = fakeCommands();
         render(<WebFindBar paneID={PANE} activeTabID={TAB1} commands={fake.commands} onClose={() => {}} />);
 
@@ -1090,7 +1090,7 @@ describe('the storage panel', () => {
      * §M39 — the panel is cookies, the private toggle and clear-all, and nothing else.
      * `StoragePanel.swift` has no localStorage read-out; the port had grown a "Local storage"
      * button that ran a `web-exec` and dumped the page's keys into the panel, which is an
-     * affordance the shipped app never shows. `nex web exec` is still the way to read it.
+     * affordance the shipped app never shows. `kelpi web exec` is still the way to read it.
      */
     it('offers no localStorage read-out, and runs no `exec` for one', async () => {
         const fake = fakeCommands();

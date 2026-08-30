@@ -4,7 +4,7 @@
  * A **third** connection, alongside the renderer's and the main process's status socket
  * (`../status.ts`), for the same reason the status one exists: the host must work before the
  * window has loaded, while it is reloading, and while it is closed — an agent driving
- * `nex web capture` does not care whether anyone is looking at the UI. Keeping it separate from
+ * `kelpi web capture` does not care whether anyone is looking at the UI. Keeping it separate from
  * the status socket also keeps the two roles independent: losing the host role never disturbs
  * the tray, and a status resync never re-registers the host.
  *
@@ -20,7 +20,7 @@
 
 import { WebSocket } from 'ws';
 
-import { type JsonObject } from '@nex/protocol';
+import { type JsonObject } from '@kelpi/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
 import { shellHello } from '../hello.js';

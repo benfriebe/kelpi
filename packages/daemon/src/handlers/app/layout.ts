@@ -7,7 +7,7 @@
  * `pane resize` exists as the focus-independent alternative.
  */
 
-import { isPredefinedLayoutKind } from '@nex/core/layout';
+import { isPredefinedLayoutKind } from '@kelpi/core/layout';
 
 import { workspaceContainingVisiblePane } from '../../store/index.js';
 import { forCommand } from './common.js';

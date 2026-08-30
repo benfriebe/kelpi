@@ -40,7 +40,7 @@ import { writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
 import { log, logError, warn } from '../log.js';
@@ -90,7 +90,7 @@ export interface WebPaneHost {
 
 /**
  * Where a screenshot over the inline budget is spilled. §8.4 pins both the directory (the OS
- * per-app temp dir) and the name (`nex-web-capture-<paneID>-<unixts>.png`) because the CLI
+ * per-app temp dir) and the name (`kelpi-web-capture-<paneID>-<unixts>.png`) because the CLI
  * prints the path and an agent then reads it.
  */
 async function spillScreenshot(paneID: string, png: Uint8Array): Promise<string> {
@@ -126,7 +126,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
             show: false,
             width: viewport.width,
             height: viewport.height,
-            title: 'Nex Web Host',
+            title: 'Kelpi Web Host',
             skipTaskbar: true
         });
         log(`web host holder window created (${String(viewport.width)}×${String(viewport.height)}, never shown)`);
@@ -250,7 +250,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
          * §7.3's other half: the chords the web-pane key layer owns are taken from the page and
          * replayed into the shell window's renderer, which is the process that implements them.
          * Without this, clicking a page permanently disables ⌘F / ⌘L / ⌘T for that pane — the
-         * page's renderer has keyboard focus and Nex's never sees the keystroke.
+         * page's renderer has keyboard focus and Kelpi's never sees the keystroke.
          */
         forwardChord: (chord) => {
             // NOT `webContents.sendInputEvent`: a synthetic OS key is delivered to whichever
@@ -435,7 +435,7 @@ export function createWebPaneHost(options: WebPaneHostOptions): WebPaneHost {
 
     client = createWebHostClient({
         location: options.location,
-        name: 'nex-shell',
+        name: 'kelpi-shell',
         version: options.version ?? '0.0.0',
         // Declared at registration so the daemon can tell this window's geometry reports from
         // any other client's (HOST_PROTOCOL §1 + §3.5).

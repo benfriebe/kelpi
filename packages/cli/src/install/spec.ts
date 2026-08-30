@@ -1,5 +1,5 @@
 /**
- * WHICH hooks get installed — the single table `nex install-hooks` writes and `nex doctor`
+ * WHICH hooks get installed — the single table `kelpi install-hooks` writes and `kelpi doctor`
  * checks (AGNT-123, AGNT-124).
  *
  * Order is contract, not taste: it is the order the Swift `install-hooks.sh` heredocs listed,
@@ -20,7 +20,7 @@ import type { JsonObject, JsonValue } from '../json.js';
 export interface HookWiring {
     /** The event name as the agent CLI spells it. */
     readonly event: string;
-    /** The `nex event <verb>` this event fires. */
+    /** The `kelpi event <verb>` this event fires. */
     readonly verb: string;
     /** `--agent codex`, or nothing for Claude Code (absent = claude on the wire). */
     readonly agent?: 'codex';
@@ -70,11 +70,11 @@ export function hookPayload(wirings: readonly HookWiring[], commandPrefix: strin
 }
 
 /**
- * The bare `nex event <verb>` bases, handed to the merge as `extraBases`.
+ * The bare `kelpi event <verb>` bases, handed to the merge as `extraBases`.
  *
  * They are what lets an install whose command prefix is an absolute path still sweep the bare
- * `nex event stop` an older installer wrote (and vice versa) — see `./merge.ts`'s note.
+ * `kelpi event stop` an older installer wrote (and vice versa) — see `./merge.ts`'s note.
  */
 export function canonicalBases(wirings: readonly HookWiring[]): string[] {
-    return wirings.map((wiring) => `nex event ${wiring.verb}`);
+    return wirings.map((wiring) => `kelpi event ${wiring.verb}`);
 }

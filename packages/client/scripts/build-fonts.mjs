@@ -29,7 +29,7 @@ const FACES = ['Regular', 'Bold'];
 
 /** Where a ghostty checkout keeps the patched TTFs, relative to this repo's parent. */
 const GHOSTTY_CANDIDATES = [
-    path.resolve(clientRoot, '..', '..', '..', 'nex', 'ghostty', 'src', 'font', 'res'),
+    path.resolve(clientRoot, '..', '..', '..', 'kelpi', 'ghostty', 'src', 'font', 'res'),
     path.resolve(clientRoot, '..', '..', 'ghostty', 'src', 'font', 'res')
 ];
 
@@ -59,7 +59,7 @@ async function loadCompressor() {
         return mod.compress ?? mod.default?.compress;
     } catch {
         throw new Error(
-            'wawoff2 is not installed. Run `pnpm add -D wawoff2 --filter @nex/client` (or `npm i wawoff2` in a scratch dir and re-run with --ttf-dir).'
+            'wawoff2 is not installed. Run `pnpm add -D wawoff2 --filter @kelpi/client` (or `npm i wawoff2` in a scratch dir and re-run with --ttf-dir).'
         );
     }
 }

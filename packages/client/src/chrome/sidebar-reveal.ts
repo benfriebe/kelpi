@@ -84,10 +84,10 @@ export function isSidebarSettledOpen(phase: SidebarPhase): boolean {
  *
  * `Sidebar.tsx` and `Inspector.tsx` both paint `sidebarBackground`, so one token covers both
  * panels; the literal fallback is the dark preset, exactly as every other chrome component
- * spells its own (`var(--nex-fg, #E6E6EA)`), so the strip is right even before `ThemeProvider`
+ * spells its own (`var(--kelpi-fg, #E6E6EA)`), so the strip is right even before `ThemeProvider`
  * has stamped anything.
  */
-export const SIDEBAR_PANEL_GROUND = 'var(--nex-sidebar-bg, #0C0C10)';
+export const SIDEBAR_PANEL_GROUND = 'var(--kelpi-sidebar-bg, #0C0C10)';
 
 /** The three inline styles the slide needs: the slot, the clip inside it, and the moving panel. */
 export interface SidebarSlideStyle {
@@ -102,7 +102,7 @@ export interface SidebarSlideStyle {
      *
      * It is exactly the animated width, and it used to paint NOTHING: every pixel the panel did
      * not itself cover was whatever lay behind the window row, which is `<body>`'s ground —
-     * `--nex-window-fill`, and under a window created transparent (§N17, `background-opacity <
+     * `--kelpi-window-fill`, and under a window created transparent (§N17, `background-opacity <
      * 1`) that ground is `transparent`, i.e. **the desktop**. A slide therefore opened a
      * 220/280 px hole onto the wallpaper: measured at 100 % of the revealed strip fully cleared
      * mid-flight on the inspector's close, and up to 23 % on the sidebar's (whose panel *is*
@@ -114,7 +114,7 @@ export interface SidebarSlideStyle {
      * the wrong colour even for one frame, whatever the panel's opacity or geometry is doing,
      * and it does not touch §N17: this is the panel's OWN opaque colour inside the panel's own
      * slot — one of the surfaces the Swift keeps opaque at every background-opacity — never
-     * `--nex-bg`, and it exists only while the slot has width, i.e. only where the panel is.
+     * `--kelpi-bg`, and it exists only while the slot has width, i.e. only where the panel is.
      */
     readonly clip: {
         readonly background: string;

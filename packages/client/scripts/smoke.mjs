@@ -3,7 +3,7 @@
  * Live smoke test for the assembled client (WP3.6's acceptance gate).
  *
  * Unit tests prove the pieces; this proves the SYSTEM. It builds the client, boots a real
- * `nexd` on private paths, and then behaves like the browser does — an HTTP GET of the page,
+ * `kelpid` on private paths, and then behaves like the browser does — an HTTP GET of the page,
  * a WebSocket handshake, a state snapshot, a delta caused by the REAL Swift CLI, a PTY attach
  * with its replay, and keystrokes that come back as terminal output.
  *
@@ -14,7 +14,7 @@
  *
  * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
  * machine): every path is inside a fresh `mkdtemp` directory, the control socket is
- * `<tmp>/nexd.sock` and NEVER `/tmp/nex.sock`, the DB, run dir, config and HOME are all
+ * `<tmp>/kelpid.sock` and NEVER `/tmp/nex.sock`, the DB, run dir, config and HOME are all
  * throwaway, and the control TCP port is one the OS just handed us.
  *
  *   node packages/client/scripts/smoke.mjs [--no-build] [--keep] [--verbose]
@@ -35,19 +35,19 @@ import { fileURLToPath } from 'node:url';
 
 const clientRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(clientRoot, '..', '..');
-const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const clientDist = path.join(clientRoot, 'dist');
 
-const SWIFT_CLI = process.env['NEX_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
+const SWIFT_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
 
-/** Frame layout from `@nex/protocol` `ws/pty.ts` (kept in sync by `smoke.test.ts`). */
+/** Frame layout from `@kelpi/protocol` `ws/pty.ts` (kept in sync by `smoke.test.ts`). */
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const FRAME_HEADER_BYTES = 17;
 const PROTOCOL_VERSION = 1;
 
 const argv = new Set(process.argv.slice(2));
 const options = {
-    // Rebuilding is the default: a stale `dist/nexd.js` silently tests LAST commit's daemon,
+    // Rebuilding is the default: a stale `dist/kelpid.js` silently tests LAST commit's daemon,
     // which is exactly the confusion a live smoke exists to prevent.
     build: !argv.has('--no-build'),
     keep: argv.has('--keep'),
@@ -117,12 +117,12 @@ async function freePort() {
 async function ensureBuilds() {
     if (options.build || !fs.existsSync(daemonEntry)) {
         process.stdout.write('building the daemon bundle…\n');
-        const result = await run('pnpm', ['--filter', '@nex/daemon', 'build']);
+        const result = await run('pnpm', ['--filter', '@kelpi/daemon', 'build']);
         if (result.code !== 0) throw new Error(`daemon build failed:\n${result.stdout}${result.stderr}`);
     }
     if (options.build || !fs.existsSync(path.join(clientDist, 'index.html'))) {
         process.stdout.write('building the client…\n');
-        const result = await run('pnpm', ['--filter', '@nex/client', 'build']);
+        const result = await run('pnpm', ['--filter', '@kelpi/client', 'build']);
         if (result.code !== 0) throw new Error(`client build failed:\n${result.stdout}${result.stderr}`);
     }
 }
@@ -134,7 +134,7 @@ async function ensureBuilds() {
  * `welcome` already carries them — and written into the throwaway root, never near the
  * developer's real `~/.config/nex/config` or `~/.config/ghostty/config`.
  */
-const SMOKE_CONFIG = `# nex smoke config
+const SMOKE_CONFIG = `# kelpi smoke config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 175
 
@@ -161,7 +161,7 @@ async function startDaemon() {
 
     const controlPort = await freePort();
     const httpPort = await freePort();
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
 
     const log = [];
@@ -170,18 +170,18 @@ async function startDaemon() {
         env: {
             PATH: process.env['PATH'] ?? '/usr/bin:/bin',
             HOME: home,
-            NEXD_RUN_DIR: runDir,
-            NEXD_SOCKET_PATH: socketPath,
-            NEXD_TCP_PORT: String(controlPort),
-            NEXD_DB_PATH: path.join(root, 'nex.db'),
-            NEXD_CONFIG_PATH: configPath,
+            KELPID_RUN_DIR: runDir,
+            KELPID_SOCKET_PATH: socketPath,
+            KELPID_TCP_PORT: String(controlPort),
+            KELPID_DB_PATH: path.join(root, 'nex.db'),
+            KELPID_CONFIG_PATH: configPath,
             // The settings service's ghostty override; without it the daemon would read the
             // developer's own ~/.config/ghostty/config.
-            NEXD_GHOSTTY_CONFIG: ghosttyConfigPath,
-            NEXD_HTTP_PORT: String(httpPort),
-            NEXD_HTTP_HOST: '127.0.0.1',
+            KELPID_GHOSTTY_CONFIG: ghosttyConfigPath,
+            KELPID_HTTP_PORT: String(httpPort),
+            KELPID_HTTP_HOST: '127.0.0.1',
             // The static-dir mechanism already exists: `ws/http.ts` `resolveClientDistDir`.
-            NEXD_CLIENT_DIR: clientDist
+            KELPID_CLIENT_DIR: clientDist
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -374,7 +374,7 @@ async function main() {
             type: 'hello',
             protocolVersion: PROTOCOL_VERSION,
             token: daemon.token,
-            client: { kind: 'browser', name: 'nex-smoke' }
+            client: { kind: 'browser', name: 'kelpi-smoke' }
         });
         const welcome = await ws.waitJson((m) => m.type === 'welcome', 'welcome');
         check(
@@ -392,7 +392,7 @@ async function main() {
             JSON.stringify(settings.general)
         );
         check(
-            'the nex config’s keybind line reaches the client',
+            'the kelpi config’s keybind line reaches the client',
             Array.isArray(settings.keybindLines) && settings.keybindLines.includes('ctrl+alt+t=split_right'),
             JSON.stringify(settings.keybindLines)
         );
@@ -498,7 +498,7 @@ async function main() {
                 `${replay.payload.length} bytes of VT snapshot, ${JSON.stringify(decoder.decode(replay.payload).slice(0, 40))}`
             );
 
-            const marker = `nex-smoke-${Date.now()}`;
+            const marker = `kelpi-smoke-${Date.now()}`;
             ws.sendFrame(encodeFrame(FRAME.input, paneID, encoder.encode(`echo ${marker}\n`)));
             const seen = [];
             const output = await ws.waitFrame((frame) => {
@@ -597,7 +597,7 @@ async function main() {
             );
             check(
                 'the write preserves every unrelated line',
-                configAfter.includes('# nex smoke config') &&
+                configAfter.includes('# kelpi smoke config') &&
                     configAfter.includes('focus-follows-mouse = true') &&
                     configAfter.includes('focus-follows-mouse-delay = 175') &&
                     configAfter.includes('keybind = ctrl+alt+t=split_right')
@@ -633,7 +633,7 @@ async function main() {
                 JSON.stringify(themed.settings?.appearance)
             );
 
-            // 5b. Settings ▸ Appearance writes a file Nex does NOT own (SET-039…041). The
+            // 5b. Settings ▸ Appearance writes a file Kelpi does NOT own (SET-039…041). The
             //     `set-ghostty-setting` verb applies the surgical writer to the user's real
             //     ghostty config, and the check that matters is the line it left alone: a
             //     colour picker must not be able to eat a hand-maintained config.
@@ -707,7 +707,7 @@ async function main() {
             fs.writeFileSync(assetPath, 'sibling asset\n', 'utf8');
 
             if (cliAvailable) {
-                // The real Swift CLI's `nex md` → the frozen `open` wire command.
+                // The real Swift CLI's `kelpi md` → the frozen `open` wire command.
                 const opened = await run(SWIFT_CLI, ['md', docPath], {
                     cwd: daemon.home,
                     env: {
@@ -838,7 +838,7 @@ async function main() {
         ws?.close();
         if (options.keep) {
             process.stdout.write(
-                `\nleaving the daemon up:\n  open ${daemon.base}/?token=${daemon.token}\n  NEX_SOCKET=tcp:127.0.0.1:${daemon.controlPort} nex pane list\n  stop it with: kill ${daemon.pid}   (state lives in ${daemon.root})\n`
+                `\nleaving the daemon up:\n  open ${daemon.base}/?token=${daemon.token}\n  NEX_SOCKET=tcp:127.0.0.1:${daemon.controlPort} kelpi pane list\n  stop it with: kill ${daemon.pid}   (state lives in ${daemon.root})\n`
             );
             // The child keeps this process's event loop alive through its stdio pipes; detach
             // from it so `--keep` returns to the shell instead of hanging on a daemon that is

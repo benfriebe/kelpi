@@ -6,7 +6,7 @@
  * makes it slow, GUI-bound and limited to a handful of rounds. This asks the same question with
  * no window at all, so it can ask it two hundred times:
  *
- *   - a SANDBOX daemon (`mkdtemp` + `NEXD_*` + ephemeral non-reserved ports — never the dev
+ *   - a SANDBOX daemon (`mkdtemp` + `KELPID_*` + ephemeral non-reserved ports — never the dev
  *     stack, never `/tmp/nex.sock`), with a real PTY running a real zsh,
  *   - a headless client speaking the real pane-stream protocol (`attach-pane`, `resize-pane`,
  *     binary `ack`/`input` frames),
@@ -14,7 +14,7 @@
  *     (`packages/client/src/terminal/ingest.ts`) into a REAL ghostty-web WASM VT — the engine
  *     the app renders with, minus the canvas,
  *   - and after every storm round, the client engine's own text differenced against the
- *     daemon's (`nex pane capture`).
+ *     daemon's (`kelpi pane capture`).
  *
  * What it is for. The owner's N23 screenshot — rows of U+FFFD and stray symbol glyphs after
  * closing or adjusting panes — is a CLIENT-side symptom with a server-side buffer that reads
@@ -89,7 +89,7 @@ const options = {
     verbose: argv.includes('--verbose')
 };
 
-// ── the wire, by hand (`@nex/protocol` `ws/pty.ts`) ─────────────────────────────────
+// ── the wire, by hand (`@kelpi/protocol` `ws/pty.ts`) ─────────────────────────────────
 
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
@@ -202,7 +202,7 @@ const sandbox = await makeSandbox(repoRoot, {
 process.stdout.write(`sandbox ${sandbox.root}\n`);
 
 if (options.build) {
-    for (const target of ['@nex/daemon', '@nex/cli']) {
+    for (const target of ['@kelpi/daemon', '@kelpi/cli']) {
         const result = await run('pnpm', ['--filter', target, 'build'], { cwd: repoRoot });
         if (result.code !== 0) throw new Error(`${target} build failed:\n${result.stdout}${result.stderr}`);
     }
@@ -327,7 +327,7 @@ const zdotdir = path.join(sandbox.work, 'n23');
 fs.mkdirSync(zdotdir, { recursive: true });
 fs.writeFileSync(
     path.join(zdotdir, '.zshrc'),
-    'setopt prompt_subst\n' + "PROMPT=$'┌NEXTRAIL ${(l:$((COLUMNS - 12))::·:)}\\n└NEXPROMPT%% '\n"
+    'setopt prompt_subst\n' + "PROMPT=$'┌KELPITRAIL ${(l:$((COLUMNS - 12))::·:)}\\n└KELPIPROMPT%% '\n"
 );
 type(victim, `exec env ZDOTDIR=${zdotdir} zsh\n`);
 await sleep(2500);

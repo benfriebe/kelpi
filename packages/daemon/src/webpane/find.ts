@@ -1,8 +1,8 @@
 /**
  * Find-in-page, daemon half (web-pane.md §10; WEB-059…WEB-065).
  *
- * The *marking* is entirely page-side — `webhost/scripts.ts`'s `__nexWebFind` wraps matches in
- * `<mark class="nex-webfind-match">` and answers `{total, current}` — and the host already
+ * The *marking* is entirely page-side — `webhost/scripts.ts`'s `__kelpiWebFind` wraps matches in
+ * `<mark class="kelpi-webfind-match">` and answers `{total, current}` — and the host already
  * exposes it as the `find` RPC. What was missing is everything between a person pressing ⌘F and
  * that RPC, which is what this module is:
  *
@@ -10,7 +10,7 @@
  *     bar is not per-client chrome the way a markdown pane's is: the marks live in a page the
  *     *host* owns, so two windows looking at the same pane are looking at the same marks. The
  *     needle is therefore daemon state, and every client reads the same counter.
- *   - **WEB-065**: a completed navigation rebuilds the DOM *and* `window.__nexWebFind`, so the
+ *   - **WEB-065**: a completed navigation rebuilds the DOM *and* `window.__kelpiWebFind`, so the
  *     remembered needle has to be re-applied once the new document reports itself. Closing the
  *     find (`clear`) forgets it, which is what stops later navigations from re-marking.
  *   - **WEB-064**: switching or closing a tab while the bar is open clears the outgoing tab and

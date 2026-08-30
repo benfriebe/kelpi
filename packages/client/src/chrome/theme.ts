@@ -15,10 +15,10 @@
  *     the OS theme (docs/current/content-panes.md §3.1 + port note 9) — `ghosttyBucket` below.
  *
  * Everything is a plain sRGB hex or `rgba()` string so the whole theme is assignable straight
- * onto a container's inline style as `--nex-*` variables.
+ * onto a container's inline style as `--kelpi-*` variables.
  */
 
-import type { WorkspaceColor } from '@nex/daemon/store';
+import type { WorkspaceColor } from '@kelpi/daemon/store';
 
 // ── token set ───────────────────────────────────────────────────────────────────────
 
@@ -155,7 +155,7 @@ export function normalizeHexColor(value: string): string | null {
 /**
  * `rgba(...)` from a hex + alpha.
  *
- * A **`var(--nex-x, #hex)` token** (what `tokens.ts` hands every component) is not a hex, and
+ * A **`var(--kelpi-x, #hex)` token** (what `tokens.ts` hands every component) is not a hex, and
  * returning it unchanged dropped the alpha silently: `withAlpha(tokens.accent, 0.18)` painted
  * the accent at FULL strength, which is why a selected settings tab, a selected profile row and
  * an armed key recorder all wore a solid periwinkle slab instead of an 18 % tint (the audit
@@ -271,59 +271,59 @@ export function resolveChromeTheme(input: ChromeThemeInput = {}): ChromeTheme {
 
 /**
  * Token → CSS variable name. Assembly owns `:root`; components read these with a literal
- * fallback (`var(--nex-fg, #E6E6EA)`) so a chrome component renders correctly even when it is
+ * fallback (`var(--kelpi-fg, #E6E6EA)`) so a chrome component renders correctly even when it is
  * mounted outside a `ThemeProvider` (tests, storybook-style harnesses).
  */
 export const CHROME_CSS_VARS: Readonly<Record<keyof ChromeTheme, string>> = {
-    windowBackground: '--nex-bg',
-    sidebarBackground: '--nex-sidebar-bg',
-    surfaceBackground: '--nex-surface',
-    headerBackground: '--nex-header-bg',
-    footerBackground: '--nex-footer-bg',
-    textPrimary: '--nex-fg',
-    textSecondary: '--nex-fg-secondary',
-    textTertiary: '--nex-fg-tertiary',
-    divider: '--nex-border',
-    selectionFill: '--nex-selection-fill',
-    selectionStroke: '--nex-selection-stroke',
-    accent: '--nex-accent',
-    paneFocus: '--nex-pane-focus',
-    statusRunning: '--nex-status-running',
-    statusWaiting: '--nex-status-waiting',
-    statusInactive: '--nex-status-inactive',
-    activeAgent: '--nex-active-agent',
-    groupBandOpacity: '--nex-group-band-opacity'
+    windowBackground: '--kelpi-bg',
+    sidebarBackground: '--kelpi-sidebar-bg',
+    surfaceBackground: '--kelpi-surface',
+    headerBackground: '--kelpi-header-bg',
+    footerBackground: '--kelpi-footer-bg',
+    textPrimary: '--kelpi-fg',
+    textSecondary: '--kelpi-fg-secondary',
+    textTertiary: '--kelpi-fg-tertiary',
+    divider: '--kelpi-border',
+    selectionFill: '--kelpi-selection-fill',
+    selectionStroke: '--kelpi-selection-stroke',
+    accent: '--kelpi-accent',
+    paneFocus: '--kelpi-pane-focus',
+    statusRunning: '--kelpi-status-running',
+    statusWaiting: '--kelpi-status-waiting',
+    statusInactive: '--kelpi-status-inactive',
+    activeAgent: '--kelpi-active-agent',
+    groupBandOpacity: '--kelpi-group-band-opacity'
 };
 
 /**
- * Second spellings the app also answers to. The pane grid (WP3.3) reads `--nex-surface-bg`
- * and `--nex-agent`; emitting both names from one resolve puts every subtree on one palette
+ * Second spellings the app also answers to. The pane grid (WP3.3) reads `--kelpi-surface-bg`
+ * and `--kelpi-agent`; emitting both names from one resolve puts every subtree on one palette
  * without either module importing the other's naming choice.
  */
 export const CHROME_CSS_VAR_ALIASES: Readonly<Record<string, string>> = {
-    '--nex-surface-bg': '--nex-surface',
-    '--nex-agent': '--nex-active-agent'
+    '--kelpi-surface-bg': '--kelpi-surface',
+    '--kelpi-agent': '--kelpi-active-agent'
 };
 
 export interface ChromeCssVarOptions {
     /**
      * The ghostty `background-opacity` (APP-012 / SET-049). Below 1 the WINDOW fill —
-     * `--nex-bg`, which the pane grid's gutters, the placeholders and the popovers paint — is
+     * `--kelpi-bg`, which the pane grid's gutters, the placeholders and the popovers paint — is
      * emitted as `rgba(…, opacity)` rather than an opaque hex, so a window the Electron shell
      * created transparent lets the desktop through everywhere the client is not deliberately
      * opaque (the sidebar, the header, popovers, the settings dialog).
      *
      * It belongs here rather than in each component for the same reason the sidebar tint knobs
-     * do: `--nex-bg` is read in a dozen places and one assignment reaches all of them. The
+     * do: `--kelpi-bg` is read in a dozen places and one assignment reaches all of them. The
      * default (1, or absent) emits exactly what it always did, byte for byte.
      */
     readonly windowOpacity?: number | undefined;
 }
 
 /**
- * §N17 — the window GROUND, as a name of its own, distinct from `--nex-bg`.
+ * §N17 — the window GROUND, as a name of its own, distinct from `--kelpi-bg`.
  *
- * `--nex-bg` is the chrome's "window gaps" colour and a dozen surfaces read it. The ground is
+ * `--kelpi-bg` is the chrome's "window gaps" colour and a dozen surfaces read it. The ground is
  * a different question: it is what `<body>` and the app root paint BEHIND everything else, and
  * once the window is transparent it must paint nothing at all. `RootChromeView.swift:32-39`
  * says so outright — the opaque backdrop is painted "only when the terminal is fully opaque",
@@ -331,7 +331,7 @@ export interface ChromeCssVarOptions {
  * would defeat that". Each pane's own fill is then the single translucent layer over the
  * desktop, exactly as libghostty's surface is in the shipped app.
  *
- * The port had no such name, so five elements painted `--nex-bg` on top of one another —
+ * The port had no such name, so five elements painted `--kelpi-bg` on top of one another —
  * `<body>`, the app root, the grid container, every pane wrapper, every pane body. Alpha
  * multiplies: 0.85 stacked five deep is 1 − 0.15⁵ = **0.99992**, i.e. solid, which is the
  * whole of N17's "fully solid pane" at the DOM layer.
@@ -339,9 +339,9 @@ export interface ChromeCssVarOptions {
  * At opacity 1 (the shipped default) this is `theme.windowBackground` — the same value those
  * elements already painted, so the rendered result is byte-identical.
  */
-export const WINDOW_FILL_CSS_VAR = '--nex-window-fill';
+export const WINDOW_FILL_CSS_VAR = '--kelpi-window-fill';
 
-/** The theme as a `{ '--nex-*': value }` map, ready for an inline `style` or `:root` block. */
+/** The theme as a `{ '--kelpi-*': value }` map, ready for an inline `style` or `:root` block. */
 export function chromeThemeCssVars(
     theme: ChromeTheme,
     options: ChromeCssVarOptions = {}
@@ -436,11 +436,11 @@ export function effectiveOpacity(value: number, intensity: number): number {
 
 /** The CSS variables the sidebar tint knobs publish (SET-037, SET-038). */
 export const SIDEBAR_TINT_VARS = {
-    intensity: '--nex-sidebar-intensity',
-    avatarFill: '--nex-avatar-fill',
-    avatarStroke: '--nex-avatar-stroke',
-    groupFill: '--nex-group-fill',
-    groupStroke: '--nex-group-stroke'
+    intensity: '--kelpi-sidebar-intensity',
+    avatarFill: '--kelpi-avatar-fill',
+    avatarStroke: '--kelpi-avatar-stroke',
+    groupFill: '--kelpi-group-fill',
+    groupStroke: '--kelpi-group-stroke'
 } as const;
 
 export interface SidebarTint extends SidebarFillStroke {

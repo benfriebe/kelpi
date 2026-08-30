@@ -100,7 +100,7 @@ export interface HostProbe {
 
 // ── darwin ──────────────────────────────────────────────────────────────────────────
 
-const DARWIN_SECTION = 'nex';
+const DARWIN_SECTION = 'kelpi';
 
 /**
  * The one command all three darwin readers ride. Sections are separated by a control-character

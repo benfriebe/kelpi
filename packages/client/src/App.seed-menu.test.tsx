@@ -11,15 +11,15 @@
  * and `scripts/packaged-smoke.mjs`; the two halves meet at the command string, pinned in both.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { SEED_TEST_GROUP_COMMAND } from './app/seed-test-group';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -41,11 +41,11 @@ interface Harness {
 
 function setup(): Harness {
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,

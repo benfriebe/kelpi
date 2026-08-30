@@ -1,5 +1,5 @@
 /**
- * `nex event *` — the Claude Code / Codex hook entrypoint.
+ * `kelpi event *` — the Claude Code / Codex hook entrypoint.
  *
  * These are the only fire-and-forget commands that carry state: the CLI writes one line and
  * exits 0 without reading anything, so every assertion is made through a following
@@ -19,25 +19,25 @@ import {
 
 const SESSION = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
-describe.skipIf(!swiftCLIAvailable())('compat: nex event', () => {
-    let nex: CompatDaemon;
+describe.skipIf(!swiftCLIAvailable())('compat: kelpi event', () => {
+    let kelpi: CompatDaemon;
     let paneID: string;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
-        await nex.json(['workspace', 'create', '--name', 'agents', '--json']);
-        const reply = await nex.json<{ pane_id: string }>([
+        kelpi = await startCompatDaemon();
+        await kelpi.json(['workspace', 'create', '--name', 'agents', '--json']);
+        const reply = await kelpi.json<{ pane_id: string }>([
             'pane', 'create', '--workspace', 'agents', '--name', 'worker', '--json'
         ]);
         paneID = reply.pane_id;
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     async function pane(): Promise<PaneListEntryJSON> {
-        const panes = await nex.json<PaneListEntryJSON[]>(['pane', 'list', '--workspace', 'agents', '--json']);
+        const panes = await kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--workspace', 'agents', '--json']);
         const found = panes.find((entry) => entry.id === paneID);
         if (found === undefined) throw new Error(`pane ${paneID} vanished`);
         return found;
@@ -45,7 +45,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex event', () => {
 
     /** Fire a hook exactly as Claude Code does: flags + a JSON payload on stdin. */
     async function hook(args: readonly string[], payload?: Record<string, unknown>): Promise<void> {
-        const result = await nex.run(['event', ...args], {
+        const result = await kelpi.run(['event', ...args], {
             paneID,
             ...(payload !== undefined ? { stdin: JSON.stringify(payload) } : {})
         });
@@ -165,14 +165,14 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex event', () => {
     }, 60_000);
 
     it('exits 0 and sends nothing without NEX_PANE_ID, and exits 1 on a bad --agent', async () => {
-        // Outside a Nex pane: `requirePaneID()` exits 0 silently (hooks must never spam).
-        const orphan = await nex.run(['event', 'start']);
+        // Outside a Kelpi pane: `requirePaneID()` exits 0 silently (hooks must never spam).
+        const orphan = await kelpi.run(['event', 'start']);
         expect(orphan.code).toBe(0);
         expect(orphan.stdout).toBe('');
         expect((await pane()).status).toBe('idle');
 
         // A typo'd --agent is loud on purpose: it would otherwise degrade to claude.
-        const bad = await nex.run(['event', 'start', '--agent', 'gpt'], { paneID });
+        const bad = await kelpi.run(['event', 'start', '--agent', 'gpt'], { paneID });
         expect(bad.code).toBe(1);
         expect(bad.stderr).toContain('Unknown --agent value: gpt (valid: claude, codex)');
         expect((await pane()).status).toBe('idle');

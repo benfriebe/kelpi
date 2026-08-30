@@ -92,7 +92,7 @@ describe('setGhosttySetting', () => {
 
     /**
      * Five writes in a row, then read the file back with the SAME line parser the daemon's
-     * ghostty reader uses. (The reader itself lives in `@nex/daemon`, which core must not
+     * ghostty reader uses. (The reader itself lives in `@kelpi/daemon`, which core must not
      * depend on — `daemon/src/settings/ghostty.test.ts` closes that half of the loop against
      * the real parser.)
      */

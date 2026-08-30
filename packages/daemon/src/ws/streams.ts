@@ -1,5 +1,5 @@
 /**
- * PTY streams over the client-sync socket (WP2.7, `@nex/protocol` `ws/pty.ts`).
+ * PTY streams over the client-sync socket (WP2.7, `@kelpi/protocol` `ws/pty.ts`).
  *
  * One binary channel per client multiplexes every pane it is attached to:
  * `[type][16-byte paneID][payload]`. Terminal bytes therefore never touch the JSON channel
@@ -50,7 +50,7 @@ import {
     type WsMouseFormat,
     type WsMouseTrackingMode,
     type WsVtModes
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
 import type { PtyManager, TerminalStateService, VtModes } from '../seams.js';
 
@@ -674,7 +674,7 @@ export function createPaneStreamHub(options: PaneStreamHubOptions): PaneStreamHu
     const offExit = pty.onExit((paneID, exitCode) => {
         if (closed) return;
         // The process is gone: a settle timer would snapshot a terminal that is being torn
-        // down, and the remembered grid would make the NEXT process in this pane id look
+        // down, and the remembered grid would make the KELPIT process in this pane id look
         // like it had never been resized.
         clearResyncTimer(paneID);
         grids.delete(paneID);

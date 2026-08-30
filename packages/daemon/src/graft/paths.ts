@@ -48,7 +48,7 @@ export function canonicalizePath(input: string, realpath: RealpathFn = fs.realpa
 
 /**
  * The socket layer's `standardizedPath` + canonicalize: expand `~` against `home` first, so a
- * CLI-supplied `--repo ~/code/nex` matches a session recorded as `/Users/ben/code/nex`.
+ * CLI-supplied `--repo ~/code/kelpi` matches a session recorded as `/Users/ben/code/kelpi`.
  */
 export function canonicalizeUserPath(
     input: string,

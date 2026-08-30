@@ -69,13 +69,13 @@ function installOurs(contents: string): void {
             version: skillVersion(contents),
             appVersion: '0.1.0',
             installedAt: '2026-08-01T00:00:00.000Z',
-            by: 'nex-shell'
+            by: 'kelpi-shell'
         })}\n`
     );
 }
 
 /**
- * Lay down an installed copy with NO marker beside it — what `nex install-hooks` leaves, and
+ * Lay down an installed copy with NO marker beside it — what `kelpi install-hooks` leaves, and
  * what every copy on disk before this app kept receipts looks like.
  */
 function installUnmarked(contents: string): string {
@@ -95,12 +95,12 @@ function backupsInDest(): string[] {
         .sort();
 }
 
-function refresh(env: NodeJS.ProcessEnv = { HOME: home, NEX_SKILL_SOURCE: sourceDir }) {
+function refresh(env: NodeJS.ProcessEnv = { HOME: home, KELPI_SKILL_SOURCE: sourceDir }) {
     return refreshBundledSkill({ env, appVersion: '0.2.0', now: () => new Date(0) }, nodeSkillFs);
 }
 
 beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-skill-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-skill-'));
     home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     sourceDir = path.join(root, 'bundle', 'skills', 'nex-agentic');
@@ -127,17 +127,17 @@ describe('where the destination comes from', () => {
         expect(resolveHomeDirectory({})).toBeNull();
         expect(resolveHomeDirectory({ HOME: '   ' })).toBeNull();
         expect(resolveHomeDirectory({ HOME: 'relative/home' })).toBeNull();
-        expect(refresh({ HOME: '', NEX_SKILL_SOURCE: sourceDir })).toMatchObject({
+        expect(refresh({ HOME: '', KELPI_SKILL_SOURCE: sourceDir })).toMatchObject({
             action: 'skipped',
             reason: 'no-home'
         });
     });
 
     it('takes the bundled document from the app’s resources, or the harness override', () => {
-        expect(bundledSkillDir({ env: {}, resourcesPath: '/Apps/Nex.app/Contents/Resources' })).toBe(
-            '/Apps/Nex.app/Contents/Resources/cli/skills/nex-agentic'
+        expect(bundledSkillDir({ env: {}, resourcesPath: '/Apps/Kelpi.app/Contents/Resources' })).toBe(
+            '/Apps/Kelpi.app/Contents/Resources/cli/skills/nex-agentic'
         );
-        expect(bundledSkillDir({ env: { NEX_SKILL_SOURCE: '/tmp/skills/nex-agentic' } })).toBe(
+        expect(bundledSkillDir({ env: { KELPI_SKILL_SOURCE: '/tmp/skills/nex-agentic' } })).toBe(
             '/tmp/skills/nex-agentic'
         );
         // A dev run carries no payload, and that is a skip rather than an error.
@@ -211,13 +211,13 @@ describe('what it refuses to do', () => {
 /**
  * The case that decides whether this step is useful at all.
  *
- * In this port the skill is installed by `nex install-hooks`, which leaves no ownership marker.
+ * In this port the skill is installed by `kelpi install-hooks`, which leaves no ownership marker.
  * If an unmarked copy could never be adopted, the launch refresh would decline forever and the
  * feature would be inert for every real user. A copy that is byte-identical to the bundled
  * document cannot have been edited relative to this build, so it — and only it — is adopted.
  */
-describe('adopting a copy `nex install-hooks` wrote', () => {
-    it('records ownership for an identical, unmarked copy so the NEXT release can refresh it', () => {
+describe('adopting a copy `kelpi install-hooks` wrote', () => {
+    it('records ownership for an identical, unmarked copy so the KELPIT release can refresh it', () => {
         const destDir = skillDestinationDir(home);
         fs.mkdirSync(destDir, { recursive: true });
         fs.writeFileSync(path.join(destDir, SKILL_FILE), BUNDLED);
@@ -249,7 +249,7 @@ describe('adopting a copy `nex install-hooks` wrote', () => {
  * §APP-006's migration — the case the first version of this module left stranded.
  *
  * Rule 2 as first written declined an unmarked drifted copy, which is *every* copy
- * `nex install-hooks` ever made: the launch step could adopt one that happened to be identical
+ * `kelpi install-hooks` ever made: the launch step could adopt one that happened to be identical
  * and could never refresh a stale one, so the Swift's own primary case never happened here. The
  * resolution is a one-time migration that cannot lose anything — the drifted document is moved
  * aside to a `.bak-<stamp>` name, the bundle is installed, and the marker goes down beside it.
@@ -333,7 +333,7 @@ describe('migrating a drifted, unmarked copy — once', () => {
     it('does not replace a copy it could not move aside', () => {
         const destFile = installUnmarked(DRIFTED);
         const result = refreshBundledSkill(
-            { env: { HOME: home, NEX_SKILL_SOURCE: sourceDir }, now: () => new Date(0) },
+            { env: { HOME: home, KELPI_SKILL_SOURCE: sourceDir }, now: () => new Date(0) },
             {
                 ...nodeSkillFs,
                 rename() {
@@ -352,7 +352,7 @@ describe('migrating a drifted, unmarked copy — once', () => {
     it('puts the backup back when the install that follows it fails', () => {
         const destFile = installUnmarked(DRIFTED);
         const result = refreshBundledSkill(
-            { env: { HOME: home, NEX_SKILL_SOURCE: sourceDir }, now: () => new Date(0) },
+            { env: { HOME: home, KELPI_SKILL_SOURCE: sourceDir }, now: () => new Date(0) },
             {
                 ...nodeSkillFs,
                 writeFile() {
@@ -407,7 +407,7 @@ describe('what it does do', () => {
     it('reports a write it could not make instead of throwing', () => {
         fs.mkdirSync(skillDestinationDir(home), { recursive: true });
         const result = refreshBundledSkill(
-            { env: { HOME: home, NEX_SKILL_SOURCE: sourceDir } },
+            { env: { HOME: home, KELPI_SKILL_SOURCE: sourceDir } },
             {
                 ...nodeSkillFs,
                 writeFile() {

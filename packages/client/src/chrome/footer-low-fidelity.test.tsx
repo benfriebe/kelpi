@@ -10,7 +10,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ZERO_SYSTEM_STATS } from '@nex/protocol';
+import { ZERO_SYSTEM_STATS } from '@kelpi/protocol';
 
 import { FOOTER_DIFF_TONES } from './StatusFooter';
 import {
@@ -34,7 +34,7 @@ function pane(overrides: Partial<ChromePane> = {}): ChromePane {
         type: 'shell',
         label: null,
         title: null,
-        workingDirectory: '/Users/test/code/nex',
+        workingDirectory: '/Users/test/code/kelpi',
         gitBranch: null,
         status: 'idle',
         agentSessionID: null,
@@ -48,7 +48,7 @@ function pane(overrides: Partial<ChromePane> = {}): ChromePane {
 const SUMMARY = { running: 1, waiting: 0, inactive: 0 };
 
 const DIRTY: FooterAssociation = {
-    worktreePath: '/Users/test/code/nex',
+    worktreePath: '/Users/test/code/kelpi',
     status: { kind: 'dirty', changedFiles: 3, additions: 27, deletions: 12 }
 };
 
@@ -172,8 +172,8 @@ describe('the focused-pane cluster', () => {
         expect(cwd.style.direction).toBe('rtl');
         expect(cwd.style.textAlign).toBe('left');
         // …with the path itself still laid out left-to-right, or a leading `~` migrates.
-        expect(cwd.querySelector('bdi')?.textContent).toBe('~/code/nex');
-        expect(cwd.textContent).toBe('~/code/nex');
+        expect(cwd.querySelector('bdi')?.textContent).toBe('~/code/kelpi');
+        expect(cwd.textContent).toBe('~/code/kelpi');
     });
 
     it('L54: both elapsed labels carry tabular figures', () => {

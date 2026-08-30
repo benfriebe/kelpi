@@ -209,7 +209,7 @@ describe('the reveal shows the panel’s own colour (§N31)', () => {
         }
         // The token, not a hex: the sidebar and the inspector both paint `sidebarBackground`, so
         // a recoloured chrome moves the reveal with them.
-        expect(SIDEBAR_PANEL_GROUND).toContain('--nex-sidebar-bg');
+        expect(SIDEBAR_PANEL_GROUND).toContain('--kelpi-sidebar-bg');
     });
 
     it('the clip is the panel’s containing block, or the anchor anchors to the window', () => {

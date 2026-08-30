@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RepoGitStatus } from '../git/index.js';
 import { stubGitService } from '../git/testing.js';
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import {
     createRepoAssociationWatch,
     GIT_STATUS_POLL_MS,
@@ -51,7 +51,7 @@ function fakeHeadWatch(onChanged: (id: string) => void): FakeHeadWatch {
 }
 
 interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly watch: RepoAssociationWatchService;
     readonly headWatch: FakeHeadWatch;
     readonly forceStopped: string[];
@@ -103,7 +103,7 @@ function harness(
     return { store, watch: service, headWatch, forceStopped };
 }
 
-function addAssociation(store: NexStore, id: string, worktreePath: string): void {
+function addAssociation(store: KelpiStore, id: string, worktreePath: string): void {
     store.dispatch({
         type: 'add-repo-association',
         workspaceID: W1,

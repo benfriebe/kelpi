@@ -11,7 +11,7 @@ export {
     resolveShell,
     resolveSpawnCwd
 } from './manager.js';
-export type { NexPtyManager, PtyManagerOptions } from './manager.js';
+export type { KelpiPtyManager, PtyManagerOptions } from './manager.js';
 
 export {
     BRACKETED_PASTE_END,

@@ -7,14 +7,14 @@
  * expected wire command.
  */
 
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
-import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -68,11 +68,11 @@ interface Harness {
 
 function setup(): Harness {
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,

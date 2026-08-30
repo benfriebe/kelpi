@@ -3,14 +3,14 @@
  * Spec: docs/current/config-keybindings.md §1.4, §5.1, §5.2.
  */
 
-import { isNexAction, UNBIND_ACTION } from './actions.js';
-import type { NexAction, UnbindAction } from './actions.js';
+import { isKelpiAction, UNBIND_ACTION } from './actions.js';
+import type { KelpiAction, UnbindAction } from './actions.js';
 import { keyTriggerConfigString, keyTriggerKey, parseKeyTrigger } from './keys.js';
 import type { KeyTrigger } from './keys.js';
 
 export interface KeyBinding {
     readonly trigger: KeyTrigger;
-    readonly action: NexAction;
+    readonly action: KelpiAction;
 }
 
 /** trigger identity (`keyTriggerKey`) → binding. One action per trigger. */
@@ -18,7 +18,7 @@ export type KeyBindingMap = ReadonlyMap<string, KeyBinding>;
 
 export interface KeybindOverride {
     readonly trigger: KeyTrigger;
-    readonly action: NexAction | UnbindAction;
+    readonly action: KelpiAction | UnbindAction;
 }
 
 /**
@@ -34,7 +34,7 @@ export function parseKeybindValue(value: string): KeybindOverride | null {
     const trigger = parseKeyTrigger(triggerString);
     if (trigger === null) return null;
     if (actionString === UNBIND_ACTION) return { trigger, action: UNBIND_ACTION };
-    if (!isNexAction(actionString)) return null;
+    if (!isKelpiAction(actionString)) return null;
     return { trigger, action: actionString };
 }
 
@@ -99,12 +99,12 @@ function buildDefaults(): KeyBindingMap {
 
 export const DEFAULT_KEYBINDINGS: KeyBindingMap = buildDefaults();
 
-export function actionForTrigger(map: KeyBindingMap, trigger: KeyTrigger): NexAction | null {
+export function actionForTrigger(map: KeyBindingMap, trigger: KeyTrigger): KelpiAction | null {
     return map.get(keyTriggerKey(trigger))?.action ?? null;
 }
 
 /** All triggers bound to an action, sorted by `configString` (deterministic across launches). */
-export function triggersForAction(map: KeyBindingMap, action: NexAction): KeyTrigger[] {
+export function triggersForAction(map: KeyBindingMap, action: KelpiAction): KeyTrigger[] {
     return [...map.values()]
         .filter((binding) => binding.action === action)
         .map((binding) => binding.trigger)
@@ -119,7 +119,7 @@ export function triggersForAction(map: KeyBindingMap, action: NexAction): KeyTri
 export function setBinding(
     map: KeyBindingMap,
     trigger: KeyTrigger,
-    action: NexAction
+    action: KelpiAction
 ): KeyBindingMap {
     const next = new Map(map);
     next.set(keyTriggerKey(trigger), { trigger, action });
@@ -132,7 +132,7 @@ export function removeBinding(map: KeyBindingMap, trigger: KeyTrigger): KeyBindi
     return next;
 }
 
-export function removeAllBindings(map: KeyBindingMap, action: NexAction): KeyBindingMap {
+export function removeAllBindings(map: KeyBindingMap, action: KelpiAction): KeyBindingMap {
     const next = new Map(map);
     for (const [key, binding] of next) {
         if (binding.action === action) next.delete(key);

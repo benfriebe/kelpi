@@ -4,7 +4,7 @@ import {
     decodePtyFrame,
     encodeAckPayload,
     encodePtyFrame
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -147,14 +147,14 @@ async function handshake(base: string): Promise<Client> {
         type: 'hello',
         protocolVersion: WS_PROTOCOL_VERSION,
         token: TOKEN,
-        client: { kind: 'browser', name: 'nex-web' }
+        client: { kind: 'browser', name: 'kelpi-web' }
     });
     await client.waitForJson((message) => message['type'] === 'snapshot', 'snapshot');
     return client;
 }
 
 function clientDist(files: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-ws-server-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-ws-server-'));
     temporaries.push(dir);
     for (const [name, contents] of Object.entries(files)) {
         const target = path.join(dir, name);
@@ -183,7 +183,7 @@ describe('http surface', () => {
     it('serves the "client not built" page when there is no build', async () => {
         const f = await startServer();
         const response = await fetch(`${f.base}/`);
-        expect(response.headers.get('x-nex-client')).toBe('not-built');
+        expect(response.headers.get('x-kelpi-client')).toBe('not-built');
     });
 });
 
@@ -201,7 +201,7 @@ describe('upgrade auth', () => {
             type: 'hello',
             protocolVersion: WS_PROTOCOL_VERSION,
             ...(token === undefined ? {} : { token }),
-            client: { kind: 'browser', name: 'nex-web' }
+            client: { kind: 'browser', name: 'kelpi-web' }
         });
         const first = await client.waitForJson(
             (message) => message['type'] === 'rejected' || message['type'] === 'welcome',
@@ -218,7 +218,7 @@ describe('upgrade auth', () => {
         // client retried with backoff forever with nothing to show the user.
         const { first, closeCode } = await helloWith(f.base, '', '');
         expect(first).toMatchObject({ type: 'rejected', code: 'unauthorized', reason: 'bad-token' });
-        expect(String(first['message'])).toContain('nexd url');
+        expect(String(first['message'])).toContain('kelpid url');
         expect(closeCode).toBe(WS_CLOSE_CODES.unauthorized);
         expect(closeCode).not.toBe(1006);
     });

@@ -17,9 +17,9 @@ import { deriveEvents } from './events.js';
 import { reduce } from './reducers/index.js';
 import type { DaemonState, DomainAction, DomainEvent } from './types.js';
 
-export type NexStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
+export type KelpiStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
 
-export function createStore(initial: DaemonState): NexStore {
+export function createStore(initial: DaemonState): KelpiStore {
     let state = initial;
     const listeners = new Set<(events: readonly DomainEvent[]) => void>();
     const queue: DomainAction[] = [];

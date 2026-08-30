@@ -6,7 +6,7 @@
  * sessions". None of that is true any more, and the difference is the whole point of the port:
  *
  *   - **The shell never stops the daemon.** Closing the window, ⌘Q, `app.quit()`, a SIGTERM —
- *     none of them signal `nexd`. PTYs, agents and terminal state keep running, and the next
+ *     none of them signal `kelpid`. PTYs, agents and terminal state keep running, and the next
  *     launch (or a browser on the tailnet) attaches to exactly the sessions that were there.
  *   - **No flush.** The daemon owns persistence, including the debounced editor autosaves the
  *     old step 1 had to force out, so there is nothing for the shell to drain before exiting.
@@ -111,7 +111,7 @@ export interface QuitGateOptions {
 export const QUIT_FLUSH_TIMEOUT_MS = 750;
 
 export interface QuitGate {
-    /** Menu/tray "Quit Nex". */
+    /** Menu/tray "Quit Kelpi". */
     requestQuit(): void;
     /** True while the confirmation is on screen (a second ⌘Q must not stack a dialog). */
     readonly confirming: boolean;

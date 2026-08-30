@@ -8,7 +8,7 @@
  * convention `store/testing.ts` follows.
  */
 
-import type { WireMessage } from '@nex/protocol';
+import type { WireMessage } from '@kelpi/protocol';
 
 import type {
     PtyManager,
@@ -22,7 +22,7 @@ import {
     createStore,
     emptyDaemonState,
     type DaemonState,
-    type NexStore,
+    type KelpiStore,
     type WorkspaceState
 } from '../../store/index.js';
 import type { PaneHandlerContext } from './context.js';
@@ -230,7 +230,7 @@ export interface HarnessOptions {
 }
 
 export interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly pty: StubPtyManager;
     readonly term: StubTerminalState;
     readonly input: StubTerminalInput;
@@ -273,7 +273,7 @@ export function harness(options: HarnessOptions = {}): Harness {
         clock: () => options.now ?? NOW,
         mintPaneID: mint,
         profiles: () => [],
-        spawn: { helpersDir: '/opt/nex/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 }
+        spawn: { helpersDir: '/opt/kelpi/helpers', inheritedPath: '/usr/bin', cols: 80, rows: 24 }
     };
 
     const dispatch = (msg: WireMessage, reply: ReplyHandle | null): void => {

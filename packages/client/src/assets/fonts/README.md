@@ -20,7 +20,7 @@ for a rarely-used SGR is a bad trade over a tailnet.
 
 ```sh
 # from a ghostty checkout that has the patched TTFs (the Swift app's own source):
-node packages/client/scripts/build-fonts.mjs --ttf-dir ../nex/ghostty/src/font/res
+node packages/client/scripts/build-fonts.mjs --ttf-dir ../kelpi/ghostty/src/font/res
 
 # or straight from the Nerd Fonts release (needs network):
 node packages/client/scripts/build-fonts.mjs --download

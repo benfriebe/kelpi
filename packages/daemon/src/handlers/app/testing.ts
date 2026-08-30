@@ -7,7 +7,7 @@
  * module so every colocated spec builds the same fixtures.
  */
 
-import { decodeWireObject, dispatchSequence, type WireMessage } from '@nex/protocol';
+import { decodeWireObject, dispatchSequence, type WireMessage } from '@kelpi/protocol';
 
 import type {
     PtyManager,
@@ -23,7 +23,7 @@ import {
     type DaemonState,
     type DomainAction,
     type DomainEvent,
-    type NexStore
+    type KelpiStore
 } from '../../store/index.js';
 import { createAppHandlers } from './index.js';
 import type { AppContext, AppHandlerOptions, AppHandlerTable, SpawnPaneRequest } from './context.js';
@@ -48,7 +48,7 @@ export interface CapturedReply {
 export interface RecordedSpawn extends SpawnPaneRequest {}
 
 export interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly ctx: AppContext;
     readonly table: AppHandlerTable;
     readonly broadcasts: Record<string, unknown>[];

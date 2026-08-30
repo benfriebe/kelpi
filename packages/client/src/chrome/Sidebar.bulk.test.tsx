@@ -419,7 +419,7 @@ describe('sidebar resize (§WS-002 / §APP-065)', () => {
         expect(readStoredSidebarWidth(storage)).toBe(220);
         storeSidebarWidth(999, storage);
         expect(readStoredSidebarWidth(storage)).toBe(300);
-        store.set('nex.sidebar.width', 'not-a-number');
+        store.set('kelpi.sidebar.width', 'not-a-number');
         expect(readStoredSidebarWidth(storage)).toBe(220);
     });
 

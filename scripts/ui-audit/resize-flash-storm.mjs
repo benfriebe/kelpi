@@ -9,7 +9,7 @@
  * way, because the corruption heals the moment the settled-resize replay lands.
  *
  * The instrument is the same stack `replay-storm.mjs` uses (a sandbox daemon on `mkdtemp` +
- * `NEXD_*` + ephemeral non-reserved ports, a real PTY running a real zsh, the real client
+ * `KELPID_*` + ephemeral non-reserved ports, a real PTY running a real zsh, the real client
  * `ingest.ts`, a real ghostty-web WASM VT) plus two things:
  *
  *   1. the REAL client renderer adapter (`packages/client/src/terminal/renderer.ts`), driven
@@ -23,7 +23,7 @@
  *   - `held`    — the adapter has the engine's paint suspended, so `CanvasRenderer.render()`
  *                 returns before reading a single cell. The canvas is the last good frame. These
  *                 are the frames the fix trades the garbage for, and they are ACCEPTABLE.
- *   - `garbage` — lit cells that match neither the daemon's own text (`nex pane capture`,
+ *   - `garbage` — lit cells that match neither the daemon's own text (`kelpi pane capture`,
  *                 refreshed every cycle) nor the fixture's repertoire: U+FFFD, or the
  *                 constant-stride runs of monotonically increasing codepoints that are what
  *                 non-text memory looks like read as text.
@@ -94,7 +94,7 @@ await esbuild.build({
         {
             name: 'stub-fonts',
             setup(build) {
-                build.onResolve({ filter: /\.\/fonts$/ }, () => ({ path: 'nex-fonts-stub', namespace: 'stub' }));
+                build.onResolve({ filter: /\.\/fonts$/ }, () => ({ path: 'kelpi-fonts-stub', namespace: 'stub' }));
                 build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
                     contents:
                         'export const TERMINAL_FONT_FALLBACKS = "monospace";' +
@@ -122,7 +122,7 @@ const options = {
     hold: !argv.includes('--no-hold')
 };
 
-// ── the wire, by hand (`@nex/protocol` `ws/pty.ts`) ─────────────────────────────────
+// ── the wire, by hand (`@kelpi/protocol` `ws/pty.ts`) ─────────────────────────────────
 
 const FRAME = { output: 0x01, input: 0x02, ack: 0x03, resize: 0x04, replay: 0x05 };
 const HEADER_BYTES = 17;
@@ -295,7 +295,7 @@ const sandbox = await makeSandbox(repoRoot, {
 process.stdout.write(`sandbox ${sandbox.root}\n`);
 
 if (options.build) {
-    for (const target of ['@nex/daemon', '@nex/cli']) {
+    for (const target of ['@kelpi/daemon', '@kelpi/cli']) {
         const result = await run('pnpm', ['--filter', target, 'build'], { cwd: repoRoot });
         if (result.code !== 0) throw new Error(`${target} build failed:\n${result.stdout}${result.stderr}`);
     }
@@ -481,7 +481,7 @@ const zdotdir = path.join(sandbox.work, 'n24');
 fs.mkdirSync(zdotdir, { recursive: true });
 fs.writeFileSync(
     path.join(zdotdir, '.zshrc'),
-    'setopt prompt_subst\n' + "PROMPT=$'┌NEXTRAIL ${(l:$((COLUMNS - 12))::·:)}\\n└NEXPROMPT%% '\n"
+    'setopt prompt_subst\n' + "PROMPT=$'┌KELPITRAIL ${(l:$((COLUMNS - 12))::·:)}\\n└KELPIPROMPT%% '\n"
 );
 type(victim, `exec env ZDOTDIR=${zdotdir} zsh\n`);
 await sleep(2500);

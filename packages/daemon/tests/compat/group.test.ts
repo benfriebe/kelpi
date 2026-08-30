@@ -1,5 +1,5 @@
 /**
- * `nex group *`: create / list / rename / delete (± cascade) / reorder / sort.
+ * `kelpi group *`: create / list / rename / delete (± cascade) / reorder / sort.
  *
  * `group create|rename|delete` are fire-and-forget (exit 0, no output, no reply), so every
  * assertion about them is made through the request/response `group list --json` that follows.
@@ -24,42 +24,42 @@ interface OrderReply {
     readonly order: readonly string[];
 }
 
-describe.skipIf(!swiftCLIAvailable())('compat: nex group', () => {
-    let nex: CompatDaemon;
+describe.skipIf(!swiftCLIAvailable())('compat: kelpi group', () => {
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     /** alpha, beta, gamma in one group, in creation order. */
     async function seedGroup(): Promise<GroupListEntryJSON> {
         for (const name of ['alpha', 'beta', 'gamma']) {
-            await nex.json(['workspace', 'create', '--name', name, '--group', 'squad', '--json']);
+            await kelpi.json(['workspace', 'create', '--name', name, '--group', 'squad', '--json']);
         }
-        const [group] = await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
+        const [group] = await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
         if (group === undefined) throw new Error('seed failed: no group');
         return group;
     }
 
     it('lists an empty group set as [] and exits 0', async () => {
-        const result = await nex.run(['group', 'list', '--json']);
+        const result = await kelpi.run(['group', 'list', '--json']);
         expect(result.code).toBe(0);
         expect(JSON.parse(result.stdout)).toEqual([]);
     }, 60_000);
 
     it('creates groups (fire-and-forget) and lists them with their members', async () => {
-        const create = await nex.run(['group', 'create', 'squad', '--color', 'red']);
+        const create = await kelpi.run(['group', 'create', 'squad', '--color', 'red']);
         expect(create.code).toBe(0);
         expect(create.stdout).toBe(''); // fire-and-forget: not one byte back
 
-        await nex.json(['workspace', 'create', '--name', 'alpha', '--group', 'squad', '--json']);
-        await nex.json(['workspace', 'create', '--name', 'beta', '--group', 'squad', '--json']);
+        await kelpi.json(['workspace', 'create', '--name', 'alpha', '--group', 'squad', '--json']);
+        await kelpi.json(['workspace', 'create', '--name', 'beta', '--group', 'squad', '--json']);
 
-        const groups = await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
+        const groups = await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
         expect(groups).toHaveLength(1);
         const group = groups[0]!;
         expect(group.id).toMatch(UUID);
@@ -71,9 +71,9 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex group', () => {
 
     it('renames a group, keeping its id and members', async () => {
         const before = await seedGroup();
-        expect((await nex.run(['group', 'rename', 'squad', 'crew'])).code).toBe(0);
+        expect((await kelpi.run(['group', 'rename', 'squad', 'crew'])).code).toBe(0);
 
-        const [after] = await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
+        const [after] = await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
         expect(after?.id).toBe(before.id);
         expect(after?.name).toBe('crew');
         expect(after?.workspaces.map((entry) => entry.name)).toEqual(['alpha', 'beta', 'gamma']);
@@ -84,7 +84,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex group', () => {
         const idOf = (name: string): string =>
             group.workspaces.find((entry) => entry.name === name)?.id ?? '';
 
-        const reply = await nex.json<OrderReply>([
+        const reply = await kelpi.json<OrderReply>([
             'group', 'reorder', 'squad', '--order', 'gamma,alpha', '--json'
         ]);
         expect(reply.ok).toBe(true);
@@ -93,7 +93,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex group', () => {
         // Omitted members keep their relative order at the tail; the reply is full UUIDs.
         expect(reply.order).toEqual([idOf('gamma'), idOf('alpha'), idOf('beta')]);
 
-        const [after] = await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
+        const [after] = await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
         expect(after?.workspaces.map((entry) => entry.name)).toEqual(['gamma', 'alpha', 'beta']);
     }, 60_000);
 
@@ -101,62 +101,62 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex group', () => {
         await seedGroup();
         const ordered = ['alpha', 'beta', 'gamma'];
 
-        const unknownGroup = await nex.run(['group', 'reorder', 'nogroup', '--order', 'alpha', '--json']);
+        const unknownGroup = await kelpi.run(['group', 'reorder', 'nogroup', '--order', 'alpha', '--json']);
         expect(unknownGroup.code).toBe(1);
         expect(unknownGroup.stderr).toContain("no group matches 'nogroup'");
 
-        const duplicate = await nex.run(['group', 'reorder', 'squad', '--order', 'alpha,alpha', '--json']);
+        const duplicate = await kelpi.run(['group', 'reorder', 'squad', '--order', 'alpha,alpha', '--json']);
         expect(duplicate.code).toBe(1);
         expect(duplicate.stderr).toContain("workspace 'alpha' listed more than once");
 
-        const nonMember = await nex.run(['group', 'reorder', 'squad', '--order', 'Default', '--json']);
+        const nonMember = await kelpi.run(['group', 'reorder', 'squad', '--order', 'Default', '--json']);
         expect(nonMember.code).toBe(1);
         expect(nonMember.stderr).toContain("'Default' is not a workspace in group 'squad'");
 
         // Nothing was written by any of the three rejections.
-        const [after] = await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
+        const [after] = await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json']);
         expect(after?.workspaces.map((entry) => entry.name)).toEqual(ordered);
     }, 60_000);
 
     it('sorts members by name, ascending and descending', async () => {
         const group = await seedGroup();
-        await nex.json(['group', 'reorder', 'squad', '--order', 'gamma,beta,alpha', '--json']);
+        await kelpi.json(['group', 'reorder', 'squad', '--order', 'gamma,beta,alpha', '--json']);
 
-        const ascending = await nex.json<OrderReply>(['group', 'sort', 'squad', '--by', 'name', '--json']);
+        const ascending = await kelpi.json<OrderReply>(['group', 'sort', 'squad', '--by', 'name', '--json']);
         expect(ascending.order).toEqual(
             ['alpha', 'beta', 'gamma'].map((name) => group.workspaces.find((entry) => entry.name === name)?.id)
         );
 
-        const descending = await nex.json<OrderReply>([
+        const descending = await kelpi.json<OrderReply>([
             'group', 'sort', 'squad', '--by', 'name', '--desc', '--json'
         ]);
         expect(descending.order).toEqual(
             ['gamma', 'beta', 'alpha'].map((name) => group.workspaces.find((entry) => entry.name === name)?.id)
         );
 
-        const badKey = await nex.run(['group', 'sort', 'squad', '--by', 'nonsense', '--json']);
+        const badKey = await kelpi.run(['group', 'sort', 'squad', '--by', 'nonsense', '--json']);
         expect(badKey.code).toBe(1);
         expect(badKey.stderr).toContain("unknown sort key 'nonsense'");
     }, 60_000);
 
     it('promotes members to top level on a plain delete, and removes them with --cascade', async () => {
         await seedGroup();
-        expect((await nex.run(['group', 'delete', 'squad'])).code).toBe(0);
-        expect(await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json'])).toEqual([]);
+        expect((await kelpi.run(['group', 'delete', 'squad'])).code).toBe(0);
+        expect(await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json'])).toEqual([]);
 
-        let workspaces = await nex.json<WorkspaceListEntryJSON[]>(['workspace', 'list', '--json']);
+        let workspaces = await kelpi.json<WorkspaceListEntryJSON[]>(['workspace', 'list', '--json']);
         expect(workspaces.map((entry) => entry.name).sort()).toEqual(['Default', 'alpha', 'beta', 'gamma']);
         for (const entry of workspaces) expect(entry.group_id).toBeUndefined();
 
         // Re-group them, then cascade.
-        expect((await nex.run(['group', 'create', 'crew'])).code).toBe(0);
+        expect((await kelpi.run(['group', 'create', 'crew'])).code).toBe(0);
         for (const name of ['alpha', 'beta', 'gamma']) {
-            expect((await nex.run(['workspace', 'move', name, '--group', 'crew'])).code).toBe(0);
+            expect((await kelpi.run(['workspace', 'move', name, '--group', 'crew'])).code).toBe(0);
         }
-        expect((await nex.run(['group', 'delete', 'crew', '--cascade'])).code).toBe(0);
+        expect((await kelpi.run(['group', 'delete', 'crew', '--cascade'])).code).toBe(0);
 
-        workspaces = await nex.json<WorkspaceListEntryJSON[]>(['workspace', 'list', '--json']);
+        workspaces = await kelpi.json<WorkspaceListEntryJSON[]>(['workspace', 'list', '--json']);
         expect(workspaces.map((entry) => entry.name)).toEqual(['Default']);
-        expect(await nex.json<GroupListEntryJSON[]>(['group', 'list', '--json'])).toEqual([]);
+        expect(await kelpi.json<GroupListEntryJSON[]>(['group', 'list', '--json'])).toEqual([]);
     }, 60_000);
 });

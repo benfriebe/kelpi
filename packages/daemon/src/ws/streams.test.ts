@@ -1,4 +1,4 @@
-import { PTY_FRAME_TYPES, decodePtyFrame, encodeAckPayload, encodePtyFrame, encodeResizePayload } from '@nex/protocol';
+import { PTY_FRAME_TYPES, decodePtyFrame, encodeAckPayload, encodePtyFrame, encodeResizePayload } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPaneStreamHub, type PaneStreamHub, type PaneStreamSession } from './streams.js';
@@ -74,7 +74,7 @@ describe('attach → replay → live', () => {
         expect(h.term.resizes).toEqual([{ paneID: PANE_A, cols: 120, rows: 40 }]);
     });
 
-    it('reports every applied grid so the NEXT spawn of the pane starts there', async () => {
+    it('reports every applied grid so the KELPIT spawn of the pane starts there', async () => {
         // Without this the pane is re-born at 80×24 on the next daemon boot and prints its
         // first prompt at a width nothing will ever render it at (`pty/geometry.ts`).
         const h = harness();

@@ -3,7 +3,7 @@
  *
  * Deliberately tiny and local: the chrome package owns the app's surfaces, and Settings is a
  * different kind of surface (form controls, not direct manipulation). Everything below paints
- * with the same `--nex-*` tokens, so a chrome theme change moves this window too.
+ * with the same `--kelpi-*` tokens, so a chrome theme change moves this window too.
  */
 
 import {
@@ -44,7 +44,7 @@ export const SETTINGS_HOVER_FILL = tokens.selectionFill;
  * the buttons, the swatches, the key-chip ✕, and the preset / repo / favourite rows.
  *
  * React state rather than a `hover:` class because the fill is a THEME TOKEN: a Tailwind
- * variant cannot read `var(--nex-selection-fill)` without a stylesheet rule per surface, and
+ * variant cannot read `var(--kelpi-selection-fill)` without a stylesheet rule per surface, and
  * the token is the whole point. `data-hovered` rides along so a test (and the audit harness)
  * can read the state without resolving a colour, exactly as `data-highlighted` does on a menu
  * row.

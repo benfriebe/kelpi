@@ -33,7 +33,7 @@ describe('the chord the row stands for', () => {
 
     it('names the global the shell evaluates (pinned on both sides)', () => {
         // `shell/src/menu.ts`'s CLOSE_PANE_EXPRESSION contains this literal and asserts it too.
-        expect(SHELL_CLOSE_GLOBAL).toBe('__nexShellClosePane');
+        expect(SHELL_CLOSE_GLOBAL).toBe('__kelpiShellClosePane');
     });
 });
 
@@ -81,7 +81,7 @@ describe('createShellCloseBridge', () => {
         let now = 1_000;
         const bridge: { request(): boolean; noteKeyboardClose(): void } = createShellCloseBridge({
             // The replay reaches the `close_pane` action, which reports back. That report must
-            // not arm the guard against the NEXT menu click.
+            // not arm the guard against the KELPIT menu click.
             replay: () => {
                 bridge.noteKeyboardClose();
                 return true;

@@ -2,7 +2,7 @@
  * Reads over the store. Two rules:
  *
  *   1. **Reuse the daemon's derived helpers.** Sidebar order, the sync broadcast group and the
- *      agent summaries are already exact functions in `@nex/daemon/store` (`derived.ts`), and
+ *      agent summaries are already exact functions in `@kelpi/daemon/store` (`derived.ts`), and
  *      the client must show what the daemon would answer — so they are called, not re-derived.
  *   2. **Array/object results are memoized on the state they are derived from.** zustand v5
  *      subscribes through `useSyncExternalStore`, which loops forever if a selector mints a new
@@ -27,10 +27,10 @@ import {
     type PaneLayout,
     type WorkspaceGroup,
     type WorkspaceState
-} from '@nex/daemon/store';
+} from '@kelpi/daemon/store';
 
 import type { ConnectionStatus } from '../connection';
-import type { NexState, Toast } from './store';
+import type { KelpiState, Toast } from './store';
 
 function memoOnState<T>(compute: (state: DaemonState) => T): (state: DaemonState) => T {
     const cache = new WeakMap<DaemonState, T>();
@@ -45,19 +45,19 @@ function memoOnState<T>(compute: (state: DaemonState) => T): (state: DaemonState
 
 // ── plumbing ────────────────────────────────────────────────────────────────────────
 
-export function selectDaemonState(state: NexState): DaemonState {
+export function selectDaemonState(state: KelpiState): DaemonState {
     return state.daemon.state;
 }
 
-export function selectConnectionStatus(state: NexState): ConnectionStatus {
+export function selectConnectionStatus(state: KelpiState): ConnectionStatus {
     return state.ui.connection;
 }
 
-export function selectIsReady(state: NexState): boolean {
+export function selectIsReady(state: KelpiState): boolean {
     return state.ui.connection === 'connected' && state.daemon.hasSnapshot;
 }
 
-export function selectToasts(state: NexState): readonly Toast[] {
+export function selectToasts(state: KelpiState): readonly Toast[] {
     return state.ui.toasts;
 }
 
@@ -91,7 +91,7 @@ const sidebarEntries = memoOnState((state): readonly SidebarEntry[] => {
 });
 
 /** The sidebar's render tree: top-level workspaces and groups, in daemon order. */
-export function selectSidebarEntries(state: NexState): readonly SidebarEntry[] {
+export function selectSidebarEntries(state: KelpiState): readonly SidebarEntry[] {
     return sidebarEntries(state.daemon.state);
 }
 
@@ -99,12 +99,12 @@ const visibleOrder = memoOnState((state) => visibleWorkspaceOrder(state));
 const sidebarOrder = memoOnState((state) => sidebarWorkspaceOrder(state));
 
 /** Sidebar order EXCLUDING collapsed groups' members — what ⌘1..9 indexes into (§2.2). */
-export function selectVisibleWorkspaceIDs(state: NexState): readonly string[] {
+export function selectVisibleWorkspaceIDs(state: KelpiState): readonly string[] {
     return visibleOrder(state.daemon.state);
 }
 
 /** Sidebar order INCLUDING collapsed groups' members (what `workspace list` walks). */
-export function selectSidebarWorkspaceIDs(state: NexState): readonly string[] {
+export function selectSidebarWorkspaceIDs(state: KelpiState): readonly string[] {
     return sidebarOrder(state.daemon.state);
 }
 
@@ -114,7 +114,7 @@ const visibleWorkspaces = memoOnState((state): readonly WorkspaceState[] =>
         .filter((workspace): workspace is WorkspaceState => workspace !== null)
 );
 
-export function selectVisibleWorkspaces(state: NexState): readonly WorkspaceState[] {
+export function selectVisibleWorkspaces(state: KelpiState): readonly WorkspaceState[] {
     return visibleWorkspaces(state.daemon.state);
 }
 
@@ -125,7 +125,7 @@ function matchesFilter(workspace: WorkspaceState, needle: string): boolean {
 }
 
 /** Sidebar entries narrowed by the UI filter; a group survives if any member matches. */
-export function selectFilteredSidebarEntries(state: NexState): readonly SidebarEntry[] {
+export function selectFilteredSidebarEntries(state: KelpiState): readonly SidebarEntry[] {
     const needle = state.ui.sidebarFilter.trim().toLowerCase();
     const entries = selectSidebarEntries(state);
     if (needle.length === 0) return entries;
@@ -143,7 +143,7 @@ export function selectFilteredSidebarEntries(state: NexState): readonly SidebarE
     return filtered;
 }
 
-export function selectGroupForWorkspace(state: NexState, workspaceID: string): WorkspaceGroup | null {
+export function selectGroupForWorkspace(state: KelpiState, workspaceID: string): WorkspaceGroup | null {
     const groupID = groupIDForWorkspace(state.daemon.state, workspaceID);
     return groupID === null ? null : groupByID(state.daemon.state, groupID);
 }
@@ -151,29 +151,29 @@ export function selectGroupForWorkspace(state: NexState, workspaceID: string): W
 // ── active workspace ────────────────────────────────────────────────────────────────
 
 /** This client's active workspace, falling back to the daemon's persisted last-active. */
-export function selectActiveWorkspaceID(state: NexState): string | null {
+export function selectActiveWorkspaceID(state: KelpiState): string | null {
     return state.ui.activeWorkspaceID ?? state.daemon.state.lastActiveWorkspaceID;
 }
 
-export function selectActiveWorkspace(state: NexState): WorkspaceState | null {
+export function selectActiveWorkspace(state: KelpiState): WorkspaceState | null {
     const id = selectActiveWorkspaceID(state);
     return id === null ? null : workspaceByID(state.daemon.state, id);
 }
 
-export function selectWorkspace(state: NexState, workspaceID: string): WorkspaceState | null {
+export function selectWorkspace(state: KelpiState, workspaceID: string): WorkspaceState | null {
     return workspaceByID(state.daemon.state, workspaceID);
 }
 
-export function selectActivePanes(state: NexState): readonly Pane[] {
+export function selectActivePanes(state: KelpiState): readonly Pane[] {
     return selectActiveWorkspace(state)?.panes ?? EMPTY_PANES;
 }
 
-export function selectActiveLayout(state: NexState): PaneLayout | null {
+export function selectActiveLayout(state: KelpiState): PaneLayout | null {
     return selectActiveWorkspace(state)?.layout ?? null;
 }
 
 /** Layout-order pane ids of the active workspace (focus cycling, palette ordering). */
-export function selectActivePaneOrder(state: NexState): readonly string[] {
+export function selectActivePaneOrder(state: KelpiState): readonly string[] {
     const workspace = selectActiveWorkspace(state);
     return workspace === null ? EMPTY_IDS : layoutPaneOrder(workspace);
 }
@@ -182,7 +182,7 @@ export function selectActivePaneOrder(state: NexState): readonly string[] {
  * The focused pane as the UI should draw it: the local echo wins for the active workspace
  * (the daemon's confirmation is a round trip away), otherwise the mirrored value.
  */
-export function selectFocusedPaneID(state: NexState): string | null {
+export function selectFocusedPaneID(state: KelpiState): string | null {
     const workspace = selectActiveWorkspace(state);
     if (workspace === null) return null;
     const echo = state.ui.focusEcho;
@@ -190,7 +190,7 @@ export function selectFocusedPaneID(state: NexState): string | null {
     return workspace.focusedPaneID;
 }
 
-export function selectPane(state: NexState, paneID: string): Pane | null {
+export function selectPane(state: KelpiState, paneID: string): Pane | null {
     for (const workspace of state.daemon.state.workspaces) {
         const pane = paneAnywhere(workspace, paneID);
         if (pane !== null) return pane;
@@ -198,12 +198,12 @@ export function selectPane(state: NexState, paneID: string): Pane | null {
     return null;
 }
 
-export function selectZoomedPaneID(state: NexState): string | null {
+export function selectZoomedPaneID(state: KelpiState): string | null {
     return selectActiveWorkspace(state)?.zoomedPaneID ?? null;
 }
 
 /** The tmux-style broadcast group for a workspace (empty when sync is off / <2 shells). */
-export function selectSyncedPaneIDs(state: NexState, workspaceID: string): readonly string[] {
+export function selectSyncedPaneIDs(state: KelpiState, workspaceID: string): readonly string[] {
     const workspace = workspaceByID(state.daemon.state, workspaceID);
     return workspace === null ? EMPTY_IDS : syncedPaneIDs(workspace);
 }
@@ -233,12 +233,12 @@ const agentSummary = memoOnState((state): AgentSummary => {
     };
 });
 
-export function selectAgentSummary(state: NexState): AgentSummary {
+export function selectAgentSummary(state: KelpiState): AgentSummary {
     return agentSummary(state.daemon.state);
 }
 
 /** Non-idle panes in one workspace (the sidebar's agent dot). */
-export function selectWorkspaceAgentCount(state: NexState, workspaceID: string): number {
+export function selectWorkspaceAgentCount(state: KelpiState, workspaceID: string): number {
     const workspace = workspaceByID(state.daemon.state, workspaceID);
     return workspace === null ? 0 : activeAgentCount(workspace);
 }

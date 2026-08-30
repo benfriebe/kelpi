@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { NAMED_KEYS } from '@nex/protocol';
+import { NAMED_KEYS } from '@kelpi/protocol';
 
 import { handlePaneCapture, handlePaneSend } from './index.js';
 import { W1, W2, harness, seedSplit, seedWorkspace, stubReply, testID } from './testing.js';

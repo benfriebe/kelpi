@@ -1,5 +1,5 @@
 /**
- * `nex web …` (cli.md §15) — the browser-automation surface.
+ * `kelpi web …` (cli.md §15) — the browser-automation surface.
  *
  * Reply rendering splits three ways and the split is contract:
  *   - `decodeWebReply` (actuators, read verbs, exec) pretty-prints the FULL envelope with
@@ -67,12 +67,12 @@ function attachWebTargetScope(
     const hasOrigin = origin !== undefined;
     if (target !== null && !isUUID(target) && workspace === null && !hasOrigin) {
         errLine(
-            `nex web ${command}: --target by label requires --workspace <name-or-id> when called outside a Nex pane`
+            `kelpi web ${command}: --target by label requires --workspace <name-or-id> when called outside a Kelpi pane`
         );
         exit(1);
     }
     if (target === null && !hasOrigin) {
-        errLine(`nex web ${command}: no --target supplied and NEX_PANE_ID is not set`);
+        errLine(`kelpi web ${command}: no --target supplied and NEX_PANE_ID is not set`);
         exit(1);
     }
 }
@@ -84,7 +84,7 @@ async function decodeWebReply(
     asJSON: boolean,
     options: ReadOptions = {}
 ): Promise<JsonObject> {
-    const data = await readReplyOrExit(payload, `nex web ${command}`, options);
+    const data = await readReplyOrExit(payload, `kelpi web ${command}`, options);
     let json: JsonObject | null;
     try {
         const parsed: unknown = JSON.parse(data);
@@ -93,13 +93,13 @@ async function decodeWebReply(
         json = null;
     }
     if (json === null) {
-        errLine(`nex web ${command}: invalid JSON response`);
+        errLine(`kelpi web ${command}: invalid JSON response`);
         exit(1);
     }
     // Dumped BEFORE the ok check so failures stay machine-readable.
     if (asJSON) printLine(prettyStringify(json));
     if (asBool(json['ok']) === false) {
-        if (!asJSON) errLine(`nex web ${command}: ${asString(json['error']) ?? 'unknown error'}`);
+        if (!asJSON) errLine(`kelpi web ${command}: ${asString(json['error']) ?? 'unknown error'}`);
         exit(1);
     }
     return json;
@@ -107,13 +107,13 @@ async function decodeWebReply(
 
 /** `<verb> ok: <pane_id>[ (<url>)]`. */
 export async function printBasicWebReply(payload: JsonObject, command: string): Promise<void> {
-    const reply = await decodeReply(payload, `nex web ${command}`);
+    const reply = await decodeReply(payload, `kelpi web ${command}`);
     const paneID = asString(reply['pane_id']) ?? '?';
     const url = asString(reply['url']);
     printLine(`${command} ok: ${paneID}${url !== undefined ? ` (${url})` : ''}`);
 }
 
-/** `nex open`'s web route reuses `web open`'s wire command and printer. */
+/** `kelpi open`'s web route reuses `web open`'s wire command and printer. */
 export async function sendWebOpen(url: string): Promise<void> {
     const payload: JsonObject = { command: 'web-open', url };
     const origin = originPaneID();
@@ -195,20 +195,20 @@ export async function handleWeb(args: string[]): Promise<void> {
 async function webOpen(args: string[]): Promise<void> {
     const isPrivate = popSwitch('--private', args);
     if (args.includes('--target') || args.includes('--workspace')) {
-        errLine('nex web open: --target / --workspace are not supported (open always creates a new pane).');
+        errLine('kelpi web open: --target / --workspace are not supported (open always creates a new pane).');
         errLine(
-            '       Use `nex web navigate <url> --target X [--workspace Y]` to redirect an existing pane\'s active tab,'
+            '       Use `kelpi web navigate <url> --target X [--workspace Y]` to redirect an existing pane\'s active tab,'
         );
-        errLine('       or `nex web tab-new <url> --target X` to open in a new tab.');
+        errLine('       or `kelpi web tab-new <url> --target X` to open in a new tab.');
         exit(1);
     }
     const url = args.shift();
     if (url === undefined || url.length === 0) {
-        errLine('Usage: nex web open [--private] <url>');
+        errLine('Usage: kelpi web open [--private] <url>');
         exit(1);
     }
     if (url.startsWith('-')) {
-        errLine(`nex web open: unexpected option '${url}' (URL must not start with '-')`);
+        errLine(`kelpi web open: unexpected option '${url}' (URL must not start with '-')`);
         exit(1);
     }
     const payload: JsonObject = { command: 'web-open', url: resolveWebArg(url) };
@@ -223,11 +223,11 @@ async function webNavigate(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const url = args.shift();
     if (url === undefined || url.length === 0) {
-        errLine('Usage: nex web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]');
+        errLine('Usage: kelpi web navigate <url> [--target <name-or-uuid>] [--workspace <name-or-uuid>]');
         exit(1);
     }
     if (url.startsWith('-')) {
-        errLine(`nex web navigate: unexpected option '${url}' (URL must not start with '-')`);
+        errLine(`kelpi web navigate: unexpected option '${url}' (URL must not start with '-')`);
         exit(1);
     }
     const payload: JsonObject = { command: 'web-navigate', url: resolveWebArg(url) };
@@ -240,7 +240,7 @@ async function webURL(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const payload: JsonObject = { command: 'web-url' };
     attachWebTargetScope(payload, target, workspace, 'url');
-    const reply = await decodeReply(payload, 'nex web url');
+    const reply = await decodeReply(payload, 'kelpi web url');
     const url = asString(reply['url']) ?? '';
     const title = asString(reply['title']) ?? '';
     printLine(title.length > 0 ? `${url}\t${title}` : url);
@@ -272,12 +272,12 @@ async function webCapture(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const mode = parseFlag('--mode', args) ?? 'meta';
     if (!CAPTURE_MODES.has(mode)) {
-        errLine(`nex web capture: unknown --mode '${mode}' (allowed: meta, text, screenshot)`);
+        errLine(`kelpi web capture: unknown --mode '${mode}' (allowed: meta, text, screenshot)`);
         exit(1);
     }
     const payload: JsonObject = { command: 'web-capture', mode };
     attachWebTargetScope(payload, target, workspace, 'capture');
-    const reply = await decodeReply(payload, 'nex web capture');
+    const reply = await decodeReply(payload, 'kelpi web capture');
     switch (asString(reply['mode']) ?? 'meta') {
         case 'text': {
             const text = asString(reply['text']);
@@ -320,7 +320,7 @@ async function webTabs(args: string[]): Promise<void> {
     const noHeader = popSwitch('--no-header', args);
     const payload: JsonObject = { command: 'web-tabs' };
     attachWebTargetScope(payload, target, workspace, 'tabs');
-    const reply = await decodeReply(payload, 'nex web tabs');
+    const reply = await decodeReply(payload, 'kelpi web tabs');
     const tabs = replyArray(reply, 'tabs');
     if (asJSON) {
         printLine(stableStringify(tabs));
@@ -348,7 +348,7 @@ async function webTabRef(args: string[], action: 'tab-close' | 'tab-select'): Pr
     const workspace = parseFlag('--workspace', args);
     const ref = args.shift();
     if (ref === undefined || ref.length === 0) {
-        errLine(`Usage: nex web ${action} <ref> [--target X] [--workspace Y]`);
+        errLine(`Usage: kelpi web ${action} <ref> [--target X] [--workspace Y]`);
         exit(1);
     }
     const payload: JsonObject = { command: `web-${action}`, tab: ref };
@@ -378,14 +378,14 @@ async function webConsole(args: string[]): Promise<void> {
     if (sinceArg !== null) {
         const since = parseUIntStrict(sinceArg);
         if (since === null) {
-            errLine(`nex web console: --since must be an unsigned integer (got '${sinceArg}')`);
+            errLine(`kelpi web console: --since must be an unsigned integer (got '${sinceArg}')`);
             exit(1);
         }
         payload['since'] = since;
     }
     if (level !== null) {
         if (!CONSOLE_LEVELS.has(level)) {
-            errLine('nex web console: --level must be one of log|debug|info|warn|error');
+            errLine('kelpi web console: --level must be one of log|debug|info|warn|error');
             exit(1);
         }
         payload['level'] = level;
@@ -396,7 +396,7 @@ async function webConsole(args: string[]): Promise<void> {
 
     if (follow) return webConsoleFollow(payload, asJSON);
 
-    const reply = await decodeReply(payload, 'nex web console');
+    const reply = await decodeReply(payload, 'kelpi web console');
     if (asJSON) {
         printLine(stableStringify(reply));
         return;
@@ -429,7 +429,7 @@ async function webConsoleFollow(payload: JsonObject, asJSON: boolean): Promise<v
         if (first) {
             first = false;
             if (asBool(json['ok']) === false) {
-                errLine(`nex web console: ${asString(json['error']) ?? 'unknown error'}`);
+                errLine(`kelpi web console: ${asString(json['error']) ?? 'unknown error'}`);
                 exit(1);
             }
             if (asJSON) {
@@ -453,7 +453,7 @@ async function webConsoleFollow(payload: JsonObject, asJSON: boolean): Promise<v
         printLine(formatConsoleLine(json));
     });
     if (outcome === 'failed') {
-        printTransportFailure('nex web console --follow');
+        printTransportFailure('kelpi web console --follow');
         exit(1);
     }
     if (outcome === 'interrupted') exit(130);
@@ -471,7 +471,7 @@ async function webInspect(args: string[]): Promise<void> {
     if (disarm) payload['disarm'] = true;
     attachWebTargetScope(payload, target, workspace, 'inspect');
 
-    const reply = await decodeReply(payload, 'nex web inspect');
+    const reply = await decodeReply(payload, 'kelpi web inspect');
     const paneID = asString(reply['pane_id']) ?? '?';
     if (asBool(reply['armed']) !== true) {
         printLine(`inspect disarmed: ${paneID}`);
@@ -496,7 +496,7 @@ async function webInspectResult(args: string[]): Promise<void> {
     if (clear) payload['clear'] = true;
     attachWebTargetScope(payload, target, workspace, 'inspect-result');
 
-    const reply = await decodeReply(payload, 'nex web inspect-result');
+    const reply = await decodeReply(payload, 'kelpi web inspect-result');
     const results = replyArray(reply, 'results');
     if (asJSON) {
         printLine(stableStringify(results));
@@ -517,7 +517,7 @@ async function webInspectResult(args: string[]): Promise<void> {
 async function webPrivate(args: string[]): Promise<void> {
     const mode = args.shift();
     if (mode === undefined || mode.length === 0) {
-        errLine('Usage: nex web private on|off [--target X] [--workspace Y]');
+        errLine('Usage: kelpi web private on|off [--target X] [--workspace Y]');
         exit(1);
     }
     let enabled: boolean;
@@ -535,7 +535,7 @@ async function webPrivate(args: string[]): Promise<void> {
             enabled = false;
             break;
         default:
-            errLine(`nex web private: expected 'on' or 'off' (got '${mode}')`);
+            errLine(`kelpi web private: expected 'on' or 'off' (got '${mode}')`);
             exit(1);
     }
     const target = parseFlag('--target', args);
@@ -543,7 +543,7 @@ async function webPrivate(args: string[]): Promise<void> {
     const payload: JsonObject = { command: 'web-private', private: enabled };
     attachWebTargetScope(payload, target, workspace, 'private');
 
-    const reply = await decodeReply(payload, 'nex web private');
+    const reply = await decodeReply(payload, 'kelpi web private');
     const isPrivate = asBool(reply['private']) ?? false;
     const changed = asBool(reply['changed']) ?? false;
     const paneID = asString(reply['pane_id']) ?? '?';
@@ -567,7 +567,7 @@ async function handleWebCookies(args: string[]): Promise<void> {
         const asJSON = popSwitch('--json', args);
         const payload: JsonObject = { command: 'web-cookies-list' };
         attachWebTargetScope(payload, target, workspace, 'cookies list');
-        const reply = await decodeReply(payload, 'nex web cookies list');
+        const reply = await decodeReply(payload, 'kelpi web cookies list');
         const cookies = replyArray(reply, 'cookies');
         if (asJSON) {
             printLine(stableStringify(cookies));
@@ -587,14 +587,14 @@ async function handleWebCookies(args: string[]): Promise<void> {
         const domain = parseFlag('--domain', args);
         const all = popSwitch('--all', args);
         if (all && domain !== null) {
-            errLine('nex web cookies clear: --all and --domain are mutually exclusive');
+            errLine('kelpi web cookies clear: --all and --domain are mutually exclusive');
             exit(1);
         }
         const payload: JsonObject = { command: 'web-cookies-clear' };
         if (domain !== null) payload['domain'] = domain;
         if (all) payload['all'] = true;
         attachWebTargetScope(payload, target, workspace, 'cookies clear');
-        const reply = await decodeReply(payload, 'nex web cookies clear');
+        const reply = await decodeReply(payload, 'kelpi web cookies clear');
         if (all || asBool(reply['cleared_site_data']) === true) {
             printLine('cleared all site data');
             return;
@@ -616,13 +616,13 @@ async function handleWebCookies(args: string[]): Promise<void> {
         const domain = parseFlag('--domain', args);
         const name = parseFlag('--name', args) ?? args.shift();
         if (name === undefined || name.length === 0) {
-            errLine('Usage: nex web cookies delete <name> [--domain <d>] [--target X] [--workspace Y]');
+            errLine('Usage: kelpi web cookies delete <name> [--domain <d>] [--target X] [--workspace Y]');
             exit(1);
         }
         const payload: JsonObject = { command: 'web-cookies-delete', name };
         if (domain !== null) payload['domain'] = domain;
         attachWebTargetScope(payload, target, workspace, 'cookies delete');
-        const reply = await decodeReply(payload, 'nex web cookies delete');
+        const reply = await decodeReply(payload, 'kelpi web cookies delete');
         const deleted = asInt(reply['deleted']) ?? 0;
         const replyName = asString(reply['name']) ?? '?';
         if (deleted === 0) {
@@ -650,7 +650,7 @@ async function webClick(args: string[]): Promise<void> {
     const selector = positional.shift();
     if (selector === undefined || selector.length === 0) {
         errLine(
-            'Usage: nex web click [--target X] [--workspace Y] <selector> [--double] [--right] [--at x,y] [--json]'
+            'Usage: kelpi web click [--target X] [--workspace Y] <selector> [--double] [--right] [--at x,y] [--json]'
         );
         exit(1);
     }
@@ -662,7 +662,7 @@ async function webClick(args: string[]): Promise<void> {
         const x = parts.length === 2 ? parseDouble((parts[0] ?? '').trim()) : null;
         const y = parts.length === 2 ? parseDouble((parts[1] ?? '').trim()) : null;
         if (x === null || y === null) {
-            errLine(`nex web click: --at must be 'x,y' numbers (got '${atArg}')`);
+            errLine(`kelpi web click: --at must be 'x,y' numbers (got '${atArg}')`);
             exit(1);
         }
         payload['at_x'] = x;
@@ -685,7 +685,7 @@ async function webType(args: string[]): Promise<void> {
     const positional = [...args, ...tail];
     const selector = positional.shift();
     const usage =
-        'Usage: nex web type [--target X] [--workspace Y] <selector> <text> [--submit] [--no-replace] [--json]';
+        'Usage: kelpi web type [--target X] [--workspace Y] <selector> <text> [--submit] [--no-replace] [--json]';
     if (selector === undefined || selector.length === 0) {
         errLine(usage);
         exit(1);
@@ -713,7 +713,7 @@ async function webSelect(args: string[]): Promise<void> {
     const selector = positional.shift();
     const valueOrLabel = positional.shift();
     if (selector === undefined || selector.length === 0 || valueOrLabel === undefined) {
-        errLine('Usage: nex web select [--target X] [--workspace Y] <selector> <value-or-label> [--json]');
+        errLine('Usage: kelpi web select [--target X] [--workspace Y] <selector> <value-or-label> [--json]');
         exit(1);
     }
     const payload: JsonObject = { command: 'web-select', selector, value_or_label: valueOrLabel };
@@ -734,11 +734,11 @@ async function webScroll(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const selector = args.shift();
     if (selector === undefined || selector.length === 0) {
-        errLine('Usage: nex web scroll [--target X] [--workspace Y] <selector> [--top|--bottom|--smooth] [--json]');
+        errLine('Usage: kelpi web scroll [--target X] [--workspace Y] <selector> [--top|--bottom|--smooth] [--json]');
         exit(1);
     }
     if (top && bottom) {
-        errLine('nex web scroll: --top and --bottom are mutually exclusive');
+        errLine('kelpi web scroll: --top and --bottom are mutually exclusive');
         exit(1);
     }
     const payload: JsonObject = {
@@ -759,7 +759,7 @@ async function webHover(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const selector = args.shift();
     if (selector === undefined || selector.length === 0) {
-        errLine('Usage: nex web hover [--target X] [--workspace Y] <selector> [--json]');
+        errLine('Usage: kelpi web hover [--target X] [--workspace Y] <selector> [--json]');
         exit(1);
     }
     const payload: JsonObject = { command: 'web-hover', selector };
@@ -776,7 +776,7 @@ async function webKey(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const keyName = args.shift();
     if (keyName === undefined || keyName.length === 0) {
-        errLine('Usage: nex web key [--target X] [--workspace Y] <key-name> [--selector <sel>] [--json]');
+        errLine('Usage: kelpi web key [--target X] [--workspace Y] <key-name> [--selector <sel>] [--json]');
         exit(1);
     }
     const payload: JsonObject = { command: 'web-key', key: keyName };
@@ -811,7 +811,7 @@ async function webRead(args: string[], verb: ReadVerb): Promise<void> {
     if (maxBytesArg !== null) {
         const maxBytes = parseIntStrict(maxBytesArg);
         if (maxBytes === null || maxBytes <= 0) {
-            errLine(`nex web ${verb}: --max-bytes must be a positive integer (got '${maxBytesArg}')`);
+            errLine(`kelpi web ${verb}: --max-bytes must be a positive integer (got '${maxBytesArg}')`);
             exit(1);
         }
         payload['max_bytes'] = maxBytes;
@@ -847,15 +847,15 @@ async function webRead(args: string[], verb: ReadVerb): Promise<void> {
 function usageForReadVerb(verb: ReadVerb): string {
     switch (verb) {
         case 'text':
-            return 'Usage: nex web text [--target X] [--workspace Y] <selector> [--max-bytes N] [--json]';
+            return 'Usage: kelpi web text [--target X] [--workspace Y] <selector> [--max-bytes N] [--json]';
         case 'attr':
-            return 'Usage: nex web attr [--target X] [--workspace Y] <selector> <attribute> [--json]';
+            return 'Usage: kelpi web attr [--target X] [--workspace Y] <selector> <attribute> [--json]';
         case 'count':
-            return 'Usage: nex web count [--target X] [--workspace Y] <selector> [--json]';
+            return 'Usage: kelpi web count [--target X] [--workspace Y] <selector> [--json]';
         case 'exists':
-            return 'Usage: nex web exists [--target X] [--workspace Y] <selector> [--json]';
+            return 'Usage: kelpi web exists [--target X] [--workspace Y] <selector> [--json]';
         case 'dom':
-            return 'Usage: nex web dom [--target X] [--workspace Y] <selector> [--max-bytes N] [--json]';
+            return 'Usage: kelpi web dom [--target X] [--workspace Y] <selector> [--max-bytes N] [--json]';
     }
 }
 
@@ -866,12 +866,12 @@ async function webExec(args: string[]): Promise<void> {
     const timeoutText = parseFlag('--timeout', args);
     const asJSON = popSwitch('--json', args);
 
-    // Default 30s: exec scripts routinely chain `nex.wait`, which alone defaults to 10s.
+    // Default 30s: exec scripts routinely chain `kelpi.wait`, which alone defaults to 10s.
     let timeoutSeconds = 30;
     if (timeoutText !== null) {
         const parsed = parseDouble(timeoutText);
         if (parsed === null || !(parsed > 0) || !Number.isFinite(parsed)) {
-            errLine(`nex web exec: --timeout must be a positive finite number of seconds (got '${timeoutText}')`);
+            errLine(`kelpi web exec: --timeout must be a positive finite number of seconds (got '${timeoutText}')`);
             exit(1);
         }
         timeoutSeconds = parsed;
@@ -882,13 +882,13 @@ async function webExec(args: string[]): Promise<void> {
         try {
             script = fs.readFileSync(file, 'utf8');
         } catch {
-            errLine(`nex web exec: cannot read --file '${file}'`);
+            errLine(`kelpi web exec: cannot read --file '${file}'`);
             exit(1);
         }
     } else {
         const positional = args.shift();
         if (positional === undefined || positional.length === 0) {
-            errLine('Usage: nex web exec [--target X] [--workspace Y] [--timeout S] (--file <path> | <js>) [--json]');
+            errLine('Usage: kelpi web exec [--target X] [--workspace Y] [--timeout S] (--file <path> | <js>) [--json]');
             exit(1);
         }
         script = positional;
@@ -928,18 +928,18 @@ async function webWait(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
 
     if (selector === null && urlMatch === null) {
-        errLine('nex web wait: one of --selector or --url-match is required');
+        errLine('kelpi web wait: one of --selector or --url-match is required');
         exit(1);
     }
     if (selector !== null && urlMatch !== null) {
-        errLine('nex web wait: --selector and --url-match are mutually exclusive');
+        errLine('kelpi web wait: --selector and --url-match are mutually exclusive');
         exit(1);
     }
     let timeoutSeconds = 10;
     if (timeoutText !== null) {
         const parsed = parseDouble(timeoutText);
         if (parsed === null || !(parsed > 0) || !Number.isFinite(parsed)) {
-            errLine(`nex web wait: --timeout must be a positive finite number of seconds (got '${timeoutText}')`);
+            errLine(`kelpi web wait: --timeout must be a positive finite number of seconds (got '${timeoutText}')`);
             exit(1);
         }
         timeoutSeconds = parsed;

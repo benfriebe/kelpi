@@ -14,7 +14,7 @@ import { parseKeybindOverrides } from './keybinds.js';
 import { parseKeyTrigger } from './keys.js';
 import { parseProfiles } from './profiles.js';
 
-const REALISTIC_CONFIG = `# Nex config
+const REALISTIC_CONFIG = `# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 
@@ -88,7 +88,7 @@ describe('writeProfiles', () => {
     it('replaces only the profile lines and preserves the rest', () => {
         const profiles = parseProfiles(REALISTIC_CONFIG, { expandTilde: false });
         const rewritten = writeProfiles(REALISTIC_CONFIG, profiles);
-        expect(rewritten).toBe(`# Nex config
+        expect(rewritten).toBe(`# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 
@@ -132,7 +132,7 @@ profile = personal:CLAUDE_CONFIG_DIR=~/.claude-accounts/personal
     });
 
     it('drops profile lines when writing an empty profile set', () => {
-        expect(writeProfiles(REALISTIC_CONFIG, [])).toBe(`# Nex config
+        expect(writeProfiles(REALISTIC_CONFIG, [])).toBe(`# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 
@@ -185,7 +185,7 @@ describe('writeKeybindings', () => {
     });
 
     it('keeps every non-keybind line when the diff is empty', () => {
-        expect(writeKeybindings(REALISTIC_CONFIG, DEFAULT_KEYBINDINGS)).toBe(`# Nex config
+        expect(writeKeybindings(REALISTIC_CONFIG, DEFAULT_KEYBINDINGS)).toBe(`# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 
@@ -243,7 +243,7 @@ profile = personal:CLAUDE_CONFIG_DIR=~/.claude-accounts/personal
 
     it('preserves comments, blanks and profile lines while replacing the keybind block', () => {
         const bindings = map('ctrl+alt+t=split_right');
-        expect(writeKeybindings(REALISTIC_CONFIG, bindings)).toBe(`# Nex config
+        expect(writeKeybindings(REALISTIC_CONFIG, bindings)).toBe(`# Kelpi config
 focus-follows-mouse = true
 focus-follows-mouse-delay = 150
 

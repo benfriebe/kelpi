@@ -11,7 +11,7 @@
  *      CSS loaded by the host page; ghostty-web needs none, so it is imported only when that
  *      engine is selected and never ships in the default bundle.
  *   3. **No `StrictMode`.** Its double-invoked effects would connect, dispose and re-connect the
- *      runtime on every mount — and `dispose()` is terminal for a `NexConnection` (it stops the
+ *      runtime on every mount — and `dispose()` is terminal for a `KelpiConnection` (it stops the
  *      reconnect loop by design). The app is mounted once, for the life of the page.
  */
 
@@ -19,7 +19,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
-import { createNexRuntime } from './state';
+import { createKelpiRuntime } from './state';
 import { configuredTerminalEngine, loadTerminalFonts } from './terminal';
 import './styles.css';
 
@@ -41,10 +41,10 @@ if (configuredTerminalEngine() === 'xterm') {
     await import('@xterm/xterm/css/xterm.css');
 }
 
-const runtime = createNexRuntime({
+const runtime = createKelpiRuntime({
     url: target.url,
     token: target.token,
-    client: { kind: 'browser', name: 'nex-web' }
+    client: { kind: 'browser', name: 'kelpi-web' }
 });
 
 const container = document.getElementById('root');

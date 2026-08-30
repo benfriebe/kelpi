@@ -1,8 +1,8 @@
 /**
  * The round trip that the whole feature exists for: a legacy Swift `nex.db` on disk, one
- * `nexd import`, and a REAL daemon booting on the result — workspaces, groups, labels, layout
+ * `kelpid import`, and a REAL daemon booting on the result — workspaces, groups, labels, layout
  * trees and panes all where they were, and a pane that had an agent session resuming it
- * exactly as a Nex.app restart would (docs/current/persistence.md §6.2 steps 4–8, §7.3).
+ * exactly as a Kelpi.app restart would (docs/current/persistence.md §6.2 steps 4–8, §7.3).
  *
  * Everything runs against private paths in a tmp directory: its own run dir, its own control
  * socket, its own database, its own HOME.
@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon, type Daemon } from '../boot/index.js';
@@ -113,7 +113,7 @@ interface Scratch {
 }
 
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-imp-it-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-imp-it-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
@@ -123,7 +123,7 @@ function scratch(): Scratch {
         root,
         home,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         configPath: path.join(root, 'config'),
         source: path.join(root, 'legacy.db'),

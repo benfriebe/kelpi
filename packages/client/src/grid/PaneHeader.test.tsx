@@ -36,8 +36,8 @@ describe('paneDisplayTitle', () => {
                 expected: 'diff: src'
             },
             {
-                pane: testPane('a', { type: 'shell', workingDirectory: '/Users/ben/code/nex' }),
-                expected: '~/code/nex'
+                pane: testPane('a', { type: 'shell', workingDirectory: '/Users/ben/code/kelpi' }),
+                expected: '~/code/kelpi'
             },
             {
                 pane: testPane('a', { type: 'shell', title: 'vim README.md' }),
@@ -85,7 +85,7 @@ describe('splitHeaderTitle (§4.2 middle truncation)', () => {
             head: '/var/folders/5x/k7q6qbys3p35wb8dcn0dlfmh0000gn/T/nexaudit',
             tail: '/home'
         });
-        expect(splitHeaderTitle('~/code/nex')).toEqual({ head: '~/code', tail: '/nex' });
+        expect(splitHeaderTitle('~/code/kelpi')).toEqual({ head: '~/code', tail: '/kelpi' });
     });
 
     it('leaves titles with nothing to protect alone', () => {
@@ -446,7 +446,7 @@ describe('truncation priority as the header narrows (TERM-102/104)', () => {
             agentSessionID: 's',
             status: 'running',
             agentStartedAt: null,
-            workingDirectory: '/Users/ben/code/nex/packages/client/src/grid'
+            workingDirectory: '/Users/ben/code/kelpi/packages/client/src/grid'
         });
         render(<PaneHeader pane={pane} focused nowSeconds={NOW} />);
 
@@ -650,15 +650,15 @@ describe('badge fills, radius and weight (M14/M15)', () => {
     /**
      * §M13 — the label chip is `Color.accentColor` (`PaneHeaderView.swift:88,91`), the macOS
      * SYSTEM accent, and the shipped app ships no `AccentColor.colorset`. The port reads its own
-     * `--nex-system-accent` name so a "Sidebar highlight" override cannot recolour the pane grid
-     * the way it does the sidebar. The value it falls back to today is still `--nex-accent` — the
+     * `--kelpi-system-accent` name so a "Sidebar highlight" override cannot recolour the pane grid
+     * the way it does the sidebar. The value it falls back to today is still `--kelpi-accent` — the
      * standing divergence is recorded in `tokens.ts`.
      */
     it('paints the label chip from the system-accent token, not the chrome accent', () => {
         renderAll();
         const chip = screen.getByTestId('pane-label-a');
-        expect(chip.style.color).toContain('--nex-system-accent');
-        expect(chip.style.background).toContain('--nex-system-accent');
+        expect(chip.style.color).toContain('--kelpi-system-accent');
+        expect(chip.style.background).toContain('--kelpi-system-accent');
     });
 });
 

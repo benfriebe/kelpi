@@ -16,7 +16,7 @@
 
 import path from 'node:path';
 
-import { workspaceSidebarID } from '@nex/core/codec';
+import { workspaceSidebarID } from '@kelpi/core/codec';
 import {
     groupsMatchingName,
     isUUIDToken,
@@ -24,13 +24,13 @@ import {
     resolveGroupStrict,
     resolveWorkspaceStrict,
     workspacesMatchingName
-} from '@nex/core/resolve';
+} from '@kelpi/core/resolve';
 import {
     buildWorkspaceListEntry,
     type WorkspaceColor,
     type WorkspaceCreateMessage,
     type WorkspaceListEntry
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../../seams.js';
 import {
@@ -195,9 +195,9 @@ function dispatchCreate(ctx: AppContext, deps: AppDeps, input: CreateInput): voi
  * client that did not issue the command (run-B L3).
  *
  * The port's active workspace is **per client** (PLAN.md), so the reducer marking the new
- * workspace `lastActiveWorkspaceID` moves what `nex workspace list` calls ACTIVE and nothing
- * else: a `nex workspace create` from a terminal used to leave the daemon and every open
- * window disagreeing for the rest of the session, and an agent's follow-up `nex pane create`
+ * workspace `lastActiveWorkspaceID` moves what `kelpi workspace list` calls ACTIVE and nothing
+ * else: a `kelpi workspace create` from a terminal used to leave the daemon and every open
+ * window disagreeing for the rest of the session, and an agent's follow-up `kelpi pane create`
  * then landed in a workspace the user could not see. A create is a deliberate act with an
  * obvious destination, so it is broadcast as a REVEAL — the same `reveal-pane` fan-out a
  * clicked notification uses (`ws/sync.ts`), which clients already implement as "activate the
@@ -217,7 +217,7 @@ function ambiguousGroupError(name: string): string {
 }
 
 function unknownWorktreeGroupError(name: string): string {
-    return `unknown group: ${name} — --worktree only supports existing groups; create it first (\`nex group create\`) or omit --group`;
+    return `unknown group: ${name} — --worktree only supports existing groups; create it first (\`kelpi group create\`) or omit --group`;
 }
 
 function handleWorktreeCreate(
@@ -461,7 +461,7 @@ function handleWorkspaceDelete(
     /*
      * The last-workspace guard, and the one caller allowed past it (§WS-156 / §APP-067).
      *
-     * The shipped app is asymmetric on purpose: `nex workspace delete` and the sidebar's own
+     * The shipped app is asymmetric on purpose: `kelpi workspace delete` and the sidebar's own
      * Delete item both refuse at one workspace (`.disabled(store.workspaces.count <= 1)`), while
      * ⌘W closing the last pane of the last workspace DOES reach zero — which is the only way to
      * arrive at `ContentView.swift:237-249`'s "No workspace selected" state, and the reason that
@@ -470,7 +470,7 @@ function handleWorkspaceDelete(
      * This guard used to be unconditional, which made the port stricter than the Swift on the
      * one path the Swift is lenient on, and made the empty state unreachable by any gesture. The
      * flag is set by exactly that path in the client (`act.closeFocused`) and by nothing else:
-     * the CLI does not send it, so `nex workspace delete` still refuses here.
+     * the CLI does not send it, so `kelpi workspace delete` still refuses here.
      */
     if (state.workspaces.length <= 1 && !allowLast) {
         fail(reply, 'refusing to delete the last workspace');
@@ -538,7 +538,7 @@ function handleWorkspaceMove(
          * Stated divergence: in the Swift app the flag is read in the sidebar's drop handler,
          * so it governs the GUI only. The wire field that would have kept that split
          * (`expand_on_drop`) does not exist in wire-protocol.md §7 and inventing one would put
-         * this port's decoder out of conformance with the spec, so `nex workspace move --group`
+         * this port's decoder out of conformance with the spec, so `kelpi workspace move --group`
          * into a collapsed group honours the same setting. Default (on) is unchanged behaviour
          * for both callers.
          */

@@ -103,7 +103,7 @@ export {
     type AgentRestartResult,
     type ContentChannel,
     type ContentCommand,
-    type NexDomainStore,
+    type KelpiDomainStore,
     type SessionOptions,
     type SettingsChannel,
     type SyncHub,

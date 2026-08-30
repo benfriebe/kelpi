@@ -1,8 +1,8 @@
 /**
  * File-vs-URL routing (cli.md §13) — the two mirror-image oracles plus the three tables.
  *
- * These are user-visible contracts exercised by muscle memory (`nex open google.com`,
- * `nex web open foo.html`, `./app` to force a path), so they are ported as pure functions with
+ * These are user-visible contracts exercised by muscle memory (`kelpi open google.com`,
+ * `kelpi web open foo.html`, `./app` to force a path), so they are ported as pure functions with
  * an injectable filesystem probe and covered by table-driven tests:
  *
  *   - `localFileURL` answers "is this argument a local path?" for `web open|navigate|tab-new`.
@@ -10,12 +10,12 @@
  *     name only is when a regular file WITH an extension exists in the cwd — that exclusion is
  *     what stops a dev hostname (`app`, `web`, `api`) colliding with a cwd directory from
  *     being hijacked into a `file://` URL.
- *   - `webTargetForOpenArg` answers the inverse for `nex open`: a real `scheme://`, a
+ *   - `webTargetForOpenArg` answers the inverse for `kelpi open`: a real `scheme://`, a
  *     `host:port`, `localhost`, an IPv4 literal, or a bare dotted host whose last label is a
  *     recognised TLD is a web target; everything else falls through to the file router.
  *
  * The TLD list deliberately omits TLDs that collide with file extensions (`.sh`, `.ai`,
- * `.app`, `.rs`, `.zip`, `.mov`, `.md`, `.pt`) so `nex open run.sh` still routes by type.
+ * `.app`, `.rs`, `.zip`, `.mov`, `.md`, `.pt`) so `kelpi open run.sh` still routes by type.
  */
 
 import fs from 'node:fs';
@@ -46,7 +46,7 @@ export const webOpenExtensions: ReadonlySet<string> = new Set([
     'webp'
 ]);
 
-/** TLDs that let `nex open` route a BARE dotted argument to a web pane. */
+/** TLDs that let `kelpi open` route a BARE dotted argument to a web pane. */
 export const webOpenCommonTLDs: ReadonlySet<string> = new Set([
     // generic
     'com', 'org', 'net', 'edu', 'gov', 'mil', 'int', 'info', 'biz',
@@ -131,7 +131,7 @@ export function localFileURL(arg: string, context: RoutingContext): string | nul
     return null;
 }
 
-/** The `nex open` URL/host detector — the mirror image of `localFileURL`. */
+/** The `kelpi open` URL/host detector — the mirror image of `localFileURL`. */
 export function webTargetForOpenArg(arg: string, context: RoutingContext): string | null {
     const trimmed = arg.trim();
     if (trimmed.length === 0) return null;

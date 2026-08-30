@@ -1,5 +1,5 @@
 /**
- * `nex pane …` (cli.md §9) — the orchestration surface agents actually drive.
+ * `kelpi pane …` (cli.md §9) — the orchestration surface agents actually drive.
  *
  * Two families of defensive parsing live here and both exist because of real incidents:
  *   - **positional targets are rejected** (`close`, `capture`, `name`, `send-key`): a typo'd
@@ -11,7 +11,7 @@
  *     target) silently exit 0 instead.
  *
  * Empty replies are a mixed-version shim: `send` treats one as success (pre-request/response
- * servers acted, then closed silently), everything else as "this Nex is too old".
+ * servers acted, then closed silently), everything else as "this Kelpi is too old".
  */
 
 import {
@@ -51,7 +51,7 @@ function printReplyWithoutOk(reply: JsonObject): void {
 
 /** The shared `split`/`create`/`name` printer: `<verb>: <pane_id> (<label>) in workspace <ws>`. */
 async function sendPaneMutationReply(payload: JsonObject, command: string, asJSON: boolean, verb: string): Promise<void> {
-    const reply = await decodeReply(payload, `nex pane ${command}`);
+    const reply = await decodeReply(payload, `kelpi pane ${command}`);
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -65,7 +65,7 @@ async function sendPaneMutationReply(payload: JsonObject, command: string, asJSO
     printLine(line);
 }
 
-/** The bespoke empty-reply path: "this Nex is too old", exit 1 (cli.md §6.5). */
+/** The bespoke empty-reply path: "this Kelpi is too old", exit 1 (cli.md §6.5). */
 async function readReplyOrEmptyError(payload: JsonObject, command: string): Promise<JsonObject> {
     const data = await sendJSONAndReadReply(payload);
     if (data === null) {
@@ -73,7 +73,7 @@ async function readReplyOrEmptyError(payload: JsonObject, command: string): Prom
         exit(1);
     }
     if (data.length === 0) {
-        errLine(`${command}: empty reply (Nex version may not support this command)`);
+        errLine(`${command}: empty reply (Kelpi version may not support this command)`);
         exit(1);
     }
     return parseReplyOrExit(data, command);
@@ -82,7 +82,7 @@ async function readReplyOrEmptyError(payload: JsonObject, command: string): Prom
 export async function handlePane(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
-        errLine('Usage: nex pane split|create|close|name|send|send-key|move|list|capture|sync|id [...]');
+        errLine('Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|sync|id [...]');
         exit(1);
     }
 
@@ -140,12 +140,12 @@ async function handlePaneSplit(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
     const workspace = parseFlag('--workspace', args);
     const asJSON = popSwitch('--json', args);
-    rejectLeftoverArgs(args, 'nex pane split', { usage: (write) => write(paneSplitUsage) });
+    rejectLeftoverArgs(args, 'kelpi pane split', { usage: (write) => write(paneSplitUsage) });
 
     const origin = originPaneID();
     if (target === null && workspace === null && origin === undefined) {
         errLine(
-            'nex pane split: requires --target <name-or-uuid> or --workspace <name-or-id> when called from outside a Nex pane'
+            'kelpi pane split: requires --target <name-or-uuid> or --workspace <name-or-id> when called from outside a Kelpi pane'
         );
         writeErr(paneSplitUsage);
         exit(1);
@@ -170,12 +170,12 @@ async function handlePaneCreate(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
     const workspace = parseFlag('--workspace', args);
     const asJSON = popSwitch('--json', args);
-    rejectLeftoverArgs(args, 'nex pane create', { usage: (write) => write(paneCreateUsage) });
+    rejectLeftoverArgs(args, 'kelpi pane create', { usage: (write) => write(paneCreateUsage) });
 
     const origin = originPaneID();
     if (target === null && workspace === null && origin === undefined) {
         errLine(
-            'nex pane create: requires --workspace <name-or-id> or --target <name-or-uuid> when called from outside a Nex pane'
+            'kelpi pane create: requires --workspace <name-or-id> or --target <name-or-uuid> when called from outside a Kelpi pane'
         );
         writeErr(paneCreateUsage);
         exit(1);
@@ -203,15 +203,15 @@ async function handlePaneClose(args: string[]): Promise<void> {
     const first = leftover[0];
     if (first !== undefined) {
         if (first.startsWith('-')) {
-            errLine(`nex pane close: unknown option ${first}`);
+            errLine(`kelpi pane close: unknown option ${first}`);
         } else {
-            errLine(`nex pane close: unexpected argument '${first}' — use --target <name-or-uuid> to address a specific pane`);
+            errLine(`kelpi pane close: unexpected argument '${first}' — use --target <name-or-uuid> to address a specific pane`);
         }
         writeErr(paneCloseUsage);
         exit(1);
     }
     if (target === null && workspace !== null) {
-        errLine('nex pane close: --workspace requires --target <name-or-uuid>');
+        errLine('kelpi pane close: --workspace requires --target <name-or-uuid>');
         writeErr(paneCloseUsage);
         exit(1);
     }
@@ -226,7 +226,7 @@ async function handlePaneClose(args: string[]): Promise<void> {
     }
     if (workspace !== null) payload['workspace'] = workspace;
 
-    const reply = await decodeReply(payload, 'nex pane close');
+    const reply = await decodeReply(payload, 'kelpi pane close');
     const id = asString(reply['pane_id']) ?? '?';
     const label = asString(reply['label']);
     const workspaceName = asString(reply['workspace_name']);
@@ -246,20 +246,20 @@ async function handlePaneName(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
     const unknown = args.find((token) => token.startsWith('-'));
     if (unknown !== undefined) {
-        errLine(`nex pane name: unknown option ${unknown}`);
+        errLine(`kelpi pane name: unknown option ${unknown}`);
         writeErr(paneNameUsage);
         exit(1);
     }
     const positionals = args.filter((token) => !token.startsWith('-'));
     const name = positionals[0];
     if (name === undefined || positionals.length !== 1 || name.length === 0) {
-        errLine('nex pane name: exactly one <name> argument is required');
+        errLine('kelpi pane name: exactly one <name> argument is required');
         writeErr(paneNameUsage);
         exit(1);
     }
     const origin = originPaneID();
     if (target === null && origin === undefined) {
-        errLine('nex pane name: requires --target <name-or-uuid> when called from outside a Nex pane');
+        errLine('kelpi pane name: requires --target <name-or-uuid> when called from outside a Kelpi pane');
         writeErr(paneNameUsage);
         exit(1);
     }
@@ -284,7 +284,7 @@ async function handlePaneResize(args: string[]): Promise<void> {
 
     const directives = [ratioText !== null, grow !== null, shrink !== null].filter(Boolean).length;
     if (directives !== 1) {
-        errLine('nex pane resize: exactly one of --ratio / --grow / --shrink is required');
+        errLine('kelpi pane resize: exactly one of --ratio / --grow / --shrink is required');
         writeErr(paneResizeUsage);
         exit(1);
     }
@@ -295,7 +295,7 @@ async function handlePaneResize(args: string[]): Promise<void> {
 
     const origin = originPaneID();
     if (target === null && origin === undefined) {
-        errLine('nex pane resize: requires --target <name-or-uuid> when called from outside a Nex pane');
+        errLine('kelpi pane resize: requires --target <name-or-uuid> when called from outside a Kelpi pane');
         writeErr(paneResizeUsage);
         exit(1);
     }
@@ -304,7 +304,7 @@ async function handlePaneResize(args: string[]): Promise<void> {
     if (ratioText !== null) {
         const ratio = parseDouble(ratioText);
         if (ratio === null || !(ratio > 0) || !(ratio < 1)) {
-            errLine('nex pane resize: --ratio must be a number between 0 and 1 (exclusive)');
+            errLine('kelpi pane resize: --ratio must be a number between 0 and 1 (exclusive)');
             exit(1);
         }
         payload['ratio'] = ratio;
@@ -317,7 +317,7 @@ async function handlePaneResize(args: string[]): Promise<void> {
     if (workspace !== null) payload['workspace'] = workspace;
     if (origin !== undefined) payload['pane_id'] = origin;
 
-    const reply = await readReplyOrEmptyError(payload, 'nex pane resize');
+    const reply = await readReplyOrEmptyError(payload, 'kelpi pane resize');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -363,13 +363,13 @@ async function handlePaneSend(args: string[]): Promise<void> {
 
     const data = await sendJSONAndReadReply(payload);
     if (data === null) {
-        printTransportFailure('nex pane send');
+        printTransportFailure('kelpi pane send');
         exit(1);
     }
-    // Empty reply = a pre-request/response Nex that acted then closed. Treat as success.
+    // Empty reply = a pre-request/response Kelpi that acted then closed. Treat as success.
     if (data.length === 0) return;
 
-    const reply = parseReplyOrExit(data, 'nex pane send');
+    const reply = parseReplyOrExit(data, 'kelpi pane send');
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;
@@ -384,7 +384,7 @@ async function handlePaneSend(args: string[]): Promise<void> {
     printLine(ack);
 }
 
-const SEND_KEY_USAGE = 'Usage: nex pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>';
+const SEND_KEY_USAGE = 'Usage: kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>';
 
 async function handlePaneSendKey(args: string[]): Promise<void> {
     const target = parseFlag('--target', args);
@@ -395,7 +395,7 @@ async function handlePaneSendKey(args: string[]): Promise<void> {
     }
     const unknown = args.find((token) => token.startsWith('-'));
     if (unknown !== undefined) {
-        errLine(`nex pane send-key: unknown option ${unknown}`);
+        errLine(`kelpi pane send-key: unknown option ${unknown}`);
         errLine(SEND_KEY_USAGE);
         exit(1);
     }
@@ -414,7 +414,7 @@ async function handlePaneSendKey(args: string[]): Promise<void> {
     if (origin !== undefined) payload['pane_id'] = origin;
     if (workspace !== null && workspace.length > 0) payload['workspace'] = workspace;
 
-    const reply = await readReplyOrEmptyError(payload, 'nex pane send-key');
+    const reply = await readReplyOrEmptyError(payload, 'kelpi pane send-key');
     const id = asString(reply['pane_id']) ?? '?';
     const label = asString(reply['label']);
     const workspaceName = asString(reply['workspace_name']);
@@ -446,13 +446,13 @@ async function handlePaneMove(args: string[]): Promise<void> {
         const workspace = parseFlag('--workspace', args);
         const asJSON = popSwitch('--json', args);
         if (target === null) {
-            errLine('nex pane move: the adjacent form requires --target <name-or-uuid>');
+            errLine('kelpi pane move: the adjacent form requires --target <name-or-uuid>');
             writeErr(paneMoveUsage);
             exit(1);
         }
         const entry = given[0];
         if (given.length !== 1 || entry === undefined || entry[1] === null) {
-            errLine('nex pane move: exactly one of --above / --below / --left-of / --right-of <anchor> is required');
+            errLine('kelpi pane move: exactly one of --above / --below / --left-of / --right-of <anchor> is required');
             writeErr(paneMoveUsage);
             exit(1);
         }
@@ -466,7 +466,7 @@ async function handlePaneMove(args: string[]): Promise<void> {
         const origin = originPaneID();
         if (origin !== undefined) payload['pane_id'] = origin;
 
-        const reply = await readReplyOrEmptyError(payload, 'nex pane move');
+        const reply = await readReplyOrEmptyError(payload, 'kelpi pane move');
         if (asJSON) {
             printReplyWithoutOk(reply);
             return;
@@ -502,7 +502,7 @@ async function handlePaneMoveToWorkspace(args: string[]): Promise<void> {
     const paneID = requirePaneID();
     const destination = parseFlag('--to-workspace', args);
     if (destination === null) {
-        errLine('Usage: nex pane move-to-workspace --to-workspace <name-or-uuid> [--create]');
+        errLine('Usage: kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]');
         exit(1);
     }
     // Legacy field names, kept exactly: `name` for the destination and the STRING "true" for
@@ -521,7 +521,7 @@ async function handlePaneList(args: string[]): Promise<void> {
     const currentOnly = popSwitch('--current', args);
     const asJSON = popSwitch('--json', args);
     const noHeader = popSwitch('--no-header', args);
-    rejectLeftoverArgs(args, 'nex pane list', { usage: (write) => write(paneListUsage) });
+    rejectLeftoverArgs(args, 'kelpi pane list', { usage: (write) => write(paneListUsage) });
 
     if (workspace !== null && currentOnly) {
         errLine('pane list: --workspace and --current are mutually exclusive');
@@ -535,7 +535,7 @@ async function handlePaneList(args: string[]): Promise<void> {
         payload['scope'] = 'current';
     }
 
-    const reply = await decodeReply(payload, 'nex pane list');
+    const reply = await decodeReply(payload, 'kelpi pane list');
     const panes = replyArray(reply, 'panes');
     if (asJSON) {
         printLine(stableStringify(panes));
@@ -553,7 +553,7 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     const workspace = parseFlag('--workspace', args);
     const linesArg = parseFlag('--lines', args);
     const scrollback = popSwitch('--scrollback', args);
-    rejectLeftoverArgs(args, 'nex pane capture', {
+    rejectLeftoverArgs(args, 'kelpi pane capture', {
         positionalHint: 'target panes with --target <name-or-uuid>',
         usage: (write) => write(paneCaptureUsage)
     });
@@ -562,7 +562,7 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     if (linesArg !== null) {
         const parsed = parseIntStrict(linesArg);
         if (parsed === null || parsed <= 0) {
-            errLine('nex pane capture: --lines must be a positive integer');
+            errLine('kelpi pane capture: --lines must be a positive integer');
             exit(1);
         }
         lines = parsed;
@@ -580,7 +580,7 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     if (lines !== null) payload['lines'] = lines;
     if (scrollback) payload['scrollback'] = true;
 
-    const reply = await decodeReply(payload, 'nex pane capture');
+    const reply = await decodeReply(payload, 'kelpi pane capture');
     // Raw bytes, no added trailing newline — captured output usually ends in one already.
     writeOut(asString(reply['text']) ?? '');
 }
@@ -604,14 +604,14 @@ async function handlePaneSync(args: string[]): Promise<void> {
         const stray = parseFlag('--target', args);
         if (stray !== null) {
             errLine(
-                `nex pane sync ${mode}: --target ${stray} is not valid here (the toggle is workspace-wide). ` +
-                    'Use `nex pane sync exclude --target ...` to opt a pane out.'
+                `kelpi pane sync ${mode}: --target ${stray} is not valid here (the toggle is workspace-wide). ` +
+                    'Use `kelpi pane sync exclude --target ...` to opt a pane out.'
             );
             exit(1);
         }
         const leftover = args[0];
         if (leftover !== undefined) {
-            errLine(`nex pane sync ${mode}: unexpected argument '${leftover}'`);
+            errLine(`kelpi pane sync ${mode}: unexpected argument '${leftover}'`);
             exit(1);
         }
         const payload: JsonObject = { command: 'pane-sync', action: mode };
@@ -624,12 +624,12 @@ async function handlePaneSync(args: string[]): Promise<void> {
     if (mode === 'exclude' || mode === 'include') {
         const target = parseFlag('--target', args);
         if (target === null || target.length === 0) {
-            errLine(`Usage: nex pane sync ${mode} --target <name-or-uuid> [--workspace <name-or-uuid>]`);
+            errLine(`Usage: kelpi pane sync ${mode} --target <name-or-uuid> [--workspace <name-or-uuid>]`);
             exit(1);
         }
         const leftover = args[0];
         if (leftover !== undefined) {
-            errLine(`nex pane sync ${mode}: unexpected argument '${leftover}'`);
+            errLine(`kelpi pane sync ${mode}: unexpected argument '${leftover}'`);
             exit(1);
         }
         const payload: JsonObject = { command: 'pane-sync-exclude', target, excluded: mode === 'exclude' };
@@ -645,7 +645,7 @@ async function handlePaneSync(args: string[]): Promise<void> {
 }
 
 async function sendPaneSyncReply(payload: JsonObject, command: string, asJSON: boolean): Promise<void> {
-    const reply = await readReplyOrEmptyError(payload, `nex pane ${command}`);
+    const reply = await readReplyOrEmptyError(payload, `kelpi pane ${command}`);
     if (asJSON) {
         printReplyWithoutOk(reply);
         return;

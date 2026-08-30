@@ -166,9 +166,9 @@ describe('M1 — the group guide runs through the "No workspaces" placeholder', 
         render(<Sidebar {...baseProps()} entries={withEmptyGroup(null)} />);
         const guide = within(screen.getByTestId('group-empty')).getByTestId('group-guide');
         // `group.color?.color ?? chromeTheme.divider` — the `??` is the only branch, and the
-        // fallback is the theme's divider token (`tokens.divider` = `--nex-border`), read live
+        // fallback is the theme's divider token (`tokens.divider` = `--kelpi-border`), read live
         // rather than frozen as a hex.
-        expect(guide.style.background).toContain('var(--nex-border');
+        expect(guide.style.background).toContain('var(--kelpi-border');
     });
 });
 
@@ -302,7 +302,7 @@ describe('M6 — the selection header’s buttons, padding and scope', () => {
         expect(header.className).toContain('py-1.5');
         for (const label of ['Select All', 'Clear']) {
             // `.buttonStyle(.borderless)` — accent text, not the strip's body colour.
-            expect((within(header).getByText(label) as HTMLElement).style.color).toContain('--nex-accent');
+            expect((within(header).getByText(label) as HTMLElement).style.color).toContain('--kelpi-accent');
         }
     });
 
@@ -410,7 +410,7 @@ describe('M9 — Create is the sheet’s default action', () => {
         // `.keyboardShortcut(.defaultAction)` (`NewWorkspaceSheet.swift:205`) — AppKit's filled
         // accent push button.
         expect(submit.getAttribute('data-default-action')).toBe('true');
-        expect(submit.style.background).toContain('--nex-accent');
+        expect(submit.style.background).toContain('--kelpi-accent');
         expect(submit.style.color).toBe('rgb(255, 255, 255)');
         // Cancel stays the plain bordered button it always was — the two must not read alike.
         expect(cancel.style.background).toBe('');
@@ -432,7 +432,7 @@ describe('M9 — Create is the sheet’s default action', () => {
         const submit = screen.getByTestId('new-workspace-submit') as HTMLButtonElement;
         expect(submit.disabled).toBe(true);
         expect(submit.style.background).not.toBe('');
-        expect(submit.style.background).not.toContain('--nex-accent');
+        expect(submit.style.background).not.toContain('--kelpi-accent');
     });
 
     it('takes Return from a control the browser would never submit from', async () => {

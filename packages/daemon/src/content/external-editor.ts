@@ -15,7 +15,7 @@
  *    are sourced — most people set `$EDITOR` in an interactive-only file.
  *  - **Sentinel-bracketed output** (CONT-084). `.zshrc` prints banners, `direnv: loading …`,
  *    gitstatus debug, MOTDs; a positional parse without markers reads a banner line as the
- *    editor. `__NEX_EDITOR_BEGIN__` … `__NEX_EDITOR_END__` make the parse noise-proof.
+ *    editor. `__KELPI_EDITOR_BEGIN__` … `__KELPI_EDITOR_END__` make the parse noise-proof.
  *  - **Both pipes drained concurrently** (CONT-085). Node's `child_process.spawn` gives us this
  *    for free — `stdout`/`stderr` `data` listeners are attached before the process can fill a
  *    64 KB pipe buffer — plus a 2 s watchdog that kills a shell hung for any other reason.
@@ -38,8 +38,8 @@ import { spawn } from 'node:child_process';
 import { userInfo } from 'node:os';
 
 /** Sentinels bracketing the `printf`, so rc-file noise cannot shift the positional parse. */
-export const EDITOR_BEGIN_MARKER = '__NEX_EDITOR_BEGIN__';
-export const EDITOR_END_MARKER = '__NEX_EDITOR_END__';
+export const EDITOR_BEGIN_MARKER = '__KELPI_EDITOR_BEGIN__';
+export const EDITOR_END_MARKER = '__KELPI_EDITOR_END__';
 
 /** How long the shell may take before the watchdog kills it (EditorService.swift: 2 s). */
 export const SHELL_TIMEOUT_MS = 2000;

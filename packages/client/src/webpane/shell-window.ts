@@ -1,5 +1,5 @@
 /**
- * "Am I the page inside a Nex shell window?"
+ * "Am I the page inside a Kelpi shell window?"
  *
  * The Electron shell loads the UI with `?shellWindow=<uuid>` — the same id its web-pane host
  * connection declares to the daemon. Two things hang off that one answer:

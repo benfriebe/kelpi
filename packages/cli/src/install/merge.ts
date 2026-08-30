@@ -9,27 +9,27 @@
  * so one merge serves both files. Three behaviours are the whole contract, and each exists
  * because of a failure someone actually hit:
  *
- *  1. **Unrelated user hooks survive.** The installer is re-run as the repair path `nex doctor`
+ *  1. **Unrelated user hooks survive.** The installer is re-run as the repair path `kelpi doctor`
  *     suggests, so it must never be a config rewrite.
- *  2. **nex-managed commands are deduped by their flag-less base** — everything before the first
+ *  2. **kelpi-managed commands are deduped by their flag-less base** — everything before the first
  *     ` --`. Any existing command *containing* that base is removed, which is what makes
  *     `/Applications/Nex.app/Contents/Helpers/nex event stop` (the old absolute-path install),
- *     a bare `nex event stop`, and `nex event stop --agent codex` all one identity instead of
+ *     a bare `kelpi event stop`, and `kelpi event stop --agent codex` all one identity instead of
  *     three hooks that double-fire on every turn.
  *  3. **Groups are matched by matcher.** An incoming matcher-less group joins an existing
  *     matcher-less group; a *stale* group (the pre-v0.19 `"matcher": "startup"` SessionStart)
- *     loses its nex command in step 2, empties, gets pruned, and the matcher-less replacement is
+ *     loses its kelpi command in step 2, empties, gets pruned, and the matcher-less replacement is
  *     appended — which is exactly how issue #181 heals on a re-run.
  *
- * The documented trade-off comes with it: a *composite* user command that embeds a nex base
- * (`notify.sh && nex event stop`) is swept from that event too. Keeping it would double-fire the
- * nex event, which is the worse failure mode. `merge_hooks.py` says so in its docstring and the
+ * The documented trade-off comes with it: a *composite* user command that embeds a kelpi base
+ * (`notify.sh && kelpi event stop`) is swept from that event too. Keeping it would double-fire the
+ * kelpi event, which is the worse failure mode. `merge_hooks.py` says so in its docstring and the
  * port keeps the behaviour rather than "improving" it into a wire difference.
  *
  * Port deviation (deliberate, and the reason `extraBases` exists): the Swift installer always
- * wrote a bare `nex`, so the incoming command's own base was a sufficient dedupe identity. This
+ * wrote a bare `kelpi`, so the incoming command's own base was a sufficient dedupe identity. This
  * CLI may write an ABSOLUTE path (a dev checkout, or an app bundle that is not on `PATH`), whose
- * base — `/Users/x/nex.js event stop` — is not a substring of the bare `nex event stop` an older
+ * base — `/Users/x/kelpi.js event stop` — is not a substring of the bare `kelpi event stop` an older
  * installer left behind. Passing the canonical bare bases as `extraBases` restores the sweep in
  * both directions. With a bare command prefix the two sets are identical and the behaviour is
  * byte-for-byte the Python's.
@@ -51,24 +51,27 @@ function escapeRegExp(value: string): string {
 /**
  * The second half of the dedupe identity, and the reason it exists.
  *
- * The Python's substring sweep worked because every path it had to recognise ended in `/nex`, so
- * the bare base `nex event stop` was literally inside `/Applications/Nex.app/Contents/Helpers/nex
- * event stop`. This CLI's bundle is `dist/nex.js`, and `nex.js event stop` does **not** contain
- * `nex event stop` — a substring-only sweep would leave the old hook in place beside the new one
+ * The Python's substring sweep worked because every path it had to recognise ended in `/kelpi`, so
+ * the bare base `kelpi event stop` was literally inside `/Applications/Nex.app/Contents/Helpers/nex
+ * event stop`. This CLI's bundle is `dist/kelpi.js`, and `kelpi.js event stop` does **not** contain
+ * `kelpi event stop` — a substring-only sweep would leave the old hook in place beside the new one
  * and every agent turn would fire twice.
  *
  * So each incoming command also contributes a structural pattern derived from its own trailing
- * `event <verb>`: "a token whose basename is `nex` (optionally `.js`/`.mjs`/`.cjs`, optionally
- * quoted), followed by `event <that verb>` at the end of the base". It recognises a bare `nex`,
- * any absolute path, a `node …/nex.js` invocation and the `notify.sh && nex event stop` composite
+ * `event <verb>`: "a token whose basename is `kelpi` (optionally `.js`/`.mjs`/`.cjs`, optionally
+ * quoted), followed by `event <that verb>` at the end of the base". It recognises a bare `kelpi`,
+ * any absolute path, a `node …/kelpi.js` invocation and the `notify.sh && kelpi event stop` composite
  * alike — and it is used in UNION with the Python's substring test, never instead of it, so the
  * sweep is always a superset of what the shell installer did.
  */
-export function nexInvocationPattern(base: string): RegExp | null {
+export function kelpiInvocationPattern(base: string): RegExp | null {
     const match = /\bevent\s+([A-Za-z0-9._-]+)$/.exec(base);
     const verb = match?.[1];
     if (verb === undefined) return null;
-    return new RegExp(`(^|[\\s/'"])nex(\\.[cm]?js)?['"]?\\s+event\\s+${escapeRegExp(verb)}$`);
+    // `nex` stays in the alternation: every hook installed before the Kelpi rename runs a bare
+    // `nex` (or a `/nex`-suffixed path), and the sweep replacing it with the `kelpi` form is
+    // exactly how those installs migrate instead of firing twice.
+    return new RegExp(`(^|[\\s/'"])(?:kelpi|nex)(\\.[cm]?js)?['"]?\\s+event\\s+${escapeRegExp(verb)}$`);
 }
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
@@ -127,10 +130,10 @@ export function mergeHooks(
                 if (command === null || command.length === 0) continue;
                 const base = baseCommand(command);
                 bases.add(base);
-                const pattern = nexInvocationPattern(base);
+                const pattern = kelpiInvocationPattern(base);
                 if (pattern !== null) patterns.push(pattern);
             }
-            const isNexManaged = (command: string | null): boolean => {
+            const isKelpiManaged = (command: string | null): boolean => {
                 if (command === null) return false;
                 if ([...bases].some((base) => command.includes(base))) return true;
                 const base = baseCommand(command);
@@ -144,7 +147,7 @@ export function mergeHooks(
                 if (!isObject(group)) continue;
                 const inner = group['hooks'];
                 group['hooks'] = (Array.isArray(inner) ? inner : []).filter(
-                    (hook) => !isNexManaged(commandOf(hook))
+                    (hook) => !isKelpiManaged(commandOf(hook))
                 );
             }
             const kept = groups.filter((group) => {

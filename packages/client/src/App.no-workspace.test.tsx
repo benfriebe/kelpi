@@ -14,14 +14,14 @@
  * button as much as the copy.
  */
 
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
-import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -47,11 +47,11 @@ interface Harness {
 
 function setup(state: JsonObject): Harness {
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,
@@ -97,7 +97,7 @@ describe('the no-workspace empty state (§APP-067 / §WS-156)', () => {
         expect(empty.className).toContain('gap-2');
         expect(empty.className).not.toContain('gap-3');
         expect(screen.getByTestId('no-workspace-glyph').style.color).toBe(
-            'color-mix(in srgb, var(--nex-fg, #E6E6EA) 10%, transparent)'
+            'color-mix(in srgb, var(--kelpi-fg, #E6E6EA) 10%, transparent)'
         );
         const button = screen.getByTestId('no-workspace-create');
         expect(button.hasAttribute('autofocus')).toBe(false);
@@ -137,11 +137,11 @@ describe('the no-workspace empty state (§APP-067 / §WS-156)', () => {
         // A client that has never had a snapshot has no workspace either, and "No workspace
         // selected" would be a lie about a daemon it has not spoken to yet.
         const sockets = createFakeSocketFactory();
-        const runtime = createNexRuntime({
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,
-            store: createNexStore(),
+            store: createKelpiStore(),
             notifications: null,
             tokenStorage: null,
             heartbeatIntervalMs: 0,
@@ -165,7 +165,7 @@ describe('the shell’s Close request with nothing to close (N14)', () => {
     it('answers false, so the shell falls back to closing the window', () => {
         setup(emptySnapshot());
 
-        const request = (window as unknown as Record<string, unknown>)['__nexShellClosePane'];
+        const request = (window as unknown as Record<string, unknown>)['__kelpiShellClosePane'];
         expect(typeof request).toBe('function');
         expect((request as () => boolean)()).toBe(false);
     });

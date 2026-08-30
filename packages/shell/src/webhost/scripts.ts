@@ -8,7 +8,7 @@
  *
  *     if (window !== window.top) return;
  *
- * They also keep their `__nexXInstalled` idempotency guards: CDP re-runs the source on every
+ * They also keep their `__kelpiXInstalled` idempotency guards: CDP re-runs the source on every
  * document (including bfcache restores and same-document rebuilds), and a second install would
  * drop an armed picker's listeners on the floor.
  *
@@ -23,14 +23,14 @@
  */
 
 /** The CDP binding the injected scripts post through (`Runtime.addBinding`). */
-export const BINDING_NAME = 'nexPost';
+export const BINDING_NAME = 'kelpiPost';
 /** Channel names, kept identical to the Swift app's `WKScriptMessageHandler` names. */
-export const INSPECT_CHANNEL = 'nexInspect';
-export const FIND_CHANNEL = 'nexWebFind';
+export const INSPECT_CHANNEL = 'kelpiInspect';
+export const FIND_CHANNEL = 'kelpiWebFind';
 /** §7.3 batch "element pickup": badge clicks, popover comment edits, dismiss and remove. */
-export const BATCH_MARKER_CHANNEL = 'nexBatchMarker';
+export const BATCH_MARKER_CHANNEL = 'kelpiBatchMarker';
 
-const BINDING_PLACEHOLDER = '__NEX_BINDING__';
+const BINDING_PLACEHOLDER = '__KELPI_BINDING__';
 
 /**
  * SET-219 / TERM-021 — the web pane's find-highlight colours, as placeholders.
@@ -42,10 +42,10 @@ const BINDING_PLACEHOLDER = '__NEX_BINDING__';
  * colours (an already-loaded page keeps the style it installed until it reloads — the same
  * granularity every other injected script has).
  */
-const FIND_MATCH_PLACEHOLDER = '__NEX_FIND_MATCH__';
-const FIND_MATCH_TEXT_PLACEHOLDER = '__NEX_FIND_MATCH_TEXT__';
-const FIND_CURRENT_PLACEHOLDER = '__NEX_FIND_CURRENT__';
-const FIND_CURRENT_TEXT_PLACEHOLDER = '__NEX_FIND_CURRENT_TEXT__';
+const FIND_MATCH_PLACEHOLDER = '__KELPI_FIND_MATCH__';
+const FIND_MATCH_TEXT_PLACEHOLDER = '__KELPI_FIND_MATCH_TEXT__';
+const FIND_CURRENT_PLACEHOLDER = '__KELPI_FIND_CURRENT__';
+const FIND_CURRENT_TEXT_PLACEHOLDER = '__KELPI_FIND_CURRENT_TEXT__';
 
 export interface WebFindPalette {
     readonly match: string;
@@ -108,33 +108,33 @@ function serialize(fn: () => void): string {
 // ── the host↔page bridge ────────────────────────────────────────────────────────────
 
 /**
- * `window.__nexPost(channel, body)` — the one-way channel every other script posts through,
+ * `window.__kelpiPost(channel, body)` — the one-way channel every other script posts through,
  * plus the `webkit.messageHandlers` shim the spec's port notes suggest so page-side code reads
  * the same as the Swift original. Both resolve the binding lazily: `Runtime.addBinding` installs
  * it on context creation, but a page that clobbers globals must not take the picker down with it.
  */
 function bridgeMain(): void {
     const w = window as unknown as PageGlobal;
-    if (w.__nexBridgeInstalled) return;
-    w.__nexBridgeInstalled = true;
+    if (w.__kelpiBridgeInstalled) return;
+    w.__kelpiBridgeInstalled = true;
 
     const post = function (channel: string, body: unknown): void {
         try {
             // The literal below is rewritten to the real binding name when this function is
             // serialised — it must stay a string literal, not a reference to a module const,
             // because module scope does not exist in the page.
-            const binding = (window as unknown as PageGlobal)['__NEX_BINDING__'];
+            const binding = (window as unknown as PageGlobal)['__KELPI_BINDING__'];
             if (typeof binding !== 'function') return;
             binding(JSON.stringify({ channel: channel, body: body }));
         } catch {
             // A page that broke JSON.stringify is not worth crashing the picker over.
         }
     };
-    w.__nexPost = post;
+    w.__kelpiPost = post;
 
     if (w.webkit === undefined) {
         const handlers: PageGlobal = {};
-        for (const name of ['nexConsole', 'nexInspect', 'nexBatchMarker', 'nexWebFind']) {
+        for (const name of ['kelpiConsole', 'kelpiInspect', 'kelpiBatchMarker', 'kelpiWebFind']) {
             handlers[name] = {
                 postMessage: function (body: unknown): void {
                     post(name, body);
@@ -151,8 +151,8 @@ function bridgeMain(): void {
 function actuatorMain(): void {
     if (window !== window.top) return;
     const w = window as unknown as PageGlobal;
-    if (w.__nexActInstalled) return;
-    w.__nexActInstalled = true;
+    if (w.__kelpiActInstalled) return;
+    w.__kelpiActInstalled = true;
 
     const doc = document;
     const encoder = new TextEncoder();
@@ -488,7 +488,7 @@ function actuatorMain(): void {
         return getComputedStyle(el).visibility !== 'hidden';
     }
 
-    const nexAct: PageGlobal = {
+    const kelpiAct: PageGlobal = {
         find: find,
         findAll: findAll,
 
@@ -795,7 +795,7 @@ function actuatorMain(): void {
         _clipToBytes: clipToBytes
     };
 
-    w.__nexAct = nexAct;
+    w.__kelpiAct = kelpiAct;
 }
 
 // ── §7.2 element picker ─────────────────────────────────────────────────────────────
@@ -803,11 +803,11 @@ function actuatorMain(): void {
 function inspectorMain(): void {
     if (window !== window.top) return;
     const w = window as unknown as PageGlobal;
-    if (w.__nexInspectorInstalled) return;
-    w.__nexInspectorInstalled = true;
+    if (w.__kelpiInspectorInstalled) return;
+    w.__kelpiInspectorInstalled = true;
 
     const doc = document;
-    const OVERLAY_ATTRS = ['data-nex-overlay', 'data-nex-batch-marker', 'data-nex-batch-markers', 'data-nex-batch-popover', 'data-nex-batch-focus-ring'];
+    const OVERLAY_ATTRS = ['data-kelpi-overlay', 'data-kelpi-batch-marker', 'data-kelpi-batch-markers', 'data-kelpi-batch-popover', 'data-kelpi-batch-focus-ring'];
     let armed = false;
     let nonce: string | null = null;
     let sticky = false;
@@ -815,8 +815,8 @@ function inspectorMain(): void {
     let previousCursor: string | null = null;
 
     function post(body: PageGlobal): void {
-        const poster = w.__nexPost;
-        if (typeof poster === 'function') poster('nexInspect', body);
+        const poster = w.__kelpiPost;
+        if (typeof poster === 'function') poster('kelpiInspect', body);
     }
 
     function isOverlay(node: EventTarget | null): boolean {
@@ -833,7 +833,7 @@ function inspectorMain(): void {
     function ensureOverlay(): HTMLElement {
         if (overlay !== null && overlay.isConnected) return overlay;
         const node = doc.createElement('div');
-        node.setAttribute('data-nex-overlay', '1');
+        node.setAttribute('data-kelpi-overlay', '1');
         /*
          * L62 — `box-sizing:border-box` and `border-radius:2px`, both of which
          * `WebPaneInspectorScript.swift:36-50` sets and neither of which the port did.
@@ -974,14 +974,14 @@ function inspectorMain(): void {
 
     function onMove(event: MouseEvent): void {
         if (!armed) return;
-        if (w.__nexBatchHasOpenPopover === true) {
+        if (w.__kelpiBatchHasOpenPopover === true) {
             hideOverlay();
             return;
         }
         const target = event.target as Element | null;
         if (target === null) return;
         /*
-         * L76 — moving onto one of Nex's own overlay surfaces HIDES the outline, it does not
+         * L76 — moving onto one of Kelpi's own overlay surfaces HIDES the outline, it does not
          * merely skip the frame. `WebPaneInspectorScript.swift:203-226` is
          * `if (isOurOverlay(el)) { hideOverlay(); return; }`: a badge, the comment popover and
          * the focus ring are not pick targets, so the picker stops pointing at anything while
@@ -998,7 +998,7 @@ function inspectorMain(): void {
     function onClick(event: MouseEvent): void {
         if (!armed) return;
         if (isOverlay(event.target)) return;
-        if (w.__nexBatchHasOpenPopover === true) return;
+        if (w.__kelpiBatchHasOpenPopover === true) return;
         const target = event.target as Element | null;
         if (target === null) return;
         event.preventDefault();
@@ -1011,7 +1011,7 @@ function inspectorMain(): void {
 
     function onKeyDown(event: KeyboardEvent): void {
         if (!armed || event.key !== 'Escape') return;
-        if (w.__nexBatchHasOpenPopover === true) return;
+        if (w.__kelpiBatchHasOpenPopover === true) return;
         // Snapshot before disable() clears it, or the host drops the cancel.
         const current = nonce;
         disable();
@@ -1046,9 +1046,9 @@ function inspectorMain(): void {
         return true;
     }
 
-    w.__nexInspectorEnable = enable;
-    w.__nexInspectorDisable = disable;
-    w.__nexInspectorArmed = function (): boolean {
+    w.__kelpiInspectorEnable = enable;
+    w.__kelpiInspectorDisable = disable;
+    w.__kelpiInspectorArmed = function (): boolean {
         return armed;
     };
 }
@@ -1059,7 +1059,7 @@ function inspectorMain(): void {
  * The page half of the batch "element pickup" session (WEB-137…WEB-143).
  *
  * A faithful port of `WebPaneBatchMarkerScript.swift`. Four surfaces, all `position:fixed` and
- * all carrying a `data-nex-batch-*` attribute so the picker's `isOverlay()` walk refuses to treat
+ * all carrying a `data-kelpi-batch-*` attribute so the picker's `isOverlay()` walk refuses to treat
  * a click on them as a pick:
  *
  *   - **numbered badges**, positioned from a LIVE re-query of each item's selector on every
@@ -1071,7 +1071,7 @@ function inspectorMain(): void {
  *     clamped 8 px from every edge, user-resizable from its bottom-right corner (WEB-140). Its
  *     edits stream out on every `input`, and an external edit is only written back when the
  *     textarea is NOT focused, so neither side clobbers the other's cursor (WEB-141);
- *   - `window.__nexBatchHasOpenPopover`, the cross-script flag the picker reads to suspend
+ *   - `window.__kelpiBatchHasOpenPopover`, the cross-script flag the picker reads to suspend
  *     itself while the popover owns the keyboard and the pointer (WEB-143).
  *
  * `setMarkers` is a diff-rebuild that preserves `focusedID` rather than a `clearAll`, and a
@@ -1081,8 +1081,8 @@ function inspectorMain(): void {
 function batchMarkerMain(): void {
     if (window !== window.top) return;
     const w = window as unknown as PageGlobal;
-    if (w.__nexBatchMarkersInstalled) return;
-    w.__nexBatchMarkersInstalled = true;
+    if (w.__kelpiBatchMarkersInstalled) return;
+    w.__kelpiBatchMarkersInstalled = true;
 
     const doc = document;
     let markers: PageGlobal = {};
@@ -1095,8 +1095,8 @@ function batchMarkerMain(): void {
     let popoverLabel: HTMLElement | null = null;
 
     function post(body: PageGlobal): void {
-        const poster = w.__nexPost;
-        if (typeof poster === 'function') poster('nexBatchMarker', body);
+        const poster = w.__kelpiPost;
+        if (typeof poster === 'function') poster('kelpiBatchMarker', body);
     }
 
     function queryElement(selector: string): Element | null {
@@ -1111,7 +1111,7 @@ function batchMarkerMain(): void {
     function ensureContainer(): HTMLElement {
         if (container !== null && container.isConnected) return container;
         const node = doc.createElement('div');
-        node.setAttribute('data-nex-batch-markers', '1');
+        node.setAttribute('data-kelpi-batch-markers', '1');
         node.style.cssText = [
             'position:fixed',
             'top:0',
@@ -1128,7 +1128,7 @@ function batchMarkerMain(): void {
 
     function hidePopover(): void {
         if (popover !== null) popover.style.display = 'none';
-        w.__nexBatchHasOpenPopover = false;
+        w.__kelpiBatchHasOpenPopover = false;
     }
 
     function clearFocusRing(): void {
@@ -1143,7 +1143,7 @@ function batchMarkerMain(): void {
     function ensureFocusRing(): HTMLElement {
         if (focusRing !== null && focusRing.isConnected) return focusRing;
         const node = doc.createElement('div');
-        node.setAttribute('data-nex-batch-focus-ring', '1');
+        node.setAttribute('data-kelpi-batch-focus-ring', '1');
         node.style.cssText = [
             'position:fixed',
             'pointer-events:none',
@@ -1222,7 +1222,7 @@ function batchMarkerMain(): void {
     function ensurePopover(): HTMLElement {
         if (popover !== null && popover.isConnected) return popover;
         const node = doc.createElement('div');
-        node.setAttribute('data-nex-batch-popover', '1');
+        node.setAttribute('data-kelpi-batch-popover', '1');
         node.style.cssText = [
             'position:fixed',
             'display:none',
@@ -1264,7 +1264,7 @@ function batchMarkerMain(): void {
         const textarea = doc.createElement('textarea');
         textarea.setAttribute('rows', '3');
         textarea.setAttribute('placeholder', 'Add a comment…');
-        textarea.setAttribute('data-nex-batch-comment', '1');
+        textarea.setAttribute('data-kelpi-batch-comment', '1');
         textarea.style.cssText = [
             'width:100%',
             'box-sizing:border-box',
@@ -1374,7 +1374,7 @@ function batchMarkerMain(): void {
         if (left + popWidth > vw - 8) left = vw - popWidth - 8;
         pop.style.left = String(left) + 'px';
         pop.style.top = String(top) + 'px';
-        w.__nexBatchHasOpenPopover = true;
+        w.__kelpiBatchHasOpenPopover = true;
     }
 
     function syncPopoverContent(): void {
@@ -1418,7 +1418,7 @@ function batchMarkerMain(): void {
 
     function createBadge(marker: PageGlobal): HTMLElement {
         const el = doc.createElement('div');
-        el.setAttribute('data-nex-batch-marker', '1');
+        el.setAttribute('data-kelpi-batch-marker', '1');
         el.style.cssText = [
             'position:fixed',
             'min-width:18px',
@@ -1506,7 +1506,7 @@ function batchMarkerMain(): void {
         popoverTextarea = null;
         popoverLabel = null;
         focusRing = null;
-        w.__nexBatchHasOpenPopover = false;
+        w.__kelpiBatchHasOpenPopover = false;
         return true;
     }
 
@@ -1570,11 +1570,11 @@ function batchMarkerMain(): void {
     window.addEventListener('scroll', refreshAll, true);
     window.addEventListener('resize', refreshAll, true);
 
-    w.__nexBatchSetMarkers = setMarkers;
-    w.__nexBatchClearMarkers = clearAll;
-    w.__nexBatchHighlight = highlight;
-    w.__nexBatchUnfocus = unfocus;
-    w.__nexBatchUpdateComment = updateExternalComment;
+    w.__kelpiBatchSetMarkers = setMarkers;
+    w.__kelpiBatchClearMarkers = clearAll;
+    w.__kelpiBatchHighlight = highlight;
+    w.__kelpiBatchUnfocus = unfocus;
+    w.__kelpiBatchUpdateComment = updateExternalComment;
 }
 
 // ── §7.5 find-in-page ───────────────────────────────────────────────────────────────
@@ -1582,35 +1582,35 @@ function batchMarkerMain(): void {
 function findMain(): void {
     if (window !== window.top) return;
     const w = window as unknown as PageGlobal;
-    if (w.__nexWebFind !== undefined) return;
+    if (w.__kelpiWebFind !== undefined) return;
 
     const doc = document;
-    const MARK_CLASS = 'nex-webfind-match';
+    const MARK_CLASS = 'kelpi-webfind-match';
     let marks: HTMLElement[] = [];
     let current = -1;
 
     function post(total: number, index: number): PageGlobal {
         const body = { total: total, current: index };
-        const poster = w.__nexPost;
-        if (typeof poster === 'function') poster('nexWebFind', body);
+        const poster = w.__kelpiPost;
+        if (typeof poster === 'function') poster('kelpiWebFind', body);
         return body;
     }
 
     function ensureStyle(): void {
-        if (doc.getElementById('nex-webfind-style') !== null) return;
+        if (doc.getElementById('kelpi-webfind-style') !== null) return;
         if (doc.head === null) {
             requestAnimationFrame(ensureStyle);
             return;
         }
         const style = doc.createElement('style');
-        style.id = 'nex-webfind-style';
+        style.id = 'kelpi-webfind-style';
         style.textContent =
             'mark.' +
             MARK_CLASS +
-            '{background:__NEX_FIND_MATCH__;color:__NEX_FIND_MATCH_TEXT__;border-radius:2px}' +
+            '{background:__KELPI_FIND_MATCH__;color:__KELPI_FIND_MATCH_TEXT__;border-radius:2px}' +
             'mark.' +
             MARK_CLASS +
-            '.nex-webfind-current{background:__NEX_FIND_CURRENT__;color:__NEX_FIND_CURRENT_TEXT__}';
+            '.kelpi-webfind-current{background:__KELPI_FIND_CURRENT__;color:__KELPI_FIND_CURRENT_TEXT__}';
         doc.head.appendChild(style);
     }
 
@@ -1634,8 +1634,8 @@ function findMain(): void {
         for (let i = 0; i < marks.length; i += 1) {
             const mark = marks[i];
             if (mark === undefined) continue;
-            if (i === index) mark.classList.add('nex-webfind-current');
-            else mark.classList.remove('nex-webfind-current');
+            if (i === index) mark.classList.add('kelpi-webfind-current');
+            else mark.classList.remove('kelpi-webfind-current');
         }
         const active = marks[index];
         if (active !== undefined) active.scrollIntoView({ block: 'center' });
@@ -1706,7 +1706,7 @@ function findMain(): void {
         return post(marks.length, current);
     }
 
-    w.__nexWebFind = {
+    w.__kelpiWebFind = {
         search: search,
         next: function (): PageGlobal {
             return step(1);
@@ -1760,7 +1760,7 @@ export function injectedScriptSources(): readonly string[] {
 // ── evaluation wrappers (§8.2 actuator dispatch, §8.5 exec) ─────────────────────────
 
 /**
- * `__nexAct.<method>(<json args>)`, wrapped exactly as §8.2 describes: the result is
+ * `__kelpiAct.<method>(<json args>)`, wrapped exactly as §8.2 describes: the result is
  * JSON-stringified inside the page so the host parses one envelope, and a missing actuator is
  * reported as the spec's own string rather than as an evaluation failure.
  *
@@ -1771,8 +1771,8 @@ export function buildActuatorCall(method: string, args: readonly unknown[]): str
     const literals = args.map((arg) => JSON.stringify(arg === undefined ? null : arg)).join(', ');
     return [
         '(async () => {',
-        "  try { if (!window.__nexAct) return JSON.stringify({ok:false,error:'actuator not installed'});",
-        `    var r = await window.__nexAct[${JSON.stringify(method)}](${literals});`,
+        "  try { if (!window.__kelpiAct) return JSON.stringify({ok:false,error:'actuator not installed'});",
+        `    var r = await window.__kelpiAct[${JSON.stringify(method)}](${literals});`,
         '    return JSON.stringify(r === undefined ? null : r);',
         '  } catch (e) { return JSON.stringify({ok:false, error: (e && e.message) ? e.message : String(e)}); }',
         '})()'
@@ -1786,7 +1786,7 @@ export function buildActuatorCall(method: string, args: readonly unknown[]): str
  */
 export const EXEC_STATEMENT_PATTERN = /(?:^\s*|;\s*)(return|throw|if|for|while|switch|try|do|let|const|var)\b/m;
 
-/** `WebPaneExecWrapper.wrap` (§8.5): `$` / `$$` / `nex` aliases, awaited, JSON enveloped. */
+/** `WebPaneExecWrapper.wrap` (§8.5): `$` / `$$` / `kelpi` aliases, awaited, JSON enveloped. */
 export function wrapExecScript(script: string): string {
     const trimmed = script.trim();
     const body = EXEC_STATEMENT_PATTERN.test(trimmed)
@@ -1794,11 +1794,11 @@ export function wrapExecScript(script: string): string {
         : `return (${trimmed.replace(/;$/, '')});`;
     return [
         '(async () => {',
-        "  if (!window.__nexAct) return JSON.stringify({ok:false,error:'actuator not installed'});",
+        "  if (!window.__kelpiAct) return JSON.stringify({ok:false,error:'actuator not installed'});",
         '  try {',
-        '    var result = await (async ($, $$, nex) => {',
+        '    var result = await (async ($, $$, kelpi) => {',
         body,
-        '    })(window.__nexAct.find, window.__nexAct.findAll, window.__nexAct);',
+        '    })(window.__kelpiAct.find, window.__kelpiAct.findAll, window.__kelpiAct);',
         '    return JSON.stringify({ok:true, result: result === undefined ? null : result});',
         '  } catch (e) {',
         '    return JSON.stringify({ok:false, error: (e && e.message) ? e.message : String(e),',
@@ -1811,22 +1811,22 @@ export function wrapExecScript(script: string): string {
 
 /** Arm/disarm the in-page picker with the daemon-minted nonce (§11.1). */
 export function buildInspectArm(nonce: string, sticky: boolean): string {
-    return `(() => { if (!window.__nexInspectorEnable) return false; return window.__nexInspectorEnable(${JSON.stringify(nonce)}, ${String(sticky)}) !== false; })()`;
+    return `(() => { if (!window.__kelpiInspectorEnable) return false; return window.__kelpiInspectorEnable(${JSON.stringify(nonce)}, ${String(sticky)}) !== false; })()`;
 }
 
 export function buildInspectDisarm(): string {
-    return '(() => { if (!window.__nexInspectorDisable) return false; return window.__nexInspectorDisable() !== false; })()';
+    return '(() => { if (!window.__kelpiInspectorDisable) return false; return window.__kelpiInspectorDisable() !== false; })()';
 }
 
 export type FindAction = 'search' | 'next' | 'prev' | 'clear';
 
-/** §10: drive `__nexWebFind` and read `{total, current}` straight back off the evaluation. */
+/** §10: drive `__kelpiWebFind` and read `{total, current}` straight back off the evaluation. */
 export function buildFindCall(action: FindAction, needle: string): string {
     const call =
         action === 'search'
-            ? `window.__nexWebFind.search(${JSON.stringify(needle)})`
-            : `window.__nexWebFind.${action}()`;
-    return `(() => { if (!window.__nexWebFind) return null; return ${call}; })()`;
+            ? `window.__kelpiWebFind.search(${JSON.stringify(needle)})`
+            : `window.__kelpiWebFind.${action}()`;
+    return `(() => { if (!window.__kelpiWebFind) return null; return ${call}; })()`;
 }
 
 // ── §7.3 batch markers: the daemon → page calls ─────────────────────────────────────
@@ -1844,25 +1844,25 @@ export interface BatchMarkerInput {
 
 /** Replace the marker set (the diff-rebuild of WEB-138). An empty list tears the surfaces down. */
 export function buildBatchSetMarkers(items: readonly BatchMarkerInput[]): string {
-    return `(() => { if (!window.__nexBatchSetMarkers) return false; return window.__nexBatchSetMarkers(${JSON.stringify(items)}) !== false; })()`;
+    return `(() => { if (!window.__kelpiBatchSetMarkers) return false; return window.__kelpiBatchSetMarkers(${JSON.stringify(items)}) !== false; })()`;
 }
 
 export function buildBatchClearMarkers(): string {
-    return '(() => { if (!window.__nexBatchClearMarkers) return false; return window.__nexBatchClearMarkers() !== false; })()';
+    return '(() => { if (!window.__kelpiBatchClearMarkers) return false; return window.__kelpiBatchClearMarkers() !== false; })()';
 }
 
 /** Focus one item: ring, badge pulse, popover — and, for a panel-origin focus, a smooth scroll. */
 export function buildBatchHighlight(itemID: string, scrollIntoView: boolean): string {
-    return `(() => { if (!window.__nexBatchHighlight) return false; return window.__nexBatchHighlight(${JSON.stringify(itemID)}, ${String(scrollIntoView)}) !== false; })()`;
+    return `(() => { if (!window.__kelpiBatchHighlight) return false; return window.__kelpiBatchHighlight(${JSON.stringify(itemID)}, ${String(scrollIntoView)}) !== false; })()`;
 }
 
 export function buildBatchUnfocus(): string {
-    return '(() => { if (!window.__nexBatchUnfocus) return false; return window.__nexBatchUnfocus() !== false; })()';
+    return '(() => { if (!window.__kelpiBatchUnfocus) return false; return window.__kelpiBatchUnfocus() !== false; })()';
 }
 
 /** A panel-side comment edit pushed into the popover (never over a focused textarea, WEB-141). */
 export function buildBatchUpdateComment(itemID: string, comment: string): string {
-    return `(() => { if (!window.__nexBatchUpdateComment) return false; return window.__nexBatchUpdateComment(${JSON.stringify(itemID)}, ${JSON.stringify(comment)}) !== false; })()`;
+    return `(() => { if (!window.__kelpiBatchUpdateComment) return false; return window.__kelpiBatchUpdateComment(${JSON.stringify(itemID)}, ${JSON.stringify(comment)}) !== false; })()`;
 }
 
 /** §8.4 capture reads, kept here so the page expressions live in one place. */

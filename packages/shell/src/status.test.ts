@@ -14,7 +14,7 @@
  * host.showWindow())` next to `setContextMenu`, so one click both opened the menu AND pulled
  * the window forward under it — where the shipped app's status item does exactly one thing,
  * `togglePopover`, with no `activate` and no window raise (`StatusBarController.swift:32-39,
- * 117-126`). Raising the window is a row the user picks ("Show Nex", or a pane row), never a
+ * 117-126`). Raising the window is a row the user picks ("Show Kelpi", or a pane row), never a
  * side effect of looking at the menu.
  */
 
@@ -298,9 +298,9 @@ describe('the tray gesture (§AGNT-086 / §APP-088 — UI-FIDELITY U2)', () => {
         expect(host.showWindow).not.toHaveBeenCalled();
     });
 
-    it('keeps window-raising reachable: the menu carries a plain "Show Nex" row', () => {
+    it('keeps window-raising reachable: the menu carries a plain "Show Kelpi" row', () => {
         const tray = electronMock.trays[0];
-        const row = rowLabelled(tray as InstanceType<typeof electronMock.FakeTray>, 'Show Nex');
+        const row = rowLabelled(tray as InstanceType<typeof electronMock.FakeTray>, 'Show Kelpi');
         expect(row).toBeDefined();
         expect(row?.enabled).not.toBe(false);
         row?.click?.();

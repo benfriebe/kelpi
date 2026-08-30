@@ -1,8 +1,8 @@
 /**
- * `NexConnection` — the client half of the client-sync socket (WP3.1).
+ * `KelpiConnection` — the client half of the client-sync socket (WP3.1).
  *
  * One WebSocket carries both channels the daemon serves (`packages/daemon/src/ws/server.ts`):
- * text frames are the JSON protocol (`@nex/protocol` `ws/messages.ts`) and binary frames are
+ * text frames are the JSON protocol (`@kelpi/protocol` `ws/messages.ts`) and binary frames are
  * multiplexed PTY traffic (`ws/pty.ts`). This module owns the socket itself — handshake,
  * framing, liveness, reconnection — and nothing else: it never parses domain state (that is
  * `state/store.ts`), never mints command ids (`./commands.ts`), and never buffers terminal
@@ -42,7 +42,7 @@ import {
     type WsResyncRequiredMessage,
     type WsSnapshotMessage,
     type WsWelcomeMessage
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
 // ── transport seam ──────────────────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ export type ConnectionStatus =
     /** The daemon refused the handshake for a reason retrying cannot fix. */
     | 'rejected';
 
-/** Daemon → client JSON that `@nex/protocol` does not declare (see `ws/streams.ts`). */
+/** Daemon → client JSON that `@kelpi/protocol` does not declare (see `ws/streams.ts`). */
 export interface PtyResyncMessage {
     readonly type: 'pty-resync';
     readonly paneID: string;
@@ -152,7 +152,7 @@ export interface BackoffOptions {
     readonly jitter?: number;
 }
 
-export interface NexConnectionOptions {
+export interface KelpiConnectionOptions {
     /** Daemon base URL, WS URL, or path. Defaults to the page's own origin + `/ws`. */
     readonly url?: string | undefined;
     /** The run dir's `.token`; rides as `?token=` (browsers cannot set headers on WS). */
@@ -229,8 +229,8 @@ function text(value: unknown): string | undefined {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-export class NexConnection {
-    private readonly options: NexConnectionOptions;
+export class KelpiConnection {
+    private readonly options: KelpiConnectionOptions;
     private readonly socketFactory: SocketFactory;
     private readonly backoff: Required<BackoffOptions>;
     private readonly listeners = new Map<ConnectionEventName, Set<(payload: never) => void>>();
@@ -255,7 +255,7 @@ export class NexConnection {
 
     private welcomeMessage: WsWelcomeMessage | null = null;
 
-    constructor(options: NexConnectionOptions = {}) {
+    constructor(options: KelpiConnectionOptions = {}) {
         this.options = options;
         this.socketFactory = options.socketFactory ?? defaultSocketFactory;
         this.backoff = { ...DEFAULT_BACKOFF, ...(options.backoff ?? {}) };
@@ -426,7 +426,7 @@ export class NexConnection {
             type: 'hello',
             protocolVersion: this.options.protocolVersion ?? WS_PROTOCOL_VERSION,
             token: this.token,
-            client: this.options.client ?? { kind: 'browser', name: 'nex-web' }
+            client: this.options.client ?? { kind: 'browser', name: 'kelpi-web' }
         };
         try {
             socket.send(JSON.stringify(hello));
@@ -567,7 +567,7 @@ export class NexConnection {
         this.fatal = message.code !== 'server-error';
         this.emit('rejected', message);
         // The daemon's sentence, unadorned: it is written to be shown to a person (e.g. "open
-        // the client via 'nexd url'"), and a `code:` prefix only gets in the way of that.
+        // the client via 'kelpid url'"), and a `code:` prefix only gets in the way of that.
         this.emitError('ws-rejected', new Error(message.message));
         if (this.fatal) {
             this.stopped = true;
@@ -692,6 +692,6 @@ export class NexConnection {
     }
 }
 
-export function createConnection(options: NexConnectionOptions = {}): NexConnection {
-    return new NexConnection(options);
+export function createConnection(options: KelpiConnectionOptions = {}): KelpiConnection {
+    return new KelpiConnection(options);
 }

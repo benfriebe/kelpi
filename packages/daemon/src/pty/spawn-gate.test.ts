@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PtySpawnOptions } from '../seams.js';
-import type { NexPtyManager } from './manager.js';
+import type { KelpiPtyManager } from './manager.js';
 import {
     DEFAULT_SPAWN_DEFER_TIMEOUT_MS,
     createPaneSpawnGate,
@@ -205,7 +205,7 @@ describe('the spawn gate', () => {
 // The PtyManager wrapper
 // ---------------------------------------------------------------------------
 
-class FakePtyManager implements NexPtyManager {
+class FakePtyManager implements KelpiPtyManager {
     readonly spawns: PtySpawnOptions[] = [];
     readonly writes: { paneID: string; data: string }[] = [];
     readonly resizes: { paneID: string; cols: number; rows: number }[] = [];

@@ -44,7 +44,7 @@ export function faviconBadgeColor(
     return null;
 }
 
-/** §8.4 dock badge → tab title: `(N) Nex` while agents wait, the bare title otherwise. */
+/** §8.4 dock badge → tab title: `(N) Kelpi` while agents wait, the bare title otherwise. */
 export function titleWithBadge(title: string, waiting: number): string {
     return waiting > 0 ? `(${waiting}) ${title}` : title;
 }
@@ -175,7 +175,7 @@ function isLink(value: unknown): value is LinkLike {
 export function createFaviconController(options: FaviconControllerOptions = {}): FaviconController {
     const doc = options.document ?? (globalThis.document as unknown as FaviconDocument | undefined);
     const createCanvas = options.createCanvas ?? defaultCanvasFactory;
-    const baseTitle = options.title ?? doc?.title ?? 'Nex';
+    const baseTitle = options.title ?? doc?.title ?? 'Kelpi';
     const updateTitle = options.updateTitle !== false;
 
     let link: LinkLike | null = null;

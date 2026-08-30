@@ -47,22 +47,22 @@
  * an opaque origin), or the copy button and scroll tracking go quiet with no other symptom.
  */
 
-import type { KeyBindingMap, KeyTrigger } from '@nex/core/config';
+import type { KeyBindingMap, KeyTrigger } from '@kelpi/core/config';
 
 import { CODE_TO_KEY_CODE } from '../chrome/keys';
 
 /** Marks a message as coming from a pane document (host → frame uses the other marker). */
-export const CONTENT_BRIDGE_SOURCE = 'nex-content';
-export const CONTENT_HOST_SOURCE = 'nex-host';
+export const CONTENT_BRIDGE_SOURCE = 'kelpi-content';
+export const CONTENT_HOST_SOURCE = 'kelpi-host';
 
 /** §3.10: how long the copy button shows its checkmark. */
 export const COPY_FEEDBACK_MS = 1500;
 
 /**
- * §3.13's highlight palette — the Swift `NexGhosttyDefaults` search colours.
+ * §3.13's highlight palette — the Swift `KelpiGhosttyDefaults` search colours.
  *
  * These are the DEFAULTS, not the values: SET-219/TERM-021 make all four user-overridable
- * through the nex config (`search-match-color`, `search-match-text-color`,
+ * through the kelpi config (`search-match-color`, `search-match-text-color`,
  * `search-match-current-color`, `search-match-current-text-color`), and `FindPalette` is how
  * an override reaches the injected script. A caller that passes none gets exactly these, which
  * is what the Swift defaults file gave a user who never edited their ghostty config.
@@ -110,7 +110,7 @@ export function resolveFindPalette(palette?: Partial<FindPalette> | undefined): 
     };
 }
 
-/** What the host asks the document's `__nexFind` namespace to do (§3.13). */
+/** What the host asks the document's `__kelpiFind` namespace to do (§3.13). */
 export type FindOp = 'search' | 'next' | 'prev' | 'clear';
 
 /** Every operation answers with this; `current` is -1 when there are no matches. */
@@ -406,7 +406,7 @@ export interface PrepareDocumentOptions {
  * The result was a dark-theme document (dark ink, dark table headers) on a white canvas.
  *
  * So the client gives the FRAME a real background instead: the same two colors the pane
- * container composites (`--nex-term-bg` = ghostty background at ghostty opacity, over the window
+ * container composites (`--kelpi-term-bg` = ghostty background at ghostty opacity, over the window
  * fill), flattened to one opaque value by `chrome/theme.ts`'s `flattenOver` and painted on
  * `<html>`. `body { background-color: transparent }` then propagates it to the canvas, so the
  * daemon's HTML contract is untouched — a client that CAN composite (a future non-sandboxed
@@ -418,7 +418,7 @@ export interface PrepareDocumentOptions {
 export function frameBaseStyle(background: string, colorScheme: 'dark' | 'light'): string {
     // `html` rather than `body`: the daemon's stylesheet owns `body`, and a document whose body
     // is shorter than the viewport would leave the rest of the canvas unpainted.
-    return `<style data-nex-frame-base="1">html{background-color:${background};color-scheme:${colorScheme};}</style>`;
+    return `<style data-kelpi-frame-base="1">html{background-color:${background};color-scheme:${colorScheme};}</style>`;
 }
 
 function escapeAttribute(value: string): string {
@@ -480,7 +480,7 @@ export function prepareContentDocument(html: string, options: PrepareDocumentOpt
  * the focus/⌘E forwarding the iframe boundary would otherwise swallow).
  *
  * Written as ES5-flavored plain DOM so it runs unchanged in any engine that renders a pane, and
- * guarded by `__nexContentBridge` so a re-injection is a no-op.
+ * guarded by `__kelpiContentBridge` so a re-injection is a no-op.
  *
  * `seedChords` (N14) is the claimed set as of injection time; the `chords` message still
  * replaces it, so a rebind reaches an open frame, but the relay is armed from the first
@@ -495,8 +495,8 @@ export function contentBridgeScript(
     const find = resolveFindPalette(findPalette);
     const seed = JSON.stringify(chordSeedObject(seedChords ?? []));
     return `(function () {
-  if (window.__nexContentBridge) return;
-  window.__nexContentBridge = true;
+  if (window.__kelpiContentBridge) return;
+  window.__kelpiContentBridge = true;
   var PANE = ${id};
   var post = function (message) {
     message.source = ${JSON.stringify(CONTENT_BRIDGE_SOURCE)};
@@ -644,7 +644,7 @@ export function contentBridgeScript(
 
   // §3.13 — find-in-page. The host owns the overlay and the needle; this owns the marks.
   var findState = { marks: [], current: -1 };
-  var FIND_STYLE_ID = '__nex-find-style';
+  var FIND_STYLE_ID = '__kelpi-find-style';
   var ensureFindStyle = function () {
     if (document.getElementById(FIND_STYLE_ID)) return;
     var head = document.head || document.documentElement;
@@ -652,8 +652,8 @@ export function contentBridgeScript(
     var style = document.createElement('style');
     style.id = FIND_STYLE_ID;
     style.textContent =
-      'mark.nex-find-match{background:${find.match};color:${find.matchText};border-radius:2px;padding:0}' +
-      'mark.nex-find-match.nex-find-current{background:${find.current};color:${find.currentText}}';
+      'mark.kelpi-find-match{background:${find.match};color:${find.matchText};border-radius:2px;padding:0}' +
+      'mark.kelpi-find-match.kelpi-find-current{background:${find.current};color:${find.currentText}}';
     head.appendChild(style);
   };
   var clearMarks = function () {
@@ -674,8 +674,8 @@ export function contentBridgeScript(
   var showCurrent = function () {
     for (var i = 0; i < findState.marks.length; i += 1) {
       var mark = findState.marks[i];
-      if (i === findState.current) mark.classList.add('nex-find-current');
-      else mark.classList.remove('nex-find-current');
+      if (i === findState.current) mark.classList.add('kelpi-find-current');
+      else mark.classList.remove('kelpi-find-current');
     }
     var active = findState.marks[findState.current];
     // §L44: 'nearest' pins the HORIZONTAL axis, as \`MarkdownFindScript.swift:65\` does. Without
@@ -695,9 +695,9 @@ export function contentBridgeScript(
       while (parent && parent !== document.body) {
         if (SKIP[parent.nodeName]) { skip = true; break; }
         // §L43: OUR OWN highlights, not every <mark>. \`MarkdownFindScript.swift:69-79\` skips a
-        // subtree carrying \`.nex-find-match\`; skipping the MARK tag outright made the text of a
+        // subtree carrying \`.kelpi-find-match\`; skipping the MARK tag outright made the text of a
         // note's own \`<mark>\` permanently unsearchable.
-        if (parent.classList && parent.classList.contains('nex-find-match')) { skip = true; break; }
+        if (parent.classList && parent.classList.contains('kelpi-find-match')) { skip = true; break; }
         parent = parent.parentNode;
       }
       if (!skip && node.nodeValue) found.push(node);
@@ -726,7 +726,7 @@ export function contentBridgeScript(
         any = true;
         if (match.index > last) pieces.appendChild(document.createTextNode(value.slice(last, match.index)));
         var mark = document.createElement('mark');
-        mark.className = 'nex-find-match';
+        mark.className = 'kelpi-find-match';
         mark.appendChild(document.createTextNode(match[0]));
         pieces.appendChild(mark);
         findState.marks.push(mark);
@@ -747,7 +747,7 @@ export function contentBridgeScript(
     showCurrent();
     reportFind();
   };
-  window.__nexFind = {
+  window.__kelpiFind = {
     search: search,
     next: function () { step(1); },
     prev: function () { step(-1); },

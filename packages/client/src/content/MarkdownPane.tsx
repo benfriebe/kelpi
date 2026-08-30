@@ -152,9 +152,9 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
                     // Inline, like the terminal retry chip. It had to be until S1/S17 moved
                     // `button { padding: 0 }` into `@layer base`; it stays inline because 3/8 is
                     // this chip's own value rather than a utility step.
-                    border: '1px solid var(--nex-border, #24242B)',
-                    color: 'var(--nex-fg-secondary, #9A9AA0)',
-                    backgroundColor: 'var(--nex-header-bg, #13131A)'
+                    border: '1px solid var(--kelpi-border, #24242B)',
+                    color: 'var(--kelpi-fg-secondary, #9A9AA0)',
+                    backgroundColor: 'var(--kelpi-header-bg, #13131A)'
                 }}
                 onClick={() => props.onOpenExternalEditor?.(paneID)}
             >

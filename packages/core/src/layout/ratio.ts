@@ -94,7 +94,7 @@ export interface ResizeResult {
     readonly targetShare: number;
 }
 
-/** Default `--grow`/`--shrink` step for `nex pane resize` (§12.5). */
+/** Default `--grow`/`--shrink` step for `kelpi pane resize` (§12.5). */
 export const RESIZE_STEP = 0.05;
 
 /**

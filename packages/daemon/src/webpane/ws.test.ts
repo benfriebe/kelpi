@@ -6,11 +6,11 @@
  * is exactly what the Electron shell will see on the wire.
  */
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher } from '../seams.js';
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import {
     createSyncHub,
     REVEAL_PANE_MESSAGE,
@@ -33,7 +33,7 @@ const DAEMON = { version: '0.1.0', build: '42', pid: 4242 };
 
 interface Fixture {
     readonly hub: SyncHub;
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly service: WebPaneService;
     connect(): { session: SyncSession; transport: RecordedTransport };
 }
@@ -74,7 +74,7 @@ function fixture(): Fixture {
     };
 }
 
-function hello(client: Record<string, unknown> = { kind: 'electron', name: 'nex-shell' }): string {
+function hello(client: Record<string, unknown> = { kind: 'electron', name: 'kelpi-shell' }): string {
     return JSON.stringify({
         type: 'hello',
         protocolVersion: WS_PROTOCOL_VERSION,
@@ -102,7 +102,7 @@ describe('host registration', () => {
         const f = fixture();
         const { session, transport } = f.connect();
         session.handleMessage(
-            hello({ kind: 'electron', name: 'nex-shell', capabilities: [WEB_HOST_CAPABILITY] })
+            hello({ kind: 'electron', name: 'kelpi-shell', capabilities: [WEB_HOST_CAPABILITY] })
         );
         expect(transport.ofType('host-registered')).toHaveLength(1);
         expect(f.service.hasHost).toBe(true);
@@ -348,7 +348,7 @@ describe('geometry reports → pane-geometry notifies', () => {
         session.handleMessage(
             hello({
                 kind: 'electron',
-                name: 'nex-shell',
+                name: 'kelpi-shell',
                 capabilities: [WEB_HOST_CAPABILITY],
                 windowID
             })
@@ -372,7 +372,7 @@ describe('geometry reports → pane-geometry notifies', () => {
         const f = fixture();
         const host = hostWithWindow(f, 'WIN-1');
         const client = f.connect();
-        client.session.handleMessage(hello({ kind: 'browser', name: 'nex-web' }));
+        client.session.handleMessage(hello({ kind: 'browser', name: 'kelpi-web' }));
 
         client.session.handleMessage(geometry({ shellWindowID: 'WIN-1' }));
 
@@ -393,7 +393,7 @@ describe('geometry reports → pane-geometry notifies', () => {
         const f = fixture();
         const host = hostWithWindow(f, 'WIN-1');
         const client = f.connect();
-        client.session.handleMessage(hello({ kind: 'browser', name: 'nex-web' }));
+        client.session.handleMessage(hello({ kind: 'browser', name: 'kelpi-web' }));
 
         client.session.handleMessage(geometry());
         client.session.handleMessage(geometry({ shellWindowID: 'SOMEONE-ELSE' }));

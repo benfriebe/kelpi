@@ -13,14 +13,14 @@
  * trigger without reaching into the registry.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -81,7 +81,7 @@ function settingsPayload(keybindLines: readonly string[]): Record<string, unknow
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     socket(): FakeWebSocket;
     sent(): Record<string, unknown>[];
     commands(): Record<string, unknown>[];
@@ -94,8 +94,8 @@ function setup(
     fixture: { web?: boolean; tabs?: number } = {}
 ): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

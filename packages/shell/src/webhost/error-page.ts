@@ -23,7 +23,7 @@
  */
 
 /** The marker the tab uses to recognise its own card in `did-navigate` (never a real page). */
-export const ERROR_PAGE_MARKER = 'nex-web-error-page';
+export const ERROR_PAGE_MARKER = 'kelpi-web-error-page';
 
 export interface WebErrorPageInput {
     /** The address the user was going to; also the Retry target. */
@@ -91,7 +91,7 @@ export function webErrorMessage(description: string): string {
  *
  * Two things are the port's and stay:
  *
- *   - the `data-nex-web-error-page` marker on `<html>`, which is how `tab.ts` recognises its own
+ *   - the `data-kelpi-web-error-page` marker on `<html>`, which is how `tab.ts` recognises its own
  *     card in `did-navigate` (the Swift tracks `WKNavigation` identity instead — see §WEB-030);
  *   - the small `(-105)` net-error code after the message. Chromium hands `did-fail-load` a code
  *     the Swift's `NSError` path never had, and it is the one thing that tells a real

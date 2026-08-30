@@ -1,4 +1,4 @@
-import { allPaneIDs, ratioAtPath } from '@nex/core/layout';
+import { allPaneIDs, ratioAtPath } from '@kelpi/core/layout';
 import { describe, expect, it } from 'vitest';
 import { workspaceByID } from './derived.js';
 import { harness, HOME, id, NOW, seededState, W1, W2 } from './testing.js';

@@ -3,10 +3,10 @@ import {
     emptyDaemonState,
     visibleWorkspaceOrder,
     type DaemonState
-} from '@nex/daemon/store';
+} from '@kelpi/daemon/store';
 import { describe, expect, it } from 'vitest';
 
-import { createNexStore } from '../state/store';
+import { createKelpiStore } from '../state/store';
 import { selectSidebarEntries } from '../state/selectors';
 import {
     applyGroupDrop,
@@ -54,7 +54,7 @@ function daemonState(collapsed = false): DaemonState {
 }
 
 function entriesFor(state: DaemonState): readonly ChromeSidebarEntry[] {
-    const client = createNexStore();
+    const client = createKelpiStore();
     client.getState().applySnapshot(1, state);
     return selectSidebarEntries(client.getState());
 }

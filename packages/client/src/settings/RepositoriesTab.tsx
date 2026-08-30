@@ -3,7 +3,7 @@
  * settings §SET-052…§SET-057), plus the auto-detect toggle §GIT-074 puts on the General tab.
  *
  * The registry is what the workspace inspector's "New Worktree" picker chooses from and what
- * `nex workspace create --worktree` resolves against, so it needs a home even though every
+ * `kelpi workspace create --worktree` resolves against, so it needs a home even though every
  * association can also be made from the inspector. `RepoRegistryView.swift` is the reference:
  *
  *   - a **filter field** matching name OR path, case-insensitively (§SET-052);
@@ -153,7 +153,7 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
             <SettingsSection
                 plain
                 title="Registry"
-                hint="Registered repositories are what the inspector's New Worktree picker and nex workspace create --worktree choose from."
+                hint="Registered repositories are what the inspector's New Worktree picker and kelpi workspace create --worktree choose from."
                 testID="registry-section"
             >
                 <div className="flex items-center gap-2">
@@ -382,7 +382,7 @@ export function RepositoriesTab(props: RepositoriesTabProps): ReactElement {
             </SettingsSection>
 
             <SettingsFooterNote>
-                Config: <span className="font-mono">{props.paths.nexConfig}</span>
+                Config: <span className="font-mono">{props.paths.kelpiConfig}</span>
             </SettingsFooterNote>
         </div>
     );

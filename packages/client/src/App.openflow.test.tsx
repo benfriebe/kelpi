@@ -6,15 +6,15 @@
  * is asserted is the wire traffic a gesture actually produces — not that a handler was called.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
 import { contentState } from './content/testing';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -54,7 +54,7 @@ function snapshotState(options: { markdown?: 'preview' | 'external' } = {}): Jso
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     socket(): FakeWebSocket;
     sent(): Record<string, unknown>[];
     commands(): Record<string, unknown>[];
@@ -65,8 +65,8 @@ interface Harness {
 
 function setup(options: { markdown?: 'preview' | 'external' } = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -119,13 +119,13 @@ afterEach(cleanup);
 describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
     it('opens a dropped .md path through the `open` verb', () => {
         const h = setup();
-        drop(screen.getByTestId('nex-app'), { 'text/uri-list': 'file:///repo/README.md' });
+        drop(screen.getByTestId('kelpi-app'), { 'text/uri-list': 'file:///repo/README.md' });
         expect(h.lastCommand('open')).toMatchObject({ command: 'open', path: '/repo/README.md' });
     });
 
     it('refuses a non-markdown drop with a toast rather than silence', async () => {
         const h = setup();
-        drop(screen.getByTestId('nex-app'), { 'text/uri-list': 'file:///repo/photo.png' });
+        drop(screen.getByTestId('kelpi-app'), { 'text/uri-list': 'file:///repo/photo.png' });
         expect(h.lastCommand('open')).toBeUndefined();
         await waitFor(() => {
             expect(document.body.textContent).toContain('not a .md file');
@@ -134,7 +134,7 @@ describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
 
     it('explains a pathless File drop and points at ⌘O', async () => {
         const h = setup();
-        drop(screen.getByTestId('nex-app'), {}, 1);
+        drop(screen.getByTestId('kelpi-app'), {}, 1);
         expect(h.lastCommand('open')).toBeUndefined();
         await waitFor(() => {
             expect(document.body.textContent).toContain('⌘O');
@@ -143,8 +143,8 @@ describe('drag-and-drop a markdown file (CONT-121 / APP-103)', () => {
 
     it('classifies a file-shaped drag, and PAINTS nothing for it (TERM-041 / H20)', () => {
         setup();
-        const app = screen.getByTestId('nex-app');
-        fireEvent.dragEnter(app, { dataTransfer: { types: ['application/x-nex-pane'], files: { length: 0 } } });
+        const app = screen.getByTestId('kelpi-app');
+        fireEvent.dragEnter(app, { dataTransfer: { types: ['application/x-kelpi-pane'], files: { length: 0 } } });
         expect(app.dataset['dropActive']).toBe('false');
         fireEvent.dragEnter(app, { dataTransfer: { types: ['Files'], files: { length: 1 } } });
         expect(app.dataset['dropActive']).toBe('true');
@@ -352,7 +352,7 @@ describe('the ••• title-bar menu (APP-052/053/054)', () => {
         );
         expect(labels).toContain('Settings…');
         expect(labels).toContain('Show Inspector');
-        expect(labels).toContain('Nex Help');
+        expect(labels).toContain('Kelpi Help');
         expect(labels).toContain('Restart Socket Server');
         // A browser client never shows the two rows only a desktop shell can honour.
         expect(labels).not.toContain('Install CLI');
@@ -366,16 +366,16 @@ describe('the ••• title-bar menu (APP-052/053/054)', () => {
         expect(h.lastCommand('restart-control-server')).toMatchObject({
             command: 'restart-control-server'
         });
-        h.reply({ socket_path: '/tmp/sandbox/nexd.sock' });
+        h.reply({ socket_path: '/tmp/sandbox/kelpid.sock' });
         await waitFor(() => {
-            expect(document.body.textContent).toContain('/tmp/sandbox/nexd.sock');
+            expect(document.body.textContent).toContain('/tmp/sandbox/kelpid.sock');
         });
     });
 
-    it('Nex Help opens the overlay', async () => {
+    it('Kelpi Help opens the overlay', async () => {
         setup();
         fireEvent.click(screen.getByTestId('titlebar-menu-toggle'));
-        fireEvent.click(screen.getByText('Nex Help'));
+        fireEvent.click(screen.getByText('Kelpi Help'));
         expect(await screen.findByTestId('help-overlay')).toBeTruthy();
     });
 });

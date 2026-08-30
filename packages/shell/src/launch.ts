@@ -121,17 +121,17 @@ export interface CliInstallPolicyDeps {
     readonly installNow: () => void;
     /** Log + the once-per-version "CLI is out of date" notification (APP-005). */
     readonly report: (result: CliInstallResult) => void;
-    /** The first-launch "Install the nex command line tool?" dialog. */
+    /** The first-launch "Install the kelpi command line tool?" dialog. */
     readonly offer: () => void;
     readonly log: (message: string) => void;
 }
 
 export type CliInstallPolicyOutcome =
-    /** Not a packaged app, or `NEX_CLI_INSTALL=off`: nothing was looked at. */
+    /** Not a packaged app, or `KELPI_CLI_INSTALL=off`: nothing was looked at. */
     | { readonly kind: 'off'; readonly mode: CliInstallMode }
     /** No launcher to point at — a dev bundle, or a broken build. */
     | { readonly kind: 'no-payload'; readonly mode: CliInstallMode }
-    /** `NEX_CLI_INSTALL=auto`: installed without asking. */
+    /** `KELPI_CLI_INSTALL=auto`: installed without asking. */
     | { readonly kind: 'installed'; readonly mode: CliInstallMode }
     /** The normal path: healed, and offered only when there was nothing there. */
     | {
@@ -142,7 +142,7 @@ export type CliInstallPolicyOutcome =
       };
 
 /**
- * What launch does about `/usr/local/bin/nex`, in the order it does it.
+ * What launch does about `/usr/local/bin/kelpi`, in the order it does it.
  *
  * **Heal first, in every case.** The offer is gated on the heal's own `absent` answer, so a
  * user who already has the CLI installed is never asked about it — and the question "is one

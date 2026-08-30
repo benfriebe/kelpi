@@ -23,8 +23,8 @@
  * Everything else is props/callbacks — the sidebar never reads the store or sends a command.
  */
 
-import { firstGrapheme } from '@nex/core/codec';
-import type { IconRef, WorkspaceColor } from '@nex/daemon/store';
+import { firstGrapheme } from '@kelpi/core/codec';
+import type { IconRef, WorkspaceColor } from '@kelpi/daemon/store';
 import {
     memo,
     useCallback,
@@ -370,7 +370,7 @@ export const AUTO_SCROLL_INTERVAL_MS = 15;
  *   1. a row that CHANGED PLACE — including mid-drag, which is the motion the user reported as
  *      dead — is FLIPped: measured before/after (`offsetTop`/`offsetLeft`, which no transform
  *      can move) and the delta handed to the spring driver, which unwinds it to zero;
- *   2. a row that APPEARS plays `nex-sidebar-row-enter` once (styles.css). A one-shot entry is
+ *   2. a row that APPEARS plays `kelpi-sidebar-row-enter` once (styles.css). A one-shot entry is
  *      never retargeted, so live physics buys it nothing and it stays on the keyframes;
  *   3. a row that is REMOVED animates a ghost (`ROW_EXIT_MS`), for the reason recorded there —
  *      also a one-shot, also left on its transition.
@@ -379,7 +379,7 @@ export const AUTO_SCROLL_INTERVAL_MS = 15;
  * transition, which after this change describes ONE thing: the drag lift's scale relaxing when
  * the gesture ends. The reorder no longer rides on it.
  */
-export const ROW_ENTER_ANIMATION = 'nex-sidebar-row-enter';
+export const ROW_ENTER_ANIMATION = 'kelpi-sidebar-row-enter';
 export const SPRING_EASING = 'cubic-bezier(0.22, 1.2, 0.36, 1)';
 export const REORDER_MS = 350;
 
@@ -390,7 +390,7 @@ export const REORDER_MS = 350;
  * `withAnimation(.easeInOut(duration: 0.1)) { springLoadedGroupID = target }` — an explicit,
  * deliberately quick curve, because the cursor is already holding a dragged row over the header
  * and the user is waiting on the children to appear underneath it. The port let the newly
- * rendered rows play the ordinary 350ms `nex-sidebar-row-enter`, so a spring-load took three and
+ * rendered rows play the ordinary 350ms `kelpi-sidebar-row-enter`, so a spring-load took three and
  * a half times as long to finish as the shipped app's and the drop zones under the cursor kept
  * moving for most of it.
  *
@@ -543,21 +543,21 @@ function StatusDot({
              * §AGNT-103 / §AGNT-104 / §H24: the dot BREATHES — its own opacity fades 1 → 0.35
              * and back on a 1 s ease-in-out, which is `PulsingStatusDot`
              * (`WorkspaceRowView.swift:16-20`) exactly. There is no halo in the Swift and there
-             * is none here any more; `--nex-dot-halo` went with the ring it drew.
+             * is none here any more; `--kelpi-dot-halo` went with the ring it drew.
              *
              * The animation lives in styles.css because it needs `@keyframes` and because it
-             * drops out under `prefers-reduced-motion`. `--nex-dot-ring` — the Swift's
+             * drops out under `prefers-reduced-motion`. `--kelpi-dot-ring` — the Swift's
              * `borderColor` stroke, the sidebar's own background so the dot separates from the
              * avatar under it — is published here and PAINTED by the class rather than inline,
              * so the animated `opacity` carries the fill and the ring together, as one view's
              * opacity does in SwiftUI.
              */
-            className="nex-agent-dot-pulse absolute -right-[3px] h-[9px] w-[9px] rounded-full"
+            className="kelpi-agent-dot-pulse absolute -right-[3px] h-[9px] w-[9px] rounded-full"
             style={
                 {
                     top: -top,
                     background: color,
-                    '--nex-dot-ring': tokens.sidebarBackground
+                    '--kelpi-dot-ring': tokens.sidebarBackground
                 } as CSSProperties
             }
         />
@@ -962,7 +962,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
      * dimmed. The port used to tint it with `workspaceColorHex(workspace.color, …)` at 16%, so
      * the active-row highlight changed hue on every workspace switch, which the shipped app
      * never does. `withAlpha` on a `var()` token mixes in CSS rather than resolving here, so the
-     * 0.7 rides whatever `--nex-selection-fill` the live theme publishes.
+     * 0.7 rides whatever `--kelpi-selection-fill` the live theme publishes.
      */
     const activeFill = withAlpha(tokens.selectionFill, 0.7);
     // `backgroundColor`, not the `background` shorthand — the paragraph above already says this
@@ -984,7 +984,7 @@ const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): React
      * §H22: the SELECTION stroke is `theme.selectionStroke.opacity(0.7)`
      * (`WorkspaceRowView.swift:161`), so it reads the live token exactly as the active stroke on
      * the line below already did. It used to be the literal `#5276B8` — the DARK preset's
-     * `--nex-selection-stroke` frozen into the source, which put a dark-theme periwinkle on a
+     * `--kelpi-selection-stroke` frozen into the source, which put a dark-theme periwinkle on a
      * light sidebar whose own stroke is `#5e8ac4`.
      */
     const selectionStroke = withAlpha(tokens.selectionStroke, 0.7);
@@ -1351,7 +1351,7 @@ const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRowProps):
                  *     that `??`, so the colourless case simply stops being a branch here and
                  *     goes through `tintedColor` like every other band: SET-037/038's intensity
                  *     and band-fill knobs reach it, and light mode gets
-                 *     `--nex-group-band-opacity: 0.3` instead of a frozen 0.16 of the dark
+                 *     `--kelpi-group-band-opacity: 0.3` instead of a frozen 0.16 of the dark
                  *     preset's `#8A8A92`.
                  */
                 // SET-038's "Group band fill". The stored `-1` sentinel is resolved to the
@@ -2204,7 +2204,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
      * on it, `onActivate` ran, and the flag was cleared on the way past. The row is now the GAP
      * — `visibility: hidden`, and a hidden box is not hit-testable — so `mouseup` lands on the
      * scroller instead and no row handler ever sees the click. Left as it was, the flag would
-     * survive the gesture and swallow the user's NEXT genuine click on a row.
+     * survive the gesture and swallow the user's KELPIT genuine click on a row.
      *
      * One window-level listener retires it instead. Bubble phase, deliberately: React attaches
      * its own handlers at the root container, which is below `window`, so a row's `onClick`
@@ -4470,7 +4470,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
               * height, on the first control in the sidebar.
               *
               * The fill and border are `chromeTheme.textPrimary.opacity(0.05 / 0.08)` (`:676`,
-              * `:679`), NOT a hex: the port's frozen `#E6E6EA` is the dark preset's `--nex-fg`,
+              * `:679`), NOT a hex: the port's frozen `#E6E6EA` is the dark preset's `--kelpi-fg`,
               * which at 5% over the LIGHT sidebar's `#efeee9` is very nearly the sidebar
               * itself, so the pill and its border effectively vanished in light mode.
               */}
@@ -4974,7 +4974,7 @@ function CustomEmojiSheet(props: CustomEmojiSheetProps): ReactElement | null {
                     in the Swift's own words. The field keeps its `aria-label`, which was always
                     its accessible name — the label was visual only. */}
                 <input
-                    id="nex-custom-emoji"
+                    id="kelpi-custom-emoji"
                     autoFocus
                     aria-label="Custom emoji"
                     data-testid="emoji-input"

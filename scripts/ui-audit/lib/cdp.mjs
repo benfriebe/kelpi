@@ -6,7 +6,7 @@
  * `Input.*` rather than synthesising DOM events in page script. `Runtime.evaluate` is reserved
  * for *reading* (assertions) and for the handful of affordances that have no stable hit target.
  *
- * Why hand-rolled instead of puppeteer: the harness must run against a packaged `Nex.app` whose
+ * Why hand-rolled instead of puppeteer: the harness must run against a packaged `Kelpi.app` whose
  * only automation surface is `--remote-debugging-port`, must add zero dependencies outside the
  * packages that already have them, and needs ~10 CDP methods.
  */
@@ -270,7 +270,7 @@ export async function connect(webSocketDebuggerUrl, { repoRoot, verbose = false 
                 if (contextId === undefined) {
                     const world = await send('Page.createIsolatedWorld', {
                         frameId,
-                        worldName: 'nex-ui-audit',
+                        worldName: 'kelpi-ui-audit',
                         grantUniveralAccess: false
                     });
                     contextId = world.executionContextId;

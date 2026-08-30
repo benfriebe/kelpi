@@ -2,7 +2,7 @@
  * The single keydown interceptor (WP3.5).
  *
  * Spec: docs/current/config-keybindings.md §7.2 (the pane-shortcut monitor pipeline) and §5
- * (the binding map). The map itself is NOT re-implemented here — `@nex/core/config` owns the
+ * (the binding map). The map itself is NOT re-implemented here — `@kelpi/core/config` owns the
  * defaults, the override application and the trigger identity, so the client and the daemon
  * agree on what a config file means by construction.
  *
@@ -35,13 +35,13 @@ import {
     type KeyBindingMap,
     type KeyModifier,
     type KeyTrigger,
-    type NexAction
-} from '@nex/core/config';
+    type KelpiAction
+} from '@kelpi/core/config';
 
 // ── KeyboardEvent.code → macOS virtual key code ─────────────────────────────────────
 
 /**
- * Physical-key table. Values are the same macOS key codes `@nex/core/config`'s
+ * Physical-key table. Values are the same macOS key codes `@kelpi/core/config`'s
  * `KEY_NAME_TO_CODE` produces, so a trigger parsed from the config file and a trigger built
  * from a DOM event are the same `keyTriggerKey`.
  */
@@ -124,7 +124,7 @@ export { DEFAULT_KEYBINDINGS, applyKeybindOverrides, actionForTrigger };
  * multiply-bound action shows the same hint on every launch rather than whichever trigger the
  * map happened to iterate first.
  */
-export function shortcutForAction(bindings: KeyBindingMap, action: NexAction): string | undefined {
+export function shortcutForAction(bindings: KeyBindingMap, action: KelpiAction): string | undefined {
     const trigger = triggersForAction(bindings, action)[0];
     return trigger === undefined ? undefined : keyTriggerDisplayString(trigger);
 }
@@ -132,7 +132,7 @@ export function shortcutForAction(bindings: KeyBindingMap, action: NexAction): s
 // ── dispatch ────────────────────────────────────────────────────────────────────────
 
 export interface KeyActionContext {
-    readonly action: NexAction;
+    readonly action: KelpiAction;
     readonly trigger: KeyTrigger;
     readonly event: KeyEventLike;
 }
@@ -145,7 +145,7 @@ export interface KeyActionContext {
 export type KeyActionHandler = (context: KeyActionContext) => boolean | void;
 
 /** Every bindable action is optional: an unwired action simply falls through to the pane. */
-export type KeyActionRegistry = Partial<Record<NexAction, KeyActionHandler>>;
+export type KeyActionRegistry = Partial<Record<KelpiAction, KeyActionHandler>>;
 
 export interface KeyDispatcherOptions {
     readonly bindings?: KeyBindingMap | (() => KeyBindingMap) | undefined;
@@ -168,7 +168,7 @@ export interface KeyDispatcherOptions {
      * **Stated decision for the port**: while a modal overlay owns the keyboard, ⌘W belongs to
      * the OVERLAY — it closes the topmost closeable thing and can never reach the window. That
      * is also what AppKit does with a sheet up (File ▸ Close is disabled), and it is what makes
-     * the shell's `__nexShellClosePane()` answer `true` in this state instead of `false`, which
+     * the shell's `__kelpiShellClosePane()` answer `true` in this state instead of `false`, which
      * is the whole reason the window used to go (`app/shell-close.ts`).
      *
      * Called only for a chord the binding map resolves to `close_pane`, so a rebind moves it
@@ -345,10 +345,10 @@ export function installKeyDispatcher(target: KeyEventTarget, dispatcher: KeyDisp
 // ── the action set assembly must cover ──────────────────────────────────────────────
 
 /**
- * The actions WP3.4/3.5 wires today; everything else in `NEX_ACTIONS` is legal to register
+ * The actions WP3.4/3.5 wires today; everything else in `KELPI_ACTIONS` is legal to register
  * and simply falls through until its feature lands (content panes: M5, web panes: M6).
  */
-export const WIRED_KEY_ACTIONS: readonly NexAction[] = [
+export const WIRED_KEY_ACTIONS: readonly KelpiAction[] = [
     'split_right',
     'split_down',
     'close_pane',
@@ -378,7 +378,7 @@ export const WIRED_KEY_ACTIONS: readonly NexAction[] = [
 ];
 
 /** `switch_to_workspace_N` → the 0-based index into `visibleWorkspaceOrder` (§3.2). */
-export function workspaceSwitchIndex(action: NexAction): number | null {
+export function workspaceSwitchIndex(action: KelpiAction): number | null {
     const match = /^switch_to_workspace_([1-9])$/.exec(action);
     if (match === null) return null;
     return Number.parseInt(match[1] as string, 10) - 1;
@@ -393,7 +393,7 @@ export function workspaceSwitchHandlers(
 ): KeyActionRegistry {
     const registry: KeyActionRegistry = {};
     for (let index = 0; index < 9; index += 1) {
-        const action = `switch_to_workspace_${index + 1}` as NexAction;
+        const action = `switch_to_workspace_${index + 1}` as KelpiAction;
         registry[action] = () => switchToIndex(index);
     }
     return registry;

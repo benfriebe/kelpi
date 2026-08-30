@@ -1,15 +1,15 @@
 /**
- * `nex install-hooks --link` — the CLI symlink half of `install-hooks.sh` (CLI-143, CLI-144).
+ * `kelpi install-hooks --link` — the CLI symlink half of `install-hooks.sh` (CLI-143, CLI-144).
  *
  * The shell script's rules, kept verbatim in behaviour:
  *
- *   - the destination is `$NEX_INSTALL_DIR`, default `/usr/local/bin`, and it is **created** if
+ *   - the destination is `$KELPI_INSTALL_DIR`, default `/usr/local/bin`, and it is **created** if
  *     missing (`mkdir -p`);
  *   - the entry is a **symlink, never a copy**. The `cp` install shipped before April 2025 is
  *     the whole reason `CLIInstallService` exists: a copied binary keeps working after a Sparkle
  *     update and silently answers with last month's CLI (issue #39). A symlink cannot drift;
  *   - a warning when the install directory is not on the current `PATH`, because the hooks run
- *     a bare `nex` (see `./self.ts` for why a non-interactive shell makes this bite).
+ *     a bare `kelpi` (see `./self.ts` for why a non-interactive shell makes this bite).
  *
  * And one rule the script did not need, because a user runs a downloaded script knowing it may
  * ask for a password: **never sudo, never silently.** An unwritable `/usr/local/bin` (the
@@ -23,7 +23,7 @@ import path from 'node:path';
 import type { InstallFs } from './fs.js';
 
 export const DEFAULT_INSTALL_DIR = '/usr/local/bin';
-export const LINK_NAME = 'nex';
+export const LINK_NAME = 'kelpi';
 
 export type LinkAction = 'linked' | 'unchanged' | 'failed' | 'would-link';
 
@@ -91,7 +91,7 @@ export function linkCli(options: LinkOptions, fsys: InstallFs): LinkResult {
     }
     try {
         // unlink + symlink rather than `ln -sf`: `ln -sf` onto an existing *directory symlink*
-        // creates the link INSIDE it, which would leave `/usr/local/bin/nex/nex`.
+        // creates the link INSIDE it, which would leave `/usr/local/bin/kelpi/kelpi`.
         fsys.remove(linkPath);
         fsys.symlink(options.target, linkPath);
     } catch (error) {

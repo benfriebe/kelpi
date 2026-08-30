@@ -9,14 +9,14 @@
  * state a body click sets, so the test drives the message and reads the state, not the handler.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -45,7 +45,7 @@ function snapshotState(): JsonObject {
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     socket(): FakeWebSocket;
     sent(): Record<string, unknown>[];
     focusReports(): Record<string, unknown>[];
@@ -61,11 +61,11 @@ function setup(options: { shellWindow?: string | null } = {}): Harness {
     const marker = options.shellWindow === undefined ? SHELL_WINDOW : options.shellWindow;
     window.history.replaceState({}, '', marker === null ? '/' : `/?shellWindow=${marker}`);
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,

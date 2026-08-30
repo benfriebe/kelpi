@@ -90,7 +90,7 @@ describe('the shared find-bar recipe', () => {
         expect(screen.getByTestId(`content-find-count-${PANE}`).textContent).toBe('-/0');
     });
 
-    /** §H7: up is NEXT and down is PREVIOUS on every find surface, the Swift's wiring. */
+    /** §H7: up is KELPIT and down is PREVIOUS on every find surface, the Swift's wiring. */
     it('steps up for the next match and down for the previous', async () => {
         render(<ContentFrame paneID={PANE} title="markdown preview" html={DOCUMENT} />);
         const posted = captureToFrame();

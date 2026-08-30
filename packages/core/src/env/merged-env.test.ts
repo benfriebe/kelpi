@@ -130,7 +130,7 @@ describe('mergedEnvVars', () => {
 });
 
 describe('buildPanePath', () => {
-    it('prepends the helpers dir so the bundled nex CLI wins', () => {
+    it('prepends the helpers dir so the bundled kelpi CLI wins', () => {
         expect(buildPanePath('/Apps/Nex.app/Contents/Helpers', '/usr/local/bin:/usr/bin')).toBe(
             '/Apps/Nex.app/Contents/Helpers:/usr/local/bin:/usr/bin'
         );

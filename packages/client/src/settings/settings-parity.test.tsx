@@ -21,7 +21,7 @@
  * `GeneralTab.test.tsx`) where the fixtures already are; what is here is everything else.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,7 +58,7 @@ afterEach(cleanup);
 
 describe('M46 — where the explanatory copy goes', () => {
     /**
-     * `SettingsView.swift:141-148`: the caption is the NEXT CHILD of the `Section`, after the
+     * `SettingsView.swift:141-148`: the caption is the KELPIT CHILD of the `Section`, after the
      * `Toggle` — a row of its own spanning the section's width, not a second line squeezed into
      * the label column.
      */
@@ -259,7 +259,7 @@ describe('Settings ▸ Keybindings', () => {
         expect(scroller.className).toContain('overflow-y-auto');
         expect(scroller.contains(footer)).toBe(false);
         expect(footer.className).toContain('shrink-0');
-        expect(footer.style.borderTop).toContain('--nex-border');
+        expect(footer.style.borderTop).toContain('--kelpi-border');
         expect(screen.getByTestId('settings-footer-note').textContent).toContain('~/.config/nex/config');
         // Reset is INSIDE the footer, and it is the footer's trailing control.
         const reset = screen.getByTestId('reset-all-keybindings');
@@ -301,7 +301,7 @@ describe('M45 — the empty states carry their glyph', () => {
         );
         const glyph = screen.getByTestId('settings-favourites-empty-glyph');
         expect(glyph.querySelector('svg')?.getAttribute('width')).toBe('28');
-        expect(glyph.style.color).toContain('--nex-fg-tertiary');
+        expect(glyph.style.color).toContain('--kelpi-fg-tertiary');
         expect(screen.getByTestId('settings-favourites-empty').textContent).toContain('No favourites yet');
     });
 });

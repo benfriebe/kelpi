@@ -1,8 +1,8 @@
-# @nex/client — the web client
+# @kelpi/client — the web client
 
-The UI half of New Nex. It renders daemon state and sends commands; **no domain logic lives
+The UI half of New Kelpi. It renders daemon state and sends commands; **no domain logic lives
 here** (ARCHITECTURE.md: "clients are views"). Every mutation is a control-protocol verb the
-`nex` CLI could equally have sent, so the browser and the CLI can never drift.
+`kelpi` CLI could equally have sent, so the browser and the CLI can never drift.
 
 ```
 src/
@@ -13,7 +13,7 @@ src/
 ├─ content/      markdown / diff / scratchpad panes: the sandboxed frame, editor, subscriptions
 ├─ chrome/       sidebar, top bar, status footer, command palette, theme, keybindings
 ├─ app/          assembly helpers: daemon-target resolution, the web-pane placeholder
-├─ App.tsx       the assembly: everything above, wired to a NexRuntime
+├─ App.tsx       the assembly: everything above, wired to a KelpiRuntime
 └─ main.tsx      entrypoint: resolve target → build runtime → render
 ```
 
@@ -27,16 +27,16 @@ There are two ways to work:
 ```bash
 # terminal 1 — a development daemon on its own paths (never /tmp/nex.sock, which the
 # shipped Swift app owns on a dev machine)
-pnpm --filter @nex/daemon build
-NEXD_SOCKET_PATH=/tmp/nexd-dev.sock \
-NEXD_HTTP_PORT=19470 \
-NEXD_TCP_PORT=19400 \
-NEXD_DB_PATH=/tmp/nexd-dev.db \
-NEXD_RUN_DIR=/tmp/nexd-dev-run \
-node packages/daemon/dist/nexd.js start --foreground
+pnpm --filter @kelpi/daemon build
+KELPID_SOCKET_PATH=/tmp/kelpid-dev.sock \
+KELPID_HTTP_PORT=19470 \
+KELPID_TCP_PORT=19400 \
+KELPID_DB_PATH=/tmp/kelpid-dev.db \
+KELPID_RUN_DIR=/tmp/kelpid-dev-run \
+node packages/daemon/dist/kelpid.js start --foreground
 
 # terminal 2
-pnpm --filter @nex/client dev     # http://localhost:5173
+pnpm --filter @kelpi/client dev     # http://localhost:5173
 ```
 
 The client dials the daemon at its own origin by default, which on :5173 is the Vite server —
@@ -44,16 +44,16 @@ so one of these has to be true:
 
 - **the WS proxy** (already configured): `vite.config.ts` proxies `/ws` to the daemon's
   **HTTP/WS** port, `http://127.0.0.1:19470` by default — the same port that serves the built
-  client, not the control TCP port. Set `NEX_DAEMON_URL=http://127.0.0.1:<port>` before
+  client, not the control TCP port. Set `KELPI_DAEMON_URL=http://127.0.0.1:<port>` before
   `pnpm dev` if your daemon took a different one; or
 - **`?daemon=`**: open `http://localhost:5173/?daemon=http://127.0.0.1:19470`, which bypasses
   the proxy entirely.
 
-Either way the daemon's handshake is token-gated, so add the token once. `nexd url` prints that
+Either way the daemon's handshake is token-gated, so add the token once. `kelpid url` prints that
 daemon's ready-to-open URL; on :5173 you want its token plus a `?daemon=`:
 
 ```bash
-TOKEN=$(NEXD_RUN_DIR=/tmp/nexd-dev-run node packages/daemon/dist/nexd.js url | sed 's/.*token=//')
+TOKEN=$(KELPID_RUN_DIR=/tmp/kelpid-dev-run node packages/daemon/dist/kelpid.js url | sed 's/.*token=//')
 open "http://localhost:5173/?daemon=http://127.0.0.1:19470&token=$TOKEN"
 ```
 
@@ -66,14 +66,14 @@ instead of looping on "Reconnecting…".
 ### 2. daemon-served (what ships)
 
 ```bash
-pnpm --filter @nex/client build                    # → packages/client/dist
-NEXD_CLIENT_DIR=$PWD/packages/client/dist \
-NEXD_HTTP_PORT=19470 \
-node packages/daemon/dist/nexd.js start --foreground
-open "$(node packages/daemon/dist/nexd.js url)"
+pnpm --filter @kelpi/client build                    # → packages/client/dist
+KELPID_CLIENT_DIR=$PWD/packages/client/dist \
+KELPID_HTTP_PORT=19470 \
+node packages/daemon/dist/kelpid.js start --foreground
+open "$(node packages/daemon/dist/kelpid.js url)"
 ```
 
-`NEXD_CLIENT_DIR` is the static-dir mechanism (`daemon/src/ws/http.ts`); with it unset the
+`KELPID_CLIENT_DIR` is the static-dir mechanism (`daemon/src/ws/http.ts`); with it unset the
 daemon answers with a "client not built" page and everything else (control socket, `/ws`,
 `/healthz`) still works. Assets under `/assets/` are content-hashed and served immutable;
 any unknown path falls back to `index.html`, so deep links work.
@@ -89,11 +89,11 @@ node packages/client/scripts/smoke.mjs --no-build --verbose
 It boots a throwaway daemon (its own tmp socket, DB, run dir and HOME — **never**
 `/tmp/nex.sock`) and asserts the things only a live system can prove: the page and its bundle
 are served, the WS handshake completes, a snapshot arrives, a workspace created with the **real
-Swift `nex` CLI** shows up as a delta on the socket, an attached pane replays before it streams,
+Swift `kelpi` CLI** shows up as a delta on the socket, an attached pane replays before it streams,
 and `echo …` typed as PTY input comes back as output. Exit code 0 means every check passed.
 
 The Swift CLI is optional: without `/Applications/Nex.app/Contents/Helpers/nex` the same verbs
-are exercised over the WS command channel instead (override the path with `NEX_COMPAT_CLI`).
+are exercised over the WS command channel instead (override the path with `KELPI_COMPAT_CLI`).
 
 ## Terminal engine
 
@@ -101,7 +101,7 @@ are exercised over the WS command channel instead (override the path with `NEX_C
 API. The escape hatch is a build-time flag:
 
 ```bash
-VITE_TERMINAL_ENGINE=xterm pnpm --filter @nex/client build
+VITE_TERMINAL_ENGINE=xterm pnpm --filter @kelpi/client build
 ```
 
 Both engines sit behind `TerminalRenderer` (`src/terminal/renderer.ts`) and are code-split, so
@@ -137,8 +137,8 @@ Regenerate the WOFF2 files with `node scripts/build-fonts.mjs --ttf-dir <ghostty
 ## Theming
 
 `chrome/theme.ts` resolves the palette (shell-ui.md §2) and `ThemeProvider` writes it to
-`documentElement` as `--nex-*` custom properties. `src/styles.css` defines the same tokens for
-both appearances as the pre-hydration state, and is the sole owner of the `--nex-term-*` family
+`documentElement` as `--kelpi-*` custom properties. `src/styles.css` defines the same tokens for
+both appearances as the pre-hydration state, and is the sole owner of the `--kelpi-term-*` family
 that the terminal engines read off the DOM. Add a token there, not in a component.
 
 ## Tests

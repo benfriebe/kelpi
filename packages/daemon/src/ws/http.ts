@@ -37,7 +37,7 @@ import { ensureToken, readToken, resolveRunPaths } from '../lifecycle/rundir.js'
 export const WS_PATH = '/ws';
 
 /** Env override for the client build directory (dev convenience). */
-export const CLIENT_DIR_ENV = 'NEXD_CLIENT_DIR';
+export const CLIENT_DIR_ENV = 'KELPID_CLIENT_DIR';
 
 export interface DaemonVersionInfo {
     readonly version: string;
@@ -84,7 +84,7 @@ export function contentTypeFor(filePath: string): string {
     return CONTENT_TYPES.get(path.extname(filePath).toLowerCase()) ?? 'application/octet-stream';
 }
 
-/** `NEXD_CLIENT_DIR`, expanded and absolute; undefined when unset. */
+/** `KELPID_CLIENT_DIR`, expanded and absolute; undefined when unset. */
 export function resolveClientDistDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
     const raw = env[CLIENT_DIR_ENV]?.trim();
     if (raw === undefined || raw.length === 0) return undefined;
@@ -92,13 +92,13 @@ export function resolveClientDistDir(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 const NOT_BUILT_PAGE = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>nexd — client not built</title></head>
+<html lang="en"><head><meta charset="utf-8"><title>kelpid — client not built</title></head>
 <body style="font-family: ui-sans-serif, system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; line-height: 1.5">
-<h1>nexd is running</h1>
+<h1>kelpid is running</h1>
 <p>The web client build was not found, so there is nothing to serve here yet.</p>
 <p>The daemon itself is healthy: the control socket, the WebSocket endpoint and
 <code>/healthz</code> all work. Build the client (or point the daemon at an existing build
-with <code>NEXD_CLIENT_DIR</code>) and reload.</p>
+with <code>KELPID_CLIENT_DIR</code>) and reload.</p>
 </body></html>
 `;
 
@@ -108,7 +108,7 @@ function notBuiltResponse(): Response {
         headers: {
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store',
-            'x-nex-client': 'not-built'
+            'x-kelpi-client': 'not-built'
         }
     });
 }
@@ -362,7 +362,7 @@ export function authorizeUpgrade(request: IncomingMessage, options: UpgradeAuthO
 }
 
 export interface RunDirTokenOptions {
-    /** Run directory override (otherwise the platform default / `NEXD_RUN_DIR`). */
+    /** Run directory override (otherwise the platform default / `KELPID_RUN_DIR`). */
     readonly dir?: string | undefined;
     readonly protocol?: number | undefined;
     readonly env?: NodeJS.ProcessEnv | undefined;

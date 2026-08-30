@@ -11,7 +11,7 @@
  * `create` instead of `split`.
  */
 
-import { resolveWorkspaceStrict } from '@nex/core/resolve';
+import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
 import { resolveStateOf, workspaceByID, type WorkspaceState } from '../../store/index.js';
@@ -43,7 +43,7 @@ type RouteResult = { readonly ok: true; readonly route: CreationRoute } | { read
  *   `--workspace` WITHOUT `--target` picks the destination workspace outright; it beats the
  *   caller's forwarded `NEX_PANE_ID`, so a pane in workspace alpha can create into beta.
  *   Otherwise `--target`/`NEX_PANE_ID` go through `resolvePaneTarget` (which scopes a label
- *   by `--workspace`). With none of the three the caller is outside Nex and gets a usage error.
+ *   by `--workspace`). With none of the three the caller is outside Kelpi and gets a usage error.
  */
 function routeCreation(
     ctx: PaneHandlerContext,
@@ -63,7 +63,7 @@ function routeCreation(
         if (verb === 'split' && sourcePaneID === null) {
             return {
                 ok: false,
-                error: `workspace '${workspace.name}' has no pane to split — use \`nex pane create --workspace ${filter}\``
+                error: `workspace '${workspace.name}' has no pane to split — use \`kelpi pane create --workspace ${filter}\``
             };
         }
         return { ok: true, route: { workspace, sourcePaneID } };
@@ -80,7 +80,7 @@ function routeCreation(
 
     return {
         ok: false,
-        error: `pane ${verb} requires --target or --workspace when called from outside a Nex pane`
+        error: `pane ${verb} requires --target or --workspace when called from outside a Kelpi pane`
     };
 }
 

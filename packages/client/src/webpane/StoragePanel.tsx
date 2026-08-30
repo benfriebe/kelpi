@@ -10,7 +10,7 @@
  * `StoragePanel.swift` is cookies, the private toggle and clear-all, full stop. The port had
  * grown a "Local storage" button that ran a `web-exec` and dumped the page's keys into a mono
  * block under the panel — an affordance the shipped app never shows, in the same class as the
- * invented full-window drop overlay (§H20). `nex web exec` is still the way to read a page's
+ * invented full-window drop overlay (§H20). `kelpi web exec` is still the way to read a page's
  * storage; it is simply not a control in this panel.
  *
  * Faithful details worth naming, because each one is a rule rather than a look:
@@ -284,7 +284,7 @@ export function StoragePanel(props: StoragePanelProps): ReactElement {
                         data-testid={`web-storage-loading-${paneID}`}
                         role="progressbar"
                         aria-label="Reading cookies"
-                        className="nex-storage-spinner"
+                        className="kelpi-storage-spinner"
                         style={{ borderColor: tokens.divider, borderTopColor: tokens.textSecondary }}
                     />
                 ) : null}

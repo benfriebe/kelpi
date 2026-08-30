@@ -277,7 +277,7 @@ describe('the page area', () => {
     it('shows an "open in the app" card in a browser, and nothing when embedded', () => {
         const { commands } = fakeCommands();
         const view = render(<WebPane paneID={PANE} tabs={TABS} activeTabID={TAB1} commands={commands} />);
-        expect(screen.getByTestId(`web-external-${PANE}`).textContent).toContain('Open in the Nex app');
+        expect(screen.getByTestId(`web-external-${PANE}`).textContent).toContain('Open in the Kelpi app');
 
         view.rerender(
             <WebPane

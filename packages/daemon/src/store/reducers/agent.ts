@@ -3,11 +3,11 @@
  *
  * Spec: docs/current/workspace-feature.md §7.10 (agent status), §7.11 (title/cwd/branch),
  * §7.15 (sync input); docs/current/agent-lifecycle.md §5 (the state machine itself, which
- * lives in @nex/core/agent — this module only routes and applies it).
+ * lives in @kelpi/core/agent — this module only routes and applies it).
  */
 
-import { reduceAgentEvent, type AgentEvent, type AgentEventResult } from '@nex/core/agent';
-import type { Pane } from '@nex/core/layout';
+import { reduceAgentEvent, type AgentEvent, type AgentEventResult } from '@kelpi/core/agent';
+import type { Pane } from '@kelpi/core/layout';
 import type { DaemonState, DomainAction, WorkspaceState } from '../types.js';
 import { findPane, mutatePane, seconds, updateWorkspace } from './helpers.js';
 

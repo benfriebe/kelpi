@@ -3,7 +3,7 @@
  *
  * This suite exists because the checklist item and the port disagreed on paper, and the
  * disagreement was in the item. `WorkspaceFeature.swift:712-716` — the lines TERM-090 cites for
- * the markdown branch — are inside `openMarkdownFile`'s **`reusePaneID`** arm (`nex md --here`),
+ * the markdown branch — are inside `openMarkdownFile`'s **`reusePaneID`** arm (`kelpi md --here`),
  * where the saved layout is restored as part of parking the source pane. The `else` arm below
  * it (`:726-745`, the ordinary open) sets `state.layout`, `state.panes`, `setFocus` and
  * `currentLayoutIndex` and never touches `savedLayout`, so an ordinary markdown open in the

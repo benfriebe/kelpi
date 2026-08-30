@@ -308,12 +308,12 @@ describe('keyboard navigation — an NSMenu walk (M58)', () => {
  * rather than per call site.
  *
  * The background is read off `style` rather than `getComputedStyle`: the token is
- * `var(--nex-selection-fill, …)`, and jsdom resolves an unset custom property to the empty
+ * `var(--kelpi-selection-fill, …)`, and jsdom resolves an unset custom property to the empty
  * string, which would make every row's *computed* background identical and the assertion
  * vacuous. The real computed-colour read is the audit's, in a browser with the theme mounted.
  */
 describe('every enabled row highlights — hover, focus, or an open submenu', () => {
-    const HIGHLIGHT = 'var(--nex-selection-fill, rgba(82, 118, 184, 0.24))';
+    const HIGHLIGHT = 'var(--kelpi-selection-fill, rgba(82, 118, 184, 0.24))';
     const rows = [
         { id: 'rename', label: 'Rename…' },
         { id: 'status', label: 'Status', submenu: [{ id: 'idle', label: 'Idle' }] },

@@ -36,9 +36,9 @@ export const FOCUS_HANDOFF_MS = 200;
  * from the top edge while fading, over 150 ms, and leaves the same way — the port hard-mounted
  * and hard-unmounted, so the app's most-used overlay POPPED instead of arriving.
  *
- * The enter half is a CSS keyframe (`nex-palette-enter` in `styles.css`). The exit half needs
+ * The enter half is a CSS keyframe (`kelpi-palette-enter` in `styles.css`). The exit half needs
  * this constant too, because an unmounted component cannot animate: the panel is held on screen
- * for exactly this long after `open` goes false, playing `nex-palette-exit`, and then dropped.
+ * for exactly this long after `open` goes false, playing `kelpi-palette-exit`, and then dropped.
  */
 export const PALETTE_TRANSITION_MS = 150;
 
@@ -131,7 +131,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
 
     /*
      * §H19's exit. `open` going false starts a 150 ms window in which the overlay is still
-     * mounted and playing `nex-palette-exit`; when it closes, the component unmounts as before.
+     * mounted and playing `kelpi-palette-exit`; when it closes, the component unmounts as before.
      * Tracked off the OPEN EDGE rather than from a `useEffect` on every render so a re-render
      * while closed cannot restart it, and re-opening inside the window cancels it outright
      * (which is also what makes ⌘P-⌘P-⌘P behave).
@@ -252,7 +252,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
         <div
             data-testid="palette-backdrop"
             data-palette-phase={phase}
-            className="nex-palette-scrim absolute inset-0 z-40 flex justify-center"
+            className="kelpi-palette-scrim absolute inset-0 z-40 flex justify-center"
             style={{
                 /*
                  * UI-FIDELITY M56 — the shipped backdrop is INVISIBLE.
@@ -275,7 +275,7 @@ export function CommandPalette(props: CommandPaletteProps): ReactElement | null 
                 data-testid="command-palette"
                 role="dialog"
                 aria-label="Command palette"
-                className="nex-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
+                className="kelpi-palette-panel mt-10 h-fit w-[440px] overflow-hidden rounded-[10px]"
                 /*
                  * UI-FIDELITY L94 / L95 — the shipped card is a fill, a clip and one soft shadow.
                  *

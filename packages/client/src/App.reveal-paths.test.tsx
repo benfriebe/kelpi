@@ -13,14 +13,14 @@
  * `App.palette-jump.test.tsx` asserts.
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -42,10 +42,10 @@ function snapshotState(): JsonObject {
 
 let scrolled: Element[] = [];
 
-function mount(): { store: ReturnType<typeof createNexStore> } {
+function mount(): { store: ReturnType<typeof createKelpiStore> } {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -129,14 +129,14 @@ describe('every activation path queues the sidebar reveal (§WS-100)', () => {
     });
 
     /**
-     * The socket path. `nex workspace create` is revealed to every attached client by the
+     * The socket path. `kelpi workspace create` is revealed to every attached client by the
      * daemon; this client's handler for that message is its `setActiveWorkspace`, so it queues
      * the reveal exactly like the local gestures do.
      */
     it('a reveal pushed by the daemon (the CLI’s own create)', async () => {
         const sockets = createFakeSocketFactory();
-        const store = createNexStore();
-        const runtime = createNexRuntime({
+        const store = createKelpiStore();
+        const runtime = createKelpiRuntime({
             url: 'ws://daemon.test/ws',
             token: 'tok',
             socketFactory: sockets.factory,

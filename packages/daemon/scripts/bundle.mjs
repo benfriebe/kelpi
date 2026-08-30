@@ -1,7 +1,7 @@
 /**
- * Bundle the daemon into a single runnable file: `dist/nexd.js`.
+ * Bundle the daemon into a single runnable file: `dist/kelpid.js`.
  *
- * Why a bundle at all: `@nex/core` and `@nex/protocol` publish TypeScript source through their
+ * Why a bundle at all: `@kelpi/core` and `@kelpi/protocol` publish TypeScript source through their
  * `exports` map (they are workspace-internal), so plain `tsc` output is not runnable by node —
  * esbuild resolves and inlines them. The result is one file plus one native dependency, which
  * is also what ships inside the app bundle.
@@ -13,9 +13,9 @@
  *     ship `node_modules/node-pty` beside `dist/`, or run from the workspace;
  *   - a CJS-compat banner, because bundled dependencies (xterm's headless build, ws) reference
  *     `require` / `__dirname` / `__filename`, none of which exist in an ES module;
- *   - a shebang and mode 0755, so `dist/nexd.js` is directly executable.
+ *   - a shebang and mode 0755, so `dist/kelpid.js` is directly executable.
  *
- * Usage: `pnpm --filter @nex/daemon build` (or `node scripts/bundle.mjs --watch`).
+ * Usage: `pnpm --filter @kelpi/daemon build` (or `node scripts/bundle.mjs --watch`).
  */
 
 import { chmodSync, mkdirSync } from 'node:fs';
@@ -25,15 +25,15 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = path.join(packageRoot, 'dist', 'nexd.js');
+const outfile = path.join(packageRoot, 'dist', 'kelpid.js');
 
 const banner = `#!/usr/bin/env node
-import { createRequire as __nexdCreateRequire } from 'node:module';
-import { fileURLToPath as __nexdFileURLToPath } from 'node:url';
-import { dirname as __nexdDirname } from 'node:path';
-const require = __nexdCreateRequire(import.meta.url);
-const __filename = __nexdFileURLToPath(import.meta.url);
-const __dirname = __nexdDirname(__filename);
+import { createRequire as __kelpidCreateRequire } from 'node:module';
+import { fileURLToPath as __kelpidFileURLToPath } from 'node:url';
+import { dirname as __kelpidDirname } from 'node:path';
+const require = __kelpidCreateRequire(import.meta.url);
+const __filename = __kelpidFileURLToPath(import.meta.url);
+const __dirname = __kelpidDirname(__filename);
 `;
 
 /** @type {import('esbuild').BuildOptions} */

@@ -2,7 +2,7 @@
  * Which chords the host takes from an embedded page (`./keys.ts`).
  *
  * The set has to be exactly the web-pane priority layer plus ⌘F. Too narrow and the layer is
- * unreachable the moment a user clicks the page; too wide and Nex starts eating a page's own
+ * unreachable the moment a user clicks the page; too wide and Kelpi starts eating a page's own
  * shortcuts — ⌘K for a command palette, ⌘S for a save — which is a much worse failure, because
  * the page looks broken and nothing says why.
  */

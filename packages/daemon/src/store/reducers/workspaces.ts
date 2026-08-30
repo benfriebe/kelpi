@@ -6,10 +6,10 @@
  * docs/current/socket-handlers.md §6.6 (`workspace label` + preset back-fill).
  */
 
-import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@nex/core/codec';
-import { normalizedAssignment } from '@nex/core/env';
-import { leaf } from '@nex/core/layout';
-import { makeSlug, normalizeLabel } from '@nex/core/resolve';
+import { groupSidebarID, workspaceSidebarID, type SidebarID } from '@kelpi/core/codec';
+import { normalizedAssignment } from '@kelpi/core/env';
+import { leaf } from '@kelpi/core/layout';
+import { makeSlug, normalizeLabel } from '@kelpi/core/resolve';
 import type {
     DaemonState,
     DomainAction,

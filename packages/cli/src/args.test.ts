@@ -108,36 +108,36 @@ describe('extractPositionalTail', () => {
 describe('rejectLeftoverArgs', () => {
     it('does nothing on an empty argv', () => {
         const io = captureIO();
-        rejectLeftoverArgs([], 'nex pane list');
+        rejectLeftoverArgs([], 'kelpi pane list');
         expect(io.err).toEqual([]);
     });
 
     it('reports a dash token as an unknown option', () => {
         const io = captureIO();
         expect(() => {
-            rejectLeftoverArgs(['--nope'], 'nex pane list');
+            rejectLeftoverArgs(['--nope'], 'kelpi pane list');
         }).toThrow(ExitError);
-        expect(io.err.join('')).toBe('nex pane list: unknown option --nope\n');
+        expect(io.err.join('')).toBe('kelpi pane list: unknown option --nope\n');
     });
 
     it('appends the positional hint so a bare uuid points at --target', () => {
         const io = captureIO();
         expect(() => {
-            rejectLeftoverArgs(['abc'], 'nex pane capture', {
+            rejectLeftoverArgs(['abc'], 'kelpi pane capture', {
                 positionalHint: 'target panes with --target <name-or-uuid>'
             });
         }).toThrow(ExitError);
         expect(io.err.join('')).toBe(
-            "nex pane capture: unexpected argument 'abc' — target panes with --target <name-or-uuid>\n"
+            "kelpi pane capture: unexpected argument 'abc' — target panes with --target <name-or-uuid>\n"
         );
     });
 
     it('prints the usage block after the message when one is supplied', () => {
         const io = captureIO();
         expect(() => {
-            rejectLeftoverArgs(['abc'], 'nex pane list', { usage: (write) => write('USAGE\n') });
+            rejectLeftoverArgs(['abc'], 'kelpi pane list', { usage: (write) => write('USAGE\n') });
         }).toThrow(ExitError);
-        expect(io.err.join('')).toBe("nex pane list: unexpected argument 'abc'\nUSAGE\n");
+        expect(io.err.join('')).toBe("kelpi pane list: unexpected argument 'abc'\nUSAGE\n");
     });
 });
 

@@ -77,7 +77,7 @@ describe('isPathLike / isMarkdownDropPath (CONT-121)', () => {
 
     it('rejects .markdown, matching the Swift drop path exactly', () => {
         // `ContentView.swift:598-607` compares `pathExtension.lowercased() == "md"`, so
-        // `.markdown` is NOT a drop target even though `nex md` opens one happily.
+        // `.markdown` is NOT a drop target even though `kelpi md` opens one happily.
         expect(isMarkdownDropPath('/a/notes.markdown')).toBe(false);
         expect(isMarkdownDropPath('/a/notes')).toBe(false);
         expect(isMarkdownDropPath('/a/.md')).toBe(false);
@@ -112,7 +112,7 @@ describe('dropDecision', () => {
     });
 
     it('ignores a drag that carries nothing file-shaped (TERM-041)', () => {
-        expect(dropDecision(transfer({ 'application/x-nex-pane': 'pane-1' })).kind).toBe('ignore');
+        expect(dropDecision(transfer({ 'application/x-kelpi-pane': 'pane-1' })).kind).toBe('ignore');
     });
 });
 
@@ -121,7 +121,7 @@ describe('dragCarriesFile (TERM-041)', () => {
         expect(dragCarriesFile(['Files'])).toBe(true);
         expect(dragCarriesFile(['text/uri-list'])).toBe(true);
         expect(dragCarriesFile(['text/plain'])).toBe(true);
-        expect(dragCarriesFile(['application/x-nex-pane'])).toBe(false);
+        expect(dragCarriesFile(['application/x-kelpi-pane'])).toBe(false);
         expect(dragCarriesFile(undefined)).toBe(false);
     });
 });

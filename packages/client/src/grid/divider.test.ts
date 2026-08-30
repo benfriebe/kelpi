@@ -6,7 +6,7 @@ import {
     split,
     splitDividers,
     type DividerDragSnapshot
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 
 import {
     dividerAtPoint,

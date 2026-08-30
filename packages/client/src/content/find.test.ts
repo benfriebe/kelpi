@@ -1,5 +1,5 @@
 /**
- * The injected `__nexFind` namespace (content-panes.md §3.13), exercised by RUNNING the
+ * The injected `__kelpiFind` namespace (content-panes.md §3.13), exercised by RUNNING the
  * bridge script against a real DOM.
  *
  * That is the point of this file: the find implementation lives in a string that only ever
@@ -43,15 +43,15 @@ function collect(event: MessageEvent): void {
 }
 
 function api(): FindApi {
-    return (window as unknown as { __nexFind: FindApi }).__nexFind;
+    return (window as unknown as { __kelpiFind: FindApi }).__kelpiFind;
 }
 
 function marks(): HTMLElement[] {
-    return [...document.querySelectorAll<HTMLElement>('mark.nex-find-match')];
+    return [...document.querySelectorAll<HTMLElement>('mark.kelpi-find-match')];
 }
 
 function currentIndex(): number {
-    return marks().findIndex((mark) => mark.classList.contains('nex-find-current'));
+    return marks().findIndex((mark) => mark.classList.contains('kelpi-find-current'));
 }
 
 /** The script posts through `parent`, which in jsdom is this window; delivery is async. */
@@ -66,7 +66,7 @@ beforeEach(() => {
         '<div id="content"><p>alpha beta Alpha</p><pre><code>alpha in code</code></pre>' +
         '<script>var alpha = 1;</script></div>';
     // The bridge guards against double injection; each test gets a fresh install.
-    delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+    delete (window as unknown as Record<string, unknown>)['__kelpiContentBridge'];
     window.addEventListener('message', collect);
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
     new Function(contentBridgeScript(PANE))();
@@ -76,7 +76,7 @@ afterEach(() => {
     window.removeEventListener('message', collect);
 });
 
-describe('__nexFind', () => {
+describe('__kelpiFind', () => {
     it('is installed by the bridge script', () => {
         expect(typeof api().search).toBe('function');
         expect(typeof api().next).toBe('function');
@@ -97,17 +97,17 @@ describe('__nexFind', () => {
 
     it('injects the spec’s highlight palette', () => {
         api().search('alpha');
-        const style = document.getElementById('__nex-find-style');
+        const style = document.getElementById('__kelpi-find-style');
         expect(style?.textContent).toContain(FIND_MATCH_COLOR);
         expect(style?.textContent).toContain(FIND_CURRENT_COLOR);
-        expect(style?.textContent).toContain('mark.nex-find-match');
+        expect(style?.textContent).toContain('mark.kelpi-find-match');
     });
 
-    // SET-219 / TERM-021: the Swift app's Nex-managed ghostty defaults, now four nex config
+    // SET-219 / TERM-021: the Swift app's Kelpi-managed ghostty defaults, now four kelpi config
     // keys — so the same highlight a user overrides in the file has to reach this stylesheet.
     it('takes an overridden palette, and refuses a value that is not a plain hex', () => {
         document.head.innerHTML = '';
-        delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+        delete (window as unknown as Record<string, unknown>)['__kelpiContentBridge'];
         // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
         new Function(
             contentBridgeScript(PANE, {
@@ -118,7 +118,7 @@ describe('__nexFind', () => {
             })
         )();
         api().search('alpha');
-        const style = document.getElementById('__nex-find-style');
+        const style = document.getElementById('__kelpi-find-style');
         expect(style?.textContent).toContain('#00ff00');
         expect(style?.textContent).toContain('#101010');
         expect(style?.textContent).toContain('#0000ff');
@@ -180,7 +180,7 @@ describe('__nexFind', () => {
      * §L43 — the walker skips OUR OWN highlights, not every `<mark>`.
      *
      * `MarkdownFindScript.swift:69-79` skips `SCRIPT` / `STYLE` / `NOSCRIPT` and any ancestor
-     * carrying `.nex-find-match`. The port skipped the `MARK` tag itself, so a note containing a
+     * carrying `.kelpi-find-match`. The port skipped the `MARK` tag itself, so a note containing a
      * raw `<mark>` had that text permanently unsearchable.
      */
     it('searches inside a note’s own <mark>, and still skips its own highlights (§L43)', async () => {
@@ -191,8 +191,8 @@ describe('__nexFind', () => {
 
         expect(results.at(-1)).toEqual({ total: 2, current: 0 });
         // The second match is nested INSIDE the author's own mark, which survives.
-        expect(document.querySelectorAll('mark:not(.nex-find-match)')).toHaveLength(1);
-        expect(document.querySelector('mark:not(.nex-find-match)')?.textContent).toBe('marked alpha');
+        expect(document.querySelectorAll('mark:not(.kelpi-find-match)')).toHaveLength(1);
+        expect(document.querySelector('mark:not(.kelpi-find-match)')?.textContent).toBe('marked alpha');
 
         // A re-search must not re-enter the marks the previous one left: `clearMarks` unwraps
         // first, so the count is stable rather than growing.

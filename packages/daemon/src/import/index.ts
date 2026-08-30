@@ -1,5 +1,5 @@
 /**
- * M8 — legacy database import (`nexd import`).
+ * M8 — legacy database import (`kelpid import`).
  *
  * Spec: docs/current/persistence.md (the entire legacy schema, its 18 migrations, the
  * Swift-Codable encodings and the load-degradation rules).

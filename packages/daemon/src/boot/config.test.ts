@@ -15,7 +15,7 @@ import {
 const temporaries: string[] = [];
 
 function tempDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-config-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-config-'));
     temporaries.push(dir);
     return dir;
 }
@@ -34,7 +34,7 @@ describe('config location', () => {
         );
     });
 
-    it('honours NEXD_CONFIG_PATH, expanding ~', () => {
+    it('honours KELPID_CONFIG_PATH, expanding ~', () => {
         expect(resolveConfigPath({ env: { [CONFIG_PATH_ENV]: '~/dev.conf' }, home: '/Users/x' })).toBe(
             '/Users/x/dev.conf'
         );

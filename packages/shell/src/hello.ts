@@ -17,7 +17,7 @@
  * and what `hello.test.ts` pins.
  */
 
-import { WS_PROTOCOL_VERSION, type JsonObject } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION, type JsonObject } from '@kelpi/protocol';
 
 export interface ShellHelloOptions {
     /** The run dir's token; the same value the bearer header carries. */

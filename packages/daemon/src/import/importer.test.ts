@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function scratchDir(): string {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-import-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-import-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     return root;
 }
@@ -130,7 +130,7 @@ function workspaceNames(target: string): string[] {
 describe('runImport — into a fresh target', () => {
     it('writes the whole snapshot and reports what landed', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
 
         const report = runImport({ from, to });
 
@@ -180,7 +180,7 @@ describe('runImport — into a fresh target', () => {
     it('leaves the source byte-identical', () => {
         const from = makeSource();
         const before = fs.readFileSync(from);
-        runImport({ from, to: path.join(scratchDir(), 'nexd.db') });
+        runImport({ from, to: path.join(scratchDir(), 'kelpid.db') });
         expect(fs.readFileSync(from).equals(before)).toBe(true);
     });
 });
@@ -188,7 +188,7 @@ describe('runImport — into a fresh target', () => {
 describe('runImport — a populated target', () => {
     it('refuses without --force and writes nothing', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         seedTarget(to, 'existing');
         const before = fs.readFileSync(to);
 
@@ -208,7 +208,7 @@ describe('runImport — a populated target', () => {
 
     it('refuses a dry run too, rather than promising an import that would fail', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         seedTarget(to, 'existing');
         expect(() => runImport({ from, to, dryRun: true })).toThrow(/already holds/);
     });
@@ -216,7 +216,7 @@ describe('runImport — a populated target', () => {
     it('with --force, backs the target up first and then replaces it', () => {
         const from = makeSource();
         const dir = scratchDir();
-        const to = path.join(dir, 'nexd.db');
+        const to = path.join(dir, 'kelpid.db');
         seedTarget(to, 'existing');
 
         const report = runImport({
@@ -241,7 +241,7 @@ describe('runImport — a populated target', () => {
     it('never reuses a backup name', () => {
         const from = makeSource();
         const dir = scratchDir();
-        const to = path.join(dir, 'nexd.db');
+        const to = path.join(dir, 'kelpid.db');
         const now = (): Date => new Date('2026-08-19T10:11:12.345Z');
 
         seedTarget(to, 'first');
@@ -260,7 +260,7 @@ describe('runImport — dry run', () => {
     it('creates nothing at all', () => {
         const from = makeSource();
         const dir = scratchDir();
-        const to = path.join(dir, 'nexd.db');
+        const to = path.join(dir, 'kelpid.db');
 
         const report = runImport({ from, to, dryRun: true });
 
@@ -276,7 +276,7 @@ describe('runImport — dry run', () => {
 
     it('reports the same counts the real run produces', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         const dry = runImport({ from, to, dryRun: true });
         const real = runImport({ from, to });
         expect({ ...dry, dryRun: false, written: true, warnings: [] }).toEqual({
@@ -289,7 +289,7 @@ describe('runImport — dry run', () => {
 describe('runImport — target failures', () => {
     it('refuses a target it cannot inspect rather than overwriting it blindly', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         fs.writeFileSync(to, 'not a database');
         try {
             runImport({ from, to });
@@ -305,7 +305,7 @@ describe('runImport — target failures', () => {
 
     it('backs up even an unreadable target when --force insists', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         fs.writeFileSync(to, 'not a database');
         try {
             runImport({ from, to, force: true, now: () => new Date('2026-08-19T10:11:12.345Z') });
@@ -330,7 +330,7 @@ describe('runImport — target failures', () => {
 
     it('creates the target database with the daemon schema and ledger', () => {
         const from = makeSource();
-        const to = path.join(scratchDir(), 'nexd.db');
+        const to = path.join(scratchDir(), 'kelpid.db');
         runImport({ from, to });
 
         const db = openSqliteDatabase(to, { readOnly: true, wal: false });

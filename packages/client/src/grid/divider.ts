@@ -1,7 +1,7 @@
 /**
  * Divider-drag maths and the commit shape the grid raises.
  *
- * Every geometric decision here delegates to `@nex/core/layout` (pane-layout.md §7.4) —
+ * Every geometric decision here delegates to `@kelpi/core/layout` (pane-layout.md §7.4) —
  * this module only sequences it: snapshot at gesture start, cumulative delta, clamp,
  * translate the split's stored ratio into something the wire can actually address.
  *
@@ -28,7 +28,7 @@ import {
     type Point,
     type SplitDirection,
     type SplitLayout
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 
 /** The addressable-pane half of a commit: which pane `pane-resize` should target. */
 export interface DividerPaneTarget {

@@ -1,4 +1,4 @@
-import { createStore as createDaemonStore, emptyDaemonState, type DaemonState } from '@nex/daemon/store';
+import { createStore as createDaemonStore, emptyDaemonState, type DaemonState } from '@kelpi/daemon/store';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,7 +12,7 @@ import {
     selectVisibleWorkspaceIDs,
     selectWorkspaceAgentCount
 } from './selectors';
-import { createNexStore, type NexStoreApi } from './store';
+import { createKelpiStore, type KelpiStoreApi } from './store';
 
 const HOME = '/Users/test';
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -42,8 +42,8 @@ function daemonState(): DaemonState {
     return store.getState();
 }
 
-function seeded(): NexStoreApi {
-    const client = createNexStore();
+function seeded(): KelpiStoreApi {
+    const client = createKelpiStore();
     // The mirror is plain data; the store's own hydration handles the wire shape elsewhere.
     client.getState().applySnapshot(0, JSON.parse(JSON.stringify(daemonState())));
     return client;

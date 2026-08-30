@@ -1,5 +1,5 @@
 /**
- * The subscription lifecycle, driven through a real `NexConnection` over the fake socket — the
+ * The subscription lifecycle, driven through a real `KelpiConnection` over the fake socket — the
  * hook, the client and the wire format are proved together, because the interesting bugs live
  * between them (a subscribe that never went out, an unsubscribe that fired while a second view
  * was still mounted, a reconnect that left the pane mirroring a frozen document).
@@ -11,7 +11,7 @@ import { type ReactElement } from 'react';
 
 import {
     CommandClient,
-    NexConnection,
+    KelpiConnection,
     completeHandshake,
     createFakeSocketFactory,
     type FakeWebSocket
@@ -23,7 +23,7 @@ import { useContent } from './useContent';
 const PANE = 'DDDDDDDD-0000-4000-8000-000000000001';
 
 interface Harness {
-    readonly connection: NexConnection;
+    readonly connection: KelpiConnection;
     readonly content: ContentClient;
     socket(): FakeWebSocket;
     /** Every `command` payload this client wrote, oldest first. */
@@ -34,7 +34,7 @@ interface Harness {
 
 function harness(): Harness {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

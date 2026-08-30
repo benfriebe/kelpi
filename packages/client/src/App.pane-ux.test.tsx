@@ -8,14 +8,14 @@
  * workspace with a running agent has to stop and ask.
  */
 
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
-import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore, type NexRuntime } from './state';
+import { createKelpiRuntime, createKelpiStore, type KelpiRuntime } from './state';
 import { createFakeRendererFactory, type FakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -130,7 +130,7 @@ function snapshotState(options: FixtureOptions = {}): JsonObject {
 }
 
 interface Harness {
-    readonly runtime: NexRuntime;
+    readonly runtime: KelpiRuntime;
     readonly renderers: FakeRendererFactory;
     socket(): FakeWebSocket;
     sent(): Record<string, unknown>[];
@@ -142,8 +142,8 @@ interface Harness {
 
 function setup(options: FixtureOptions = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -461,14 +461,14 @@ describe('the ⌘W active-agents gate (TERM-077 / WS-109)', () => {
  * N14 — the shell's File ▸ Close (⌘W), arriving as a request rather than as a window close.
  *
  * The menu row in the main process no longer decides anything: it evaluates
- * `window.__nexShellClosePane()` in this page and only closes the WINDOW if the answer is not
+ * `window.__kelpiShellClosePane()` in this page and only closes the WINDOW if the answer is not
  * `true` (`shell/src/menu.ts`). What is asserted here is this end of that contract — the global
  * exists, it runs the same `close_pane` a keystroke runs, and one ⌘W can never close two panes
  * however many routes it arrives by.
  */
 describe('the shell’s Close request (N14)', () => {
     const askShellClose = (): boolean => {
-        const request = (window as unknown as Record<string, unknown>)['__nexShellClosePane'];
+        const request = (window as unknown as Record<string, unknown>)['__kelpiShellClosePane'];
         if (typeof request !== 'function') throw new Error('the client installed no close bridge');
         return (request as () => boolean)();
     };

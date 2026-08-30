@@ -1,5 +1,5 @@
 /**
- * `nex graft start|stop|status` (cli.md §14).
+ * `kelpi graft start|stop|status` (cli.md §14).
  *
  * Two renderings that look like error handling but are not:
  *   - `start` with a `partial_error` prints `Partial failure: …` to STDERR and still exits 0 —
@@ -20,7 +20,7 @@ import { graftUsage } from '../usage.js';
 export async function handleGraft(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
-        errLine('Usage: nex graft start|stop|status');
+        errLine('Usage: kelpi graft start|stop|status');
         exit(1);
     }
     switch (action) {
@@ -56,7 +56,7 @@ async function handleGraftCommand(command: string, args: string[]): Promise<void
         if (paneID !== undefined) payload['pane_id'] = paneID;
     }
 
-    const reply = await decodeReply(payload, `nex ${command}`);
+    const reply = await decodeReply(payload, `kelpi ${command}`);
 
     if (command === 'graft-start') {
         const started = replyArray(reply, 'started');
@@ -94,7 +94,7 @@ async function handleGraftCommand(command: string, args: string[]): Promise<void
 
 async function handleGraftStatus(args: string[]): Promise<void> {
     const asJSON = popSwitch('--json', args);
-    const reply = await decodeReply({ command: 'graft-status' }, 'nex graft status');
+    const reply = await decodeReply({ command: 'graft-status' }, 'kelpi graft status');
     const sessions = replyArray(reply, 'sessions');
     if (asJSON) {
         printLine(stableStringify(sessions));

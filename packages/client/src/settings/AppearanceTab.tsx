@@ -6,9 +6,9 @@
  * styling had no daemon-side home at all. Both halves are now writable, and the split between
  * them is the organising idea of the whole tab:
  *
- *   - **nex-owned** — the chrome palette, the sidebar tint knobs and the status-bar gauges are
+ *   - **kelpi-owned** — the chrome palette, the sidebar tint knobs and the status-bar gauges are
  *     `key = value` lines in `~/.config/nex/config`, written with `set-general-setting`
- *     (`@nex/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
+ *     (`@kelpi/protocol` `WsChromeSettings` documents each key). They are ours, so they live in
  *     our file.
  *   - **ghostty-owned** — background, opacity, font and terminal theme belong to ghostty's
  *     config, written with `set-ghostty-setting`, which touches only the five keys the daemon
@@ -20,8 +20,8 @@
  * settles on whatever the file actually says.
  */
 
-import { BUILT_IN_TERMINAL_THEMES } from '@nex/core/config';
-import { DEFAULT_WS_CHROME_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { BUILT_IN_TERMINAL_THEMES } from '@kelpi/core/config';
+import { DEFAULT_WS_CHROME_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { useRef, useState, type ChangeEvent, type ReactElement } from 'react';
 
 import {
@@ -90,10 +90,10 @@ function isAgentStatusKey(key: OverridableChromeKey): boolean {
 }
 
 /**
- * `NexTheme.builtIn` — the ten terminal themes, by their ghostty theme id (which IS the
+ * `KelpiTheme.builtIn` — the ten terminal themes, by their ghostty theme id (which IS the
  * `theme = <id>` value; the ids are case-sensitive filenames).
  *
- * Re-exported from `@nex/core/config` rather than declared here: §SET-105's `theme` key is read
+ * Re-exported from `@kelpi/core/config` rather than declared here: §SET-105's `theme` key is read
  * by the DAEMON (it decides which theme the settings snapshot reports), so the table has to be
  * one table. The export name is kept so every existing importer is unchanged.
  */
@@ -284,7 +284,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
     };
 
     /**
-     * SET-219's four keys. They are NEX keys (the nex config file), not ghostty ones: the Swift
+     * SET-219's four keys. They are KELPI keys (the kelpi config file), not ghostty ones: the Swift
      * app shipped them as a ghostty defaults file only because libghostty drew the highlight —
      * here every search highlight is ours, so they live where the rest of the chrome palette
      * does. An unparseable value is dropped rather than written.
@@ -404,7 +404,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
             })
             .catch((error: unknown) => {
                 setStatus(
-                    error instanceof ChromeThemeError ? error.message : "That clipboard text isn't a Nex theme."
+                    error instanceof ChromeThemeError ? error.message : "That clipboard text isn't a Kelpi theme."
                 );
             });
     };
@@ -483,7 +483,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
             <SettingsSection
                 title="Chrome"
-                hint="Themes the Nex window chrome (sidebar, title bar, status bar). Independent of the terminal theme below."
+                hint="Themes the Kelpi window chrome (sidebar, title bar, status bar). Independent of the terminal theme below."
                 testID="appearance-chrome"
             >
                 <SegmentedField
@@ -743,7 +743,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
             <SettingsSection
                 title="Search highlight"
-                hint="What a search match is painted with — the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Nex ships the Swift app's colours; these override them."
+                hint="What a search match is painted with — the markdown/diff find bar, a web pane's find bar, and the terminal's search selection. Kelpi ships the Swift app's colours; these override them."
                 testID="appearance-search"
             >
                 <ColorField
@@ -953,7 +953,7 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
 
             <SettingsFooterNote>
                 Terminal colours and fonts: <span className="font-mono">{props.paths.ghosttyConfig}</span>. Chrome
-                palette, sidebar and status bar: <span className="font-mono">{props.paths.nexConfig}</span>. Both are
+                palette, sidebar and status bar: <span className="font-mono">{props.paths.kelpiConfig}</span>. Both are
                 watched — save either file and this window follows.
             </SettingsFooterNote>
         </div>

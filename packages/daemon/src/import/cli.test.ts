@@ -1,5 +1,5 @@
 /**
- * `nexd import` as a CLI: the two paths it prints before acting, the refusals, and the shapes
+ * `kelpid import` as a CLI: the two paths it prints before acting, the refusals, and the shapes
  * of its human and `--json` output.
  *
  * The daemon-running refusal is exercised against a REAL daemon on a scratch run dir (the
@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from '../boot/index.js';
 import { createPersistence } from '../db/index.js';
-import { helpText, parseNexdArgs, runNexd, type CliIO } from '../main.js';
+import { helpText, parseKelpidArgs, runKelpid, type CliIO } from '../main.js';
 import {
     legacyGroup,
     legacyPane,
@@ -69,7 +69,7 @@ interface Scratch {
 }
 
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-imp-cli-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-imp-cli-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
@@ -103,19 +103,19 @@ function scratch(): Scratch {
         root,
         home,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         configPath: path.join(root, 'config'),
         source,
-        target: path.join(root, 'nexd.db')
+        target: path.join(root, 'kelpid.db')
     };
 }
 
 function envFor(paths: Scratch): NodeJS.ProcessEnv {
     return {
         HOME: paths.home,
-        NEXD_RUN_DIR: paths.runDir,
-        NEXD_SOCKET_PATH: paths.socketPath,
-        NEXD_DB_PATH: paths.target
+        KELPID_RUN_DIR: paths.runDir,
+        KELPID_SOCKET_PATH: paths.socketPath,
+        KELPID_DB_PATH: paths.target
     };
 }
 
@@ -126,9 +126,9 @@ function workspaceNames(target: string): string[] {
     return (snapshot?.workspaces ?? []).map((workspace) => workspace.name);
 }
 
-describe('nexd import — argument parsing', () => {
+describe('kelpid import — argument parsing', () => {
     it('recognises the verb and its flags', () => {
-        const args = parseNexdArgs(['import', '--from', '/a.db', '--to', '/b.db', '--force', '--dry-run', '--json']);
+        const args = parseKelpidArgs(['import', '--from', '/a.db', '--to', '/b.db', '--force', '--dry-run', '--json']);
         expect(args).toMatchObject({
             command: 'import',
             from: '/a.db',
@@ -141,38 +141,38 @@ describe('nexd import — argument parsing', () => {
     });
 
     it('rejects a flag with no value', () => {
-        expect(parseNexdArgs(['import', '--from']).error).toBe('--from needs a path');
-        expect(parseNexdArgs(['import', '--to', '--json']).error).toBe('--to needs a path');
+        expect(parseKelpidArgs(['import', '--from']).error).toBe('--from needs a path');
+        expect(parseKelpidArgs(['import', '--to', '--json']).error).toBe('--to needs a path');
     });
 
     it('is documented in --help, including the recommended flow', () => {
-        expect(helpText()).toContain('nexd import');
+        expect(helpText()).toContain('kelpid import');
         expect(helpText()).toContain('--dry-run');
-        expect(helpText()).toContain('nexd stop && nexd import && nexd start');
-        expect(helpText()).toContain('~/Library/Application Support/Nex/nex.db');
+        expect(helpText()).toContain('kelpid stop && kelpid import && kelpid start');
+        expect(helpText()).toContain('~/Library/Application Support/Kelpi/nex.db');
     });
 
     it('exits 2 on a usage error', async () => {
         const captured = io();
-        expect(await runNexd(['import', '--from'], captured)).toBe(2);
+        expect(await runKelpid(['import', '--from'], captured)).toBe(2);
         expect(captured.stderr[0]).toBe('--from needs a path');
     });
 });
 
-describe('nexd import — with no daemon running', () => {
+describe('kelpid import — with no daemon running', () => {
     it('prints both paths before acting, then the report', async () => {
         const paths = scratch();
         const captured = io(envFor(paths));
 
-        expect(await runNexd(['import', '--from', paths.source], captured)).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source], captured)).toBe(0);
 
-        expect(captured.stdout[0]).toBe('nexd import');
+        expect(captured.stdout[0]).toBe('kelpid import');
         expect(captured.stdout[1]).toBe(`  from: ${paths.source}`);
         expect(captured.stdout[2]).toBe(`  to:   ${paths.target}`);
         expect(captured.text()).toContain('imported 2 workspace(s), 3 pane(s), 1 group(s)');
         expect(captured.text()).toContain('agent session(s) to resume on the next start: 1');
         expect(captured.text()).toContain('pane broken: unparseable pane id');
-        expect(captured.text()).toContain('Next: `nexd start`');
+        expect(captured.text()).toContain('Next: `kelpid start`');
         expect(workspaceNames(paths.target)).toEqual(['Alpha', 'Beta']);
     });
 
@@ -180,10 +180,10 @@ describe('nexd import — with no daemon running', () => {
         const paths = scratch();
         const captured = io(envFor(paths));
 
-        expect(await runNexd(['import'], captured)).toBe(1);
+        expect(await runKelpid(['import'], captured)).toBe(1);
 
         expect(captured.stdout[1]).toBe(
-            `  from: ${path.join(paths.home, 'Library', 'Application Support', 'Nex', 'nex.db')}`
+            `  from: ${path.join(paths.home, 'Library', 'Application Support', 'Kelpi', 'nex.db')}`
         );
         expect(captured.stderr.join('\n')).toContain('no legacy database at');
         expect(captured.stderr.join('\n')).toContain('Repair:');
@@ -194,9 +194,9 @@ describe('nexd import — with no daemon running', () => {
         const paths = scratch();
         const captured = io(envFor(paths));
 
-        expect(await runNexd(['import', '--from', paths.source, '--dry-run'], captured)).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source, '--dry-run'], captured)).toBe(0);
 
-        expect(captured.stdout[0]).toBe('nexd import (dry run)');
+        expect(captured.stdout[0]).toBe('kelpid import (dry run)');
         expect(captured.text()).toContain('would import 2 workspace(s)');
         expect(captured.text()).toContain('Nothing was written.');
         expect(fs.existsSync(paths.target)).toBe(false);
@@ -206,7 +206,7 @@ describe('nexd import — with no daemon running', () => {
         const paths = scratch();
         const captured = io(envFor(paths));
 
-        expect(await runNexd(['import', '--from', paths.source, '--json'], captured)).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source, '--json'], captured)).toBe(0);
 
         expect(captured.stdout).toHaveLength(1);
         const report = JSON.parse(captured.stdout[0] as string) as Record<string, unknown>;
@@ -229,15 +229,15 @@ describe('nexd import — with no daemon running', () => {
         const paths = scratch();
         const env = envFor(paths);
 
-        expect(await runNexd(['import', '--from', paths.source], io(env))).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source], io(env))).toBe(0);
 
         const second = io(env);
-        expect(await runNexd(['import', '--from', paths.source], second)).toBe(1);
+        expect(await runKelpid(['import', '--from', paths.source], second)).toBe(1);
         expect(second.stderr.join('\n')).toContain('already holds 2 workspace(s)');
         expect(second.stderr.join('\n')).toContain('--force');
 
         const forced = io(env);
-        expect(await runNexd(['import', '--from', paths.source, '--force'], forced)).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source, '--force'], forced)).toBe(0);
         expect(forced.text()).toContain('backup:');
         expect(workspaceNames(paths.target)).toEqual(['Alpha', 'Beta']);
         expect(fs.readdirSync(paths.root).some((entry) => entry.endsWith('.bak'))).toBe(true);
@@ -246,10 +246,10 @@ describe('nexd import — with no daemon running', () => {
     it('reports a refusal as JSON when asked', async () => {
         const paths = scratch();
         const env = envFor(paths);
-        expect(await runNexd(['import', '--from', paths.source], io(env))).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source], io(env))).toBe(0);
 
         const captured = io(env);
-        expect(await runNexd(['import', '--from', paths.source, '--json'], captured)).toBe(1);
+        expect(await runKelpid(['import', '--from', paths.source, '--json'], captured)).toBe(1);
         expect(captured.stdout).toHaveLength(1);
         const reply = JSON.parse(captured.stdout[0] as string) as Record<string, unknown>;
         expect(reply['ok']).toBe(false);
@@ -258,7 +258,7 @@ describe('nexd import — with no daemon running', () => {
     });
 });
 
-describe('nexd import — with a daemon running', () => {
+describe('kelpid import — with a daemon running', () => {
     it('refuses, and --force does not override it', async () => {
         const paths = scratch();
         const daemon = createDaemon({
@@ -276,18 +276,18 @@ describe('nexd import — with a daemon running', () => {
         const env = envFor(paths);
 
         const captured = io(env);
-        expect(await runNexd(['import', '--from', paths.source], captured)).toBe(1);
-        expect(captured.stderr.join('\n')).toContain('nexd is running');
+        expect(await runKelpid(['import', '--from', paths.source], captured)).toBe(1);
+        expect(captured.stderr.join('\n')).toContain('kelpid is running');
         expect(captured.stderr.join('\n')).toContain(`owns ${paths.target}`);
-        expect(captured.stderr.join('\n')).toContain('nexd stop');
+        expect(captured.stderr.join('\n')).toContain('kelpid stop');
 
         const forced = io(env);
-        expect(await runNexd(['import', '--from', paths.source, '--force'], forced)).toBe(1);
+        expect(await runKelpid(['import', '--from', paths.source, '--force'], forced)).toBe(1);
         expect(forced.stderr.join('\n')).toContain('--force does not override this');
 
         // Even a dry run is refused: the answer would be about to become wrong.
         const dry = io(env);
-        expect(await runNexd(['import', '--from', paths.source, '--dry-run'], dry)).toBe(1);
+        expect(await runKelpid(['import', '--from', paths.source, '--dry-run'], dry)).toBe(1);
 
         // The daemon's own database is untouched by any of that (a freshly booted daemon has
         // not even written its "Default" workspace yet — the import must not add ours).
@@ -311,7 +311,7 @@ describe('nexd import — with a daemon running', () => {
 
         const elsewhere = path.join(paths.root, 'elsewhere.db');
         const captured = io(envFor(paths));
-        expect(await runNexd(['import', '--from', paths.source, '--to', elsewhere], captured)).toBe(0);
+        expect(await runKelpid(['import', '--from', paths.source, '--to', elsewhere], captured)).toBe(0);
         expect(captured.stderr.join('\n')).toContain('is not the database it opened');
         expect(workspaceNames(elsewhere)).toEqual(['Alpha', 'Beta']);
         expect(workspaceNames(paths.target)).not.toContain('Alpha');

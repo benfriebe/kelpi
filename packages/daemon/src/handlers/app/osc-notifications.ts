@@ -7,7 +7,7 @@
  * This is the sibling of `applyAgentEvent` in `./events.ts` and shares everything that matters
  * with it — the same suppression matrix (`notificationDecision`, whose `'osc'` branch has been
  * sitting unused since M4), the same parked-INCLUSIVE `findPaneAnywhere` routing, and the same
- * `nex-<paneID>` dedup identity, so an OSC notification REPLACES the pane's previous banner
+ * `kelpi-<paneID>` dedup identity, so an OSC notification REPLACES the pane's previous banner
  * rather than stacking beside it. What it does not share is a store dispatch: a notification is
  * a message *about* the pane, not activity *in* it, and the Swift reducer likewise leaves
  * `lastActivityAt` alone.
@@ -21,7 +21,7 @@
  * notifies, because a background pane can never be "attended".
  */
 
-import { notificationDecision } from '@nex/core/agent';
+import { notificationDecision } from '@kelpi/core/agent';
 
 import { findPaneAnywhere, workspaceByID, type DaemonState } from '../../store/index.js';
 import type { OscNotification } from '../../term/index.js';

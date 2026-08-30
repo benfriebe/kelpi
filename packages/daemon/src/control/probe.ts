@@ -12,7 +12,7 @@
 
 import net from 'node:net';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 
 export type ControlProbeTarget = { readonly socketPath: string } | { readonly port: number; readonly host?: string | undefined };
 
@@ -43,7 +43,7 @@ export interface ControlPingProbe {
     readonly persistence?: ControlPingPersistence | undefined;
     /** Did the optional TCP listener bind? Undefined = no TCP listener was configured. */
     readonly tcp?: ControlPingTcp | undefined;
-    /** The CLI-compat socket is degraded (another Nex owns it). Undefined = serving. */
+    /** The CLI-compat socket is degraded (another Kelpi owns it). Undefined = serving. */
     readonly compat?: ControlPingCompat | undefined;
     /** The `NEX_SOCKET` the daemon injects into pane envs. Undefined = it did not say. */
     readonly paneRoute?: string | undefined;
@@ -54,7 +54,7 @@ export interface ControlPingProbe {
 /**
  * The `compat` block of a `ping` reply: the CLI-compat socket failed to bind — typically the
  * Swift app owning `/tmp/nex.sock` — while the daemon serves on via its run-dir socket and
- * pane-route TCP. A degraded compat socket is not a degraded daemon, but `nexd status` must
+ * pane-route TCP. A degraded compat socket is not a degraded daemon, but `kelpid status` must
  * say where plain-terminal commands are actually going.
  */
 export interface ControlPingCompat {

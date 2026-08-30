@@ -9,9 +9,9 @@
  * members only (§7.4 step 7).
  */
 
-import { groupSidebarID } from '@nex/core/codec';
-import { resolveGroupMember, resolveGroupStrict } from '@nex/core/resolve';
-import type { WorkspaceColor } from '@nex/protocol';
+import { groupSidebarID } from '@kelpi/core/codec';
+import { resolveGroupMember, resolveGroupStrict } from '@kelpi/core/resolve';
+import type { WorkspaceColor } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../../seams.js';
 import {

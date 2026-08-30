@@ -6,8 +6,8 @@
  * §5.2 (clearSearchIfTargets).
  */
 
-import { epochSecondsFromUnixMillis } from '@nex/core/codec';
-import { makePane, type Pane, type PaneType } from '@nex/core/layout';
+import { epochSecondsFromUnixMillis } from '@kelpi/core/codec';
+import { makePane, type Pane, type PaneType } from '@kelpi/core/layout';
 import { MAX_FOCUS_HISTORY, type DaemonState, type WorkspaceState } from '../types.js';
 
 /** Persisted timestamps are epoch seconds; actions carry epoch milliseconds. */

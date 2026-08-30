@@ -4,20 +4,20 @@
  * Lines are produced by the host (injected page script / CDP events), appended to that pane's
  * ring buffer here, and read two ways:
  *
- *   - **poll drain** — `nex web console [--since N] [--level L] [--clear]` → one reply carrying
+ *   - **poll drain** — `kelpi web console [--since N] [--level L] [--clear]` → one reply carrying
  *     the matching lines, `next_since` and the drop count;
- *   - **follow stream** — `nex web console --follow` → the same drain object as line 1 (the
+ *   - **follow stream** — `kelpi web console --follow` → the same drain object as line 1 (the
  *     handle is NOT closed), then one JSON object per appended line until the client hangs up.
  *
  * Two behaviours are deliberate quirks carried over from the Swift app (§9.3, §17.5):
  *   - streamed lines are NOT filtered by the `--level` given at subscribe time — only the
  *     catch-up drain is;
- *   - a drop count rides on the NEXT streamed line (`"dropped": N`) rather than being its own
+ *   - a drop count rides on the KELPIT streamed line (`"dropped": N`) rather than being its own
  *     notice, so ordering between "lines were lost" and the live lines is unambiguous. It is
  *     acknowledged by exactly two paths: a poll drain, and that fan-out.
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import { createRingBuffer, type RingBuffer } from './ring.js';
 

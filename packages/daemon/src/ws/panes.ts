@@ -23,9 +23,9 @@
  * silently rather than interpolated into a shell (persisted command injection).
  */
 
-import { newUUID } from '@nex/core/codec';
-import { displayAgentKind, resumeCommand } from '@nex/core/agent';
-import type { JsonObject } from '@nex/protocol';
+import { newUUID } from '@kelpi/core/codec';
+import { displayAgentKind, resumeCommand } from '@kelpi/core/agent';
+import type { JsonObject } from '@kelpi/protocol';
 
 import { refreshSyncGroup, spawnPaneIfShell, type PaneHandlerContext } from '../handlers/pane/index.js';
 import { visiblePane, workspaceByID } from '../store/derived.js';

@@ -44,7 +44,7 @@ import {
     swappingLeaves,
     updatingSplitRatio,
     type Pane
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 import type { DaemonState, DomainAction, WebPaneState, WorkspaceState } from '../types.js';
 import { MAX_RECENTLY_CLOSED_PANES } from '../types.js';
 import {
@@ -185,7 +185,7 @@ export function closePaneInWorkspace(workspace: WorkspaceState, paneID: string):
     let next = clearSearchIfTargets(workspace, paneID);
     next = restoreZoomIfNeeded(next);
 
-    // A) UNPARK: this pane replaced a parked terminal (`nex open --here`).
+    // A) UNPARK: this pane replaced a parked terminal (`kelpi open --here`).
     const closing = findVisiblePane(next, paneID);
     const parkedSourceID = closing?.parkedSourcePaneID ?? null;
     const parked = parkedSourceID === null ? null : findParkedPane(next, parkedSourceID);

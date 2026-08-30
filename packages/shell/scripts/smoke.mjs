@@ -20,9 +20,9 @@
  *
  * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
  * machine): every path is inside a fresh `mkdtemp` directory, the control socket is
- * `<tmp>/nexd.sock` and NEVER `/tmp/nex.sock`, the run dir / DB / config / HOME are throwaway,
+ * `<tmp>/kelpid.sock` and NEVER `/tmp/nex.sock`, the run dir / DB / config / HOME are throwaway,
  * and Electron gets its own `--user-data-dir` so it cannot collide with (or steal the
- * single-instance lock from) a real Nex shell.
+ * single-instance lock from) a real Kelpi shell.
  *
  *   node packages/shell/scripts/smoke.mjs [--no-build] [--verbose] [--keep-logs]
  *
@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 const shellRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(shellRoot, '..', '..');
-const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+const daemonEntry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
 const shellEntry = path.join(shellRoot, 'dist', 'main.js');
 const clientDist = path.join(repoRoot, 'packages', 'client', 'dist');
 const PROTOCOL_VERSION = 1;
@@ -101,7 +101,7 @@ const realHome = process.env.HOME ?? os.homedir();
 const realHomeSkillDir = path.join(realHome, '.claude', 'skills', 'nex-agentic');
 const realHomeSkillFile = path.join(realHomeSkillDir, 'SKILL.md');
 const realHomeSkillBefore = readIfPresent(realHomeSkillFile);
-const realHomeMarkerBefore = readIfPresent(path.join(realHomeSkillDir, '.nex-skill.json'));
+const realHomeMarkerBefore = readIfPresent(path.join(realHomeSkillDir, '.kelpi-skill.json'));
 
 /** The document the app ships — what a heal or an install has to land, byte for byte. */
 const bundledSkillFile = path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic', 'SKILL.md');
@@ -121,7 +121,7 @@ function skillBackups(sandbox) {
 /**
  * Put a sandbox HOME into the PRE-MARKER state: a drifted document with nothing beside it.
  *
- * This is what every copy `nex install-hooks` ever wrote looks like — it leaves no ownership
+ * This is what every copy `kelpi install-hooks` ever wrote looks like — it leaves no ownership
  * marker — and it is the case §APP-006's migration exists for. Returns the bytes laid down so
  * the phase can assert the backup preserved exactly them.
  */
@@ -140,7 +140,7 @@ function assertRealHomeUntouched(label) {
     );
     check(
         `${label}: and nothing was written beside it`,
-        readIfPresent(path.join(realHomeSkillDir, '.nex-skill.json')) === realHomeMarkerBefore,
+        readIfPresent(path.join(realHomeSkillDir, '.kelpi-skill.json')) === realHomeMarkerBefore,
         'no marker appeared in the real home'
     );
 }
@@ -221,7 +221,7 @@ async function freePort() {
 }
 
 /**
- * One newline-JSON command over a unix control socket — the same protocol the `nex` CLI
+ * One newline-JSON command over a unix control socket — the same protocol the `kelpi` CLI
  * speaks. Always the sandbox's RUN-DIR socket, never `/tmp/nex.sock`.
  */
 function controlCommand(socketPath, payload, expectReply = true, timeoutMs = 5000) {
@@ -263,7 +263,7 @@ const controlPing = (socketPath) => controlCommand(socketPath, { command: 'ping'
 async function ensureBuilds() {
     if (options.build || !fs.existsSync(daemonEntry)) {
         process.stdout.write('building the daemon bundle…\n');
-        const result = await run('pnpm', ['--filter', '@nex/daemon', 'build']);
+        const result = await run('pnpm', ['--filter', '@kelpi/daemon', 'build']);
         if (result.code !== 0) throw new Error(`daemon build failed:\n${result.stdout}${result.stderr}`);
     }
     if (options.build || !fs.existsSync(shellEntry)) {
@@ -276,7 +276,7 @@ async function ensureBuilds() {
 // ── throwaway environment ───────────────────────────────────────────────────────────
 
 /**
- * Every path the daemon and the shell touch, inside one temp directory. `NEXD_SOCKET_PATH`
+ * Every path the daemon and the shell touch, inside one temp directory. `KELPID_SOCKET_PATH`
  * is asserted to not be the production socket — a bug here would reach the user's real app.
  */
 async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
@@ -286,7 +286,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(userData, { recursive: true });
 
-    const socketPath = path.join(root, 'nexd.sock');
+    const socketPath = path.join(root, 'kelpid.sock');
     if (socketPath === '/tmp/nex.sock') throw new Error('refusing to touch the production socket');
 
     const configPath = path.join(root, 'config');
@@ -300,7 +300,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
      *     ownership marker beside it no longer describes the bytes. The launch must leave the
      *     document, and the marker, exactly as they are — permanently.
      *   - `drifted`: a document that differs from the bundle with NO marker beside it (what
-     *     `nex install-hooks` leaves). The launch must migrate it: old bytes moved aside to a
+     *     `kelpi install-hooks` leaves). The launch must migrate it: old bytes moved aside to a
      *     `.bak-` name, the bundle installed, a marker written. Laid down by `layDriftedSkill`
      *     rather than here, because phase 1 drives it on its SECOND launch.
      *   - `empty`: the directory exists — the user opted in — but the document is missing. The
@@ -313,7 +313,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
     const installedSkill = path.join(home, '.claude', 'skills', 'nex-agentic');
     fs.mkdirSync(installedSkill, { recursive: true });
     const skillFile = path.join(installedSkill, 'SKILL.md');
-    const skillMarkerFile = path.join(installedSkill, '.nex-skill.json');
+    const skillMarkerFile = path.join(installedSkill, '.kelpi-skill.json');
     let skillFixtureBytes = null;
     let skillMarkerBytes = null;
     if (skill === 'marked-edited') {
@@ -328,7 +328,7 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
                 version: null,
                 appVersion: '0.0.0-smoke',
                 installedAt: '2026-08-01T00:00:00.000Z',
-                by: 'nex-shell'
+                by: 'kelpi-shell'
             },
             null,
             2
@@ -346,18 +346,18 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
         // The unpackaged shell has no `Contents/Resources/cli/skills`, so the launch step is
         // pointed at the checkout's copy — the same escape hatch `--skill-source` gives the CLI.
         // It only names a SOURCE; the destination still comes from the HOME above.
-        NEX_SKILL_SOURCE: path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic'),
-        NEXD_RUN_DIR: path.join(root, 'run'),
-        NEXD_SOCKET_PATH: socketPath,
-        NEXD_TCP_PORT: String(await freePort()),
-        NEXD_DB_PATH: path.join(root, 'nex.db'),
-        NEXD_CONFIG_PATH: configPath,
-        NEXD_HTTP_PORT: String(await freePort()),
-        NEXD_HTTP_HOST: '127.0.0.1',
-        NEXD_ENTRY: daemonEntry,
+        KELPI_SKILL_SOURCE: path.join(repoRoot, 'packages', 'cli', 'resources', 'skills', 'nex-agentic'),
+        KELPID_RUN_DIR: path.join(root, 'run'),
+        KELPID_SOCKET_PATH: socketPath,
+        KELPID_TCP_PORT: String(await freePort()),
+        KELPID_DB_PATH: path.join(root, 'nex.db'),
+        KELPID_CONFIG_PATH: configPath,
+        KELPID_HTTP_PORT: String(await freePort()),
+        KELPID_HTTP_HOST: '127.0.0.1',
+        KELPID_ENTRY: daemonEntry,
         // Point the daemon at the built client when there is one; the daemon serves its own
         // "client not built" page otherwise, which still exercises window loading.
-        ...(fs.existsSync(path.join(clientDist, 'index.html')) ? { NEXD_CLIENT_DIR: clientDist } : {})
+        ...(fs.existsSync(path.join(clientDist, 'index.html')) ? { KELPID_CLIENT_DIR: clientDist } : {})
     };
 
     return {
@@ -370,11 +370,11 @@ async function makeSandbox(label, { skill = 'marked-edited' } = {}) {
         skillFixture: skill,
         skillFixtureBytes,
         skillMarkerBytes,
-        runDir: env.NEXD_RUN_DIR,
+        runDir: env.KELPID_RUN_DIR,
         socketPath,
-        httpPort: Number(env.NEXD_HTTP_PORT),
-        base: `http://127.0.0.1:${env.NEXD_HTTP_PORT}`,
-        runSocket: path.join(env.NEXD_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
+        httpPort: Number(env.KELPID_HTTP_PORT),
+        base: `http://127.0.0.1:${env.KELPID_HTTP_PORT}`,
+        runSocket: path.join(env.KELPID_RUN_DIR, `daemon-v${PROTOCOL_VERSION}.sock`),
         cleanup() {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -514,8 +514,8 @@ function startShell(sandbox) {
 }
 
 /**
- * Launch the app a SECOND time with files on argv, the way `open -a Nex.app notes.md` does on a
- * machine where Nex is already running (CONT-124/125, APP-100/101).
+ * Launch the app a SECOND time with files on argv, the way `open -a Kelpi.app notes.md` does on a
+ * machine where Kelpi is already running (CONT-124/125, APP-100/101).
  *
  * Finder's own `open-file` event cannot be raised from a script — LaunchServices delivers it —
  * but it and this route end in the same place: the same extension filter, the same `forwardOpen`,
@@ -620,10 +620,10 @@ async function adoptPhase() {
 
         // APP-020/APP-026/APP-027: the application menu is not observable from outside the
         // process, so the shell logs what it built and this is the check.
-        const menu = await shell.waitForLine(/menu: Nex /, 'the application menu');
+        const menu = await shell.waitForLine(/menu: Kelpi /, 'the application menu');
         check('the app menu offers "Check for Updates…"', menu.includes('Check for Updates…'), menu.trim());
         check('the File menu offers "Preview Markdown…" on ⌘O', menu.includes('Preview Markdown… (⌘O)'), menu.trim());
-        check('the Help menu offers "Nex Help" on ⌘?', menu.includes('Nex Help (⌘?)'), menu.trim());
+        check('the Help menu offers "Kelpi Help" on ⌘?', menu.includes('Kelpi Help (⌘?)'), menu.trim());
         // §APP-028 / §SET-194: this smoke runs an UNPACKAGED shell (`electron .` against the
         // checkout), which is this port's `#if DEBUG`, so the Debug menu must be there. The
         // other half — that it is NOT there in a built .app — is `packaged-smoke.mjs`.
@@ -732,7 +732,7 @@ async function adoptPhase() {
             `${String((beforeOpen?.panes ?? []).length)} → ${String((afterOpen?.panes ?? []).length)} panes`
         );
 
-        // A real agent lifecycle, driven over the control socket exactly as the `nex` CLI's
+        // A real agent lifecycle, driven over the control socket exactly as the `kelpi` CLI's
         // hooks drive it: the deltas have to reach the MAIN process and move the dock badge.
         const workspace = await controlCommand(sandbox.runSocket, { command: 'workspace-create', name: 'smoke' });
         check('the control socket creates a workspace', workspace?.ok === true, JSON.stringify(workspace));
@@ -785,7 +785,7 @@ async function adoptPhase() {
         //
         // §APP-006 case (b) rides along on this launch: before it starts, the sandbox HOME is
         // rewritten into the pre-marker state — a drifted document with NOTHING beside it, which
-        // is what `nex install-hooks` leaves and what case (a)'s rule used to strand forever.
+        // is what `kelpi install-hooks` leaves and what case (a)'s rule used to strand forever.
         const driftedBytes = layDriftedSkill(sandbox);
         const second = startShell(sandbox);
         try {
@@ -820,7 +820,7 @@ async function adoptPhase() {
             check(
                 'with the ownership marker that makes the migration a one-time event',
                 healedMarker !== null &&
-                    healedMarker.by === 'nex-shell' &&
+                    healedMarker.by === 'kelpi-shell' &&
                     healedMarker.installedHash === sha256(readIfPresent(bundledSkillFile) ?? ''),
                 JSON.stringify(healedMarker)
             );
@@ -920,10 +920,10 @@ async function spawnPhase() {
             bundledSkill !== null && readIfPresent(sandbox.skillFile) === bundledSkill,
             sandbox.skillFile
         );
-        const marker = JSON.parse(readIfPresent(path.join(sandbox.installedSkill, '.nex-skill.json')) ?? 'null');
+        const marker = JSON.parse(readIfPresent(path.join(sandbox.installedSkill, '.kelpi-skill.json')) ?? 'null');
         check(
             'with an ownership marker recording the hash it wrote',
-            marker !== null && typeof marker.installedHash === 'string' && marker.by === 'nex-shell',
+            marker !== null && typeof marker.installedHash === 'string' && marker.by === 'kelpi-shell',
             JSON.stringify(marker)
         );
         assertRealHomeUntouched('phase 2');
@@ -970,7 +970,7 @@ async function spawnPhase() {
  * above the correctly-drawn one. That strand is the user-visible defect: a stack of half-width
  * prompt copies down the pane, all stamped with the same second.
  *
- * The marker line is `+NEXWIDTH ` (10 characters) plus dots padded to `COLUMNS - 20`, so it is
+ * The marker line is `+KELPIWIDTH ` (10 characters) plus dots padded to `COLUMNS - 20`, so it is
  * exactly `COLUMNS - 10` long: a direct read of the grid the shell believed it had when it
  * printed, and comfortably short of the wrap column, where a line the full width of the screen
  * would be at the mercy of deferred-wrap behaviour instead. The `sleep` stands in for the init
@@ -979,10 +979,10 @@ async function spawnPhase() {
 const STRAND_MARKER_SLACK = 10;
 const INSTANT_PROMPT_ZSHRC = [
     'setopt prompt_subst',
-    'print -P "+NEXWIDTH ${(l:$((COLUMNS - 20))::.:)}"',
-    'print -n "+NEXPS1> "',
+    'print -P "+KELPIWIDTH ${(l:$((COLUMNS - 20))::.:)}"',
+    'print -n "+KELPIPS1> "',
     'sleep 0.6',
-    "PROMPT=$'+NEXWIDTH ${(l:$((COLUMNS - 20))::.:)}\\n+NEXPS1> '",
+    "PROMPT=$'+KELPIWIDTH ${(l:$((COLUMNS - 20))::.:)}\\n+KELPIPS1> '",
     ''
 ].join('\n');
 
@@ -990,12 +990,12 @@ const INSTANT_PROMPT_ZSHRC = [
 function strandWidths(text) {
     return text
         .split('\n')
-        .filter((line) => line.includes('+NEXWIDTH'))
+        .filter((line) => line.includes('+KELPIWIDTH'))
         .map((line) => line.trimEnd().length);
 }
 
 /**
- * Read a pane's whole buffer over the control socket, exactly as `nex pane capture
+ * Read a pane's whole buffer over the control socket, exactly as `kelpi pane capture
  * --scrollback` does.
  */
 async function capturePane(sandbox, paneID) {

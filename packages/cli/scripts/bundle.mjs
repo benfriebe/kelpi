@@ -1,21 +1,21 @@
 /**
- * Bundle the CLI into a single runnable file: `dist/nex.js`.
+ * Bundle the CLI into a single runnable file: `dist/kelpi.js`.
  *
- * Same shape as the daemon's bundler and for the same reason: `@nex/protocol` publishes
+ * Same shape as the daemon's bundler and for the same reason: `@kelpi/protocol` publishes
  * TypeScript source through its `exports` map, so plain `tsc` output is not runnable by node.
  * esbuild resolves and inlines it, leaving one dependency-free file that can be symlinked into
- * `/usr/local/bin/nex` (or pointed at by `NEX_COMPAT_CLI`).
+ * `/usr/local/bin/kelpi` (or pointed at by `KELPI_COMPAT_CLI`).
  *
  * Contract:
  *   - platform node, format ESM, target the Node the repo pins (24);
  *   - NO external dependencies at all — the CLI must run from anywhere, including a checkout
  *     with no `node_modules` beside it;
- *   - a shebang and mode 0755, so `dist/nex.js` is directly executable (`spawn` finds `node`
+ *   - a shebang and mode 0755, so `dist/kelpi.js` is directly executable (`spawn` finds `node`
  *     through `/usr/bin/env`, which is why the harness can exec it like the Swift binary);
- *   - `NEX_CLI_VERSION` / `NEX_CLI_BUILD` are read at RUNTIME (see src/version.ts), so a
+ *   - `KELPI_CLI_VERSION` / `KELPI_CLI_BUILD` are read at RUNTIME (see src/version.ts), so a
  *     packaging step can stamp identity without a rebuild.
  *
- * Usage: `pnpm --filter @nex/cli build` (or `node scripts/bundle.mjs --watch`).
+ * Usage: `pnpm --filter @kelpi/cli build` (or `node scripts/bundle.mjs --watch`).
  */
 
 import { chmodSync, mkdirSync } from 'node:fs';
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = path.join(packageRoot, 'dist', 'nex.js');
+const outfile = path.join(packageRoot, 'dist', 'kelpi.js');
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {

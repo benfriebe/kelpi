@@ -18,7 +18,7 @@
  * way the daemon handles it rather than by a second implementation here.
  */
 
-import { layoutPaneOrder, visiblePane, type WorkspaceColor, type WorkspaceState } from '@nex/daemon/store';
+import { layoutPaneOrder, visiblePane, type WorkspaceColor, type WorkspaceState } from '@kelpi/daemon/store';
 
 import { homeAbbreviated } from './theme';
 import type { ChromePane } from './types';

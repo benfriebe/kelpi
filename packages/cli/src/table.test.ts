@@ -38,7 +38,7 @@ describe('printPaneTable', () => {
                         workspace_name: 'alpha',
                         status: 'running',
                         agent_session_id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
-                        working_directory: '/Users/tester/code/nex'
+                        working_directory: '/Users/tester/code/kelpi'
                     },
                     {
                         id: PANE_B,
@@ -57,7 +57,7 @@ describe('printPaneTable', () => {
         );
         expect(lines[1]).toContain(PANE_A);
         expect(lines[1]).toContain('a1b2c3d4…4c5d');
-        expect(lines[1]).toContain('~/code/nex');
+        expect(lines[1]).toContain('~/code/kelpi');
         // Unlabelled / typeless panes render `-`, and the last column has no trailing pad.
         expect(lines[2]).toContain('-       ');
         expect(lines[2]?.endsWith('/tmp')).toBe(true);

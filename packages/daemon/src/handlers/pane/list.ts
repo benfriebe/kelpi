@@ -3,14 +3,14 @@
  *
  * Panes are enumerated in LAYOUT order (the tree's leaf order), never state order, and ids
  * with no backing visible pane are skipped; parked panes never appear because they are not in
- * the layout. Optional keys follow the builders in @nex/protocol: `background_tasks` only when
+ * the layout. Optional keys follow the builders in @kelpi/protocol: `background_tasks` only when
  * positive, `group_id`/`group_name` both-or-neither, empty strings omitted entirely.
  */
 
-import { allPaneIDs } from '@nex/core/layout';
-import { buildPaneListEntry, type PaneListEntry } from '@nex/protocol';
+import { allPaneIDs } from '@kelpi/core/layout';
+import { buildPaneListEntry, type PaneListEntry } from '@kelpi/protocol';
 
-import { resolveWorkspaceStrict } from '@nex/core/resolve';
+import { resolveWorkspaceStrict } from '@kelpi/core/resolve';
 import type { CommandHandler } from '../../seams.js';
 import {
     groupByID,

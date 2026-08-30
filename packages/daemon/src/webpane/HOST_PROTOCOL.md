@@ -7,7 +7,7 @@ Electron shell, which owns one `WebContentsView` per tab plus its CDP session.
 
 This document is the contract. The daemon side is `packages/daemon/src/webpane/`; the wire
 behaviour the whole thing exists to preserve is `docs/current/web-pane.md` (referenced below as
-§n). Message types live in `@nex/protocol` (`ws/messages.ts`).
+§n). Message types live in `@kelpi/protocol` (`ws/messages.ts`).
 
 ---
 
@@ -22,7 +22,7 @@ close). It completes the normal handshake first:
 ```jsonc
 // host → daemon
 {"type":"hello","protocolVersion":1,"token":"…",
- "client":{"kind":"electron","name":"nex-shell","capabilities":["web-pane-host"],
+ "client":{"kind":"electron","name":"kelpi-shell","capabilities":["web-pane-host"],
            "windowID":"<uuid>"}}
 ```
 
@@ -30,7 +30,7 @@ Listing `web-pane-host` in `client.capabilities` claims the role as part of the 
 explicit form works too, any time after `hello`:
 
 ```jsonc
-{"type":"host-register","role":"web-pane","name":"nex-shell","windowID":"<uuid>"}  // host → daemon
+{"type":"host-register","role":"web-pane","name":"kelpi-shell","windowID":"<uuid>"}  // host → daemon
 {"type":"host-registered","role":"web-pane","hostID":"…","superseded":false}  // daemon → host
 ```
 
@@ -161,8 +161,8 @@ Rules:
 
 | verb | args | reply |
 |---|---|---|
-| `actuate` | `{paneID, tabID, method, args:[…]}` | Call `window.__nexAct[method](...args)` in the tab's **main frame, page world**, with the promise awaited (CDP `Runtime.evaluate {awaitPromise:true, returnByValue:true}`), and return its object verbatim. `method` is one of `click, type, text, attr, count, exists, dom, select, scroll, hover, key, wait` (§7.4). Missing actuator → `{ok:false,error:"actuator not installed"}`; a dead tab → `{ok:false,error:"web pane has no live tab <uuid>"}`; a non-object/throwing evaluation → `{ok:false,error:"actuator evaluation failed: <detail>"}`. |
-| `exec` | `{paneID, tabID, script}` | Wrap per §8.5 (`$`/`$$`/`nex` aliases, statement-vs-expression detection) and return `{ok:true, result}` or `{ok:false, error, js_error:{name,message,line,column}}`. Budget: 30 s. |
+| `actuate` | `{paneID, tabID, method, args:[…]}` | Call `window.__kelpiAct[method](...args)` in the tab's **main frame, page world**, with the promise awaited (CDP `Runtime.evaluate {awaitPromise:true, returnByValue:true}`), and return its object verbatim. `method` is one of `click, type, text, attr, count, exists, dom, select, scroll, hover, key, wait` (§7.4). Missing actuator → `{ok:false,error:"actuator not installed"}`; a dead tab → `{ok:false,error:"web pane has no live tab <uuid>"}`; a non-object/throwing evaluation → `{ok:false,error:"actuator evaluation failed: <detail>"}`. |
+| `exec` | `{paneID, tabID, script}` | Wrap per §8.5 (`$`/`$$`/`kelpi` aliases, statement-vs-expression detection) and return `{ok:true, result}` or `{ok:false, error, js_error:{name,message,line,column}}`. Budget: 30 s. |
 | `inspect-arm` | `{paneID, tabID, nonce, sticky}` | Arm the in-page picker with that **nonce**; `{ok:true}` on success, `{ok:false,error}` otherwise (the daemon substitutes `failed to arm inspector for active tab` when no error is given). |
 | `inspect-disarm` | `{paneID}` | Sent as a notify. Tear the picker down. |
 | `devtools` | `{paneID, tabID?, open?}` | Toggle the tab's docked dev tools (§16.5); `open` forces a state, absent toggles. Reply `{ok:true, open:<bool>}`. GUI-only — it reaches the daemon as the WS command `web-devtools`, never from the CLI. |
@@ -192,10 +192,10 @@ from §13.2 — empty list, `deleted:0` — never an error.
 
 | event | payload | daemon does |
 |---|---|---|
-| `console` | `{level, message, url, line?, column?}` | Appends to the pane's ring buffer (capacity 1000, monotonic `seq`, drop accounting) and fans out to `nex web console --follow` readers and WS subscribers. `level` is mapped onto `log/debug/info/warn/error` (`warning`→`warn`, `verbose`→`debug`, `assert`→`error`, anything unknown→`log`). Send one event per line, already argument-joined per §7.1. |
+| `console` | `{level, message, url, line?, column?}` | Appends to the pane's ring buffer (capacity 1000, monotonic `seq`, drop accounting) and fans out to `kelpi web console --follow` readers and WS subscribers. `level` is mapped onto `log/debug/info/warn/error` (`warning`→`warn`, `verbose`→`debug`, `assert`→`error`, anything unknown→`log`). Send one event per line, already argument-joined per §7.1. |
 | `page-state` | `{url?, title?}` | Mirrors into the tab record and the pane header. `""`/`about:blank` URLs are ignored as placeholders (§4.4); titles are always taken. Send on `did-navigate`, `did-navigate-in-page`, `page-title-updated`. |
 | `nav-state` | `{loading, can_go_back, can_go_forward}` with `tabID` | WEB-032/WEB-033. Broadcast to clients as `web-nav-state` (per **tab**, so WEB-034's tab snap works); never stored. Send on `did-start-loading`, `did-stop-loading`, `did-navigate` and a main-frame `did-fail-load`. Chromium has no `estimatedProgress`, so this bracket is all the progress there is — the client draws an indeterminate strip between the two edges. Suppress the bootstrap `about:blank` load, and drop an unchanged repeat. An event without `tabID` is ignored. |
-| `inspect` | the picker payload (§7.2) — `{nonce, selector, xpath, tag, element_id, outer_html, attributes, rect, text, context_html, url, captured_at}`, or `{nonce, cancelled:true}` | Validates the nonce against the current arm (mismatch → silently dropped), sanitises it (ANSI/C0 stripping + byte clamps, §11.6), disarms the single-shot arm, queues the result for `nex web inspect-result` (cap 32) and, when the arm carried `--send-to`, pastes the formatted block into that shell pane's PTY. |
+| `inspect` | the picker payload (§7.2) — `{nonce, selector, xpath, tag, element_id, outer_html, attributes, rect, text, context_html, url, captured_at}`, or `{nonce, cancelled:true}` | Validates the nonce against the current arm (mismatch → silently dropped), sanitises it (ANSI/C0 stripping + byte clamps, §11.6), disarms the single-shot arm, queues the result for `kelpi web inspect-result` (cap 32) and, when the arm carried `--send-to`, pastes the formatted block into that shell pane's PTY. |
 | `tab-closed` | `{}` with `tabID` | The host closed a tab on its own (`window.close()`, a crash): the daemon drops it from the tab list and re-activates the left neighbour. |
 | `view-focus` | `{}` with `tabID` | §N29. The **user** gave this pane's page keyboard focus — a click inside the native view, which reaches Chromium and nothing else. Broadcast to clients as `web-view-focus` (`{paneID, workspaceID, windowID?}`, scoped to the reporting host's window); never stored, and the daemon does **not** move focus itself — the client runs the same focused-pane path a terminal body click runs and reports back with an ordinary `focus-report`. Send it only for a gesture the host did not cause: filter out the host's own `webContents.focus()` (the `focus-view` verb below), and report only for a view actually embedded in a window — a focus event on an off-screen holder view is automation, not a click, and moving the user's ring for it would be a defect of its own. A pane the daemon does not know as a web pane is dropped. |
 
@@ -264,7 +264,7 @@ Failure strings the daemon can author, all stable:
 
 All of it is now wired, and none of it has a CLI verb — the Swift app has none either, so these
 are **WS-only** commands (`daemon/src/ws/web-ui.ts`, matched in `ws/sync.ts` before the wire
-decoder) rather than additions to the `nex web` vocabulary.
+decoder) rather than additions to the `kelpi web` vocabulary.
 
 New host verbs this adds to the tables above:
 
@@ -283,7 +283,7 @@ And one new host **event**: `batch-marker`, carrying the page's own intents — 
 clicked), `{commentChanged:{id, comment}}`, `{dismiss:{id}}`, `{remove:{id}}`.
 
 **Chord forwarding is not on this socket.** A page in a `WebContentsView` has its own keyboard
-focus, so ⌘F / ⌘L / ⌘T never reach Nex's renderer once a user clicks the page. The host takes
+focus, so ⌘F / ⌘L / ⌘T never reach Kelpi's renderer once a user clicks the page. The host takes
 those chords (`shell/src/webhost/keys.ts`), cancels them in the page, and replays them into its
 own window over the daemon's existing `menu-request` → `menu-command` relay. No new message type,
 and the daemon is not involved beyond fanning the relay out.

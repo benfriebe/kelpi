@@ -5,7 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { WireMessage } from '@nex/protocol';
+import type { WireMessage } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher, ReplyHandle } from '../seams.js';
@@ -105,7 +105,7 @@ describe('control server', () => {
     };
 
     beforeEach(() => {
-        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-ctl-'));
+        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-ctl-'));
         socketPath = path.join(directory, 'c.sock');
     });
 
@@ -384,7 +384,7 @@ describe('control server', () => {
 
     /**
      * §SET-021 / §AGNT-005. This used to abort `start()` and tear the Unix socket down with it,
-     * so one stale `tcp-port` took every `nex` command, hook and client offline. The listener
+     * so one stale `tcp-port` took every `kelpi` command, hook and client offline. The listener
      * that failed is now a reported fact, not a fatal one.
      */
     it('keeps serving the Unix socket when the TCP port is already taken, and says so', async () => {
@@ -494,7 +494,7 @@ describe('control server', () => {
 
     /**
      * §AGNT-003 / §SET-021: what `ping` says afterwards. A stopped listener must not leave a
-     * `requested` port on `tcpStatus` — `nexd status`, Settings ▸ Network and `ping`'s
+     * `requested` port on `tcpStatus` — `kelpid status`, Settings ▸ Network and `ping`'s
      * `controlTransport` block would then all report a port nothing is listening on, with no
      * error to explain it. `startTCP(undefined)` already means "no listener" and reports null;
      * `stopTCP` is the same statement and now reads the same way.

@@ -5,7 +5,7 @@
  * imported directly so a future edit to either side fails here rather than in a user's window.
  */
 
-import { sanitizedGitName } from '@nex/daemon/git';
+import { sanitizedGitName } from '@kelpi/daemon/git';
 import { describe, expect, it } from 'vitest';
 
 import { sanitizeGitName, worktreePreview, worktreePreviewPath } from './worktree';

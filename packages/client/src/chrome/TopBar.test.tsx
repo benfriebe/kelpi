@@ -24,12 +24,12 @@ function pane(status: ChromePane['status']): ChromePane {
 describe('identity cluster (§3)', () => {
     it('waiting beats running beats the workspace color', () => {
         expect(identityDotColor([pane('running'), pane('waitingForInput')], 'blue', 'dark')).toContain(
-            '--nex-status-waiting'
+            '--kelpi-status-waiting'
         );
-        expect(identityDotColor([pane('running')], 'blue', 'dark')).toContain('--nex-status-running');
+        expect(identityDotColor([pane('running')], 'blue', 'dark')).toContain('--kelpi-status-running');
         expect(identityDotColor([pane('idle')], 'blue', 'dark')).toBe(workspaceColorHex('blue', 'dark'));
         // No active workspace at all → tertiary text color.
-        expect(identityDotColor([], undefined, 'dark')).toContain('--nex-fg-tertiary');
+        expect(identityDotColor([], undefined, 'dark')).toContain('--kelpi-fg-tertiary');
     });
 
     it('shows the name and pane count, pluralized', () => {
@@ -50,10 +50,10 @@ describe('identity cluster (§3)', () => {
         expect(screen.getByTestId('top-bar-identity').textContent).toContain('2 panes');
     });
 
-    it('falls back to "Nex" with no pane count when nothing is active', () => {
+    it('falls back to "Kelpi" with no pane count when nothing is active', () => {
         render(<TopBar workspaceName={null} panes={[]} connection="connected" />);
         const identity = screen.getByTestId('top-bar-identity').textContent ?? '';
-        expect(identity).toContain('Nex');
+        expect(identity).toContain('Kelpi');
         expect(identity).not.toContain('pane');
     });
 });

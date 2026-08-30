@@ -1,4 +1,4 @@
-import { createStore as createDaemonStore, emptyDaemonState, type DaemonState } from '@nex/daemon/store';
+import { createStore as createDaemonStore, emptyDaemonState, type DaemonState } from '@kelpi/daemon/store';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -24,9 +24,9 @@ function daemonState(): DaemonState {
         type: 'create-workspace',
         id: W1,
         paneID: P1,
-        name: 'nex-client',
+        name: 'kelpi-client',
         color: 'blue',
-        workingDirectory: `${HOME}/code/nex`,
+        workingDirectory: `${HOME}/code/kelpi`,
         now: NOW
     });
     store.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'vertical', now: NOW + 1 });
@@ -38,7 +38,7 @@ function daemonState(): DaemonState {
         paneID: P3,
         name: 'daemon',
         color: 'red',
-        workingDirectory: `${HOME}/code/nexd`,
+        workingDirectory: `${HOME}/code/kelpid`,
         now: NOW + 3
     });
     return store.getState();
@@ -69,7 +69,7 @@ describe('item universe (§10.1)', () => {
     it('titles a pane label ?? title ?? home-abbreviated cwd', () => {
         const byID = new Map(items().map((item) => [item.id, item]));
         // no label, no title → the cwd, home-abbreviated
-        expect(byID.get(`pane:${P1}`)?.title).toBe('~/code/nex');
+        expect(byID.get(`pane:${P1}`)?.title).toBe('~/code/kelpi');
         expect(byID.get(`pane:${P1}`)?.subtitle).toBe('');
         // label + a distinct title → title as the subtitle
         expect(byID.get(`pane:${P2}`)?.title).toBe('worker');
@@ -104,7 +104,7 @@ describe('item universe (§10.1)', () => {
 
 describe('query parsing', () => {
     it('lowercases, drops leading whitespace and consumes the scope prefix', () => {
-        expect(parsePaletteQuery('   NEX Client')).toEqual({ scope: 'all', terms: ['nex', 'client'] });
+        expect(parsePaletteQuery('   KELPI Client')).toEqual({ scope: 'all', terms: ['kelpi', 'client'] });
         expect(parsePaletteQuery('w:dae')).toEqual({ scope: 'workspace', terms: ['dae'] });
         expect(parsePaletteQuery('p: vim  src')).toEqual({ scope: 'pane', terms: ['vim', 'src'] });
         expect(parsePaletteQuery('w:')).toEqual({ scope: 'workspace', terms: [] });
@@ -138,7 +138,7 @@ describe('matching (substring AND-of-terms — never fuzzy)', () => {
     it('is not fuzzy: non-contiguous letters do not match', () => {
         expect(ids('wrkr')).toEqual([]);
         expect(ids('nxc')).toEqual([]);
-        expect(ids('nex-c')).toEqual([`ws:${W1}`, `pane:${P1}`, `pane:${P2}`]);
+        expect(ids('kelpi-c')).toEqual([`ws:${W1}`, `pane:${P1}`, `pane:${P2}`]);
     });
 
     it('is case-insensitive', () => {

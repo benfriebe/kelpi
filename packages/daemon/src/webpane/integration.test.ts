@@ -1,14 +1,14 @@
 /**
  * Web panes end to end: a REAL daemon (own run dir, own control socket, own SQLite file), a
  * REAL WebSocket host speaking `./HOST_PROTOCOL.md`, and REAL control-socket clients issuing
- * `web-*` commands the way the `nex` CLI does — one JSON line in, one JSON line + EOF out.
+ * `web-*` commands the way the `kelpi` CLI does — one JSON line in, one JSON line + EOF out.
  *
  * This is where the pieces that only composition can get wrong are exercised: the host
  * registered on the WS channel is the same registry the control-socket handlers call into, a
  * `--follow` stream survives on a held reply handle and stops when the client hangs up, and a
  * second shell taking over strands nothing.
  *
- * Every path here is private to the test (`/tmp/nexd-web-*`): the production Swift Nex owns
+ * Every path here is private to the test (`/tmp/kelpid-web-*`): the production Swift Kelpi owns
  * `/tmp/nex.sock` and the default run dir, and this suite must never touch them.
  */
 
@@ -16,12 +16,12 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import { createDaemon, type Daemon, type DaemonInfo } from '../boot/compose.js';
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 
 type Reply = Record<string, unknown>;
 
@@ -45,14 +45,14 @@ interface Paths {
 
 /** Short paths: a unix socket path is capped near 104 bytes on macOS. */
 function scratch(): Paths {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-web-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-web-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -105,7 +105,7 @@ function request(socketPath: string, message: Reply, timeoutMs = 10_000): Promis
     });
 }
 
-/** A long-lived control connection: what `nex web console --follow` holds open. */
+/** A long-lived control connection: what `kelpi web console --follow` holds open. */
 interface Follower {
     readonly lines: Reply[];
     next(index: number, timeoutMs?: number): Promise<Reply>;

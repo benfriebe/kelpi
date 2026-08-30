@@ -148,7 +148,7 @@ describe('parseChromeHex', () => {
     });
 });
 
-// SET-219 / TERM-021 — the Swift `NexGhosttyDefaults` search colours, as overridable keys.
+// SET-219 / TERM-021 — the Swift `KelpiGhosttyDefaults` search colours, as overridable keys.
 describe('search-highlight colours', () => {
     it('ships the Swift defaults when the file names none', () => {
         const settings = parseChromeSettings('# nothing here\n');

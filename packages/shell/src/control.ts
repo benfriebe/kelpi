@@ -7,14 +7,14 @@
  * and the daemon's `open` verb is the thing that turns it into a pane.
  *
  * It dials the RUN DIR's socket (`daemon-v<PROTO>.sock`), never `/tmp/nex.sock`. The compat
- * path belongs to whatever `nex` CLI the user has installed — on a development machine that
+ * path belongs to whatever `kelpi` CLI the user has installed — on a development machine that
  * is the shipped Swift app — and the shell has no business connecting to a daemon it did not
  * discover through the run dir.
  */
 
 import net from 'node:net';
 
-import { createLineBuffer, type JsonObject } from '@nex/protocol';
+import { createLineBuffer, type JsonObject } from '@kelpi/protocol';
 
 export const DEFAULT_CONTROL_TIMEOUT_MS = 5_000;
 

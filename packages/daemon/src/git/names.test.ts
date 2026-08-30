@@ -52,18 +52,18 @@ describe('resolvedWorktreeBasePath', () => {
     });
 
     it('expands both forms in one template', () => {
-        expect(resolvedWorktreeBasePath('<repo>/wt/<repo>', '/code/nex', HOME)).toBe('/code/nex/wt/nex');
+        expect(resolvedWorktreeBasePath('<repo>/wt/<repo>', '/code/kelpi', HOME)).toBe('/code/kelpi/wt/kelpi');
     });
 
     it('joins the sanitized folder name onto the base', () => {
         expect(
             worktreePathFor({
                 template: DEFAULT_WORKTREE_BASE_PATH,
-                repoPath: '/code/nex',
+                repoPath: '/code/kelpi',
                 home: HOME,
                 folderName: 'feature-x'
             })
-        ).toBe(`${HOME}/nex/worktrees/nex/feature-x`);
+        ).toBe(`${HOME}/nex/worktrees/kelpi/feature-x`);
     });
 });
 
@@ -76,7 +76,7 @@ describe('path helpers', () => {
 
     it('standardizes . / .. and a trailing separator', () => {
         expect(standardizePath('/a/b/../c/', HOME)).toBe('/a/c');
-        expect(standardizePath(' ~/code/./nex ', HOME)).toBe(`${HOME}/code/nex`);
+        expect(standardizePath(' ~/code/./kelpi ', HOME)).toBe(`${HOME}/code/kelpi`);
     });
 });
 

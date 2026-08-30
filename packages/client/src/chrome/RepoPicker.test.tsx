@@ -286,8 +286,8 @@ describe('the shipped picker’s presentation', () => {
         const anchor = [...screen.getAllByRole('option')].find(
             (node) => (node as HTMLElement).dataset['anchor'] === 'true'
         ) as HTMLElement;
-        expect(anchor.style.outline).toContain('--nex-accent');
-        expect(anchor.style.outline).not.toContain('--nex-border');
+        expect(anchor.style.outline).toContain('--kelpi-accent');
+        expect(anchor.style.outline).not.toContain('--kelpi-border');
     });
 
     /**
@@ -301,12 +301,12 @@ describe('the shipped picker’s presentation', () => {
         fireEvent.focus(list);
         fireEvent.click(row('r1'));
         const focused = row('r1').style.background;
-        expect(focused).toContain('--nex-accent');
+        expect(focused).toContain('--kelpi-accent');
         expect(focused).toContain('40%');
 
         fireEvent.blur(list);
         const blurred = row('r1').style.background;
-        expect(blurred).toContain('--nex-accent');
+        expect(blurred).toContain('--kelpi-accent');
         expect(blurred).toContain('25%');
         expect(blurred).not.toBe(focused);
         // Still selected — only its tone moved.

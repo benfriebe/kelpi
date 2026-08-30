@@ -24,7 +24,7 @@
  *     told why instead of watching nothing happen.
  *
  * **Everything that touches `$HOME` is injected.** `themeSearchDirs` takes `env` and `home`
- * exactly as `resolveGhosttyConfigPath` does, and `NEXD_GHOSTTY_THEME_DIRS` replaces the whole
+ * exactly as `resolveGhosttyConfigPath` does, and `KELPID_GHOSTTY_THEME_DIRS` replaces the whole
  * search path — so a test (or the audit sandbox) resolves themes inside a `mkdtemp` and the
  * developer's own `~/.config/ghostty` is never read.
  */
@@ -32,13 +32,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { parseConfigLines } from '@nex/core/config';
+import { parseConfigLines } from '@kelpi/core/config';
 import {
     DEFAULT_WS_TERMINAL_THEME,
     TERMINAL_PALETTE_ANSI_KEYS,
     type TerminalPaletteKey,
     type WsTerminalThemeResolution
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
 import { expandTilde } from '../lifecycle/rundir.js';
 import { parseGhosttyColor } from './ghostty.js';
@@ -49,7 +49,7 @@ import { parseGhosttyColor } from './ghostty.js';
  * Additive and test-only in spirit — it exists so nothing in this package can be made to read
  * the developer's real `~/.config/ghostty/themes` while a test is running.
  */
-export const GHOSTTY_THEME_DIRS_ENV = 'NEXD_GHOSTTY_THEME_DIRS';
+export const GHOSTTY_THEME_DIRS_ENV = 'KELPID_GHOSTTY_THEME_DIRS';
 
 /** ghostty's own env var for its resource root; its `themes/` lives inside. */
 const GHOSTTY_RESOURCES_ENV = 'GHOSTTY_RESOURCES_DIR';
@@ -148,7 +148,7 @@ export interface ThemeSearchOptions {
  * Where a ghostty theme file can live, most specific first.
  *
  * 1. **beside the config file the daemon actually read.** In a normal install that IS
- *    `~/.config/ghostty/themes`, and when `NEXD_GHOSTTY_CONFIG` points somewhere else (tests,
+ *    `~/.config/ghostty/themes`, and when `KELPID_GHOSTTY_CONFIG` points somewhere else (tests,
  *    the audit sandbox) the themes follow it — which is what keeps a test off the real home.
  * 2. `$XDG_CONFIG_HOME/ghostty/themes`, then `~/.config/ghostty/themes` — ghostty's own config
  *    locations, in ghostty's order.
@@ -269,7 +269,7 @@ export function resolveGhosttyTheme(
                 name,
                 path: file,
                 palette: {},
-                error: `Theme “${name}” was found at ${file} but defines no colours Nex understands, so the terminal palette is unchanged.`
+                error: `Theme “${name}” was found at ${file} but defines no colours Kelpi understands, so the terminal palette is unchanged.`
             };
         }
         return { name, path: file, palette, error: null };

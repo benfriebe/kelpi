@@ -1,4 +1,4 @@
-import { NEX_ACTIONS } from '@nex/core/config';
+import { KELPI_ACTIONS } from '@kelpi/core/config';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -16,7 +16,7 @@ describe('the action catalog', () => {
     // keep a display name for one core removed.
     it('covers every bindable action exactly once', () => {
         const catalogued = ACTION_CATALOG.map((entry) => entry.action);
-        expect([...catalogued].sort()).toEqual([...NEX_ACTIONS].sort());
+        expect([...catalogued].sort()).toEqual([...KELPI_ACTIONS].sort());
         expect(new Set(catalogued).size).toBe(catalogued.length);
     });
 

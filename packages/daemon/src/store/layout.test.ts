@@ -1,4 +1,4 @@
-import { allPaneIDs, PREDEFINED_LAYOUT_ORDER } from '@nex/core/layout';
+import { allPaneIDs, PREDEFINED_LAYOUT_ORDER } from '@kelpi/core/layout';
 import { describe, expect, it } from 'vitest';
 import { workspaceByID } from './derived.js';
 import { harness, id, NOW, seededState, W1 } from './testing.js';

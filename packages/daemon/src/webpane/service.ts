@@ -16,7 +16,7 @@
  * connected` when nobody is there.
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { DomainStore } from '../seams.js';
 import { findPaneAnywhere, workspaceByID } from '../store/derived.js';
@@ -69,7 +69,7 @@ export interface HostEventInput {
     readonly payload: Record<string, unknown>;
 }
 
-/** Paste sink for `nex web inspect --send-to` (boot binds it to `TerminalInput.sendText`). */
+/** Paste sink for `kelpi web inspect --send-to` (boot binds it to `TerminalInput.sendText`). */
 export type WebPastePort = (paneID: string, text: string, options: { submit: boolean }) => void;
 
 export interface WebPaneServiceOptions {
@@ -150,7 +150,7 @@ export interface WebPaneService {
     /** True when a host is attached (handlers use it to answer `no web pane host connected`). */
     readonly hasHost: boolean;
     /**
-     * Drive the page's `__nexWebFind` on `tabID` and remember (or forget) the needle.
+     * Drive the page's `__kelpiWebFind` on `tabID` and remember (or forget) the needle.
      *
      * The reply always names the tab it was measured on, so a consumer can drop a count that
      * arrived for a tab that is no longer active (WEB-063) — the failure that motivates it is an
@@ -174,7 +174,7 @@ export interface WebPaneService {
      */
     forgetTab(paneID: string, tabID: string): void;
     /**
-     * Arm the page picker STICKY for a batch (WEB-127): unlike `nex web inspect`, the arm is not
+     * Arm the page picker STICKY for a batch (WEB-127): unlike `kelpi web inspect`, the arm is not
      * consumed by the first pick, so the user keeps clicking elements into the panel.
      */
     armBatch(paneID: string): Promise<JsonObject>;
@@ -282,7 +282,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
 
     /**
      * Push the pane's batch to both ends: the page's numbered badges (the diff-rebuild in
-     * `__nexBatchSetMarkers`) and every attached client. A hidden batch syncs an EMPTY marker
+     * `__kelpiBatchSetMarkers`) and every attached client. A hidden batch syncs an EMPTY marker
      * set — its items live on in daemon state, but the page shows nothing (WEB-127).
      */
     const publishBatch = (paneID: string): BatchSession | null => {
@@ -308,7 +308,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
      * The Swift drops the arm inside `destroyTab` because the arm's listeners lived in that
      * WKWebView. Here the arm is daemon state, so an arm left on a closed tab outlives its page
      * and is merely INERT — every inbound payload is checked against `arm.tabID`. Inert is not
-     * gone: `nex web inspect` would still report an arm that can never fire, and a `--send-to`
+     * gone: `kelpi web inspect` would still report an arm that can never fire, and a `--send-to`
      * arm would wait forever. Both tab-close paths (the verb and a page-initiated close) call
      * this. No `inspect-disarm` notify: it would address a tab the host has already destroyed.
      */
@@ -323,7 +323,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
     const callFind = (paneID: string, tabID: string, action: WebFindAction, needle: string): Promise<JsonObject> =>
         host.call('find', { paneID, tabID, action, needle });
 
-    /** WEB-065: a load rebuilt the DOM *and* `window.__nexWebFind`, so re-mark the needle. */
+    /** WEB-065: a load rebuilt the DOM *and* `window.__kelpiWebFind`, so re-mark the needle. */
     const reapplyFind = (paneID: string, tabID: string): void => {
         const session = findState.sessionOf(paneID);
         if (session === null || session.tabID !== tabID) return;
@@ -666,7 +666,7 @@ export function createWebPaneService(options: WebPaneServiceOptions = {}): WebPa
             // An empty batch just tears down — nothing to paste, nothing to queue (WEB-135).
             if (items.length === 0) return { ok: true, sent: 0, sendTo };
             if (sendTo === null) {
-                // No destination: every item is queued for `nex web inspect-result` to drain,
+                // No destination: every item is queued for `kelpi web inspect-result` to drain,
                 // with its comment stamped onto the result (the single-shot path always leaves
                 // `comment` empty, so this is the only way an annotation reaches the CLI).
                 for (const item of items) {

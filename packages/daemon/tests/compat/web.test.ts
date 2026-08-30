@@ -1,5 +1,5 @@
 /**
- * `nex web …` against the REAL Swift CLI, with a host attached (M6).
+ * `kelpi web …` against the REAL Swift CLI, with a host attached (M6).
  *
  * Three suites now cover web panes, deliberately split by what each one can prove:
  *
@@ -11,7 +11,7 @@
  *     and exited with, and what the daemon asked the host to do (verb, tab id, normalized URL).
  *   - `packages/shell/scripts/web-smoke.mjs` — the **real** host: Electron, real
  *     `WebContentsView`s, real CDP, driven by the same shipped CLI (41 checks, run manually with
- *     `pnpm --filter @nex/shell smoke:web`).
+ *     `pnpm --filter @kelpi/shell smoke:web`).
  *
  * The fake host is what belongs in a vitest run: it needs no GUI session, no Electron download
  * and no built shell bundle, and it makes host answers *deterministic*, so timing-dependent
@@ -43,12 +43,12 @@ interface TabJSON {
 const DATA_URL = 'data:text/html,<h1>compat</h1>';
 
 describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
-    let nex: CompatDaemon;
+    let kelpi: CompatDaemon;
     let host: FakeWebHost;
 
     /** `web open` + the pane id the CLI printed. */
     async function open(url: string, extra: readonly string[] = []): Promise<string> {
-        const opened = await nex.run(['web', 'open', ...extra, url], { timeoutMs: 15_000 });
+        const opened = await kelpi.run(['web', 'open', ...extra, url], { timeoutMs: 15_000 });
         expect(opened.code, opened.stderr).toBe(0);
         const paneID = /open ok: ([0-9A-Fa-f-]{36})/.exec(opened.stdout)?.[1];
         expect(paneID, opened.stdout).toBeDefined();
@@ -56,17 +56,17 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
     }
 
     async function tabs(paneID: string): Promise<readonly TabJSON[]> {
-        return nex.json<TabJSON[]>(['web', 'tabs', '--target', paneID, '--json']);
+        return kelpi.json<TabJSON[]>(['web', 'tabs', '--target', paneID, '--json']);
     }
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
-        host = await connectFakeHost(nex.info);
+        kelpi = await startCompatDaemon();
+        host = await connectFakeHost(kelpi.info);
     }, 60_000);
 
     afterEach(async () => {
         host?.close();
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     // ── open ────────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
     it('opens a pane for a data: URL and mirrors it onto the host', async () => {
         const paneID = await open(DATA_URL);
 
-        const panes = await nex.json<PaneListEntryJSON[]>(['pane', 'list', '--json']);
+        const panes = await kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--json']);
         expect(panes.find((pane) => pane.id === paneID)?.type).toBe('web');
 
         const listed = await tabs(paneID);
@@ -108,11 +108,11 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         // extension in the cwd becomes a percent-encoded file:// URL. The daemon must accept it
         // verbatim — a `file:` scheme has no `://` until the CLI rewrites it, and
         // `normalizeURLInput` would otherwise treat it as a hostname.
-        const site = path.join(nex.home, 'site');
+        const site = path.join(kelpi.home, 'site');
         fs.mkdirSync(site, { recursive: true });
         fs.writeFileSync(path.join(site, 'page one.html'), '<h1>local</h1>\n');
 
-        const opened = await nex.run(['web', 'open', 'page one.html'], {
+        const opened = await kelpi.run(['web', 'open', 'page one.html'], {
             cwd: site,
             timeoutMs: 15_000
         });
@@ -132,7 +132,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const paneID = await open('https://example.com');
         await host.waitForNotify('pane-open');
 
-        const created = await nex.run(
+        const created = await kelpi.run(
             ['web', 'tab-new', '--target', paneID, 'https://second.example'],
             { timeoutMs: 15_000 }
         );
@@ -153,7 +153,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         });
 
         // `--no-focus` opens in the background: daemon state and the host agree it is not active.
-        const background = await nex.run(
+        const background = await kelpi.run(
             ['web', 'tab-new', '--target', paneID, '--no-focus', 'https://third.example'],
             { timeoutMs: 15_000 }
         );
@@ -163,7 +163,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         expect(host.notifiesOf('tab-open')[1]?.args['makeActive']).toBe(false);
 
         // Tab refs are a numeric index or a tab UUID; both are the daemon's resolution.
-        const selected = await nex.run(['web', 'tab-select', '--target', paneID, '0'], {
+        const selected = await kelpi.run(['web', 'tab-select', '--target', paneID, '0'], {
             timeoutMs: 15_000
         });
         expect(selected.code, selected.stderr).toBe(0);
@@ -173,7 +173,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             tabID: three[0]?.id
         });
 
-        const closed = await nex.run(
+        const closed = await kelpi.run(
             ['web', 'tab-close', '--target', paneID, three[2]?.id as string],
             { timeoutMs: 15_000 }
         );
@@ -189,7 +189,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         });
 
         // A bad ref is refused by the daemon, with the reason the CLI prints verbatim.
-        const outOfRange = await nex.run(['web', 'tab-select', '--target', paneID, '9'], {
+        const outOfRange = await kelpi.run(['web', 'tab-select', '--target', paneID, '9'], {
             timeoutMs: 15_000
         });
         expect(outOfRange.code).toBe(1);
@@ -204,7 +204,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         host.on('navigate', () => ({ ok: true }));
 
         // A bare hostname is normalized daemon-side (§7.6) before it reaches the host.
-        const navigated = await nex.run(['web', 'navigate', '--target', paneID, 'example.org/docs'], {
+        const navigated = await kelpi.run(['web', 'navigate', '--target', paneID, 'example.org/docs'], {
             timeoutMs: 15_000
         });
         expect(navigated.code, navigated.stderr).toBe(0);
@@ -224,7 +224,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const paneID = await open('https://example.com');
         host.on('navigate', () => ({ ok: false, error: 'ERR_NAME_NOT_RESOLVED' }));
 
-        const failed = await nex.run(['web', 'navigate', '--target', paneID, 'https://nope.invalid'], {
+        const failed = await kelpi.run(['web', 'navigate', '--target', paneID, 'https://nope.invalid'], {
             timeoutMs: 15_000
         });
         expect(failed.code).toBe(1);
@@ -236,13 +236,13 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const paneID = await open('https://example.com');
         host.on('url', () => ({ ok: true, url: 'https://example.com/after', title: 'Live Title' }));
 
-        const live = await nex.run(['web', 'url', '--target', paneID], { timeoutMs: 15_000 });
+        const live = await kelpi.run(['web', 'url', '--target', paneID], { timeoutMs: 15_000 });
         expect(live.code, live.stderr).toBe(0);
         expect(live.stdout.trim()).toBe('https://example.com/after\tLive Title');
 
         // §8.2: a host that answers ok:false is not an error — the daemon serves its own copy.
         host.on('url', () => ({ ok: false, error: 'view is gone' }));
-        const fallback = await nex.run(['web', 'url', '--target', paneID], { timeoutMs: 15_000 });
+        const fallback = await kelpi.run(['web', 'url', '--target', paneID], { timeoutMs: 15_000 });
         expect(fallback.code, fallback.stderr).toBe(0);
         expect(fallback.stdout.trim()).toBe('https://example.com');
     }, 60_000);
@@ -259,7 +259,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             return { ...base, byte_count: 0 };
         });
 
-        const text = await nex.run(['web', 'capture', '--target', paneID, '--mode', 'text'], {
+        const text = await kelpi.run(['web', 'capture', '--target', paneID, '--mode', 'text'], {
             timeoutMs: 15_000
         });
         expect(text.code, text.stderr).toBe(0);
@@ -267,7 +267,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         expect(text.stdout.trim()).toBe('hello compat');
         expect(host.callsOf('capture')[0]?.args).toMatchObject({ paneID, mode: 'text' });
 
-        const screenshot = await nex.run(
+        const screenshot = await kelpi.run(
             ['web', 'capture', '--target', paneID, '--mode', 'screenshot'],
             { timeoutMs: 15_000 }
         );
@@ -275,7 +275,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         expect(screenshot.stdout.trim()).toBe('iVBORw0KGgo=');
 
         // Default mode is `meta`, rendered as labelled lines from the host's LIVE values.
-        const meta = await nex.run(['web', 'capture', '--target', paneID], { timeoutMs: 15_000 });
+        const meta = await kelpi.run(['web', 'capture', '--target', paneID], { timeoutMs: 15_000 });
         expect(meta.stdout).toContain('url:');
         expect(meta.stdout).toContain('https://example.com/live');
         expect(meta.stdout).toContain('Example Domain');
@@ -298,7 +298,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             byte_count: 12
         }));
 
-        const ignored = await nex.run(
+        const ignored = await kelpi.run(
             ['web', 'capture', '--target', paneID, '--mode', 'text', '--json'],
             { timeoutMs: 15_000 }
         );
@@ -307,7 +307,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
 
         for (const mode of ['dom', 'all', 'pdf']) {
             const calls = host.callsOf('capture').length;
-            const rejected = await nex.run(
+            const rejected = await kelpi.run(
                 ['web', 'capture', '--target', paneID, '--mode', mode],
                 { timeoutMs: 15_000 }
             );
@@ -327,7 +327,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const [tab] = await tabs(paneID);
         host.on('actuate', () => ({ ok: true, text: 'hello compat', truncated: false }));
 
-        const json = await nex.json<JsonRecord>([
+        const json = await kelpi.json<JsonRecord>([
             'web',
             'text',
             '--target',
@@ -354,11 +354,11 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             '1 + 1': 2,
             'true': true,
             'null': null,
-            'nex.meta()': { title: 'Example Domain', width: 800 }
+            'kelpi.meta()': { title: 'Example Domain', width: 800 }
         };
         host.on('exec', (call) => ({ ok: true, result: scripts[String(call.args['script'])] ?? null }));
 
-        const title = await nex.run(['web', 'exec', '--target', paneID, 'document.title'], {
+        const title = await kelpi.run(['web', 'exec', '--target', paneID, 'document.title'], {
             timeoutMs: 15_000
         });
         expect(title.code, title.stderr).toBe(0);
@@ -366,12 +366,12 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         expect(title.stdout.trim()).toBe('Example Domain');
         expect(host.callsOf('exec')[0]?.args['script']).toBe('document.title');
 
-        expect((await nex.run(['web', 'exec', '--target', paneID, '1 + 1'])).stdout.trim()).toBe('2');
-        expect((await nex.run(['web', 'exec', '--target', paneID, 'true'])).stdout.trim()).toBe('true');
+        expect((await kelpi.run(['web', 'exec', '--target', paneID, '1 + 1'])).stdout.trim()).toBe('2');
+        expect((await kelpi.run(['web', 'exec', '--target', paneID, 'true'])).stdout.trim()).toBe('true');
         // A null result prints nothing at all.
-        expect((await nex.run(['web', 'exec', '--target', paneID, 'null'])).stdout.trim()).toBe('');
+        expect((await kelpi.run(['web', 'exec', '--target', paneID, 'null'])).stdout.trim()).toBe('');
 
-        const object = await nex.run(['web', 'exec', '--target', paneID, 'nex.meta()']);
+        const object = await kelpi.run(['web', 'exec', '--target', paneID, 'kelpi.meta()']);
         expect(JSON.parse(object.stdout) as JsonRecord).toEqual({
             title: 'Example Domain',
             width: 800
@@ -386,7 +386,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             js_error: { name: 'ReferenceError', message: 'nope is not defined', line: 1, column: 7 }
         }));
 
-        const plain = await nex.run(['web', 'exec', '--target', paneID, 'return nope'], {
+        const plain = await kelpi.run(['web', 'exec', '--target', paneID, 'return nope'], {
             timeoutMs: 15_000
         });
         expect(plain.code).toBe(1);
@@ -394,7 +394,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         expect(plain.stdout).toBe('');
 
         // §15.2: `--json` dumps the reply BEFORE the ok check, so failures are still machine-readable.
-        const json = await nex.run(['web', 'exec', '--target', paneID, '--json', 'return nope'], {
+        const json = await kelpi.run(['web', 'exec', '--target', paneID, '--json', 'return nope'], {
             timeoutMs: 15_000
         });
         expect(json.code).toBe(1);
@@ -412,7 +412,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         host.emit('console', paneID, { level: 'log', message: 'one', url: 'https://example.com/' });
         host.emit('console', paneID, { level: 'warn', message: 'two', url: 'https://example.com/' });
 
-        const drained = await nex.run(['web', 'console', '--target', paneID, '--clear', '--json'], {
+        const drained = await kelpi.run(['web', 'console', '--target', paneID, '--clear', '--json'], {
             timeoutMs: 15_000
         });
         expect(drained.code, drained.stderr).toBe(0);
@@ -428,13 +428,13 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
 
         // `--clear` drops what it returned: the next read starts empty, and the sequence keeps
         // counting (an agent's `--since` cursor stays valid across a clear).
-        const after = await nex.run(['web', 'console', '--target', paneID, '--json'], {
+        const after = await kelpi.run(['web', 'console', '--target', paneID, '--json'], {
             timeoutMs: 15_000
         });
         expect(JSON.parse(after.stdout)).toMatchObject({ ok: true, lines: [], next_since: 2 });
 
         host.emit('console', paneID, { level: 'error', message: 'three', url: 'https://example.com/' });
-        const later = await nex.run(['web', 'console', '--target', paneID], { timeoutMs: 15_000 });
+        const later = await kelpi.run(['web', 'console', '--target', paneID], { timeoutMs: 15_000 });
         expect(later.stdout).toContain('[2] error: three');
     }, 60_000);
 
@@ -444,7 +444,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const paneID = await open('https://example.com');
         await host.waitForNotify('pane-open');
 
-        const closed = await nex.run(['pane', 'close', '--target', paneID], { timeoutMs: 15_000 });
+        const closed = await kelpi.run(['pane', 'close', '--target', paneID], { timeoutMs: 15_000 });
         expect(closed.code, closed.stderr).toBe(0);
 
         const notify = await host.waitForNotify(
@@ -453,10 +453,10 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         );
         expect(notify.args['paneID']).toBe(paneID);
 
-        const panes = await nex.json<PaneListEntryJSON[]>(['pane', 'list', '--json']);
+        const panes = await kelpi.json<PaneListEntryJSON[]>(['pane', 'list', '--json']);
         expect(panes.map((pane) => pane.id)).not.toContain(paneID);
 
-        const orphan = await nex.run(['web', 'tabs', '--target', paneID, '--json'], {
+        const orphan = await kelpi.run(['web', 'tabs', '--target', paneID, '--json'], {
             timeoutMs: 15_000
         });
         expect(orphan.code).toBe(1);
@@ -469,7 +469,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
         const paneID = await open('https://example.com');
         const calls = host.calls.length;
 
-        const bare = await nex.run(['web', 'capture', '--target', 'somelabel'], {
+        const bare = await kelpi.run(['web', 'capture', '--target', 'somelabel'], {
             timeoutMs: 15_000
         });
         expect(bare.code).toBe(1);
@@ -477,7 +477,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: web panes with a host', () => {
             '--target by label requires --workspace <name-or-id> when called outside a Nex pane'
         );
 
-        const noTarget = await nex.run(['web', 'capture'], { timeoutMs: 15_000 });
+        const noTarget = await kelpi.run(['web', 'capture'], { timeoutMs: 15_000 });
         expect(noTarget.code).toBe(1);
         expect(noTarget.stderr).toContain('no --target supplied and NEX_PANE_ID is not set');
 

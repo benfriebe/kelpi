@@ -1,9 +1,9 @@
 /**
- * The `nex-agent` desktop-notification category, as far as Electron has one (§AGNT-073).
+ * The `kelpi-agent` desktop-notification category, as far as Electron has one (§AGNT-073).
  *
- * The Swift registers a `UNNotificationCategory` once at launch — identifier `nex-agent`, two
+ * The Swift registers a `UNNotificationCategory` once at launch — identifier `kelpi-agent`, two
  * actions, "Open" (`.foreground`) and "Dismiss" (`.destructive`) — and every agent notification
- * carries `content.categoryIdentifier = "nex-agent"`, which is what makes the two buttons a SET:
+ * carries `content.categoryIdentifier = "kelpi-agent"`, which is what makes the two buttons a SET:
  * one registration, every notification, the same two choices in the same order.
  *
  * Electron has no category registry. `new Notification({ actions })` attaches the buttons to the
@@ -29,14 +29,14 @@
  */
 
 /** The Swift's `NotificationService.categoryID`, kept verbatim. */
-export const NEX_AGENT_CATEGORY = 'nex-agent';
+export const KELPI_AGENT_CATEGORY = 'kelpi-agent';
 
 /** The Swift's action identifiers, in the order the category registers them. */
-export const NEX_AGENT_ACTION_IDS = ['open', 'dismiss'] as const;
-export type NexNotificationActionID = (typeof NEX_AGENT_ACTION_IDS)[number];
+export const KELPI_AGENT_ACTION_IDS = ['open', 'dismiss'] as const;
+export type KelpiNotificationActionID = (typeof KELPI_AGENT_ACTION_IDS)[number];
 
 /** Structurally Electron's `NotificationAction`, without importing `electron`. */
-export interface NexNotificationAction {
+export interface KelpiNotificationAction {
     readonly type: 'button';
     readonly text: string;
 }
@@ -46,7 +46,7 @@ export interface NexNotificationAction {
  * position, so this array's order IS the protocol between `agentNotificationSpec` and
  * `notificationActionID`.
  */
-export const NEX_AGENT_ACTIONS: readonly NexNotificationAction[] = [
+export const KELPI_AGENT_ACTIONS: readonly KelpiNotificationAction[] = [
     { type: 'button', text: 'Open' },
     { type: 'button', text: 'Dismiss' }
 ];
@@ -56,7 +56,7 @@ export interface AgentNotificationSpec {
     readonly body: string;
     /** The Swift sets `content.sound = .default`; `silent: false` is the same statement. */
     readonly silent: false;
-    readonly actions: readonly NexNotificationAction[];
+    readonly actions: readonly KelpiNotificationAction[];
 }
 
 export interface AgentNotificationInput {
@@ -68,15 +68,15 @@ export interface AgentNotificationInput {
  * Every agent notification the shell posts, built the same way.
  *
  * The defaults match the Swift's: a missing title falls back to the app name, a missing body to
- * empty (the daemon always sends one, but a hand-written `nex event notification` need not).
+ * empty (the daemon always sends one, but a hand-written `kelpi event notification` need not).
  */
 export function agentNotificationSpec(input: AgentNotificationInput): AgentNotificationSpec {
-    const title = input.title !== undefined && input.title.length > 0 ? input.title : 'Nex';
+    const title = input.title !== undefined && input.title.length > 0 ? input.title : 'Kelpi';
     return {
         title,
         body: input.body ?? '',
         silent: false,
-        actions: NEX_AGENT_ACTIONS
+        actions: KELPI_AGENT_ACTIONS
     };
 }
 
@@ -86,9 +86,9 @@ export function agentNotificationSpec(input: AgentNotificationInput): AgentNotif
  * Out-of-range is `null` rather than a guess: a future macOS that reports something unexpected
  * must not be read as "Open" and raise a window nobody asked for.
  */
-export function notificationActionID(index: number): NexNotificationActionID | null {
-    if (!Number.isInteger(index) || index < 0 || index >= NEX_AGENT_ACTION_IDS.length) return null;
-    return NEX_AGENT_ACTION_IDS[index] ?? null;
+export function notificationActionID(index: number): KelpiNotificationActionID | null {
+    if (!Number.isInteger(index) || index < 0 || index >= KELPI_AGENT_ACTION_IDS.length) return null;
+    return KELPI_AGENT_ACTION_IDS[index] ?? null;
 }
 
 /**
@@ -97,7 +97,7 @@ export function notificationActionID(index: number): NexNotificationActionID | n
  * live in the OS's notification centre, where no screenshot can reach them.
  */
 export function notificationLogLine(key: string, spec: AgentNotificationSpec): string {
-    return `notification posted: ${key} category=${NEX_AGENT_CATEGORY} actions=${spec.actions
+    return `notification posted: ${key} category=${KELPI_AGENT_CATEGORY} actions=${spec.actions
         .map((action) => action.text)
         .join(',')}`;
 }

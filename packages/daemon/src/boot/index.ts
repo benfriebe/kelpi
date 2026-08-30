@@ -1,5 +1,5 @@
 /**
- * WP2.8b — boot: the composition root and the `nexd` entrypoint's building blocks.
+ * WP2.8b — boot: the composition root and the `kelpid` entrypoint's building blocks.
  *
  * `createDaemon(options).start()` is the whole daemon: seams wired, listeners bound, the
  * spec's restore ordering performed. `src/main.ts` adds only argument parsing and the

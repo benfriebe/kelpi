@@ -1,5 +1,5 @@
 /**
- * The crash-recovery breadcrumb (`<parentRepoRoot>/.git/nex-graft-active`, graft-git.md §2).
+ * The crash-recovery breadcrumb (`<parentRepoRoot>/.git/kelpi-graft-active`, graft-git.md §2).
  *
  * Compatibility is the whole point (port note 5): a user can upgrade from the Swift app with a
  * breadcrumb already on disk, so the path, the field names, `version: 1` and the sorted-key
@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const BREADCRUMB_FILENAME = 'nex-graft-active';
+export const BREADCRUMB_FILENAME = 'kelpi-graft-active';
 export const BREADCRUMB_VERSION = 1;
 
 export interface GraftBreadcrumb {
@@ -33,7 +33,7 @@ export interface GraftBreadcrumb {
     readonly worktreePreGraftSha: string | null;
 }
 
-/** `<parentRepoRoot>/.git/nex-graft-active` — literal, even for an unusual git dir layout. */
+/** `<parentRepoRoot>/.git/kelpi-graft-active` — literal, even for an unusual git dir layout. */
 export function breadcrumbPath(parentRepoRoot: string): string {
     return path.join(parentRepoRoot, '.git', BREADCRUMB_FILENAME);
 }

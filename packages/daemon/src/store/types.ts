@@ -3,7 +3,7 @@
  *
  * Specs: docs/current/workspace-feature.md (per-workspace state + actions),
  * docs/current/app-state-core.md (app-level state, groups, sidebar order, labels, boot),
- * docs/current/pane-layout.md (layout invariants — algorithms live in @nex/core/layout).
+ * docs/current/pane-layout.md (layout invariants — algorithms live in @kelpi/core/layout).
  *
  * Everything here is data only: the reducers (`./reducers/`) are pure
  * `(state, action) => state`, the store (`./store.ts`) turns each dispatch into a batch of
@@ -13,11 +13,11 @@
  * Time: every action that timestamps carries `now` in **epoch milliseconds** (JS-native).
  * Persisted timestamps (`createdAt`, `lastActivityAt`, `lastAccessedAt`) are stored as epoch
  * *seconds* (the Swift/GRDB encoding); the transient `agentStartedAt` keeps the epoch-ms
- * contract declared by @nex/core/agent.
+ * contract declared by @kelpi/core/agent.
  */
 
-import type { AgentEvent, AgentKind } from '@nex/core/agent';
-import type { IconRef, SidebarID, WebTab } from '@nex/core/codec';
+import type { AgentEvent, AgentKind } from '@kelpi/core/agent';
+import type { IconRef, SidebarID, WebTab } from '@kelpi/core/codec';
 import type {
     Direction,
     DropZone,
@@ -27,8 +27,8 @@ import type {
     PaneType,
     PredefinedLayoutKind,
     SplitDirection
-} from '@nex/core/layout';
-import type { WorkspaceColor } from '@nex/protocol';
+} from '@kelpi/core/layout';
+import type { WorkspaceColor } from '@kelpi/protocol';
 
 export type { AgentKind, Direction, DropZone, IconRef, Pane, PaneLayout, PaneStatus, PaneType };
 export type { PredefinedLayoutKind, SidebarID, SplitDirection, WebTab, WorkspaceColor };
@@ -111,7 +111,7 @@ export interface WorkspaceState {
     readonly profileName: string | null;
     /** Visible panes, append order. */
     readonly panes: readonly Pane[];
-    /** TRANSIENT: off-layout panes whose PTYs stay alive (`nex open --here` sources). */
+    /** TRANSIENT: off-layout panes whose PTYs stay alive (`kelpi open --here` sources). */
     readonly parkedPanes: readonly Pane[];
     readonly layout: PaneLayout;
     readonly focusedPaneID: string | null;
@@ -163,7 +163,7 @@ export interface DaemonState {
     readonly labelPresets: readonly LabelPreset[];
     /**
      * app-state-core.md §6.5 / §13 — the one-shot legacy-label → preset marker. Persisted
-     * (appState key `nexd.labelPresetsMigrated`), server-only: `serializeState` never sends it.
+     * (appState key `kelpid.labelPresetsMigrated`), server-only: `serializeState` never sends it.
      * Once true the boot back-fill never runs again, so a preset the user deletes while its
      * label is still applied somewhere is not resurrected by the next launch.
      */

@@ -19,7 +19,7 @@ export interface ResolvablePane {
     readonly label: string | null;
     readonly workspaceID: string;
     /**
-     * Parked panes (`nex open --here` sources) keep live PTYs but are NOT
+     * Parked panes (`kelpi open --here` sources) keep live PTYs but are NOT
      * user-addressable: every user-command resolver skips them, only
      * `workspaceContainingPane` (lifecycle routing) sees them.
      */

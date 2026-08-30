@@ -9,26 +9,26 @@
  * shell working purely by grace of the exemption and break it the day the exemption narrows.
  */
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { shellHello } from './hello.js';
 
 describe('shellHello', () => {
     it('carries the token, so the handshake authenticates on its own', () => {
-        const hello = shellHello({ token: 'tok', name: 'nex-shell', version: '0.1.0' });
+        const hello = shellHello({ token: 'tok', name: 'kelpi-shell', version: '0.1.0' });
         expect(hello).toEqual({
             type: 'hello',
             protocolVersion: WS_PROTOCOL_VERSION,
             token: 'tok',
-            client: { kind: 'electron', name: 'nex-shell', version: '0.1.0' }
+            client: { kind: 'electron', name: 'kelpi-shell', version: '0.1.0' }
         });
     });
 
     it('claims the web-pane host role when asked, without disturbing the rest', () => {
         const hello = shellHello({
             token: 'tok',
-            name: 'nex-webhost',
+            name: 'kelpi-webhost',
             version: '0.1.0',
             capabilities: ['web-pane-host']
         });
@@ -37,7 +37,7 @@ describe('shellHello', () => {
     });
 
     it('omits capabilities entirely when there are none (the status socket)', () => {
-        const client = shellHello({ token: 't', name: 'nex-shell', version: '1' })['client'] as Record<string, unknown>;
+        const client = shellHello({ token: 't', name: 'kelpi-shell', version: '1' })['client'] as Record<string, unknown>;
         expect('capabilities' in client).toBe(false);
     });
 

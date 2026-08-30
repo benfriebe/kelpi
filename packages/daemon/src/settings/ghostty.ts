@@ -2,9 +2,9 @@
  * A MINIMAL `~/.config/ghostty/config` reader (content-panes.md §3.1, §3.8 + port note 9).
  *
  * The Swift app links libghostty and asks it for the resolved terminal config; the daemon has
- * no ghostty, so it reads the five keys that actually change how Nex draws — and nothing else.
+ * no ghostty, so it reads the five keys that actually change how Kelpi draws — and nothing else.
  * Ghostty's file uses the same `key = value` / `#` comment syntax as `~/.config/nex/config`,
- * so the line splitter is `@nex/core/config`'s: one parser, one set of quirks.
+ * so the line splitter is `@kelpi/core/config`'s: one parser, one set of quirks.
  *
  * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:
  *
@@ -23,8 +23,8 @@
  * clears the accumulated list.
  */
 
-import { parseConfigLines } from '@nex/core/config';
-import { DEFAULT_SETTINGS_BACKGROUND } from '@nex/protocol';
+import { parseConfigLines } from '@kelpi/core/config';
+import { DEFAULT_SETTINGS_BACKGROUND } from '@kelpi/protocol';
 
 export interface GhosttyAppearance {
     /** `#rrggbb`, lowercase. Always concrete: the luminance rule needs a real color. */

@@ -58,20 +58,20 @@ describe('terminalPaletteCssVars', () => {
         expect(
             terminalPaletteCssVars({ foreground: '#d8dee9', brightBlue: '#81a1c1', black: '#3b4252' })
         ).toEqual({
-            '--nex-term-fg': '#d8dee9',
-            '--nex-term-bright-blue': '#81a1c1',
-            '--nex-term-black': '#3b4252'
+            '--kelpi-term-fg': '#d8dee9',
+            '--kelpi-term-bright-blue': '#81a1c1',
+            '--kelpi-term-black': '#3b4252'
         });
     });
 
     /**
-     * `--nex-term-bg` is the pane FILL — the background at the ghostty opacity — and the theme
+     * `--kelpi-term-bg` is the pane FILL — the background at the ghostty opacity — and the theme
      * reaches it daemon-side instead (`appearance.backgroundColor`). Emitting an opaque hex
      * here would overwrite the alpha and break window transparency (§APP-012).
      */
-    it('never emits --nex-term-bg', () => {
+    it('never emits --kelpi-term-bg', () => {
         expect(terminalPaletteCssVars({ background: '#2e3440', foreground: '#d8dee9' })).toEqual({
-            '--nex-term-fg': '#d8dee9'
+            '--kelpi-term-fg': '#d8dee9'
         });
     });
 

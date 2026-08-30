@@ -3,8 +3,8 @@
  *
  *   `store.ts`         — the zustand store (daemon slice, ui slice) and wire hydration
  *   `selectors.ts`     — reads, reusing the daemon's own derived helpers
- *   `notifications.ts` — Web Notifications + toast fallback with `nex-<paneID>` identity
- *   `bridge.ts`        — subscribes the store to a `NexConnection`, and `createNexRuntime`,
+ *   `notifications.ts` — Web Notifications + toast fallback with `kelpi-<paneID>` identity
+ *   `bridge.ts`        — subscribes the store to a `KelpiConnection`, and `createKelpiRuntime`,
  *                        the assembled connection + commands + PTY + store object
  *   `activation.ts`    — §AGNT-056's "is anybody looking?", from the shell's relayed
  *                        `shell-activation` plus the document's own visibility
@@ -32,20 +32,20 @@ export {
 export {
     DOMAIN_EVENT_KINDS,
     MAX_TOASTS,
-    createNexStore,
+    createKelpiStore,
     emptyDaemonState,
     hydrateDomainEvents,
     hydrateSettings,
     hydrateSnapshotState,
-    nexStateCreator,
+    kelpiStateCreator,
     recentlyClosedCount,
-    useNexStore,
+    useKelpiStore,
     type DaemonInfo,
     type DaemonSlice,
     type FocusEcho,
-    type NexActions,
-    type NexState,
-    type NexStoreApi,
+    type KelpiActions,
+    type KelpiState,
+    type KelpiStoreApi,
     type SettingsSlice,
     type Toast,
     type UiSlice
@@ -93,9 +93,9 @@ export {
 
 export {
     connectStore,
-    createNexRuntime,
+    createKelpiRuntime,
     isTokenRejection,
-    type NexRuntime,
-    type NexRuntimeOptions,
+    type KelpiRuntime,
+    type KelpiRuntimeOptions,
     type StoreBridgeOptions
 } from './bridge';

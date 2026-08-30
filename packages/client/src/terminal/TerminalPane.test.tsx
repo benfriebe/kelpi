@@ -597,7 +597,7 @@ describe('TerminalPane — input and focus', () => {
      *
      * AppKit does not resign a view's first-responder status when its window stops being key,
      * so ghostty computes surface focus as `window.isKeyWindow && … && isFirstResponder`
-     * (`BaseTerminalController.syncFocusToSurfaceTree`): a Nex window in the background has no
+     * (`BaseTerminalController.syncFocusToSurfaceTree`): a Kelpi window in the background has no
      * blinking cursor anywhere in it. Nothing about `focused`, `visible` or the engine's status
      * changes when the OS takes the window away, so the window's own event is the only signal.
      */

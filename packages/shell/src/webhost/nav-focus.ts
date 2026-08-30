@@ -9,7 +9,7 @@
  * route neither of those rows could see.
  *
  * **Swift has no equivalent, and the reason is the whole specification of this module.** A
- * `WKWebView` loading a page does not become first responder, so `nex web navigate` there leaves
+ * `WKWebView` loading a page does not become first responder, so `kelpi web navigate` there leaves
  * the caret exactly where the user put it — in a terminal, in the URL bar, or in the page if
  * that is where it was. So the rule is not "decide who should have the keyboard after a
  * navigation"; it is **preserve**: a commit hands the keyboard back to whoever held it when the
@@ -32,7 +32,7 @@
  *   - **A deliberate claim cancels it.** If the client asks for the page to take the keyboard
  *     (WEB-043's `focus-view`) or the user presses into the page (§N29's gesture) while a load
  *     is in flight, the page is legitimately focused and the commit must leave it alone.
- *     Without this, `nex web open` — which creates a pane, focuses it, and loads a URL, all
+ *     Without this, `kelpi web open` — which creates a pane, focuses it, and loads a URL, all
  *     racing each other — would have its handoff undone by its own load.
  *   - **Parked views are ignored.** A view in the off-screen holder is on nobody's screen and
  *     cannot hold the window's keyboard; there is nothing to hand back.

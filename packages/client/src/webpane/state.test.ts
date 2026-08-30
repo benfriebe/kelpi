@@ -60,14 +60,14 @@ describe('the batch destination picker (WEB-132/WEB-133)', () => {
     const panes = [
         { id: 'web-1', type: 'web' },
         { id: 'shell-1', type: 'shell', tag: 'worker' },
-        { id: 'shell-2', type: 'shell', workingDirectory: '/Users/x/code/nex' },
+        { id: 'shell-2', type: 'shell', workingDirectory: '/Users/x/code/kelpi' },
         { id: 'md-1', type: 'markdown' }
     ];
 
     it('offers only other shell panes, labelled by tag then by cwd tail', () => {
         expect(batchDestinations(panes, 'web-1')).toEqual([
             { paneID: 'shell-1', label: 'worker' },
-            { paneID: 'shell-2', label: 'shell: nex' }
+            { paneID: 'shell-2', label: 'shell: kelpi' }
         ]);
     });
 

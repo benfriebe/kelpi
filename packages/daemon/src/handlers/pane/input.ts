@@ -7,7 +7,7 @@
  * dropping the message. `capture` is the one pane command with an async read.
  */
 
-import { parseNamedKey, unknownNamedKeyError } from '@nex/protocol';
+import { parseNamedKey, unknownNamedKeyError } from '@kelpi/protocol';
 
 import type { CommandHandler, ReplyHandle } from '../../seams.js';
 import type { PaneHandlerContext } from './context.js';

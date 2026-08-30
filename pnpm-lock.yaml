@@ -23,7 +23,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@nex/protocol':
+      '@kelpi/protocol':
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
@@ -33,13 +33,13 @@ importers:
 
   packages/client:
     dependencies:
-      '@nex/core':
+      '@kelpi/core':
         specifier: workspace:*
         version: link:../core
-      '@nex/daemon':
+      '@kelpi/daemon':
         specifier: workspace:*
         version: link:../daemon
-      '@nex/protocol':
+      '@kelpi/protocol':
         specifier: workspace:*
         version: link:../protocol
       '@xterm/xterm':
@@ -90,10 +90,10 @@ importers:
       '@hono/node-server':
         specifier: ^2.1.1
         version: 2.1.1(hono@4.13.3)
-      '@nex/core':
+      '@kelpi/core':
         specifier: workspace:*
         version: link:../core
-      '@nex/protocol':
+      '@kelpi/protocol':
         specifier: workspace:*
         version: link:../protocol
       '@xterm/addon-serialize':
@@ -129,13 +129,13 @@ importers:
 
   packages/shell:
     dependencies:
-      '@nex/core':
+      '@kelpi/core':
         specifier: workspace:*
         version: link:../core
-      '@nex/daemon':
+      '@kelpi/daemon':
         specifier: workspace:*
         version: link:../daemon
-      '@nex/protocol':
+      '@kelpi/protocol':
         specifier: workspace:*
         version: link:../protocol
       update-electron-app:

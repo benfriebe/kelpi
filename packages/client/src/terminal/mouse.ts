@@ -6,7 +6,7 @@
  * **ignores** them — its canvas `mousedown` starts a text selection, `mousemove` extends it,
  * `mouseup` copies it, and `hasMouseTracking()` is never consulted by the input path. A real
  * press → drag → release under 1002 + 1006 produced *zero* reports (run-I's mouse step). So a
- * mouse-mode TUI — vim, tmux, htop, less — had no mouse in a Nex pane on the default engine.
+ * mouse-mode TUI — vim, tmux, htop, less — had no mouse in a Kelpi pane on the default engine.
  *
  * The fix is engine-agnostic on purpose: the daemon streams the modes (`pane-modes`, from the
  * `@xterm/headless` instance that already sees every PTY byte), the pane intercepts pointer
@@ -28,10 +28,10 @@
  * UTF-8 format (1005) is *meant* to be UTF-8, and it says so.
  */
 
-/** DEC tracking mode, in xterm's vocabulary (`@nex/protocol` `WsMouseTrackingMode`). */
+/** DEC tracking mode, in xterm's vocabulary (`@kelpi/protocol` `WsMouseTrackingMode`). */
 export type MouseTrackingMode = 'none' | 'x10' | 'vt200' | 'drag' | 'any';
 
-/** Coordinate encoding (`@nex/protocol` `WsMouseFormat`). */
+/** Coordinate encoding (`@kelpi/protocol` `WsMouseFormat`). */
 export type MouseFormat = 'x10' | 'utf8' | 'sgr' | 'urxvt' | 'sgr-pixels';
 
 /** The pane VT modes a client mirrors; the mouse pair is what this module reads. */

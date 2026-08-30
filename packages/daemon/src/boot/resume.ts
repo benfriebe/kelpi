@@ -18,7 +18,7 @@
  * sequence is testable without a real PTY or a 2 s wait.
  */
 
-import { resumeCommand, RESUME_SETTLE_DELAY_MS, type ResumeTuple } from '@nex/core/agent';
+import { resumeCommand, RESUME_SETTLE_DELAY_MS, type ResumeTuple } from '@kelpi/core/agent';
 import {
     buildPanePath,
     effectiveProfileName,
@@ -27,8 +27,8 @@ import {
     normalizedAssignment,
     resolveProfileEnv,
     type EnvVar
-} from '@nex/core/env';
-import type { Profile } from '@nex/core/config';
+} from '@kelpi/core/env';
+import type { Profile } from '@kelpi/core/config';
 
 import { DEFAULT_COLS, DEFAULT_ROWS } from '../pty/index.js';
 import type { PtyManager, TerminalInput, TerminalStateService } from '../seams.js';

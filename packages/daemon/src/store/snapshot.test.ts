@@ -1,4 +1,4 @@
-import { resumeCommand } from '@nex/core/agent';
+import { resumeCommand } from '@kelpi/core/agent';
 import { describe, expect, it } from 'vitest';
 import { workspaceByID } from './derived.js';
 import { applyLoadReset, fromSnapshot, toSnapshot } from './snapshot.js';

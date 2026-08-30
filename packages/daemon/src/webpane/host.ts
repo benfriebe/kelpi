@@ -20,7 +20,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 /** No shell (or other host) has claimed the web-pane role. Stable wire string. */
 export const NO_HOST_ERROR = 'no web pane host connected';

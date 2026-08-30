@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 function scratchDir(): string {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-import-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-import-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     return root;
 }
@@ -474,7 +474,7 @@ describe('readLegacyDatabase — refusals and safety', () => {
         }
     });
 
-    it('refuses a database that is not a Nex database', () => {
+    it('refuses a database that is not a Kelpi database', () => {
         const file = path.join(scratchDir(), 'other.db');
         writeLegacyDatabase(file, {});
         const db = fs.readFileSync(file);
@@ -486,7 +486,7 @@ describe('readLegacyDatabase — refusals and safety', () => {
             expect.unreachable('should have thrown');
         } catch (error) {
             expect(isLegacyImportError(error)).toBe(true);
-            expect(['source-unreadable', 'not-a-nex-database']).toContain(
+            expect(['source-unreadable', 'not-a-kelpi-database']).toContain(
                 (error as LegacyImportError).code
             );
         }

@@ -13,15 +13,15 @@
  * shape the daemon never produces).
  */
 
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
-import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory } from './connection';
 import { firePointer, stubBoundingRect } from './grid/testing';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -62,8 +62,8 @@ function snapshotState(): JsonObject {
 
 function setup() {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,

@@ -128,7 +128,7 @@ function harness(
         }
     };
     const writeScreenshot = vi.fn(
-        options.writeScreenshot ?? ((): Promise<string> => Promise.resolve('/tmp/nex-web-capture-P1-1.png'))
+        options.writeScreenshot ?? ((): Promise<string> => Promise.resolve('/tmp/kelpi-web-capture-P1-1.png'))
     );
     const dispatcher = createVerbDispatcher<FakeTab>({ registry, storage, writeScreenshot });
     dispatcher.notify('pane-open', {
@@ -189,7 +189,7 @@ describe('lifecycle notifies', () => {
         dispatcher.notify('tab-open', { paneID: 'P1', tabID: 'T2', url: '', makeActive: false });
         dispatcher.notify('inspect-disarm', { paneID: 'P1' });
         expect(tabs).toHaveLength(2);
-        for (const tab of tabs) expect(tab.evaluated[0]).toContain('__nexInspectorDisable');
+        for (const tab of tabs) expect(tab.evaluated[0]).toContain('__kelpiInspectorDisable');
     });
 });
 
@@ -304,7 +304,7 @@ describe('capture (§8.4)', () => {
         const { dispatcher, tab, writeScreenshot } = harness();
         tab.png = new Uint8Array(1_000_001);
         const reply = await dispatcher.call('capture', { ...scope, mode: 'screenshot' });
-        expect(reply['path']).toBe('/tmp/nex-web-capture-P1-1.png');
+        expect(reply['path']).toBe('/tmp/kelpi-web-capture-P1-1.png');
         expect(reply['byte_count']).toBe(1_000_001);
         expect(writeScreenshot).toHaveBeenCalledOnce();
     });
@@ -375,7 +375,7 @@ describe('actuator + exec (§8.2, §8.5)', () => {
             ok: false,
             error: 'no match for selector: #x'
         });
-        expect(tab.evaluated[0]).toContain('window.__nexAct["click"]');
+        expect(tab.evaluated[0]).toContain('window.__kelpiAct["click"]');
     });
 
     it('labels a thrown evaluation as an actuator failure', async () => {
@@ -674,7 +674,7 @@ describe('the batch marker verbs (§7.3)', () => {
         });
         await Promise.resolve();
         const call = tab.evaluated.at(-1) ?? '';
-        expect(call).toContain('__nexBatchSetMarkers');
+        expect(call).toContain('__kelpiBatchSetMarkers');
         expect(call).toContain('"selector":"#a"');
         // A marker with no selector cannot be re-queried, so it never reaches the page.
         expect(call).not.toContain('"id":"i2"');
@@ -684,23 +684,23 @@ describe('the batch marker verbs (§7.3)', () => {
         const { dispatcher, tab } = harness();
         dispatcher.notify('batch-highlight', { ...scope, itemID: 'i1' });
         await Promise.resolve();
-        expect(tab.evaluated.at(-1)).toContain('__nexBatchHighlight("i1", true)');
+        expect(tab.evaluated.at(-1)).toContain('__kelpiBatchHighlight("i1", true)');
 
         dispatcher.notify('batch-highlight', { ...scope, itemID: 'i1', scrollIntoView: false });
         await Promise.resolve();
-        expect(tab.evaluated.at(-1)).toContain('__nexBatchHighlight("i1", false)');
+        expect(tab.evaluated.at(-1)).toContain('__kelpiBatchHighlight("i1", false)');
 
         dispatcher.notify('batch-unfocus', scope);
         await Promise.resolve();
-        expect(tab.evaluated.at(-1)).toContain('__nexBatchUnfocus');
+        expect(tab.evaluated.at(-1)).toContain('__kelpiBatchUnfocus');
 
         dispatcher.notify('batch-clear', scope);
         await Promise.resolve();
-        expect(tab.evaluated.at(-1)).toContain('__nexBatchClearMarkers');
+        expect(tab.evaluated.at(-1)).toContain('__kelpiBatchClearMarkers');
 
         dispatcher.notify('batch-comment', { ...scope, itemID: 'i1', comment: 'typed' });
         await Promise.resolve();
-        expect(tab.evaluated.at(-1)).toContain('__nexBatchUpdateComment("i1", "typed")');
+        expect(tab.evaluated.at(-1)).toContain('__kelpiBatchUpdateComment("i1", "typed")');
     });
 
     it('is a silent no-op for a pane the host has no view for', () => {

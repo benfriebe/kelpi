@@ -9,7 +9,7 @@
  * returned inline.
  */
 
-import { WS_PROTOCOL_VERSION, type JsonObject } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION, type JsonObject } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import type { ControlDispatcher } from '../seams.js';

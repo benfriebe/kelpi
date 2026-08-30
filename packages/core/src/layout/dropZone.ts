@@ -83,7 +83,7 @@ export function movingPane(
     return replacing(without, targetID, node);
 }
 
-/** Wire zone names used by `nex pane move --target` (§12.2). */
+/** Wire zone names used by `kelpi pane move --target` (§12.2). */
 export type WireMoveEdge = 'above' | 'below' | 'left-of' | 'right-of';
 
 const WIRE_EDGE_TO_ZONE: Record<WireMoveEdge, DropZone> = {

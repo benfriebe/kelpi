@@ -1,11 +1,11 @@
 /**
- * ThemeProvider — resolves the chrome palette and writes it onto a container as `--nex-*`
+ * ThemeProvider — resolves the chrome palette and writes it onto a container as `--kelpi-*`
  * custom properties (shell-ui.md §2, port note "hex colors are canonical").
  *
  * The provider owns a real DOM container rather than `:root` on purpose: assembly may mount
  * the whole app under one, and a preview/settings surface can mount a *second* provider with
  * a different appearance to render a live theme preview without touching the document.
- * Descendants read the palette either as CSS (`var(--nex-fg)`) or, when they need the value
+ * Descendants read the palette either as CSS (`var(--kelpi-fg)`) or, when they need the value
  * itself (canvas favicon, inline SVG), through `useChromeTheme()`.
  */
 
@@ -87,7 +87,7 @@ export interface ThemeProviderProps {
     readonly applyToDocument?: boolean | undefined;
     /**
      * APP-012 / SET-049 — the ghostty `background-opacity`. Below 1 the window fill
-     * (`--nex-bg`) is published with alpha, so a shell window created transparent shows the
+     * (`--kelpi-bg`) is published with alpha, so a shell window created transparent shows the
      * desktop through the gaps the client does not paint opaquely. 1 (the default) is
      * byte-identical to what this provider always emitted.
      */
@@ -117,7 +117,7 @@ export function ThemeProvider(props: ThemeProviderProps): ReactElement {
      *
      * React flushes every layout effect in a commit (children, then parents) before any passive
      * effect of that same commit. Descendants that must READ this stamp back off the DOM — the
-     * terminal palette in `App.tsx` reads `--nex-term-*` off `:root`, because the engines want
+     * terminal palette in `App.tsx` reads `--kelpi-term-*` off `:root`, because the engines want
      * concrete colors — run in passive effects, so writing here is what guarantees they see the
      * bucket this commit resolved. As a plain `useEffect` the parent wrote AFTER the child read,
      * so the very first light→dark transition left the terminal painted with the light palette
@@ -129,13 +129,13 @@ export function ThemeProvider(props: ThemeProviderProps): ReactElement {
         const root = globalThis.document?.documentElement;
         if (root === undefined || root === null) return;
         for (const [name, cssValue] of Object.entries(vars)) root.style.setProperty(name, cssValue);
-        root.dataset['nexTheme'] = value.bucket;
+        root.dataset['kelpiTheme'] = value.bucket;
     }, [props.applyToDocument, vars, value.bucket]);
 
     return (
         <ChromeThemeContext.Provider value={value}>
             <div
-                data-nex-theme={value.bucket}
+                data-kelpi-theme={value.bucket}
                 className={props.className ?? 'contents'}
                 style={{ ...(vars as CSSProperties), ...props.style }}
             >

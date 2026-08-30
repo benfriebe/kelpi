@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { makePane } from '@nex/core/layout';
+import { makePane } from '@kelpi/core/layout';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { canonicalizeForClient, clientPaths, createClientPathResolver } from './paths.js';
@@ -38,7 +38,7 @@ function symlinkedFixture(): {
     readonly physicalRepo: string;
     readonly cleanup: () => void;
 } {
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-n5-'));
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-n5-'));
     // The temp dir may itself sit under a symlink; resolve it so `physical*` below really is
     // the form `git rev-parse --show-toplevel` would print.
     const physicalRoot = fs.realpathSync(base);

@@ -10,8 +10,8 @@ import {
     formatWireTimestamp,
     looksLikeUnixMillis,
     normalizeUUIDLoose
-} from '@nex/core/codec';
-import type { WireMessage } from '@nex/protocol';
+} from '@kelpi/core/codec';
+import type { WireMessage } from '@kelpi/protocol';
 
 import type { ReplyHandle } from '../../seams.js';
 import { groupByID, syncedPaneIDs, workspaceByID, type DaemonState } from '../../store/index.js';

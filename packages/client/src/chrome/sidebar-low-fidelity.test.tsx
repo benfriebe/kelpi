@@ -178,7 +178,7 @@ describe('L8 — the collapse chevron is 11pt semibold in the TERTIARY colour', 
         const chevron = screen.getByTestId('group-chevron');
         // `.font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.textTertiary)` —
         // `GroupHeaderRow.swift:85-89`.
-        expect(chevron.style.color).toContain('--nex-fg-tertiary');
+        expect(chevron.style.color).toContain('--kelpi-fg-tertiary');
         const svg = chevron.querySelector('svg') as SVGElement;
         expect(svg.getAttribute('width')).toBe('11');
         expect(svg.getAttribute('stroke-width')).toBe('1.6');
@@ -242,7 +242,7 @@ describe('L10 — the drop preview is a wash OVER the band, not a replacement fo
         expect(header.style.backgroundColor).toBe(restingBackground);
         expect(header.style.border).toBe(restingBorder);
         expect(header.style.backgroundImage).toContain('linear-gradient');
-        expect(header.style.backgroundImage).toContain('var(--nex-accent');
+        expect(header.style.backgroundImage).toContain('var(--kelpi-accent');
         expect(header.style.backgroundImage).toContain('18%');
 
         fireEvent.mouseUp(window);

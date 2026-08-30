@@ -26,7 +26,7 @@
 
 import fs from 'node:fs';
 
-import { isSafeSessionID } from '@nex/core/agent';
+import { isSafeSessionID } from '@kelpi/core/agent';
 import {
     parseChildOrderJSON,
     parseIconString,
@@ -35,9 +35,9 @@ import {
     parseTopLevelOrderJSON,
     parseUUID,
     parseWebTabsJSON
-} from '@nex/core/codec';
-import { AGENT_KINDS, PANE_STATUSES, PANE_TYPES } from '@nex/core/layout';
-import { parseWorkspaceColor } from '@nex/protocol';
+} from '@kelpi/core/codec';
+import { AGENT_KINDS, PANE_STATUSES, PANE_TYPES } from '@kelpi/core/layout';
+import { parseWorkspaceColor } from '@kelpi/protocol';
 
 import {
     APP_STATE_ACTIVE_WORKSPACE,
@@ -80,8 +80,8 @@ export type LegacyImportErrorCode =
     | 'source-missing'
     /** SQLite could not open it read-only (locked WAL without a -shm, not a database, …). */
     | 'source-unreadable'
-    /** Opened fine, but has no `workspace` table — this is not a Nex database. */
-    | 'not-a-nex-database'
+    /** Opened fine, but has no `workspace` table — this is not a Kelpi database. */
+    | 'not-a-kelpi-database'
     /** The target already holds workspaces (or cannot be inspected) and `--force` was not given. */
     | 'target-populated'
     /** `--from` and `--to` name the same file. */
@@ -521,7 +521,7 @@ function openSource(path: string): SqlDatabase {
         throw new LegacyImportError(
             'source-missing',
             `no legacy database at ${path}`,
-            'Pass --from <path> pointing at the Swift app\'s nex.db (usually ~/Library/Application Support/Nex/nex.db).'
+            'Pass --from <path> pointing at the Swift app\'s nex.db (usually ~/Library/Application Support/Kelpi/nex.db).'
         );
     }
     try {
@@ -532,7 +532,7 @@ function openSource(path: string): SqlDatabase {
         throw new LegacyImportError(
             'source-unreadable',
             `cannot open ${path} read-only: ${error instanceof Error ? error.message : String(error)}`,
-            'If Nex.app is running, quit it and retry; a WAL database whose -shm file is missing cannot be opened read-only. Otherwise copy nex.db, nex.db-wal and nex.db-shm to a scratch directory and import from the copy.',
+            'If Kelpi.app is running, quit it and retry; a WAL database whose -shm file is missing cannot be opened read-only. Otherwise copy nex.db, nex.db-wal and nex.db-shm to a scratch directory and import from the copy.',
             { cause: error }
         );
     }
@@ -551,7 +551,7 @@ export function readLegacyDatabase(options: ReadLegacyDatabaseOptions): LegacyRe
         throw new LegacyImportError(
             'source-unreadable',
             `cannot read ${options.path}: ${error instanceof Error ? error.message : String(error)}`,
-            'Check that the path is a Nex SQLite database. If Nex.app is running, quit it and retry, or import from a copy of nex.db (plus its -wal and -shm files).',
+            'Check that the path is a Kelpi SQLite database. If Kelpi.app is running, quit it and retry, or import from a copy of nex.db (plus its -wal and -shm files).',
             { cause: error }
         );
     } finally {
@@ -567,9 +567,9 @@ export function readFromOpenDatabase(
 ): LegacyReadResult {
     if (!tableExists(db, 'workspace')) {
         throw new LegacyImportError(
-            'not-a-nex-database',
+            'not-a-kelpi-database',
             `${path} has no "workspace" table`,
-            'Point --from at a Nex database (the Swift app writes ~/Library/Application Support/Nex/nex.db).'
+            'Point --from at a Kelpi database (the Swift app writes ~/Library/Application Support/Kelpi/nex.db).'
         );
     }
 

@@ -20,7 +20,7 @@
  * composition; handlers only call seam methods.
  */
 
-import type { Profile } from '@nex/core/config';
+import type { Profile } from '@kelpi/core/config';
 
 import type { HandlerContext, TerminalStateService } from '../../seams.js';
 import type { DaemonState, DomainAction, DomainEvent } from '../../store/index.js';
@@ -35,10 +35,10 @@ export interface AsyncTerminalReads {
 
 /** Process-level defaults every PTY spawn inherits (terminal-surface.md §2). */
 export interface PaneSpawnDefaults {
-    /** Directory holding the bundled `nex` CLI; prepended to `PATH` when present. */
+    /** Directory holding the bundled `kelpi` CLI; prepended to `PATH` when present. */
     readonly helpersDir?: string | undefined;
     /**
-     * The `NEX_SOCKET` value routing this pane's `nex` CLI back at THIS daemon
+     * The `NEX_SOCKET` value routing this pane's `kelpi` CLI back at THIS daemon
      * (`tcp:127.0.0.1:<port>`), read at env-build time so it reflects the live listener.
      * Without it a hook firing inside the pane resolves the shared `/tmp/nex.sock` — which on
      * a machine also running the Swift app is somebody else's daemon. Null = no injection.
@@ -108,9 +108,9 @@ export interface PaneHandlerContext
      *
      * `WorkspaceProfilesClient.resolveEnv` warns when a workspace resolves a NON-`default`
      * profile that the config file does not define — the marker is still injected, but nothing
-     * else is, and without the warning a typo in `nex workspace profile` looks exactly like a
+     * else is, and without the warning a typo in `kelpi workspace profile` looks exactly like a
      * working assignment. The daemon has no `os_log`, so the warning goes where every other
-     * daemon diagnostic goes: `createDaemon`'s `onLog`, i.e. the `nexd` log. Unset in tests
+     * daemon diagnostic goes: `createDaemon`'s `onLog`, i.e. the `kelpid` log. Unset in tests
      * that do not care, which is why it is optional.
      */
     readonly onLog?: ((message: string) => void) | undefined;

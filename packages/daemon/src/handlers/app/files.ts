@@ -3,7 +3,7 @@
  *
  * Routing is identical for the two: a known caller pane focuses that pane and opens in ITS
  * workspace, otherwise the active workspace takes it, and with no active workspace the message
- * is dropped. Only `open` honours `reuse` (`nex open --here`), which converts the caller's pane
+ * is dropped. Only `open` honours `reuse` (`kelpi open --here`), which converts the caller's pane
  * in place by parking it; `diff` never reuses.
  *
  * "Known pane" deliberately means a VISIBLE pane (`workspace.panes`) — a parked source pane is
@@ -41,11 +41,11 @@ function route(state: DaemonState, paneID: string | undefined): Route | null {
  * directory, then the target workspace's **focused pane's**, and is otherwise left exactly as
  * it came (`AppReducer+SearchNotify.swift:110-126`, `AppReducer.swift:2468-2494`).
  *
- * The `nex` CLI absolutises before it sends (`cli/src/commands/openmd.ts`), so this chain is
+ * The `kelpi` CLI absolutises before it sends (`cli/src/commands/openmd.ts`), so this chain is
  * inert for the common path and deliberately stays that way — it is what makes a RAW socket
  * client, the shell's `open-file` forward and a hand-written `{"command":"open"}` behave like
  * the Swift app instead of resolving against the *daemon's* cwd, which is whatever directory
- * `nexd` happened to be launched from and is never what the caller meant.
+ * `kelpid` happened to be launched from and is never what the caller meant.
  *
  * One deliberate widening of the Swift chain: a `~`-prefixed path is left alone rather than
  * appended to a cwd. `NSString.appendingPathComponent` produces `<cwd>/~/x` there, a path that
@@ -96,7 +96,7 @@ export function fileHandlerEntries(deps: AppDeps): readonly (readonly [string, A
             const target = route(state, msg.pane_id);
             if (target === null) return;
             // §CONT-131: the repo path and the optional scope both go through the same chain —
-            // `nex diff ../other` names a sibling checkout, not a directory under `nexd`'s cwd.
+            // `kelpi diff ../other` names a sibling checkout, not a directory under `kelpid`'s cwd.
             const repoPath = resolveAgainstPane(state, target, msg.repo_path);
             const targetPath =
                 msg.target_path === undefined

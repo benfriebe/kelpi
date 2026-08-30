@@ -4,7 +4,7 @@
  * Spec: docs/current/persistence.md §2 (columns), §3 (JSON encodings), §5.4 (save-side field
  * mapping), §6.1 (read + decode), §6.3 (slug backfill), §9 items 5–8 (graceful degradation).
  *
- * Every encoded column goes through `@nex/core/codec` — the Swift-compatible codecs — and
+ * Every encoded column goes through `@kelpi/core/codec` — the Swift-compatible codecs — and
  * nothing here hand-rolls an encoding: layout JSON (`_0`-keyed), SidebarID JSON, labels /
  * childOrder / webTabs arrays, uppercase UUIDs, epoch-SECONDS timestamps, `system:`/`emoji:`
  * icon strings. Writing `Date.now()` into a timestamp column would corrupt it by 1000×, so the
@@ -43,8 +43,8 @@ import {
     type IconRef,
     type SidebarID,
     type WebTab
-} from '@nex/core/codec';
-import { normalizedAssignment } from '@nex/core/env';
+} from '@kelpi/core/codec';
+import { normalizedAssignment } from '@kelpi/core/env';
 import {
     AGENT_KINDS,
     PANE_STATUSES,
@@ -52,9 +52,9 @@ import {
     type AgentKind,
     type PaneStatus,
     type PaneType
-} from '@nex/core/layout';
-import { makeSlug } from '@nex/core/resolve';
-import { parseWorkspaceColor, WORKSPACE_COLORS, type WorkspaceColor } from '@nex/protocol';
+} from '@kelpi/core/layout';
+import { makeSlug } from '@kelpi/core/resolve';
+import { parseWorkspaceColor, WORKSPACE_COLORS, type WorkspaceColor } from '@kelpi/protocol';
 
 import type {
     LabelColor,
@@ -149,16 +149,16 @@ export interface AppStateRow {
 export const APP_STATE_ACTIVE_WORKSPACE = 'activeWorkspaceID';
 export const APP_STATE_TOP_LEVEL_ORDER = 'topLevelOrder';
 /** Daemon-owned: the Mac app keeps label presets in UserDefaults, which the daemon has no access to. */
-export const APP_STATE_LABEL_PRESETS = 'nexd.labelPresets';
+export const APP_STATE_LABEL_PRESETS = 'kelpid.labelPresets';
 /** Daemon-owned: `PersistedSnapshot.version`, independent of the DB migration ledger. */
-export const APP_STATE_SNAPSHOT_VERSION = 'nexd.snapshotVersion';
+export const APP_STATE_SNAPSHOT_VERSION = 'kelpid.snapshotVersion';
 /**
  * Daemon-owned, app-state-core.md §6.5 / §13: the one-shot legacy-label → preset marker. This
  * is the port's home for the Swift app's `settings.labelPresets.migrated` UserDefaults flag —
  * the same place the presets themselves live, because a daemon has no UserDefaults. A database
  * written before this key existed has NO row for it, which decodes as "never migrated".
  */
-export const APP_STATE_LABEL_PRESETS_MIGRATED = 'nexd.labelPresetsMigrated';
+export const APP_STATE_LABEL_PRESETS_MIGRATED = 'kelpid.labelPresetsMigrated';
 
 // ---------------------------------------------------------------------------
 // Column readers

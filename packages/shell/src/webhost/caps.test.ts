@@ -79,7 +79,7 @@ describe('clampField', () => {
 
 describe('screenshotFileName', () => {
     it('uses the spec name shape with unix SECONDS', () => {
-        expect(screenshotFileName('PANE-1', 1_766_000_000_123)).toBe('nex-web-capture-PANE-1-1766000000.png');
+        expect(screenshotFileName('PANE-1', 1_766_000_000_123)).toBe('kelpi-web-capture-PANE-1-1766000000.png');
     });
 });
 

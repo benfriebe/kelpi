@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ContentPaneState, ContentSubscription } from '../content/index.js';
@@ -412,7 +412,7 @@ describe('GET /pane-assets/:paneID/*', () => {
     }
 
     it('serves a file the service resolved', async () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-assets-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-assets-'));
         temporaries.push(dir);
         const file = path.join(dir, 'a.png');
         fs.writeFileSync(file, 'PNGDATA');

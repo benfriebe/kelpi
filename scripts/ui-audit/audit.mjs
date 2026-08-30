@@ -17,11 +17,11 @@
  *
  *     node scripts/ui-audit/audit.mjs                       # docs/audit/<timestamp>/
  *     node scripts/ui-audit/audit.mjs --out docs/audit/run2  # re-runnable, fixed directory
- *     node scripts/ui-audit/audit.mjs --packaged             # drive the packaged Nex.app
+ *     node scripts/ui-audit/audit.mjs --packaged             # drive the packaged Kelpi.app
  *     node scripts/ui-audit/audit.mjs --no-build --keep --verbose
  *
  * Isolation: everything lives under a fresh `mkdtemp` with ephemeral ports. It never touches
- * `/tmp/nex.sock`, `/tmp/nexd-dev*`, or ports 19733/19734/9223 — the developer's own stack.
+ * `/tmp/nex.sock`, `/tmp/kelpid-dev*`, or ports 19733/19734/9223 — the developer's own stack.
  *
  * Concurrency: every bundle (daemon, CLI, client, shell) is rebuilt from source at the START of
  * a run, so the screenshots always describe the working tree as it is at that moment, even
@@ -54,7 +54,7 @@ import { MOD, connect, listTargets, sleep, waitForPageTarget } from './lib/cdp.m
  * first two attempts), which nine runs had recorded as a timing flake without diagnosing.
  * `reattach-after-relaunch` quits the shell with 15 panes alive and relaunches it; the restored
  * web panes come back as page targets, `pages[0]` sometimes lands on one of them, and the harness
- * then drives **the fixture page** while waiting for `[data-testid="nex-app"]` that a fixture will
+ * then drives **the fixture page** while waiting for `[data-testid="kelpi-app"]` that a fixture will
  * never have. It times out, and the next step reads a window that is not the client — which is
  * why the cascade always shows up as a wall of `undefined`. `run-AB-attempts/attempt1`'s
  * `116-mac-chrome-chrome.png` is a screenshot of the web fixture, taken by a step that believed it
@@ -112,7 +112,7 @@ function parseArgs(argv) {
          * `--window hidden` is still worth having for an assertions-only regression run, and
          * `--window onscreen` is the per-class fidelity pin used by `lib/shards.mjs`'s
          * `ONSCREEN_STEPS`. The throttling half of the change (`backgroundThrottling: false`) is
-         * unconditional under `NEX_AUDIT` and is what makes any of them survive being occluded.
+         * unconditional under `KELPI_AUDIT` and is what makes any of them survive being occluded.
          */
         window: 'default',
         /** Total shards. 1 = the classic single-process serial run. */
@@ -289,7 +289,7 @@ const PROMPT_GLYPHS = [
  * This is the whole "cols overrun" question made visible: the ruler is exactly `tput cols`
  * cells wide, so if the client hands the PTY more columns than it can paint, the `]` is off
  * the right edge; if it hands over fewer, the row wraps and `[END]` lands on a second line.
- * Both failures are unmissable in the screenshot AND countable in `nex pane capture`.
+ * Both failures are unmissable in the screenshot AND countable in `kelpi pane capture`.
  *
  * Written with literal UTF-8 box-drawing characters — macOS `/bin/sh` is bash 3.2, whose
  * `printf` has no `\\u` escape and whose `tr` cannot map to a multibyte character.
@@ -379,7 +379,7 @@ function writeFixtures(sandbox) {
     const editorScript = path.join(work, 'audit-editor.sh');
     fs.writeFileSync(
         editorScript,
-        '#!/bin/sh\nprintf "NEX-AUDIT-EDITOR %s\\n" "$1"\ncat > /dev/null\n'
+        '#!/bin/sh\nprintf "KELPI-AUDIT-EDITOR %s\\n" "$1"\ncat > /dev/null\n'
     );
     fs.chmodSync(editorScript, 0o755);
     // A few files so `ls` has something to say.
@@ -436,9 +436,9 @@ function makeRepo(sandbox) {
  * and a substring that could also come from Chromium's own logging would prove nothing.
  */
 const OOPIF_MARKERS = {
-    top: 'NEX-OOPIF-TOP',
-    child: 'NEX-OOPIF-LOG',
-    thrown: 'NEX-OOPIF-THROW'
+    top: 'KELPI-OOPIF-TOP',
+    child: 'KELPI-OOPIF-LOG',
+    thrown: 'KELPI-OOPIF-THROW'
 };
 
 /** A local site for the web pane — a real origin beats `about:blank` for judging embedding. */
@@ -456,7 +456,7 @@ async function startFixtureSite() {
     const framePort = await freePort();
     const frameOrigin = `http://localhost:${String(framePort)}`;
     const frameBody = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Nex cross-origin child</title></head>
+<html><head><meta charset="utf-8"><title>Kelpi cross-origin child</title></head>
 <body style="font:14px/1.4 -apple-system,system-ui,sans-serif;background:#134e4a;color:#ccfbf1;margin:0;padding:12px">
   <p id="child-frame-body">A child frame from a second origin.</p>
   <script>
@@ -467,14 +467,14 @@ async function startFixtureSite() {
   </script>
 </body></html>`;
     const oopifBody = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Nex cross-origin host</title></head>
+<html><head><meta charset="utf-8"><title>Kelpi cross-origin host</title></head>
 <body style="font:15px/1.5 -apple-system,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:16px">
   <h1 style="font-size:18px;margin:0 0 12px">Cross-origin embed</h1>
   <iframe id="child" src="${frameOrigin}/frame" width="560" height="120" style="border:1px solid #334155;border-radius:8px"></iframe>
   <script>console.log('${OOPIF_MARKERS.top} top document speaking');</script>
 </body></html>`;
     const body = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Nex UI Audit Fixture</title>
+<html><head><meta charset="utf-8"><title>Kelpi UI Audit Fixture</title>
 <style>
   body { font: 16px/1.5 -apple-system, system-ui, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
   header { padding: 24px 32px; background: linear-gradient(90deg,#2563eb,#7c3aed); color: white; }
@@ -483,7 +483,7 @@ async function startFixtureSite() {
   button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #38bdf8; color: #082f49; }
 </style></head>
 <body>
-  <header><h1 id="hello">Nex web pane fixture</h1><p>If you can read this inside a Nex pane, embedding works.</p></header>
+  <header><h1 id="hello">Kelpi web pane fixture</h1><p>If you can read this inside a Kelpi pane, embedding works.</p></header>
   <main>
     <div class="card"><h2>Card one</h2><p>Some body copy to judge rendering, spacing and colour against.</p></div>
     <div class="card"><h2>Card two</h2><button id="go">Click me</button> <span id="out">idle</span></div>
@@ -588,7 +588,7 @@ async function startFixtureSite() {
 // ── page helpers (the vocabulary the flows speak) ────────────────────────────────────
 
 const PAGE = {
-    app: '[data-testid="nex-app"]',
+    app: '[data-testid="kelpi-app"]',
     sidebar: '[data-testid="sidebar"]',
     workspaceRows: '[data-testid="workspace-row"]',
     grid: '[data-testid="pane-grid"]',
@@ -747,7 +747,7 @@ async function settleStable(sample, { ceilingMs, stableMs = 200, intervalMs = 60
 }
 
 /**
- * `nex pane capture`, polled until the capture satisfies `accept` — and RETURNED, so the
+ * `kelpi pane capture`, polled until the capture satisfies `accept` — and RETURNED, so the
  * assertion that follows reads the very text the poll settled on.
  *
  * The replacement for the commonest shape in the terminal steps:
@@ -856,15 +856,15 @@ async function openSettingsTab(page, tab) {
 }
 
 /**
- * `nexd status --json` against the SANDBOX daemon (§SET-021's other reporting surface).
+ * `kelpid status --json` against the SANDBOX daemon (§SET-021's other reporting surface).
  *
  * Spawned rather than imported: the point is to exercise the shipped CLI entry the way a user
  * runs it, with the sandbox's own run dir, and to prove the field reaches stdout rather than
  * only the function that formats it. Returns null when the process failed or printed non-JSON,
  * which the caller reports as a failed check rather than crashing the run.
  */
-async function nexdStatus(sandbox, { repoRoot, json = true } = {}) {
-    const entry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'nexd.js');
+async function kelpidStatus(sandbox, { repoRoot, json = true } = {}) {
+    const entry = path.join(repoRoot, 'packages', 'daemon', 'dist', 'kelpid.js');
     return new Promise((resolve) => {
         const child = spawnProcess(process.execPath, [entry, 'status', ...(json ? ['--json'] : [])], {
             cwd: repoRoot,
@@ -897,7 +897,7 @@ async function nexdStatus(sandbox, { repoRoot, json = true } = {}) {
 /**
  * One newline-JSON message straight down the control socket, with no CLI in between.
  *
- * §CONT-130's chain only exists for callers that do NOT absolutise first, and `nex md` always
+ * §CONT-130's chain only exists for callers that do NOT absolutise first, and `kelpi md` always
  * does (`path.resolve(process.cwd(), …)`), so the CLI physically cannot exercise it. This is
  * the raw wire the shell's `open-file` forward and any third-party client speak.
  */
@@ -1086,7 +1086,7 @@ function capturedCells(capture) {
  * "terminal renderer failed to start" across the pane.
  *
  * Worth its own read because nothing else sees it: the daemon is happy, the pane is in the DOM
- * at the right size, `nex pane capture` answers from the server-side VT — and the person looking
+ * at the right size, `kelpi pane capture` answers from the server-side VT — and the person looking
  * at the window has a sentence where their shell should be. Checked wherever a pane is REVEALED
  * (a create, a workspace switch), which is where an engine is built in a hurry.
  */
@@ -1119,12 +1119,12 @@ async function paneStartAttempts(page) {
 
 /** Focus a pane by clicking its body — a real click, so focus follows the real code path. */
 /**
- * A CDP session on the EMBEDDED page (the shell's `WebContentsView`), not on Nex's renderer.
+ * A CDP session on the EMBEDDED page (the shell's `WebContentsView`), not on Kelpi's renderer.
  *
  * Two things need it. The picks in the pickup flow have to be real clicks on real elements. And
  * the browser-shortcut chords have to be pressed *where a user presses them* — inside a page
  * that has keyboard focus — because that is the only path that exercises the host's
- * `before-input-event` forwarding (`shell/webhost/keys.ts`). Dispatching them at Nex's renderer
+ * `before-input-event` forwarding (`shell/webhost/keys.ts`). Dispatching them at Kelpi's renderer
  * instead would test a state a user cannot be in: with a native view focused, Chromium routes
  * keyboard input to that view and the renderer never sees it.
  */
@@ -1284,7 +1284,7 @@ export function parseShortcutGlyphs(display) {
 async function liveShortcut(page, action) {
     await page.click('[data-testid="titlebar-menu-toggle"]');
     await sleep(300);
-    await clickMenuItem(page, 'Nex Help');
+    await clickMenuItem(page, 'Kelpi Help');
     await sleep(600);
     const display = await page.eval(
         `document.querySelector('[data-help-action="${action}"] [data-help-shortcut]')?.getAttribute('data-help-shortcut') ?? ''`
@@ -1424,7 +1424,7 @@ async function openSidebarMenu(page, selector, needle) {
  */
 async function runShardedParent() {
     const startedAt = new Date().toISOString();
-    process.stdout.write(`nex UI audit → ${outDir}  (${String(options.shards)} shards)\n`);
+    process.stdout.write(`kelpi UI audit → ${outDir}  (${String(options.shards)} shards)\n`);
 
     if (options.build) {
         // Once, here. Every child runs `--no-build`: four concurrent `pnpm build`s writing the
@@ -1520,7 +1520,7 @@ async function runShardedParent() {
             ...inheritedMeta,
             startedAt,
             commit: gitCommit(),
-            shellMode: options.packaged ? 'packaged Nex.app' : 'dev electron (packages/shell)',
+            shellMode: options.packaged ? 'packaged Kelpi.app' : 'dev electron (packages/shell)',
             windowPlacement: options.window,
             shardCount: options.shards
         }
@@ -1539,14 +1539,14 @@ async function runShardedParent() {
 
 async function main() {
     const startedAt = new Date().toISOString();
-    process.stdout.write(`nex UI audit → ${outDir}\n`);
+    process.stdout.write(`kelpi UI audit → ${outDir}\n`);
 
     if (options.build) {
         await buildAll(repoRoot, {
             log: (message) => process.stdout.write(`  ${message}\n`),
             force: options.forceBuild
         });
-        // A `--packaged` run drives `Nex.app`, so the bundle is a build input like any other:
+        // A `--packaged` run drives `Kelpi.app`, so the bundle is a build input like any other:
         // rebuild it from the bundles above rather than debugging whatever `out/` happens to
         // hold. (`--no-build` still skips this, and the signature check below still runs.)
         if (options.packaged) await packageApp(repoRoot, { log: (message) => process.stdout.write(`  ${message}\n`) });
@@ -1560,17 +1560,17 @@ async function main() {
      *
      * The harness starts the daemon itself and the shell discovers it, so the daemon — not the
      * app — decides what the window loads. A `--packaged` run therefore points at the app's OWN
-     * staged client (`Nex.app/Contents/Resources/client`); together with the packaged main
+     * staged client (`Kelpi.app/Contents/Resources/client`); together with the packaged main
      * process, the packaged daemon and the bundled Node (`startDaemon`'s `packaged` flag), that
      * makes every layer under the audit the shipped bytes. Before N22 was fixed this branch
      * unset the client dir entirely, and the packaged run's window got the daemon's plain
      * "client not built" page — the second reason no packaged run ever produced a green step.
      *
-     * `NEX_AUDIT_CLIENT_DIR` still overrides both, which is what `run-V-packaged-client` used to
+     * `KELPI_AUDIT_CLIENT_DIR` still overrides both, which is what `run-V-packaged-client` used to
      * drive the packaged client from a dev shell while the packaged binary was unreachable.
      */
     const clientDir =
-        process.env['NEX_AUDIT_CLIENT_DIR'] ??
+        process.env['KELPI_AUDIT_CLIENT_DIR'] ??
         (options.packaged ? packagedResource(repoRoot, 'client') : path.join(repoRoot, 'packages', 'client', 'dist'));
     if (!fs.existsSync(path.join(clientDir, 'index.html'))) {
         throw new Error(`the web client is not built: ${clientDir}`);
@@ -1579,7 +1579,7 @@ async function main() {
     // `auditWindow` on the sandbox, not just on `launchShell`'s `extraEnv`: the reattach step
     // starts a SECOND shell with an `extraEnv` of its own, and the placement has to survive that.
     const sandbox = await makeSandbox(repoRoot, { label: 'ui', clientDir, auditWindow: options.window });
-    if (options.packaged) delete sandbox.env.NEXD_ENTRY;
+    if (options.packaged) delete sandbox.env.KELPID_ENTRY;
 
     const work = writeFixtures(sandbox);
     const repo = makeRepo(sandbox);
@@ -1590,7 +1590,7 @@ async function main() {
         meta: {
             startedAt,
             commit: gitCommit(),
-            shellMode: options.packaged ? 'packaged Nex.app' : 'dev electron (packages/shell)',
+            shellMode: options.packaged ? 'packaged Kelpi.app' : 'dev electron (packages/shell)',
             // Which window placement produced these pixels. `shell.log` cannot answer it for the
             // whole run — it holds only the LAST shell's lines, and `reattach-after-relaunch`
             // starts a second one — so the run states it here instead.
@@ -1656,14 +1656,14 @@ async function main() {
                 packaged: options.packaged,
                 verbose: options.verbose,
                 extraEnv: {
-                    NEX_AUDIT: '1',
+                    KELPI_AUDIT: '1',
                     // Where the window goes, and (implicitly) `backgroundThrottling: false`.
-                    // `packages/shell/src/audit-window.ts` reads both; with NEX_AUDIT unset — i.e.
+                    // `packages/shell/src/audit-window.ts` reads both; with KELPI_AUDIT unset — i.e.
                     // in every launch that is not this harness — it returns Electron's defaults.
-                    NEX_AUDIT_WINDOW: options.window,
+                    KELPI_AUDIT_WINDOW: options.window,
                     // The ⌘O step's scripted answer to the native open panel — an OS window CDP
                     // cannot click. See `shell/src/main.ts` `promptOpenFile`.
-                    NEX_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+                    KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
                 }
             });
         /*
@@ -1757,7 +1757,7 @@ async function main() {
          * timeline, "which step left this pane behind / left that workspace active" is one
          * grep. Best-effort: a CLI hiccup records the error and never fails the run.
          */
-        process.env.NEX_AUDIT_CLI_LOG = path.join(outDir, 'cli-invocations.jsonl');
+        process.env.KELPI_AUDIT_CLI_LOG = path.join(outDir, 'cli-invocations.jsonl');
         const timelinePath = path.join(outDir, 'state-timeline.jsonl');
         const recordTimeline = async (stepID) => {
             try {
@@ -1899,7 +1899,7 @@ function buildFlows(ctx) {
         GIT_COMMITTER_EMAIL: 'audit@example.invalid'
     };
     const git = (args, cwd = repo) => execFileSync('git', args, { cwd, encoding: 'utf8', env: gitEnv });
-    const breadcrumbPath = () => path.join(repo, '.git', 'nex-graft-active');
+    const breadcrumbPath = () => path.join(repo, '.git', 'kelpi-graft-active');
 
     /** A linked worktree carrying one file the parent does not have, so a graft is VISIBLE. */
     function graftWorktree() {
@@ -2147,7 +2147,7 @@ function buildFlows(ctx) {
         {
             id: 'terminal-ls',
             expect:
-                'Typing `ls -la` into the focused pane echoes the keystrokes and prints a directory listing; the same text is readable through `nex pane capture`.',
+                'Typing `ls -la` into the focused pane echoes the keystrokes and prints a directory listing; the same text is readable through `kelpi pane capture`.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = (await domPaneIDs(page))[0];
@@ -2158,7 +2158,7 @@ function buildFlows(ctx) {
                 await sleep(600);
                 await recorder.shot(page);
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture', capture);
+                recorder.block('kelpi pane capture', capture);
                 recorder.check('keystrokes reached the PTY', capture.includes('ls -la'), 'the typed command is echoed');
                 recorder.check('listing contains the fixture files', capture.includes('alpha.txt') && capture.includes('AUDIT.md'));
                 recorder.eyes('does the listing on screen match the capture text, column for column?');
@@ -2179,7 +2179,7 @@ function buildFlows(ctx) {
                 );
                 await recorder.shot(page);
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture', capture);
+                recorder.block('kelpi pane capture', capture);
                 const joined = capture.replace(/\n/g, '');
                 recorder.check('the wrapped line starts where expected', joined.includes('START420>>>'));
                 recorder.check('the wrapped line ends where expected', joined.includes('<<<END420'));
@@ -2200,7 +2200,7 @@ function buildFlows(ctx) {
                 await runInTerminal(page, `sh ${path.join(work, 'width.sh')}`, { settleMs: 1800 });
                 await recorder.shot(page);
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture', capture);
+                recorder.block('kelpi pane capture', capture);
                 const reported = /reported:\s+(\d+)\s+cols\s+x\s+(\d+)\s+rows/.exec(capture);
                 recorder.check('the PTY reports a size', reported !== null, reported === null ? capture.slice(0, 200) : `${reported[1]}x${reported[2]}`);
                 if (reported !== null) recorder.note(`PTY size: ${reported[1]} cols x ${reported[2]} rows`);
@@ -2250,7 +2250,7 @@ function buildFlows(ctx) {
                 await runInTerminal(page, `sh ${path.join(work, 'glyphs.sh')}`, { settleMs: 1600 });
                 await recorder.shot(page);
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture', capture);
+                recorder.block('kelpi pane capture', capture);
                 recorder.check('box-drawing round-trips through the VT', capture.includes('╭') && capture.includes('█'));
                 recorder.check('emoji round-trip through the VT', capture.includes('🚀'));
                 recorder.check('CJK round-trips through the VT', capture.includes('日本語'));
@@ -2274,7 +2274,7 @@ function buildFlows(ctx) {
                  * context, so `getImageData` returns the truth: the brightest pixel over the
                  * printed rows IS the default foreground the VT resolved (glyph strokes at
                  * 13px hit full coverage somewhere). Comparing it against the theme's declared
-                 * `--nex-term-fg` turns "reads like SGR dim" into a number.
+                 * `--kelpi-term-fg` turns "reads like SGR dim" into a number.
                  */
                 const paint = await page.eval(
                     `(() => {
@@ -2300,8 +2300,8 @@ function buildFlows(ctx) {
                             top,
                             dpr: window.devicePixelRatio,
                             canvas: { w: canvas.width, h: canvas.height, cssW: canvas.clientWidth, cssH: canvas.clientHeight },
-                            themeFg: root.getPropertyValue('--nex-term-fg').trim(),
-                            themeBg: root.getPropertyValue('--nex-term-bg').trim()
+                            themeFg: root.getPropertyValue('--kelpi-term-fg').trim(),
+                            themeBg: root.getPropertyValue('--kelpi-term-bg').trim()
                         };
                     })()`
                 );
@@ -2352,7 +2352,7 @@ function buildFlows(ctx) {
                 await recorder.shot(page);
 
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture', capture);
+                recorder.block('kelpi pane capture', capture);
                 const missing = PROMPT_GLYPHS.filter(([glyph]) => !capture.includes(glyph)).map(
                     ([glyph, name]) => `${name} U+${glyph.codePointAt(0).toString(16).toUpperCase()}`
                 );
@@ -2536,7 +2536,7 @@ function buildFlows(ctx) {
         {
             id: 'terminal-resize-storm',
             expect:
-                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`nex pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; ten split/close rounds over multibyte text leave the client\'s screen EQUAL to the daemon\'s (§N23: nothing missing, nothing invented, no replacement characters); eight LEFT/RIGHT close rounds under a per-frame canvas probe paint NOT ONE frame while the engine is resized-but-not-yet-replayed, and every hold ends on a replay rather than on its timeout (§N24); and the pane is still a live shell when the window is handed back.',
+                'A 90-step window-width storm over a p10k-shaped two-line prompt leaves exactly ONE prompt behind — in the daemon\'s buffer (`kelpi pane capture`) AND in the client engine\'s own buffer (read back through its selection, not off the pixels) — instead of a ladder of stale copies; ten split/close rounds over multibyte text leave the client\'s screen EQUAL to the daemon\'s (§N23: nothing missing, nothing invented, no replacement characters); eight LEFT/RIGHT close rounds under a per-frame canvas probe paint NOT ONE frame while the engine is resized-but-not-yet-replayed, and every hold ends on a replay rather than on its timeout (§N24); and the pane is still a live shell when the window is handed back.',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -2560,19 +2560,19 @@ function buildFlows(ctx) {
                  * later step a different shell with a dot-filled prompt.
                  */
                 const anchor = state.firstPane ?? (await domPaneIDs(page))[0];
-                const CLIP_SENTINEL_STORM = 'NEX-AUDIT-RESIZE-STORM-SENTINEL';
+                const CLIP_SENTINEL_STORM = 'KELPI-AUDIT-RESIZE-STORM-SENTINEL';
                 const zdotdir = path.join(work, 'resize-storm');
                 fs.mkdirSync(zdotdir, { recursive: true });
                 /*
                  * The prompt is the whole fixture. Two lines, the first dot-filled to exactly
                  * $COLUMNS (so every shrink has a full-width line to rewrap) and re-expanded by
-                 * zle on every SIGWINCH (`prompt_subst`). `NEXTRAIL` marks the line that gets
-                 * stranded; `NEXPROMPT` marks the line the cursor sits on. ZDOTDIR rather than
+                 * zle on every SIGWINCH (`prompt_subst`). `KELPITRAIL` marks the line that gets
+                 * stranded; `KELPIPROMPT` marks the line the cursor sits on. ZDOTDIR rather than
                  * $HOME so the sandbox's home is left exactly as the rest of the run found it.
                  */
                 fs.writeFileSync(
                     path.join(zdotdir, '.zshrc'),
-                    "setopt prompt_subst\n" + "PROMPT=$'┌NEXTRAIL ${(l:$((COLUMNS - 12))::.:)}\n└NEXPROMPT%% '\n"
+                    "setopt prompt_subst\n" + "PROMPT=$'┌KELPITRAIL ${(l:$((COLUMNS - 12))::.:)}\n└KELPIPROMPT%% '\n"
                 );
 
                 const split = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', anchor, '--json']);
@@ -2671,7 +2671,7 @@ function buildFlows(ctx) {
                     // NOTHING may run in this pane between here and the storm: the trail count
                     // below is over the whole scrollback, and every command a shell runs leaves
                     // another prompt in it. The multibyte fixture therefore lives in phase 4c,
-                    // after the last NEXTRAIL assertion.
+                    // after the last KELPITRAIL assertion.
                     //
                     // SETTLE-WAIT (was runInTerminal's settleMs: 2500): the replacement shell has
                     // drawn its two-line prompt exactly once — the fixture-integrity condition the
@@ -2679,15 +2679,15 @@ function buildFlows(ctx) {
                     const armed = await captureUntil(
                         cli,
                         paneID,
-                        (text) => (text.match(/NEXTRAIL/g) ?? []).length === 1 && text.includes('NEXPROMPT'),
+                        (text) => (text.match(/KELPITRAIL/g) ?? []).length === 1 && text.includes('KELPIPROMPT'),
                         { ceilingMs: 2500, scrollback: true }
                     );
                     recorder.artifact('armed-capture.txt', armed);
-                    const armedTrails = (armed.match(/NEXTRAIL/g) ?? []).length;
+                    const armedTrails = (armed.match(/KELPITRAIL/g) ?? []).length;
                     recorder.check(
                         'the two-line dot-filled prompt is up, once (fixture integrity)',
-                        armedTrails === 1 && armed.includes('NEXPROMPT'),
-                        `NEXTRAIL x${String(armedTrails)} · ${JSON.stringify(armed.trimEnd().split('\n').slice(-2))}`
+                        armedTrails === 1 && armed.includes('KELPIPROMPT'),
+                        `KELPITRAIL x${String(armedTrails)} · ${JSON.stringify(armed.trimEnd().split('\n').slice(-2))}`
                     );
                     await recorder.shot(page, 'armed');
 
@@ -2753,19 +2753,19 @@ function buildFlows(ctx) {
                     // ── 3. what the DAEMON's buffer holds ────────────────────────────
                     const capture = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                     recorder.artifact('after-storm-capture.txt', capture);
-                    const serverTrails = (capture.match(/NEXTRAIL/g) ?? []).length;
-                    recorder.note(`server buffer: NEXTRAIL x${String(serverTrails)} after 90 resize steps`);
+                    const serverTrails = (capture.match(/KELPITRAIL/g) ?? []).length;
+                    recorder.note(`server buffer: KELPITRAIL x${String(serverTrails)} after 90 resize steps`);
                     recorder.check(
                         'the daemon buffer holds exactly ONE prompt after the storm (reflow policy)',
                         serverTrails === 1,
-                        `NEXTRAIL x${String(serverTrails)}`
+                        `KELPITRAIL x${String(serverTrails)}`
                     );
                     const viewport = await cli.ok(['pane', 'capture', '--target', paneID]);
-                    const viewportTrails = (viewport.match(/NEXTRAIL/g) ?? []).length;
+                    const viewportTrails = (viewport.match(/KELPITRAIL/g) ?? []).length;
                     recorder.check(
                         'and exactly one on the visible screen',
                         viewportTrails === 1,
-                        `NEXTRAIL x${String(viewportTrails)}`
+                        `KELPITRAIL x${String(viewportTrails)}`
                     );
 
                     // ── 4. what the CLIENT ENGINE holds ──────────────────────────────
@@ -2862,12 +2862,12 @@ function buildFlows(ctx) {
 
                     const clientText = (await readClientScreen('after-storm')) ?? '';
                     if (clientText === '') return;
-                    const clientTrails = (clientText.match(/NEXTRAIL/g) ?? []).length;
-                    recorder.note(`client engine screen: NEXTRAIL x${String(clientTrails)}`);
+                    const clientTrails = (clientText.match(/KELPITRAIL/g) ?? []).length;
+                    recorder.note(`client engine screen: KELPITRAIL x${String(clientTrails)}`);
                     recorder.check(
                         'THE DEFECT: the client engine shows exactly ONE prompt too (post-resize resync)',
                         clientTrails === 1,
-                        `NEXTRAIL x${String(clientTrails)} in the engine's own selection`
+                        `KELPITRAIL x${String(clientTrails)} in the engine's own selection`
                     );
 
                     // ── 4b. §N23: the client's screen IS the daemon's screen ─────────
@@ -2954,7 +2954,7 @@ function buildFlows(ctx) {
                         const canvas = root === null ? null : root.querySelector('canvas');
                         if (canvas === null) return 'no canvas';
                         const probe = { frames: 0, held: 0, changedWhileHeld: 0, holdWindows: 0, stop: false };
-                        window.__nexN24 = probe;
+                        window.__kelpiN24 = probe;
                         const ctx = canvas.getContext('2d', { willReadFrequently: true });
                         let last = null;
                         let wasHeld = false;
@@ -3036,7 +3036,7 @@ function buildFlows(ctx) {
                          */
                         await settleDom(
                             page,
-                            `(() => { const p = window.__nexN24;
+                            `(() => { const p = window.__kelpiN24;
                               const root = document.querySelector('${paneRoot}');
                               return p !== undefined && p.holdWindows >= 8 &&
                                   root?.getAttribute('data-terminal-paint-held') !== 'true'; })()`,
@@ -3045,7 +3045,7 @@ function buildFlows(ctx) {
                         const probe = JSON.parse(
                             String(
                                 await page.eval(
-                                    'JSON.stringify((() => { const p = window.__nexN24; if (p === undefined) return null; p.stop = true; return p; })())'
+                                    'JSON.stringify((() => { const p = window.__kelpiN24; if (p === undefined) return null; p.stop = true; return p; })())'
                                 )
                             )
                         );
@@ -3082,20 +3082,20 @@ function buildFlows(ctx) {
                     // SETTLE-WAIT (was runInTerminal's settleMs: 1500): the shell has ECHOED the
                     // answer — which is the very string the assertion below looks for, so the
                     // wait and the assertion now name the same condition.
-                    await runInTerminal(page, 'echo NEX_STILL_ALIVE_$((6*7))', { settleMs: 0 });
-                    const alive = await captureUntil(cli, paneID, (text) => text.includes('NEX_STILL_ALIVE_42'), {
+                    await runInTerminal(page, 'echo KELPI_STILL_ALIVE_$((6*7))', { settleMs: 0 });
+                    const alive = await captureUntil(cli, paneID, (text) => text.includes('KELPI_STILL_ALIVE_42'), {
                         ceilingMs: 1500,
                         scrollback: true
                     });
                     recorder.artifact('restored-capture.txt', alive);
                     recorder.check(
                         'the pane is still a live shell after the storm and the restore',
-                        alive.includes('NEX_STILL_ALIVE_42'),
+                        alive.includes('KELPI_STILL_ALIVE_42'),
                         JSON.stringify(alive.trimEnd().split('\n').slice(-3))
                     );
                     await recorder.shot(page, 'restored');
                     recorder.eyes(
-                        'the stormed pane must show ONE two-line prompt (┌NEXTRAIL …dots… / └NEXPROMPT), not a ladder of ┌NEXTRAIL rows climbing the pane'
+                        'the stormed pane must show ONE two-line prompt (┌KELPITRAIL …dots… / └KELPIPROMPT), not a ladder of ┌KELPITRAIL rows climbing the pane'
                     );
 
                     // Put the machine's clipboard back (this step wrote to the real one).
@@ -3335,7 +3335,7 @@ function buildFlows(ctx) {
         },
         {
             id: 'split-cli',
-            expect: '`nex pane split --direction vertical` adds a third pane stacked below the target, and the UI updates live without a reload.',
+            expect: '`kelpi pane split --direction vertical` adds a third pane stacked below the target, and the UI updates live without a reload.',
             async run(recorder) {
                 const before = await page.eval(paneCountExpr);
                 const reply = await cli.json(['pane', 'split', '--direction', 'vertical', '--target', state.firstPane, '--json']);
@@ -3482,7 +3482,7 @@ function buildFlows(ctx) {
                  *
                  * Step 1 of the dispatcher stands down for the palette, so the chord used to
                  * fall through to the shell's Close row — which, being answered `false` by
-                 * `window.__nexShellClosePane()`, closed the WINDOW. The stated decision is that
+                 * `window.__kelpiShellClosePane()`, closed the WINDOW. The stated decision is that
                  * ⌘W belongs to the topmost overlay and can never reach the window, and both of
                  * its routes are reachable from here: CDP's key event walks the renderer path a
                  * keystroke walks, and the global IS the menu row's whole question (the native
@@ -3517,7 +3517,7 @@ function buildFlows(ctx) {
                 await page.key('KeyP', { modifiers: MOD.meta });
                 await page.waitFor(paletteOpenExpr, { timeoutMs: 8000, label: 'the command palette' });
                 const answer = await page.eval(
-                    `(() => { try { return window.__nexShellClosePane() === true; } catch (error) { return String(error); } })()`
+                    `(() => { try { return window.__kelpiShellClosePane() === true; } catch (error) { return String(error); } })()`
                 );
                 // The answer is synchronous; the overlay it closes is a React render, so the DOM
                 // is read after it has landed rather than in the same turn.
@@ -3544,7 +3544,7 @@ function buildFlows(ctx) {
                  * the shape the overlap check below needs (the keybinding step before this one
                  * may have left an even-horizontal grid, which has no crossing at all).
                  *
-                 * `nex layout` is caller-pane scoped (`requirePaneID()`), so it is run AS a
+                 * `kelpi layout` is caller-pane scoped (`requirePaneID()`), so it is run AS a
                  * pane — without `NEX_PANE_ID` the CLI exits 0 having done nothing, which is
                  * how this check silently found no junction to test.
                  */
@@ -3870,7 +3870,7 @@ function buildFlows(ctx) {
                 let after = await page.eval(paneCountExpr);
                 recorder.check('⌘W closes the focused TERMINAL pane', after === before - 1, `${String(before)} → ${String(after)}`);
                 if (after === before) {
-                    recorder.note('falling back to `nex pane close --target` so the rest of the audit can continue');
+                    recorder.note('falling back to `kelpi pane close --target` so the rest of the audit can continue');
                     await cli.run(['pane', 'close', '--target', victim]);
                     await sleep(1400);
                     await recorder.shot(page, 'cli-fallback');
@@ -3961,7 +3961,7 @@ function buildFlows(ctx) {
                 );
                 if (created2 !== undefined) {
                     const capture = await cli.ok(['pane', 'capture', '--target', created2.id]);
-                    recorder.block('nex pane capture (the new workspace’s pane)', capture);
+                    recorder.block('kelpi pane capture (the new workspace’s pane)', capture);
                     const hosts = await page.eval(
                         `Array.from(document.querySelectorAll('[data-terminal-host]')).map(el => {
                             const pane = el.closest('[data-pane-id]');
@@ -3997,7 +3997,7 @@ function buildFlows(ctx) {
         {
             id: 'workspace-create-cli',
             expect:
-                '`nex workspace create` adds a workspace AND the window follows it — the new workspace becomes the one you are looking at, the way it does when you create one from the sidebar.',
+                '`kelpi workspace create` adds a workspace AND the window follows it — the new workspace becomes the one you are looking at, the way it does when you create one from the sidebar.',
             needsEyes: true,
             async run(recorder) {
                 const before = await page.eval(`document.querySelectorAll('${PAGE.workspaceRows}').length`);
@@ -4058,7 +4058,7 @@ function buildFlows(ctx) {
                  * thing a destructive menu has to keep on screen — WHICH one — was behind it.
                  * Overlap is measured as area against the row that was right-clicked (the first
                  * row, which is what `rightClick` targets), so a menu that merely brushes the
-                 * NEXT row still passes.
+                 * KELPIT row still passes.
                  */
                 const placement = await page.eval(
                     `(() => {
@@ -4118,7 +4118,7 @@ function buildFlows(ctx) {
                  * What this click IS matters to the reading of the assertion below. When the
                  * window is already showing the row being clicked, the click is the idempotent
                  * re-assert of run-B L3 — the case that used to be a total no-op, leaving
-                 * `nex workspace list` naming the wrong workspace for the rest of the session.
+                 * `kelpi workspace list` naming the wrong workspace for the rest of the session.
                  * Recorded rather than asserted: which workspace the run arrives here on
                  * depends on the steps before it, and the assertion is the same either way.
                  */
@@ -4162,7 +4162,7 @@ function buildFlows(ctx) {
                  * (`mount-policy.ts`) and remounts them on the way back, and a remounted pane
                  * used to come up wearing the screen of whichever pane had last held its WASM
                  * slot — a garbled grid on a plain sidebar click, with the daemon perfectly
-                 * innocent (`nex pane capture` was always clean). Nothing in the DOM can be
+                 * innocent (`kelpi pane capture` was always clean). Nothing in the DOM can be
                  * asked what a canvas says, so the check is the ink: a pane whose VT holds a
                  * bare prompt cannot be painting a screenful of somebody else's output.
                  */
@@ -4244,7 +4244,7 @@ function buildFlows(ctx) {
                  * …and on THIS pane, after this many resizes, it can no longer be an assertion.
                  *
                  * L6 turned out to be worse than the ledger said. The claim there was that the
-                 * daemon merely *scrambles* — "`nex pane capture` holds the same scrambled text
+                 * daemon merely *scrambles* — "`kelpi pane capture` holds the same scrambled text
                  * the screen shows". It does not: run-H measured 280 k ink pixels on screen
                  * against **53 cells across the daemon's visible screen AND its scrollback**, and
                  * the screenshot (`17-tidy-grid.png`) shows this pane's own glyph torture-test
@@ -4263,7 +4263,7 @@ function buildFlows(ctx) {
                  * a resize storm and where the daemon's capture is still a fair bound.
                  */
                 const survivorCapture = await cli.ok(['pane', 'capture', '--target', keep.id]);
-                recorder.block('nex pane capture (the survivor)', survivorCapture);
+                recorder.block('kelpi pane capture (the survivor)', survivorCapture);
                 const survivorHistory = await cli.ok(['pane', 'capture', '--target', keep.id, '--scrollback']);
                 const survivorPaint = await paneInkPixels(page, keep.id);
                 if (survivorPaint !== null) {
@@ -4292,7 +4292,7 @@ function buildFlows(ctx) {
         {
             id: 'markdown-pane',
             expect:
-                '`nex md AUDIT.md` opens a markdown pane rendering the front-matter table, headings, list, table, fenced code block, blockquote and task list — styled, not raw.',
+                '`kelpi md AUDIT.md` opens a markdown pane rendering the front-matter table, headings, list, table, fenced code block, blockquote and task list — styled, not raw.',
             needsEyes: true,
             async run(recorder) {
                 const file = path.join(work, 'AUDIT.md');
@@ -4982,7 +4982,7 @@ function buildFlows(ctx) {
         {
             id: 'diff-pane',
             expect:
-                '`nex diff <repo>` opens a diff pane with per-file collapsible sections and GitHub-style green additions / red deletions for both changed files.',
+                '`kelpi diff <repo>` opens a diff pane with per-file collapsible sections and GitHub-style green additions / red deletions for both changed files.',
             needsEyes: true,
             async run(recorder) {
                 const output = await cli.ok(['diff'], { cwd: repo });
@@ -5137,7 +5137,7 @@ function buildFlows(ctx) {
         {
             id: 'web-pane',
             expect:
-                '`nex web open <url>` opens a web pane and the page is EMBEDDED in the window at the pane\'s rect — the fixture\'s purple header and cards visible inside the Nex frame, not in a separate window.',
+                '`kelpi web open <url>` opens a web pane and the page is EMBEDDED in the window at the pane\'s rect — the fixture\'s purple header and cards visible inside the Kelpi frame, not in a separate window.',
             needsEyes: true,
             async run(recorder) {
                 const output = await cli.ok(['web', 'open', site.url], { timeoutMs: 60_000 });
@@ -5150,11 +5150,11 @@ function buildFlows(ctx) {
                 recorder.check('a web pane exists', web !== undefined, panes.map((pane) => pane.type).join(', '));
                 if (web === undefined) return;
                 const url = await cli.run(['web', 'url', '--target', String(web?.id)], { timeoutMs: 40_000 });
-                recorder.note(`nex web url → ${url.stdout.trim() || url.stderr.trim()}`);
-                recorder.check('the live view reports the fixture title', url.stdout.includes('Nex UI Audit Fixture'), url.stdout.trim());
+                recorder.note(`kelpi web url → ${url.stdout.trim() || url.stderr.trim()}`);
+                recorder.check('the live view reports the fixture title', url.stdout.includes('Kelpi UI Audit Fixture'), url.stdout.trim());
                 const capture = await cli.run(['web', 'capture', '--target', String(web?.id), '--mode', 'text'], { timeoutMs: 40_000 });
-                recorder.block('nex web capture --mode text', `${capture.stdout}\n${capture.stderr}`.slice(0, 1500));
-                recorder.check('the page text is readable through the host', capture.stdout.includes('Nex web pane fixture'), 'header text present');
+                recorder.block('kelpi web capture --mode text', `${capture.stdout}\n${capture.stderr}`.slice(0, 1500));
+                recorder.check('the page text is readable through the host', capture.stdout.includes('Kelpi web pane fixture'), 'header text present');
                 const placeholder = await page.eval(
                     `(() => {
                         const host = document.querySelector('[data-testid="web-page-${String(web?.id)}"]');
@@ -5266,7 +5266,7 @@ function buildFlows(ctx) {
                     await cli.run(['pane', 'close', '--target', String(pane.id)]);
                     await sleep(400);
                 }
-                // `nex layout` is one of the `requirePaneID()` verbs (§CLI-017): with no
+                // `kelpi layout` is one of the `requirePaneID()` verbs (§CLI-017): with no
                 // `NEX_PANE_ID` it exits 0 SILENTLY and does nothing, so the pane id has to ride
                 // along or this is a no-op that looks like a success.
                 await cli.run(['layout', 'select', 'even-horizontal'], { paneID: String(web?.id) });
@@ -5346,7 +5346,7 @@ function buildFlows(ctx) {
                     recorder.check('a web pane exists to search', false);
                     return;
                 }
-                // Nex's idea of focus first (a click on the pane's own chrome)…
+                // Kelpi's idea of focus first (a click on the pane's own chrome)…
                 await focusWebPane(page, paneID);
                 // …then the chord where a user would press it: inside the page, which is what
                 // makes this a test of the host's chord forwarding rather than of CDP.
@@ -5361,7 +5361,7 @@ function buildFlows(ctx) {
                 const forwarded = (runtime.shell?.lines ?? []).filter((line) => line.includes('forwarding'));
                 recorder.note(`shell forwarding log: ${forwarded.slice(-3).join(' | ') || '(none)'}`);
                 recorder.check(
-                    'the host took the chord from the page and gave it to Nex',
+                    'the host took the chord from the page and gave it to Kelpi',
                     forwarded.some((line) => line.includes('meta+KeyF')),
                     forwarded.at(-1) ?? '(none)'
                 );
@@ -5434,8 +5434,8 @@ function buildFlows(ctx) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
                     const marks = await view.eval(
                         `(() => {
-                            const nodes = Array.from(document.querySelectorAll('mark.nex-webfind-match'));
-                            const current = nodes.find((node) => node.classList.contains('nex-webfind-current'));
+                            const nodes = Array.from(document.querySelectorAll('mark.kelpi-webfind-match'));
+                            const current = nodes.find((node) => node.classList.contains('kelpi-webfind-current'));
                             return { count: nodes.length,
                                      text: nodes.map((node) => node.textContent).join('|'),
                                      currentBg: current === undefined ? '' : getComputedStyle(current).backgroundColor,
@@ -5508,7 +5508,7 @@ function buildFlows(ctx) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
                     const seen = await view.eval(
                         `(() => {
-                            const current = document.querySelector('mark.nex-webfind-current');
+                            const current = document.querySelector('mark.kelpi-webfind-current');
                             if (current === null) return null;
                             const rect = current.getBoundingClientRect();
                             return { top: Math.round(rect.top), vh: window.innerHeight,
@@ -5606,7 +5606,7 @@ function buildFlows(ctx) {
         {
             id: 'web-batch-pickup',
             expect:
-                'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; hiding the panel leaves the button wearing a numeric badge with the pending count; Send pastes one `# nex inspect batch` block into a shell pane.',
+                'The scope button starts a batch: clicking two page elements adds two numbered rows to the panel and two numbered badges to the page; hiding the panel leaves the button wearing a numeric badge with the pending count; Send pastes one `# kelpi inspect batch` block into a shell pane.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.webPane;
@@ -5615,7 +5615,7 @@ function buildFlows(ctx) {
                     return;
                 }
                 // The WIDEST on-screen shell: the destination must be in this web pane's
-                // workspace (WEB-133), and the pasted `# nex inspect batch …` header is ~50
+                // workspace (WEB-133), and the pasted `# kelpi inspect batch …` header is ~50
                 // columns — in a 33-column pane it soft-wraps and `pane capture` returns it as
                 // two screen rows, which reads as a missing header when it is really a narrow
                 // pane. Same class of harness artefact as `widestShellPane`'s three callers.
@@ -5639,7 +5639,7 @@ function buildFlows(ctx) {
                 recorder.check('the embedded page is reachable for the picks', viewTarget !== undefined);
                 if (viewTarget !== undefined) {
                     const view = await connect(viewTarget.webSocketDebuggerUrl, { repoRoot });
-                    const armed = await view.eval('window.__nexInspectorArmed ? window.__nexInspectorArmed() : null');
+                    const armed = await view.eval('window.__kelpiInspectorArmed ? window.__kelpiInspectorArmed() : null');
                     recorder.check('the page picker is armed (sticky)', armed === true, String(armed));
                     await view.click('#hello');
                     await sleep(700);
@@ -5648,7 +5648,7 @@ function buildFlows(ctx) {
                     // dismisses it. Pressing the popover's own button is the real gesture.
                     const dismissed = await view.eval(
                         `(() => {
-                            const popover = document.querySelector('[data-nex-batch-popover]');
+                            const popover = document.querySelector('[data-kelpi-batch-popover]');
                             if (popover === null) return 'no popover';
                             const buttons = popover.querySelectorAll('button');
                             const done = buttons[buttons.length - 1];
@@ -5663,7 +5663,7 @@ function buildFlows(ctx) {
                     await sleep(700);
                     await view.eval(
                         `(() => {
-                            const popover = document.querySelector('[data-nex-batch-popover]');
+                            const popover = document.querySelector('[data-kelpi-batch-popover]');
                             const buttons = popover === null ? [] : popover.querySelectorAll('button');
                             const done = buttons[buttons.length - 1];
                             if (done !== undefined) done.click();
@@ -5673,9 +5673,9 @@ function buildFlows(ctx) {
                     await sleep(400);
                     const badges = await view.eval(
                         `(() => {
-                            const nodes = Array.from(document.querySelectorAll('[data-nex-batch-marker]'));
+                            const nodes = Array.from(document.querySelectorAll('[data-kelpi-batch-marker]'));
                             return { count: nodes.length, labels: nodes.map((node) => node.textContent).join(','),
-                                     ring: document.querySelector('[data-nex-batch-focus-ring]') !== null };
+                                     ring: document.querySelector('[data-kelpi-batch-focus-ring]') !== null };
                         })()`
                     );
                     view.close();
@@ -5818,9 +5818,9 @@ function buildFlows(ctx) {
                     const capture = await cli.run(['pane', 'capture', '--target', String(shell.id), '--scrollback']);
                     const text = `${capture.stdout}\n${capture.stderr}`;
                     recorder.artifact('batch-paste.txt', text);
-                    recorder.block('nex pane capture (destination shell)', text.slice(-1600));
+                    recorder.block('kelpi pane capture (destination shell)', text.slice(-1600));
                     /**
-                     * The needle is `nex inspect batch`, not `# nex inspect batch`.
+                     * The needle is `kelpi inspect batch`, not `# kelpi inspect batch`.
                      *
                      * What lands in the destination is a SHELL's echo of a pasted line, and a
                      * line long enough to wrap is re-drawn by readline — so `pane capture` can
@@ -5833,7 +5833,7 @@ function buildFlows(ctx) {
                     const dewrapped = text.split('\n').join('');
                     recorder.check(
                         'the batch header reached the shell pane',
-                        text.includes('nex inspect batch') || dewrapped.includes('nex inspect batch'),
+                        text.includes('kelpi inspect batch') || dewrapped.includes('kelpi inspect batch'),
                         'header present'
                     );
                     recorder.check('the payload names both picked elements', text.includes('hello') && text.includes('go'), 'both selectors present');
@@ -5878,7 +5878,7 @@ function buildFlows(ctx) {
                 // ── WEB-140: the popover's header and placement rules ───────────────
                 const placement = await view.eval(
                     `(() => {
-                        const pop = document.querySelector('[data-nex-batch-popover]');
+                        const pop = document.querySelector('[data-kelpi-batch-popover]');
                         if (pop === null) return null;
                         const rect = pop.getBoundingClientRect();
                         const target = document.querySelector('#hello').getBoundingClientRect();
@@ -5942,7 +5942,7 @@ function buildFlows(ctx) {
                     await sleep(700);
                 }
                 const pushed = await view.eval(
-                    `(document.querySelector('[data-nex-batch-comment]')?.value ?? '')`
+                    `(document.querySelector('[data-kelpi-batch-comment]')?.value ?? '')`
                 );
                 recorder.check(
                     'a panel-side edit is pushed into the page textarea while it is unfocused (WEB-141)',
@@ -5953,7 +5953,7 @@ function buildFlows(ctx) {
                 // …and NOT while the user is typing in it: the guard is what stops the two
                 // editors fighting over the cursor.
                 await view.eval(
-                    `(() => { const t = document.querySelector('[data-nex-batch-comment]'); t.focus();
+                    `(() => { const t = document.querySelector('[data-kelpi-batch-comment]'); t.focus();
                               t.value = 'typed in the page'; return document.activeElement === t; })()`
                 );
                 if (String(rowComment) !== '') {
@@ -5962,7 +5962,7 @@ function buildFlows(ctx) {
                     await sleep(700);
                 }
                 const guarded = await view.eval(
-                    `(document.querySelector('[data-nex-batch-comment]')?.value ?? '')`
+                    `(document.querySelector('[data-kelpi-batch-comment]')?.value ?? '')`
                 );
                 recorder.check(
                     'and is refused while the textarea has focus, so the cursor is never yanked',
@@ -5973,7 +5973,7 @@ function buildFlows(ctx) {
                 // ── WEB-137: reposition on scroll, and a live re-query ───────────────
                 const beforeScroll = await view.eval(
                     `(() => {
-                        const badge = document.querySelector('[data-nex-batch-marker]');
+                        const badge = document.querySelector('[data-kelpi-batch-marker]');
                         const el = document.querySelector('#hello').getBoundingClientRect();
                         const b = badge.getBoundingClientRect();
                         return { badgeTop: Math.round(b.top), elTop: Math.round(el.top), scrollY: window.scrollY };
@@ -5986,7 +5986,7 @@ function buildFlows(ctx) {
                 await sleep(500);
                 const afterScroll = await view.eval(
                     `(() => {
-                        const badge = document.querySelector('[data-nex-batch-marker]');
+                        const badge = document.querySelector('[data-kelpi-batch-marker]');
                         const el = document.querySelector('#hello').getBoundingClientRect();
                         const b = badge.getBoundingClientRect();
                         return { badgeTop: Math.round(b.top), elTop: Math.round(el.top), scrollY: window.scrollY,
@@ -6015,7 +6015,7 @@ function buildFlows(ctx) {
                     `(() => {
                         window.scrollTo(0, 900);
                         return new Promise((resolve) => setTimeout(() => {
-                            const badge = document.querySelector('[data-nex-batch-marker]');
+                            const badge = document.querySelector('[data-kelpi-batch-marker]');
                             resolve({ display: badge === null ? 'absent' : getComputedStyle(badge).display,
                                       elTop: Math.round(document.querySelector('#hello').getBoundingClientRect().top) });
                         }, 300));
@@ -6028,7 +6028,7 @@ function buildFlows(ctx) {
                     String(scrolledAway?.display)
                 );
                 // Back to the top: everything after this needs the focused element ON SCREEN.
-                // (While it is not, the popover is hidden and `__nexBatchHasOpenPopover` is
+                // (While it is not, the popover is hidden and `__kelpiBatchHasOpenPopover` is
                 // false, which hands Escape back to the PICKER — cancelling the whole batch.
                 // That is the Swift behaviour too, and it is a trap for a test that scrolls.)
                 await view.eval(
@@ -6047,7 +6047,7 @@ function buildFlows(ctx) {
                         old.replaceWith(fresh);
                         window.dispatchEvent(new Event('scroll', { bubbles: true }));
                         return new Promise((resolve) => setTimeout(() => {
-                            const badge = document.querySelector('[data-nex-batch-marker]');
+                            const badge = document.querySelector('[data-kelpi-batch-marker]');
                             const el = document.querySelector('#hello').getBoundingClientRect();
                             resolve({ delta: Math.round(badge.getBoundingClientRect().top - el.top),
                                       display: getComputedStyle(badge).display });
@@ -6067,9 +6067,9 @@ function buildFlows(ctx) {
                         document.querySelector('#hello').style.display = 'none';
                         window.dispatchEvent(new Event('scroll', { bubbles: true }));
                         return new Promise((resolve) => setTimeout(() => {
-                            const badge = document.querySelector('[data-nex-batch-marker]');
-                            const ring = document.querySelector('[data-nex-batch-focus-ring]');
-                            const pop = document.querySelector('[data-nex-batch-popover]');
+                            const badge = document.querySelector('[data-kelpi-batch-marker]');
+                            const ring = document.querySelector('[data-kelpi-batch-focus-ring]');
+                            const pop = document.querySelector('[data-kelpi-batch-popover]');
                             resolve({ badge: getComputedStyle(badge).display,
                                       ring: ring === null ? 'absent' : getComputedStyle(ring).display,
                                       popover: pop === null ? 'absent' : getComputedStyle(pop).display });
@@ -6092,9 +6092,9 @@ function buildFlows(ctx) {
                         document.querySelector('#hello').style.display = '';
                         window.dispatchEvent(new Event('scroll', { bubbles: true }));
                         return new Promise((resolve) => setTimeout(() => {
-                            const pop = document.querySelector('[data-nex-batch-popover]');
+                            const pop = document.querySelector('[data-kelpi-batch-popover]');
                             resolve({ popover: pop === null ? 'absent' : getComputedStyle(pop).display,
-                                      flag: window.__nexBatchHasOpenPopover === true });
+                                      flag: window.__kelpiBatchHasOpenPopover === true });
                         }, 300));
                     })()`
                 );
@@ -6108,14 +6108,14 @@ function buildFlows(ctx) {
                 // ── WEB-142: Escape and ⌘-Return dismiss the popover ─────────────────
                 const escaped = await view.eval(
                     `(() => {
-                        const t = document.querySelector('[data-nex-batch-comment]');
+                        const t = document.querySelector('[data-kelpi-batch-comment]');
                         t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
                         return new Promise((resolve) => setTimeout(() => {
-                            const pop = document.querySelector('[data-nex-batch-popover]');
-                            const ring = document.querySelector('[data-nex-batch-focus-ring]');
+                            const pop = document.querySelector('[data-kelpi-batch-popover]');
+                            const ring = document.querySelector('[data-kelpi-batch-focus-ring]');
                             resolve({ popover: pop === null ? 'absent' : getComputedStyle(pop).display,
                                       ring: ring === null ? 'absent' : getComputedStyle(ring).display,
-                                      flag: window.__nexBatchHasOpenPopover === true });
+                                      flag: window.__kelpiBatchHasOpenPopover === true });
                         }, 500));
                     })()`
                 );
@@ -6133,13 +6133,13 @@ function buildFlows(ctx) {
                 await sleep(700);
                 const cmdReturn = await view.eval(
                     `(() => {
-                        const t = document.querySelector('[data-nex-batch-comment]');
+                        const t = document.querySelector('[data-kelpi-batch-comment]');
                         if (t === null) return { popover: 'no popover' };
                         t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
                         return new Promise((resolve) => setTimeout(() => {
-                            const pop = document.querySelector('[data-nex-batch-popover]');
+                            const pop = document.querySelector('[data-kelpi-batch-popover]');
                             resolve({ popover: pop === null ? 'absent' : getComputedStyle(pop).display,
-                                      flag: window.__nexBatchHasOpenPopover === true });
+                                      flag: window.__kelpiBatchHasOpenPopover === true });
                         }, 500));
                     })()`
                 );
@@ -6158,17 +6158,17 @@ function buildFlows(ctx) {
                     `(() => {
                         // Force the race the guard exists for: highlight an id the page does not
                         // know yet, then sync the markers that include it.
-                        const before = window.__nexBatchHighlight('pending-item', false);
-                        const synced = window.__nexBatchSetMarkers([
+                        const before = window.__kelpiBatchHighlight('pending-item', false);
+                        const synced = window.__kelpiBatchSetMarkers([
                             { id: 'pending-item', selector: '#go', label: '9', comment: 'parked' }
                         ]);
                         return new Promise((resolve) => setTimeout(() => {
-                            const ring = document.querySelector('[data-nex-batch-focus-ring]');
-                            const badge = document.querySelector('[data-nex-batch-marker]');
+                            const ring = document.querySelector('[data-kelpi-batch-focus-ring]');
+                            const badge = document.querySelector('[data-kelpi-batch-marker]');
                             resolve({ before, synced,
                                       ring: ring === null ? 'absent' : getComputedStyle(ring).display,
                                       label: badge === null ? '' : badge.textContent,
-                                      comment: document.querySelector('[data-nex-batch-comment]')?.value ?? '' });
+                                      comment: document.querySelector('[data-kelpi-batch-comment]')?.value ?? '' });
                         }, 300));
                     })()`
                 );
@@ -6769,7 +6769,7 @@ function buildFlows(ctx) {
                 recorder.check('the strip is drawn while the load is in flight', loading?.present === true);
                 recorder.check(
                     'it is indeterminate — Chromium reports no estimatedProgress (WEB-033)',
-                    loading?.phase === 'loading' && String(loading?.animated).includes('nex-web-progress'),
+                    loading?.phase === 'loading' && String(loading?.animated).includes('kelpi-web-progress'),
                     `phase=${String(loading?.phase)} animation=${String(loading?.animated)}`
                 );
                 recorder.check('and it is the 2 px bar the spec asks for', loading?.height === 2, `${String(loading?.height)}px`);
@@ -7089,7 +7089,7 @@ function buildFlows(ctx) {
                      *
                      * ⌘= is pressed INSIDE THE PAGE, where a user's hands are after clicking it:
                      * the host lifts the chord out of the page (`webhost/keys.ts`) and replays it
-                     * into Nex's renderer, whose priority layer applies it to the FOCUSED web
+                     * into Kelpi's renderer, whose priority layer applies it to the FOCUSED web
                      * pane. With the ring stuck on the terminal, `focusedWebPane()` answered null
                      * and the chord did nothing. Zoom is visible from inside the page: Chromium
                      * folds the zoom factor into `devicePixelRatio`.
@@ -7296,8 +7296,8 @@ function buildFlows(ctx) {
                         `(() => {
                             const from = document.querySelector('[data-testid="settings-favourite-${String(before[0])}"]');
                             if (from === null) return 'missing row';
-                            window.__nexAuditDrag = new DataTransfer();
-                            from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: window.__nexAuditDrag }));
+                            window.__kelpiAuditDrag = new DataTransfer();
+                            from.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: window.__kelpiAuditDrag }));
                             return 'grabbed';
                         })()`
                     );
@@ -7306,7 +7306,7 @@ function buildFlows(ctx) {
                         `(() => {
                             const to = document.querySelector('[data-testid="settings-favourite-${String(before[1])}"]');
                             if (to === null) return 'missing row';
-                            const data = window.__nexAuditDrag ?? new DataTransfer();
+                            const data = window.__kelpiAuditDrag ?? new DataTransfer();
                             to.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
                             to.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
                             return 'dropped';
@@ -7556,7 +7556,7 @@ function buildFlows(ctx) {
              */
             id: 'web-console-frames',
             expect:
-                'A cross-origin iframe\'s console.log AND its uncaught exception both reach `nex web console` for the pane that embeds it, attributed to that pane\'s tab (WEB-073).',
+                'A cross-origin iframe\'s console.log AND its uncaught exception both reach `kelpi web console` for the pane that embeds it, attributed to that pane\'s tab (WEB-073).',
             needsEyes: true,
             async run(recorder) {
                 const opened = await cli.ok(['web', 'open', site.oopifURL], { timeoutMs: 60_000 });
@@ -7655,7 +7655,7 @@ function buildFlows(ctx) {
                 const drain = await cli.json(['web', 'console', '--target', paneID, '--json'], { timeoutMs: 40_000 });
                 const lines = Array.isArray(drain.lines) ? drain.lines : [];
                 recorder.block(
-                    'nex web console --json',
+                    'kelpi web console --json',
                     lines
                         .map((line) => `${String(line.level)} [${String(line.tab_id).slice(0, 8)}] ${String(line.url)} — ${String(line.message)}`)
                         .join('\n')
@@ -7708,7 +7708,7 @@ function buildFlows(ctx) {
                 );
                 const afterLines = Array.isArray(after.lines) ? after.lines : [];
                 recorder.block(
-                    'nex web console --json (after re-navigating)',
+                    'kelpi web console --json (after re-navigating)',
                     afterLines.map((line) => `${String(line.level)} ${String(line.message)}`).join('\n').slice(0, 1200) || '(no lines)'
                 );
                 recorder.check(
@@ -9051,9 +9051,9 @@ function buildFlows(ctx) {
                             body: paint('[data-testid="settings-window"]'),
                             toolbar: paint('[data-testid="settings-toolbar"]'),
                             rail: paint('[data-testid="settings-tabs"]'),
-                            headerToken: tokenColor('--nex-header-bg', '#13131A'),
-                            surfaceToken: tokenColor('--nex-surface', '#101013'),
-                            sidebarToken: tokenColor('--nex-sidebar-bg', '#0C0C10')
+                            headerToken: tokenColor('--kelpi-header-bg', '#13131A'),
+                            surfaceToken: tokenColor('--kelpi-surface', '#101013'),
+                            sidebarToken: tokenColor('--kelpi-sidebar-bg', '#0C0C10')
                         };
                     })()`
                 );
@@ -9066,17 +9066,17 @@ function buildFlows(ctx) {
                 recorder.check(
                     'painted from the chrome HEADER token, not a system sheet colour (§SET-004)',
                     chromeTones !== null && chromeTones.toolbar === chromeTones.headerToken,
-                    `${String(chromeTones?.toolbar)} vs --nex-header-bg ${String(chromeTones?.headerToken)}`
+                    `${String(chromeTones?.toolbar)} vs --kelpi-header-bg ${String(chromeTones?.headerToken)}`
                 );
                 recorder.check(
                     'the dialog BODY is painted from the chrome surface token (§SET-004)',
                     chromeTones !== null && chromeTones.body === chromeTones.surfaceToken,
-                    `${String(chromeTones?.body)} vs --nex-surface ${String(chromeTones?.surfaceToken)}`
+                    `${String(chromeTones?.body)} vs --kelpi-surface ${String(chromeTones?.surfaceToken)}`
                 );
                 recorder.check(
                     'and the tab rail from the sidebar token, so all three are app chrome',
                     chromeTones !== null && chromeTones.rail === chromeTones.sidebarToken,
-                    `${String(chromeTones?.rail)} vs --nex-sidebar-bg ${String(chromeTones?.sidebarToken)}`
+                    `${String(chromeTones?.rail)} vs --kelpi-sidebar-bg ${String(chromeTones?.sidebarToken)}`
                 );
                 recorder.eyes('overlay elevation, padding, tab affordance, whether the panel is centred and readable');
             }
@@ -9177,7 +9177,7 @@ function buildFlows(ctx) {
         {
             id: 'appearance-preset-theme',
             expect:
-                'Settings ▸ Appearance shows a grid of seven chrome preset swatches; clicking Gruvbox Dark writes `chrome-appearance` + `chrome-colors` into the nex config, reports which theme was applied, and repaints the window chrome without touching the ghostty file.',
+                'Settings ▸ Appearance shows a grid of seven chrome preset swatches; clicking Gruvbox Dark writes `chrome-appearance` + `chrome-colors` into the kelpi config, reports which theme was applied, and repaints the window chrome without touching the ghostty file.',
             needsEyes: true,
             async run(recorder) {
                 await openSettingsTab(page, 'appearance');
@@ -9204,7 +9204,7 @@ function buildFlows(ctx) {
                 recorder.check('the status line names the applied theme', /Gruvbox Dark/.test(String(status)), String(status));
 
                 const config = fs.readFileSync(sandbox.configPath, 'utf8');
-                recorder.block('nex config after applying the preset', config || '(empty)');
+                recorder.block('kelpi config after applying the preset', config || '(empty)');
                 recorder.check('chrome-appearance was written', /chrome-appearance\s*=\s*dark/.test(config), config.slice(0, 200));
                 recorder.check(
                     'the palette was written as chrome-colors',
@@ -9218,9 +9218,9 @@ function buildFlows(ctx) {
 
                 // The palette actually reached the document, not just the file.
                 const accent = await page.eval(
-                    `getComputedStyle(document.documentElement).getPropertyValue('--nex-accent').trim()`
+                    `getComputedStyle(document.documentElement).getPropertyValue('--kelpi-accent').trim()`
                 );
-                recorder.note(`--nex-accent after apply: ${String(accent)}`);
+                recorder.note(`--kelpi-accent after apply: ${String(accent)}`);
                 recorder.check(
                     'the chrome accent variable took the preset colour',
                     String(accent).toUpperCase().includes('FE8019'),
@@ -9298,25 +9298,25 @@ function buildFlows(ctx) {
 
                 // The daemon re-reads and broadcasts, so the pane fill must follow.
                 //
-                // Read off the ROOT THEME CONTAINER, not `documentElement`: `--nex-term-bg` is
+                // Read off the ROOT THEME CONTAINER, not `documentElement`: `--kelpi-term-bg` is
                 // assigned as an inline style on the provider's own div (only the chrome tokens
                 // are mirrored onto the document), and `documentElement` carries the
                 // stylesheet's static fallback — which is the pre-change colour, so reading it
                 // there would pass on a daemon that never wrote anything.
                 const paneFill = await page.eval(
                     `(() => {
-                        // \`documentElement\` also carries \`data-nex-theme\` (the provider mirrors
+                        // \`documentElement\` also carries \`data-kelpi-theme\` (the provider mirrors
                         // the bucket onto it), so the FIRST match is the html element and its
-                        // \`--nex-term-bg\` is the stylesheet's static fallback. The provider's
+                        // \`--kelpi-term-bg\` is the stylesheet's static fallback. The provider's
                         // own div is the one holding the inline assignment.
-                        const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                        const hosts = Array.from(document.querySelectorAll('[data-kelpi-theme]'))
                             .filter((el) => el !== document.documentElement);
                         const host = hosts[0];
                         if (host === undefined) return '(no theme container)';
-                        return getComputedStyle(host).getPropertyValue('--nex-term-bg').trim();
+                        return getComputedStyle(host).getPropertyValue('--kelpi-term-bg').trim();
                     })()`
                 );
-                recorder.note(`--nex-term-bg after the write: ${String(paneFill)}`);
+                recorder.note(`--kelpi-term-bg after the write: ${String(paneFill)}`);
                 recorder.check(
                     'the live pane fill followed the ghostty write',
                     /45\s*,\s*27\s*,\s*61/.test(String(paneFill)) || String(paneFill).toLowerCase().includes('2d1b3d'),
@@ -9520,7 +9520,7 @@ function buildFlows(ctx) {
         {
             id: 'appearance-sidebar-tint',
             expect:
-                'The Sidebar sliders in Settings ▸ Appearance are live: dragging "Avatar fill" and "Colour intensity" writes the nex config and visibly changes the workspace avatar in the sidebar behind the sheet.',
+                'The Sidebar sliders in Settings ▸ Appearance are live: dragging "Avatar fill" and "Colour intensity" writes the kelpi config and visibly changes the workspace avatar in the sidebar behind the sheet.',
             needsEyes: true,
             async run(recorder) {
                 await openSettingsTab(page, 'appearance');
@@ -9573,12 +9573,12 @@ function buildFlows(ctx) {
                 // The variables reached the theme container…
                 const vars = await page.eval(
                     `(() => {
-                        const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                        const hosts = Array.from(document.querySelectorAll('[data-kelpi-theme]'))
                             .filter((el) => el !== document.documentElement);
                         const host = hosts[0];
                         if (host === undefined) return null;
                         const read = (name) => getComputedStyle(host).getPropertyValue(name).trim();
-                        return { fill: read('--nex-avatar-fill'), intensity: read('--nex-sidebar-intensity') };
+                        return { fill: read('--kelpi-avatar-fill'), intensity: read('--kelpi-sidebar-intensity') };
                     })()`
                 );
                 recorder.note(`tint variables: ${JSON.stringify(vars)}`);
@@ -9609,7 +9609,7 @@ function buildFlows(ctx) {
         {
             id: 'global-hotkey-record',
             expect:
-                'Settings ▸ Keybindings ▸ Global records a system-wide hotkey: pressing ⌃⌥⇧K shows it as a chip and writes `global-hotkey = ctrl+alt+shift+k` into the nex config, and the "press again to hide" toggle becomes enabled.',
+                'Settings ▸ Keybindings ▸ Global records a system-wide hotkey: pressing ⌃⌥⇧K shows it as a chip and writes `global-hotkey = ctrl+alt+shift+k` into the kelpi config, and the "press again to hide" toggle becomes enabled.',
             needsEyes: true,
             async run(recorder) {
                 await openSettingsTab(page, 'keybindings');
@@ -9652,7 +9652,7 @@ function buildFlows(ctx) {
                 );
 
                 const after = fs.readFileSync(sandbox.configPath, 'utf8');
-                recorder.block('nex config after recording the global hotkey', after || '(empty)');
+                recorder.block('kelpi config after recording the global hotkey', after || '(empty)');
                 recorder.check(
                     'the hotkey was written to the config file',
                     after !== before && /global-hotkey\s*=\s*ctrl\+alt\+shift\+k/.test(after),
@@ -9702,7 +9702,7 @@ function buildFlows(ctx) {
         {
             id: 'agent-start',
             expect:
-                '`nex event start` on a pane turns its header status dot amber, shows a "claude · <elapsed>" badge, and increments the footer\'s running count.',
+                '`kelpi event start` on a pane turns its header status dot amber, shows a "claude · <elapsed>" badge, and increments the footer\'s running count.',
             needsEyes: true,
             async run(recorder) {
                 const shellPanes = (await cli.json(['pane', 'list', '--json'])).filter((pane) => pane.type === 'shell');
@@ -9744,7 +9744,7 @@ function buildFlows(ctx) {
                         recorder.note('no sibling pane to park focus on — the dwell may clear this status');
                     }
                 }
-                // `nex event` takes its hook payload on stdin, exactly as Claude Code delivers
+                // `kelpi event` takes its hook payload on stdin, exactly as Claude Code delivers
                 // it; the session id is what makes the pane show an agent badge at all.
                 const sessionID = 'audit-0000-1111-2222';
                 await cli.ok(['event', 'session-start'], { paneID, stdin: JSON.stringify({ session_id: sessionID }) });
@@ -9776,7 +9776,7 @@ function buildFlows(ctx) {
         {
             id: 'agent-notification',
             expect:
-                '`nex event notification` raises a desktop notification and flips the pane to "awaiting input": blue dot, "awaiting input" badge, footer waiting count = 1.',
+                '`kelpi event notification` raises a desktop notification and flips the pane to "awaiting input": blue dot, "awaiting input" badge, footer waiting count = 1.',
             needsEyes: true,
             async run(recorder) {
                 const paneID = state.agentPane;
@@ -9813,7 +9813,7 @@ function buildFlows(ctx) {
         },
         {
             id: 'agent-stop',
-            expect: '`nex event stop` clears the running state; the badge and the footer running count go back down.',
+            expect: '`kelpi event stop` clears the running state; the badge and the footer running count go back down.',
             async run(recorder) {
                 const paneID = state.agentPane;
                 if (paneID === undefined) {
@@ -9873,11 +9873,11 @@ function buildFlows(ctx) {
              *
              * **§AGNT-073** cannot be photographed: the two action buttons live in macOS's
              * notification centre. What is asserted is that a REAL `Notification` was
-             * constructed with the `nex-agent` category's actions, read off the shell's own log
+             * constructed with the `kelpi-agent` category's actions, read off the shell's own log
              * line — the same technique §AGNT-090's tray rows use, for the same reason.
              *
              * **§AGNT-116**'s dialog is the client's, so it IS photographable. The main process
-             * calls the page's `window.__nexQuitGate.open(spec)` over `executeJavaScript` (this
+             * calls the page's `window.__kelpiQuitGate.open(spec)` over `executeJavaScript` (this
              * app has no preload); this drives that exact entry point with the exact spec
              * `quitDialogSpec` builds, and asks the three questions the item is about: is Quit
              * painted destructive, does Cancel hold focus (so Return is safe), does Escape
@@ -9890,7 +9890,7 @@ function buildFlows(ctx) {
              */
             id: 'agent-lifecycle',
             expect:
-                'A status raised while the app is in the BACKGROUND survives (no 600 ms self-clear) and clears ~600 ms after the app becomes active again; the desktop notification is posted with the `nex-agent` category’s Open/Dismiss actions; and the ⌘Q confirmation the shell routes into the renderer paints Quit destructive, holds focus on Cancel, and cancels on Escape.',
+                'A status raised while the app is in the BACKGROUND survives (no 600 ms self-clear) and clears ~600 ms after the app becomes active again; the desktop notification is posted with the `kelpi-agent` category’s Open/Dismiss actions; and the ⌘Q confirmation the shell routes into the renderer paints Quit destructive, holds focus on Cancel, and cancels on Escape.',
             needsEyes: true,
             async run(recorder) {
                 const shellPane = await widestShellPane(page, cli);
@@ -10016,13 +10016,13 @@ function buildFlows(ctx) {
                         .filter((line) => line.includes('notification posted:'));
                     recorder.block('shell log: the notification it posted', posted.join('\n') || '(nothing)');
                     recorder.check(
-                        'the desktop notification carries the nex-agent category’s actions (§AGNT-073)',
-                        posted.some((line) => line.includes('category=nex-agent') && line.includes('actions=Open,Dismiss')),
+                        'the desktop notification carries the kelpi-agent category’s actions (§AGNT-073)',
+                        posted.some((line) => line.includes('category=kelpi-agent') && line.includes('actions=Open,Dismiss')),
                         posted.slice(-1).join('') || '(no notification line)'
                     );
                     recorder.check(
                         '…for this pane, under its dedupe identity',
-                        posted.some((line) => line.includes(`nex-${paneID}`)),
+                        posted.some((line) => line.includes(`kelpi-${paneID}`)),
                         posted.slice(-1).join('') || '(no notification line)'
                     );
 
@@ -10049,12 +10049,12 @@ function buildFlows(ctx) {
                     // The exact spec `shell/src/settings.ts` `quitDialogSpec` builds, through the
                     // exact global the main process calls over `executeJavaScript`.
                     const openGate = `(() => {
-                        const gate = window.__nexQuitGate;
+                        const gate = window.__kelpiQuitGate;
                         if (!gate || typeof gate.open !== 'function') return null;
                         window.__auditQuitVerdict = null;
                         gate.open({
                             type: 'question',
-                            message: 'Quit Nex?',
+                            message: 'Quit Kelpi?',
                             detail: '1 agent across 1 workspace is still active. They keep running in the background — quitting only closes this window.',
                             buttons: ['Quit', 'Cancel'],
                             defaultId: 1,
@@ -10181,15 +10181,15 @@ function buildFlows(ctx) {
             /**
              * The REAL hook chain (routing fix 7a7875d). Every other agent step injects events
              * through the harness CLI with NEX_SOCKET set — this one types the event commands
-             * INTO the pane's shell, so the `nex` binary is resolved from the pane's own PATH
-             * (the sandbox's NEXD_HELPERS_DIR shim, exactly what the packaged app stages) and
+             * INTO the pane's shell, so the `kelpi` binary is resolved from the pane's own PATH
+             * (the sandbox's KELPID_HELPERS_DIR shim, exactly what the packaged app stages) and
              * the routing is carried by the pane's own injected NEX_SOCKET. The harness CLI is
              * used only as the keyboard (`pane send`) and the reader (`pane list`/`capture`);
              * the events themselves never touch a harness-privileged transport.
              */
             id: 'agent-hook-routing',
             expect:
-                'A bare `nex event …` typed inside a pane — resolved from the pane PATH, routed by the injected NEX_SOCKET — binds a session id and moves the pane status through running → awaiting input on the header, sidebar and footer, with no harness socket override anywhere.',
+                'A bare `kelpi event …` typed inside a pane — resolved from the pane PATH, routed by the injected NEX_SOCKET — binds a session id and moves the pane status through running → awaiting input on the header, sidebar and footer, with no harness socket override anywhere.',
             async run(recorder) {
                 const shellPane = await widestShellPane(page, cli);
                 if (shellPane === null) {
@@ -10220,20 +10220,20 @@ function buildFlows(ctx) {
 
                 // 1. The pane's environment really carries the route: NEX_PANE_ID names this
                 //    pane, NEX_SOCKET a tcp loopback listener, and PATH starts with the shim.
-                await cli.ok(['pane', 'send', '--target', paneID, 'printf "route=%s pane=%s nexbin=%s\\n" "$NEX_SOCKET" "$NEX_PANE_ID" "$(command -v nex)"']);
+                await cli.ok(['pane', 'send', '--target', paneID, 'printf "route=%s pane=%s nexbin=%s\\n" "$NEX_SOCKET" "$NEX_PANE_ID" "$(command -v kelpi)"']);
                 await sleep(900);
                 const probe = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                 recorder.check('the pane env names this pane', probe.includes(`pane=${paneID}`), probe.slice(-300));
                 recorder.check('the pane env carries a tcp NEX_SOCKET route', /route=tcp:127\.0\.0\.1:\d+/.test(probe), String(probe.match(/route=tcp:\S*/)?.[0]));
                 recorder.check(
-                    'a bare `nex` resolves the sandbox helpers shim (packaged-app PATH shape)',
-                    probe.includes(`nexbin=${sandbox.helpersDir}/nex`),
+                    'a bare `kelpi` resolves the sandbox helpers shim (packaged-app PATH shape)',
+                    probe.includes(`nexbin=${sandbox.helpersDir}/kelpi`),
                     String(probe.match(/nexbin=\/\S*/)?.[0])
                 );
 
                 // 2. In-pane session-start + start: the id binds and the status runs.
                 const sessionID = 'e2e00000-1111-4222-8333-routechain01';
-                await cli.ok(['pane', 'send', '--target', paneID, `printf '{"session_id":"${sessionID}"}' | nex event session-start && nex event start`]);
+                await cli.ok(['pane', 'send', '--target', paneID, `printf '{"session_id":"${sessionID}"}' | kelpi event session-start && kelpi event start`]);
                 const runningBy = Date.now() + 12_000;
                 let entry;
                 while (Date.now() < runningBy) {
@@ -10252,7 +10252,7 @@ function buildFlows(ctx) {
                 recorder.check('the footer counts the typed agent', /1\s*running/.test(String(footer)), String(footer));
 
                 // 3. In-pane stop → awaiting input; session-end → id cleared.
-                await cli.ok(['pane', 'send', '--target', paneID, `nex event stop && printf '{"session_id":"${sessionID}"}' | nex event session-end`]);
+                await cli.ok(['pane', 'send', '--target', paneID, `kelpi event stop && printf '{"session_id":"${sessionID}"}' | kelpi event session-end`]);
                 const waitingBy = Date.now() + 12_000;
                 while (Date.now() < waitingBy) {
                     entry = (await cli.json(['pane', 'list', '--json'])).find((item) => item.id === paneID);
@@ -10306,7 +10306,7 @@ function buildFlows(ctx) {
         },
         {
             /**
-             * Coexistence (routing fix 7a7875d): another Nex owning the CLI-compat socket must
+             * Coexistence (routing fix 7a7875d): another Kelpi owning the CLI-compat socket must
              * degrade that one listener, not the daemon — and panes must still route via their
              * injected NEX_SOCKET. This boots its OWN daemon-only sandbox with a decoy
              * ping-answering server pre-bound at the sandbox's compat path (never the real
@@ -10314,7 +10314,7 @@ function buildFlows(ctx) {
              */
             id: 'agent-coexistence',
             expect:
-                'With a live decoy owning the sandbox compat socket, the daemon boots degraded (loud log line), the decoy is left untouched and still answers afterwards, and an in-pane `nex event start` still reaches the daemon via the injected NEX_SOCKET.',
+                'With a live decoy owning the sandbox compat socket, the daemon boots degraded (loud log line), the decoy is left untouched and still answers afterwards, and an in-pane `kelpi event start` still reaches the daemon via the injected NEX_SOCKET.',
             async run(recorder) {
                 const box = await makeSandbox(repoRoot, { label: 'coexist' });
                 let decoy;
@@ -10340,7 +10340,7 @@ function buildFlows(ctx) {
                         daemon2.text().split('\n').find((line) => line.includes('compat')) ?? '(no compat log line)'
                     );
 
-                    // In-pane events still land: type a bare `nex event start` into the default
+                    // In-pane events still land: type a bare `kelpi event start` into the default
                     // pane's shell (helpers-shim PATH + injected NEX_SOCKET, nothing else).
                     const cli2 = makeCli(box, { repoRoot });
                     const panes = await cli2.json(['pane', 'list', '--json']);
@@ -10348,7 +10348,7 @@ function buildFlows(ctx) {
                     recorder.check('the degraded daemon still serves its default pane', paneID !== undefined, JSON.stringify(panes).slice(0, 200));
                     if (paneID !== undefined) {
                         await sleep(1500);
-                        await cli2.ok(['pane', 'send', '--target', paneID, 'nex event start']);
+                        await cli2.ok(['pane', 'send', '--target', paneID, 'kelpi event start']);
                         const deadline = Date.now() + 12_000;
                         let status;
                         while (Date.now() < deadline) {
@@ -11186,7 +11186,7 @@ function buildFlows(ctx) {
             needsEyes: true,
             async run(recorder) {
                 /*
-                 * `nex pane create` is being called from OUTSIDE a Nex pane (the harness has no
+                 * `kelpi pane create` is being called from OUTSIDE a Kelpi pane (the harness has no
                  * `NEX_PANE_ID`), so it needs an explicit destination or the CLI refuses with
                  * "requires --workspace <name-or-id> or --target". Without it this whole step
                  * errored out — which is exactly how it errored in run-J1/J2/J3, taking the only
@@ -11983,7 +11983,7 @@ function buildFlows(ctx) {
         {
             id: 'pane-context-menu',
             expect:
-                'Right-clicking a pane header opens Nex’s own menu (not the browser’s) with Rename…, Close Pane, Split Right, Split Down, New Web Pane, Status ▸, Move to Workspace ▸, Open in Finder and Copy Working Directory — and the Status submenu checkmarks the pane’s current value.',
+                'Right-clicking a pane header opens Kelpi’s own menu (not the browser’s) with Rename…, Close Pane, Split Right, Split Down, New Web Pane, Status ▸, Move to Workspace ▸, Open in Finder and Copy Working Directory — and the Status submenu checkmarks the pane’s current value.',
             needsEyes: true,
             async run(recorder) {
                 // Address the widest SHELL pane on screen — see `widestShellPane` for why every
@@ -12009,7 +12009,7 @@ function buildFlows(ctx) {
                     })()`
                 );
                 recorder.note(`pane menu: ${JSON.stringify(menu)}`);
-                recorder.check('the pane header opens Nex’s own context menu', menu !== null);
+                recorder.check('the pane header opens Kelpi’s own context menu', menu !== null);
                 const labels = (menu ?? []).map((item) => item.label);
                 for (const wanted of [
                     'Rename…',
@@ -12199,7 +12199,7 @@ function buildFlows(ctx) {
                  * Every other terminal step reads what the SCREEN shows, which is the engine's
                  * own rendering of its own state. This one reads what the PTY *received*: `cat
                  * -v` prints a control byte as `^A` and an escape as `^[`, so the bytes the
-                 * engine produced come back as text `nex pane capture` can quote. Nothing else
+                 * engine produced come back as text `kelpi pane capture` can quote. Nothing else
                  * in this repo has ever asserted the key→byte mapping (TERM-024…TERM-039).
                  */
                 await runInTerminal(page, 'cat -v', { settleMs: 700 });
@@ -12780,7 +12780,7 @@ function buildFlows(ctx) {
              * what an IME produces: start → update(preedit) → the terminating keydown →
              * end(committed). So this step does what the integration probe did, as a
              * permanent flow: compose 한글 into a live `cat`, and read the PTY's own copy back
-             * through `nex pane capture`.
+             * through `kelpi pane capture`.
              *
              * Three things it can prove that a unit test cannot, and the index's claim standard
              * demands (`written-but-unexercised is [~]`):
@@ -12851,7 +12851,7 @@ function buildFlows(ctx) {
                 const TEST_PREEDIT = String.fromCodePoint(0xd14c); // 테
                 const TEST = String.fromCodePoint(0xd14c, 0xc2a4, 0xd2b8); // 테스트
                 const HAN = String.fromCodePoint(0x6f22); // 漢, a double-width glyph
-                const CLIP_SENTINEL = 'NEX-AUDIT-CLIPBOARD-SENTINEL';
+                const CLIP_SENTINEL = 'KELPI-AUDIT-CLIPBOARD-SENTINEL';
 
                 await focusPaneBody(page, paneID);
                 await runInTerminal(page, 'clear', { settleMs: 500 });
@@ -13010,7 +13010,7 @@ function buildFlows(ctx) {
                 });
                 await recorder.shot(page, 'composed');
 
-                recorder.block('nex pane capture (Space-terminated composition)', spaceCapture.trimEnd());
+                recorder.block('kelpi pane capture (Space-terminated composition)', spaceCapture.trimEnd());
                 const hangulCount = spaceCapture.split(HANGUL).length - 1;
                 recorder.note(`"${HANGUL}" occurrences on screen: ${String(hangulCount)}`);
                 recorder.check(
@@ -13060,7 +13060,7 @@ function buildFlows(ctx) {
                     (text) => text.split('\n').some((line) => line.trim() === TEST),
                     { ceilingMs: 900, intervalMs: 90 }
                 );
-                recorder.block('nex pane capture (Enter-terminated composition)', enterCapture.trimEnd());
+                recorder.block('kelpi pane capture (Enter-terminated composition)', enterCapture.trimEnd());
                 const keyNameLeak = ['Enter', 'Return', 'Escape', 'Backspace'].filter((name) => enterCapture.includes(name));
                 recorder.check(
                     'a composition ended by a NAMED key never writes the key name to the PTY (the vendored hardening)',
@@ -13376,7 +13376,7 @@ function buildFlows(ctx) {
                     (text) => text.includes('^[[H') && text.includes('^[[F'),
                     { ceilingMs: 700, intervalMs: 90, scrollback: true }
                 );
-                recorder.block('nex pane capture (cat -v, DECCKM off)', encoderCapture.trimEnd().split('\n').slice(-8).join('\n'));
+                recorder.block('kelpi pane capture (cat -v, DECCKM off)', encoderCapture.trimEnd().split('\n').slice(-8).join('\n'));
                 recorder.check(
                     'Shift+Tab reaches the PTY as `ESC [ Z` — TERM-029\'s named case, unasserted until now',
                     encoderCapture.includes('^[[Z'),
@@ -13413,7 +13413,7 @@ function buildFlows(ctx) {
                     ceilingMs: 700,
                     intervalMs: 90
                 });
-                recorder.block('nex pane capture (cat -v, DECCKM set)', decckmCapture.trimEnd().split('\n').slice(-4).join('\n'));
+                recorder.block('kelpi pane capture (cat -v, DECCKM set)', decckmCapture.trimEnd().split('\n').slice(-4).join('\n'));
                 const decckmLine = decckmCapture.split('\n').filter((line) => line.includes('^[')).pop() ?? '';
                 recorder.note(`DECCKM line: ${JSON.stringify(decckmLine)}`);
                 recorder.check(
@@ -13591,7 +13591,7 @@ function buildFlows(ctx) {
                 'Read off the engine\'s own canvas in device pixels, with the cursor parked on a known cell by a CUP escape: ' +
                 'the unfocused pane\'s cursor cell is IDENTICAL across two blink periods and paints only its perimeter ' +
                 '(border pixels lit, centre and inset on the background), while the focused pane\'s fills the whole cell and ' +
-                'changes between frames. The window is half of it: a Nex window that loses focus has no blinking cursor ' +
+                'changes between frames. The window is half of it: a Kelpi window that loses focus has no blinking cursor ' +
                 'anywhere in it (`BaseTerminalController.syncFocusToSurfaceTree` gates on `window.isKeyWindow`), so a window ' +
                 'blur turns the focused pane\'s cursor hollow too, and a window focus restores it.',
             needsEyes: true,
@@ -13615,7 +13615,7 @@ function buildFlows(ctx) {
                  * This step needs two shell panes and will make one when the grid has only one.
                  * The first version left it there, and `pane-header-details` five steps later
                  * reads `529px → 529px` where every earlier run read `529 → 296 → 127`: that
-                 * step narrows the widest shell pane with `nex pane resize`, which acts on the
+                 * step narrows the widest shell pane with `kelpi pane resize`, which acts on the
                  * pane's ENCLOSING split, and the split this one added is a vertical one — so
                  * the resize moved a height and the header's width never budged. Same class as
                  * ledger **N9** (a leaked pane poisoning a step sixty later), reached by a
@@ -13898,7 +13898,7 @@ function buildFlows(ctx) {
                  *
                  * AppKit does not resign a view's first-responder status when its window stops
                  * being key, so ghostty computes surface focus with `window.isKeyWindow` in it
-                 * and a backgrounded Nex window has no blinking cursor anywhere. The browser's
+                 * and a backgrounded Kelpi window has no blinking cursor anywhere. The browser's
                  * equivalent is the window's own `focus`/`blur` event, which is what the client
                  * listens to — and which is dispatched here rather than acted out, because
                  * taking the OS focus away from the harness would also take it away from the
@@ -13995,7 +13995,7 @@ function buildFlows(ctx) {
                 recorder.eyes(
                     'the "focused-vs-unfocused" shot: ONE cursor in the grid should be a solid block and the other a thin ' +
                         'outline (it is a single device pixel wide — ghostty\'s own thickness — so look closely rather ' +
-                        'than for a heavy border). What no capture here can settle: that a real ⌘Tab away from Nex, ' +
+                        'than for a heavy border). What no capture here can settle: that a real ⌘Tab away from Kelpi, ' +
                         'rather than a dispatched `blur`, stops the cursor blinking — Chromium\'s delivery of the window ' +
                         'event is the one link in the chain a page cannot observe about itself.'
                 );
@@ -14037,9 +14037,9 @@ function buildFlows(ctx) {
                 recorder.note(`target pane: ${String(paneID)} (${String(Math.round(target?.width ?? 0))}px)`);
 
                 const tag = Math.random().toString(36).slice(2, 7).toUpperCase();
-                const SENTINEL = `NEX-OSC52-SENTINEL-${tag}`;
-                const BLOCKED = `NEX-OSC52-BLOCKED-${tag}`;
-                const ALLOWED = `NEX-OSC52-ALLOWED-${tag} (with a space)`;
+                const SENTINEL = `KELPI-OSC52-SENTINEL-${tag}`;
+                const BLOCKED = `KELPI-OSC52-BLOCKED-${tag}`;
+                const ALLOWED = `KELPI-OSC52-ALLOWED-${tag} (with a space)`;
                 const b64 = (text) => Buffer.from(text, 'utf8').toString('base64');
                 /** `pane capture` reads the daemon's buffer; a marker keeps the assertions local. */
                 const readClipboard = async () =>
@@ -14132,7 +14132,7 @@ function buildFlows(ctx) {
                 );
 
                 // ── 2. the live-apply flip, through the Settings window ─────────────
-                const pidBefore = Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                const pidBefore = Number((await kelpidStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
                 await openSettingsTab(page, 'workspaces');
                 const toggleState = async () =>
                     page.eval(`document.querySelector('[data-testid="clipboard-write-toggle"]')?.checked === true`);
@@ -14211,7 +14211,7 @@ function buildFlows(ctx) {
                     !shellLog.includes(ALLOWED),
                     shellLog.includes(ALLOWED) ? 'the payload appeared in the shell log' : 'no payload in the shell log'
                 );
-                const pidAfter = Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                const pidAfter = Number((await kelpidStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
                 recorder.check(
                     'with no restart in between — the same daemon process throughout',
                     pidAfter === pidBefore && pidAfter > 0,
@@ -14249,7 +14249,7 @@ function buildFlows(ctx) {
                 await focusPaneBody(page, paneID);
                 await runInTerminal(page, "printf '\\033[2J\\033[3J\\033[H'", { settleMs: 600 });
                 await runInTerminal(page, oscRead, { settleMs: 1200 });
-                const readSentinel = `NEXREAD${tag}`;
+                const readSentinel = `KELPIREAD${tag}`;
                 await runInTerminal(page, 'cat -v', { settleMs: 900 });
                 await runInTerminal(page, readSentinel, { settleMs: 900 });
                 const drained = await cli.ok(['pane', 'capture', '--target', paneID]);
@@ -14562,9 +14562,9 @@ function buildFlows(ctx) {
                 // The assertion is on BYTES, read back through `cat -v` exactly as
                 // `terminal-input-matrix` reads the key encodings: the payload is multi-line, and
                 // under DEC 2004 it must arrive wrapped in `ESC [ 2 0 0 ~` … `ESC [ 2 0 1 ~`.
-                const PASTE_A = 'NEXPASTE-ALPHA';
-                const PASTE_B = 'NEXPASTE-BETA';
-                const PASTE_C = 'NEXPASTE-GAMMA';
+                const PASTE_A = 'KELPIPASTE-ALPHA';
+                const PASTE_B = 'KELPIPASTE-BETA';
+                const PASTE_C = 'KELPIPASTE-GAMMA';
                 const payload = `${PASTE_A}\n${PASTE_B}\n${PASTE_C}`;
                 const seedClipboard = async () =>
                     String(
@@ -14582,7 +14582,7 @@ function buildFlows(ctx) {
                  * copies the selection on mouse-up, and the click that FOCUSES a pane is a
                  * mouse-up over a cell, so focusing a pane that has text under the pointer
                  * replaces the system clipboard with that one character. First run: a focus
-                 * click landed on the `E` of `NEXPASTE-BETA` and the paste under test faithfully
+                 * click landed on the `E` of `KELPIPASTE-BETA` and the paste under test faithfully
                  * pasted `E`. Seeding after the last click is what makes the payload the thing
                  * being measured rather than the pointer's position.
                  */
@@ -15086,7 +15086,7 @@ function buildFlows(ctx) {
                     `background pane before: title=${JSON.stringify(beforeReports?.title)} cwd=${String(beforeReports?.working_directory)}`
                 );
 
-                const BG_TITLE = 'NEX-BG-TITLE-9F3';
+                const BG_TITLE = 'KELPI-BG-TITLE-9F3';
                 const bgDir = path.join(work, 'bg-cwd');
                 fs.mkdirSync(bgDir, { recursive: true });
                 // OSC 2 (title) and OSC 7 (pwd) written by the shell itself, driven from outside
@@ -15147,7 +15147,7 @@ function buildFlows(ctx) {
                 );
 
                 // §TERM-050: an OSC 9 desktop notification from the same background pane.
-                const BG_BODY = 'NEX-BG-OSC-NOTIFY';
+                const BG_BODY = 'KELPI-BG-OSC-NOTIFY';
                 await cli.ok(['pane', 'send', '--target', paneID, `printf '\\033]9;${BG_BODY}\\007'`]);
                 // SETTLE-WAIT (was sleep(1500)): the notification has arrived ON THE OBSERVER —
                 // an in-process array, so this poll costs nothing — carrying the body the first
@@ -15161,7 +15161,7 @@ function buildFlows(ctx) {
                                 String(message.body) === BG_BODY &&
                                 message.paneID === paneID &&
                                 message.workspaceID === edgesID &&
-                                message.dedupeKey === `nex-${paneID}`
+                                message.dedupeKey === `kelpi-${paneID}`
                         ),
                     { ceilingMs: 1500, intervalMs: 30 }
                 );
@@ -15178,7 +15178,7 @@ function buildFlows(ctx) {
                         (message) =>
                             message.paneID === paneID &&
                             message.workspaceID === edgesID &&
-                            message.dedupeKey === `nex-${paneID}`
+                            message.dedupeKey === `kelpi-${paneID}`
                     ),
                     JSON.stringify(oscNotifications.at(-1) ?? null)
                 );
@@ -15251,7 +15251,7 @@ function buildFlows(ctx) {
              * The harness needs one thing it has never needed before: an interrupt that does
              * not go through the keyboard. Under the protocol, ctrl+c is `CSI 99;5u` and the
              * tty never sees 0x03 — which is correct, and which would wedge every later step if
-             * the only way out were a keystroke. `nex pane send-key ctrl-c` writes the raw byte
+             * the only way out were a keystroke. `kelpi pane send-key ctrl-c` writes the raw byte
              * from the DAEMON side, below the client encoder entirely.
              */
             id: 'terminal-kitty',
@@ -15680,7 +15680,7 @@ function buildFlows(ctx) {
                 const activityBefore = await activityOf();
                 recorder.note(`header before: ${JSON.stringify(before)} · activity ${String(activityBefore)}`);
 
-                const probe = `NEX-TITLE-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+                const probe = `KELPI-TITLE-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
                 // A full second, so the ISO-8601 `last_activity_at` (whole seconds) can move.
                 await sleep(1100);
                 await runInTerminal(page, `printf '\\033]2;${probe}\\007'`, { settleMs: 900 });
@@ -16193,7 +16193,7 @@ function buildFlows(ctx) {
                 // empty commit as "drop the label" (TERM-112). Two behaviours for the price of
                 // the cleanup.
                 // Put the header back to something short. (Clearing a label outright is the
-                // inline field's empty-commit rule — `nex pane name` refuses an empty argument
+                // inline field's empty-commit rule — `kelpi pane name` refuses an empty argument
                 // by design — and that path is covered by `PaneHeader.test.tsx`'s rename tests
                 // rather than re-driven here.)
                 await cli.run(['pane', 'name', 'hdr', '--target', paneID]);
@@ -16601,7 +16601,7 @@ function buildFlows(ctx) {
         {
             id: 'capture-parity',
             expect:
-                'What the CLI says is on the screen and what is on the screen are the same thing: a nonce typed through the canvas appears verbatim in `nex pane capture`, in the same row order, and the screenshot shows it.',
+                'What the CLI says is on the screen and what is on the screen are the same thing: a nonce typed through the canvas appears verbatim in `kelpi pane capture`, in the same row order, and the screenshot shows it.',
             needsEyes: true,
             async run(recorder) {
                 /**
@@ -16635,7 +16635,7 @@ function buildFlows(ctx) {
                 await sleep(900);
                 await recorder.shot(page);
                 const capture = await cli.ok(['pane', 'capture', '--target', paneID]);
-                recorder.block('nex pane capture (compare against the screenshot above, row by row)', capture);
+                recorder.block('kelpi pane capture (compare against the screenshot above, row by row)', capture);
                 recorder.artifact('capture.txt', capture);
                 const rows = capture.split('\n').filter((line) => line.includes(nonce) && /^row\d\d /.test(line.trim()));
                 recorder.check('the capture contains the nonce', capture.includes(nonce), nonce);
@@ -16829,7 +16829,7 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`after ⌘E: ${JSON.stringify(afterCmdE)}`);
                 recorder.check('⌘E ends a live editor session', (afterCmdE?.preview ?? 0) === 1, JSON.stringify(afterCmdE));
-                recorder.eyes('did the pane visibly become a terminal running the editor (look for the NEX-AUDIT-EDITOR line), and a rendered preview again afterwards?');
+                recorder.eyes('did the pane visibly become a terminal running the editor (look for the KELPI-AUDIT-EDITOR line), and a rendered preview again afterwards?');
             }
         },
         {
@@ -16901,10 +16901,10 @@ function buildFlows(ctx) {
                 // from "the daemon found no token".
                 await page.eval(
                     `(() => {
-                        window.__nexClickProbe = [];
+                        window.__kelpiClickProbe = [];
                         document.addEventListener('click', (event) => {
                             const host = event.target?.closest?.('[data-terminal-host]') ?? null;
-                            window.__nexClickProbe.push({ meta: event.metaKey, button: event.button,
+                            window.__kelpiClickProbe.push({ meta: event.metaKey, button: event.button,
                                                           host: host !== null, x: event.clientX, y: event.clientY });
                         }, true);
                         return 'armed';
@@ -16946,7 +16946,7 @@ function buildFlows(ctx) {
                         if (created.length > 0) break outer;
                     }
                 }
-                const probe = await page.eval(`JSON.stringify(window.__nexClickProbe ?? [])`);
+                const probe = await page.eval(`JSON.stringify(window.__kelpiClickProbe ?? [])`);
                 recorder.note(`click probe: ${String(probe).slice(0, 500)}`);
                 await recorder.shot(page, 'after-click');
                 recorder.note(`⌘-click attempts: ${String(attempts)}; created: ${JSON.stringify(created.map((pane) => ({ id: pane.id, type: pane.type, label: pane.label })))}`);
@@ -16971,7 +16971,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 const dropExpr = (uri) =>
                     `(() => {
-                        const app = document.querySelector('[data-testid="nex-app"]');
+                        const app = document.querySelector('[data-testid="kelpi-app"]');
                         if (app === null) return 'no-app';
                         const dt = new DataTransfer();
                         dt.setData('text/uri-list', ${JSON.stringify('')} + ${JSON.stringify(uri)});
@@ -17116,7 +17116,7 @@ function buildFlows(ctx) {
                  *
                  * So assert the two things the item is actually about: the daemon **typed a
                  * clipboard-image file name into the pane**, and that file **exists on the
-                 * daemon's filesystem under `nex-clipboard-images`**. The uuid makes the name
+                 * daemon's filesystem under `kelpi-clipboard-images`**. The uuid makes the name
                  * unique, so finding it on disk proves the directory as surely as reading the
                  * prefix off a wrapped row would.
                  */
@@ -17133,10 +17133,10 @@ function buildFlows(ctx) {
                     // path) while the daemon resolves `/tmp`. The uuid in the name makes the
                     // search unambiguous either way.
                     const roots = [...new Set([os.tmpdir(), '/tmp'])];
-                    const candidates = roots.map((root) => path.join(root, 'nex-clipboard-images', match[0]));
+                    const candidates = roots.map((root) => path.join(root, 'kelpi-clipboard-images', match[0]));
                     const written = candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
                     recorder.check(
-                        'and the file really exists on the daemon’s filesystem, under nex-clipboard-images',
+                        'and the file really exists on the daemon’s filesystem, under kelpi-clipboard-images',
                         written !== null,
                         written ?? `not at any of: ${candidates.join(' , ')}`
                     );
@@ -17195,7 +17195,7 @@ function buildFlows(ctx) {
                             : help.splitRight !== '' && help.splitRight !== '⌘D',
                         `${help.splitRight} vs config ${rebound ?? 'super+d'}`
                     );
-                    recorder.check('it points at the CLI', help.cli.includes('nex doctor'), help.cli.slice(0, 120));
+                    recorder.check('it points at the CLI', help.cli.includes('kelpi doctor'), help.cli.slice(0, 120));
                     recorder.check('it links the repository', help.github.startsWith('https://github.com/'), help.github);
                 }
 
@@ -17224,7 +17224,7 @@ function buildFlows(ctx) {
         {
             id: 'titlebar-menu',
             expect:
-                'The ••• title-bar menu opens with Settings…, a Show/Hide Inspector item whose title reflects the current state, Nex Help, Install CLI + Check for Updates… (Electron only) and Restart Socket Server — and the restart really rebinds the control socket, so the CLI still answers afterwards.',
+                'The ••• title-bar menu opens with Settings…, a Show/Hide Inspector item whose title reflects the current state, Kelpi Help, Install CLI + Check for Updates… (Electron only) and Restart Socket Server — and the restart really rebinds the control socket, so the CLI still answers afterwards.',
             needsEyes: true,
             async run(recorder) {
                 await page.click('[data-testid="titlebar-menu-toggle"]');
@@ -17244,7 +17244,7 @@ function buildFlows(ctx) {
                 recorder.note(`••• menu: ${JSON.stringify(menu)}`);
                 recorder.check('the ••• button opens a menu', menu !== null);
                 const labels = (menu ?? []).map((item) => item.label);
-                for (const wanted of ['Settings…', 'Nex Help', 'Install CLI', 'Check for Updates…', 'Restart Socket Server']) {
+                for (const wanted of ['Settings…', 'Kelpi Help', 'Install CLI', 'Check for Updates…', 'Restart Socket Server']) {
                     recorder.check(`the menu offers "${wanted}"`, labels.includes(wanted), labels.join(' / '));
                 }
                 recorder.check(
@@ -17369,7 +17369,7 @@ function buildFlows(ctx) {
                 // clicked below - the session is started and stopped from the CLI, so the dot
                 // can only appear (and clear) if the boot-time subscription delivered it.
                 const cliStart = await cli.run(['graft', 'start', '--repo', path.basename(wt)]);
-                recorder.note(`nex graft start --repo ${path.basename(wt)}: code=${String(cliStart.code)} ${String(cliStart.stdout).trim()} ${String(cliStart.stderr).trim()}`.trim());
+                recorder.note(`kelpi graft start --repo ${path.basename(wt)}: code=${String(cliStart.code)} ${String(cliStart.stdout).trim()} ${String(cliStart.stderr).trim()}`.trim());
                 if (cliStart.code !== 0) {
                     recorder.check('a CLI-started graft reaches the daemon (\u00a7GIT-044)', false, `${cliStart.stdout}${cliStart.stderr}`.slice(0, 200));
                 } else {
@@ -17611,7 +17611,7 @@ function buildFlows(ctx) {
                     JSON.stringify({
                         assocId: associationID,
                         branch: 'graft-branch',
-                        preGraftBranch: 'branch-deleted-while-nex-was-down',
+                        preGraftBranch: 'branch-deleted-while-kelpi-was-down',
                         preGraftSha: git(['rev-parse', 'HEAD']).trim(),
                         stashRef: null,
                         stashed: false,
@@ -17862,7 +17862,7 @@ function buildFlows(ctx) {
                         String(contentChip)
                     );
                     /*
-                     * Hand the split back. `nex md` splits the FOCUSED pane, so the markdown pane
+                     * Hand the split back. `kelpi md` splits the FOCUSED pane, so the markdown pane
                      * and the shell pane above are siblings, and widening one squeezes the other \u2014
                      * which is not this step's business to leave behind. It costs two steps if it
                      * is left: the detached-HEAD reads below lose the shell pane's chip again, and
@@ -17925,7 +17925,7 @@ function buildFlows(ctx) {
 
                 const before = runtime.shell.text().length;
                 // Two panes in two states, so the header has counts to render and the menu has
-                // more than one row: `nex event` is the same hook path Claude Code uses.
+                // more than one row: `kelpi event` is the same hook path Claude Code uses.
                 await cli.ok(['event', 'start'], {
                     paneID: shellPane.id,
                     stdin: JSON.stringify({ session_id: 'audit-tray-0000-0001' })
@@ -18021,7 +18021,7 @@ function buildFlows(ctx) {
         {
             id: 'settings-tcp-state',
             expect:
-                'Settings \u25b8 General \u25b8 Network reports what the daemon\u2019s TCP listener actually DID, not what the config file asked for, and `nexd status` agrees with it \u2014 in JSON and in its human output. (The failed-bind half of \u00a7SET-021 needs a port that is already taken at daemon start, so it is covered by `daemon/src/control/server.test.ts` for the transport and `client/src/settings/GeneralTab.test.tsx` for the destructive-tone line.)',
+                'Settings \u25b8 General \u25b8 Network reports what the daemon\u2019s TCP listener actually DID, not what the config file asked for, and `kelpid status` agrees with it \u2014 in JSON and in its human output. (The failed-bind half of \u00a7SET-021 needs a port that is already taken at daemon start, so it is covered by `daemon/src/control/server.test.ts` for the transport and `client/src/settings/GeneralTab.test.tsx` for the destructive-tone line.)',
             needsEyes: true,
             async run(recorder) {
                 await openSettingsTab(page, 'general');
@@ -18035,7 +18035,7 @@ function buildFlows(ctx) {
                     row !== null && String(row).length > 0,
                     String(row)
                 );
-                // The sandbox daemon binds TCP from `NEXD_TCP_PORT`, and the CONFIG FILE says
+                // The sandbox daemon binds TCP from `KELPID_TCP_PORT`, and the CONFIG FILE says
                 // nothing about it — which is exactly the case the old row got wrong: it read
                 // the file, said "Disabled", and was talking about a listener that was up.
                 recorder.check(
@@ -18050,10 +18050,10 @@ function buildFlows(ctx) {
                 );
 
                 // The same fact, from the other surface that reports it.
-                const status = await nexdStatus(sandbox, { repoRoot, json: true });
-                recorder.block('nexd status --json (tcp)', JSON.stringify(status?.tcp ?? null));
+                const status = await kelpidStatus(sandbox, { repoRoot, json: true });
+                recorder.block('kelpid status --json (tcp)', JSON.stringify(status?.tcp ?? null));
                 recorder.check(
-                    '`nexd status` reports the TCP listener state as a first-class field',
+                    '`kelpid status` reports the TCP listener state as a first-class field',
                     status !== null && 'tcp' in status,
                     JSON.stringify(status?.tcp ?? 'absent')
                 );
@@ -18062,8 +18062,8 @@ function buildFlows(ctx) {
                     Number(status?.tcp?.bound) === sandbox.controlPort && status?.tcp?.error === null,
                     JSON.stringify(status?.tcp ?? null)
                 );
-                const human = await nexdStatus(sandbox, { repoRoot, json: false });
-                recorder.block('nexd status (human)', String(human).trim());
+                const human = await kelpidStatus(sandbox, { repoRoot, json: false });
+                recorder.block('kelpid status (human)', String(human).trim());
                 recorder.check(
                     'and prints it in the human output too',
                     new RegExp(`tcp: listening on 127\\.0\\.0\\.1:${String(sandbox.controlPort)}`).test(String(human)),
@@ -18113,7 +18113,7 @@ function buildFlows(ctx) {
                 );
 
                 const beforeIDs = new Set((await cli.json(['pane', 'list', '--json'])).map((entry) => entry.id));
-                // The RAW wire, deliberately: `nex md` calls `path.resolve` first, so it can
+                // The RAW wire, deliberately: `kelpi md` calls `path.resolve` first, so it can
                 // never exercise the daemon-side chain this step is about.
                 await sendRawControl(sandbox, { command: 'open', path: 'docs/relative.md', pane_id: shellPane.id });
                 await sleep(2500);
@@ -18335,7 +18335,7 @@ function buildFlows(ctx) {
         {
             id: 'settings-live-apply',
             expect:
-                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `nex workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014). The repaint reaches the CELL AREA, not just the margin around it: the theme\u2019s background is the most-painted colour on the engine\u2019s own canvas on arrival AND after a full-screen redraw \u2014 or, under `background-opacity < 1`, the cell area is CLEARED and carries no opaque pixel of the previous background (\u00a7N18).',
+                'A setting changed in the Settings WINDOW takes effect in the daemon that is already running: the Workspaces toggle writes `expand-group-on-workspace-drop` into `~/.config/nex/config` and the switch follows the daemon\u2019s broadcast rather than a local echo, and changing the worktree base path on General makes the very next `kelpi workspace create --worktree` build its worktree under the NEW path \u2014 same daemon process, no restart. And `theme = <name>` is RESOLVED rather than merely stored: a fixture ghostty theme file in the sandbox\u2019s themes directory, picked in Settings \u25b8 Appearance, repaints the live terminal with the file\u2019s own background and foreground, while a name with no file behind it falls back with a visible note (\u00a7SET-012, \u00a7SET-008, \u00a7SET-225, \u00a7APP-014). The repaint reaches the CELL AREA, not just the margin around it: the theme\u2019s background is the most-painted colour on the engine\u2019s own canvas on arrival AND after a full-screen redraw \u2014 or, under `background-opacity < 1`, the cell area is CLEARED and carries no opaque pixel of the previous background (\u00a7N18).',
             needsEyes: true,
             async run(recorder) {
                 /*
@@ -18353,7 +18353,7 @@ function buildFlows(ctx) {
                  *      file; the assertion is that the file's colours reach a terminal that is
                  *      already on screen, and that a name with no file says so.
                  */
-                const pidOf = async () => Number((await nexdStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
+                const pidOf = async () => Number((await kelpidStatus(sandbox, { repoRoot, json: true }))?.pid ?? 0);
                 const pidBefore = await pidOf();
                 recorder.check('a running daemon to apply the change to', pidBefore > 0, String(pidBefore));
 
@@ -18508,7 +18508,7 @@ function buildFlows(ctx) {
                 // SETTLE-WAIT (was sleep(900)): the restored base path is on disk — the exact
                 // regex the assertion below runs over the file.
                 await settle(
-                    () => /worktree-base-path\s*=\s*~\/nex\/worktrees\/<repo>/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
+                    () => /worktree-base-path\s*=\s*~\/kelpi\/worktrees\/<repo>/.test(fs.readFileSync(sandbox.configPath, 'utf8')),
                     { ceilingMs: 900, intervalMs: 60 }
                 );
                 await page.key('Escape');
@@ -18521,7 +18521,7 @@ function buildFlows(ctx) {
                 );
                 recorder.check(
                     'the step puts the base path back where it found it',
-                    /worktree-base-path\s*=\s*~\/nex\/worktrees\/<repo>/.test(
+                    /worktree-base-path\s*=\s*~\/kelpi\/worktrees\/<repo>/.test(
                         fs.readFileSync(sandbox.configPath, 'utf8')
                     ),
                     fs.readFileSync(sandbox.configPath, 'utf8').trim().slice(-160)
@@ -18539,7 +18539,7 @@ function buildFlows(ctx) {
                  * else rides.
                  *
                  * The fixture theme is written into the SANDBOX's own themes directory (beside
-                 * the ghostty config `NEXD_GHOSTTY_CONFIG` pins), which is the first entry on
+                 * the ghostty config `KELPID_GHOSTTY_CONFIG` pins), which is the first entry on
                  * the daemon's search path — so this cannot resolve out of the developer's home
                  * or a real Ghostty install, and its colours are deliberately nothing any preset
                  * ships.
@@ -18659,7 +18659,7 @@ function buildFlows(ctx) {
                                 // The provider's own div carries the inline assignments;
                                 // \`documentElement\` carries the stylesheet's static fallback,
                                 // which would pass on a daemon that resolved nothing.
-                                const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                                const hosts = Array.from(document.querySelectorAll('[data-kelpi-theme]'))
                                     .filter((el) => el !== document.documentElement);
                                 const host = hosts[0];
                                 if (host === undefined) return '(no theme container)';
@@ -18685,9 +18685,9 @@ function buildFlows(ctx) {
                     );
 
                 await openSettingsTab(page, 'appearance');
-                const fgBefore = await termToken('--nex-term-fg');
+                const fgBefore = await termToken('--kelpi-term-fg');
                 const fillBefore = await paneFillOf();
-                recorder.note(`before the theme: --nex-term-fg=${fgBefore} pane fill=${fillBefore}`);
+                recorder.note(`before the theme: --kelpi-term-fg=${fgBefore} pane fill=${fillBefore}`);
 
                 // Picked the way a user picks it — the same select §SET-105 writes through.
                 await page.eval(
@@ -18710,12 +18710,12 @@ function buildFlows(ctx) {
                 try {
                     await page.waitFor(
                         `(() => {
-                            const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                            const hosts = Array.from(document.querySelectorAll('[data-kelpi-theme]'))
                                 .filter((el) => el !== document.documentElement);
                             const host = hosts[0];
                             if (host === undefined) return false;
                             return getComputedStyle(host)
-                                .getPropertyValue('--nex-term-fg')
+                                .getPropertyValue('--kelpi-term-fg')
                                 .trim()
                                 .toLowerCase()
                                 .includes('7fffd4');
@@ -18734,11 +18734,11 @@ function buildFlows(ctx) {
                     /theme\s*=\s*Dracula/.test(ghosttyWithTheme),
                     ghosttyWithTheme.trim().slice(-160)
                 );
-                const fgAfter = await termToken('--nex-term-fg');
+                const fgAfter = await termToken('--kelpi-term-fg');
                 const fillAfter = await paneFillOf();
-                const bgToken = await termToken('--nex-term-bg');
+                const bgToken = await termToken('--kelpi-term-bg');
                 recorder.note(
-                    `after the theme: --nex-term-fg=${fgAfter} --nex-term-bg=${bgToken} pane fill=${fillAfter}`
+                    `after the theme: --kelpi-term-fg=${fgAfter} --kelpi-term-bg=${bgToken} pane fill=${fillAfter}`
                 );
                 recorder.check(
                     'the theme FILE’s foreground is what the running client resolves (§APP-014)',
@@ -18918,7 +18918,7 @@ function buildFlows(ctx) {
                  *
                  * So the transition is decided on the pane's own CONTENT, through the DAEMON's
                  * own read of its terminal: print a sentinel, prove it is on the screen, send
-                 * the `clear`, and settle on `nex pane capture` no longer containing it. That
+                 * the `clear`, and settle on `kelpi pane capture` no longer containing it. That
                  * read is a text buffer — no amount of subpixel drift can satisfy it, and no
                  * amount of prompt redraw can hide a `clear` from it. THEN §N18's pixel question
                  * is asked of the canvas that answered. `cellAreaTookTheTheme` is untouched,
@@ -18943,7 +18943,7 @@ function buildFlows(ctx) {
                  * — and a `clear` takes both, because it wipes the viewport `pane capture`
                  * reads.
                  */
-                const CLEAR_SENTINEL = 'NEX-AUDIT-CLEAR-SENTINEL';
+                const CLEAR_SENTINEL = 'KELPI-AUDIT-CLEAR-SENTINEL';
                 const captureProbe = async () => {
                     if (probePaneID === '') return '';
                     try {
@@ -19106,12 +19106,12 @@ function buildFlows(ctx) {
                     unresolvedNote.includes('Nord') && /theme file/i.test(unresolvedNote),
                     unresolvedNote || '(no note rendered)'
                 );
-                const fgFallback = await termToken('--nex-term-fg');
+                const fgFallback = await termToken('--kelpi-term-fg');
                 const fillFallback = await paneFillOf();
                 recorder.check(
                     'and the palette falls back to what it was, rather than to a guess',
                     !fgFallback.toLowerCase().includes('7fffd4') && !/48\s*,\s*25\s*,\s*52/.test(fillFallback),
-                    `--nex-term-fg=${fgFallback || '(unset)'} fill=${fillFallback}`
+                    `--kelpi-term-fg=${fgFallback || '(unset)'} fill=${fillFallback}`
                 );
 
                 // ── put the ghostty file and the themes directory back ───────────────────
@@ -19250,7 +19250,7 @@ function buildFlows(ctx) {
                 if (!config.includes('profile = audit:')) {
                     /**
                      * The `tcp-port` line rides along ON PURPOSE. The sandbox's daemon takes its
-                     * control port from `NEXD_TCP_PORT`, so the config file does not name it —
+                     * control port from `KELPID_TCP_PORT`, so the config file does not name it —
                      * and §AGNT-005's live re-bind reads the FILE on every settings change, sees
                      * "no port wanted", and stops the listener the CLI is talking to. Writing the
                      * port the daemon already uses makes the re-bind a no-op instead. (A daemon
@@ -20040,7 +20040,7 @@ function buildFlows(ctx) {
                 try {
                     await page.eval(
                         `(() => {
-                            const app = document.querySelector('[data-testid="nex-app"]');
+                            const app = document.querySelector('[data-testid="kelpi-app"]');
                             const row = document.querySelector('[data-testid="workspace-row"][data-active="true"]');
                             if (app === null || row === null) return 'skip';
                             const r = row.getBoundingClientRect();
@@ -20054,7 +20054,7 @@ function buildFlows(ctx) {
                 } finally {
                     await page.eval(
                         `(() => {
-                            const app = document.querySelector('[data-testid="nex-app"]');
+                            const app = document.querySelector('[data-testid="kelpi-app"]');
                             if (app !== null) { app.style.transform = ''; app.style.transformOrigin = ''; }
                             return 'ok';
                         })()`
@@ -21457,7 +21457,7 @@ function buildFlows(ctx) {
                 await recorder.shot(page, 'row-entering');
                 recorder.check(
                     'a row that appears plays the entry animation (§WS-008)',
-                    entered.flagged === 1 && entered.animation === 'nex-sidebar-row-enter',
+                    entered.flagged === 1 && entered.animation === 'kelpi-sidebar-row-enter',
                     JSON.stringify(entered)
                 );
                 // SETTLE-WAIT (was sleep(600)): the entry animation has finished — the rows below
@@ -22087,7 +22087,7 @@ function buildFlows(ctx) {
                  * path, and a failed probe is worth exactly one red.
                  */
                 const handBack = async () => {
-                    await page.eval(`(() => { delete window.__nexSpring; return true; })()`);
+                    await page.eval(`(() => { delete window.__kelpiSpring; return true; })()`);
                     await cli.run(['group', 'delete', 'Springboard', '--cascade']);
                     // Phase (d) drags `Spring Nested` OUT of the group, so the cascade above may
                     // no longer own it. Deleting it by name is a no-op when the cascade already
@@ -22238,17 +22238,17 @@ function buildFlows(ctx) {
                                 requestAnimationFrame(tick);
                             };
                             requestAnimationFrame(tick);
-                            window.__nexSpring = { samples, targets, stop: () => { running = false; } };
+                            window.__kelpiSpring = { samples, targets, stop: () => { running = false; } };
                             return true;
                         })()`
                     );
                 };
                 const readSamples = async () =>
-                    JSON.parse(String(await page.eval(`JSON.stringify(window.__nexSpring?.samples ?? [])`)));
+                    JSON.parse(String(await page.eval(`JSON.stringify(window.__kelpiSpring?.samples ?? [])`)));
                 const readTargets = async () =>
-                    JSON.parse(String(await page.eval(`JSON.stringify(window.__nexSpring?.targets ?? [])`)));
+                    JSON.parse(String(await page.eval(`JSON.stringify(window.__kelpiSpring?.targets ?? [])`)));
                 const stopSampler = async () => {
-                    await page.eval(`(() => { window.__nexSpring?.stop?.(); return true; })()`);
+                    await page.eval(`(() => { window.__kelpiSpring?.stop?.(); return true; })()`);
                 };
 
                 /*
@@ -22351,7 +22351,7 @@ function buildFlows(ctx) {
                     )
                 );
                 const orderAfter = await orderNow();
-                const releaseMark = Number(await page.eval(`window.__nexSpring?.samples?.length ?? 0`));
+                const releaseMark = Number(await page.eval(`window.__kelpiSpring?.samples?.length ?? 0`));
                 await page.mouse('mouseReleased', grabX, settleY, { button: 'left', clickCount: 1 });
                 await sleep(900);
                 await stopSampler();
@@ -22816,18 +22816,18 @@ function buildFlows(ctx) {
                                 requestAnimationFrame(tick);
                             };
                             requestAnimationFrame(tick);
-                            window.__nexHandover = { samples, stop: () => { running = false; } };
+                            window.__kelpiHandover = { samples, stop: () => { running = false; } };
                             return true;
                         })()`
                     );
                     await sleep(80);
                     await page.mouse('mouseReleased', nestedX, releaseY, { button: 'left', clickCount: 1 });
                     await sleep(900);
-                    await page.eval(`(() => { window.__nexHandover?.stop?.(); return true; })()`);
+                    await page.eval(`(() => { window.__kelpiHandover?.stop?.(); return true; })()`);
                     const handover = JSON.parse(
-                        String(await page.eval(`JSON.stringify(window.__nexHandover?.samples ?? [])`))
+                        String(await page.eval(`JSON.stringify(window.__kelpiHandover?.samples ?? [])`))
                     );
-                    await page.eval(`(() => { delete window.__nexHandover; return true; })()`);
+                    await page.eval(`(() => { delete window.__kelpiHandover; return true; })()`);
 
                     const present = handover.filter((sample) => sample[1] === 1);
                     const doubles = handover.filter((sample) => sample[2] === 1 && sample[3] > 0).length;
@@ -23205,14 +23205,14 @@ function buildFlows(ctx) {
                                 requestAnimationFrame(tick);
                             };
                             requestAnimationFrame(tick);
-                            window.__nexSlideNet = { samples, stop: () => { running = false; } };
+                            window.__kelpiSlideNet = { samples, stop: () => { running = false; } };
                             return true;
                         })()`
                     );
                 const readSamples = async () => {
-                    await page.eval(`(() => { window.__nexSlideNet?.stop?.(); return true; })()`);
+                    await page.eval(`(() => { window.__kelpiSlideNet?.stop?.(); return true; })()`);
                     return JSON.parse(
-                        String(await page.eval(`JSON.stringify(window.__nexSlideNet?.samples ?? [])`))
+                        String(await page.eval(`JSON.stringify(window.__kelpiSlideNet?.samples ?? [])`))
                     );
                 };
 
@@ -23265,14 +23265,14 @@ function buildFlows(ctx) {
                                 });
                             });
                             observer.observe(grid);
-                            window.__nexGridNet = { observations, stop: () => { running = false; observer.disconnect(); } };
+                            window.__kelpiGridNet = { observations, stop: () => { running = false; observer.disconnect(); } };
                             return true;
                         })()`
                     );
                 const readGridCoverage = async () => {
-                    await page.eval(`(() => { window.__nexGridNet?.stop?.(); return true; })()`);
+                    await page.eval(`(() => { window.__kelpiGridNet?.stop?.(); return true; })()`);
                     const observations = JSON.parse(
-                        String(await page.eval(`JSON.stringify(window.__nexGridNet?.observations ?? [])`))
+                        String(await page.eval(`JSON.stringify(window.__kelpiGridNet?.observations ?? [])`))
                     );
                     const measured = observations.filter((entry) => entry.wrappers > 0);
                     return {
@@ -23439,7 +23439,7 @@ function buildFlows(ctx) {
                 // on a settings write and on an OS scheme change), so in any run where the theme
                 // has moved since launch — a full run applies Gruvbox Dark at
                 // `appearance-preset-theme`, thirty steps before this — the creation line and the
-                // page's live `--nex-bg` are two different moments and comparing them is a
+                // page's live `--kelpi-bg` are two different moments and comparing them is a
                 // question about neither. Taking the last line makes the check what it always
                 // meant: the ground on the window NOW is the ground the page is painting NOW,
                 // which asserts the live-update path as well as the creation one. The creation
@@ -23453,11 +23453,11 @@ function buildFlows(ctx) {
                 const transparentWindow = groundLine.includes('transparent');
                 const pageGround = String(
                     await page.eval(
-                        `getComputedStyle(document.documentElement).getPropertyValue('--nex-bg').trim()`
+                        `getComputedStyle(document.documentElement).getPropertyValue('--kelpi-bg').trim()`
                     )
                 );
                 recorder.note(
-                    `shell window line: ${groundLine || '(none)'}${updateLine === '' ? '' : ` · latest: ${updateLine}`} · page --nex-bg ${pageGround}`
+                    `shell window line: ${groundLine || '(none)'}${updateLine === '' ? '' : ` · latest: ${updateLine}`} · page --kelpi-bg ${pageGround}`
                 );
                 recorder.check(
                     '§N31: the window’s own background is the THEME’s ground, not the old `#16161a`',
@@ -24912,7 +24912,7 @@ function buildFlows(ctx) {
 
                 /*
                  * §N32 — the CLI ROUND TRIP, which is the half of the redesign a screenshot
-                 * cannot show. §6.5/§6.6's back-fill (`nex workspace label … --add`) creates a
+                 * cannot show. §6.5/§6.6's back-fill (`kelpi workspace label … --add`) creates a
                  * gray preset for any label that has none; a preset MINTED here must be the same
                  * object, or the two routes would produce different rows for the same name. So
                  * the CLI is pointed at the name this tab just minted: it must ADOPT it (no
@@ -24986,12 +24986,12 @@ function buildFlows(ctx) {
                  * carry `data-hovered`, and no other row does.
                  */
                 const focusTrace = `(() => {
-                    if (window.__nexLabelFocus !== undefined) { window.__nexLabelFocus.length = 0; return 'reset'; }
-                    window.__nexLabelFocus = [];
+                    if (window.__kelpiLabelFocus !== undefined) { window.__kelpiLabelFocus.length = 0; return 'reset'; }
+                    window.__kelpiLabelFocus = [];
                     const name = (el) => el === null || el === undefined ? 'null'
                         : el === document.body ? 'BODY' : (el.getAttribute('data-testid') ?? el.tagName);
-                    document.addEventListener('focusin', (e) => window.__nexLabelFocus.push('in:' + name(e.target)), true);
-                    document.addEventListener('focusout', (e) => window.__nexLabelFocus.push('out:' + name(e.target)), true);
+                    document.addEventListener('focusin', (e) => window.__kelpiLabelFocus.push('in:' + name(e.target)), true);
+                    document.addEventListener('focusout', (e) => window.__kelpiLabelFocus.push('out:' + name(e.target)), true);
                     return 'installed';
                 })()`;
                 await page.eval(focusTrace);
@@ -25011,7 +25011,7 @@ function buildFlows(ctx) {
                         order: JSON.parse(String(await page.eval(presetOrder))),
                         active: String(await page.eval(activeID)),
                         painted: JSON.parse(String(await page.eval(paintedIDs))),
-                        trace: await page.eval(`JSON.stringify(window.__nexLabelFocus ?? [])`)
+                        trace: await page.eval(`JSON.stringify(window.__kelpiLabelFocus ?? [])`)
                     };
                     recorder.note(`labels reorder — ${label}: ${JSON.stringify(state)}`);
                     recorder.check(
@@ -25171,7 +25171,7 @@ function buildFlows(ctx) {
                         .catch(() => {});
                     await sleep(1200);
                     const caret = String(await page.eval(activeID));
-                    const trace = JSON.parse(String(await page.eval(`JSON.stringify(window.__nexLabelFocus ?? [])`)));
+                    const trace = JSON.parse(String(await page.eval(`JSON.stringify(window.__kelpiLabelFocus ?? [])`)));
                     const orderAfterRename = JSON.parse(String(await page.eval(presetOrder)));
                     recorder.note(
                         `rename after reorder: focus=${caret} order=${orderAfterRename.join(' ')} trace=${JSON.stringify(trace)}`
@@ -25260,7 +25260,7 @@ function buildFlows(ctx) {
                 );
                 recorder.note(`shipped search colours: ${JSON.stringify(shipped)}`);
                 recorder.check(
-                    'the tab ships the Swift NexGhosttyDefaults pair',
+                    'the tab ships the Swift KelpiGhosttyDefaults pair',
                     String(shipped?.previewMatch).toLowerCase() === '#f2d027' &&
                         String(shipped?.previewCurrent).toLowerCase() === '#ff7a00',
                     JSON.stringify(shipped)
@@ -25286,7 +25286,7 @@ function buildFlows(ctx) {
                 const config = fs.readFileSync(sandbox.configPath, 'utf8');
                 recorder.block('config after overriding the search colours', config || '(empty)');
                 recorder.check(
-                    'the override is written to the nex config file',
+                    'the override is written to the kelpi config file',
                     /search-match-color\s*=\s*#00e5ff/.test(config) &&
                         /search-match-current-color\s*=\s*#ff00aa/.test(config),
                     config.trim().slice(-160)
@@ -25355,9 +25355,9 @@ function buildFlows(ctx) {
                     // The FIRST match is also the current one, so an ordinary match has to be
                     // read from one that is not selected — otherwise both readings are the
                     // current-match colour and the two overrides cannot be told apart.
-                    `(() => { const plain = document.querySelector('mark.nex-find-match:not(.nex-find-current)');
-                              const current = document.querySelector('mark.nex-find-match.nex-find-current');
-                              return { total: document.querySelectorAll('mark.nex-find-match').length,
+                    `(() => { const plain = document.querySelector('mark.kelpi-find-match:not(.kelpi-find-current)');
+                              const current = document.querySelector('mark.kelpi-find-match.kelpi-find-current');
+                              return { total: document.querySelectorAll('mark.kelpi-find-match').length,
                                        match: plain === null ? null : getComputedStyle(plain).backgroundColor,
                                        matchText: plain === null ? null : getComputedStyle(plain).color,
                                        current: current === null ? null : getComputedStyle(current).backgroundColor }; })()`
@@ -25552,7 +25552,7 @@ function buildFlows(ctx) {
         {
             id: 'window-transparency',
             expect:
-                'The shell decides window compositing from the ghostty `background-opacity` at CREATION (Electron cannot toggle it later): at 1 the window is opaque and the client paints an opaque window fill; below 1 it is created transparent, the page is told so, and `--nex-bg` carries the alpha. A change that crosses 1.0 is reported as needing a relaunch rather than silently ignored.',
+                'The shell decides window compositing from the ghostty `background-opacity` at CREATION (Electron cannot toggle it later): at 1 the window is opaque and the client paints an opaque window fill; below 1 it is created transparent, the page is told so, and `--kelpi-bg` carries the alpha. A change that crosses 1.0 is reported as needing a relaunch rather than silently ignored.',
             needsEyes: true,
             async run(recorder) {
                 const log = runtime.shell.text();
@@ -25561,7 +25561,7 @@ function buildFlows(ctx) {
                 recorder.check('the shell logged the compositing decision it took', line !== '', line.trim());
                 const createdTransparent = /window: transparent/.test(line);
                 const painted = await page.eval(
-                    `(() => ({ bg: getComputedStyle(document.documentElement).getPropertyValue('--nex-bg').trim(),
+                    `(() => ({ bg: getComputedStyle(document.documentElement).getPropertyValue('--kelpi-bg').trim(),
                                body: getComputedStyle(document.body).backgroundColor,
                                marked: window.location.search.includes('windowTransparent=1') }))()`
                 );
@@ -25586,7 +25586,7 @@ function buildFlows(ctx) {
                 /*
                  * §N17 — COUNT THE LAYERS, then read the canvas.
                  *
-                 * The checks above ask whether `--nex-bg` carries alpha, and it always did.
+                 * The checks above ask whether `--kelpi-bg` carries alpha, and it always did.
                  * What made a 0.85 pane render SOLID was arithmetic nobody measured: five
                  * elements painted that variable — `<body>`, the app root, the grid container,
                  * every pane wrapper, every pane body — and alpha multiplies, so 1 − 0.15⁵ is
@@ -25637,11 +25637,11 @@ function buildFlows(ctx) {
                         return {
                             grounds: {
                                 body: bg(document.body),
-                                appRoot: bg(document.querySelector('[data-testid="nex-app"]')),
+                                appRoot: bg(document.querySelector('[data-testid="kelpi-app"]')),
                                 grid: bg(document.querySelector('[data-testid="pane-grid"]')),
                                 paneWrapper: wrapper === null ? null : bg(wrapper)
                             },
-                            groundsClear: [document.body, document.querySelector('[data-testid="nex-app"]'),
+                            groundsClear: [document.body, document.querySelector('[data-testid="kelpi-app"]'),
                                            document.querySelector('[data-testid="pane-grid"]'), wrapper]
                                 .map((el) => clear(bg(el))),
                             paneFill: bg(body),
@@ -25661,7 +25661,7 @@ function buildFlows(ctx) {
                  * client's opacity is LIVE, and `appearance-terminal` has already dragged it to
                  * 0.85 by the time this step runs — which is the product's own documented state
                  * ("Panes already follow it; the window itself becomes transparent the next time
-                 * Nex starts", `main.ts` ▸ `applyAppearanceSettings`). Keying the CANVAS
+                 * Kelpi starts", `main.ts` ▸ `applyAppearanceSettings`). Keying the CANVAS
                  * assertions off the window flag asserted a state the run had deliberately left
                  * behind, and reported three failures against correct behaviour.
                  *
@@ -25762,11 +25762,11 @@ function buildFlows(ctx) {
                 await sleep(1500);
                 const after = await page.eval(
                     `(() => {
-                        const hosts = Array.from(document.querySelectorAll('[data-nex-theme]'))
+                        const hosts = Array.from(document.querySelectorAll('[data-kelpi-theme]'))
                             .filter((el) => el !== document.documentElement);
                         const host = hosts[0] ?? document.documentElement;
-                        return { bg: getComputedStyle(document.documentElement).getPropertyValue('--nex-bg').trim(),
-                                 term: getComputedStyle(host).getPropertyValue('--nex-term-bg').trim() };
+                        return { bg: getComputedStyle(document.documentElement).getPropertyValue('--kelpi-bg').trim(),
+                                 term: getComputedStyle(host).getPropertyValue('--kelpi-term-bg').trim() };
                     })()`
                 );
                 recorder.note(`fills after the change: ${JSON.stringify(after)}`);
@@ -25796,7 +25796,7 @@ function buildFlows(ctx) {
                 recorder.eyes(
                     createdTransparent
                         ? 'DESKTOP-THROUGH CHECK — and the one thing no capture here can settle: a CDP screenshot composites the PAGE, not the screen behind the window, so whether the desktop is visible through the window fill and through the terminal has to be looked at on a real screen. Every layer between the two is asserted above (the window flag from the shell log, the four grounds all clear, the pane fill at 0.85, the engine flag, and alpha 0 read back off the canvas); the last inch is a pair of eyes.'
-                        : 'the opaque window as shipped; run with NEX_AUDIT_GHOSTTY_EXTRA="background-opacity = 0.85" to photograph the transparent case.'
+                        : 'the opaque window as shipped; run with KELPI_AUDIT_GHOSTTY_EXTRA="background-opacity = 0.85" to photograph the transparent case.'
                 );
             }
         },
@@ -25881,7 +25881,7 @@ function buildFlows(ctx) {
                 const menuLine = (runtime.shell?.text() ?? '')
                     .split('\n')
                     .reverse()
-                    .find((line) => line.includes('menu: Nex '));
+                    .find((line) => line.includes('menu: Kelpi '));
                 recorder.note(`shell menu line: ${String(menuLine)}`);
                 recorder.check(
                     'the running shell installed View ▸ Toggle Sidebar on ⌘⇧S (§WS-001)',
@@ -26852,7 +26852,7 @@ function buildFlows(ctx) {
                 }
 
                 // ── 1. the row itself, off the shell's own log ───────────────────────
-                const menuLine = runtime.shell?.lines.find((line) => line.includes('menu: Nex ')) ?? '';
+                const menuLine = runtime.shell?.lines.find((line) => line.includes('menu: Kelpi ')) ?? '';
                 recorder.note(`shell menu line: ${menuLine.trim()}`);
                 recorder.check(
                     'this (unpackaged) build installed Debug ▸ Seed Test Group',
@@ -27994,8 +27994,8 @@ function buildFlows(ctx) {
                     packaged: runOptions.packaged,
                     verbose: runOptions.verbose,
                     extraEnv: {
-                        NEX_AUDIT: '1',
-                        NEX_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
+                        KELPI_AUDIT: '1',
+                        KELPI_AUDIT_OPEN_FILE: path.join(sandbox.root, 'open-file-answer.txt')
                     }
                 });
                 runtime.shell = relaunched;
@@ -28381,7 +28381,7 @@ function buildFlows(ctx) {
                 const menuLine = (runtime.shell?.text() ?? '')
                     .split('\n')
                     .reverse()
-                    .find((line) => line.includes('menu: Nex '));
+                    .find((line) => line.includes('menu: Kelpi '));
                 recorder.note(`shell menu line: ${String(menuLine)}`);
                 recorder.check(
                     'the running shell installed View ▸ Toggle Sidebar (⌘⇧S) — §WS-001, unchanged',
@@ -28871,7 +28871,7 @@ function buildFlows(ctx) {
                 // THE DESTRUCTIVE PART, and the reason this step runs last. The state cannot be
                 // faked: it exists only when the daemon holds zero workspaces, and the only
                 // gesture that can get there is ⌘W on the last pane of the last one — the
-                // shipped app's own asymmetry (`nex workspace delete` refuses at one; ⌘W does
+                // shipped app's own asymmetry (`kelpi workspace delete` refuses at one; ⌘W does
                 // not). So the step really deletes them, really lands on the empty state, and
                 // really builds a workspace back out of the button it is asserting.
                 const before = await cli.json(['workspace', 'list', '--json']);
@@ -29042,7 +29042,7 @@ function buildFlows(ctx) {
                     // already gone
                 }
                 recorder.eyes(
-                    'Does the empty state read like the shipped app’s (faint terminal glyph, secondary copy, one button), and does the recreated window look like a normal Nex window rather than a half-torn-down one?'
+                    'Does the empty state read like the shipped app’s (faint terminal glyph, secondary copy, one button), and does the recreated window look like a normal Kelpi window rather than a half-torn-down one?'
                 );
             }
         },

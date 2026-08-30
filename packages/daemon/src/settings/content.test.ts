@@ -38,7 +38,7 @@ interface Fixture {
 }
 
 async function fixture(ghostty: string): Promise<Fixture> {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-settings-content-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-settings-content-'));
     roots.push(root);
     const ghosttyPath = path.join(root, 'ghostty-config');
     fs.writeFileSync(ghosttyPath, ghostty, 'utf8');
@@ -48,7 +48,7 @@ async function fixture(ghostty: string): Promise<Fixture> {
     // `watch: false` keeps the test deterministic: `reload()` is the exact call the watcher's
     // debounced callback makes, so driving it by hand tests the same path without a sleep.
     const settings = createSettingsService({
-        configPath: path.join(root, 'nex-config'),
+        configPath: path.join(root, 'kelpi-config'),
         ghosttyPath,
         watch: false
     });

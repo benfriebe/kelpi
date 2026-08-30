@@ -8,13 +8,13 @@ import {
     replyText,
     unwrapReply
 } from './commands';
-import { NexConnection } from './socket';
+import { KelpiConnection } from './socket';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './testing';
 
 const PANE = '11111111-2222-4333-8444-555555555555';
 
 interface Harness {
-    readonly connection: NexConnection;
+    readonly connection: KelpiConnection;
     readonly client: CommandClient;
     socket(): FakeWebSocket;
     /** The last `command` frame's payload. */
@@ -26,7 +26,7 @@ interface Harness {
 
 function harness(): Harness {
     const sockets = createFakeSocketFactory();
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'ws://daemon.test/ws',
         token: 't',
         socketFactory: sockets.factory,

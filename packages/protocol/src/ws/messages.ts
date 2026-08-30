@@ -351,10 +351,10 @@ export interface WsTransportStatus {
     /** null = no TCP listener was configured — NOT the same as one that failed to bind. */
     readonly tcp: WsTcpTransportStatus | null;
     /**
-     * The CLI-compat socket's bind failure (typically another Nex — the Swift app — owning
+     * The CLI-compat socket's bind failure (typically another Kelpi — the Swift app — owning
      * `/tmp/nex.sock`), or null/absent while it serves. Additive: an older client ignores it.
      * A degraded compat socket is not a degraded daemon (panes route via their injected
-     * `NEX_SOCKET`), but Settings ▸ Network must be able to say where plain-terminal `nex`
+     * `NEX_SOCKET`), but Settings ▸ Network must be able to say where plain-terminal `kelpi`
      * commands are going.
      */
     readonly compat?: { readonly path: string; readonly error: string } | null;
@@ -386,7 +386,7 @@ export interface WsWelcomeMessage {
         readonly pid: number;
         /**
          * §APP-069: the daemon HOST's home directory, for display only — the client abbreviates
-         * the daemon-side paths it renders (`~/code/nex`). Additive; absent = do not abbreviate.
+         * the daemon-side paths it renders (`~/code/kelpi`). Additive; absent = do not abbreviate.
          */
         readonly home?: string;
     };
@@ -558,7 +558,7 @@ export type WsNotificationKind = (typeof WS_NOTIFICATION_KINDS)[number];
 
 /**
  * The daemon decides notifications and broadcasts them; clients render them (Electron
- * natively, browsers via Web Notifications). `dedupeKey` preserves the `nex-<paneID>`
+ * natively, browsers via Web Notifications). `dedupeKey` preserves the `kelpi-<paneID>`
  * identity so a re-post replaces the previous one.
  */
 export interface WsNotificationMessage {

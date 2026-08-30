@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { allPaneIDs } from '@nex/core/layout';
+import { allPaneIDs } from '@kelpi/core/layout';
 
 import { W1, W2, harness, seedSplit, seedWorkspace, testID } from './testing.js';
 

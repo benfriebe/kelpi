@@ -35,8 +35,8 @@ import {
     parseKeyTrigger,
     type KeyBindingMap,
     type KeyTrigger,
-    type NexAction
-} from '@nex/core/config';
+    type KelpiAction
+} from '@kelpi/core/config';
 
 import { actionForTrigger, modifiersFromEvent, triggerFromEvent, type KeyEventLike } from '../chrome';
 import { actionLabel } from './catalog';
@@ -65,7 +65,7 @@ export type RecorderOutcome =
           readonly kind: 'conflict';
           readonly reason: string;
           readonly trigger: KeyTrigger;
-          readonly action: NexAction | null;
+          readonly action: KelpiAction | null;
       }
     /** Commit: bind `config` to the action being recorded, then close. */
     | {
@@ -81,7 +81,7 @@ export interface RecorderOptions {
     /** The map to check conflicts against — the daemon's resolved bindings. */
     readonly bindings: KeyBindingMap;
     /** The action being recorded; its own triggers are not conflicts. */
-    readonly excluding?: NexAction | undefined;
+    readonly excluding?: KelpiAction | undefined;
     /**
      * The configured global hotkey as its config string (`"ctrl+alt+space"`), when the caller
      * is the ROW recorder. Absent/null = SET-093's `ignoreGlobalHotkey: true`, which is what
@@ -93,7 +93,7 @@ export interface RecorderOptions {
 /** §13.2's message for a combo that carries no modifier. */
 export const NEEDS_MODIFIER_MESSAGE = 'Add at least one modifier (⌘, ⌃, ⌥ or ⇧)';
 
-export function conflictMessage(action: NexAction): string {
+export function conflictMessage(action: KelpiAction): string {
     return `Already bound to “${actionLabel(action)}”`;
 }
 

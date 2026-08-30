@@ -19,7 +19,7 @@
  *     client (agent-lifecycle.md §7 + Port note 2: with nothing attached, "app active" is
  *     false, so headless operation still notifies).
  *   - **Commands** ride the same decode path as the control socket, dual-fire included, so
- *     a WS client and the `nex` CLI cannot drift.
+ *     a WS client and the `kelpi` CLI cannot drift.
  *   - **This is where authentication happens.** The `/ws` upgrade classifies a connection
  *     (authenticated / anonymous) but no longer refuses one, because a refused upgrade reaches
  *     a browser as an anonymous close 1006 that it can only retry. The handshake can instead
@@ -52,10 +52,10 @@ import {
     type WsSettingsCommand,
     type WsSettingsSnapshot,
     type WsTransportStatus
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
-import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@nex/core/codec';
-import { ratioAtPath } from '@nex/core/layout';
+import { formatIconString, newUUID, normalizeIconEmoji, parseIconString } from '@kelpi/core/codec';
+import { ratioAtPath } from '@kelpi/core/layout';
 
 import type { ContentMode, ContentPaneState, ContentSubscription } from '../content/index.js';
 import { dualFireMessage } from '../control/server.js';
@@ -100,7 +100,7 @@ import type { HostRegistration } from '../webpane/host.js';
 import type { WebPaneService } from '../webpane/service.js';
 import { serializeDomainEvents, serializeLabelPreset, serializeState } from './serialize.js';
 
-export type NexDomainStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
+export type KelpiDomainStore = DomainStore<DaemonState, DomainAction, DomainEvent>;
 
 /** WS close codes for the rejection reasons (4000-4999 is the app-defined range). */
 export const WS_CLOSE_CODES = {
@@ -117,7 +117,7 @@ export const WS_CLOSE_CODES = {
 export const DEFAULT_HELLO_TIMEOUT_MS = 10_000;
 
 /** The message a client sees when its hello carries no usable token. */
-export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token — open the client via 'nexd url'";
+export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token — open the client via 'kelpid url'";
 
 export interface SyncTransport {
     sendJson(message: JsonObject): void;
@@ -149,7 +149,7 @@ export interface SyncSession {
 }
 
 export interface SyncHubOptions {
-    readonly store: NexDomainStore;
+    readonly store: KelpiDomainStore;
     /** Where client `command` messages go — the same dispatcher the control socket uses. */
     readonly dispatcher: ControlDispatcher;
     readonly daemon: { readonly version: string; readonly build: string; readonly pid?: number | undefined };
@@ -299,8 +299,8 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * grew one because they are direct-manipulation gestures (a zoom button, a disclosure triangle,
  * an inline rename field).
  *
- * They are deliberately NOT added to `@nex/protocol`'s `WIRE_COMMANDS`: a new CLI verb is a
- * compatibility surface we would owe the Swift CLI forever, and `nex` has no way to send these.
+ * They are deliberately NOT added to `@kelpi/protocol`'s `WIRE_COMMANDS`: a new CLI verb is a
+ * compatibility surface we would owe the Swift CLI forever, and `kelpi` has no way to send these.
  * So they are handled here, *before* `decodeWireObject` (which would reject an unknown command),
  * and each one simply dispatches the store action that already exists. Field names follow the
  * wire's snake_case convention so a client speaks one dialect for both kinds of command.
@@ -330,7 +330,7 @@ function parseClientInfo(value: unknown): WsClientInfo {
  * `labels`) is left where it is; this is pure routing.
  *
  * `icon` is the flat prefix string the DB stores (`"emoji:🔥"` / `"system:star"`), decoded by
- * `@nex/core/codec`'s `parseIconString`; `null` (or anything unparseable) clears the icon back
+ * `@kelpi/core/codec`'s `parseIconString`; `null` (or anything unparseable) clears the icon back
  * to the letter avatar. An SF Symbol name is therefore an OPAQUE token end to end — a legacy DB
  * value the client cannot draw still round-trips through a client that never touches it. An
  * `emoji:` payload is the one thing NOT taken on trust: it is re-validated against §WS-073's
@@ -425,13 +425,13 @@ export function decodeLabelTextColorToken(
             return { present: true, value: { kind: 'custom', hex: raw.trim().toLowerCase() } };
         }
     }
-    // Anything else is not a colour Nex can store; treat it as "auto" rather than refusing the
+    // Anything else is not a colour Kelpi can store; treat it as "auto" rather than refusing the
     // whole command, which is what `decodeLabelColorToken` does for the background.
     return { present: true, value: null };
 }
 
 /** The reply shape all three preset verbs share: the post-mutation list, wire-serialized. */
-function presetsReply(store: NexDomainStore, extra: JsonObject): JsonObject {
+function presetsReply(store: KelpiDomainStore, extra: JsonObject): JsonObject {
     return {
         ok: true,
         ...extra,
@@ -452,7 +452,7 @@ export interface WsOnlyCommandOptions {
 }
 
 export function handleWsOnlyCommand(
-    store: NexDomainStore,
+    store: KelpiDomainStore,
     command: WsOnlyCommand,
     payload: Record<string, unknown>,
     options: WsOnlyCommandOptions = {}
@@ -920,7 +920,7 @@ export interface AgentChannel {
  *     host is told with `host-revoked`. Dropping the connection releases the slot.
  *   - any **client** (the web UI) can subscribe to a pane's console with
  *     `web-console-subscribe` and receive `web-console-line` messages — the WS twin of the
- *     control socket's `nex web console --follow`, reading the same daemon ring buffer.
+ *     control socket's `kelpi web console --follow`, reading the same daemon ring buffer.
  *
  * Contract for the host side: `daemon/src/webpane/HOST_PROTOCOL.md`.
  */
@@ -959,7 +959,7 @@ export const WEB_COMMANDS = [
     'web-devtools',
     // §10 find-in-page and §4.2 page zoom. The host has always answered `find` and `zoom` as
     // RPCs; these are the verbs that finally reach them, and both are GUI-only in the Swift app
-    // too (⌘F and the ⌘= / ⌘- / ⌘0 layer — there is no `nex web find`).
+    // too (⌘F and the ⌘= / ⌘- / ⌘0 layer — there is no `kelpi web find`).
     'web-find',
     'web-zoom',
     // WEB-016's tab drag-reorder, WEB-032's stop glyph and WEB-043's focus handoff: three more
@@ -1016,7 +1016,7 @@ export const REVEAL_PANE_MESSAGE = 'reveal-pane';
 
 /**
  * Shell → daemon → client: a native menu item whose behaviour the CLIENT owns (⌘O's picker
- * entry point, "Nex Help"). The mirror image of `reveal-request`, for the same reason — the
+ * entry point, "Kelpi Help"). The mirror image of `reveal-request`, for the same reason — the
  * Electron shell has no preload, so the daemon is the only channel between the main process and
  * the page (`ws/desktop.ts` documents both directions).
  */
@@ -1035,7 +1035,7 @@ export const WEB_HOST_CAPABILITY = 'web-pane-host';
  * The settings verbs. Same reasoning as `WS_ONLY_COMMANDS` (direct-manipulation gestures the
  * CLI has no vocabulary for, matched before `decodeWireObject`), with one rule of their own:
  * **they write through the config file**. Nothing is kept in memory here — the service applies
- * a `@nex/core/config` writer to the file's current contents, re-reads it, and the reply
+ * a `@kelpi/core/config` writer to the file's current contents, re-reads it, and the reply
  * carries the re-read snapshot. That is why a hand-edit and a UI edit cannot disagree.
  *
  *   set-keybinding       `action`, `trigger` (config string, or null to unbind the action)
@@ -1758,7 +1758,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          * the global one still agrees with it. Returning early on `this.activeWorkspaceID ===
          * workspaceID` (as this used to) meant a client re-asserting the workspace it was
          * already showing could never pull the daemon's answer back, and
-         * `nex workspace list`'s ACTIVE column stayed wrong for the rest of the session.
+         * `kelpi workspace list`'s ACTIVE column stayed wrong for the rest of the session.
          *
          * So: the last activation from ANY source wins, and a client re-assert is a real
          * activation (the client sends one on every sidebar click, even an idempotent one).
@@ -2013,7 +2013,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
          *
          * It exists for one reason: the shipped app lets ⌘W on the last pane of the LAST
          * workspace reach zero workspaces (and land on "No workspace selected"), while
-         * `nex workspace delete` refuses at one. The port had both routes on one verb, so the
+         * `kelpi workspace delete` refuses at one. The port had both routes on one verb, so the
          * GUI inherited the CLI's refusal and the empty state had no gesture that could reach it.
          *
          * Rather than put a flag on the wire — `allow_last` is not in wire-protocol.md §7's field
@@ -2231,7 +2231,7 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         // ── web-pane console subscriptions (M6) ─────────────────────────────
 
         /**
-         * `web-console-subscribe` is the WS twin of `nex web console --follow`: the reply is
+         * `web-console-subscribe` is the WS twin of `kelpi web console --follow`: the reply is
          * the same catch-up drain object, and every later line arrives as its own
          * `web-console-line` message. Both readers share one ring buffer per pane, so a drop
          * notice is delivered to whoever consumes it first (web-pane.md §9.3).

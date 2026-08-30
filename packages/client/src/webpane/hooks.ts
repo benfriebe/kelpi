@@ -21,7 +21,7 @@ import {
     type WebNavState
 } from './state';
 
-/** The slice of `NexConnection` this hook uses — a fixture satisfies it in tests. */
+/** The slice of `KelpiConnection` this hook uses — a fixture satisfies it in tests. */
 export interface WebUIConnection {
     on(event: 'message', listener: (message: Record<string, unknown>) => void): () => void;
     on(event: 'status', listener: (status: string) => void): () => void;

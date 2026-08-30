@@ -7,12 +7,12 @@
  * hidden: §4 says they are NOT rendered in the Settings table (their delivery mechanism is the
  * hard-coded priority layer), while still being legal to bind by hand in the config file.
  *
- * The vocabulary itself is NOT restated here — `NEX_ACTIONS` from `@nex/core/config` is the
+ * The vocabulary itself is NOT restated here — `KELPI_ACTIONS` from `@kelpi/core/config` is the
  * list, and `catalog.test.ts` asserts this table covers it exactly once. So an action added to
  * core cannot quietly go missing from Settings, and a display name cannot outlive its action.
  */
 
-import { NEX_ACTIONS, type NexAction } from '@nex/core/config';
+import { KELPI_ACTIONS, type KelpiAction } from '@kelpi/core/config';
 
 export const SETTINGS_CATEGORIES = [
     'Pane Management',
@@ -36,7 +36,7 @@ export const VISIBLE_CATEGORIES: readonly SettingsCategory[] = [
 ];
 
 export interface ActionEntry {
-    readonly action: NexAction;
+    readonly action: KelpiAction;
     readonly category: SettingsCategory;
     /** §4's display name column, verbatim. */
     readonly label: string;
@@ -46,7 +46,7 @@ function switchEntries(): ActionEntry[] {
     const entries: ActionEntry[] = [];
     for (let index = 1; index <= 9; index += 1) {
         entries.push({
-            action: `switch_to_workspace_${index}` as NexAction,
+            action: `switch_to_workspace_${index}` as KelpiAction,
             category: 'Workspaces',
             label: `Switch to Workspace ${String(index)}`
         });
@@ -54,7 +54,7 @@ function switchEntries(): ActionEntry[] {
     return entries;
 }
 
-/** Every action, in §4's table order (which is also `NEX_ACTIONS` order). */
+/** Every action, in §4's table order (which is also `KELPI_ACTIONS` order). */
 export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'split_right', category: 'Pane Management', label: 'Split Right' },
     { action: 'split_down', category: 'Pane Management', label: 'Split Down' },
@@ -107,27 +107,27 @@ export const ACTION_CATALOG: readonly ActionEntry[] = [
     { action: 'web_zoom_reset', category: 'Web Pane', label: 'Web: Reset Zoom' }
 ];
 
-const BY_ACTION: ReadonlyMap<NexAction, ActionEntry> = new Map(
+const BY_ACTION: ReadonlyMap<KelpiAction, ActionEntry> = new Map(
     ACTION_CATALOG.map((entry) => [entry.action, entry])
 );
 
-/** The catalog entry for an action; every `NexAction` has one (asserted in the tests). */
-export function actionEntry(action: NexAction): ActionEntry | undefined {
+/** The catalog entry for an action; every `KelpiAction` has one (asserted in the tests). */
+export function actionEntry(action: KelpiAction): ActionEntry | undefined {
     return BY_ACTION.get(action);
 }
 
 /** §4's display name, falling back to the raw value so an unknown action still renders. */
-export function actionLabel(action: NexAction): string {
+export function actionLabel(action: KelpiAction): string {
     return BY_ACTION.get(action)?.label ?? action;
 }
 
 /** The actions of one category, in catalog order. */
-export function actionsInCategory(category: SettingsCategory): readonly NexAction[] {
+export function actionsInCategory(category: SettingsCategory): readonly KelpiAction[] {
     return ACTION_CATALOG.filter((entry) => entry.category === category).map((entry) => entry.action);
 }
 
 /** Sanity anchor for the tests: the vocabulary this table is written against. */
-export const CATALOGUED_ACTIONS: readonly NexAction[] = NEX_ACTIONS;
+export const CATALOGUED_ACTIONS: readonly KelpiAction[] = KELPI_ACTIONS;
 
 // ── the tabs ────────────────────────────────────────────────────────────────────────
 
@@ -136,7 +136,7 @@ export const CATALOGUED_ACTIONS: readonly NexAction[] = NEX_ACTIONS;
  *
  * §13's window has seven: General, Appearance, Repositories, Labels, Profiles, Keybindings,
  * Web. **General** is now here — its worktree base path and the two placement pickers became
- * real config keys (`@nex/core/config` `general.ts`), so the tab writes rather than merely
+ * real config keys (`@kelpi/core/config` `general.ts`), so the tab writes rather than merely
  * displays, which was the bar it previously failed.
  *
  * **Repositories** is now here too: the registry gained its own WS verbs (`repo-add` /

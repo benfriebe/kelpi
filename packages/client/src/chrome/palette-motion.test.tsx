@@ -80,7 +80,7 @@ function props(open: boolean, overrides: Record<string, unknown> = {}) {
 
 describe('the keyframes (§H19)', () => {
     it('the panel slides down from above while it fades in', () => {
-        const frames = keyframesBody('nex-palette-enter');
+        const frames = keyframesBody('kelpi-palette-enter');
         expect(frames).toContain('opacity: 0');
         // `.move(edge: .top)` — it comes FROM above, so the offset is negative.
         expect(frames).toMatch(/translateY\(-\d+px\)/);
@@ -89,23 +89,23 @@ describe('the keyframes (§H19)', () => {
     });
 
     it('and leaves the way it came — the half a mount-delay flag exists for', () => {
-        const frames = keyframesBody('nex-palette-exit');
+        const frames = keyframesBody('kelpi-palette-exit');
         expect(frames).toMatch(/from\s*\{\s*opacity:\s*1/);
         expect(frames).toMatch(/to\s*\{[^}]*opacity:\s*0/);
         expect(frames).toMatch(/translateY\(-\d+px\)/);
     });
 
     it('the scrim only fades: an inset-0 wash that also translated would bare an edge', () => {
-        expect(keyframesBody('nex-palette-scrim-in')).not.toContain('translate');
-        expect(keyframesBody('nex-palette-scrim-out')).not.toContain('translate');
+        expect(keyframesBody('kelpi-palette-scrim-in')).not.toContain('translate');
+        expect(keyframesBody('kelpi-palette-scrim-out')).not.toContain('translate');
     });
 
     it('both directions run for 150 ms on ease-out, the shipped curve and duration', () => {
         for (const selector of [
-            "[data-palette-phase='entering'] .nex-palette-panel",
-            "[data-palette-phase='exiting'] .nex-palette-panel",
-            ".nex-palette-scrim[data-palette-phase='entering']",
-            ".nex-palette-scrim[data-palette-phase='exiting']"
+            "[data-palette-phase='entering'] .kelpi-palette-panel",
+            "[data-palette-phase='exiting'] .kelpi-palette-panel",
+            ".kelpi-palette-scrim[data-palette-phase='entering']",
+            ".kelpi-palette-scrim[data-palette-phase='exiting']"
         ]) {
             const body = ruleBody(selector);
             expect(body, selector).toContain('150ms');
@@ -118,15 +118,15 @@ describe('the keyframes (§H19)', () => {
 
     it('the component and the stylesheet agree on the duration', () => {
         expect(PALETTE_TRANSITION_MS).toBe(150);
-        expect(ruleBody("[data-palette-phase='exiting'] .nex-palette-panel")).toContain(
+        expect(ruleBody("[data-palette-phase='exiting'] .kelpi-palette-panel")).toContain(
             `${String(PALETTE_TRANSITION_MS)}ms`
         );
     });
 
     it('reduced motion turns all of it off', () => {
         const reduced = stylesheet.slice(stylesheet.lastIndexOf('@media (prefers-reduced-motion: reduce)'));
-        expect(reduced).toContain('nex-palette-panel');
-        expect(reduced).toContain('nex-palette-scrim');
+        expect(reduced).toContain('kelpi-palette-panel');
+        expect(reduced).toContain('kelpi-palette-scrim');
         expect(reduced).toContain('animation: none');
     });
 });
@@ -136,8 +136,8 @@ describe('the mount machine (§H19)', () => {
         render(<CommandPalette {...props(true)} />);
         const backdrop = screen.getByTestId('palette-backdrop');
         expect(backdrop.dataset['palettePhase']).toBe('entering');
-        expect(backdrop.className).toContain('nex-palette-scrim');
-        expect(screen.getByTestId('command-palette').className).toContain('nex-palette-panel');
+        expect(backdrop.className).toContain('kelpi-palette-scrim');
+        expect(screen.getByTestId('command-palette').className).toContain('kelpi-palette-panel');
     });
 
     it('stays mounted for the exit, then goes — a hard unmount cannot animate', () => {

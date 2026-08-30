@@ -3,7 +3,7 @@
  * exact JSON that reaches the socket.
  *
  * What this covers that unit tests cannot:
- *   - the process contract — `dist/nex.js` is executable via its shebang, stdout survives the
+ *   - the process contract — `dist/kelpi.js` is executable via its shebang, stdout survives the
  *     exit path, and every command lands on the documented exit code;
  *   - the three reply disciplines — request/response, fire-and-forget (exit 0 even when the
  *     socket is dead), and the `--follow` stream;
@@ -48,7 +48,7 @@ describe('dispatcher', () => {
     it('runs from its own shebang and prints its version to stdout', async () => {
         const result = await runCLI(['--version'], { direct: true });
         expect(result.code).toBe(0);
-        expect(result.stdout).toBe('nex 0.1.0\n');
+        expect(result.stdout).toBe('kelpi 0.1.0\n');
         expect(result.stderr).toBe('');
     });
 
@@ -61,7 +61,7 @@ describe('dispatcher', () => {
         const help = await runCLI(['--help']);
         expect(help.code).toBe(0);
         expect(help.stdout).toBe('');
-        expect(help.stderr).toContain('nex doctor [--json]');
+        expect(help.stderr).toContain('kelpi doctor [--json]');
     });
 
     it('names an unknown command before the usage block', async () => {
@@ -147,7 +147,7 @@ describe('request/response', () => {
         });
         expect(result.code).toBe(1);
         expect(result.stdout).toBe('');
-        expect(result.stderr).toBe("nex pane close: no pane matched target 'ghost'\n");
+        expect(result.stderr).toBe("kelpi pane close: no pane matched target 'ghost'\n");
     });
 
     it('writes capture output raw, with no added trailing newline', async () => {
@@ -169,7 +169,7 @@ describe('request/response', () => {
         const result = await runCLI(['pane', 'capture', PANE], { port: server.port, paneID: OTHER });
         expect(result.code).toBe(1);
         expect(result.stderr).toContain(
-            `nex pane capture: unexpected argument '${PANE}' — target panes with --target <name-or-uuid>`
+            `kelpi pane capture: unexpected argument '${PANE}' — target panes with --target <name-or-uuid>`
         );
         expect(server.requests).toHaveLength(0);
     });
@@ -183,7 +183,7 @@ describe('request/response', () => {
 
         const key = await runCLI(['pane', 'send-key', '--target', PANE, 'enter'], { port: server.port });
         expect(key.code).toBe(1);
-        expect(key.stderr).toBe('nex pane send-key: empty reply (Nex version may not support this command)\n');
+        expect(key.stderr).toBe('kelpi pane send-key: empty reply (Kelpi version may not support this command)\n');
     });
 
     it('formats the resize ack as a whole-percent share', async () => {
@@ -206,7 +206,7 @@ describe('request/response', () => {
     it('refuses a ratio outside (0,1) before touching the socket', async () => {
         const result = await runCLI(['pane', 'resize', '--target', PANE, '--ratio', '1.5'], { port: server.port });
         expect(result.code).toBe(1);
-        expect(result.stderr).toBe('nex pane resize: --ratio must be a number between 0 and 1 (exclusive)\n');
+        expect(result.stderr).toBe('kelpi pane resize: --ratio must be a number between 0 and 1 (exclusive)\n');
         expect(server.requests).toHaveLength(0);
     });
 });
@@ -246,13 +246,13 @@ describe('fire-and-forget', () => {
         const result = await runCLI(['group', 'create', 'squad'], { port });
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('');
-        expect(result.stderr.startsWith('Warning: nex: TCP connect to 127.0.0.1:')).toBe(true);
+        expect(result.stderr.startsWith('Warning: kelpi: TCP connect to 127.0.0.1:')).toBe(true);
         expect(result.stderr).toContain('\nRepair: ');
     });
 
-    it('is fully silent with NEX_SILENT', async () => {
+    it('is fully silent with KELPI_SILENT', async () => {
         const port = await deadPort();
-        const result = await runCLI(['group', 'create', 'squad'], { port, env: { NEX_SILENT: '1' } });
+        const result = await runCLI(['group', 'create', 'squad'], { port, env: { KELPI_SILENT: '1' } });
         expect(result.code).toBe(0);
         expect(result.stderr).toBe('');
     });
@@ -261,11 +261,11 @@ describe('fire-and-forget', () => {
         const port = await deadPort();
         const result = await runCLI(['pane', 'list'], { port });
         expect(result.code).toBe(1);
-        expect(result.stderr.startsWith('Error: nex pane list: TCP connect to 127.0.0.1:')).toBe(true);
+        expect(result.stderr.startsWith('Error: kelpi pane list: TCP connect to 127.0.0.1:')).toBe(true);
     });
 });
 
-describe('nex event', () => {
+describe('kelpi event', () => {
     it('forwards the hook payload fields it recognises', async () => {
         const result = await runCLI(['event', 'stop'], {
             port: server.port,
@@ -334,15 +334,15 @@ describe('nex event', () => {
         expect(server.requests).toHaveLength(0);
     });
 
-    it('stays silent on a dead socket unless NEX_VERBOSE_HOOKS is set', async () => {
+    it('stays silent on a dead socket unless KELPI_VERBOSE_HOOKS is set', async () => {
         const port = await deadPort();
         const quiet = await runCLI(['event', 'stop'], { port, paneID: PANE });
         expect(quiet.code).toBe(0);
         expect(quiet.stderr).toBe('');
 
-        const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { NEX_VERBOSE_HOOKS: '1' } });
+        const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { KELPI_VERBOSE_HOOKS: '1' } });
         expect(loud.code).toBe(0);
-        expect(loud.stderr).toContain('Warning: nex event stop:');
+        expect(loud.stderr).toContain('Warning: kelpi event stop:');
     });
 });
 
@@ -456,12 +456,12 @@ describe('open / md / diff routing', () => {
     it('refuses a file type it has no pane for', async () => {
         const result = await runCLI(['open', 'archive.zip'], { port: server.port });
         expect(result.code).toBe(1);
-        expect(result.stderr).toContain("nex open: don't know how to open '.zip' files");
-        expect(result.stderr).toContain('Use `nex md <file>` to force a markdown pane');
+        expect(result.stderr).toContain("kelpi open: don't know how to open '.zip' files");
+        expect(result.stderr).toContain('Use `kelpi md <file>` to force a markdown pane');
         expect(server.requests).toHaveLength(0);
     });
 
-    it('forces markdown for any extension with `nex md`', async () => {
+    it('forces markdown for any extension with `kelpi md`', async () => {
         const home = scratchHome();
         await runCLI(['md', 'notes.txt'], { port: server.port, cwd: home });
         expect(lastRequest()).toEqual({ command: 'open', path: path.join(home, 'notes.txt') });
@@ -516,7 +516,7 @@ describe('web', () => {
             });
             expect(rejected.code).toBe(1);
             expect(rejected.stderr).toBe(
-                `nex web capture: unknown --mode '${mode}' (allowed: meta, text, screenshot)\n`
+                `kelpi web capture: unknown --mode '${mode}' (allowed: meta, text, screenshot)\n`
             );
             expect(server.requests).toHaveLength(before);
         }
@@ -526,12 +526,12 @@ describe('web', () => {
         const label = await runCLI(['web', 'capture', '--target', 'somelabel'], { port: server.port });
         expect(label.code).toBe(1);
         expect(label.stderr).toBe(
-            'nex web capture: --target by label requires --workspace <name-or-id> when called outside a Nex pane\n'
+            'kelpi web capture: --target by label requires --workspace <name-or-id> when called outside a Kelpi pane\n'
         );
 
         const none = await runCLI(['web', 'capture'], { port: server.port });
         expect(none.code).toBe(1);
-        expect(none.stderr).toBe('nex web capture: no --target supplied and NEX_PANE_ID is not set\n');
+        expect(none.stderr).toBe('kelpi web capture: no --target supplied and NEX_PANE_ID is not set\n');
         expect(server.requests).toHaveLength(0);
     });
 
@@ -617,7 +617,7 @@ describe('web', () => {
             timeoutMs: 15_000
         });
         expect(result.code).toBe(1);
-        expect(result.stderr).toBe('nex web console: pane is not a web pane\n');
+        expect(result.stderr).toBe('kelpi web console: pane is not a web pane\n');
     }, 30_000);
 });
 
@@ -799,7 +799,7 @@ describe('caller-pane scoping', () => {
         [['pane', 'move-to-workspace', '--to-workspace', 'beta'], 'pane-move-to-workspace'],
         [['layout', 'cycle'], 'layout-cycle'],
         [['layout', 'select', 'tiled'], 'layout-select']
-    ])('exits 0 silently outside a pane: nex %s', async (args) => {
+    ])('exits 0 silently outside a pane: kelpi %s', async (args) => {
         const result = await runCLI(args, { port: server.port });
         expect(result.code).toBe(0);
         expect(result.stdout).toBe('');
@@ -827,7 +827,7 @@ describe('caller-pane scoping', () => {
         const result = await runCLI(['pane', 'split'], { port: server.port });
         expect(result.code).toBe(1);
         expect(result.stderr).toContain(
-            'nex pane split: requires --target <name-or-uuid> or --workspace <name-or-id> when called from outside a Nex pane'
+            'kelpi pane split: requires --target <name-or-uuid> or --workspace <name-or-id> when called from outside a Kelpi pane'
         );
     });
 });
@@ -866,7 +866,7 @@ describe('doctor', () => {
     it('uses exit 2 for an unexpected argument', async () => {
         const result = await runCLI(['doctor', 'extra'], { port: server.port });
         expect(result.code).toBe(2);
-        expect(result.stderr).toBe('nex doctor: unexpected argument: extra\nUsage: nex doctor [--json]\n');
+        expect(result.stderr).toBe('kelpi doctor: unexpected argument: extra\nUsage: kelpi doctor [--json]\n');
     });
 
     it('passes the process check on a live daemon pid record', async () => {
@@ -880,11 +880,11 @@ describe('doctor', () => {
         );
         // Unix transport so the check runs at all; the socket check FAILs, which is fine —
         // we are asserting the process check alone.
-        const result = await runCLI(['doctor', '--json'], { cwd: home, env: { NEXD_RUN_DIR: runDir } });
+        const result = await runCLI(['doctor', '--json'], { cwd: home, env: { KELPID_RUN_DIR: runDir } });
         const report = JSON.parse(result.stdout) as { checks: { name: string; status: string; detail: string }[] };
         const check = report.checks.find((entry) => entry.name === 'process');
         expect(check?.status).toBe('pass');
-        expect(check?.detail).toContain(`nexd running (pid ${String(process.pid)}`);
+        expect(check?.detail).toContain(`kelpid running (pid ${String(process.pid)}`);
     });
 });
 

@@ -36,7 +36,7 @@ const HAS_GIT = gitAvailable();
 const roots: string[] = [];
 
 function tmpDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nex-git-${prefix}-`));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kelpi-git-${prefix}-`));
     roots.push(dir);
     return fs.realpathSync(dir);
 }
@@ -47,10 +47,10 @@ function git(cwd: string, ...args: string[]): string {
         encoding: 'utf8',
         env: {
             ...process.env,
-            GIT_AUTHOR_NAME: 'nex',
-            GIT_AUTHOR_EMAIL: 'nex@example.com',
-            GIT_COMMITTER_NAME: 'nex',
-            GIT_COMMITTER_EMAIL: 'nex@example.com'
+            GIT_AUTHOR_NAME: 'kelpi',
+            GIT_AUTHOR_EMAIL: 'kelpi@example.com',
+            GIT_COMMITTER_NAME: 'kelpi',
+            GIT_COMMITTER_EMAIL: 'kelpi@example.com'
         }
     });
 }
@@ -391,15 +391,15 @@ describe.skipIf(!HAS_GIT)('GitService — graft primitives', () => {
     it('stashes by SHA, pops by SHA, and treats a dropped stash as success', async () => {
         const repo = initRepo('stash');
         const service = createGitService();
-        expect(await service.stashPushIncludeUntracked(repo, 'nex-graft:none')).toBeNull();
+        expect(await service.stashPushIncludeUntracked(repo, 'kelpi-graft:none')).toBeNull();
 
         fs.writeFileSync(path.join(repo, 'README.md'), '# edited\n');
         fs.writeFileSync(path.join(repo, 'untracked.txt'), 'new\n');
-        const ref = await service.stashPushIncludeUntracked(repo, 'nex-graft:test');
+        const ref = await service.stashPushIncludeUntracked(repo, 'kelpi-graft:test');
         expect(ref).toMatch(/^[0-9a-f]{40}$/);
         // Untracked files ride along, so the tree is clean afterwards.
         expect(await service.getStatus(repo)).toEqual({ kind: 'clean' });
-        expect(git(repo, 'stash', 'list')).toContain('nex-graft:test');
+        expect(git(repo, 'stash', 'list')).toContain('kelpi-graft:test');
 
         await service.stashPopRef(repo, ref as string);
         expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('# edited\n');

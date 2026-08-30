@@ -4,10 +4,10 @@ import {
     emptyDaemonState,
     type DaemonState,
     type DomainEvent
-} from '@nex/daemon/store';
+} from '@kelpi/daemon/store';
 import { describe, expect, it } from 'vitest';
 
-import { createNexStore, hydrateDomainEvents, hydrateSnapshotState, recentlyClosedCount } from './store';
+import { createKelpiStore, hydrateDomainEvents, hydrateSnapshotState, recentlyClosedCount } from './store';
 
 const HOME = '/Users/test';
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -112,7 +112,7 @@ describe('snapshot → delta convergence', () => {
         const { store: daemon, batches } = seededDaemon();
         const before = daemon.getState();
 
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(before));
 
         daemon.dispatch({ type: 'split-pane', workspaceID: W1, paneID: P2, direction: 'vertical', now: NOW + 1 });
@@ -147,7 +147,7 @@ describe('snapshot → delta convergence', () => {
 
     it('flags a seq gap instead of splicing a hole into the mirror', () => {
         const { store: daemon, batches } = seededDaemon();
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(daemon.getState()));
 
         daemon.dispatch({ type: 'rename-workspace', id: W1, name: 'one' });
@@ -161,14 +161,14 @@ describe('snapshot → delta convergence', () => {
     });
 
     it('ignores deltas that arrive before any snapshot', () => {
-        const client = createNexStore();
+        const client = createKelpiStore();
         expect(client.getState().applyDelta(1, [{ kind: 'active-workspace-changed', workspaceID: W1 }])).toBe(false);
         expect(client.getState().daemon.hasSnapshot).toBe(false);
     });
 
     it('replaces the mirror wholesale on a re-snapshot', () => {
         const { store: daemon } = seededDaemon();
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(daemon.getState()));
         expect(client.getState().daemon.state.workspaces).toHaveLength(1);
 
@@ -184,7 +184,7 @@ describe('ui slice', () => {
         daemon.dispatch({ type: 'create-workspace', id: W2, paneID: P2, name: 'beta', color: 'red', now: NOW + 1 });
         daemon.dispatch({ type: 'set-active-workspace', id: W2, now: NOW + 2 });
 
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(daemon.getState()));
         expect(client.getState().ui.activeWorkspaceID).toBe(W2);
 
@@ -204,7 +204,7 @@ describe('ui slice', () => {
         // echo used to outlive everything — so after a split the daemon focused the NEW pane
         // and the client kept drawing the ring (and holding the caret) on the old one.
         const { store: daemon, batches } = seededDaemon();
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(daemon.getState()));
         client.getState().setFocusEcho(W1, P1);
 
@@ -219,7 +219,7 @@ describe('ui slice', () => {
 
     it('keeps the focus echo while the daemon says nothing about focus', () => {
         const { store: daemon, batches } = seededDaemon();
-        const client = createNexStore();
+        const client = createKelpiStore();
         client.getState().applySnapshot(0, serializeState(daemon.getState()));
         client.getState().setFocusEcho(W1, P1);
 
@@ -232,7 +232,7 @@ describe('ui slice', () => {
     });
 
     it('tracks connection status, palette, filter and focus echo', () => {
-        const client = createNexStore();
+        const client = createKelpiStore();
         const state = () => client.getState().ui;
 
         client.getState().setConnectionStatus('reconnecting', 'socket closed (1006)');
@@ -257,7 +257,7 @@ describe('ui slice', () => {
     });
 
     it('replaces toasts by id and drops them per pane', () => {
-        const client = createNexStore();
+        const client = createKelpiStore();
         const toast = (id: string, paneID: string, title: string) => ({
             id,
             kind: 'agent-waiting' as const,
@@ -268,12 +268,12 @@ describe('ui slice', () => {
             createdAt: 1
         });
 
-        client.getState().pushToast(toast(`nex-${P1}`, P1, 'first'));
-        client.getState().pushToast(toast(`nex-${P1}`, P1, 'second'));
+        client.getState().pushToast(toast(`kelpi-${P1}`, P1, 'first'));
+        client.getState().pushToast(toast(`kelpi-${P1}`, P1, 'second'));
         expect(client.getState().ui.toasts).toHaveLength(1);
         expect(client.getState().ui.toasts[0]?.title).toBe('second');
 
-        client.getState().pushToast(toast(`nex-${P2}`, P2, 'other'));
+        client.getState().pushToast(toast(`kelpi-${P2}`, P2, 'other'));
         client.getState().dismissPaneToasts(P1);
         expect(client.getState().ui.toasts.map((entry) => entry.paneID)).toEqual([P2]);
 

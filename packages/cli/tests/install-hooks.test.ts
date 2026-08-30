@@ -1,5 +1,5 @@
 /**
- * `nex install-hooks` driven as the real bundled binary (gap #1's acceptance).
+ * `kelpi install-hooks` driven as the real bundled binary (gap #1's acceptance).
  *
  * The unit tests cover the merge and the filesystem decisions; this covers the thing a user
  * actually types — argument parsing, which stream each line lands on, the exit codes, and the
@@ -48,13 +48,13 @@ function dirs(options: { codex?: boolean } = {}): Dirs {
     };
 }
 
-describe('nex install-hooks', () => {
+describe('kelpi install-hooks', () => {
     it('installs both hook sets into the default ~/.claude and ~/.codex', async () => {
         const d = dirs({ codex: true });
-        const result = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
 
         expect(result.code).toBe(0);
-        expect(result.stdout).toContain('Configuring Claude Code hooks (command: nex)');
+        expect(result.stdout).toContain('Configuring Claude Code hooks (command: kelpi)');
         expect(result.stdout).toContain(`created ${d.settings}`);
         expect(result.stdout).toContain('Configuring Codex CLI hooks');
         expect(result.stdout).toContain('run /hooks inside codex');
@@ -70,7 +70,7 @@ describe('nex install-hooks', () => {
         fs.mkdirSync(codex, { recursive: true });
 
         const result = await runCLI(
-            ['install-hooks', '--claude-dir', claude, '--codex-dir', codex, '--command', 'nex'],
+            ['install-hooks', '--claude-dir', claude, '--codex-dir', codex, '--command', 'kelpi'],
             { cwd: d.home }
         );
         expect(result.code).toBe(0);
@@ -81,7 +81,7 @@ describe('nex install-hooks', () => {
 
     it('says it is skipping Codex when ~/.codex is not there', async () => {
         const d = dirs();
-        const result = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         expect(result.stdout).toContain('Skipping Codex CLI hooks');
         expect(result.stdout).toContain('Codex CLI not detected');
@@ -90,9 +90,9 @@ describe('nex install-hooks', () => {
 
     it('is idempotent, and says so on the second run', async () => {
         const d = dirs();
-        await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         const before = fs.readFileSync(d.settings, 'utf8');
-        const again = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const again = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         expect(again.code).toBe(0);
         expect(again.stdout).toContain('already up to date');
         expect(fs.readFileSync(d.settings, 'utf8')).toBe(before);
@@ -103,11 +103,11 @@ describe('nex install-hooks', () => {
         fs.mkdirSync(d.claude, { recursive: true });
         fs.writeFileSync(d.settings, golden('input-claude-stale.json'), 'utf8');
 
-        const result = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
-        expect(result.stdout).toContain(`backup: ${d.settings}.nex-backup`);
+        expect(result.stdout).toContain(`backup: ${d.settings}.kelpi-backup`);
         expect(fs.readFileSync(d.settings, 'utf8')).toBe(golden('expected-claude-stale-migrated.json'));
-        expect(fs.readFileSync(`${d.settings}.nex-backup`, 'utf8')).toBe(golden('input-claude-stale.json'));
+        expect(fs.readFileSync(`${d.settings}.kelpi-backup`, 'utf8')).toBe(golden('input-claude-stale.json'));
     });
 
     it('refuses a malformed settings.json — exit 1, file untouched, error on stderr', async () => {
@@ -115,18 +115,18 @@ describe('nex install-hooks', () => {
         fs.mkdirSync(d.claude, { recursive: true });
         fs.writeFileSync(d.settings, '{ oops', 'utf8');
 
-        const result = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(1);
         expect(result.stderr).toContain('not valid JSON');
         expect(fs.readFileSync(d.settings, 'utf8')).toBe('{ oops');
-        expect(fs.existsSync(`${d.settings}.nex-backup`)).toBe(false);
+        expect(fs.existsSync(`${d.settings}.kelpi-backup`)).toBe(false);
     });
 
     it('keeps a broken Codex config non-fatal (exit 0, warning on stderr)', async () => {
         const d = dirs({ codex: true });
         fs.writeFileSync(d.codexHooks, 'not json', 'utf8');
 
-        const result = await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         expect(result.stderr).toContain('Skipping Codex hooks');
         expect(fs.readFileSync(d.settings, 'utf8')).toBe(golden('expected-claude-fresh.json'));
@@ -135,7 +135,7 @@ describe('nex install-hooks', () => {
 
     it('--dry-run writes nothing and says so', async () => {
         const d = dirs({ codex: true });
-        const result = await runCLI(['install-hooks', '--dry-run', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--dry-run', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         expect(result.stdout).toContain('would be created');
         expect(result.stdout).toContain('Dry run: nothing was written');
@@ -145,13 +145,13 @@ describe('nex install-hooks', () => {
 
     it('--json prints one key-sorted object and nothing else', async () => {
         const d = dirs({ codex: true });
-        const result = await runCLI(['install-hooks', '--json', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--json', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
         expect(parsed).toMatchObject({
             ok: true,
             dry_run: false,
-            command: 'nex',
+            command: 'kelpi',
             claude: { path: d.settings, action: 'created' },
             codex: { path: d.codexHooks, action: 'created' }
         });
@@ -163,7 +163,7 @@ describe('nex install-hooks', () => {
         const d = dirs();
         fs.mkdirSync(d.claude, { recursive: true });
         fs.writeFileSync(d.settings, '[]', 'utf8'); // valid JSON, but not an object
-        const result = await runCLI(['install-hooks', '--json', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--json', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(1);
         const parsed = JSON.parse(result.stdout) as { ok: boolean; claude: { action: string } };
         expect(parsed.ok).toBe(false);
@@ -174,18 +174,18 @@ describe('nex install-hooks', () => {
         const d = dirs();
         const installDir = path.join(d.home, 'bin');
         const result = await runCLI(
-            ['install-hooks', '--link', '--install-dir', installDir, '--command', 'nex'],
+            ['install-hooks', '--link', '--install-dir', installDir, '--command', 'kelpi'],
             { cwd: d.home, env: { PATH: '/usr/bin:/bin' } }
         );
         expect(result.code).toBe(0);
-        const link = path.join(installDir, 'nex');
+        const link = path.join(installDir, 'kelpi');
         expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-        expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(process.cwd(), 'packages/cli/dist/nex.js')));
+        expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(process.cwd(), 'packages/cli/dist/kelpi.js')));
         expect(result.stdout).toContain(`linked ${link}`);
         expect(result.stderr).toContain('is not on this shell\'s PATH');
     });
 
-    it('--link picks the bare `nex` command once the link is on PATH', async () => {
+    it('--link picks the bare `kelpi` command once the link is on PATH', async () => {
         const d = dirs();
         const installDir = path.join(d.home, 'bin');
         const result = await runCLI(['install-hooks', '--link', '--install-dir', installDir, '--json'], {
@@ -194,7 +194,7 @@ describe('nex install-hooks', () => {
         });
         expect(result.code).toBe(0);
         const parsed = JSON.parse(result.stdout) as { command: string; link: { on_path: boolean } };
-        expect(parsed.command).toBe('nex');
+        expect(parsed.command).toBe('kelpi');
         expect(parsed.link.on_path).toBe(true);
         expect(fs.readFileSync(path.join(d.claude, 'settings.json'), 'utf8')).toBe(
             golden('expected-claude-fresh.json')
@@ -206,7 +206,7 @@ describe('nex install-hooks', () => {
         const result = await runCLI(['install-hooks', '--json'], { cwd: d.home, env: { PATH: '/usr/bin:/bin' } });
         expect(result.code).toBe(0);
         const parsed = JSON.parse(result.stdout) as { command: string };
-        expect(parsed.command).toBe(fs.realpathSync(path.join(process.cwd(), 'packages/cli/dist/nex.js')));
+        expect(parsed.command).toBe(fs.realpathSync(path.join(process.cwd(), 'packages/cli/dist/kelpi.js')));
         expect(fs.readFileSync(path.join(d.claude, 'settings.json'), 'utf8')).toContain(
             `${parsed.command} event stop`
         );
@@ -214,7 +214,7 @@ describe('nex install-hooks', () => {
 
     it('installs the bundled nex-agentic skill it ships beside itself', async () => {
         const d = dirs();
-        const result = await runCLI(['install-hooks', '--json', '--command', 'nex'], { cwd: d.home });
+        const result = await runCLI(['install-hooks', '--json', '--command', 'kelpi'], { cwd: d.home });
         expect(result.code).toBe(0);
         const parsed = JSON.parse(result.stdout) as { skill: { action: string; path: string; source: string } };
         // Found via `<dist>/../resources/skills/nex-agentic` — the checkout shape.
@@ -225,7 +225,7 @@ describe('nex install-hooks', () => {
         expect(installed).toBe(fs.readFileSync(parsed.skill.path, 'utf8'));
 
         // Second run: nothing to do, and it says so rather than rewriting.
-        const again = await runCLI(['install-hooks', '--json', '--command', 'nex'], { cwd: d.home });
+        const again = await runCLI(['install-hooks', '--json', '--command', 'kelpi'], { cwd: d.home });
         expect((JSON.parse(again.stdout) as { skill: { action: string } }).skill.action).toBe('unchanged');
     });
 
@@ -233,7 +233,7 @@ describe('nex install-hooks', () => {
         const d = dirs();
         const empty = path.join(d.home, 'no-skill-here');
         fs.mkdirSync(empty, { recursive: true });
-        const result = await runCLI(['install-hooks', '--command', 'nex', '--skill-source', empty, '--json'], {
+        const result = await runCLI(['install-hooks', '--command', 'kelpi', '--skill-source', empty, '--json'], {
             cwd: d.home
         });
         expect(result.code).toBe(0);
@@ -259,14 +259,14 @@ describe('nex install-hooks', () => {
     it('prints its help to stdout and exits 0', async () => {
         const result = await runCLI(['install-hooks', '--help']);
         expect(result.code).toBe(0);
-        expect(result.stdout).toContain('nex install-hooks');
+        expect(result.stdout).toContain('kelpi install-hooks');
         expect(result.stdout).toContain('--dry-run');
         expect(result.stderr).toBe('');
     });
 
     it('is listed in the top-level usage block', async () => {
         const result = await runCLI(['--help']);
-        expect(result.stderr).toContain('nex install-hooks');
+        expect(result.stderr).toContain('kelpi install-hooks');
     });
 
     it('is what doctor now names as the repair', async () => {
@@ -274,10 +274,10 @@ describe('nex install-hooks', () => {
         fs.mkdirSync(d.claude, { recursive: true });
         fs.writeFileSync(d.settings, '{}', 'utf8');
         const before = await runCLI(['doctor'], { cwd: d.home });
-        expect(before.stdout + before.stderr).toContain('nex install-hooks');
+        expect(before.stdout + before.stderr).toContain('kelpi install-hooks');
         expect(before.stdout + before.stderr).not.toContain('install-hooks.sh');
 
-        await runCLI(['install-hooks', '--command', 'nex'], { cwd: d.home });
+        await runCLI(['install-hooks', '--command', 'kelpi'], { cwd: d.home });
         const after = await runCLI(['doctor', '--json'], { cwd: d.home });
         const report = JSON.parse(after.stdout) as { checks: { name: string; status: string }[] };
         const hooks = report.checks.find((check) => check.name === 'hooks');

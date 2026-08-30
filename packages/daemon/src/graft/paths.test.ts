@@ -8,7 +8,7 @@ import { canonicalizePath, canonicalizeUserPath, directoryExists, lastPathCompon
 const roots: string[] = [];
 
 function tmpDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nex-graft-paths-${prefix}-`));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kelpi-graft-paths-${prefix}-`));
     roots.push(dir);
     return dir;
 }
@@ -69,8 +69,8 @@ describe('canonicalizeUserPath', () => {
     it('expands ~ before resolving, so a CLI --repo matches a recorded session', () => {
         const dir = tmpDir('home');
         const real = fs.realpathSync(dir);
-        fs.mkdirSync(path.join(dir, 'code', 'nex'), { recursive: true });
-        expect(canonicalizeUserPath('~/code/nex', dir)).toBe(path.join(real, 'code', 'nex'));
+        fs.mkdirSync(path.join(dir, 'code', 'kelpi'), { recursive: true });
+        expect(canonicalizeUserPath('~/code/kelpi', dir)).toBe(path.join(real, 'code', 'kelpi'));
     });
 });
 

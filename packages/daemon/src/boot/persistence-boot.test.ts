@@ -1,15 +1,15 @@
 /**
  * Boot-level half of the P0 (`db/durability.test.ts` is the storage half).
  *
- * The observed failure: a daemon started with `NEXD_DB_PATH=/tmp/nexd-dev.db` came up, served a
- * full day of work, answered every health check cheerfully, printed a clean `nexd stop`, and had
+ * The observed failure: a daemon started with `KELPID_DB_PATH=/tmp/kelpid-dev.db` came up, served a
+ * full day of work, answered every health check cheerfully, printed a clean `kelpid stop`, and had
  * written **zero bytes**. The chmod bug itself is fixed in `db/location.ts`; these tests pin the
  * semantics that make a future variant of it impossible to sit on:
  *
  *   1. persistence failure at boot is FATAL — the daemon refuses to start, names the file and
  *      the errno, and binds nothing;
  *   2. running without persistence is possible only on purpose, and says so on every boot;
- *   3. a degraded daemon reports it through `ping`, so `nexd status` cannot pretend;
+ *   3. a degraded daemon reports it through `ping`, so `kelpid status` cannot pretend;
  *   4. a mid-run save failure reaches attached clients as a broadcast, not just a log line;
  *   5. shutdown knows whether the final flush actually landed;
  *   6. and the whole thing works end to end through a shared parent directory: create state over
@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { openSqliteDatabase } from '../db/index.js';
@@ -58,7 +58,7 @@ interface Scratch {
  * the case the bug could not happen in.
  */
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-pboot-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-pboot-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
@@ -68,7 +68,7 @@ function scratch(): Scratch {
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(shared, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -92,7 +92,7 @@ function daemonFor(paths: Scratch, overrides: Parameters<typeof createDaemon>[0]
     return daemon;
 }
 
-/** One request, one reply line, then EOF — exactly what the `nex` CLI does. */
+/** One request, one reply line, then EOF — exactly what the `kelpi` CLI does. */
 function request(socketPath: string, message: Reply, timeoutMs = 10_000): Promise<Reply> {
     return new Promise<Reply>((resolve, reject) => {
         const socket = net.connect({ path: socketPath });
@@ -191,7 +191,7 @@ describe('a daemon that cannot persist refuses to start', () => {
         expect(failure?.code).toBe('ENEXDPERSIST');
         expect(failure?.message).toContain('locked');
         expect(failure?.message).toContain('EACCES');
-        expect(failure?.repair).toContain('NEXD_DB_PATH');
+        expect(failure?.repair).toContain('KELPID_DB_PATH');
 
         // The refusal lands before any side effect: nothing created, nothing listening.
         expect(fs.existsSync(paths.socketPath)).toBe(false);
@@ -214,7 +214,7 @@ describe('a daemon that cannot persist refuses to start', () => {
         expect(info.persistence.degraded).toBe(true);
         // Two unmissable warnings: the opt-in, and the failure it is covering for.
         expect(logs.join('\n')).toContain(ALLOW_EPHEMERAL_STATE_ENV);
-        expect(logs.join('\n')).toContain('WARNING: nexd cannot save state');
+        expect(logs.join('\n')).toContain('WARNING: kelpid cannot save state');
     });
 
     it('still allows an explicit in-memory database', async () => {
@@ -303,9 +303,9 @@ describe('a degraded daemon says so', () => {
 
         const text = logs.join('\n');
         expect(text).toContain('shut down WITHOUT saving state');
-        expect(text).toContain('nexd stopped (state NOT saved)');
+        expect(text).toContain('kelpid stopped (state NOT saved)');
         // The old build printed exactly this line over a database of zero bytes.
-        expect(logs).not.toContain('nexd stopped');
+        expect(logs).not.toContain('kelpid stopped');
         expect(daemon.persistenceHealth().degraded).toBe(true);
     });
 
@@ -317,7 +317,7 @@ describe('a degraded daemon says so', () => {
         await daemon.restored;
         await daemon.stop();
 
-        expect(logs).toContain('nexd stopped');
+        expect(logs).toContain('kelpid stopped');
         expect(daemon.persistenceHealth().degraded).toBe(false);
     });
 });
@@ -330,7 +330,7 @@ describe('end to end through a shared parent directory', () => {
         await first.start();
         await first.restored;
 
-        // Exactly what `nex workspace create` sends.
+        // Exactly what `kelpi workspace create` sends.
         const created = await request(paths.socketPath, {
             command: 'workspace-create',
             name: 'survives-restart'

@@ -2,7 +2,7 @@
  * Doctor's seven checks (cli.md §16), including the two the daemon architecture changes.
  *
  * `process` and `version` are the interesting ones: the Swift CLI FAILed `process` whenever
- * `Nex.app` was not in `ps`, which in the daemon world is the *normal* case, and it WARNed on
+ * `Kelpi.app` was not in `ps`, which in the daemon world is the *normal* case, and it WARNed on
  * any version-string difference between a CLI and an app that used to ship as one bundle.
  * Both are re-pointed here, and the hook checks are unchanged local filesystem reads.
  */
@@ -26,7 +26,7 @@ import { claudeHooksCheck, codexHooksCheck, matcherCovers, type HookFilesystem }
 import { exitCodeFor, printHumanReport, reportJSON } from './doctor/types.js';
 import { setLastTransportFailure } from './transport.js';
 import { resetIO, setIO } from './io.js';
-import { PROTOCOL_VERSION } from '@nex/protocol';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 
 const CLI = { version: '0.1.0', build: 'dev', protocol: PROTOCOL_VERSION };
 
@@ -85,7 +85,7 @@ describe('ping', () => {
         setLastTransportFailure({ kind: 'unixSocketMissing', path: '/tmp/nex.sock' });
         const check = pingCheck(null, {});
         expect(check).toMatchObject({ name: 'ping', status: 'FAIL' });
-        expect(check.detail).toContain('nex doctor: cannot reach Nex');
+        expect(check.detail).toContain('kelpi doctor: cannot reach Kelpi');
         setLastTransportFailure(null);
     });
 
@@ -180,7 +180,7 @@ describe('process (daemon-aware)', () => {
             { pid: 777 }
         );
         expect(check.status).toBe('PASS');
-        expect(check.detail).toContain('nexd running (pid 777');
+        expect(check.detail).toContain('kelpid running (pid 777');
     });
 
     it('ignores a STALE pid record (the process is gone)', async () => {
@@ -191,22 +191,22 @@ describe('process (daemon-aware)', () => {
             {}
         );
         expect(check.status).toBe('FAIL');
-        expect(check.detail).toBe('no running nexd or Nex.app process found');
+        expect(check.detail).toBe('no running kelpid or Kelpi.app process found');
     });
 
-    it('accepts a bundled `nexd.js` under node from the process table', async () => {
+    it('accepts a bundled `kelpid.js` under node from the process table', async () => {
         const check = await processCheck(
             { kind: 'unix', path: '/tmp/nex.sock' },
             processDeps({
                 run: async (_path, args) =>
                     args.includes('pid=,command=')
-                        ? ok('  901 /usr/local/bin/node /opt/nex/packages/daemon/dist/nexd.js start --foreground\n')
+                        ? ok('  901 /usr/local/bin/node /opt/kelpi/packages/daemon/dist/kelpid.js start --foreground\n')
                         : ok('')
             }),
             {}
         );
         expect(check).toMatchObject({ status: 'PASS' });
-        expect(check.detail).toBe('nexd running (pids: 901)');
+        expect(check.detail).toBe('kelpid running (pids: 901)');
     });
 
     it('still accepts the Swift app', async () => {
@@ -218,7 +218,7 @@ describe('process (daemon-aware)', () => {
             }),
             {}
         );
-        expect(check).toMatchObject({ status: 'PASS', detail: 'Nex.app running (pids: 1234)' });
+        expect(check).toMatchObject({ status: 'PASS', detail: 'Kelpi.app running (pids: 1234)' });
     });
 
     it('warns when ping answered from a pid nothing else knows about', async () => {
@@ -234,11 +234,11 @@ describe('process (daemon-aware)', () => {
         expect(check.detail).toContain('ping replied from pid 999');
     });
 
-    it('resolves the run dir per platform, with NEXD_RUN_DIR winning', () => {
+    it('resolves the run dir per platform, with KELPID_RUN_DIR winning', () => {
         expect(resolveRunDir({}, 'darwin', '/Users/t')).toBe('/Users/t/Library/Application Support/nexd/run');
         expect(resolveRunDir({}, 'linux', '/home/t')).toBe('/home/t/.local/state/nexd/run');
         expect(resolveRunDir({ XDG_RUNTIME_DIR: '/run/user/1' }, 'linux', '/home/t')).toBe('/run/user/1/nexd');
-        expect(resolveRunDir({ NEXD_RUN_DIR: '/custom/run' }, 'darwin', '/Users/t')).toBe('/custom/run');
+        expect(resolveRunDir({ KELPID_RUN_DIR: '/custom/run' }, 'darwin', '/Users/t')).toBe('/custom/run');
     });
 
     it('reads only a well-formed pid record', () => {
@@ -260,13 +260,13 @@ describe('version (daemon-aware)', () => {
 
     it('passes on an identical version and build', () => {
         const check = versionCheck(CLI, { version: '0.1.0', build: 'dev', protocol: PROTOCOL_VERSION });
-        expect(check).toMatchObject({ status: 'PASS', detail: 'CLI 0.1.0 matches nexd 0.1.0' });
+        expect(check).toMatchObject({ status: 'PASS', detail: 'CLI 0.1.0 matches kelpid 0.1.0' });
     });
 
     it('warns — but only advisorily — when the two artifacts differ', () => {
         const check = versionCheck(CLI, { version: '0.1.0', build: '1', protocol: PROTOCOL_VERSION });
         expect(check.status).toBe('WARN');
-        expect(check.detail).toBe('CLI is 0.1.0 (build dev); nexd is 0.1.0 (build 1).');
+        expect(check.detail).toBe('CLI is 0.1.0 (build dev); kelpid is 0.1.0 (build 1).');
         expect(check.repair).toContain('Advisory only');
         // A WARN never fails doctor.
         expect(exitCodeFor([check])).toBe(0);
@@ -295,11 +295,11 @@ describe('hooks', () => {
 
     const wired = JSON.stringify({
         hooks: {
-            Stop: [{ hooks: [{ type: 'command', command: 'nex event stop' }] }],
-            Notification: [{ hooks: [{ type: 'command', command: 'nex event notification' }] }],
-            SessionStart: [{ hooks: [{ type: 'command', command: 'nex event session-start' }] }],
-            SessionEnd: [{ hooks: [{ type: 'command', command: 'nex event session-end' }] }],
-            UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'nex event start' }] }]
+            Stop: [{ hooks: [{ type: 'command', command: 'kelpi event stop' }] }],
+            Notification: [{ hooks: [{ type: 'command', command: 'kelpi event notification' }] }],
+            SessionStart: [{ hooks: [{ type: 'command', command: 'kelpi event session-start' }] }],
+            SessionEnd: [{ hooks: [{ type: 'command', command: 'kelpi event session-end' }] }],
+            UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'kelpi event start' }] }]
         }
     });
 
@@ -320,20 +320,20 @@ describe('hooks', () => {
     });
 
     it('accepts absolute paths and extra flags (substring match)', () => {
-        const absolute = wired.replace(/nex event/g, '/Applications/Nex.app/Contents/Helpers/nex event');
+        const absolute = wired.replace(/kelpi event/g, '/Applications/Nex.app/Contents/Helpers/nex event');
         expect(claudeHooksCheck(fsWith({ '/Users/t/.claude/settings.json': absolute }), '/Users/t').status).toBe('PASS');
     });
 
     it('reports missing hooks and a stale SessionStart matcher', () => {
         const stale = JSON.stringify({
             hooks: {
-                Stop: [{ hooks: [{ type: 'command', command: 'nex event stop' }] }],
-                SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'nex event session-start' }] }]
+                Stop: [{ hooks: [{ type: 'command', command: 'kelpi event stop' }] }],
+                SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'kelpi event session-start' }] }]
             }
         });
         const check = claudeHooksCheck(fsWith({ '/Users/t/.claude/settings.json': stale }), '/Users/t');
         expect(check.status).toBe('WARN');
-        expect(check.detail).toContain('missing hook(s): Notification → `nex event notification`');
+        expect(check.detail).toContain('missing hook(s): Notification → `kelpi event notification`');
         expect(check.detail).toContain('SessionStart matcher "startup" misses source(s): resume, clear, compact');
         expect(check.detail).toContain('issue #181');
     });
@@ -361,10 +361,10 @@ describe('hooks', () => {
 
         const codex = JSON.stringify({
             hooks: {
-                Stop: [{ hooks: [{ type: 'command', command: 'nex event stop --agent codex' }] }],
-                PermissionRequest: [{ hooks: [{ type: 'command', command: 'nex event notification --agent codex' }] }],
-                SessionStart: [{ hooks: [{ type: 'command', command: 'nex event session-start --agent codex' }] }],
-                UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'nex event start --agent codex' }] }]
+                Stop: [{ hooks: [{ type: 'command', command: 'kelpi event stop --agent codex' }] }],
+                PermissionRequest: [{ hooks: [{ type: 'command', command: 'kelpi event notification --agent codex' }] }],
+                SessionStart: [{ hooks: [{ type: 'command', command: 'kelpi event session-start --agent codex' }] }],
+                UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'kelpi event start --agent codex' }] }]
             }
         });
         const check = codexHooksCheck(

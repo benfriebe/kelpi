@@ -5,7 +5,7 @@
  * §6 (private mode), §17 (invariants).
  *
  * The split of ownership in the port: **the daemon owns this state** (it persists, it is what
- * `nex web tabs` reads, it survives the shell restarting), while the actual browser views live
+ * `kelpi web tabs` reads, it survives the shell restarting), while the actual browser views live
  * in the Electron shell and are driven over the host RPC channel (`daemon/src/webpane/`). So
  * every action here is a pure state mutation; the forwarding to a real page is the handler's
  * job, never the reducer's.
@@ -21,7 +21,7 @@
  *    (§4.4) — titles are always taken.
  */
 
-import type { WebTab } from '@nex/core/codec';
+import type { WebTab } from '@kelpi/core/codec';
 
 import type { DaemonState, DomainAction, WebPaneState, WorkspaceState } from '../types.js';
 import { mutateVisiblePane, updateWorkspace } from './helpers.js';

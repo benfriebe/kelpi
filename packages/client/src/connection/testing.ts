@@ -4,7 +4,7 @@
  * packages can drive a connection in their own tests without re-implementing the protocol.
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import type { SocketCloseLike, SocketFactory, SocketLike } from './socket';
 

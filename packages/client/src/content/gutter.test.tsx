@@ -111,7 +111,7 @@ describe('PlainTextEditor gutter', () => {
             />
         );
         const gutter = screen.getByTestId(`content-gutter-${PANE}`);
-        expect(gutter.style.background).toContain('--nex-header-bg');
+        expect(gutter.style.background).toContain('--kelpi-header-bg');
         expect(gutter.style.borderRight).toBe('');
         expect(gutter.getAttribute('style')).not.toContain('border');
     });

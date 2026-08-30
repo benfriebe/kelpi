@@ -1,4 +1,4 @@
-import type { NexAction } from '@nex/core/config';
+import type { KelpiAction } from '@kelpi/core/config';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -53,9 +53,9 @@ function contentEditableElement(): HTMLDivElement {
 }
 
 /** A registry that records which action fired. */
-function recorder(): { registry: KeyActionRegistry; fired: NexAction[] } {
-    const fired: NexAction[] = [];
-    const actions: NexAction[] = [
+function recorder(): { registry: KeyActionRegistry; fired: KelpiAction[] } {
+    const fired: KelpiAction[] = [];
+    const actions: KelpiAction[] = [
         'split_right',
         'split_down',
         'close_pane',
@@ -103,7 +103,7 @@ describe('code → keyCode identity', () => {
 });
 
 describe('the default binding matrix', () => {
-    const cases: ReadonlyArray<readonly [string, Parameters<typeof keyEvent>[1], NexAction]> = [
+    const cases: ReadonlyArray<readonly [string, Parameters<typeof keyEvent>[1], KelpiAction]> = [
         ['KeyD', { meta: true }, 'split_right'],
         ['KeyD', { meta: true, shift: true }, 'split_down'],
         ['KeyW', { meta: true }, 'close_pane'],

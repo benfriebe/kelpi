@@ -13,8 +13,8 @@
  * fire (nobody is watching the pane).
  */
 
-import { newUUID } from '@nex/core/codec';
-import type { SidebarID } from '@nex/core/codec';
+import { newUUID } from '@kelpi/core/codec';
+import type { SidebarID } from '@kelpi/core/codec';
 
 import type { CommandHandler, HandlerContext, HandlerTable, ReplyHandle } from '../../seams.js';
 import type {

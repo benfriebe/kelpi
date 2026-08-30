@@ -23,7 +23,7 @@ afterEach(cleanup);
 
 /** Exactly what `shell/src/settings.ts` `quitDialogSpec` produces. */
 const SPEC: QuitGateSpec = {
-    message: 'Quit Nex?',
+    message: 'Quit Kelpi?',
     detail: '1 agent across 1 workspace is still active. They keep running in the background.',
     buttons: ['Quit', 'Cancel'],
     defaultId: 1,

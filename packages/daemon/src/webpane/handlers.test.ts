@@ -158,7 +158,7 @@ describe('web-open (§3.3)', () => {
      *
      * Swift performs the globe-button open in-process with `fromPaneID` + `direction`; the port
      * has to say the same thing on the wire, so `web-open` accepts `target` (the pane to split)
-     * and `direction`. The CLI sends neither, which is what keeps `nex web open` splitting the
+     * and `direction`. The CLI sends neither, which is what keeps `kelpi web open` splitting the
      * FOCUSED pane exactly as before.
      */
     describe('the GUI anchor (WEB-011)', () => {
@@ -214,7 +214,7 @@ describe('web-open (§3.3)', () => {
             expect(split?.second).toEqual({ kind: 'leaf', paneID: created });
         });
 
-        it('without an anchor it splits the FOCUSED pane, the way `nex web open` always has', () => {
+        it('without an anchor it splits the FOCUSED pane, the way `kelpi web open` always has', () => {
             const h = webHarness();
             const reply = h.reply({ command: 'web-open', url: 'about:blank', pane_id: SHELL_PANE });
             const created = String(reply['pane_id']);
@@ -309,12 +309,12 @@ describe('tabs (§5)', () => {
         });
     });
 
-    it('refuses to close the only tab and points at `nex pane close`', () => {
+    it('refuses to close the only tab and points at `kelpi pane close`', () => {
         const h = webHarness();
         expect(h.reply({ command: 'web-tab-close', pane_id: WEB_PANE, tab: WEB_TAB })).toEqual({
             ok: false,
             error:
-                'cannot close the only tab in a web pane, use `nex pane close` to close the pane itself'
+                'cannot close the only tab in a web pane, use `kelpi pane close` to close the pane itself'
         });
     });
 
@@ -515,7 +515,7 @@ describe('capture (§8.4)', () => {
 });
 
 describe('actuator verbs (§8.2)', () => {
-    it('sends one `actuate` call per verb with the __nexAct method + args', async () => {
+    it('sends one `actuate` call per verb with the __kelpiAct method + args', async () => {
         const h = webHarness();
         const host = attachFakeHost(h.service);
 
@@ -894,7 +894,7 @@ describe('element picker (§11)', () => {
         expect(h.pasted).toHaveLength(1);
         expect(h.pasted[0]?.paneID).toBe(SHELL_PANE);
         expect(h.pasted[0]?.bare).toBe(false);
-        expect(h.pasted[0]?.text).toContain('# nex inspect');
+        expect(h.pasted[0]?.text).toContain('# kelpi inspect');
         expect(h.pasted[0]?.text).toContain('"selector": "#login"');
 
         const drained = h.reply({ command: 'web-inspect-result', pane_id: WEB_PANE, clear: true });

@@ -14,8 +14,8 @@
  * Commands that touch the active tab additionally fail with `web pane has no active tab`.
  */
 
-import type { Pane } from '@nex/core/layout';
-import { resolvePaneTarget } from '@nex/core/resolve';
+import type { Pane } from '@kelpi/core/layout';
+import { resolvePaneTarget } from '@kelpi/core/resolve';
 
 import {
     resolveStateOf,

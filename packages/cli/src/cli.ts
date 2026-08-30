@@ -4,7 +4,7 @@
  * Quirks that are contract, not accidents:
  *   - no arguments at all prints the usage block to **stderr** and exits 1;
  *   - `--help` prints the same block, still to **stderr**, and exits 0;
- *   - `--version` prints `nex <version>` to stdout;
+ *   - `--version` prints `kelpi <version>` to stdout;
  *   - an unknown subcommand prints `Unknown command: <x>` then the usage block, exit 1.
  */
 
@@ -41,7 +41,7 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
     }
 
     if (subcommand === '--version' || subcommand === 'version') {
-        printLine(`nex ${resolveCliIdentity(environment).version}`);
+        printLine(`kelpi ${resolveCliIdentity(environment).version}`);
         exit(0);
     }
     if (isHelpToken(subcommand)) {

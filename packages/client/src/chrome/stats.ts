@@ -2,7 +2,7 @@
  * The status-bar metrics: display metadata + the two formatters (APP-080, APP-081, APP-084).
  *
  * Ported from `SystemStatKind` and `SystemStatsFormat` in
- * `Nex/Services/SystemStatsService.swift`. The daemon samples (`@nex/protocol` `ws/stats.ts`);
+ * `Nex/Services/SystemStatsService.swift`. The daemon samples (`@kelpi/protocol` `ws/stats.ts`);
  * everything about how a number READS is here, because it is a rendering decision.
  *
  * **The divisor split is the thing to not get wrong** (APP-084): throughput RATES step units at
@@ -14,7 +14,7 @@
  * included.
  */
 
-import { SYSTEM_STAT_KINDS, type SystemStatKind, type WsSystemStats } from '@nex/protocol';
+import { SYSTEM_STAT_KINDS, type SystemStatKind, type WsSystemStats } from '@kelpi/protocol';
 
 import type { ChromeIconName } from './icons';
 

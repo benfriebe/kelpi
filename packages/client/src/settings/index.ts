@@ -6,7 +6,7 @@
  *                           the TCP listener
  *   `KeybindingsTab.tsx`  — §13.1's table + §13.2's recorder, over `set-keybinding`
  *   `GlobalHotkeySection.tsx` — §8's system-wide hotkey recorder, inside the Keybindings tab
- *   `AppearanceTab.tsx`   — the chrome palette + presets/share codes (nex config) and the
+ *   `AppearanceTab.tsx`   — the chrome palette + presets/share codes (kelpi config) and the
  *                           terminal theme/background/font (ghostty config)
  *   `LabelsTab.tsx`       — label presets, over the WS-only preset verbs
  *   `ColorFlyover.tsx`    — §N38's anchored colour popover: the Background/Text sections and the

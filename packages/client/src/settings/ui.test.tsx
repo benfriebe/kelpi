@@ -57,10 +57,10 @@ describe('the Settings switch (H14)', () => {
 
     it('fills with the accent when on, and a neutral track when off', () => {
         const on = renderToggle(true);
-        expect(on.input.style.background).toContain('--nex-accent');
+        expect(on.input.style.background).toContain('--kelpi-accent');
         cleanup();
         const off = renderToggle(false);
-        expect(off.input.style.background).not.toContain('--nex-accent');
+        expect(off.input.style.background).not.toContain('--kelpi-accent');
         expect(off.input.style.background).toContain('128, 128, 128');
     });
 
@@ -100,12 +100,12 @@ describe('the Settings hover recipe (H11)', () => {
         const button = screen.getByTestId('probe-button');
         expect(button.dataset['hovered']).toBe('false');
         expect(button.style.background).toBe('transparent');
-        expect(button.style.borderColor).toContain('--nex-border');
+        expect(button.style.borderColor).toContain('--kelpi-border');
 
         fireEvent.mouseEnter(button);
         expect(button.dataset['hovered']).toBe('true');
-        expect(button.style.background).toContain('--nex-selection-fill');
-        expect(button.style.borderColor).toContain('--nex-selection-stroke');
+        expect(button.style.background).toContain('--kelpi-selection-fill');
+        expect(button.style.borderColor).toContain('--kelpi-selection-stroke');
 
         fireEvent.mouseLeave(button);
         expect(button.dataset['hovered']).toBe('false');
@@ -143,7 +143,7 @@ describe('the Settings hover recipe (H11)', () => {
         expect(button.className).toContain('w-5');
         expect(button.className).toContain('-m-0.5');
         fireEvent.mouseEnter(button);
-        expect(button.style.background).toContain('--nex-selection-fill');
+        expect(button.style.background).toContain('--kelpi-selection-fill');
     });
 
     it('is one hook, so a control cannot report hover it does not paint', () => {

@@ -7,7 +7,7 @@
  * control that would do nothing.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot, type WsTransportStatus } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot, type WsTransportStatus } from '@kelpi/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -213,7 +213,7 @@ describe('Settings ▸ General', () => {
             expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
         });
 
-        // A daemon started with `NEXD_TCP_PORT` (a dev container, the audit sandbox) is really
+        // A daemon started with `KELPID_TCP_PORT` (a dev container, the audit sandbox) is really
         // listening even though this config file says nothing — "Disabled" would be false.
         it('reports a listener the daemon has even when the config file does not ask for one', () => {
             renderTab({ tcpPort: 0 }, { tcp: { requested: 52114, host: '127.0.0.1', bound: 52114, error: null } });
@@ -238,7 +238,7 @@ describe('Settings ▸ General', () => {
             expect(screen.queryByTestId('tcp-bind-error')).toBeNull();
         });
 
-        it('notes the coexistence state when another Nex owns the compat socket', () => {
+        it('notes the coexistence state when another Kelpi owns the compat socket', () => {
             renderTab(
                 { tcpPort: 0 },
                 {
@@ -247,7 +247,7 @@ describe('Settings ▸ General', () => {
                 }
             );
             const note = screen.getByTestId('compat-degraded-note');
-            expect(note.textContent).toContain('Another Nex owns /tmp/nex.sock');
+            expect(note.textContent).toContain('Another Kelpi owns /tmp/nex.sock');
             expect(note.textContent).toContain('Panes are unaffected');
         });
 

@@ -175,7 +175,7 @@ async function frameClock(placement) {
     let page = null;
     try {
         await waitForHealthz(sandbox.base);
-        shell = startShell(sandbox, { repoRoot, extraEnv: { NEX_AUDIT: '1', NEX_AUDIT_WINDOW: placement } });
+        shell = startShell(sandbox, { repoRoot, extraEnv: { KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: placement } });
         const target = await waitForPageTarget(sandbox.debugPort, {
             timeoutMs: 90_000,
             match: (candidate) => String(candidate?.url ?? '').includes('shellWindow=')
@@ -184,7 +184,7 @@ async function frameClock(placement) {
         await page.send('Page.enable');
         await page.send('Runtime.enable');
         await page.send('Page.bringToFront').catch(() => {});
-        await page.waitFor('document.querySelector(\'[data-testid="nex-app"]\') !== null', { timeoutMs: 60_000, label: 'the app to mount' });
+        await page.waitFor('document.querySelector(\'[data-testid="kelpi-app"]\') !== null', { timeoutMs: 60_000, label: 'the app to mount' });
         await sleep(1500);
         await page.eval(
             `(() => { window.__fidelityFrames = 0; window.__fidelityStart = performance.now();

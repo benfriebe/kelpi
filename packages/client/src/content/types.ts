@@ -7,7 +7,7 @@
  * the copy button, the clipboard and the editor's keystrokes.
  *
  * The daemon does not export its type to the client (its package publishes `./store` only), so
- * the shape is restated here with a parse guard, exactly as `@nex/protocol` does for wire
+ * the shape is restated here with a parse guard, exactly as `@kelpi/protocol` does for wire
  * messages: a field the daemon renames must fail loudly at the boundary rather than surface as
  * `undefined` three components deep.
  */

@@ -10,7 +10,7 @@
  * deliberately mirrors `packages/daemon/src/webpane/inspect.ts`, which is the source of truth:
  * the daemon re-sanitises everything a host sends before it can reach a PTY, so this copy is
  * defense in depth (and keeps the payload small on the wire). It is duplicated rather than
- * imported because `@nex/daemon` does not export the `webpane` subpath, and the shell must not
+ * imported because `@kelpi/daemon` does not export the `webpane` subpath, and the shell must not
  * grow a dependency on the daemon's internal module layout.
  */
 
@@ -174,7 +174,7 @@ export function clampInspectPayload(payload: Record<string, unknown>): Record<st
     };
 }
 
-/** §8.4 screenshot spill file: `nex-web-capture-<paneID>-<unixts>.png` in the OS temp dir. */
+/** §8.4 screenshot spill file: `kelpi-web-capture-<paneID>-<unixts>.png` in the OS temp dir. */
 export function screenshotFileName(paneID: string, atEpochMs: number): string {
-    return `nex-web-capture-${paneID}-${String(Math.floor(atEpochMs / 1000))}.png`;
+    return `kelpi-web-capture-${paneID}-${String(Math.floor(atEpochMs / 1000))}.png`;
 }

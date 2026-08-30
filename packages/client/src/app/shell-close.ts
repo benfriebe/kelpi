@@ -28,7 +28,7 @@
  */
 
 /** The name the shell evaluates in the focused window (`shell/src/menu.ts`). Pinned in both suites. */
-export const SHELL_CLOSE_GLOBAL = '__nexShellClosePane';
+export const SHELL_CLOSE_GLOBAL = '__kelpiShellClosePane';
 
 /**
  * How long a keyboard close silences a menu-routed one.

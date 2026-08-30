@@ -56,7 +56,7 @@
  * the picker inside it is gone because there is no longer anything for it to disambiguate.)
  */
 
-import type { WorkspaceColor } from '@nex/daemon/store';
+import type { WorkspaceColor } from '@kelpi/daemon/store';
 import {
     useEffect,
     useRef,

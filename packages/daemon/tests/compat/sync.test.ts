@@ -1,5 +1,5 @@
 /**
- * `nex pane sync` — tmux-style synchronise-input, driven by the real CLI.
+ * `kelpi pane sync` — tmux-style synchronise-input, driven by the real CLI.
  *
  * Two contract details this pins down:
  *   - the reply reflects **post-mutation** state (a PLAN.md "deliberate fix" over the Swift
@@ -20,26 +20,26 @@ interface SyncReply {
     readonly workspace_name: string;
 }
 
-describe.skipIf(!swiftCLIAvailable())('compat: nex pane sync', () => {
-    let nex: CompatDaemon;
+describe.skipIf(!swiftCLIAvailable())('compat: kelpi pane sync', () => {
+    let kelpi: CompatDaemon;
 
     beforeEach(async () => {
-        nex = await startCompatDaemon();
+        kelpi = await startCompatDaemon();
     }, 60_000);
 
     afterEach(async () => {
-        await nex?.stop();
+        await kelpi?.stop();
     });
 
     const sync = (args: readonly string[]): Promise<SyncReply> =>
-        nex.json<SyncReply>(['pane', 'sync', ...args, '--workspace', 'alpha', '--json']);
+        kelpi.json<SyncReply>(['pane', 'sync', ...args, '--workspace', 'alpha', '--json']);
 
     it('toggles a workspace-wide group and honours exclusions', async () => {
-        await nex.json(['workspace', 'create', '--name', 'alpha', '--json']);
-        const first = await nex.json<{ pane_id: string }>([
+        await kelpi.json(['workspace', 'create', '--name', 'alpha', '--json']);
+        const first = await kelpi.json<{ pane_id: string }>([
             'pane', 'create', '--workspace', 'alpha', '--name', 'w1', '--json'
         ]);
-        const second = await nex.json<{ pane_id: string }>([
+        const second = await kelpi.json<{ pane_id: string }>([
             'pane', 'create', '--workspace', 'alpha', '--name', 'w2', '--json'
         ]);
 
@@ -55,7 +55,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane sync', () => {
         expect(on.synced_pane_ids).toContain(second.pane_id);
         expect(on.excluded).toEqual([]);
 
-        const excluded = await nex.json<SyncReply>([
+        const excluded = await kelpi.json<SyncReply>([
             'pane', 'sync', 'exclude', '--target', first.pane_id, '--workspace', 'alpha', '--json'
         ]);
         expect(excluded.excluded).toEqual([{ id: first.pane_id, label: 'w1' }]);
@@ -64,14 +64,14 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane sync', () => {
         // A read-only status agrees with the mutation's own reply.
         expect(await sync(['status'])).toEqual(excluded);
 
-        const included = await nex.json<SyncReply>([
+        const included = await kelpi.json<SyncReply>([
             'pane', 'sync', 'include', '--target', first.pane_id, '--workspace', 'alpha', '--json'
         ]);
         expect(included.excluded).toEqual([]);
         expect(included.synced_pane_ids).toHaveLength(3);
 
         // Every transition clears exclusions — this is why `exclude` must follow `on`.
-        await nex.json(['pane', 'sync', 'exclude', '--target', second.pane_id, '--workspace', 'alpha', '--json']);
+        await kelpi.json(['pane', 'sync', 'exclude', '--target', second.pane_id, '--workspace', 'alpha', '--json']);
         const toggledOff = await sync(['toggle']);
         expect(toggledOff.active).toBe(false);
         expect(toggledOff.excluded).toEqual([]);
@@ -85,7 +85,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: nex pane sync', () => {
     }, 60_000);
 
     it('never "syncs" a lone pane to itself', async () => {
-        await nex.json(['workspace', 'create', '--name', 'alpha', '--json']);
+        await kelpi.json(['workspace', 'create', '--name', 'alpha', '--json']);
         const on = await sync(['on']);
         // `active` is the workspace toggle, so it flips — but the computed broadcast group
         // stays empty: a lone terminal never syncs to itself (socket-handlers.md §4.13).

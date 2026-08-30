@@ -18,7 +18,7 @@
  * one that already owns it; a duplicate is reported through `onError` and dropped.
  */
 
-import type { WireMessage } from '@nex/protocol';
+import type { WireMessage } from '@kelpi/protocol';
 
 import type { CommandHandler, ControlDispatcher, HandlerTable, ReplyHandle } from '../seams.js';
 

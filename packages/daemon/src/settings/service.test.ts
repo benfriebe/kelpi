@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_KEYBINDINGS, actionForTrigger, parseKeyTrigger, parseKeybindOverrides, resolveKeyBindings } from '@nex/core/config';
-import { DEFAULT_WS_SETTINGS } from '@nex/protocol';
+import { DEFAULT_KEYBINDINGS, actionForTrigger, parseKeyTrigger, parseKeybindOverrides, resolveKeyBindings } from '@kelpi/core/config';
+import { DEFAULT_WS_SETTINGS } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -24,7 +24,7 @@ const roots: string[] = [];
 const services: SettingsService[] = [];
 
 function tmpRoot(): string {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-settings-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-settings-'));
     roots.push(root);
     return root;
 }
@@ -41,7 +41,7 @@ interface Fixture {
 
 function fixture(options: { config?: string; ghostty?: string; watch?: boolean } = {}): Fixture {
     const root = tmpRoot();
-    const configPath = path.join(root, 'nex-config');
+    const configPath = path.join(root, 'kelpi-config');
     const ghosttyPath = path.join(root, 'ghostty-config');
     if (options.config !== undefined) fs.writeFileSync(configPath, options.config, 'utf8');
     if (options.ghostty !== undefined) fs.writeFileSync(ghosttyPath, options.ghostty, 'utf8');
@@ -54,7 +54,7 @@ function fixture(options: { config?: string; ghostty?: string; watch?: boolean }
         // §APP-014: pin the theme lookup inside this tmp root, so a machine with Ghostty
         // installed cannot resolve `theme = Nord` out of the real app bundle and repaint a
         // fixture's background from a file this test never wrote.
-        env: { NEXD_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
+        env: { KELPID_GHOSTTY_THEME_DIRS: path.join(root, 'themes') },
         home: root
     });
     services.push(service);
@@ -83,7 +83,7 @@ describe('resolveGhosttyConfigPath', () => {
         );
     });
 
-    it('honours NEXD_GHOSTTY_CONFIG, expanding ~', () => {
+    it('honours KELPID_GHOSTTY_CONFIG, expanding ~', () => {
         expect(
             resolveGhosttyConfigPath({ env: { [GHOSTTY_CONFIG_PATH_ENV]: '~/alt/ghostty' }, home: '/Users/x' })
         ).toBe('/Users/x/alt/ghostty');
@@ -124,18 +124,18 @@ describe('buildSettingsSnapshot', () => {
     });
 
     /*
-     * §SET-105 / §SET-216: the nex config's `theme` key is CONSUMED, not merely displayed.
+     * §SET-105 / §SET-216: the kelpi config's `theme` key is CONSUMED, not merely displayed.
      *
-     * The Swift app resolved it through `NexTheme.named(id)` at launch and the resolved theme is
+     * The Swift app resolved it through `KelpiTheme.named(id)` at launch and the resolved theme is
      * what the terminal used. Here the same lookup decides `appearance.theme` — the value the
      * Appearance picker shows, and what tells that tab a theme owns the background — under two
      * rules: ghostty's own file wins, and a name that is not a built-in selects nothing.
      */
-    it('falls back to the nex config’s theme when ghostty names none (§SET-105)', () => {
+    it('falls back to the kelpi config’s theme when ghostty names none (§SET-105)', () => {
         expect(buildSettingsSnapshot('theme = Nord\n', '').appearance.theme).toBe('Nord');
     });
 
-    it('lets ghostty’s own theme line win over the nex key', () => {
+    it('lets ghostty’s own theme line win over the kelpi key', () => {
         expect(buildSettingsSnapshot('theme = Nord\n', 'theme = Dracula\n').appearance.theme).toBe(
             'Dracula'
         );
@@ -246,7 +246,7 @@ describe('createSettingsService (watching)', () => {
         }
     };
 
-    it('pushes a nex-config edit without anyone asking', async () => {
+    it('pushes a kelpi-config edit without anyone asking', async () => {
         const f = fixture({ config: 'theme = Nord\n', watch: true });
         const seen: SettingsSnapshot[] = [];
         f.service.subscribe((snapshot) => seen.push(snapshot));
@@ -273,13 +273,13 @@ describe('createSettingsService (watching)', () => {
         const seen: SettingsSnapshot[] = [];
         f.service.subscribe((snapshot) => seen.push(snapshot));
         await tick(50);
-        const temp = path.join(f.root, 'nex-config.swap');
+        const temp = path.join(f.root, 'kelpi-config.swap');
         fs.writeFileSync(temp, 'theme = Dracula\n', 'utf8');
         fs.renameSync(temp, f.configPath);
         await waitFor(() => seen.length > 0, 'the renamed config');
         expect(f.service.snapshot.general.theme).toBe('Dracula');
 
-        // …and the re-attached watch still works for the NEXT edit.
+        // …and the re-attached watch still works for the KELPIT edit.
         const before = seen.length;
         f.write('theme = Gruvbox Dark\n');
         await waitFor(() => seen.length > before, 'the post-rename edit');
@@ -315,7 +315,7 @@ describe('createSettingsService (watching)', () => {
 
 // ── write-through mutations ─────────────────────────────────────────────────────────
 
-const PRESERVED = `# my nex config
+const PRESERVED = `# my kelpi config
 focus-follows-mouse = true
 
 # terminal
@@ -340,7 +340,7 @@ describe('createSettingsService (write-through)', () => {
         const f = fixture({ config: PRESERVED });
         f.service.setKeybinding('split_right', 'ctrl+alt+t');
         const after = f.read() ?? '';
-        expect(after).toContain('# my nex config');
+        expect(after).toContain('# my kelpi config');
         expect(after).toContain('# terminal');
         expect(after).toContain('focus-follows-mouse = true');
         expect(after).toContain('theme = Nord');

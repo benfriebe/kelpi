@@ -10,7 +10,7 @@
  * about what the tab shows next to the picker.
  */
 
-import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@nex/protocol';
+import { DEFAULT_WS_SETTINGS, type WsSettingsSnapshot } from '@kelpi/protocol';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -97,7 +97,7 @@ describe('Settings ▸ Appearance ▸ Terminal ▸ Theme (§APP-014)', () => {
                 name: 'Broken',
                 path: '/a/themes/Broken',
                 palette: {},
-                error: 'Theme “Broken” was found at /a/themes/Broken but defines no colours Nex understands, so the terminal palette is unchanged.'
+                error: 'Theme “Broken” was found at /a/themes/Broken but defines no colours Kelpi understands, so the terminal palette is unchanged.'
             }
         });
         expect(screen.getByTestId('terminal-theme-error').textContent).toContain('/a/themes/Broken');

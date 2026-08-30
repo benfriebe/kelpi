@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event stop"
+            "command": "kelpi event stop"
           }
         ]
       }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event notification"
+            "command": "kelpi event notification"
           }
         ]
       }
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-start"
+            "command": "kelpi event session-start"
           }
         ]
       }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-end"
+            "command": "kelpi event session-end"
           }
         ]
       }
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "nex event start"
+            "command": "kelpi event start"
           }
         ]
       }

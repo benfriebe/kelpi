@@ -1,13 +1,13 @@
 #!/bin/bash
 # Regenerate the `expected-*.json` goldens in this directory by running the REAL Swift-era
 # installer logic — `scripts/install-hooks.sh`'s two heredocs, fed through the actual
-# `scripts/merge_hooks.py` from the shipped Nex repo.
+# `scripts/merge_hooks.py` from the shipped Kelpi repo.
 #
 # That is the whole point of these files: `install-hooks.test.ts` asserts that the TypeScript
 # port produces the same bytes as the Python did, on the same inputs, so "we ported it" is a
 # claim with a diff behind it rather than a reading of the source.
 #
-#   ./generate.sh [path-to-swift-nex-repo]     (default: a sibling `nex` checkout of the Swift
+#   ./generate.sh [path-to-swift-kelpi-repo]     (default: a sibling `kelpi` checkout of the Swift
 #                                               app, next to this repo)
 #
 # The `input-*.json` files are hand-written by contrast: they are the *situations* a real user
@@ -16,11 +16,11 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-swift_repo="${1:-$(cd "$here/../../../../../.." && pwd)/nex}"
+swift_repo="${1:-$(cd "$here/../../../../../.." && pwd)/kelpi}"
 merge="$swift_repo/scripts/merge_hooks.py"
 
 if [ ! -f "$merge" ]; then
-    echo "merge_hooks.py not found at $merge — pass the Swift nex repo path as \$1" >&2
+    echo "merge_hooks.py not found at $merge — pass the Swift kelpi repo path as \$1" >&2
     exit 1
 fi
 
@@ -32,7 +32,7 @@ HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event stop"
+            "command": "kelpi event stop"
           }
         ]
       }
@@ -42,7 +42,7 @@ HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event notification"
+            "command": "kelpi event notification"
           }
         ]
       }
@@ -52,7 +52,7 @@ HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-start"
+            "command": "kelpi event session-start"
           }
         ]
       }
@@ -62,7 +62,7 @@ HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-end"
+            "command": "kelpi event session-end"
           }
         ]
       }
@@ -72,7 +72,7 @@ HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event start"
+            "command": "kelpi event start"
           }
         ]
       }
@@ -87,7 +87,7 @@ CODEX_HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event stop --agent codex"
+            "command": "kelpi event stop --agent codex"
           }
         ]
       }
@@ -97,7 +97,7 @@ CODEX_HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event notification --agent codex"
+            "command": "kelpi event notification --agent codex"
           }
         ]
       }
@@ -107,7 +107,7 @@ CODEX_HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event session-start --agent codex"
+            "command": "kelpi event session-start --agent codex"
           }
         ]
       }
@@ -117,7 +117,7 @@ CODEX_HOOKS='{
         "hooks": [
           {
             "type": "command",
-            "command": "nex event start --agent codex"
+            "command": "kelpi event start --agent codex"
           }
         ]
       }

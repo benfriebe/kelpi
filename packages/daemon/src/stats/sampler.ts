@@ -3,7 +3,7 @@
  *
  * `Nex/Features/StatusBar/StatusBarView.swift` runs this loop in the VIEW: a 2 s timer, a
  * `SystemStatsSampler` that never dispatches into TCA, and a 60-entry history ring per metric.
- * Here it runs in the daemon, for the reason `@nex/protocol`'s `ws/stats.ts` states: a browser
+ * Here it runs in the daemon, for the reason `@kelpi/protocol`'s `ws/stats.ts` states: a browser
  * tab cannot read host counters, and two attached clients must not double-sample one machine.
  * Everything else about the loop is preserved exactly.
  *
@@ -33,7 +33,7 @@ import {
     ZERO_SYSTEM_STATS,
     systemStatScalar,
     type WsSystemStats
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
 import { probeHost, readCpuTicks, readDiskSpace, readLoadAverage, type HostProbe } from './host.js';
 

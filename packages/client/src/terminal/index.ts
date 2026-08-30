@@ -87,7 +87,7 @@ export {
 export { PENDING_LIVE_LIMIT_BYTES, createTerminalIngest, type IngestTarget, type TerminalIngest } from './ingest';
 
 // §APP-014: the daemon's resolved `theme = <name>` palette, merged over the light/dark preset
-// and published as `--nex-term-*` for every surface that reads a terminal colour out of CSS.
+// and published as `--kelpi-term-*` for every surface that reads a terminal colour out of CSS.
 export {
     mergeTerminalPalette,
     terminalPaletteCssVars,

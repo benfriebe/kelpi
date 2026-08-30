@@ -165,9 +165,9 @@ describe('the Finder open queue (CONT-127 stage one, APP-101)', () => {
 function planFor(action: CliInstallPlan['action']): CliInstallPlan {
     return {
         action,
-        linkPath: '/sandbox/bin/nex',
-        target: '/sandbox/Nex.app/Contents/Resources/cli/nex',
-        manualCommand: 'sudo ln -sfn /sandbox/Nex.app/Contents/Resources/cli/nex /sandbox/bin/nex'
+        linkPath: '/sandbox/bin/kelpi',
+        target: '/sandbox/Kelpi.app/Contents/Resources/cli/kelpi',
+        manualCommand: 'sudo ln -sfn /sandbox/Kelpi.app/Contents/Resources/cli/kelpi /sandbox/bin/kelpi'
     };
 }
 
@@ -187,8 +187,8 @@ function policyHarness(
         env: {},
         isPackaged: true,
         alreadyPrompted: false,
-        target: '/sandbox/Nex.app/Contents/Resources/cli/nex',
-        linkPath: '/sandbox/bin/nex',
+        target: '/sandbox/Kelpi.app/Contents/Resources/cli/kelpi',
+        linkPath: '/sandbox/bin/kelpi',
         heal: () => {
             calls.push('heal');
             return healResult;
@@ -221,10 +221,10 @@ describe('the launch-time CLI policy (APP-004)', () => {
         expect(calls).toEqual(['log:cli-install: disabled for this run']);
     });
 
-    it('NEX_CLI_INSTALL=off is honoured inside a packaged app', () => {
+    it('KELPI_CLI_INSTALL=off is honoured inside a packaged app', () => {
         const { calls, deps } = policyHarness(
             { kind: 'ok', plan: planFor('ok') },
-            { env: { NEX_CLI_INSTALL: 'off' } }
+            { env: { KELPI_CLI_INSTALL: 'off' } }
         );
 
         expect(runCliInstallPolicy(deps).kind).toBe('off');
@@ -241,7 +241,7 @@ describe('the launch-time CLI policy (APP-004)', () => {
     it('auto installs without asking anybody', () => {
         const { calls, deps } = policyHarness(
             { kind: 'ok', plan: planFor('ok') },
-            { env: { NEX_CLI_INSTALL: 'auto' } }
+            { env: { KELPI_CLI_INSTALL: 'auto' } }
         );
 
         expect(runCliInstallPolicy(deps)).toEqual({ kind: 'installed', mode: 'auto' });

@@ -1,4 +1,4 @@
-# `@nex/cli` — the `nex` command line
+# `@kelpi/cli` — the `kelpi` command line
 
 A TypeScript rewrite of the shipped Swift `nex` binary (`nex 0.32.0`, bundled at
 `Nex.app/Contents/Helpers/nex`). It speaks the same control protocol, prints the same lines to
@@ -11,15 +11,15 @@ binary: [`docs/compat-status.md`](../../docs/compat-status.md).
 ## Install
 
 ```bash
-pnpm --filter @nex/cli build          # → packages/cli/dist/nex.js (executable, shebang'd)
-node packages/cli/dist/nex.js install-hooks --link
+pnpm --filter @kelpi/cli build          # → packages/cli/dist/kelpi.js (executable, shebang'd)
+node packages/cli/dist/kelpi.js install-hooks --link
 ```
 
-`install-hooks --link` symlinks this binary into `/usr/local/bin` (or `$NEX_INSTALL_DIR` /
-`--install-dir`) and then wires the agent hooks — see [Hooks](#hooks-nex-install-hooks) below.
-The symlink half alone is still just `ln -sf "$PWD/packages/cli/dist/nex.js" /usr/local/bin/nex`.
+`install-hooks --link` symlinks this binary into `/usr/local/bin` (or `$KELPI_INSTALL_DIR` /
+`--install-dir`) and then wires the agent hooks — see [Hooks](#hooks-kelpi-install-hooks) below.
+The symlink half alone is still just `ln -sf "$PWD/packages/cli/dist/kelpi.js" /usr/local/bin/kelpi`.
 
-`dist/nex.js` is a single dependency-free file: `node dist/nex.js …` works from anywhere, and
+`dist/kelpi.js` is a single dependency-free file: `node dist/kelpi.js …` works from anywhere, and
 so does exec'ing it directly (mode 0755 + `#!/usr/bin/env node`). Nothing needs to be installed
 beside it — unlike the daemon, it has no native dependencies.
 
@@ -29,17 +29,17 @@ comes from compiled-in constants, overridable at runtime for a packaging step:
 
 | Variable | Meaning |
 |---|---|
-| `NEX_CLI_VERSION` | Overrides the reported version (`nex --version`, doctor). |
-| `NEX_CLI_BUILD` | Overrides the reported build id (doctor only). |
+| `KELPI_CLI_VERSION` | Overrides the reported version (`kelpi --version`, doctor). |
+| `KELPI_CLI_BUILD` | Overrides the reported build id (doctor only). |
 
-## Hooks: `nex install-hooks`
+## Hooks: `kelpi install-hooks`
 
 The port of `scripts/install-hooks.sh` + `merge_hooks.py` from the Swift repo, as a subcommand
-(gap #1) — which is also what `nex doctor`'s `hooks` / `codex-hooks` repair lines now name,
+(gap #1) — which is also what `kelpi doctor`'s `hooks` / `codex-hooks` repair lines now name,
 since the port ships no shell script for them to point at.
 
 ```
-nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>]
+kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>]
                   [--link [--install-dir <dir>]] [--dry-run] [--json]
 ```
 
@@ -51,19 +51,19 @@ nex install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--command <prefix>]
 Behaviour carried over verbatim from the Python, and verified byte-for-byte against goldens it
 generated (`tests/fixtures/hooks/`, regenerable with their `generate.sh`):
 
-- unrelated user hooks are preserved; only nex-managed commands are replaced;
+- unrelated user hooks are preserved; only kelpi-managed commands are replaced;
 - dedupe is by the command's **flag-less base** (everything before the first ` --`), and any
   existing command *containing* that base goes — so `/Applications/Nex.app/Contents/Helpers/nex
-  event stop`, a bare `nex event stop` and `nex event stop --agent codex` are one identity, not
+  event stop`, a bare `kelpi event stop` and `kelpi event stop --agent codex` are one identity, not
   three hooks firing three times. The documented trade-off comes too: a composite user command
-  embedding a nex base (`notify.sh && nex event stop`) is swept from that event;
+  embedding a kelpi base (`notify.sh && kelpi event stop`) is swept from that event;
 - an incoming group joins an existing group with the **same matcher**, so the pre-v0.19
   `"matcher": "startup"` SessionStart group empties, is pruned, and is replaced by a
   matcher-less one — the issue #181 repair;
 - output is `json.dump(..., indent=2)` + a trailing newline, so a re-run is byte-identical.
 
 Added on top, because a subcommand is re-run more casually than a downloaded script: an
-existing file is copied to `<file>.nex-backup` before it changes; an unchanged result is
+existing file is copied to `<file>.kelpi-backup` before it changes; an unchanged result is
 reported as `unchanged` instead of rewritten; `--dry-run` writes nothing; and a file that is
 not valid JSON is **refused**, never overwritten (fatal for Claude, a warning for Codex — the
 Codex section is best-effort by design, exactly as the shell script's was).
@@ -72,7 +72,7 @@ Codex section is best-effort by design, exactly as the shell script's was).
 
 Hook commands run in the *non-interactive* shell the agent CLI spawns: it does not read
 `~/.zshrc` and inherits the agent process's own `PATH`. So the command is resolved rather than
-assumed — `--command` wins if given; otherwise a bare `nex` when a `nex` on `PATH` really
+assumed — `--command` wins if given; otherwise a bare `kelpi` when a `kelpi` on `PATH` really
 resolves to this binary (verified, not hoped); otherwise this binary's absolute path,
 shell-quoted. `--link` runs first so a fresh machine can reach the bare form on its first run,
 and warns when the install directory is not on `PATH`. An unwritable directory prints the
@@ -89,17 +89,17 @@ Everything in `cli.md` is implemented: `event` (all six, hook payload parsing on
 `doctor`) and `doctor`. The parsing primitives are ported bug-for-bug: flags anywhere in argv,
 dash-prefixed values consumed, a value-less trailing flag left to be rejected as an unknown
 option, `--` tails only on `web click|type|select`, `pane send` joining leftovers with single
-spaces, and the leftover-argument rejection that makes `nex pane capture <uuid>` fail loudly.
+spaces, and the leftover-argument rejection that makes `kelpi pane capture <uuid>` fail loudly.
 
 How this is measured, and what "parity" is worth:
 
 - **The compat suite runs against this binary.** `packages/daemon/tests/compat` boots real
   daemons, drives a CLI as a child process and asserts exit codes and parsed JSON. All 103
-  tests pass with `NEX_COMPAT_CLI` pointed at `dist/nex.js`, and they still pass against the
+  tests pass with `KELPI_COMPAT_CLI` pointed at `dist/kelpi.js`, and they still pass against the
   shipped Swift binary:
 
   ```bash
-  NEX_COMPAT_CLI="$PWD/packages/cli/dist/nex.js" npx vitest run packages/daemon/tests/compat
+  KELPI_COMPAT_CLI="$PWD/packages/cli/dist/kelpi.js" npx vitest run packages/daemon/tests/compat
   ```
 
 - **A differential run** over ~114 parse-level invocations (usage errors, scope guards, bad
@@ -123,22 +123,22 @@ How this is measured, and what "parity" is worth:
    behave like the thing it replaces, so the client-side narrowing is reproduced; the daemon
    still accepts the full documented mode set.
 
-## `nex doctor` in the daemon world
+## `kelpi doctor` in the daemon world
 
 Seven checks, same names, same PASS/WARN/FAIL/SKIP vocabulary, same exit rule (non-zero only
-when something FAILs). Two of them are re-pointed at `nexd`:
+when something FAILs). Two of them are re-pointed at `kelpid`:
 
-**`process`** — the Swift check grepped `ps` for `Nex.app/Contents/MacOS/Nex` and FAILed when
+**`process`** — the Swift check grepped `ps` for `Kelpi.app/Contents/MacOS/Kelpi` and FAILed when
 the app was absent, which in the new architecture is the normal case. It now accepts any of:
 
 1. a **live pid record** in the daemon run dir (`daemon-v<PROTOCOL>.pid`, resolved from
-   `NEXD_RUN_DIR` or the platform default, and cross-checked with `kill(pid, 0)` so a stale
+   `KELPID_RUN_DIR` or the platform default, and cross-checked with `kill(pid, 0)` so a stale
    record does not count);
-2. a **`nexd` / `nexd.js` process** in the process table (a bundled daemon runs under `node`,
+2. a **`kelpid` / `kelpid.js` process** in the process table (a bundled daemon runs under `node`,
    so its `comm` is the node binary and only the full command line shows it);
 3. the **Swift app**, exactly as before.
 
-Only when none of the three exists is it a FAIL ("no running nexd or Nex.app process found").
+Only when none of the three exists is it a FAIL ("no running kelpid or Kelpi.app process found").
 TCP transport still SKIPs — the daemon is on another host and its process table is not ours to
 read.
 
@@ -153,7 +153,7 @@ therefore compares, in order:
 | version **and** build identical | PASS |
 | anything else | WARN, explicitly advisory ("the CLI and the daemon are separate artifacts and the wire protocol matches") |
 
-Neither WARN changes the exit code, so `nex doctor` stays usable as a transport/app-health gate
+Neither WARN changes the exit code, so `kelpi doctor` stays usable as a transport/app-health gate
 in scripts.
 
 `hooks` and `codex-hooks` are unchanged: local reads of `~/.claude/settings.json` +
@@ -166,7 +166,7 @@ where the agent CLIs run, which stays correct when the daemon lives elsewhere.
 `NEX_SOCKET` selects the transport, exactly as before: absent (or any value not starting with
 `tcp:`) is the **hardcoded** Unix socket `/tmp/nex.sock`; `tcp:<host>:<port>` is TCP. A
 malformed `tcp:` value falls back to the Unix socket silently. Other environment variables:
-`NEX_PANE_ID`, `NEX_REPLY_TIMEOUT` (seconds, default 5), `NEX_SILENT`, `NEX_VERBOSE_HOOKS`,
+`NEX_PANE_ID`, `KELPI_REPLY_TIMEOUT` (seconds, default 5), `KELPI_SILENT`, `KELPI_VERBOSE_HOOKS`,
 `HOME`.
 
 Failures are categorized (`unixSocketMissing`, `unixConnectRefused`, `tcpResolveFailed`,
@@ -176,7 +176,7 @@ fire-and-forget commands, which always exit 0.
 ## Tests
 
 ```bash
-npx vitest run packages/cli            # unit + integration (builds dist/nex.js first)
+npx vitest run packages/cli            # unit + integration (builds dist/kelpi.js first)
 ```
 
 - `src/*.test.ts` — the pure halves: parsing primitives, the routing tables, table renderers,
@@ -185,6 +185,6 @@ npx vitest run packages/cli            # unit + integration (builds dist/nex.js 
   control server on an ephemeral TCP port: exit codes, stream discipline, the exact JSON on the
   wire, the `--follow` stream and its Ctrl-C exit.
 
-The tests never touch `/tmp/nex.sock`, `~/.config`, `~/Library/Application Support/Nex` or any
+The tests never touch `/tmp/nex.sock`, `~/.config`, `~/Library/Application Support` or any
 real daemon: every path is a private temp directory and every socket is a local TCP listener
 the test owns.

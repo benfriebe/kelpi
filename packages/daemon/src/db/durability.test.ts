@@ -5,13 +5,13 @@
  *
  * What actually happened, in order:
  *
- *   1. `NEXD_DB_PATH=/tmp/nexd-dev.db` → `ensureDatabaseDir` called `chmod('/tmp', 0700)`;
+ *   1. `KELPID_DB_PATH=/tmp/kelpid-dev.db` → `ensureDatabaseDir` called `chmod('/tmp', 0700)`;
  *   2. /tmp is root-owned mode 1777, so a normal user got `EPERM`;
  *   3. that threw out of `createPersistence`'s open path into its catch, which set `db = null`
  *      and carried on — the documented "a broken DB must not take the daemon down";
  *   4. `load()` then returned null, which boot reads as "fresh install";
  *   5. `scheduleSave()` returned early on every dispatch from then on, silently, forever;
- *   6. `ping`, `nexd status` and `nexd stop` all reported perfect health.
+ *   6. `ping`, `kelpid status` and `kelpid stop` all reported perfect health.
  *
  * Every existing suite missed it because they all put the database under a fresh `mkdtemp`
  * directory — one the daemon itself creates, and can therefore chmod. The entire failure lives
@@ -43,7 +43,7 @@ let root = '';
 const restore: (() => void)[] = [];
 
 beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-dur-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-dur-'));
 });
 
 afterEach(() => {
@@ -120,7 +120,7 @@ describe('persistence under a pre-existing shared parent (the /tmp case)', () =>
     it('opens a database directly under /tmp itself', () => {
         // The literal reported configuration. /tmp is root-owned 1777 on every machine this
         // runs on, which is exactly why the old unconditional chmod could never succeed.
-        const dbPath = path.join('/tmp', `nexd-durability-${String(process.pid)}-${String(Date.now())}.db`);
+        const dbPath = path.join('/tmp', `kelpid-durability-${String(process.pid)}-${String(Date.now())}.db`);
         restore.push(() => {
             for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${dbPath}${suffix}`, { force: true });
         });
@@ -171,7 +171,7 @@ describe('an unusable database is a hard failure, not a silent downgrade', () =>
         // Everything an operator needs, on one line, without reading a stack trace.
         expect(failure.message).toContain(dbPath);
         expect(failure.message).toContain('EACCES');
-        expect(failure.repair).toContain('NEXD_DB_PATH');
+        expect(failure.repair).toContain('KELPID_DB_PATH');
         expect(failure.repair).toContain('Refusing to start');
     });
 
@@ -262,7 +262,7 @@ describe('a mid-run save failure surfaces', () => {
         store.close();
     });
 
-    it('flush() reports success honestly, which is what makes `nexd stop` truthful', () => {
+    it('flush() reports success honestly, which is what makes `kelpid stop` truthful', () => {
         const dbPath = path.join(sharedParent(), 'nex.db');
         const { store, handle } = brokenAfterBoot(dbPath);
 

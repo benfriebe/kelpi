@@ -38,7 +38,7 @@
  * to choose.
  */
 
-import type { WsProfile } from '@nex/protocol';
+import type { WsProfile } from '@kelpi/protocol';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
 import { tokens, withAlpha } from '../chrome';
@@ -505,7 +505,7 @@ export function ProfilesTab(props: ProfilesTabProps): ReactElement {
             </SettingsSection>
 
             <SettingsFooterNote>
-                Config: <span className="font-mono">{props.paths.nexConfig}</span>. Changes apply to panes opened
+                Config: <span className="font-mono">{props.paths.kelpiConfig}</span>. Changes apply to panes opened
                 afterwards — live panes keep the environment they were born with. A workspace with no explicit
                 profile uses <span className="font-mono">{DEFAULT_PROFILE_NAME}</span>.
             </SettingsFooterNote>

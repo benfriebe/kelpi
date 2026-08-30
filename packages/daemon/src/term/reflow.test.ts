@@ -124,7 +124,7 @@ describe('reflow policy — rows', () => {
 
     it('restores the no-reflow policy after the row half of a resize', async () => {
         // `applyGrid` lifts the policy for the row resize and puts it back in a `finally`;
-        // if it ever failed to, the NEXT narrowing would rewrap.
+        // if it ever failed to, the KELPIT narrowing would rewrap.
         const service = makeService();
         service.attach('p', 40, 6);
         await write(service, 'p', `${'A'.repeat(40)}\r\nsecond`);

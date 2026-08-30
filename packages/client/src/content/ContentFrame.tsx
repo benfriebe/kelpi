@@ -23,7 +23,7 @@
  * Two more things ride the same channel because the sandbox leaves no other route:
  *
  *   - **find-in-page** (§3.13). The marks and the match count live inside the document (the
- *     injected `__nexFind`); the needle, the bar and the count display live here, PER CLIENT —
+ *     injected `__kelpiFind`); the needle, the bar and the count display live here, PER CLIENT —
  *     two browsers searching the same pane never see each other's highlights. The stored needle
  *     is re-applied on every `ready`, so a watcher reload does not silently drop the marks. The
  *     bar itself is the grid's `PaneSearchOverlay` — the shipped app draws one find bar over
@@ -53,12 +53,12 @@ import {
 import { stripFrontMatter, writeRichText, type RichClipboardWriter } from './copy';
 import { contentScrollStore, type ScrollStore } from './scroll';
 
-/** The pane fill behind the transparent document (`--nex-term-bg`, as terminal panes use). */
-export const CONTENT_PANE_BACKGROUND = 'var(--nex-term-bg, #0A0A0C)';
+/** The pane fill behind the transparent document (`--kelpi-term-bg`, as terminal panes use). */
+export const CONTENT_PANE_BACKGROUND = 'var(--kelpi-term-bg, #0A0A0C)';
 
 /**
  * The opaque fill painted INSIDE the frame when assembly did not resolve one (`bridge.ts`'s
- * `frameBaseStyle` explains why the frame needs its own). These are the `--nex-term-bg` defaults
+ * `frameBaseStyle` explains why the frame needs its own). These are the `--kelpi-term-bg` defaults
  * of the two chrome columns, so a standalone frame (a test, a storybook) is still theme-correct.
  */
 export const FRAME_DOCUMENT_BACKGROUND = { dark: '#0A0A0C', light: '#FFFFFF' } as const;
@@ -116,7 +116,7 @@ export interface ContentFrameProps {
     readonly findEnabled?: boolean | undefined;
     /**
      * SET-219's overridable find-highlight colours, straight off the settings snapshot. Absent
-     * = the Swift `NexGhosttyDefaults` pair (#F2D027 / #FF7A00 on black), which is what a user
+     * = the Swift `KelpiGhosttyDefaults` pair (#F2D027 / #FF7A00 on black), which is what a user
      * who has never touched the keys sees.
      */
     readonly findPalette?: Partial<FindPalette> | undefined;
@@ -170,7 +170,7 @@ export function ContentStatus(props: ContentStatusProps): ReactElement {
             className="flex h-full w-full items-center justify-center p-4 text-center text-[11px]"
             style={{
                 background: CONTENT_PANE_BACKGROUND,
-                color: error ? '#E0655C' : 'var(--nex-fg-tertiary, #6A6A72)'
+                color: error ? '#E0655C' : 'var(--kelpi-fg-tertiary, #6A6A72)'
             }}
         >
             {props.text}
@@ -334,7 +334,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
     }, [toFrame]);
 
     /**
-     * H10: WebKit's own Copy row, appended under the two nex commands.
+     * H10: WebKit's own Copy row, appended under the two kelpi commands.
      *
      * The Swift menu *inserts* its commands into the WebKit menu, so Copy, Look Up, Speech and
      * Services all survive a right-click in a preview. Of those four only Copy is something a
@@ -573,7 +573,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
                                     role="separator"
                                     data-testid={`content-copy-separator-${paneID}`}
                                     className="my-1 h-px"
-                                    style={{ background: 'var(--nex-divider, #2A2A31)' }}
+                                    style={{ background: 'var(--kelpi-divider, #2A2A31)' }}
                                 />
                                 <button
                                     type="button"
@@ -601,7 +601,7 @@ export function ContentFrame(props: ContentFrameProps): ReactElement {
           * while the needle is empty, the same ✕ and the same counter rule (nothing at all
           * until something is typed — never a standing `0/0`) as a terminal's. What differs
           * is only what it drives: the daemon counts a terminal's scrollback, and here the
-          * sandboxed frame's own `__nexFind` counts, because nothing else can see inside it.
+          * sandboxed frame's own `__kelpiFind` counts, because nothing else can see inside it.
           *
           * §S9 — and it hangs OUTSIDE the frame, as a sibling in the pane body.
           *
@@ -660,8 +660,8 @@ const EMPTY_CHORDS: readonly string[] = [];
 
 /** The chrome the overlays sit in — deliberately opaque so text under them never shows through. */
 const OVERLAY_STYLE = {
-    background: 'var(--nex-surface-bg, #1B1B20)',
-    border: '1px solid var(--nex-divider, #2A2A31)',
-    color: 'var(--nex-fg-primary, #E6E6EA)',
+    background: 'var(--kelpi-surface-bg, #1B1B20)',
+    border: '1px solid var(--kelpi-divider, #2A2A31)',
+    color: 'var(--kelpi-fg-primary, #E6E6EA)',
     boxShadow: '0 6px 18px rgba(0,0,0,0.35)'
 } as const;

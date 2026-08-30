@@ -63,8 +63,8 @@ describe('badge priority', () => {
     });
 
     it('folds the waiting count into the title, the dock-badge equivalent (§8.4)', () => {
-        expect(titleWithBadge('Nex', 0)).toBe('Nex');
-        expect(titleWithBadge('Nex', 3)).toBe('(3) Nex');
+        expect(titleWithBadge('Kelpi', 0)).toBe('Kelpi');
+        expect(titleWithBadge('Kelpi', 3)).toBe('(3) Kelpi');
     });
 });
 
@@ -92,7 +92,7 @@ describe('drawFavicon', () => {
 describe('createFaviconController', () => {
     it('creates the link, updates href + title, and redraws only on change', () => {
         document.head.innerHTML = '';
-        document.title = 'Nex';
+        document.title = 'Kelpi';
         let draws = 0;
         const controller = createFaviconController({
             createCanvas: () => {
@@ -111,32 +111,32 @@ describe('createFaviconController', () => {
 
         controller.update({ running: 0, waiting: 2 });
         expect(draws).toBe(2);
-        expect(document.title).toBe('(2) Nex');
+        expect(document.title).toBe('(2) Kelpi');
         expect(link?.getAttribute('href')).toBe('data:image/png;base64,FAKE');
 
         controller.dispose();
-        expect(document.title).toBe('Nex');
+        expect(document.title).toBe('Kelpi');
     });
 
     it('is inert without a canvas (jsdom, blocked embedders) instead of throwing', () => {
         document.head.innerHTML = '';
-        document.title = 'Nex';
+        document.title = 'Kelpi';
         const controller = createFaviconController({ createCanvas: () => null });
         expect(() => {
             controller.update({ running: 1, waiting: 1 });
         }).not.toThrow();
-        expect(document.title).toBe('(1) Nex'); // the title badge still works
+        expect(document.title).toBe('(1) Kelpi'); // the title badge still works
         controller.dispose();
     });
 
     it('leaves the title alone when the host owns the dock badge', () => {
         document.head.innerHTML = '';
-        document.title = 'Nex';
+        document.title = 'Kelpi';
         const controller = createFaviconController({
             createCanvas: () => fakeCanvas(),
             updateTitle: false
         });
         controller.update({ running: 0, waiting: 4 });
-        expect(document.title).toBe('Nex');
+        expect(document.title).toBe('Kelpi');
     });
 });

@@ -11,7 +11,7 @@
  * The platform probe is injected, so all of this runs identically on any OS.
  */
 
-import { SYSTEM_STAT_KINDS } from '@nex/protocol';
+import { SYSTEM_STAT_KINDS } from '@kelpi/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostProbe } from './host.js';

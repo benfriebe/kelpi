@@ -16,7 +16,7 @@
  * own hooks report what happens next, exactly as they do for a resume at boot.
  */
 
-import { displayAgentKind, resumeCommand } from '@nex/core/agent';
+import { displayAgentKind, resumeCommand } from '@kelpi/core/agent';
 
 import type { DomainStore, PtyManager, TerminalInput } from '../seams.js';
 import { findPaneAnywhere } from '../store/derived.js';

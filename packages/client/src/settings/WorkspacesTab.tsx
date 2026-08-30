@@ -29,7 +29,7 @@
  * disagree about what the file says.
  */
 
-import type { WsSettingsSnapshot } from '@nex/protocol';
+import type { WsSettingsSnapshot } from '@kelpi/protocol';
 import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
@@ -53,7 +53,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
             <SettingsSection title="Workspaces" testID="workspaces-section">
                 <SettingsRow
                     label="Confirm before deleting a workspace with active agents"
-                    detail="Applies to this window and every other client. nex workspace delete --force bypasses it regardless."
+                    detail="Applies to this window and every other client. kelpi workspace delete --force bypasses it regardless."
                     testID="confirm-delete-row"
                 >
                     <SettingsToggle
@@ -77,7 +77,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                 {/*
                  * SET-012. A CLIENT-side gesture rule, like SET-011's group inheritance: the
                  * sidebar's drop puts this answer on `workspace-move` (`expand_on_drop`), so
-                 * `nex workspace move --group X` still opens a collapsed group and only the
+                 * `kelpi workspace move --group X` still opens a collapsed group and only the
                  * drag-and-drop in the window is governed by the toggle.
                  */}
                 <SettingsRow
@@ -176,7 +176,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
                  */}
                 <SettingsRow
                     label="Let programs write the clipboard"
-                    detail="A program in a terminal pane can put text on your clipboard with OSC 52 — how tmux, vim and remote shells copy. Off by default. Programs can never READ your clipboard: Nex refuses those requests whatever this is set to."
+                    detail="A program in a terminal pane can put text on your clipboard with OSC 52 — how tmux, vim and remote shells copy. Off by default. Programs can never READ your clipboard: Kelpi refuses those requests whatever this is set to."
                     testID="clipboard-write-row"
                 >
                     <SettingsToggle
@@ -195,7 +195,7 @@ export function WorkspacesTab(props: WorkspacesTabProps): ReactElement {
             </p>
 
             <SettingsFooterNote>
-                Config: <span className="font-mono">{props.paths.nexConfig}</span>
+                Config: <span className="font-mono">{props.paths.kelpiConfig}</span>
             </SettingsFooterNote>
         </div>
     );

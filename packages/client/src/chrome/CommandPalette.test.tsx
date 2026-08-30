@@ -14,10 +14,10 @@ const ITEMS: readonly PaletteItem[] = [
         id: `ws:${W1}`,
         kind: 'workspace',
         icon: 'rectangle.stack',
-        title: 'nex-client',
+        title: 'kelpi-client',
         subtitle: '2 panes',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: null,
         workspaceColor: 'blue'
     },
@@ -25,10 +25,10 @@ const ITEMS: readonly PaletteItem[] = [
         id: `pane:${P1}`,
         kind: 'pane',
         icon: 'terminal',
-        title: '~/code/nex',
+        title: '~/code/kelpi',
         subtitle: '',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: P1,
         workspaceColor: 'blue'
     },
@@ -39,7 +39,7 @@ const ITEMS: readonly PaletteItem[] = [
         title: 'notes',
         subtitle: 'README.md',
         workspaceID: W1,
-        workspaceName: 'nex-client',
+        workspaceName: 'kelpi-client',
         paneID: P2,
         workspaceColor: 'blue'
     }
@@ -69,7 +69,7 @@ const TWO_WORKSPACES: readonly PaletteItem[] = [
         id: `pane:${P3}`,
         kind: 'pane',
         icon: 'terminal',
-        title: '~/code/nexd',
+        title: '~/code/kelpid',
         subtitle: '',
         workspaceID: W2,
         workspaceName: 'daemon',
@@ -131,7 +131,7 @@ describe('rendering', () => {
         ]);
         // The trailing chip: "workspace", or the owning workspace's name on a pane row.
         expect(rows[0]?.textContent).toContain('workspace');
-        expect(rows[1]?.textContent).toContain('nex-client');
+        expect(rows[1]?.textContent).toContain('kelpi-client');
         expect(rows[4]?.textContent).toContain('daemon');
     });
 

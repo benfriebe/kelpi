@@ -7,7 +7,7 @@
  * own hotkey impossible, or lets a user silently shadow ⌘D from outside the app.
  */
 
-import { DEFAULT_KEYBINDINGS } from '@nex/core/config';
+import { DEFAULT_KEYBINDINGS } from '@kelpi/core/config';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 

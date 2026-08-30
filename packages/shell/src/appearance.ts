@@ -13,8 +13,8 @@
  *   2. **The web pane's find-highlight colours.** They are pasted into a page stylesheet by an
  *      injected script the main process installs, so the value has to exist in this process.
  *
- * Both reads follow `./hotkey.ts`'s discipline exactly: the same `@nex/core/config` parsers the
- * daemon uses, the same `NEXD_CONFIG_PATH` / `NEXD_GHOSTTY_CONFIG` overrides so a dev or test
+ * Both reads follow `./hotkey.ts`'s discipline exactly: the same `@kelpi/core/config` parsers the
+ * daemon uses, the same `KELPID_CONFIG_PATH` / `KELPID_GHOSTTY_CONFIG` overrides so a dev or test
  * shell never reads the developer's real files, and a missing/unreadable file is not an error —
  * it yields the shipped defaults.
  *
@@ -29,15 +29,15 @@ import {
     DEFAULT_CHROME_SETTINGS,
     parseChromeSettings,
     parseConfigLines
-} from '@nex/core/config';
-import { expandTilde } from '@nex/daemon/lifecycle';
+} from '@kelpi/core/config';
+import { expandTilde } from '@kelpi/daemon/lifecycle';
 
 import { resolveConfigPath } from './hotkey.js';
 
 /** The daemon's own override name, restated so the shell and the daemon cannot disagree. */
-export const GHOSTTY_CONFIG_PATH_ENV = 'NEXD_GHOSTTY_CONFIG';
+export const GHOSTTY_CONFIG_PATH_ENV = 'KELPID_GHOSTTY_CONFIG';
 
-/** `~/.config/ghostty/config`, or `NEXD_GHOSTTY_CONFIG`. Never creates anything. */
+/** `~/.config/ghostty/config`, or `KELPID_GHOSTTY_CONFIG`. Never creates anything. */
 export function resolveGhosttyConfigPath(
     env: NodeJS.ProcessEnv = process.env,
     home: string = homedir()
@@ -60,7 +60,7 @@ function readFile(file: string): string {
  *
  * A deliberately tiny parser rather than an import of the daemon's `parseGhosttyAppearance`:
  * the shell needs ONE key, and the daemon's reader lives behind a service that opens watchers.
- * The line syntax is shared (`@nex/core/config`'s splitter), so the two cannot disagree about
+ * The line syntax is shared (`@kelpi/core/config`'s splitter), so the two cannot disagree about
  * what a line means.
  */
 export function readBackgroundOpacity(
@@ -89,7 +89,7 @@ export interface WindowTransparency {
  * SET-049's rule, transcribed: `isOpaque = opacity >= 1.0`.
  *
  * Below 1 the window is created transparent with a fully transparent `backgroundColor`, and the
- * page paints the fill: the client publishes `--nex-bg` at the same alpha (see the client's
+ * page paints the fill: the client publishes `--kelpi-bg` at the same alpha (see the client's
  * `ThemeProvider`), so the desktop shows through the window fill and the pane fills while the
  * sidebar, header and popovers stay opaque — the same composite the Swift app produced by
  * marking each surface non-opaque.
@@ -170,7 +170,7 @@ export function resolveWindowGround(input: WindowGroundInput = {}): string {
     return (hex.startsWith('#') ? hex : `#${hex}`).toUpperCase();
 }
 
-/** The same answer, read from the nex config file this process already owns. */
+/** The same answer, read from the kelpi config file this process already owns. */
 export function readWindowGround(
     systemDark: boolean,
     env: NodeJS.ProcessEnv = process.env,
@@ -192,7 +192,7 @@ export interface ShellSearchPalette {
     readonly currentText: string;
 }
 
-/** SET-219's four keys, from the nex config (defaults = the Swift `NexGhosttyDefaults` hexes). */
+/** SET-219's four keys, from the kelpi config (defaults = the Swift `KelpiGhosttyDefaults` hexes). */
 export function readSearchPalette(
     env: NodeJS.ProcessEnv = process.env,
     home: string = homedir()

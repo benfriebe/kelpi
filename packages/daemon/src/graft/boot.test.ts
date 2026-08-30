@@ -23,7 +23,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createLineBuffer, WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { createLineBuffer, WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
@@ -68,14 +68,14 @@ interface Scratch {
 
 /** Short paths: a unix socket path is capped near 104 bytes on macOS. */
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-graft-'));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-graft-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config')
@@ -89,10 +89,10 @@ function git(cwd: string, ...args: string[]): string {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
             ...process.env,
-            GIT_AUTHOR_NAME: 'nex',
-            GIT_AUTHOR_EMAIL: 'nex@example.com',
-            GIT_COMMITTER_NAME: 'nex',
-            GIT_COMMITTER_EMAIL: 'nex@example.com',
+            GIT_AUTHOR_NAME: 'kelpi',
+            GIT_AUTHOR_EMAIL: 'kelpi@example.com',
+            GIT_COMMITTER_NAME: 'kelpi',
+            GIT_COMMITTER_EMAIL: 'kelpi@example.com',
             GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_CONFIG_SYSTEM: '/dev/null'
         }
@@ -167,7 +167,7 @@ function daemonFor(paths: Scratch): Daemon {
     return daemon;
 }
 
-/** One request, one reply line, then EOF — exactly what the `nex` CLI does. */
+/** One request, one reply line, then EOF — exactly what the `kelpi` CLI does. */
 function request(socketPath: string, message: Json, timeoutMs = 30_000): Promise<Json> {
     return new Promise<Json>((resolve, reject) => {
         const socket = net.connect({ path: socketPath });
@@ -340,7 +340,7 @@ describe.skipIf(!HAS_GIT)('graft at launch', () => {
         // A client is attached before anything starts, so the broadcast has somewhere to land.
         const client = await connect(info);
 
-        // `nex graft start --workspace Default`, over the real control socket.
+        // `kelpi graft start --workspace Default`, over the real control socket.
         const started = await request(paths.socketPath, {
             command: 'graft-start',
             workspace: 'Default'
@@ -360,7 +360,7 @@ describe.skipIf(!HAS_GIT)('graft at launch', () => {
         expect(sessions[0]?.['association_id']).toBe(ASSOC_ID);
         expect(sessions[0]?.['parent_repo_root']).toBe(repo.parent);
 
-        // …and `nex graft status` answers from the service, not from any client mirror.
+        // …and `kelpi graft status` answers from the service, not from any client mirror.
         const status = await request(paths.socketPath, { command: 'graft-status' });
         expect(status['ok']).toBe(true);
         expect((status['sessions'] as Json[])).toHaveLength(1);

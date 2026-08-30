@@ -10,7 +10,7 @@
  * So it measures its page area on every render and reports the rect (`./geometry.ts` throttles;
  * `daemon/src/webpane/HOST_PROTOCOL.md` §3.5 routes). In the shell window the shell moves the
  * real view there and the empty box is exactly covered; in any other client the same box holds
- * an honest "open in the Nex app" card, because nothing in a browser can render that page.
+ * an honest "open in the Kelpi app" card, because nothing in a browser can render that page.
  *
  * Behaviour taken from §16.2 (the URL bar reconciliation, which is what makes the bar feel
  * right): the field shows the live URL, EXCEPT while the user is mid-edit — an incoming URL is
@@ -62,7 +62,7 @@ export interface WebPaneProps {
     readonly visible?: boolean | undefined;
     readonly focused?: boolean | undefined;
     /**
-     * True when this client is the page inside a Nex shell window, so a native view will cover
+     * True when this client is the page inside a Kelpi shell window, so a native view will cover
      * the page area. False (a plain browser) swaps in the "open in the app" card.
      */
     readonly embedded?: boolean | undefined;
@@ -540,7 +540,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * from the first frame, with nobody clicking anything. Seeding this ref from the mount value
      * made `gained` false in exactly that case, and the port only *looked* right because the
      * page's own load then stole the keyboard for itself (§N30's steal). With that steal handed
-     * back, the miss became visible: `nex web open` left the ring on the new pane and the
+     * back, the miss became visible: `kelpi web open` left the ring on the new pane and the
      * keyboard in this renderer — §N19/§N20's divergence, one pane type further on.
      */
     const wasFocused = useRef(false);
@@ -560,7 +560,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
      * The gain used to be consumed BEFORE the blank-tab and chrome-text guards, so a pane born
      * focused whose active tab arrived blank and gained a URL a moment later ate its own claim
      * and never made another — a tab filling in is not a focus change, so nothing re-armed it.
-     * `nex web open` is measured to deliver the tab with its URL in one update, which is why the
+     * `kelpi web open` is measured to deliver the tab with its URL in one update, which is why the
      * row could only call it latent; the ordering is not a contract, and a client that reloads
      * over a running daemon reaches it with no daemon change at all. Measured live in that state
      * (`docs/audit/n29-verify/`): ring on the web pane, its page holding a freshly landed URL,
@@ -790,7 +790,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                     >
                         <div
                             data-testid={`web-progress-bar-${paneID}`}
-                            className={progress.indeterminate ? 'nex-web-progress' : ''}
+                            className={progress.indeterminate ? 'kelpi-web-progress' : ''}
                             style={{
                                 height: '100%',
                                 background: tokens.accent,
@@ -996,10 +996,10 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                          * shipped app scrolls invisibly, and the padding was 6 px on the sides
                          * with 4 px on BOTH edges where the Swift has 8 px on the sides and 4 px
                          * on the bottom only (the nav row's own 4 pt supplies the gap above).
-                         * `data-nex-web-tabstrip` hides the bar for this one element in
+                         * `data-kelpi-web-tabstrip` hides the bar for this one element in
                          * `styles.css`; the global rule is untouched.
                          */
-                        data-nex-web-tabstrip=""
+                        data-kelpi-web-tabstrip=""
                         className="flex shrink-0 items-center gap-1 overflow-x-auto px-2 pb-1"
                         // Same fill as the nav row, no rule between them (M31).
                         style={{ background: tokens.headerBackground }}
@@ -1053,7 +1053,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
                 ) : embedded ? null : (
                     <PageNote
                         testID={`web-external-${paneID}`}
-                        title="Open in the Nex app"
+                        title="Open in the Kelpi app"
                         detail={`${liveURL || 'This page'} renders in the desktop app; this browser shows its chrome only.`}
                     />
                 )}
@@ -1097,7 +1097,7 @@ export const WebPane = memo(function WebPane(props: WebPaneProps): ReactElement 
  *
  * The two type sizes are macOS's: `.callout` = 12 pt, `.caption` = 10 pt.
  *
- * `PageNote` stays a card for the "open in the Nex app" note below, which has no Swift
+ * `PageNote` stays a card for the "open in the Kelpi app" note below, which has no Swift
  * counterpart at all — it exists because a plain browser cannot draw the page, and a card is
  * what says "this box is not the page".
  */

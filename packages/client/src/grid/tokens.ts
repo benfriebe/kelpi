@@ -1,21 +1,21 @@
 /**
  * Chrome theme tokens as CSS custom properties (shell-ui.md §2).
  *
- * The grid never resolves a palette itself: it reads `var(--nex-*)` with the dark preset
+ * The grid never resolves a palette itself: it reads `var(--kelpi-*)` with the dark preset
  * baked in as the fallback, so the module renders correctly standalone (tests, storybook)
  * and assembly can unify the whole app by defining the variables once on `:root`.
  * Fallback values are the dark column of the preset table in shell-ui.md §2.
  */
 
 export const GRID_TOKEN_FALLBACKS = {
-    '--nex-bg': '#0A0A0C', // windowBackground: gaps between panes / empty grid
-    '--nex-header-bg': '#13131A', // headerBackground: pane headers, overlays
-    '--nex-surface-bg': '#101013', // surfaceBackground: chips, popovers
-    '--nex-fg': '#E6E6EA', // textPrimary
-    '--nex-fg-secondary': '#9A9AA0', // textSecondary
-    '--nex-fg-tertiary': '#6A6A72', // textTertiary
-    '--nex-border': '#24242B', // divider
-    '--nex-accent': '#6F9BD8', // accent
+    '--kelpi-bg': '#0A0A0C', // windowBackground: gaps between panes / empty grid
+    '--kelpi-header-bg': '#13131A', // headerBackground: pane headers, overlays
+    '--kelpi-surface-bg': '#101013', // surfaceBackground: chips, popovers
+    '--kelpi-fg': '#E6E6EA', // textPrimary
+    '--kelpi-fg-secondary': '#9A9AA0', // textSecondary
+    '--kelpi-fg-tertiary': '#6A6A72', // textTertiary
+    '--kelpi-border': '#24242B', // divider
+    '--kelpi-accent': '#6F9BD8', // accent
     /**
      * M13 — the macOS **system** accent, as its own name.
      *
@@ -29,15 +29,15 @@ export const GRID_TOKEN_FALLBACKS = {
      * is a main-process API, there is no preload bridge, and reaching it would mean a new wire
      * message through protocol → daemon → client. That is **ledgered as a standing divergence**
      * rather than built here. What this token buys is the seam: the three surfaces now read one
-     * name, it falls back to `--nex-accent` so today's palette is byte-identical, and whoever
+     * name, it falls back to `--kelpi-accent` so today's palette is byte-identical, and whoever
      * threads the OS accent through later defines this one variable and all three follow.
      */
-    '--nex-system-accent': 'var(--nex-accent, #6F9BD8)', // systemAccent (M13)
-    '--nex-pane-focus': '#6F9BD8', // paneFocus (independently themable)
-    '--nex-status-running': '#5FBE89', // statusRunning
-    '--nex-status-waiting': '#6F9BD8', // statusWaiting
-    '--nex-status-inactive': '#8A8A92', // statusInactive
-    '--nex-agent': '#D3A329', // activeAgent (amber agent badge / elapsed timer)
+    '--kelpi-system-accent': 'var(--kelpi-accent, #6F9BD8)', // systemAccent (M13)
+    '--kelpi-pane-focus': '#6F9BD8', // paneFocus (independently themable)
+    '--kelpi-status-running': '#5FBE89', // statusRunning
+    '--kelpi-status-waiting': '#6F9BD8', // statusWaiting
+    '--kelpi-status-inactive': '#8A8A92', // statusInactive
+    '--kelpi-agent': '#D3A329', // activeAgent (amber agent badge / elapsed timer)
     /**
      * L27 — the header's **one** orange.
      *
@@ -45,43 +45,43 @@ export const GRID_TOKEN_FALLBACKS = {
      * colour, and neither is part of `chromeTheme` — so in the shipped app the two badges are
      * always the same hue and always distinct from the agent amber. The port had drifted to two
      * different ambers: ZOOM on a hard-coded `#D08237` (the only colour in the grid that was not
-     * a `--nex-*` name, so it survived the light/dark swap unchanged) and SYNC repainted with
-     * `--nex-agent`, which made a synced pane read as a pane with a running agent.
+     * a `--kelpi-*` name, so it survived the light/dark swap unchanged) and SYNC repainted with
+     * `--kelpi-agent`, which made a synced pane read as a pane with a running agent.
      *
      * One name, both badges, and a light column so it actually swaps. The dark value is the
      * port's existing ZOOM orange; the light one is derived from it by the same per-channel
-     * ratio that takes `--nex-agent` from `#d3a329` to `#a97c17`. Not repainted to SwiftUI's
+     * ratio that takes `--kelpi-agent` from `#d3a329` to `#a97c17`. Not repainted to SwiftUI's
      * literal `Color.orange` (`#FF9F0A` dark / `#FF9500` light) — that is a palette decision the
      * preset table owns, and this row is about the token, not the hue.
      */
-    '--nex-orange': '#D08237'
+    '--kelpi-orange': '#D08237'
 } as const;
 
 export type GridTokenName = keyof typeof GRID_TOKEN_FALLBACKS;
 
-/** `var(--nex-x, <dark preset>)` — usable anywhere a CSS color string is. */
+/** `var(--kelpi-x, <dark preset>)` — usable anywhere a CSS color string is. */
 export function token(name: GridTokenName): string {
     return `var(${name}, ${GRID_TOKEN_FALLBACKS[name]})`;
 }
 
 /** Colors resolved once, so components read `tokens.headerBackground` rather than raw vars. */
 export const tokens = {
-    windowBackground: token('--nex-bg'),
-    headerBackground: token('--nex-header-bg'),
-    surfaceBackground: token('--nex-surface-bg'),
-    textPrimary: token('--nex-fg'),
-    textSecondary: token('--nex-fg-secondary'),
-    textTertiary: token('--nex-fg-tertiary'),
-    divider: token('--nex-border'),
-    accent: token('--nex-accent'),
-    systemAccent: token('--nex-system-accent'),
-    paneFocus: token('--nex-pane-focus'),
-    statusRunning: token('--nex-status-running'),
-    statusWaiting: token('--nex-status-waiting'),
-    statusInactive: token('--nex-status-inactive'),
-    activeAgent: token('--nex-agent'),
+    windowBackground: token('--kelpi-bg'),
+    headerBackground: token('--kelpi-header-bg'),
+    surfaceBackground: token('--kelpi-surface-bg'),
+    textPrimary: token('--kelpi-fg'),
+    textSecondary: token('--kelpi-fg-secondary'),
+    textTertiary: token('--kelpi-fg-tertiary'),
+    divider: token('--kelpi-border'),
+    accent: token('--kelpi-accent'),
+    systemAccent: token('--kelpi-system-accent'),
+    paneFocus: token('--kelpi-pane-focus'),
+    statusRunning: token('--kelpi-status-running'),
+    statusWaiting: token('--kelpi-status-waiting'),
+    statusInactive: token('--kelpi-status-inactive'),
+    activeAgent: token('--kelpi-agent'),
     /** L27 — `.orange`: the ZOOM and SYNC badges, and nothing else. */
-    orange: token('--nex-orange')
+    orange: token('--kelpi-orange')
 } as const;
 
 /**

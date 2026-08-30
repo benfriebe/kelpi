@@ -97,7 +97,7 @@ const options = {
     /**
      * Where the shell window is placed: `default` (visible, unchanged), `hidden`, `offscreen` or
      * `onscreen` — `packages/shell/src/audit-window.ts` decides what each means. Read from
-     * `NEX_AUDIT_WINDOW` when the flag is absent so a caller can set it once for a comparison.
+     * `KELPI_AUDIT_WINDOW` when the flag is absent so a caller can set it once for a comparison.
      *
      * This instrument is one of the two places a placement can be judged rather than guessed: it
      * counts real composited frames, so a compositor skipping them shows up as a smaller
@@ -105,7 +105,7 @@ const options = {
      * disqualified `hidden` — a zero-opacity window photographs as blank, which shows up in the
      * PNG bytes rather than in any of these counters.)
      */
-    placement: flag('--placement', process.env['NEX_AUDIT_WINDOW'] ?? 'default'),
+    placement: flag('--placement', process.env['KELPI_AUDIT_WINDOW'] ?? 'default'),
     /** Multiply every slide transition by this, so a slow instrument still resolves the motion. */
     slow: Number(flag('--slow', '1')),
     dump: argv.includes('--dump'),
@@ -278,10 +278,10 @@ async function main() {
 
     // `makeSandbox` reads this when it writes the sandbox ghostty config: `background-opacity`
     // is fixed at window construction (APP-012 / SET-049), so it cannot be set from inside a run.
-    if (options.opacity !== '1') process.env.NEX_AUDIT_GHOSTTY_EXTRA = `background-opacity = ${options.opacity}`;
-    else delete process.env.NEX_AUDIT_GHOSTTY_EXTRA;
+    if (options.opacity !== '1') process.env.KELPI_AUDIT_GHOSTTY_EXTRA = `background-opacity = ${options.opacity}`;
+    else delete process.env.KELPI_AUDIT_GHOSTTY_EXTRA;
 
-    const clientDir = process.env['NEX_AUDIT_CLIENT_DIR'] ?? path.join(repoRoot, 'packages', 'client', 'dist');
+    const clientDir = process.env['KELPI_AUDIT_CLIENT_DIR'] ?? path.join(repoRoot, 'packages', 'client', 'dist');
     if (!fs.existsSync(path.join(clientDir, 'index.html'))) {
         throw new Error(`the web client is not built: ${clientDir}`);
     }
@@ -311,7 +311,7 @@ async function main() {
             // Unset, this is `default` and the instrument behaves exactly as it did. Pass
             // `--placement X` to measure a placement: run it twice and compare `report.json`'s
             // `totals`, which is how `offscreen` was measured and rejected.
-            extraEnv: { NEX_AUDIT: '1', NEX_AUDIT_WINDOW: options.placement }
+            extraEnv: { KELPI_AUDIT: '1', KELPI_AUDIT_WINDOW: options.placement }
         });
         const target = await waitForPageTarget(sandbox.debugPort, {
             timeoutMs: 90_000,
@@ -325,7 +325,7 @@ async function main() {
         // rAF — an audit window behind another sticks at phase `opening` forever.
         await page.send('Page.bringToFront').catch(() => {});
         try {
-            await page.waitFor(`document.querySelector('[data-testid="nex-app"]') !== null`, {
+            await page.waitFor(`document.querySelector('[data-testid="kelpi-app"]') !== null`, {
                 timeoutMs: 60_000,
                 label: 'the app to mount'
             });
@@ -386,21 +386,21 @@ async function main() {
                 await page.eval(
                     `(() => {
                         const style = getComputedStyle(document.documentElement);
-                        const names = ['--nex-bg','--nex-window-fill','--nex-sidebar-bg','--nex-surface','--nex-header-bg',
-                                       '--nex-footer-bg','--nex-fg','--nex-fg-secondary','--nex-fg-tertiary','--nex-border',
-                                       '--nex-accent','--nex-term-bg','--nex-term-fg','--nex-active-agent','--nex-status-running',
-                                       '--nex-status-waiting','--nex-status-inactive','--nex-orange','--nex-selection-stroke'];
+                        const names = ['--kelpi-bg','--kelpi-window-fill','--kelpi-sidebar-bg','--kelpi-surface','--kelpi-header-bg',
+                                       '--kelpi-footer-bg','--kelpi-fg','--kelpi-fg-secondary','--kelpi-fg-tertiary','--kelpi-border',
+                                       '--kelpi-accent','--kelpi-term-bg','--kelpi-term-fg','--kelpi-active-agent','--kelpi-status-running',
+                                       '--kelpi-status-waiting','--kelpi-status-inactive','--kelpi-orange','--kelpi-selection-stroke'];
                         const out = {};
                         for (const name of names) out[name] = style.getPropertyValue(name).trim();
                         out['body'] = getComputedStyle(document.body).backgroundColor;
-                        out['theme'] = document.documentElement.getAttribute('data-nex-theme') ?? '(unset)';
+                        out['theme'] = document.documentElement.getAttribute('data-kelpi-theme') ?? '(unset)';
                         return JSON.stringify(out);
                     })()`
                 )
             )
         );
         report.palette = palette;
-        log(`palette (${palette.theme}): bg ${palette['--nex-bg']} · fill ${palette['--nex-window-fill']} · sidebar ${palette['--nex-sidebar-bg']}`);
+        log(`palette (${palette.theme}): bg ${palette['--kelpi-bg']} · fill ${palette['--kelpi-window-fill']} · sidebar ${palette['--kelpi-sidebar-bg']}`);
 
         const paletteRgb = [];
         for (const [name, value] of Object.entries(palette)) {
@@ -409,10 +409,10 @@ async function main() {
             if (rgb !== null) paletteRgb.push(rgb);
         }
         // Black is always explicable: it is what a transparent window composites to in a
-        // screencast, and it is `--nex-term-*`'s neighbourhood anyway.
+        // screencast, and it is `--kelpi-term-*`'s neighbourhood anyway.
         paletteRgb.push([0, 0, 0]);
-        /** The window GROUND — what `<body>` paints (`--nex-window-fill`), or nothing at all. */
-        const groundRgb = hexToRgb(palette['--nex-window-fill']);
+        /** The window GROUND — what `<body>` paints (`--kelpi-window-fill`), or nothing at all. */
+        const groundRgb = hexToRgb(palette['--kelpi-window-fill']);
 
         if (options.slow > 1) {
             /*
@@ -424,7 +424,7 @@ async function main() {
             await page.eval(
                 `(() => {
                     const style = document.createElement('style');
-                    style.id = 'nex-n31-slow';
+                    style.id = 'kelpi-n31-slow';
                     style.textContent = '[data-testid="sidebar-slot"],[data-testid="sidebar-panel"],[data-testid="inspector-slot"],[data-testid="inspector-panel"]{transition-duration:${String(Math.round(250 * options.slow))}ms !important;}';
                     document.head.appendChild(style);
                     return true;
@@ -532,13 +532,13 @@ async function main() {
                         );
                     });
                     observer.observe(grid);
-                    window.__nexGridCoverage = { observations, stop: () => { running = false; observer.disconnect(); } };
+                    window.__kelpiGridCoverage = { observations, stop: () => { running = false; observer.disconnect(); } };
                     return true;
                 })()`
             );
         const readCoverage = async () => {
-            await page.eval(`(() => { window.__nexGridCoverage?.stop?.(); return true; })()`);
-            return JSON.parse(String(await page.eval(`JSON.stringify(window.__nexGridCoverage?.observations ?? [])`)));
+            await page.eval(`(() => { window.__kelpiGridCoverage?.stop?.(); return true; })()`);
+            return JSON.parse(String(await page.eval(`JSON.stringify(window.__kelpiGridCoverage?.observations ?? [])`)));
         };
 
         // ── screencast plumbing ─────────────────────────────────────────────────────
@@ -605,13 +605,13 @@ async function main() {
                         requestAnimationFrame(tick);
                     };
                     requestAnimationFrame(tick);
-                    window.__nexSlide = { samples, stop: () => { running = false; } };
+                    window.__kelpiSlide = { samples, stop: () => { running = false; } };
                     return true;
                 })()`
             );
         const stopSampler = async () => {
-            await page.eval(`(() => { window.__nexSlide?.stop?.(); return true; })()`);
-            return JSON.parse(String(await page.eval(`JSON.stringify(window.__nexSlide?.samples ?? [])`)));
+            await page.eval(`(() => { window.__kelpiSlide?.stop?.(); return true; })()`);
+            return JSON.parse(String(await page.eval(`JSON.stringify(window.__kelpiSlide?.samples ?? [])`)));
         };
 
         /**
@@ -974,7 +974,7 @@ async function main() {
                 edge: 'leading',
                 slot: 'sidebar-slot',
                 restWidth: sidebarWidth,
-                colour: hexToRgb(palette['--nex-sidebar-bg'])
+                colour: hexToRgb(palette['--kelpi-sidebar-bg'])
             };
             log(`sidebar panel colour ${String(panel.colour)}`);
             for (let cycle = 0; cycle < options.cycles; cycle++) {
@@ -1006,7 +1006,7 @@ async function main() {
                 edge: 'trailing',
                 slot: 'inspector-slot',
                 restWidth: INSPECTOR_WIDTH,
-                colour: hexToRgb(palette['--nex-sidebar-bg'])
+                colour: hexToRgb(palette['--kelpi-sidebar-bg'])
             };
             for (let cycle = 0; cycle < options.cycles; cycle++) {
                 log(`inspector cycle ${String(cycle + 1)}/${String(options.cycles)}`);

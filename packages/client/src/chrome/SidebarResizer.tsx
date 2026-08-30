@@ -23,7 +23,7 @@ import { tokens } from './tokens';
 export const SIDEBAR_MIN_WIDTH = 180;
 export const SIDEBAR_MAX_WIDTH = 300;
 export const SIDEBAR_DEFAULT_WIDTH = 220;
-export const SIDEBAR_WIDTH_STORAGE_KEY = 'nex.sidebar.width';
+export const SIDEBAR_WIDTH_STORAGE_KEY = 'kelpi.sidebar.width';
 
 /** Anything outside 180–300 (or not a number at all) lands on the nearest legal width. */
 export function clampSidebarWidth(value: number): number {

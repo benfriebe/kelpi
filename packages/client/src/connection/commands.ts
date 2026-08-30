@@ -2,10 +2,10 @@
  * Command RPC over the sync socket (WP3.1).
  *
  * A client `command` message carries a minted id and a **control-protocol request object** —
- * the exact same `{"command": …}` payload the `nex` CLI writes to `/tmp/nex.sock`. The daemon
+ * the exact same `{"command": …}` payload the `kelpi` CLI writes to `/tmp/nex.sock`. The daemon
  * decodes it through `decodeWireObject` and dispatches it into the same handler table
  * (`daemon/src/ws/sync.ts` → `boot/dispatch.ts`), so the UI cannot drift from the CLI: if a
- * verb is not in `@nex/protocol`'s `WIRE_COMMANDS`, it does not exist here either.
+ * verb is not in `@kelpi/protocol`'s `WIRE_COMMANDS`, it does not exist here either.
  *
  * Every command settles. Allowlisted verbs answer with the handler's reply; fire-and-forget
  * verbs (`pane-move`, `layout-*`, `workspace-profile`, the agent events) get a synthesized
@@ -44,9 +44,9 @@ import type {
     SplitDirection,
     SyncAction,
     WorkspaceColor
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
-import type { ConnectionStatus, NexConnection } from './socket';
+import type { ConnectionStatus, KelpiConnection } from './socket';
 
 export type CommandReply = JsonObject;
 
@@ -217,7 +217,7 @@ export class CommandClient {
     private disposed = false;
 
     constructor(
-        private readonly connection: NexConnection,
+        private readonly connection: KelpiConnection,
         options: CommandClientOptions = {}
     ) {
         this.newID = options.newID ?? defaultNewID;
@@ -1330,7 +1330,7 @@ export class CommandClient {
 
     // ── settings verbs (M8) ────────────────────────────────────────────────────────
     //
-    // The daemon owns `~/.config/nex/config`: each verb applies a `@nex/core/config` writer to
+    // The daemon owns `~/.config/nex/config`: each verb applies a `@kelpi/core/config` writer to
     // the file's current contents, re-reads it, and answers `{ok, settings}` with the re-read
     // snapshot — so the reply is the truth, not an optimistic echo. A `settings-changed`
     // broadcast follows for every OTHER attached client; this client can apply the reply
@@ -1381,7 +1381,7 @@ export class CommandClient {
      * `background-opacity`, `font-family`, `font-size`, `theme`).
      *
      * A separate verb from `setGeneralSetting` because it writes a DIFFERENT FILE — one ghostty
-     * owns and from which Nex only borrows five keys. `value: null` REMOVES the key, which is
+     * owns and from which Kelpi only borrows five keys. `value: null` REMOVES the key, which is
      * how "no explicit background, inherit whatever the theme sets" is expressed; the daemon
      * preserves every unrelated line byte-for-byte and re-reads the file before replying, so a
      * user's hand-maintained ghostty config survives a colour picker intact.
@@ -1515,6 +1515,6 @@ function sameVisibility(a: ReportedVisibility, b: ReportedVisibility): boolean {
     return a.visiblePaneIDs.every((id, index) => id === b.visiblePaneIDs[index]);
 }
 
-export function createCommandClient(connection: NexConnection, options: CommandClientOptions = {}): CommandClient {
+export function createCommandClient(connection: KelpiConnection, options: CommandClientOptions = {}): CommandClient {
     return new CommandClient(connection, options);
 }

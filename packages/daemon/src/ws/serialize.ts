@@ -17,7 +17,7 @@
  * agent status) — that is what the client renders.
  */
 
-import type { JsonObject, JsonValue } from '@nex/protocol';
+import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
 import { canonicalizeForClient } from './paths.js';
 import type {

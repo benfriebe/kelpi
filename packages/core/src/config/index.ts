@@ -26,8 +26,8 @@ export {
     parseKeyTrigger
 } from './keys.js';
 export type { KeyModifier, KeyTrigger } from './keys.js';
-export { MENU_BAR_ACTIONS, NEX_ACTIONS, UNBIND_ACTION, isNexAction } from './actions.js';
-export type { NexAction, UnbindAction } from './actions.js';
+export { MENU_BAR_ACTIONS, KELPI_ACTIONS, UNBIND_ACTION, isKelpiAction } from './actions.js';
+export type { KelpiAction, UnbindAction } from './actions.js';
 export {
     DEFAULT_KEYBINDINGS,
     DEFAULT_KEYBIND_LINES,

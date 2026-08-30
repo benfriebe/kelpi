@@ -124,7 +124,7 @@ describe('the injected script', () => {
      */
     beforeAll(() => {
         document.body.innerHTML = '<div id="content"><p>hi</p></div>';
-        delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+        delete (window as unknown as Record<string, unknown>)['__kelpiContentBridge'];
         window.addEventListener('message', collect);
         // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
         new Function(contentBridgeScript(PANE))();

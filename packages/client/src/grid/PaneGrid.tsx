@@ -7,7 +7,7 @@
  *
  * Three invariants shape the whole component:
  *
- * 1. **No layout maths here.** Every rect comes from `@nex/core/layout` — `paneFrames`,
+ * 1. **No layout maths here.** Every rect comes from `@kelpi/core/layout` — `paneFrames`,
  *    `splitDividers`, `dividerHitRect`, `dividerDragSnapshot`/`ratioFromDividerDrag`,
  *    `calculateDropZone`, `dropZoneOverlayRect`. The daemon runs the same functions, so a
  *    divider cannot drift between what the client draws and what the daemon stores.
@@ -53,7 +53,7 @@ import {
     type Point,
     type Rect,
     type SplitDividerInfo
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 
 import {
     dividerAtPoint,
@@ -273,7 +273,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
          * §N31 — the measurement has to land in the SAME frame the container resized in.
          *
          * Every pane is `position: absolute` at a pixel rect derived from `measured`, and the
-         * grid itself paints nothing (`--nex-window-fill` is `transparent` below
+         * grid itself paints nothing (`--kelpi-window-fill` is `transparent` below
          * `background-opacity` 1, §N17). So for as long as `measured` disagrees with the
          * container, the difference is not "slightly stale panes" — it is a strip of window
          * that NOTHING has painted, i.e. the desktop.
@@ -628,7 +628,7 @@ export function PaneGrid(props: PaneGridProps): ReactElement {
              * §N17 — NO fill here. `PaneGridView.swift:104-118` is a bare `ZStack` over a
              * `GeometryReader`: the grid paints nothing, the app's ground shows through the
              * gutters, and the only fill in the tree is each pane's own. This container used to
-             * repaint `--nex-bg`, which is invisible at opacity 1 (same colour as the ground
+             * repaint `--kelpi-bg`, which is invisible at opacity 1 (same colour as the ground
              * behind it) and lethal below it — a second 0.85 layer, and alpha multiplies. The
              * one place the Swift DOES paint `windowBackground` is the empty placeholder
              * (`:509-510`), which `EmptyGrid` now carries itself.
@@ -840,7 +840,7 @@ interface DividerProps {
  * the bar's absolute position does not depend on the inset at all.
  *
  * SPACING-REVIEW S48 (owner-directed): the band was 10 px, `SplitDividerView.swift:21-25`'s own
- * `inset(by: -4)`. `@nex/core`'s `DIVIDER_HIT_INSET` carries the reasoning and the parity value.
+ * `inset(by: -4)`. `@kelpi/core`'s `DIVIDER_HIT_INSET` carries the reasoning and the parity value.
  */
 function Divider({ info, dragging, onPointerDown }: DividerProps): ReactElement {
     const hit = dividerHitRect(info.rect);

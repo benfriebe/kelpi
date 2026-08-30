@@ -235,7 +235,7 @@ export interface BatchDestination {
  *
  * The Swift picker has **no** local-queue row at all: its `TargetSelection` is `.unselected` or
  * `.pane(id)`, and Send is disabled until the user picks a pane
- * (`WebBatchInspectPanel.swift:224-247`). The port keeps the CLI's `nex web inspect-result`
+ * (`WebBatchInspectPanel.swift:224-247`). The port keeps the CLI's `kelpi web inspect-result`
  * queue reachable — the daemon's `batchSend(paneID, null)` branch is a real capability — but it
  * may never be what an *unselected* picker means, which is what it was: a batch the user had
  * not addressed went silently into a queue they had to know about to drain.

@@ -2,7 +2,7 @@
  * The built-in chrome palettes and the shareable style-theme document (SET-023…SET-030).
  *
  * The share code is a format other people's files land in, so the tests here are mostly about
- * refusal: a document from a newer Nex must be rejected by version rather than half-decoded,
+ * refusal: a document from a newer Kelpi must be rejected by version rather than half-decoded,
  * and the three paste forms must all round-trip while junk produces the exact Swift message
  * (the user sees that string, so it is part of the contract).
  */
@@ -101,9 +101,9 @@ describe('the theme document', () => {
     });
 
     // SET-029: the version gate, with the exact user-facing wording.
-    it('refuses a document from a newer Nex, by version', () => {
+    it('refuses a document from a newer Kelpi, by version', () => {
         expect(() => decodeChromeStyleTheme({ ...THEME, version: 2 })).toThrow(unsupportedVersionMessage(2));
-        // And a pasted one reaches the user as THAT message, not "not a Nex theme".
+        // And a pasted one reaches the user as THAT message, not "not a Kelpi theme".
         const code = `${CHROME_THEME_CODE_PREFIX}${base64Encode(JSON.stringify({ ...THEME, version: 7 }))}`;
         expect(() => parseChromeThemeCode(code)).toThrow(unsupportedVersionMessage(7));
     });

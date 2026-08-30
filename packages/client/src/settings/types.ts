@@ -8,8 +8,8 @@
  * renders from a fixture, and the Electron shell could host this window as-is.
  */
 
-import type { NexAction } from '@nex/core/config';
-import type { WsProfile } from '@nex/protocol';
+import type { KelpiAction } from '@kelpi/core/config';
+import type { WsProfile } from '@kelpi/protocol';
 
 import type { ChromeLabelPreset } from '../chrome';
 import type { LabelledWorkspace } from './model';
@@ -20,9 +20,9 @@ export interface SettingsActions {
      * `set-keybinding`. `trigger` is a config-file string (`"super+d"`); `null` unbinds every
      * trigger the action has. The daemon writes the file and broadcasts; nothing is stored here.
      */
-    setKeybinding(action: NexAction, trigger: string | null): void;
+    setKeybinding(action: KelpiAction, trigger: string | null): void;
     /** `reset-keybindings`. `null` = the whole map back to the shipped defaults (§5.4). */
-    resetKeybindings(action: NexAction | null): void;
+    resetKeybindings(action: KelpiAction | null): void;
     /** `set-general-setting` — one `key = value` line in `~/.config/nex/config` (§1.3). */
     setGeneralSetting(key: string, value: string): void;
     /**
@@ -81,12 +81,12 @@ export interface SettingsActions {
 
 /** Where the daemon's two config files live, for the footer strips (§13.1). */
 export interface SettingsPaths {
-    readonly nexConfig: string;
+    readonly kelpiConfig: string;
     readonly ghosttyConfig: string;
 }
 
 export const DEFAULT_SETTINGS_PATHS: SettingsPaths = {
-    nexConfig: '~/.config/nex/config',
+    kelpiConfig: '~/.config/nex/config',
     ghosttyConfig: '~/.config/ghostty/config'
 };
 

@@ -45,7 +45,7 @@ describe('database location', () => {
         );
     });
 
-    it('lets NEXD_DB_PATH win on every platform', () => {
+    it('lets KELPID_DB_PATH win on every platform', () => {
         for (const platform of ['darwin', 'linux'] as const) {
             expect(
                 resolveDatabasePath({ env: { [DB_PATH_ENV]: '/tmp/custom/nex.db' }, platform, home: HOME })
@@ -53,7 +53,7 @@ describe('database location', () => {
         }
     });
 
-    it('expands ~ and honours :memory: in NEXD_DB_PATH', () => {
+    it('expands ~ and honours :memory: in KELPID_DB_PATH', () => {
         expect(resolveDatabasePath({ env: { [DB_PATH_ENV]: '~/db/nex.db' }, platform: 'darwin', home: HOME })).toBe(
             path.join(HOME, 'db', 'nex.db')
         );
@@ -62,7 +62,7 @@ describe('database location', () => {
         ).toBe(MEMORY_DATABASE_PATH);
     });
 
-    it('ignores a blank NEXD_DB_PATH', () => {
+    it('ignores a blank KELPID_DB_PATH', () => {
         expect(resolveDatabasePath({ env: { [DB_PATH_ENV]: '   ' }, platform: 'darwin', home: HOME })).toBe(
             path.join(HOME, 'Library', 'Application Support', 'nexd', DATABASE_FILENAME)
         );
@@ -73,7 +73,7 @@ describe('database location', () => {
             legacyMacAppDatabasePath(HOME)
         );
         expect(legacyMacAppDatabasePath(HOME)).toBe(
-            path.join(HOME, 'Library', 'Application Support', 'Nex', DATABASE_FILENAME)
+            path.join(HOME, 'Library', 'Application Support', 'Kelpi', DATABASE_FILENAME)
         );
     });
 
@@ -89,7 +89,7 @@ describe('ensureDatabaseDir', () => {
     let root = '';
 
     beforeEach(() => {
-        root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-loc-'));
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-loc-'));
     });
 
     afterEach(() => {
@@ -112,18 +112,18 @@ describe('ensureDatabaseDir', () => {
 
     // ── the P0 ──────────────────────────────────────────────────────────────
     //
-    // `NEXD_DB_PATH=/tmp/nexd-dev.db` used to make this function chmod('/tmp', 0700). /tmp is
+    // `KELPID_DB_PATH=/tmp/kelpid-dev.db` used to make this function chmod('/tmp', 0700). /tmp is
     // root-owned and mode 1777, so a normal user gets EPERM, which was thrown out of
     // `createPersistence`'s open path, caught, and turned into a daemon that ran all day with
     // persistence quietly disabled. Nothing here may touch a directory it did not create.
 
     it('uses an existing shared parent as-is — no chmod, no throw (the /tmp case)', () => {
         const before = fs.statSync('/tmp').mode & 0o7777;
-        expect(() => ensureDatabaseDir('/tmp/nexd-location-test.db')).not.toThrow();
-        expect(ensureDatabaseDir('/tmp/nexd-location-test.db')).toBe('/tmp');
+        expect(() => ensureDatabaseDir('/tmp/kelpid-location-test.db')).not.toThrow();
+        expect(ensureDatabaseDir('/tmp/kelpid-location-test.db')).toBe('/tmp');
         // Unchanged, and specifically NOT 0700.
         expect(fs.statSync('/tmp').mode & 0o7777).toBe(before);
-        expect(fs.existsSync('/tmp/nexd-location-test.db')).toBe(false);
+        expect(fs.existsSync('/tmp/kelpid-location-test.db')).toBe(false);
     });
 
     it('leaves the permissions of any pre-existing parent alone', () => {
@@ -165,7 +165,7 @@ describe('prepareDatabaseFile', () => {
     let root = '';
 
     beforeEach(() => {
-        root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-prep-'));
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-prep-'));
     });
 
     afterEach(() => {

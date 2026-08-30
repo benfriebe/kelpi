@@ -297,7 +297,7 @@ const POINTER_PARK_SLOP = 4;
  * N32 — the name a MINTED preset is born with: `New label`, then `New label 2`, `New label 3`, …
  *
  * The shape, and the reason for it, are `sidebar-model.ts`'s `defaultGroupName` (§WS-083, the
- * Swift's own `NexCommands.defaultGroupName`): a mint has to produce something the daemon will
+ * Swift's own `KelpiCommands.defaultGroupName`): a mint has to produce something the daemon will
  * accept on the first try, and §6.4 makes a preset's NAME its identity — a duplicate is refused
  * outright, so the uniquifier is not a nicety, it is what makes the button work twice in a row.
  * Matching against the list this tab is rendering is enough: it IS the daemon's list.
@@ -768,7 +768,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
         const name = defaultLabelPresetName(props.presets.map((preset) => preset.name));
         pendingMint.current = name;
         // A new gesture supersedes the last reorder's: without this, §N33's intent stays armed
-        // and the NEXT commit that changes the order would take the caret out of the name field
+        // and the KELPIT commit that changes the order would take the caret out of the name field
         // this mint is about to hand it to.
         focusIntent.current = null;
         // …and so does an open flyover (§N38). The mint's handoff is to the NEW row's name field;
@@ -830,7 +830,7 @@ export function LabelsTab(props: LabelsTabProps): ReactElement {
                  * §N36(2) — "Labels", not "Presets".
                  *
                  * The user-facing concept in this app is a LABEL: the sidebar's submenu applies
-                 * labels, `nex workspace label` writes labels, a workspace WEARS labels. "Preset"
+                 * labels, `kelpi workspace label` writes labels, a workspace WEARS labels. "Preset"
                  * is what the daemon calls the stored row (`labelPresets`, `add-label-preset`,
                  * §SET-058…§SET-068) and it stays there — in the wire verbs, the props, the
                  * test ids and these comments — but no copy on this tab says it any more. The

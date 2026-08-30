@@ -36,7 +36,7 @@ export interface ShellSettings {
     /** True once the value above has been pushed into the daemon settings (or found default). */
     readonly quitConfirmationMigrated: boolean;
     /**
-     * Has the user been offered the `/usr/local/bin/nex` install once? (`./cli-install.ts`)
+     * Has the user been offered the `/usr/local/bin/kelpi` install once? (`./cli-install.ts`)
      * Asking twice about the same thing is nagging; asking never means a fresh install has no
      * CLI and therefore no hooks.
      */
@@ -141,7 +141,7 @@ export interface QuitDialogSpec {
 export function quitDialogSpec(counts: AgentCounts): QuitDialogSpec {
     return {
         type: 'question',
-        message: 'Quit Nex?',
+        message: 'Quit Kelpi?',
         detail: quitConfirmDetail(counts),
         buttons: ['Quit', 'Cancel'],
         defaultId: 1,

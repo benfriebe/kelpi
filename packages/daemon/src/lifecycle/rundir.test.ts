@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { PROTOCOL_VERSION } from '@nex/protocol';
+import { PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -43,19 +43,19 @@ describe('run dir resolution', () => {
         );
     });
 
-    it('falls back to ~/.local/state/nexd/run on linux without XDG_RUNTIME_DIR', () => {
+    it('falls back to ~/.local/state/kelpid/run on linux without XDG_RUNTIME_DIR', () => {
         expect(resolveRunDir({ env: {}, platform: 'linux', home: HOME })).toBe(
             path.join(HOME, '.local', 'state', 'nexd', 'run')
         );
     });
 
-    it('lets NEXD_RUN_DIR win on every platform, expanding ~', () => {
+    it('lets KELPID_RUN_DIR win on every platform, expanding ~', () => {
         for (const platform of ['darwin', 'linux'] as const) {
-            expect(resolveRunDir({ env: { NEXD_RUN_DIR: '~/nexd-run' }, platform, home: HOME })).toBe(
-                path.join(HOME, 'nexd-run')
+            expect(resolveRunDir({ env: { KELPID_RUN_DIR: '~/kelpid-run' }, platform, home: HOME })).toBe(
+                path.join(HOME, 'kelpid-run')
             );
         }
-        expect(resolveRunDir({ env: { NEXD_RUN_DIR: '  ' }, platform: 'darwin', home: HOME })).toBe(
+        expect(resolveRunDir({ env: { KELPID_RUN_DIR: '  ' }, platform: 'darwin', home: HOME })).toBe(
             path.join(HOME, 'Library', 'Application Support', 'nexd', 'run')
         );
     });
@@ -87,7 +87,7 @@ describe('run dir files', () => {
     let directory: string;
 
     beforeEach(() => {
-        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-run-'));
+        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-run-'));
     });
 
     afterEach(() => {

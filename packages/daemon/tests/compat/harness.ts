@@ -9,7 +9,7 @@
  * Shape of a compat test:
  *   1. boot a daemon in-process with its own tmp HOME, tmp sqlite file and an **ephemeral**
  *      control TCP port (`tcpPort: 0`) plus a tmp unix socket path;
- *   2. drive `nex` as a child process with `NEX_SOCKET=tcp:127.0.0.1:<port>`;
+ *   2. drive `kelpi` as a child process with `NEX_SOCKET=tcp:127.0.0.1:<port>`;
  *   3. assert the **exit code** and the **parsed JSON** — never the human table text, which
  *      is rendered CLI-side and is not part of the daemon's contract.
  *
@@ -24,12 +24,12 @@ import path from 'node:path';
 
 import { createDaemon, type Daemon, type DaemonInfo } from '../../src/boot/index.js';
 
-/** The shipped Swift CLI. Absent on a machine without Nex installed → the suites skip. */
-export const NEX_CLI = process.env['NEX_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
+/** The shipped Swift CLI. Absent on a machine without Kelpi installed → the suites skip. */
+export const KELPI_CLI = process.env['KELPI_COMPAT_CLI'] ?? '/Applications/Nex.app/Contents/Helpers/nex';
 
 export function swiftCLIAvailable(): boolean {
     try {
-        fs.accessSync(NEX_CLI, fs.constants.X_OK);
+        fs.accessSync(KELPI_CLI, fs.constants.X_OK);
         return true;
     } catch {
         return false;
@@ -49,7 +49,7 @@ export interface CliOptions {
     readonly cwd?: string | undefined;
     readonly env?: Record<string, string> | undefined;
     readonly timeoutMs?: number | undefined;
-    /** Piped to the child's stdin — this is how `nex event` receives its hook payload. */
+    /** Piped to the child's stdin — this is how `kelpi event` receives its hook payload. */
     readonly stdin?: string | undefined;
 }
 
@@ -86,7 +86,7 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
         env: {},
         home,
         runDir: path.join(root, 'run'),
-        controlSocketPath: path.join(root, 'nex.sock'),
+        controlSocketPath: path.join(root, 'kelpi.sock'),
         tcpPort: 0,
         dbPath: path.join(root, 'nex.db'),
         configPath: path.join(root, 'config'),
@@ -105,7 +105,7 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
 
     const run = (args: readonly string[], options: CliOptions = {}): Promise<CliResult> =>
         new Promise<CliResult>((resolve, reject) => {
-            const child = spawn(NEX_CLI, [...args], {
+            const child = spawn(KELPI_CLI, [...args], {
                 cwd: options.cwd ?? home,
                 env: {
                     PATH: process.env['PATH'] ?? '/usr/bin:/bin',
@@ -126,7 +126,7 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
             child.stderr.on('data', (chunk: string) => {
                 stderr += chunk;
             });
-            // `nex event` reads stdin (the hook payload); an unclosed stdin would hang it.
+            // `kelpi event` reads stdin (the hook payload); an unclosed stdin would hang it.
             // Most verbs never read it, so a fast CLI can exit before the write lands and the
             // pipe closes under us. EPIPE there says "the child was done", not "the test
             // failed" — unhandled it becomes an uncaught exception that fails whichever file
@@ -155,14 +155,14 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
             const result = await run(args, options);
             if (result.code !== 0) {
                 throw new Error(
-                    `nex ${args.join(' ')} exited ${String(result.code)}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
+                    `kelpi ${args.join(' ')} exited ${String(result.code)}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
                 );
             }
             try {
                 return JSON.parse(result.stdout) as T;
             } catch (error) {
                 throw new Error(
-                    `nex ${args.join(' ')} printed non-JSON: ${JSON.stringify(result.stdout)} (${String(error)})`
+                    `kelpi ${args.join(' ')} printed non-JSON: ${JSON.stringify(result.stdout)} (${String(error)})`
                 );
             }
         },

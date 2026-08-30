@@ -2,7 +2,7 @@
  * `--link` and the command resolution behind it (CLI-143, CLI-144).
  *
  * The install directory is always a temp path here. `/usr/local/bin` is a real directory on the
- * machine running this suite and it very likely holds a real `nex`; a test that used the default
+ * machine running this suite and it very likely holds a real `kelpi`; a test that used the default
  * would replace the developer's own CLI with a symlink into a checkout.
  */
 
@@ -21,9 +21,9 @@ let installDir = '';
 let target = '';
 
 beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-link-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-link-'));
     installDir = path.join(root, 'bin');
-    target = path.join(root, 'app', 'nex.js');
+    target = path.join(root, 'app', 'kelpi.js');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, '#!/usr/bin/env node\n', { mode: 0o755 });
 });
@@ -60,7 +60,7 @@ describe('linkCli', () => {
 
     it('repairs a symlink that points somewhere else (the post-update drift case)', () => {
         fs.mkdirSync(installDir, { recursive: true });
-        fs.symlinkSync(path.join(root, 'old', 'nex.js'), path.join(installDir, 'nex'));
+        fs.symlinkSync(path.join(root, 'old', 'kelpi.js'), path.join(installDir, 'kelpi'));
         const result = linkCli({ installDir, target, dryRun: false }, nodeInstallFs);
         expect(result.action).toBe('linked');
         expect(fs.readlinkSync(result.path)).toBe(target);
@@ -68,7 +68,7 @@ describe('linkCli', () => {
 
     it('replaces a stale REGULAR file (the pre-April `cp` install)', () => {
         fs.mkdirSync(installDir, { recursive: true });
-        fs.writeFileSync(path.join(installDir, 'nex'), 'stale copy');
+        fs.writeFileSync(path.join(installDir, 'kelpi'), 'stale copy');
         const result = linkCli({ installDir, target, dryRun: false }, nodeInstallFs);
         expect(result.action).toBe('linked');
         expect(fs.lstatSync(result.path).isSymbolicLink()).toBe(true);
@@ -95,9 +95,9 @@ describe('linkCli', () => {
             expect(result.action).toBe('failed');
             expect(result.reason).toContain('not writable');
             expect(result.manualCommand).toBe(
-                `sudo mkdir -p ${installDir} && sudo ln -sfn ${target} ${path.join(installDir, 'nex')}`
+                `sudo mkdir -p ${installDir} && sudo ln -sfn ${target} ${path.join(installDir, 'kelpi')}`
             );
-            expect(fs.existsSync(path.join(installDir, 'nex'))).toBe(false);
+            expect(fs.existsSync(path.join(installDir, 'kelpi'))).toBe(false);
         } finally {
             fs.chmodSync(installDir, 0o700);
         }
@@ -110,45 +110,45 @@ describe('linkCli', () => {
 
 describe('resolving what the hooks should invoke', () => {
     it('quotes only what needs quoting', () => {
-        expect(shellQuote('/usr/local/bin/nex')).toBe('/usr/local/bin/nex');
-        expect(shellQuote('/Users/a b/nex.js')).toBe("'/Users/a b/nex.js'");
-        expect(shellQuote("/tmp/it's/nex")).toBe("'/tmp/it'\\''s/nex'");
+        expect(shellQuote('/usr/local/bin/kelpi')).toBe('/usr/local/bin/kelpi');
+        expect(shellQuote('/Users/a b/kelpi.js')).toBe("'/Users/a b/kelpi.js'");
+        expect(shellQuote("/tmp/it's/kelpi")).toBe("'/tmp/it'\\''s/kelpi'");
     });
 
     it('resolves argv[1] through symlinks', () => {
-        const link = path.join(root, 'link-to-nex');
+        const link = path.join(root, 'link-to-kelpi');
         fs.symlinkSync(target, link);
         expect(resolveSelfExecutable(['node', link], nodeInstallFs)).toBe(fs.realpathSync(target));
     });
 
     it('finds itself on PATH through a symlink', () => {
         fs.mkdirSync(installDir, { recursive: true });
-        fs.symlinkSync(target, path.join(installDir, 'nex'));
+        fs.symlinkSync(target, path.join(installDir, 'kelpi'));
         const self = fs.realpathSync(target);
         expect(findSelfOnPath(self, `/nowhere:${installDir}`, nodeInstallFs)).toBe(installDir);
         expect(findSelfOnPath(self, '/nowhere', nodeInstallFs)).toBeNull();
     });
 
     it('accepts a launcher SIBLING on PATH (the packaged-app shape)', () => {
-        // /usr/local/bin/nex -> Resources/cli/nex (a launcher), which execs Resources/cli/nex.js.
+        // /usr/local/bin/kelpi -> Resources/cli/kelpi (a launcher), which execs Resources/cli/kelpi.js.
         const cliDir = path.join(root, 'Resources', 'cli');
         fs.mkdirSync(cliDir, { recursive: true });
-        const bundle = path.join(cliDir, 'nex.js');
-        const launcher = path.join(cliDir, 'nex');
+        const bundle = path.join(cliDir, 'kelpi.js');
+        const launcher = path.join(cliDir, 'kelpi');
         fs.writeFileSync(bundle, '');
         fs.writeFileSync(launcher, '', { mode: 0o755 });
         fs.mkdirSync(installDir, { recursive: true });
-        fs.symlinkSync(launcher, path.join(installDir, 'nex'));
+        fs.symlinkSync(launcher, path.join(installDir, 'kelpi'));
 
         expect(findSelfOnPath(fs.realpathSync(bundle), installDir, nodeInstallFs)).toBe(installDir);
     });
 
-    it('prefers the bare `nex` when PATH resolves to us, else the absolute path', () => {
+    it('prefers the bare `kelpi` when PATH resolves to us, else the absolute path', () => {
         fs.mkdirSync(installDir, { recursive: true });
-        fs.symlinkSync(target, path.join(installDir, 'nex'));
+        fs.symlinkSync(target, path.join(installDir, 'kelpi'));
 
         const onPath = resolveHookCommand({ argv: ['node', target], pathValue: installDir }, nodeInstallFs);
-        expect(onPath).toMatchObject({ command: 'nex', onPath: true, pathEntry: installDir });
+        expect(onPath).toMatchObject({ command: 'kelpi', onPath: true, pathEntry: installDir });
 
         const offPath = resolveHookCommand({ argv: ['node', target], pathValue: '/usr/bin' }, nodeInstallFs);
         expect(offPath).toMatchObject({ command: fs.realpathSync(target), onPath: false });
@@ -156,17 +156,17 @@ describe('resolving what the hooks should invoke', () => {
 
     it('honours an explicit --command over everything', () => {
         const resolved = resolveHookCommand(
-            { override: '  /opt/nex  ', argv: ['node', target], pathValue: '/usr/bin' },
+            { override: '  /opt/kelpi  ', argv: ['node', target], pathValue: '/usr/bin' },
             nodeInstallFs
         );
-        expect(resolved.command).toBe('/opt/nex');
+        expect(resolved.command).toBe('/opt/kelpi');
     });
 
-    it('falls back to the bare `nex` when it cannot see its own path at all', () => {
+    it('falls back to the bare `kelpi` when it cannot see its own path at all', () => {
         const blind: InstallFs = { ...nodeInstallFs, realPath: () => null, exists: () => false };
         expect(resolveHookCommand({ argv: ['node'], pathValue: '' }, blind)).toMatchObject({
             executable: null,
-            command: 'nex'
+            command: 'kelpi'
         });
     });
 });

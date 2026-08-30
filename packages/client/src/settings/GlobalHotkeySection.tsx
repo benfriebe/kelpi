@@ -26,7 +26,7 @@
  *      — which is what CLEARING the hotkey and re-recording a working chord both produce —
  *      leaves `registrationError` null, so the error disappears with no state of its own.
  *   4. **The in-app collision advisory** (SET-084): a global hotkey that also matches an in-app
- *      binding wins while Nex is frontmost, so the in-app shortcut silently stops working. That
+ *      binding wins while Kelpi is frontmost, so the in-app shortcut silently stops working. That
  *      is worth an advisory, not a refusal — the combination is legal and sometimes wanted.
  *
  * SET-093 is the recorder's own rule and the reason this does not simply reuse the row
@@ -37,7 +37,7 @@
  * `ignoreGlobalHotkey: true` flag is structural here rather than a parameter.
  */
 
-import { keyTriggerDisplayString, parseKeyTrigger, type KeyBindingMap } from '@nex/core/config';
+import { keyTriggerDisplayString, parseKeyTrigger, type KeyBindingMap } from '@kelpi/core/config';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { actionForTrigger, tokens, withAlpha } from '../chrome';
@@ -228,7 +228,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
 
             <SettingsRow
                 label="Press again to hide"
-                detail="A second press hides Nex when it is already frontmost, instead of re-raising it."
+                detail="A second press hides Kelpi when it is already frontmost, instead of re-raising it."
                 testID="global-hotkey-repress-row"
             >
                 <SettingsToggle
@@ -265,7 +265,7 @@ export function GlobalHotkeySection(props: GlobalHotkeySectionProps): ReactEleme
                     className="rounded px-2 py-1 text-[11px]"
                     style={{ color: WARNING_COLOR, background: withAlpha(WARNING_COLOR, 0.1) }}
                 >
-                    This is also bound to “{conflict}” in the app. While Nex is frontmost the global hotkey wins and
+                    This is also bound to “{conflict}” in the app. While Kelpi is frontmost the global hotkey wins and
                     the in-app shortcut won&rsquo;t fire.
                 </span>
             )}

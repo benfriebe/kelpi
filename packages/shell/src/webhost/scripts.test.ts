@@ -36,7 +36,7 @@ describe('injection', () => {
         const sources = injectedScriptSources();
         expect(sources[0]).toBe(bridgeScript());
         expect(sources).toHaveLength(5);
-        // The batch markers post through the bridge too (§7.3's `nexBatchMarker` channel).
+        // The batch markers post through the bridge too (§7.3's `kelpiBatchMarker` channel).
         expect(sources).toContain(batchMarkerScript());
     });
 
@@ -50,16 +50,16 @@ describe('injection', () => {
 
     it('deliberately does not inject the console script (the port takes the CDP branch)', () => {
         const all = injectedScriptSources().join('\n');
-        expect(all).not.toContain('__nexConsoleInstalled');
-        expect(all).not.toContain('__nexConsoleOriginals');
+        expect(all).not.toContain('__kelpiConsoleInstalled');
+        expect(all).not.toContain('__kelpiConsoleOriginals');
     });
 
     it('keeps the idempotency guards CDP re-injection needs', () => {
-        expect(actuatorScript()).toContain('__nexActInstalled');
-        expect(inspectorScript()).toContain('__nexInspectorInstalled');
-        expect(bridgeScript()).toContain('__nexBridgeInstalled');
-        expect(findScript()).toContain('__nexWebFind');
-        expect(batchMarkerScript()).toContain('__nexBatchMarkersInstalled');
+        expect(actuatorScript()).toContain('__kelpiActInstalled');
+        expect(inspectorScript()).toContain('__kelpiInspectorInstalled');
+        expect(bridgeScript()).toContain('__kelpiBridgeInstalled');
+        expect(findScript()).toContain('__kelpiWebFind');
+        expect(batchMarkerScript()).toContain('__kelpiBatchMarkersInstalled');
     });
 
     it('is self-contained: no bundler helper reaches the page unresolved', () => {
@@ -71,7 +71,7 @@ describe('injection', () => {
         // is the cheap early warning; the live smoke is the expensive one.
         for (const source of injectedScriptSources()) {
             expect(source).toContain('var __name=function(target){return target;}');
-            const helpers = source.match(/\b__(?!name\b|nex)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
+            const helpers = source.match(/\b__(?!name\b|kelpi)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
             expect(helpers).toEqual([]);
         }
     });
@@ -97,7 +97,7 @@ describe('injection', () => {
             `data:text/javascript;base64,${Buffer.from(code, 'utf8').toString('base64')}`
         )) as { injectedScriptSources(): readonly string[] };
         for (const source of bundled.injectedScriptSources()) {
-            const helpers = source.match(/\b__(?!name\b|nex)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
+            const helpers = source.match(/\b__(?!name\b|kelpi)[A-Za-z_$][\w$]*\s*\(/g) ?? [];
             expect(helpers).toEqual([]);
             // …and the helper the bundler DID emit resolves inside the wrapper's scope. The
             // fake `window` is not `window.top`, so the main-frame guard returns immediately —
@@ -115,13 +115,13 @@ describe('injection', () => {
         // The quoting depends on whatever transform produced `Function.prototype.toString()`
         // output, so assert on the name itself rather than on a quote style.
         expect(source).toContain(BINDING_NAME);
-        expect(source).not.toContain('__NEX_BINDING__');
+        expect(source).not.toContain('__KELPI_BINDING__');
     });
 
     it('keeps the webkit.messageHandlers shim so page code reads like the Swift original', () => {
         const source = bridgeScript();
         expect(source).toContain('messageHandlers');
-        expect(source).toContain('nexInspect');
+        expect(source).toContain('kelpiInspect');
     });
 
     it('keeps the find highlight palette (it matches the terminal/markdown find colors)', () => {
@@ -130,11 +130,11 @@ describe('injection', () => {
         expect(source).toContain('#FF7A00');
         // No placeholder survives into the page: an unsubstituted token would be an invalid
         // CSS colour and the marks would render unstyled.
-        expect(source).not.toContain('__NEX_FIND_');
+        expect(source).not.toContain('__KELPI_FIND_');
     });
 
     // SET-219 / TERM-021: the Swift app shipped these as ghostty defaults a user could override
-    // in their own config; here they are nex config keys, and this is the substitution that
+    // in their own config; here they are kelpi config keys, and this is the substitution that
     // carries one into the page.
     it('paints with the configured palette, refusing anything that is not a plain hex', () => {
         const source = findScript({
@@ -149,7 +149,7 @@ describe('injection', () => {
         expect(source).not.toContain('display:none');
         // The refused value falls back to the Swift default rather than to nothing.
         expect(source).toContain(DEFAULT_WEB_FIND_PALETTE.currentText);
-        expect(source).not.toContain('__NEX_FIND_');
+        expect(source).not.toContain('__KELPI_FIND_');
     });
 
     it('remembers the palette the main process set, for every later injection', () => {
@@ -167,8 +167,8 @@ describe('injection', () => {
     it('keeps the picker overlay palette and the overlay-passthrough attributes', () => {
         const source = inspectorScript();
         expect(source).toContain('#007AFF');
-        expect(source).toContain('data-nex-overlay');
-        expect(source).toContain('data-nex-batch-popover');
+        expect(source).toContain('data-kelpi-overlay');
+        expect(source).toContain('data-kelpi-batch-popover');
     });
 
     /**
@@ -184,7 +184,7 @@ describe('injection', () => {
      */
     it('sizes the hover outline border-box, with the Swift’s 2 px radius (L62)', () => {
         const source = inspectorScript();
-        const overlay = source.slice(source.indexOf('data-nex-overlay'));
+        const overlay = source.slice(source.indexOf('data-kelpi-overlay'));
         const block = overlay.slice(0, overlay.indexOf('function drawOverlay'));
         expect(block).toContain('box-sizing:border-box');
         expect(block).toContain('border-radius:2px');
@@ -193,11 +193,11 @@ describe('injection', () => {
     /**
      * §L76 — `if (isOurOverlay(el)) { hideOverlay(); return; }`
      * (`WebPaneInspectorScript.swift:203-226`). The port returned early *without* hiding, so
-     * moving the pointer onto one of Nex's own overlay surfaces (a numbered badge, the comment
+     * moving the pointer onto one of Kelpi's own overlay surfaces (a numbered badge, the comment
      * popover, the focus ring) left the previous outline drawn underneath it — the picker still
      * pointing at an element the pointer had left.
      */
-    it('hides the outline when the pointer lands on one of Nex’s own overlays (L76)', () => {
+    it('hides the outline when the pointer lands on one of Kelpi’s own overlays (L76)', () => {
         const source = inspectorScript();
         const onMove = source.slice(source.indexOf('function onMove'));
         const body = onMove.slice(0, onMove.indexOf('function onClick'));
@@ -208,7 +208,7 @@ describe('injection', () => {
 describe('buildActuatorCall', () => {
     it('awaits the call and JSON-encodes the reply inside the page', () => {
         const expression = buildActuatorCall('wait', [{ selector: '#x', timeout: 1000 }]);
-        expect(expression).toContain('await window.__nexAct["wait"]');
+        expect(expression).toContain('await window.__kelpiAct["wait"]');
         expect(expression).toContain('JSON.stringify');
         expect(expression).toContain('{"selector":"#x","timeout":1000}');
     });
@@ -247,10 +247,10 @@ describe('wrapExecScript (§8.5)', () => {
         expect(EXEC_STATEMENT_PATTERN.test('x.returned')).toBe(false);
     });
 
-    it('exposes $, $$ and nex as the actuator aliases', () => {
+    it('exposes $, $$ and kelpi as the actuator aliases', () => {
         const wrapped = wrapExecScript('1');
-        expect(wrapped).toContain('($, $$, nex)');
-        expect(wrapped).toContain('window.__nexAct.find, window.__nexAct.findAll, window.__nexAct');
+        expect(wrapped).toContain('($, $$, kelpi)');
+        expect(wrapped).toContain('window.__kelpiAct.find, window.__kelpiAct.findAll, window.__kelpiAct');
     });
 
     it('carries the js_error shape on a throw', () => {
@@ -268,8 +268,8 @@ describe('picker + find expressions', () => {
     });
 
     it('is a no-op expression when the picker is not installed', () => {
-        expect(buildInspectArm('n', false)).toContain('if (!window.__nexInspectorEnable) return false');
-        expect(buildInspectDisarm()).toContain('if (!window.__nexInspectorDisable) return false');
+        expect(buildInspectArm('n', false)).toContain('if (!window.__kelpiInspectorEnable) return false');
+        expect(buildInspectDisarm()).toContain('if (!window.__kelpiInspectorDisable) return false');
     });
 
     it('only search takes a needle', () => {

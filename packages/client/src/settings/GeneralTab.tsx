@@ -3,7 +3,7 @@
  *
  * The tab was absent through M8 for an honest reason — the Swift General tab is almost entirely
  * `UserDefaults`, and a tab that could only *display* things would have been worse than none.
- * Every control here now has a real config key behind it (`@nex/core/config`'s `general.ts`),
+ * Every control here now has a real config key behind it (`@kelpi/core/config`'s `general.ts`),
  * the daemon reads each one through the settings service on every command rather than at boot,
  * and the write is the same `set-general-setting` verb the rest of Settings uses.
  *
@@ -27,7 +27,7 @@
  * value is how they drift).
  */
 
-import type { WsSettingsSnapshot, WsTransportStatus } from '@nex/protocol';
+import type { WsSettingsSnapshot, WsTransportStatus } from '@kelpi/protocol';
 import type { ReactElement } from 'react';
 
 import { tokens } from '../chrome';
@@ -57,7 +57,7 @@ export function tcpListenerDetail(
 ): string {
     const tcp = transport?.tcp;
     // What the listener DID outranks what the file asks for, in both directions: a daemon
-    // started with `NEXD_TCP_PORT` (a dev container, the audit sandbox) is genuinely listening
+    // started with `KELPID_TCP_PORT` (a dev container, the audit sandbox) is genuinely listening
     // even though this config file says nothing, and saying "Disabled" there would be false.
     if (tcp !== null && tcp !== undefined && tcp.bound !== null) {
         // When the file did not ask for it, say where the port came from — otherwise the switch
@@ -95,7 +95,7 @@ export function tcpBindError(
 ): string | null {
     const tcp = transport?.tcp;
     // Keyed off the FAILED LISTENER, not off the config value: a listener asked for by
-    // `NEXD_TCP_PORT` fails just as loudly as one asked for by the file, and the user who has to
+    // `KELPID_TCP_PORT` fails just as loudly as one asked for by the file, and the user who has to
     // fix it is the same user either way.
     if (tcp === null || tcp === undefined || tcp.bound !== null) return null;
     return `Port ${String(tcp.requested)} is unavailable${tcp.error === null ? '' : ` — ${tcp.error}`}`;
@@ -154,7 +154,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
 
             <SettingsSection title="Workspaces" testID="general-workspaces">
                 {/* SET-011. A CLIENT-side rule: ⌘N and the sidebar's New Workspace form read
-                    it, the wire verb does not, so `nex workspace create` is unaffected. */}
+                    it, the wire verb does not, so `kelpi workspace create` is unaffected. */}
                 <SettingsRow
                     label="Inherit group when creating a new workspace"
                     detail="When the active workspace belongs to a group, new workspaces are created inside that same group. Disable to always create at the top level."
@@ -254,10 +254,10 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                     </p>
                 )}
                 {/*
-                 * The routing fix's coexistence state: another Nex (the Swift app) owns the
+                 * The routing fix's coexistence state: another Kelpi (the Swift app) owns the
                  * shared CLI-compat socket. Not destructive-toned — panes are unaffected
                  * (their NEX_SOCKET is injected at spawn) — but the one place a user goes
-                 * looking when plain-terminal `nex` commands answer as the wrong app.
+                 * looking when plain-terminal `kelpi` commands answer as the wrong app.
                  */}
                 {props.transport?.compat == null ? null : (
                     <p
@@ -265,7 +265,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
                         className="text-[11px]"
                         style={{ color: tokens.textTertiary }}
                     >
-                        {`Another Nex owns ${props.transport.compat.path}, so plain-terminal nex commands reach that app. Panes are unaffected — they route here automatically.`}
+                        {`Another Kelpi owns ${props.transport.compat.path}, so plain-terminal kelpi commands reach that app. Panes are unaffected — they route here automatically.`}
                     </p>
                 )}
             </SettingsSection>
@@ -276,7 +276,7 @@ export function GeneralTab(props: GeneralTabProps): ReactElement {
             </p>
 
             <SettingsFooterNote>
-                Config: <span className="font-mono">{props.paths.nexConfig}</span>. Every value here is a line in
+                Config: <span className="font-mono">{props.paths.kelpiConfig}</span>. Every value here is a line in
                 that file — edit it by hand and this window follows.
             </SettingsFooterNote>
         </div>

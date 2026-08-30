@@ -1,8 +1,8 @@
-import { isWireCommand } from '@nex/protocol';
+import { isWireCommand } from '@kelpi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { GraftError, type GraftOrphan, type GraftService, type GraftSession } from '../graft/index.js';
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import {
     GRAFT_UI_COMMANDS,
     createGraftOrphanRegistry,
@@ -49,7 +49,7 @@ function orphan(overrides: Partial<GraftOrphan> = {}): GraftOrphan {
 }
 
 interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly channel: GraftChannel;
     readonly started: string[];
     readonly stopped: string[];

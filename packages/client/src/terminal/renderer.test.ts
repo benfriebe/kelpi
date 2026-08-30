@@ -229,10 +229,10 @@ describe('theme resolution', () => {
         expect(resolveTerminalTheme(host())).toEqual(DEFAULT_TERMINAL_THEME);
     });
 
-    it('reads --nex-term-* custom properties where the platform exposes them', () => {
+    it('reads --kelpi-term-* custom properties where the platform exposes them', () => {
         const element = host();
-        element.style.setProperty('--nex-term-bg', '#123456');
-        element.style.setProperty('--nex-term-fg', 'chartreuse'); // unparseable → ignored
+        element.style.setProperty('--kelpi-term-bg', '#123456');
+        element.style.setProperty('--kelpi-term-fg', 'chartreuse'); // unparseable → ignored
 
         const theme = resolveTerminalTheme(element);
 

@@ -13,18 +13,18 @@
  * the two surfaces agree, from one daemon-supplied home, in one render of the real App.
  */
 
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
-import type { JsonObject } from '@nex/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const HOME = '/Users/test';
-const CWD = `${HOME}/code/nex`;
+const CWD = `${HOME}/code/kelpi`;
 const W1 = 'AAAAAAAA-0000-4000-8000-000000000001';
 const PANE_A = 'DDDDDDDD-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
@@ -66,11 +66,11 @@ function handshake(socket: FakeWebSocket, options: { home?: string } = {}): void
 
 function boot(options: { home?: string } = {}): void {
     const sockets = createFakeSocketFactory();
-    const runtime = createNexRuntime({
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
-        store: createNexStore(),
+        store: createKelpiStore(),
         notifications: null,
         tokenStorage: null,
         heartbeatIntervalMs: 0,
@@ -88,9 +88,9 @@ describe('the pane header path', () => {
     it('abbreviates the daemon home, and agrees with the footer about the same pane', () => {
         boot({ home: HOME });
 
-        expect(screen.getByTestId(`pane-title-${PANE_A}`).textContent).toBe('~/code/nex');
+        expect(screen.getByTestId(`pane-title-${PANE_A}`).textContent).toBe('~/code/kelpi');
         // The footer describes the same pane from the same home; the two must not disagree.
-        expect(screen.getByTestId('footer-cwd').textContent).toBe('~/code/nex');
+        expect(screen.getByTestId('footer-cwd').textContent).toBe('~/code/kelpi');
     });
 
     /**

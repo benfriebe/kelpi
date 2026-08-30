@@ -2,9 +2,9 @@
  * §TERM-050's missing half — the OSC desktop-notification **source**.
  *
  * The delivery chain has been complete for three waves: `notificationDecision('osc', …)` has a
- * dedicated branch in `@nex/core/agent`, the daemon supplies real client focus/visibility, the
+ * dedicated branch in `@kelpi/core/agent`, the daemon supplies real client focus/visibility, the
  * protocol already lists `'osc'` among `WS_NOTIFICATION_KINDS`, and the Electron shell posts a
- * native notification with the `nex-<paneID>` dedup identity. What nothing did was *raise* one:
+ * native notification with the `kelpi-<paneID>` dedup identity. What nothing did was *raise* one:
  * no code in the repo parsed OSC 9 or OSC 777 out of a PTY stream, so the branch was dead.
  *
  * This is that parser. It sits where OSC 7 and OSC 0/2 already sit — on the headless VT every

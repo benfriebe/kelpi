@@ -194,7 +194,7 @@ export interface WorkspaceDeleteMessage {
      * §WS-156 / §APP-067 — may this delete leave ZERO workspaces behind?
      *
      * **Not a wire field.** It has no entry in wire-protocol.md §7's dictionary and `decode.ts`
-     * never reads it, so nothing arriving over the control socket can set it: `nex workspace
+     * never reads it, so nothing arriving over the control socket can set it: `kelpi workspace
      * delete` is byte-identical and still refuses the last workspace. It exists on this message
      * because the GUI's own `delete-workspace` verb — WS-only, like `rename-workspace`, and
      * therefore outside the CLI's vocabulary forever — CONSTRUCTS this message directly
@@ -330,7 +330,7 @@ export interface WebOpenMessage {
     /**
      * WEB-011: the pane the new one splits off, and which way it splits.
      *
-     * The CLI never sends either — `nex web open` splits the *focused* pane, exactly as Swift's
+     * The CLI never sends either — `kelpi web open` splits the *focused* pane, exactly as Swift's
      * `handleWebOpen` does. They exist for the two GUI gestures Swift performs in-process and
      * this port has to express on the wire: the pane header's globe button (click = split right,
      * ⇧-click = split down) and the pane context menu's "New Web Pane". Both names are already

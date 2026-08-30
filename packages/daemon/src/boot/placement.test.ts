@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { createLineBuffer } from '@nex/protocol';
+import { createLineBuffer } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { harness, id, NOW } from '../handlers/app/testing.js';
@@ -42,7 +42,7 @@ function scratch(config: string | null): {
     home: string;
     configPath: string;
 } {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-place-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-place-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     fs.mkdirSync(home, { recursive: true });
@@ -50,7 +50,7 @@ function scratch(config: string | null): {
     if (config !== null) fs.writeFileSync(configPath, config);
     return {
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath
@@ -120,7 +120,7 @@ async function boot(config: string | null): Promise<{ socketPath: string }> {
     return { socketPath: paths.socketPath };
 }
 
-/** Sidebar order, by name — what `nex workspace list` prints. */
+/** Sidebar order, by name — what `kelpi workspace list` prints. */
 async function order(socketPath: string): Promise<string[]> {
     const reply = await request(socketPath, { command: 'workspace-list' });
     const workspaces = reply['workspaces'] as { name: string }[];

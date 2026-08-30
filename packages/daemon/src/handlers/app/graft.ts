@@ -14,9 +14,9 @@
  *     never render the `failed` list; `failed` stays for clients that do render it.
  */
 
-import { normalizeUUIDLoose } from '@nex/core/codec';
-import { resolveWorkspaceLenient } from '@nex/core/resolve';
-import type { GraftStartMessage, GraftStopMessage } from '@nex/protocol';
+import { normalizeUUIDLoose } from '@kelpi/core/codec';
+import { resolveWorkspaceLenient } from '@kelpi/core/resolve';
+import type { GraftStartMessage, GraftStopMessage } from '@kelpi/protocol';
 
 import {
     canonicalizeUserPath,

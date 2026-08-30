@@ -37,12 +37,14 @@ import {
     shell
 } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import {
     bundledCliLauncher,
     describeCliInstall,
     healCliSymlink,
+    healLegacyCliSymlink,
     installCliSymlink,
     nodeCliFs,
     resolveCliLinkPath,
@@ -99,6 +101,7 @@ import { canCheckForUpdates, checkForUpdatesNow, maybeStartAutoUpdate } from './
 import { installQuitGate, settingsFile, type QuitGate } from './quit.js';
 import { EMPTY_COUNTS } from './agents.js';
 import {
+    SETTINGS_FILE,
     markQuitConfirmationMigrated,
     pendingQuitConfirmationMigration,
     readShellSettings,
@@ -109,6 +112,7 @@ import { setWebFindPalette } from './webhost/scripts.js';
 import {
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
+    WINDOW_STATE_FILE,
     clampBoundsToDisplays,
     defaultBounds,
     readWindowState,
@@ -168,7 +172,35 @@ let updaterStarted = false;
  */
 const shellWindowID = randomUUID();
 
-app.setName('Nex');
+app.setName('Kelpi');
+
+/**
+ * One-shot migration of the shell's per-user files from the pre-rename userData directory.
+ *
+ * `setName('Kelpi')` moves `app.getPath('userData')` from `…/Application Support/Nex` to
+ * `…/Application Support/Kelpi`, which would silently reset window bounds and every shell
+ * setting (including the CLI-install "already prompted" flag, whose reset would re-prompt).
+ * Copy-only, per file, and only when the Kelpi-side file does not exist yet: the old `Nex`
+ * directory is shared with the Swift app (`nex.db` lives there) and is never touched beyond
+ * reading these two files.
+ */
+function migrateLegacyUserData(): void {
+    try {
+        const userData = app.getPath('userData');
+        const legacyDir = join(dirname(userData), 'Nex');
+        for (const name of [SETTINGS_FILE, WINDOW_STATE_FILE]) {
+            const target = join(userData, name);
+            const source = join(legacyDir, name);
+            if (existsSync(target) || !existsSync(source)) continue;
+            mkdirSync(userData, { recursive: true });
+            copyFileSync(source, target);
+            log(`userdata-migrate: copied ${name} from ${legacyDir}`);
+        }
+    } catch (error) {
+        warn(`userdata-migrate: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+migrateLegacyUserData();
 
 // ── window ──────────────────────────────────────────────────────────────────────────
 
@@ -368,7 +400,7 @@ function createWindow(): BrowserWindow {
      * has no equivalent: `transparent` is fixed at construction, so the decision is taken HERE,
      * from the config file, before the window exists. Below 1 the window is created transparent
      * with a fully transparent `backgroundColor` and the PAGE paints the fill (the client
-     * publishes `--nex-bg` at the same alpha), so the desktop shows through the window fill and
+     * publishes `--kelpi-bg` at the same alpha), so the desktop shows through the window fill and
      * the terminal panes while the sidebar and header stay opaque.
      *
      * At opacity 1 the window is opaque and paints the theme's own ground behind the page (see
@@ -396,7 +428,7 @@ function createWindow(): BrowserWindow {
     );
     /*
      * The audit's two window concessions — see `./audit-window.ts` for what they buy and why
-     * they are safe. With `NEX_AUDIT` unset (every user launch, every packaged launch) the policy
+     * they are safe. With `KELPI_AUDIT` unset (every user launch, every packaged launch) the policy
      * is Electron's own defaults and the three expressions below are the identity.
      */
     const audit = auditWindowPolicy(process.env);
@@ -408,7 +440,7 @@ function createWindow(): BrowserWindow {
         minWidth: MIN_WINDOW_WIDTH,
         minHeight: MIN_WINDOW_HEIGHT,
         show: false,
-        title: 'Nex',
+        title: 'Kelpi',
         ...(windowIsTransparent ? { transparent: true } : {}),
         backgroundColor: ground,
         /*
@@ -436,7 +468,7 @@ function createWindow(): BrowserWindow {
             /*
              * Electron's default is `true`, and `auditWindowPolicy` returns `true` for every
              * launch that is not an audit run — so this key is present with its default value
-             * and the window a user gets is unchanged. Under `NEX_AUDIT=1` it goes false, which
+             * and the window a user gets is unchanged. Under `KELPI_AUDIT=1` it goes false, which
              * is what keeps a run alive when its window stops being the one nobody is looking
              * at: Chromium drops an occluded renderer's frame clock and timers to a crawl, and
              * the audit's animation steps advance on double-rAF gates, so they do not slow down
@@ -729,7 +761,7 @@ function applyAppearanceSettings(): void {
             `background-opacity is now ${opacity.toFixed(2)}. Panes already follow it; ` +
             'the window itself becomes ' +
             wanted +
-            ' the next time Nex starts.'
+            ' the next time Kelpi starts.'
     }).show();
 }
 
@@ -749,7 +781,7 @@ const openFiles = createOpenFileQueue({
             command: 'open',
             path: filePath,
             // The pane that asked, when one did (the ⌘O route). `open` routes into that pane's
-            // workspace exactly as `nex md` from inside a pane does; Finder's route names none.
+            // workspace exactly as `kelpi md` from inside a pane does; Finder's route names none.
             ...(paneID === null ? {} : { pane_id: paneID })
         }).then((result) => {
             if (!result.ok) warn(`open ${filePath} failed: ${result.error ?? 'no reply'}`);
@@ -782,7 +814,7 @@ function promptOpenFile(paneID: string | null): void {
     // trip (client → daemon → shell → `open` → a markdown pane) run for real. The file is
     // consumed on read, so a second ⌘O in the same run shows the real panel unless the harness
     // wrote a new answer. Off unless the env var names a path, which no shipped launch does.
-    const scripted = process.env['NEX_AUDIT_OPEN_FILE'];
+    const scripted = process.env['KELPI_AUDIT_OPEN_FILE'];
     if (scripted !== undefined && scripted !== '') {
         let answer = '';
         try {
@@ -828,7 +860,7 @@ function checkForUpdates(): void {
         void dialog.showMessageBox({
             type: 'info',
             message: 'Checking for updates',
-            detail: 'Nex is asking the update feed. If one is available it installs on the next launch.'
+            detail: 'Kelpi is asking the update feed. If one is available it installs on the next launch.'
         });
         return;
     }
@@ -843,10 +875,10 @@ function drainPendingOpens(): void {
     openFiles.drain();
 }
 
-// ── the global `nex` CLI (APP-003…005) ──────────────────────────────────────────────
+// ── the global `kelpi` CLI (APP-003…005) ──────────────────────────────────────────────
 
 /**
- * Keep `/usr/local/bin/nex` pointing at THIS bundle's CLI, and offer to create it once.
+ * Keep `/usr/local/bin/kelpi` pointing at THIS bundle's CLI, and offer to create it once.
  *
  * The decision logic — what counts as ours, when to touch it, when to give up — is in
  * `./cli-install.ts` and has no Electron in it. What lives here is the part only the app can do:
@@ -873,7 +905,7 @@ function reportCliInstall(result: CliInstallResult, announce: boolean): void {
 
     if (!Notification.isSupported()) return;
     new Notification({
-        title: 'Nex CLI is out of date',
+        title: 'Kelpi CLI is out of date',
         body: `Could not update ${result.plan.linkPath}. Run this in a terminal:\n${result.plan.manualCommand}`
     }).show();
 }
@@ -886,13 +918,13 @@ function installCliNow(announce: boolean): void {
     if (!announce || result.kind === 'blocked') return;
     const detail =
         result.kind === 'linked'
-            ? `${result.plan.linkPath} now points at this build. Run \`nex install-hooks\` to wire agent status tracking.`
+            ? `${result.plan.linkPath} now points at this build. Run \`kelpi install-hooks\` to wire agent status tracking.`
             : result.kind === 'ok'
               ? `${result.plan.linkPath} already points at this build.`
               : result.reason;
     void dialog.showMessageBox({
         type: result.kind === 'skipped' ? 'warning' : 'info',
-        message: result.kind === 'skipped' ? 'Nex did not change the CLI' : 'Nex CLI installed',
+        message: result.kind === 'skipped' ? 'Kelpi did not change the CLI' : 'Kelpi CLI installed',
         detail
     });
 }
@@ -903,11 +935,11 @@ function offerCliInstall(): void {
     void dialog
         .showMessageBox({
             type: 'question',
-            message: 'Install the nex command line tool?',
+            message: 'Install the kelpi command line tool?',
             detail:
-                `This creates a symlink at ${resolveCliLinkPath(process.env)} pointing at the CLI inside Nex.app, ` +
-                'so `nex` works in any terminal and Claude Code hooks can report agent status. ' +
-                'You can do it later from the Nex tray menu.',
+                `This creates a symlink at ${resolveCliLinkPath(process.env)} pointing at the CLI inside Kelpi.app, ` +
+                'so `kelpi` works in any terminal and Claude Code hooks can report agent status. ' +
+                'You can do it later from the Kelpi tray menu.',
             buttons: ['Install', 'Not Now'],
             defaultId: 0,
             cancelId: 1
@@ -962,6 +994,12 @@ function applyCliInstallPolicy(): void {
         offer: () => offerCliInstall(),
         log
     });
+    // The pre-rename `nex` link, healed under the same opt-in rules (never created, foreign
+    // entries untouched) so hooks installed before the Kelpi rename keep resolving.
+    if (app.isPackaged) {
+        const legacy = healLegacyCliSymlink(process.resourcesPath);
+        if (legacy !== null) log(describeCliInstall(legacy));
+    }
 }
 
 // ── application menu ────────────────────────────────────────────────────────────────
@@ -1040,7 +1078,7 @@ function buildMenu(): void {
         ...(process.platform === 'darwin'
             ? ([
                   {
-                      label: 'Nex',
+                      label: 'Kelpi',
                       submenu: appMenuTemplate({
                           checkForUpdates: () => checkForUpdates(),
                           canCheckForUpdates: updatesAvailable
@@ -1081,19 +1119,19 @@ function buildMenu(): void {
         // imports Electron, which is what lets `menu.test.ts` build the menu both ways.
         ...debugMenuSection({ ...relay, isPackaged: app.isPackaged }),
         {
-            // APP-027: the Help menu is replaced by a single "Nex Help" item bound to ⌘?. The
+            // APP-027: the Help menu is replaced by a single "Kelpi Help" item bound to ⌘?. The
             // window it opens is the client's overlay (`client/src/chrome/HelpOverlay.tsx`),
             // reached through the daemon because this shell has no preload.
             role: 'help',
             submenu: [
                 {
-                    label: 'Nex Help',
+                    label: 'Kelpi Help',
                     accelerator: 'CommandOrControl+?',
                     click: () => {
                         if (status?.sendMenuRequest('help') !== true) {
                             void dialog.showMessageBox({
                                 type: 'info',
-                                message: 'Nex Help',
+                                message: 'Kelpi Help',
                                 detail: 'The window is still connecting — try again in a moment.'
                             });
                         }
@@ -1309,7 +1347,7 @@ async function boot(): Promise<void> {
             const repair = error instanceof DaemonUnavailableError ? error.repair : '';
             const message = error instanceof Error ? error.message : String(error);
             logError(`daemon unavailable: ${message}${repair === '' ? '' : ` — ${repair}`}`);
-            dialog.showErrorBox('Nex cannot reach its daemon', `${message}\n\n${repair}`);
+            dialog.showErrorBox('Kelpi cannot reach its daemon', `${message}\n\n${repair}`);
             app.exit(1);
         },
         // SET-219: the web pane's find colours live in this process (they are pasted into a page
@@ -1337,7 +1375,7 @@ async function boot(): Promise<void> {
         // it is a real repair we could not do, one notification per build), not a failed launch.
         runCliInstallPolicy: applyCliInstallPolicy,
         refreshBundledSkill: applySkillRefreshIfEnabled,
-        // Disabled unless NEX_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
+        // Disabled unless KELPI_AUTO_UPDATE=1 — see ./updater.ts for why (public-repo feed, and a
         // signed build) and what it logs when it declines. No network call happens by default.
         // §APP-013: RETURNED rather than fired-and-forgotten, so the launch wave owns it — it
         // runs beside the hotkey / CLI / skill steps instead of after them, and the sequence does
@@ -1379,14 +1417,14 @@ async function boot(): Promise<void> {
 
 // A second launch must never start a second shell: raise the window we already have.
 if (!app.requestSingleInstanceLock()) {
-    log('another Nex shell owns the single-instance lock; exiting');
+    log('another Kelpi shell owns the single-instance lock; exiting');
     app.exit(0);
 } else {
     app.on('second-instance', (_event, argv) => {
         showWindow();
         for (const arg of argv.slice(1)) {
             // CONT-124's filter: `open` renders whatever path it is handed AS MARKDOWN, so an
-            // unfiltered forward would turn `open -a Nex.app photo.png` into a pane showing PNG
+            // unfiltered forward would turn `open -a Kelpi.app photo.png` into a pane showing PNG
             // bytes as markdown source. `AppDelegate.swift:45-51` filtered for the same reason.
             if (!arg.startsWith('-') && isForwardableOpenPath(arg)) forwardOpen(arg);
         }
@@ -1405,19 +1443,19 @@ if (!app.requestSingleInstanceLock()) {
      * Harness watchdog: when the audit harness (or a probe script) that spawned this shell is
      * hard-killed, its `finally` never runs and the shell would sit on screen forever, its
      * stdout a dead pipe raising EPIPE on every log write (the "Uncaught Exception" dialogs a
-     * user found over leftover audit windows). Under NEX_HARNESS, the first failed stdout
+     * user found over leftover audit windows). Under KELPI_HARNESS, the first failed stdout
      * write is taken as "my supervisor is gone" and the shell quits. A real user's shell never
      * carries the marker, so closing the terminal that launched `electron .` still detaches
      * normally, and the packaged app is unaffected.
      */
-    if (process.env['NEX_HARNESS'] === '1') {
+    if (process.env['KELPI_HARNESS'] === '1') {
         let closing = false;
         const supervisorGone = (): void => {
             if (closing) return;
             closing = true;
             app.quit();
         };
-        // A dead stdout pipe fires only on the NEXT write; an idle shell could sit silent for
+        // A dead stdout pipe fires only on the KELPIT write; an idle shell could sit silent for
         // minutes first. The parent pid is the deterministic signal: when the supervisor dies,
         // the shell is reparented and `process.ppid` becomes 1.
         for (const stream of [process.stdout, process.stderr]) {

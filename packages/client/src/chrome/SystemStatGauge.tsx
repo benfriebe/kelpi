@@ -36,7 +36,7 @@ import {
 } from './stats';
 import { withAlpha } from './theme';
 import { tokens } from './tokens';
-import type { WsSystemStats } from '@nex/protocol';
+import type { WsSystemStats } from '@kelpi/protocol';
 
 export type SparklineStyle = 'line' | 'dots';
 

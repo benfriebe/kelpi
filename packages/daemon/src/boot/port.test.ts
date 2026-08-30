@@ -10,7 +10,7 @@ import { clearPortFile, portFilePath, readPortFile, writePortFile } from './port
 const temporaries: string[] = [];
 
 function runPaths() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-port-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-port-'));
     temporaries.push(dir);
     return resolveRunPaths({ dir, protocol: 7 });
 }

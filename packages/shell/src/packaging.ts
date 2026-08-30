@@ -53,7 +53,7 @@ export function packagedAppIgnore(file: string): boolean {
 // ── the CLI launcher ────────────────────────────────────────────────────────────────
 
 /**
- * Grep-able proof that a file at `/usr/local/bin/nex` came from a Nex app bundle.
+ * Grep-able proof that a file at `/usr/local/bin/kelpi` came from a Kelpi app bundle.
  *
  * The Swift `CLIInstallService` answered "is this ours?" with a code-signature Team ID. This
  * build is not necessarily signed at all (`isSignedBuild`), so attribution uses a marker the
@@ -63,9 +63,9 @@ export function packagedAppIgnore(file: string): boolean {
 export const CLI_LAUNCHER_MARKER = 'nex-cli-launcher';
 
 /**
- * The POSIX-sh launcher staged as `Contents/Resources/cli/nex`.
+ * The POSIX-sh launcher staged as `Contents/Resources/cli/kelpi`.
  *
- * `/usr/local/bin/nex` is a symlink to this file, so the first thing it has to do is walk back
+ * `/usr/local/bin/kelpi` is a symlink to this file, so the first thing it has to do is walk back
  * through that symlink to find the directory it really lives in — `$0` is the *link's* path, and
  * `dirname "$0"` would say `/usr/local/bin`, where there is no bundle to run.
  *
@@ -79,15 +79,15 @@ export function cliLauncherScript(options: { version?: string } = {}): string {
     const stamp =
         version === ''
             ? ''
-            : `# Identity for \`nex --version\` and doctor's CLI/daemon drift check.\n` +
-              `NEX_CLI_VERSION="\${NEX_CLI_VERSION:-${version}}"\n` +
-              `export NEX_CLI_VERSION\n`;
+            : `# Identity for \`kelpi --version\` and doctor's CLI/daemon drift check.\n` +
+              `KELPI_CLI_VERSION="\${KELPI_CLI_VERSION:-${version}}"\n` +
+              `export KELPI_CLI_VERSION\n`;
     return `#!/bin/sh
-# ${CLI_LAUNCHER_MARKER} — installed by Nex.app. Safe to delete; \`nex install-hooks --link\`
+# ${CLI_LAUNCHER_MARKER} — installed by Kelpi.app. Safe to delete; \`kelpi install-hooks --link\`
 # (or the app's "Install CLI" tray item) puts it back.
 set -e
 
-# Walk $0 back through any symlinks: /usr/local/bin/nex points here.
+# Walk $0 back through any symlinks: /usr/local/bin/kelpi points here.
 target="$0"
 while [ -L "$target" ]; do
     link="$(readlink "$target")"
@@ -97,7 +97,7 @@ while [ -L "$target" ]; do
     esac
 done
 dir="$(cd "$(dirname "$target")" && pwd)"
-bundle="$dir/nex.js"
+bundle="$dir/kelpi.js"
 ${stamp}
 # The app ships its own Node beside this directory; fall back to PATH only if it is gone.
 if [ -x "$dir/../node" ]; then
@@ -111,7 +111,7 @@ exec node "$bundle" "$@"
 
 /**
  * Is this build signed with a real identity, rather than the ad-hoc signature Forge falls back
- * to? `NEX_MACOS_IDENTITY` is the one input: set it and `forge.config.cjs` adds an `osxSign`
+ * to? `KELPI_MACOS_IDENTITY` is the one input: set it and `forge.config.cjs` adds an `osxSign`
  * block, leave it empty and the bundle carries an ad-hoc (`-`) signature whose code identity
  * changes with every build.
  */
@@ -166,15 +166,15 @@ export function adhocSignRequired(identity: string | null | undefined, platform:
  *
  * Forge's `FusesPlugin` flips the fuses at the `packageAfterCopy` hook and, because there is no
  * `osxSign` config, re-signs ad-hoc right there. Packaging then keeps going: `@electron/packager`
- * renames `Electron.app` → `Nex.app` and all four `Electron Helper*.app` bundles, rewrites every
+ * renames `Electron.app` → `Kelpi.app` and all four `Electron Helper*.app` bundles, rewrites every
  * one of their `Info.plist`s (`appBundleId`, `productName`, `extendInfo`, the asar integrity
  * hash) and copies `extraResource` in. Nothing re-signs afterwards. So the shipped bundle used
  * to carry a signature sealed over the *pre-rename* contents:
  *
- *     $ codesign --verify --strict Nex.app
- *     Nex.app: invalid Info.plist (plist or signature have been modified)
- *     $ codesign -dv Nex.app
- *     Identifier=com.github.Electron        ← not com.benfriebe.newnex
+ *     $ codesign --verify --strict Kelpi.app
+ *     Kelpi.app: invalid Info.plist (plist or signature have been modified)
+ *     $ codesign -dv Kelpi.app
+ *     Identifier=com.github.Electron        ← not com.benfriebe.kelpi
  *     Info.plist=not bound
  *
  * That is not cosmetic. macOS derives the app's *identity* from the code signature, and a broken

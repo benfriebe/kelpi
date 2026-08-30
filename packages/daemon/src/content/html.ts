@@ -59,7 +59,7 @@ export function isDarkBackground(color: string): boolean {
 /**
  * The daemon's fallback ghostty background. The Swift app reads the user's ghostty config; the
  * daemon has no ghostty, so callers pass a configured color and this is what they get when they
- * do not. It matches the web client's `--nex-term-bg` fallback so an unconfigured daemon and an
+ * do not. It matches the web client's `--kelpi-term-bg` fallback so an unconfigured daemon and an
  * unconfigured client agree on light/dark.
  */
 export const DEFAULT_CONTENT_BACKGROUND = '#0A0A0C';

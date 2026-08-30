@@ -13,7 +13,7 @@ import {
     updatingSplitRatio,
     type PaneLayout,
     type Rect
-} from '@nex/core/layout';
+} from '@kelpi/core/layout';
 
 import { PaneGrid, type PaneGridProps } from './PaneGrid';
 import { expectedBox, firePointer, stubBoundingRect, styleBox, testPane } from './testing';
@@ -573,9 +573,9 @@ describe('PaneGrid pane overlay placement (M12)', () => {
 /**
  * §M13 — the drop-zone overlay and the divider's drag tint are `Color.accentColor`
  * (`PaneGridView.swift:451-452`, `SplitDividerView.swift:20`), the macOS SYSTEM accent, and the
- * shipped app ships no `AccentColor.colorset`. They read `--nex-system-accent` so a Settings ▸
+ * shipped app ships no `AccentColor.colorset`. They read `--kelpi-system-accent` so a Settings ▸
  * Appearance ▸ "Sidebar highlight" override cannot recolour the pane grid the way it recolours
- * the sidebar. The token's value still falls back to `--nex-accent`; the standing divergence (no
+ * the sidebar. The token's value still falls back to `--kelpi-accent`; the standing divergence (no
  * OS accent in a renderer) is recorded in `tokens.ts`.
  */
 describe('PaneGrid system-accent surfaces (M13)', () => {
@@ -584,13 +584,13 @@ describe('PaneGrid system-accent surfaces (M13)', () => {
         act(() => firePointer(screen.getByTestId('pane-header-a'), 'pointerdown', { clientX: 40, clientY: 10 }));
         act(() => firePointer(window, 'pointermove', { clientX: 750, clientY: 300 }));
         const overlay = screen.getByTestId('drop-zone-overlay');
-        // The OUTER name is the system accent; `--nex-accent` appears only as its fallback, which
+        // The OUTER name is the system accent; `--kelpi-accent` appears only as its fallback, which
         // is the ledgered divergence — a renderer cannot read the OS accent, so today the two
         // resolve to the same colour and the SEAM is the thing that exists.
-        expect(overlay.style.background).toMatch(/var\(--nex-system-accent,/);
+        expect(overlay.style.background).toMatch(/var\(--kelpi-system-accent,/);
         // L36 split the fill from the outline (see below); both still read the one token.
         const outline = screen.getByTestId('drop-zone-outline');
-        expect(outline.style.border).toMatch(/var\(--nex-system-accent,/);
+        expect(outline.style.border).toMatch(/var\(--kelpi-system-accent,/);
     });
 
     /**
@@ -612,12 +612,12 @@ describe('PaneGrid system-accent surfaces (M13)', () => {
     it('tints only the DRAGGED divider, and from the same token', () => {
         renderGrid({ ratioCommitIntervalMs: 0 });
         const bar = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
-        expect(bar.style.background).not.toContain('--nex-system-accent');
+        expect(bar.style.background).not.toContain('--kelpi-system-accent');
 
         act(() => firePointer(screen.getByTestId('divider-d'), 'pointerdown', { clientX: 500, clientY: 300 }));
         act(() => firePointer(window, 'pointermove', { clientX: 560, clientY: 300 }));
         const dragged = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
-        expect(dragged.style.background).toContain('--nex-system-accent');
+        expect(dragged.style.background).toContain('--kelpi-system-accent');
     });
 
     /**
@@ -631,7 +631,7 @@ describe('PaneGrid system-accent surfaces (M13)', () => {
         renderGrid();
         const bar = screen.getByTestId('divider-d').firstElementChild as HTMLElement;
         expect(bar.style.background).toBe(
-            'color-mix(in srgb, var(--nex-fg-secondary, #9A9AA0) 20%, var(--nex-border, #24242B))'
+            'color-mix(in srgb, var(--kelpi-fg-secondary, #9A9AA0) 20%, var(--kelpi-border, #24242B))'
         );
     });
 });
@@ -646,10 +646,10 @@ describe('PaneGrid empty state tones (M16)', () => {
     it('splits the glyph and the label into two tones and raises the label', () => {
         renderGrid({ layout: empty(), panes: [], onCreatePane: vi.fn() });
         const root = screen.getByTestId('pane-grid-empty');
-        expect(root.style.color).toContain('--nex-fg-secondary');
+        expect(root.style.color).toContain('--kelpi-fg-secondary');
 
         const glyph = screen.getByTestId('pane-grid-empty-glyph');
-        expect(glyph.style.color).toContain('--nex-fg,');
+        expect(glyph.style.color).toContain('--kelpi-fg,');
         expect(glyph.style.color).toContain(' 10%');
         expect(glyph.querySelector('svg')?.getAttribute('width')).toBe('36');
 

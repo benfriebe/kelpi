@@ -23,7 +23,7 @@ const GHOST = id('cccc0000', 9);
 
 const WT1 = '/Users/test/nex/worktrees/feature-x';
 const WT2 = '/Users/test/nex/worktrees/other';
-const PARENT = '/Users/test/code/nex';
+const PARENT = '/Users/test/code/kelpi';
 
 /** Two workspaces, each with one association, plus a two-entry repo registry. */
 function seededWithAssociations(): DaemonState {
@@ -34,7 +34,7 @@ function seededWithAssociations(): DaemonState {
             {
                 id: R1,
                 path: PARENT,
-                name: 'nex',
+                name: 'kelpi',
                 remoteURL: null,
                 lastAccessedAt: NOW / 1000,
                 isAutoDiscovered: false
@@ -172,7 +172,7 @@ describe('resolveGraftAssociations', () => {
     });
 
     it('searches every workspace for a repo-only filter, matching path, folder or repo name', () => {
-        for (const filter of [WT1, 'feature-x', 'nex']) {
+        for (const filter of [WT1, 'feature-x', 'kelpi']) {
             const scoped = resolveGraftAssociations(state, undefined, filter, undefined);
             expect(scoped.ok && scoped.associations.map((a) => a.id)).toEqual([A1]);
         }
@@ -349,7 +349,7 @@ describe('graft-stop', () => {
     });
 
     it('matches an orphan by worktree folder name, parent root and parent folder name', async () => {
-        for (const filter of ['feature-x', PARENT, 'nex']) {
+        for (const filter of ['feature-x', PARENT, 'kelpi']) {
             const graft = fakeGraft([session({ id: GHOST })]);
             const h = harness({ initial: seeded(1), graft });
             h.send({ command: 'graft-stop', repo: filter });
@@ -402,7 +402,7 @@ describe('graft-stop', () => {
         };
         const h = harness({ initial: seededWithAssociations(), graft });
         // A repo-less, workspace-less path: the orphan fallback plus the resolved scope.
-        h.send({ command: 'graft-stop', repo: 'nex', pane_id: P1 });
+        h.send({ command: 'graft-stop', repo: 'kelpi', pane_id: P1 });
         await flush();
         const payload = h.replies[0]?.payloads[0] as Record<string, unknown>;
         expect(payload['stopped']).toEqual([A1]);

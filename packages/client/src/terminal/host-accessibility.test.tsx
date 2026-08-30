@@ -62,7 +62,7 @@ function renderPane(accessibilityName?: string): HTMLElement {
 
 describe('terminalAccessibilityName', () => {
     it('names the pane the way its header does', () => {
-        expect(terminalAccessibilityName('~/code/nex')).toBe('Terminal — ~/code/nex');
+        expect(terminalAccessibilityName('~/code/kelpi')).toBe('Terminal — ~/code/kelpi');
     });
 
     it('falls back to the bare word rather than to a uuid', () => {
@@ -91,8 +91,8 @@ describe('§TERM-036 — the surface is an accessibility element', () => {
 
     /** The regression this replaces: a 36-character id read aloud as the pane's name. */
     it('is named after the pane, never after its uuid', () => {
-        const named = renderPane('~/code/nex');
-        expect(named.getAttribute('aria-label')).toBe('Terminal — ~/code/nex');
+        const named = renderPane('~/code/kelpi');
+        expect(named.getAttribute('aria-label')).toBe('Terminal — ~/code/kelpi');
         expect(named.getAttribute('aria-label')).not.toContain(PANE);
 
         const unnamed = renderPane();
@@ -117,7 +117,7 @@ describe('§TERM-036 — the surface is an accessibility element', () => {
      * live read of this item came back as ghostty-web's static "Terminal input".
      */
     it('does not put the identity on the element the engine overwrites', () => {
-        const host = renderPane('~/code/nex').querySelector('[data-terminal-host]');
+        const host = renderPane('~/code/kelpi').querySelector('[data-terminal-host]');
         expect(host?.getAttribute('aria-label')).toBeNull();
         expect(host?.getAttribute('aria-describedby')).toBeNull();
     });

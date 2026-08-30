@@ -50,7 +50,7 @@ describe('the preview’s copy menu', () => {
 
         const menu = screen.getByTestId(`content-copy-menu-${PANE}`);
         const rows = [...menu.querySelectorAll('[role="menuitem"]')].map((row) => row.textContent);
-        // The Swift order: the two nex commands first, WebKit's Copy under the separator.
+        // The Swift order: the two kelpi commands first, WebKit's Copy under the separator.
         expect(rows).toEqual(['Copy as Markdown', 'Copy as Rich Text', 'Copy']);
         expect(screen.getByTestId(`content-copy-separator-${PANE}`)).not.toBeNull();
 
@@ -113,7 +113,7 @@ describe('the preview’s copy menu', () => {
         };
         window.addEventListener('message', collect);
         document.body.innerHTML = '<div id="content"><p id="para">selected text</p></div>';
-        delete (window as unknown as Record<string, unknown>)['__nexContentBridge'];
+        delete (window as unknown as Record<string, unknown>)['__kelpiContentBridge'];
         // eslint-disable-next-line @typescript-eslint/no-implied-eval -- running the injected script IS the test
         new Function(contentBridgeScript(PANE))();
 

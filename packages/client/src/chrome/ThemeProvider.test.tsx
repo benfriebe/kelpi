@@ -22,9 +22,9 @@ describe('ThemeProvider', () => {
             </ThemeProvider>
         );
         const host = container.firstElementChild as HTMLElement;
-        expect(host.style.getPropertyValue('--nex-bg')).toBe(LIGHT_CHROME_THEME.windowBackground);
-        expect(host.style.getPropertyValue('--nex-fg')).toBe(LIGHT_CHROME_THEME.textPrimary);
-        expect(host.dataset['nexTheme']).toBe('light');
+        expect(host.style.getPropertyValue('--kelpi-bg')).toBe(LIGHT_CHROME_THEME.windowBackground);
+        expect(host.style.getPropertyValue('--kelpi-fg')).toBe(LIGHT_CHROME_THEME.textPrimary);
+        expect(host.dataset['kelpiTheme']).toBe('light');
     });
 
     it('publishes the bucket and palette through context', () => {
@@ -61,8 +61,8 @@ describe('ThemeProvider', () => {
             </ThemeProvider>
         );
         const host = container.firstElementChild as HTMLElement;
-        expect(host.style.getPropertyValue('--nex-accent')).toBe('#FF8800');
-        expect(host.style.getPropertyValue('--nex-selection-stroke')).toBe('#FF8800');
+        expect(host.style.getPropertyValue('--kelpi-accent')).toBe('#FF8800');
+        expect(host.style.getPropertyValue('--kelpi-selection-stroke')).toBe('#FF8800');
     });
 
     it('falls back to the dark preset outside any provider', () => {
@@ -71,15 +71,15 @@ describe('ThemeProvider', () => {
     });
 
     it('mirrors onto documentElement only when asked', () => {
-        document.documentElement.style.removeProperty('--nex-bg');
+        document.documentElement.style.removeProperty('--kelpi-bg');
         render(
             <ThemeProvider appearance="light" applyToDocument>
                 <span>child</span>
             </ThemeProvider>
         );
-        expect(document.documentElement.style.getPropertyValue('--nex-bg')).toBe(
+        expect(document.documentElement.style.getPropertyValue('--kelpi-bg')).toBe(
             LIGHT_CHROME_THEME.windowBackground
         );
-        expect(document.documentElement.dataset['nexTheme']).toBe('light');
+        expect(document.documentElement.dataset['kelpiTheme']).toBe('light');
     });
 });

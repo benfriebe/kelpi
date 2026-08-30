@@ -30,7 +30,7 @@ describe('spawnDetached', () => {
     let directory: string;
 
     beforeEach(() => {
-        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-detach-'));
+        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-detach-'));
     });
 
     afterEach(() => {
@@ -67,7 +67,7 @@ describe('spawnDetached', () => {
     });
 
     it('appends child output to a log file when asked', async () => {
-        const logFile = path.join(directory, 'logs', 'nexd.log');
+        const logFile = path.join(directory, 'logs', 'kelpid.log');
         spawnDetached('/bin/sh', ['-c', 'printf detached-hello'], { logFile });
         const contents = await waitForFile(logFile);
         expect(contents).toContain('detached-hello');
@@ -78,12 +78,12 @@ describe('spawnDetached', () => {
         const output = path.join(directory, 'env.txt');
         fs.writeFileSync(
             entry,
-            ["import fs from 'node:fs';", 'fs.writeFileSync(process.argv[2], `${process.env.NEXD_TEST_VAR}|${process.cwd()}`);'].join(
+            ["import fs from 'node:fs';", 'fs.writeFileSync(process.argv[2], `${process.env.KELPID_TEST_VAR}|${process.cwd()}`);'].join(
                 '\n'
             )
         );
         const workingDirectory = fs.realpathSync(directory);
-        spawnDetached(entry, [output], { cwd: workingDirectory, env: { ...process.env, NEXD_TEST_VAR: 'set' } });
+        spawnDetached(entry, [output], { cwd: workingDirectory, env: { ...process.env, KELPID_TEST_VAR: 'set' } });
         expect(await waitForFile(output)).toBe(`set|${workingDirectory}`);
     });
 });
@@ -104,7 +104,7 @@ describe('daemon liveness probe', () => {
     };
 
     beforeEach(() => {
-        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexd-live-'));
+        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpid-live-'));
         paths = resolveRunPaths({ dir: directory });
     });
 

@@ -957,7 +957,7 @@ describe('sidebar drag affordances', () => {
         const rows = screen.getAllByTestId('workspace-row');
         const fresh = rows.find((row) => row.dataset['workspaceId'] === W5);
         expect(fresh?.dataset['entering']).toBe('true');
-        expect(fresh?.style.animation).toContain('nex-sidebar-row-enter');
+        expect(fresh?.style.animation).toContain('kelpi-sidebar-row-enter');
         // The rows that were already there do NOT replay their entry.
         expect(rows.filter((row) => row.dataset['entering'] === 'true')).toHaveLength(1);
     });
@@ -1346,7 +1346,7 @@ describe('the dragged row follows the cursor (§WS-084)', () => {
     /**
      * The gap is not hit-testable, so the `click` that follows a drag no longer lands on the row
      * that used to retire the "do not activate" flag. A window-level listener retires it
-     * instead; without that, the user's NEXT click on any row would be swallowed.
+     * instead; without that, the user's KELPIT click on any row would be swallowed.
      */
     it('does not swallow the click AFTER the one that ends a drag', () => {
         const onActivateWorkspace = vi.fn();
@@ -1652,18 +1652,18 @@ describe('row background states stack (§WS-027)', () => {
         );
         const row = rowFor(W1);
         // The 1.5px accent takes the outer edge …
-        expect(row.style.outline).toBe('1.5px solid var(--nex-selection-stroke, #5276B8)');
+        expect(row.style.outline).toBe('1.5px solid var(--kelpi-selection-stroke, #5276B8)');
         // … and the selection's 1px stroke at 0.7 opacity survives as the inner ring. §H22: the
-        // 0.7 now rides the LIVE `--nex-selection-stroke` (`WorkspaceRowView.swift:161` is
+        // 0.7 now rides the LIVE `--kelpi-selection-stroke` (`WorkspaceRowView.swift:161` is
         // `theme.selectionStroke.opacity(0.7)`), where it used to be the dark preset's `#5276B8`
         // frozen into the source — a dark periwinkle on a light sidebar whose stroke is `#5e8ac4`.
         expect(row.style.boxShadow).toBe(
-            'inset 0 0 0 1px color-mix(in srgb, var(--nex-selection-stroke, #5276B8) 70%, transparent)'
+            'inset 0 0 0 1px color-mix(in srgb, var(--kelpi-selection-stroke, #5276B8) 70%, transparent)'
         );
         // Both fills: the selection fill as the colour, the active tint layered over it. Read off
         // `backgroundColor` rather than the `background` shorthand, which is what the row now
         // writes — a shorthand goes unreadable the moment a layered `background-image` joins it.
-        expect(row.style.backgroundColor).toContain('--nex-selection-fill');
+        expect(row.style.backgroundColor).toContain('--kelpi-selection-fill');
         expect(row.style.backgroundImage).toContain('linear-gradient');
     });
 
@@ -1671,7 +1671,7 @@ describe('row background states stack (§WS-027)', () => {
         const { rerender } = render(
             <Sidebar {...baseProps()} entries={entries()} activeWorkspaceID={W1} />
         );
-        expect(rowFor(W1).style.outline).toBe('1.5px solid var(--nex-selection-stroke, #5276B8)');
+        expect(rowFor(W1).style.outline).toBe('1.5px solid var(--kelpi-selection-stroke, #5276B8)');
         expect(rowFor(W1).style.boxShadow).toBe('');
         expect(rowFor(W1).style.backgroundImage).toBe('');
 
@@ -1684,7 +1684,7 @@ describe('row background states stack (§WS-027)', () => {
             />
         );
         expect(rowFor(W1).style.outline).toBe(
-            '1px solid color-mix(in srgb, var(--nex-selection-stroke, #5276B8) 70%, transparent)'
+            '1px solid color-mix(in srgb, var(--kelpi-selection-stroke, #5276B8) 70%, transparent)'
         );
         expect(rowFor(W1).style.boxShadow).toBe('');
     });
@@ -1701,7 +1701,7 @@ describe('row background states stack (§WS-027)', () => {
      */
     it('§H6: the active fill is the neutral selection fill at 0.7, whatever colour the row is', () => {
         const expected =
-            'color-mix(in srgb, var(--nex-selection-fill, rgba(82, 118, 184, 0.24)) 70%, transparent)';
+            'color-mix(in srgb, var(--kelpi-selection-fill, rgba(82, 118, 184, 0.24)) 70%, transparent)';
         // Two rows of DIFFERENT colours, so a fill that read the workspace could not match twice.
         const coloured: ChromeSidebarEntry[] = [
             { kind: 'workspace', workspace: workspace(W1, 'alpha', { color: 'blue' }) },
@@ -2036,7 +2036,7 @@ describe('the group delete prompt takes its shape from membership (§WS-068)', (
  * shipped height. Both are settled here against `WorkspaceListView.swift` / `GroupHeaderRow.swift`.
  *
  * The colour assertions look for the CSS VARIABLE rather than a resolved value on purpose: a
- * `var(--nex-x, …)` read is the whole fix — it is what makes the colour follow the live theme
+ * `var(--kelpi-x, …)` read is the whole fix — it is what makes the colour follow the live theme
  * instead of freezing one bucket's palette into the source — and it is the thing a hex literal
  * cannot be mistaken for. The audit's own light/dark renders carry the resolved numbers.
  */
@@ -2068,13 +2068,13 @@ describe('the sidebar reads theme tokens, not frozen hex (§H21/§H22)', () => {
         // `:676` / `:679` — `chromeTheme.textPrimary.opacity(0.05 / 0.08)`.
         //
         // A hex still appears in these strings, and that is correct: `tokens.ts` gives every
-        // read a `var(--nex-x, <dark preset>)` FALLBACK so a component mounted outside a
+        // read a `var(--kelpi-x, <dark preset>)` FALLBACK so a component mounted outside a
         // provider still renders. So the assertion is about POSITION — the variable is what is
         // read and the hex is only its fallback — which is exactly the difference between this
         // and the frozen `withAlpha('#E6E6EA', …)` it replaced.
-        expect(pill().style.background).toMatch(/^color-mix\(in srgb, var\(--nex-fg,[^)]*\) 5%/);
+        expect(pill().style.background).toMatch(/^color-mix\(in srgb, var\(--kelpi-fg,[^)]*\) 5%/);
         expect(pill().style.border).toMatch(
-            /^1px solid color-mix\(in srgb, var\(--nex-fg,[^)]*\) 8%/
+            /^1px solid color-mix\(in srgb, var\(--kelpi-fg,[^)]*\) 8%/
         );
     });
 
@@ -2084,7 +2084,7 @@ describe('the sidebar reads theme tokens, not frozen hex (§H21/§H22)', () => {
         );
         // `WorkspaceListView.swift:850` — `Color.accentColor.opacity(0.12)`.
         const strip = screen.getByTestId('selection-header');
-        expect(strip.style.background).toMatch(/^color-mix\(in srgb, var\(--nex-accent,[^)]*\) 12%/);
+        expect(strip.style.background).toMatch(/^color-mix\(in srgb, var\(--kelpi-accent,[^)]*\) 12%/);
     });
 
     it('§H22: a colourless group band is textTertiary at the band opacity, like a coloured one', () => {
@@ -2099,11 +2099,11 @@ describe('the sidebar reads theme tokens, not frozen hex (§H21/§H22)', () => {
         const band = screen.getByTestId('group-header');
         // `GroupHeaderRow.swift:27-30` is ONE expression — `(color?.color ?? theme.textTertiary)`
         // at the resolved band fill — so the colourless case is not a branch with its own
-        // opacity: it goes through the same `--nex-group-fill` × `--nex-sidebar-intensity` mix a
+        // opacity: it goes through the same `--kelpi-group-fill` × `--kelpi-sidebar-intensity` mix a
         // coloured band does, which is what lets SET-037/038 and light mode's 0.3 reach it.
-        expect(band.style.background).toContain('--nex-fg-tertiary');
-        expect(band.style.background).toContain('--nex-group-fill');
-        expect(band.style.background).toContain('--nex-sidebar-intensity');
+        expect(band.style.background).toContain('--kelpi-fg-tertiary');
+        expect(band.style.background).toContain('--kelpi-group-fill');
+        expect(band.style.background).toContain('--kelpi-sidebar-intensity');
         expect(band.style.background).not.toContain('#8A8A92');
     });
 

@@ -20,7 +20,7 @@
  *     post-remove index, because the shadow itself was built by removing then inserting.
  */
 
-import type { WorkspaceColor } from '@nex/daemon/store';
+import type { WorkspaceColor } from '@kelpi/daemon/store';
 
 import { WORKSPACE_COLORS, type ChromeSidebarEntry, type ChromeWorkspace } from './types';
 

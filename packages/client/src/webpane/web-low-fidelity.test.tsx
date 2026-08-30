@@ -82,7 +82,7 @@ describe('web chrome metrics (L67, L68, L69, L70, L75, L78)', () => {
         mount({ isPrivate: true });
         const field = screen.getByTestId(`web-url-${PANE}`).parentElement;
         expect(field?.style.border.toLowerCase()).not.toContain('9b6bd6');
-        expect(field?.style.border).toContain('--nex-border');
+        expect(field?.style.border).toContain('--kelpi-border');
     });
 
     /**
@@ -108,12 +108,12 @@ describe('web chrome metrics (L67, L68, L69, L70, L75, L78)', () => {
         const active = screen.getByTestId(`web-tab-${TAB1}`);
         const idle = screen.getByTestId(`web-tab-${TAB2}`);
         expect(active.style.background).toContain('18%');
-        expect(active.style.background).toContain('--nex-accent');
+        expect(active.style.background).toContain('--kelpi-accent');
         expect(active.style.border).toContain('40%');
         expect(idle.style.background).toContain('8%');
-        expect(idle.style.background).toContain('--nex-fg-secondary');
+        expect(idle.style.background).toContain('--kelpi-fg-secondary');
         expect(idle.style.border).toContain('transparent');
-        expect(idle.style.background).not.toContain('--nex-surface-bg');
+        expect(idle.style.background).not.toContain('--kelpi-surface-bg');
     });
 
     /**
@@ -124,7 +124,7 @@ describe('web chrome metrics (L67, L68, L69, L70, L75, L78)', () => {
     it('hides the strip’s scrollbar and pads it 8 px across, 4 px at the bottom only', () => {
         mount();
         const strip = screen.getByTestId(`web-tabs-${PANE}`);
-        expect(strip.hasAttribute('data-nex-web-tabstrip')).toBe(true);
+        expect(strip.hasAttribute('data-kelpi-web-tabstrip')).toBe(true);
         expect(strip.className).toContain('px-2');
         expect(strip.className).toContain('pb-1');
         expect(strip.className).not.toContain('py-1');
@@ -194,10 +194,10 @@ describe('pickup panel typography and structure (L71, L72)', () => {
         expect(tag.className).toContain('uppercase');
         expect(tag.className).toContain('font-semibold');
         expect(tag.className).toContain('text-[10px]');
-        expect(tag.style.color).toContain('--nex-accent');
+        expect(tag.style.color).toContain('--kelpi-accent');
 
         const selector = screen.getByTestId('web-batch-selector-i1');
-        expect(selector.style.color).toContain('--nex-fg,');
+        expect(selector.style.color).toContain('--kelpi-fg,');
 
         const chip = screen.getByTestId('web-batch-chip-i1');
         expect(chip.className).toContain('h-[18px]');
@@ -213,10 +213,10 @@ describe('pickup panel typography and structure (L71, L72)', () => {
     it('fences the header and the footer, tints unfocused rows and eases the focus change', () => {
         mountPanel();
         expect(screen.getByTestId(`web-batch-header-rule-${PANE}`).style.borderTop).toContain(
-            '--nex-border'
+            '--kelpi-border'
         );
         expect(screen.getByTestId(`web-batch-footer-rule-${PANE}`).style.borderTop).toContain(
-            '--nex-border'
+            '--kelpi-border'
         );
 
         const focused = screen.getByTestId('web-batch-item-i1');
@@ -224,7 +224,7 @@ describe('pickup panel typography and structure (L71, L72)', () => {
         expect(focused.style.background).toContain('18%');
         expect(focused.style.border).toContain('50%');
         expect(idle.style.background).toContain('6%');
-        expect(idle.style.background).toContain('--nex-fg-secondary');
+        expect(idle.style.background).toContain('--kelpi-fg-secondary');
         expect(idle.style.border).toContain('transparent');
         for (const row of [focused, idle]) {
             expect(row.style.transition).toContain('180ms');

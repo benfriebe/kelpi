@@ -311,7 +311,7 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                         // reach the screen on its own. Inline is the authority for the value the
                         // Swift states — `.font(.system(size: 12, design: .monospaced))` (`:22`) —
                         // and the test below asserts it there; the classes are kept in step.
-                        fontFamily: 'var(--nex-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+                        fontFamily: 'var(--kelpi-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
                         fontSize: 12,
                         // Room for the counter, which floats over the field's trailing edge.
                         paddingRight: count === null ? undefined : `${String(count.length * 7 + 12)}px`
@@ -333,7 +333,7 @@ export function PaneSearchOverlay(props: PaneSearchOverlayProps): ReactElement {
                 )}
             </div>
             {/*
-              * Up is NEXT and down is PREVIOUS — `PaneSearchOverlay.swift:48-66` wires
+              * Up is KELPIT and down is PREVIOUS — `PaneSearchOverlay.swift:48-66` wires
               * `chevron.up` to `onNavigateNext` and `chevron.down` to `onNavigatePrevious`, in
               * that order. It reads backwards written down, and it is what the shipped app's
               * users have in their fingers, so the glyph order and the stepping order both

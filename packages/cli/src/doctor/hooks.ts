@@ -18,18 +18,18 @@ import { parseJsonObject } from '../json.js';
 import type { DoctorCheck } from './types.js';
 
 export const expectedHooks: readonly (readonly [string, string])[] = [
-    ['Stop', 'nex event stop'],
-    ['Notification', 'nex event notification'],
-    ['SessionStart', 'nex event session-start'],
-    ['SessionEnd', 'nex event session-end'],
-    ['UserPromptSubmit', 'nex event start']
+    ['Stop', 'kelpi event stop'],
+    ['Notification', 'kelpi event notification'],
+    ['SessionStart', 'kelpi event session-start'],
+    ['SessionEnd', 'kelpi event session-end'],
+    ['UserPromptSubmit', 'kelpi event start']
 ];
 
 export const expectedCodexHooks: readonly (readonly [string, string])[] = [
-    ['Stop', 'nex event stop --agent codex'],
-    ['PermissionRequest', 'nex event notification --agent codex'],
-    ['SessionStart', 'nex event session-start --agent codex'],
-    ['UserPromptSubmit', 'nex event start --agent codex']
+    ['Stop', 'kelpi event stop --agent codex'],
+    ['PermissionRequest', 'kelpi event notification --agent codex'],
+    ['SessionStart', 'kelpi event session-start --agent codex'],
+    ['UserPromptSubmit', 'kelpi event start --agent codex']
 ];
 
 export const sessionStartSources: readonly string[] = ['startup', 'resume', 'clear', 'compact'];
@@ -39,13 +39,13 @@ export const sessionStartSources: readonly string[] = ['startup', 'resume', 'cle
  *
  * The Swift CLI pointed at `/Applications/Nex.app/Contents/Resources/scripts/install-hooks.sh`,
  * a shell script that shipped inside the app bundle. This CLI *is* the installer
- * (`nex install-hooks`, `../commands/install-hooks.ts`), so the repair names a command the user
+ * (`kelpi install-hooks`, `../commands/install-hooks.ts`), so the repair names a command the user
  * already has rather than a file the port does not ship. Same guarantee as the script: safe to
- * re-run, merges, dedupes nex-managed commands, normalises stale matchers.
+ * re-run, merges, dedupes kelpi-managed commands, normalises stale matchers.
  */
 const HOOKS_REPAIR =
-    'Run the installer (safe to re-run — it merges, dedupes, and normalises nex-managed hooks): nex install-hooks';
-const CODEX_REPAIR = 'Run `nex install-hooks`, then run /hooks inside codex once to trust the nex hooks.';
+    'Run the installer (safe to re-run — it merges, dedupes, and normalises kelpi-managed hooks): kelpi install-hooks';
+const CODEX_REPAIR = 'Run `kelpi install-hooks`, then run /hooks inside codex once to trust the kelpi hooks.';
 
 export interface HookFilesystem {
     /** File contents, or null when absent/unreadable. */
@@ -85,15 +85,22 @@ function groupsUnder(files: readonly JsonObject[], event: string): JsonObject[] 
     return groups;
 }
 
-/** Groups whose inner command list CONTAINS `command` as a substring (paths, flags count). */
+/**
+ * Groups whose inner command list CONTAINS `command` as a substring (paths, flags count).
+ *
+ * The pre-rename `nex event …` spelling is accepted alongside `kelpi event …`: hooks installed
+ * before the Kelpi rename still fire (the compat launcher keeps `nex` resolving), so a doctor
+ * that warned on them would be prescribing a repair for something that works.
+ */
 function groupsWiring(files: readonly JsonObject[], event: string, command: string): JsonObject[] {
+    const accepted = [command, command.replace(/^kelpi /, 'nex ')];
     return groupsUnder(files, event).filter((group) => {
         const inner = group['hooks'];
         if (!Array.isArray(inner)) return false;
         return inner.some((hook) => {
             if (typeof hook !== 'object' || hook === null || Array.isArray(hook)) return false;
             const value = (hook as JsonObject)['command'];
-            return typeof value === 'string' && value.includes(command);
+            return typeof value === 'string' && accepted.some((form) => value.includes(form));
         });
     });
 }
@@ -116,7 +123,7 @@ export function claudeHooksCheck(fsys: HookFilesystem, home: string, label = '~/
             return {
                 name: 'hooks',
                 status: 'WARN',
-                detail: `no Claude Code settings in ${label} — nex hooks are not installed, so agent status and session ids won't track.`,
+                detail: `no Claude Code settings in ${label} — kelpi hooks are not installed, so agent status and session ids won't track.`,
                 repair: HOOKS_REPAIR
             };
         }
@@ -137,7 +144,7 @@ export function claudeHooksCheck(fsys: HookFilesystem, home: string, label = '~/
     const disableAll = [...files].reverse().map((file) => file['disableAllHooks']).find((value) => typeof value === 'boolean');
     if (disableAll === true) {
         problems.push(
-            '"disableAllHooks": true is set — every hook (including nex\'s) is disabled, so session ids and agent status won\'t track'
+            '"disableAllHooks": true is set — every hook (including kelpi\'s) is disabled, so session ids and agent status won\'t track'
         );
     }
 
@@ -146,7 +153,7 @@ export function claudeHooksCheck(fsys: HookFilesystem, home: string, label = '~/
         .map(([event, command]) => `${event} → \`${command}\``);
     if (missing.length > 0) problems.push(`missing hook(s): ${missing.join(', ')}`);
 
-    const sessionStartGroups = groupsWiring(files, 'SessionStart', 'nex event session-start');
+    const sessionStartGroups = groupsWiring(files, 'SessionStart', 'kelpi event session-start');
     if (sessionStartGroups.length > 0) {
         const matchers = sessionStartGroups.map((group) => {
             const value = group['matcher'];
@@ -169,7 +176,7 @@ export function claudeHooksCheck(fsys: HookFilesystem, home: string, label = '~/
 
     const scope = parsed.map((entry) => entry.name).join(', ');
     if (problems.length === 0) {
-        return { name: 'hooks', status: 'PASS', detail: `all nex hooks wired in ${label} (checked ${scope})` };
+        return { name: 'hooks', status: 'PASS', detail: `all kelpi hooks wired in ${label} (checked ${scope})` };
     }
     return {
         name: 'hooks',
@@ -193,7 +200,7 @@ export function codexHooksCheck(fsys: HookFilesystem, home: string, label = '~/.
         return {
             name: 'codex-hooks',
             status: 'WARN',
-            detail: `no hooks.json in ${label} — nex Codex hooks are not installed, so Codex panes won't track status or session ids (needs Codex CLI ≥ 0.142).`,
+            detail: `no hooks.json in ${label} — kelpi Codex hooks are not installed, so Codex panes won't track status or session ids (needs Codex CLI ≥ 0.142).`,
             repair: CODEX_REPAIR
         };
     }
@@ -214,7 +221,7 @@ export function codexHooksCheck(fsys: HookFilesystem, home: string, label = '~/.
         return {
             name: 'codex-hooks',
             status: 'PASS',
-            detail: `all nex Codex hooks wired in ${label}/hooks.json (trust state not verifiable — run /hooks inside codex if they don't fire; inline [hooks] in config.toml not checked)`
+            detail: `all kelpi Codex hooks wired in ${label}/hooks.json (trust state not verifiable — run /hooks inside codex if they don't fire; inline [hooks] in config.toml not checked)`
         };
     }
     return {

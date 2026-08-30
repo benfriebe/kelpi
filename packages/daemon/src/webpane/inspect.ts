@@ -1,14 +1,14 @@
 /**
  * The element-picker pipeline, daemon half (web-pane.md §11).
  *
- * `nex web inspect` arms a single-shot picker on the pane's active tab; the click happens in
+ * `kelpi web inspect` arms a single-shot picker on the pane's active tab; the click happens in
  * the page, the host forwards the payload, and the daemon
  *
  *   1. validates it against the arm's **nonce** (§17.6 — page JS can call the host binding, so
  *      the nonce is what makes a picked element trustworthy),
  *   2. **sanitises** it (§11.6 — the payload can cross a PTY boundary, where an ANSI escape
  *      would reposition a cursor or fire an OSC 52 clipboard write),
- *   3. queues it for `nex web inspect-result` (cap 32, oldest dropped) and, when the arm
+ *   3. queues it for `kelpi web inspect-result` (cap 32, oldest dropped) and, when the arm
  *      carried `--send-to`, pastes the formatted block into that shell pane.
  *
  * The batch ("element pickup") session is a GUI surface: it lives in the client, and only its
@@ -18,7 +18,7 @@
 
 import { randomBytes } from 'node:crypto';
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 /** §11.3 queue cap; the oldest result is dropped. */
 export const INSPECT_QUEUE_CAP = 32;
@@ -266,7 +266,7 @@ function pasteBody(result: InspectResult): Record<string, unknown> {
  * for an agent to detect in its scrollback, readable on a terminal.
  */
 export function formatForPaste(result: InspectResult, now: number): string {
-    const header = `# nex inspect ${new Date(now).toISOString()}`;
+    const header = `# kelpi inspect ${new Date(now).toISOString()}`;
     const body = JSON.stringify(pasteBody(result), null, 2);
     return `${header}\n\`\`\`json\n${body}\n\`\`\`\n`;
 }

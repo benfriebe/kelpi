@@ -72,7 +72,7 @@ export interface WebTabProps {
     readonly path?: string | undefined;
 }
 
-export const DEFAULT_FAVOURITES_PATH = '~/.local/state/nex/favourites.json';
+export const DEFAULT_FAVOURITES_PATH = '~/.local/state/kelpi/favourites.json';
 
 /**
  * SET-098's middle truncation, as a character budget.

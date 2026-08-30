@@ -1,7 +1,7 @@
 /**
  * The client's transport layer: one socket, three concerns.
  *
- *   `socket.ts`   — handshake, framing, heartbeat, reconnect (`NexConnection`)
+ *   `socket.ts`   — handshake, framing, heartbeat, reconnect (`KelpiConnection`)
  *   `commands.ts` — control-protocol verbs as promises (`CommandClient`) + UI-only reports
  *   `pty.ts`      — per-pane terminal streams with ack-based flow control (`PtyClient`)
  *
@@ -10,7 +10,7 @@
 
 export {
     DEFAULT_WS_PATH,
-    NexConnection,
+    KelpiConnection,
     SOCKET_OPEN,
     createConnection,
     defaultSocketFactory,
@@ -23,7 +23,7 @@ export {
     type ConnectionEvents,
     type ConnectionListener,
     type ConnectionStatus,
-    type NexConnectionOptions,
+    type KelpiConnectionOptions,
     type PtyResyncMessage,
     type SocketCloseLike,
     type SocketFactory,

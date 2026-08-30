@@ -3,7 +3,7 @@
  *
  * The seam it plugs into already existed. A pane's colours come from
  * `resolveTerminalTheme(null, terminalThemePreset(bucket))`: the light/dark preset, overlaid
- * with whatever `--nex-term-*` the stylesheet resolved. All a THEME does is add one more layer
+ * with whatever `--kelpi-term-*` the stylesheet resolved. All a THEME does is add one more layer
  * on top — the keys the theme file actually defined — and hand the result to the same
  * `setTheme` every pane's renderer already re-applies live.
  *
@@ -17,7 +17,7 @@
  *     `isEngineColor` is the same guard the CSS-variable read applies to values it did not
  *     write. Anything else is dropped and the base's value stands.
  *
- * `terminalPaletteCssVars` publishes the same answer as `--nex-term-*` custom properties.
+ * `terminalPaletteCssVars` publishes the same answer as `--kelpi-term-*` custom properties.
  * That is what `TERMINAL_TOKEN_NAMES` documents as the unifying mechanism — every surface that
  * reads a terminal colour out of CSS (a pane's fallback fill, the content panes, a stylesheet
  * rule) then follows the theme too, rather than only the canvas the engine paints.
@@ -51,9 +51,9 @@ export function mergeTerminalPalette(
 }
 
 /**
- * The palette as `--nex-term-*` custom properties, for the element that owns the theme scope.
+ * The palette as `--kelpi-term-*` custom properties, for the element that owns the theme scope.
  *
- * `--nex-term-bg` is deliberately NOT emitted here: the pane background is the ghostty
+ * `--kelpi-term-bg` is deliberately NOT emitted here: the pane background is the ghostty
  * background AT THE GHOSTTY OPACITY (`App.tsx`'s `paneFill`), and the theme reaches it through
  * the daemon instead — a resolved theme's `background` becomes `appearance.backgroundColor`
  * when the user's own config names none. Emitting it twice would let an opaque hex overwrite

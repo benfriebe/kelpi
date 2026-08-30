@@ -1,15 +1,15 @@
-import { PTY_FRAME_TYPES, encodePtyFrame } from '@nex/protocol';
+import { PTY_FRAME_TYPES, encodePtyFrame } from '@kelpi/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { NexConnection, resolveWsUrl, tokenFromLocation, type ConnectionStatus } from './socket';
+import { KelpiConnection, resolveWsUrl, tokenFromLocation, type ConnectionStatus } from './socket';
 import { completeHandshake, createFakeSocketFactory, emptySnapshotState } from './testing';
 
 const PANE = '11111111-2222-4333-8444-555555555555';
 
-function connectionWith(overrides: Partial<ConstructorParameters<typeof NexConnection>[0]> = {}) {
+function connectionWith(overrides: Partial<ConstructorParameters<typeof KelpiConnection>[0]> = {}) {
     const harness = createFakeSocketFactory();
     const statuses: ConnectionStatus[] = [];
-    const connection = new NexConnection({
+    const connection = new KelpiConnection({
         url: 'http://daemon.test:19470',
         token: 'secret',
         socketFactory: harness.factory,
@@ -24,7 +24,7 @@ function connectionWith(overrides: Partial<ConstructorParameters<typeof NexConne
 describe('resolveWsUrl', () => {
     it('turns an http origin into the daemon ws endpoint with the token attached', () => {
         expect(resolveWsUrl('http://127.0.0.1:19470', 'abc')).toBe('ws://127.0.0.1:19470/ws?token=abc');
-        expect(resolveWsUrl('https://nex.tailnet.ts.net', 'x')).toBe('wss://nex.tailnet.ts.net/ws?token=x');
+        expect(resolveWsUrl('https://kelpi.tailnet.ts.net', 'x')).toBe('wss://kelpi.tailnet.ts.net/ws?token=x');
     });
 
     it('keeps an explicit ws url and path', () => {
@@ -37,7 +37,7 @@ describe('resolveWsUrl', () => {
     });
 });
 
-describe('NexConnection handshake', () => {
+describe('KelpiConnection handshake', () => {
     beforeEach(() => {
         vi.useFakeTimers();
     });
@@ -115,7 +115,7 @@ describe('NexConnection handshake', () => {
     });
 });
 
-describe('NexConnection reconnection', () => {
+describe('KelpiConnection reconnection', () => {
     beforeEach(() => {
         vi.useFakeTimers();
     });
@@ -202,7 +202,7 @@ describe('NexConnection reconnection', () => {
             type: 'rejected',
             code: 'unauthorized',
             reason: 'bad-token',
-            message: "invalid or missing daemon token — open the client via 'nexd url'",
+            message: "invalid or missing daemon token — open the client via 'kelpid url'",
             protocolVersion: 1
         });
         // A coded close in the app range, NOT the 1006 an aborted upgrade produced.
@@ -211,7 +211,7 @@ describe('NexConnection reconnection', () => {
         expect(reasons).toEqual(['bad-token']);
         // The daemon's own words reach the UI unprefixed, and the clean close does not add a
         // spurious "socket closed (1006)" on top of the real explanation.
-        expect(errors).toEqual(["invalid or missing daemon token — open the client via 'nexd url'"]);
+        expect(errors).toEqual(["invalid or missing daemon token — open the client via 'kelpid url'"]);
         expect(connection.status).toBe('rejected');
     });
 
@@ -248,7 +248,7 @@ describe('NexConnection reconnection', () => {
     });
 });
 
-describe('NexConnection heartbeat', () => {
+describe('KelpiConnection heartbeat', () => {
     beforeEach(() => {
         vi.useFakeTimers();
     });

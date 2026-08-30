@@ -7,7 +7,7 @@
  * so the fake stays honest when the protocol changes.
  */
 
-import { decodeWireObject, dispatchSequence, type WireMessage } from '@nex/protocol';
+import { decodeWireObject, dispatchSequence, type WireMessage } from '@kelpi/protocol';
 
 import { createAppHandlers, type AppContext, type AppHandlerTable } from '../handlers/app/index.js';
 import type {
@@ -18,7 +18,7 @@ import type {
     TerminalStateService,
     VtModes
 } from '../seams.js';
-import { createStore, emptyDaemonState, type DaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type DaemonState, type KelpiStore } from '../store/index.js';
 import type { HostRegistration } from './host.js';
 import { createWebPaneService, type WebPaneService } from './service.js';
 
@@ -201,7 +201,7 @@ export interface OpenReply {
 }
 
 export interface WebHarness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly ctx: AppContext;
     readonly table: AppHandlerTable;
     readonly service: WebPaneService;

@@ -8,14 +8,14 @@
  * by (`webpane/geometry.ts` → `shell/webhost/embed.ts`). `false` means "the page is parked".
  */
 
-import type { JsonObject } from '@nex/protocol';
-import { createStore as createDaemonStore, emptyDaemonState } from '@nex/daemon/store';
+import type { JsonObject } from '@kelpi/protocol';
+import { createStore as createDaemonStore, emptyDaemonState } from '@kelpi/daemon/store';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App';
 import { completeHandshake, createFakeSocketFactory, type FakeWebSocket } from './connection';
-import { createNexRuntime, createNexStore } from './state';
+import { createKelpiRuntime, createKelpiStore } from './state';
 import { createFakeRendererFactory } from './terminal/testing';
 
 const W1 = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -66,8 +66,8 @@ interface Harness {
 
 function mount(options: { web?: boolean; agent?: boolean; second?: boolean } = {}): Harness {
     const sockets = createFakeSocketFactory();
-    const store = createNexStore();
-    const runtime = createNexRuntime({
+    const store = createKelpiStore();
+    const runtime = createKelpiRuntime({
         url: 'ws://daemon.test/ws',
         token: 'tok',
         socketFactory: sockets.factory,
@@ -102,7 +102,7 @@ afterEach(cleanup);
 describe('the status bar spans the window (§H2)', () => {
     it('is a sibling of the sidebar | grid | inspector row, not a child of the centre column', () => {
         mount();
-        const app = screen.getByTestId('nex-app');
+        const app = screen.getByTestId('kelpi-app');
         const footer = screen.getByTestId('status-footer');
         const sidebar = screen.getByTestId('sidebar-slot');
 
@@ -154,7 +154,7 @@ describe('modals park a live web pane (§H1)', () => {
 
     it('a toast parks it — otherwise the page eats the only message the user gets', async () => {
         mount({ web: true });
-        const app = screen.getByTestId('nex-app');
+        const app = screen.getByTestId('kelpi-app');
         await act(async () => {
             fireEvent.drop(app, {
                 dataTransfer: {

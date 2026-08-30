@@ -66,7 +66,7 @@ function fixture(
             : {
                   restartControl: async () => {
                       restarts.push(Date.now());
-                      return { socketPath: '/tmp/sandbox/nexd.sock', tcpPort: 19999 };
+                      return { socketPath: '/tmp/sandbox/kelpid.sock', tcpPort: 19999 };
                   }
               })
     });
@@ -161,7 +161,7 @@ describe('restart-control-server (APP-054 / AGNT-006)', () => {
     it('rebinds and reports where it is listening', async () => {
         const f = fixture();
         const reply = await f.channel.run('restart-control-server', {});
-        expect(reply).toMatchObject({ ok: true, socket_path: '/tmp/sandbox/nexd.sock', tcp_port: 19999 });
+        expect(reply).toMatchObject({ ok: true, socket_path: '/tmp/sandbox/kelpid.sock', tcp_port: 19999 });
         expect(f.restarts).toHaveLength(1);
     });
 

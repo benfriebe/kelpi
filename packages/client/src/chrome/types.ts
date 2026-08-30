@@ -13,7 +13,7 @@
  * falls back to client-local state) until the daemon grows them.
  */
 
-import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@nex/daemon/store';
+import type { Pane, WorkspaceColor, WorkspaceGroup, WorkspaceState } from '@kelpi/daemon/store';
 
 /** The pane fields the chrome reads. */
 export type ChromePane = Pick<

@@ -19,7 +19,7 @@
  * re-checks it against its own window id anyway (belt and braces, per the port notes).
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 /** The `pane-geometry` notify verb, so the daemon and its tests spell it once. */
 export const GEOMETRY_NOTIFY_VERB = 'pane-geometry';

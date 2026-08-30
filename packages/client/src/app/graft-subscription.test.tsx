@@ -83,7 +83,7 @@ describe('useGraft — the daemon event subscription (§GIT-044)', () => {
         expect(result.current.state.sessions).toEqual({});
 
         // `started` — the engine published a session this client never asked for (another
-        // window's toggle, or `nex graft start`).
+        // window's toggle, or `kelpi graft start`).
         act(() => {
             events.emit({ type: 'graft-changed', sessions: [sessionEntry(A1, 'watching')] });
         });

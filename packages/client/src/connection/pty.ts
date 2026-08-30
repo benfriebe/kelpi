@@ -1,7 +1,7 @@
 /**
  * Per-pane PTY streams, multiplexed over the one socket (WP3.1).
  *
- * The binary channel is `[type][16-byte paneID][payload]` (`@nex/protocol` `ws/pty.ts`), so a
+ * The binary channel is `[type][16-byte paneID][payload]` (`@kelpi/protocol` `ws/pty.ts`), so a
  * chunk of terminal output is demultiplexed without a JSON parse and handed straight to the
  * pane's renderer. **Terminal bytes never enter the zustand store** — that is the whole point
  * of keeping this module independent of `state/`.
@@ -31,9 +31,9 @@ import {
     encodePtyFrame,
     type PtyFrameType,
     type WsVtModes
-} from '@nex/protocol';
+} from '@kelpi/protocol';
 
-import type { NexConnection } from './socket';
+import type { KelpiConnection } from './socket';
 
 export interface PtySubscription {
     /** Attach replay (the pane's screen as of attach). Falls back to `onData` when absent. */
@@ -105,7 +105,7 @@ export class PtyClient {
     private disposed = false;
 
     constructor(
-        private readonly connection: NexConnection,
+        private readonly connection: KelpiConnection,
         private readonly options: PtyClientOptions = {}
     ) {
         this.ackThreshold = Math.max(1, options.ackThresholdBytes ?? Math.floor(PTY_FLOW_CONTROL_WINDOW_BYTES / 4));
@@ -399,6 +399,6 @@ export class PtyClient {
     }
 }
 
-export function createPtyClient(connection: NexConnection, options: PtyClientOptions = {}): PtyClient {
+export function createPtyClient(connection: KelpiConnection, options: PtyClientOptions = {}): PtyClient {
     return new PtyClient(connection, options);
 }

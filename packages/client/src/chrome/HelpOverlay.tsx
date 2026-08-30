@@ -14,10 +14,10 @@
  * never drift from what the keyboard actually does.
  *
  * The CLI column exists because half of what this app can do has no key at all: the section is
- * a short, honest pointer at `nex --help` and the verbs a GUI user is most likely to want.
+ * a short, honest pointer at `kelpi --help` and the verbs a GUI user is most likely to want.
  */
 
-import type { KeyBindingMap, NexAction } from '@nex/core/config';
+import type { KeyBindingMap, KelpiAction } from '@kelpi/core/config';
 import { useEffect, useRef, type ReactElement } from 'react';
 
 import { ACTION_CATALOG, VISIBLE_CATEGORIES, type SettingsCategory } from '../settings/catalog';
@@ -33,16 +33,16 @@ export interface HelpCliEntry {
 }
 
 /**
- * The CLI pointers. Deliberately short: this is a signpost, not `nex --help` reproduced in the
+ * The CLI pointers. Deliberately short: this is a signpost, not `kelpi --help` reproduced in the
  * window, and every line here is a verb a GUI user reaches for and cannot otherwise find.
  */
 export const HELP_CLI_ENTRIES: readonly HelpCliEntry[] = [
-    { command: 'nex --help', description: 'every command, with its flags' },
-    { command: 'nex doctor', description: 'check the CLI ↔ app connection when commands stop landing' },
-    { command: 'nex md <file>', description: 'open a markdown preview pane' },
-    { command: 'nex diff [path]', description: 'open a diff pane for a repo or path' },
-    { command: 'nex pane split|send|capture', description: 'drive panes from a script or an agent' },
-    { command: 'nex workspace create --worktree <name>', description: 'a new workspace on a fresh git worktree' }
+    { command: 'kelpi --help', description: 'every command, with its flags' },
+    { command: 'kelpi doctor', description: 'check the CLI ↔ app connection when commands stop landing' },
+    { command: 'kelpi md <file>', description: 'open a markdown preview pane' },
+    { command: 'kelpi diff [path]', description: 'open a diff pane for a repo or path' },
+    { command: 'kelpi pane split|send|capture', description: 'drive panes from a script or an agent' },
+    { command: 'kelpi workspace create --worktree <name>', description: 'a new workspace on a fresh git worktree' }
 ];
 
 export interface HelpOverlayProps {
@@ -57,7 +57,7 @@ export interface HelpOverlayProps {
 }
 
 interface Row {
-    readonly action: NexAction;
+    readonly action: KelpiAction;
     readonly label: string;
     readonly shortcut: string | undefined;
 }
@@ -95,7 +95,7 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
             data-testid="help-overlay"
             role="dialog"
             aria-modal="true"
-            aria-label="Nex Help"
+            aria-label="Kelpi Help"
             className="absolute inset-0 z-50 flex items-center justify-center p-6"
             style={{ background: 'rgba(0, 0, 0, 0.45)' }}
             onClick={(event) => {
@@ -120,10 +120,10 @@ export function HelpOverlay(props: HelpOverlayProps): ReactElement {
                         className="flex h-10 w-10 items-center justify-center rounded-lg text-[15px] font-semibold"
                         style={{ background: tokens.accent, color: '#0B0B0F' }}
                     >
-                        nex
+                        kelpi
                     </span>
                     <div className="min-w-0 flex-1">
-                        <div className="text-[15px] font-semibold">Nex</div>
+                        <div className="text-[15px] font-semibold">Kelpi</div>
                         <div data-testid="help-version" className="text-[12px]" style={{ color: tokens.textTertiary }}>
                             Version {props.version}
                         </div>

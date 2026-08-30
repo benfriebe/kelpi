@@ -79,7 +79,7 @@ describe('the page-click gesture', () => {
         for (const type of ['rawKeyDown', 'keyDown', 'keyUp', 'char']) {
             h.gate.inputEvent({ type, embedded: true });
         }
-        // A keystroke moving the ring would also fire on an agent's `nex web` typing.
+        // A keystroke moving the ring would also fire on an agent's `kelpi web` typing.
         expect(h.reports).toEqual([]);
     });
 

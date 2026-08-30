@@ -30,7 +30,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { createGitService, resolveGitExecutable } from '../git/index.js';
-import { createStore, emptyDaemonState, type NexStore } from '../store/index.js';
+import { createStore, emptyDaemonState, type KelpiStore } from '../store/index.js';
 import { handleRepoCommand, type RepoChannel } from '../ws/repos.js';
 import { breadcrumbPath } from './breadcrumb.js';
 import {
@@ -62,7 +62,7 @@ const A1 = 'CCCCCCCC-0000-4000-8000-000000000001';
 const NOW = 1_755_500_000_000;
 
 function tmpDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nex-graft-${prefix}-`));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `kelpi-graft-${prefix}-`));
     roots.push(dir);
     return dir;
 }
@@ -74,10 +74,10 @@ function git(cwd: string, ...args: string[]): string {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
             ...process.env,
-            GIT_AUTHOR_NAME: 'nex',
-            GIT_AUTHOR_EMAIL: 'nex@example.com',
-            GIT_COMMITTER_NAME: 'nex',
-            GIT_COMMITTER_EMAIL: 'nex@example.com',
+            GIT_AUTHOR_NAME: 'kelpi',
+            GIT_AUTHOR_EMAIL: 'kelpi@example.com',
+            GIT_COMMITTER_NAME: 'kelpi',
+            GIT_COMMITTER_EMAIL: 'kelpi@example.com',
             GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_CONFIG_SYSTEM: '/dev/null'
         }
@@ -140,7 +140,7 @@ function fakeHeadWatch(): FakeHeadWatch {
 }
 
 interface Harness {
-    readonly store: NexStore;
+    readonly store: KelpiStore;
     readonly graft: GraftService;
     readonly watch: RepoAssociationWatchService;
     readonly headWatch: FakeHeadWatch;
@@ -208,7 +208,7 @@ function harness(f: Fixture): Harness {
     };
 }
 
-function associationIDs(store: NexStore): string[] {
+function associationIDs(store: KelpiStore): string[] {
     return store
         .getState()
         .workspaces.flatMap((workspace) => workspace.repoAssociations.map((entry) => entry.id));

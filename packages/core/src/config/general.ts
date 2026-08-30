@@ -53,7 +53,7 @@ export interface GeneralSettings {
      * §13's Settings ▸ General ▸ Worktrees "Base path" (SET-008), default
      * `~/nex/worktrees/<repo>`. `<repo>` expands to the full repo path at the START of the
      * template and to the repo's directory NAME elsewhere; `~` expands too
-     * (`@nex/daemon`'s `git/names.ts`, SET-009 — already implemented and tested there).
+     * (`@kelpi/daemon`'s `git/names.ts`, SET-009 — already implemented and tested there).
      *
      * UserDefaults in the Swift app; a config key here for the same multi-client reason as
      * the flags above. A blank value falls back to the shipped default rather than producing
@@ -77,7 +77,7 @@ export interface GeneralSettings {
      *
      * It gates the CLIENT's create gestures — ⌘N, and the New Workspace form's preselected
      * group — not the wire verb: the Swift app reads it in `NewWorkspaceSheet`, never in the
-     * socket path, so `nex workspace create` without `--group` still lands at top level.
+     * socket path, so `kelpi workspace create` without `--group` still lands at top level.
      */
     readonly inheritGroupOnNewWorkspace: boolean;
     /**

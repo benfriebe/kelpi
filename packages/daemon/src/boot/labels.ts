@@ -20,10 +20,10 @@
  * user's brand-new labels as legacy ones.
  *
  * The Swift app keeps the marker in `UserDefaults`; a daemon has none, so it lives beside the
- * presets themselves in the `appState` table (`nexd.labelPresetsMigrated`, see `db/codec.ts`).
+ * presets themselves in the `appState` table (`kelpid.labelPresetsMigrated`, see `db/codec.ts`).
  */
 
-import type { DaemonState, LabelColor, NexStore } from '../store/index.js';
+import type { DaemonState, LabelColor, KelpiStore } from '../store/index.js';
 
 /** The colour every back-filled preset gets (§6.5); the user recolours it in Settings. */
 export const MIGRATED_LABEL_PRESET_COLOR: LabelColor = { kind: 'named', color: 'gray' };
@@ -73,7 +73,7 @@ export interface LabelPresetMigrationDeps {
  * queue, so the debounced save that follows sees the finished state, not a half-migrated one.
  */
 export function runLabelPresetMigration(
-    store: NexStore,
+    store: KelpiStore,
     deps: LabelPresetMigrationDeps = {}
 ): LabelPresetMigrationOutcome {
     if (store.getState().labelPresetsMigrated) return { ran: false, backfilled: [] };

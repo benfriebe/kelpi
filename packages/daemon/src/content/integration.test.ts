@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
-import { WS_PROTOCOL_VERSION } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
@@ -44,7 +44,7 @@ interface Scratch {
 
 /** Short paths: a unix socket path is capped near 104 bytes on macOS. */
 function scratch(): Scratch {
-    const root = fs.mkdtempSync(path.join('/tmp', 'nexd-m5-'));
+    const root = fs.mkdtempSync(path.join('/tmp', 'kelpid-m5-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const home = path.join(root, 'home');
     const notes = path.join(root, 'notes');
@@ -53,7 +53,7 @@ function scratch(): Scratch {
     return {
         root,
         runDir: path.join(root, 'run'),
-        socketPath: path.join(root, 'nex.sock'),
+        socketPath: path.join(root, 'kelpi.sock'),
         dbPath: path.join(root, 'nex.db'),
         home,
         configPath: path.join(root, 'config'),
@@ -79,7 +79,7 @@ async function boot(paths: Scratch): Promise<{ daemon: Daemon; info: DaemonInfo 
     return { daemon, info };
 }
 
-/** Fire-and-forget control line (what `nex open` / `nex diff` send). */
+/** Fire-and-forget control line (what `kelpi open` / `kelpi diff` send). */
 function notify(socketPath: string, message: Json): Promise<void> {
     return new Promise<void>((resolve, reject) => {
         const socket = net.connect({ path: socketPath });
@@ -179,7 +179,7 @@ describe('content panes end to end', () => {
 
         const { daemon, info } = await boot(paths);
 
-        // The real `nex md note.md` wire command.
+        // The real `kelpi md note.md` wire command.
         await notify(paths.socketPath, { command: 'open', path: file });
         const paneID = (await waitFor(
             () => paneOfType(daemon, 'markdown'),

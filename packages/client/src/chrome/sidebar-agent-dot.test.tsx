@@ -7,7 +7,7 @@
  * `borderColor` ring, `.opacity(isPulsing ? 0.35 : 1.0)`, and
  * `.easeInOut(duration: 1.0).repeatForever(autoreverses: true)`. The dot fades to 35 % and back,
  * forever, and there is **no halo in the Swift at all**. The port used to grow a `0 0 0 4px`
- * box-shadow halo on a fully-opaque dot, driven by a `--nex-dot-halo` custom property.
+ * box-shadow halo on a fully-opaque dot, driven by a `--kelpi-dot-halo` custom property.
  *
  * A CSS animation is not something a screenshot can hold, so this reads the two halves that
  * decide it: the element's residue (the class it carries and the one property it still
@@ -110,19 +110,19 @@ describe('the sidebar agent dot pulses', () => {
         const dots = screen.getAllByTestId('status-dot');
         expect(dots.length).toBeGreaterThan(0);
         const dot = dots[0] as HTMLElement;
-        expect(dot.className).toContain('nex-agent-dot-pulse');
+        expect(dot.className).toContain('kelpi-agent-dot-pulse');
         // The 1.5 px ring — the Swift's `borderColor` stroke — is published as a property and
         // PAINTED by the class, so the animated opacity carries the fill and the ring together
         // exactly as one SwiftUI view's `.opacity` does.
-        expect(dot.style.getPropertyValue('--nex-dot-ring')).not.toBe('');
+        expect(dot.style.getPropertyValue('--kelpi-dot-ring')).not.toBe('');
         /*
          * L18: and the 1.5px is CENTRED on the dot's edge. `Circle().stroke(borderColor,
          * lineWidth: 1.5)` (`WorkspaceRowView.swift:15`) straddles the path — 0.75 out, 0.75 in
          * — where a single `0 0 0 1.5px` spread hung the whole ring outside and made the marker
          * 12px across instead of 10.5.
          */
-        expect(ruleBody('.nex-agent-dot-pulse')).toContain(
-            '0 0 0 0.75px var(--nex-dot-ring), inset 0 0 0 0.75px var(--nex-dot-ring)'
+        expect(ruleBody('.kelpi-agent-dot-pulse')).toContain(
+            '0 0 0 0.75px var(--kelpi-dot-ring), inset 0 0 0 0.75px var(--kelpi-dot-ring)'
         );
     });
 
@@ -139,23 +139,23 @@ describe('the sidebar agent dot pulses', () => {
     });
 
     it('§H24: fades opacity 1 → 0.35 and back, and grows no halo', () => {
-        const frames = keyframesBody('nex-agent-dot-pulse');
+        const frames = keyframesBody('kelpi-agent-dot-pulse');
         // The Swift's two opacity endpoints, and the only two declarations in the animation.
         expect(frames).toMatch(/from\s*\{\s*opacity:\s*1;\s*\}/);
         expect(frames).toMatch(/to\s*\{\s*opacity:\s*0\.35;\s*\}/);
         // `autoreverses: true` + `repeatForever` at a 1 s ease-in-out.
-        expect(ruleBody('.nex-agent-dot-pulse')).toContain(
-            'animation: nex-agent-dot-pulse 1s ease-in-out infinite alternate'
+        expect(ruleBody('.kelpi-agent-dot-pulse')).toContain(
+            'animation: kelpi-agent-dot-pulse 1s ease-in-out infinite alternate'
         );
         // No halo anywhere: the keyframes animate nothing but opacity, and the property that used
         // to colour the expanding ring is gone from every DECLARATION (the prose above the rule
         // still names it, which is why the comments are stripped) and from the element.
         expect(frames).not.toContain('box-shadow');
-        expect(declarations).not.toContain('--nex-dot-halo');
+        expect(declarations).not.toContain('--kelpi-dot-halo');
 
         renderSidebar('waitingForInput');
         const dot = screen.getAllByTestId('status-dot')[0] as HTMLElement;
-        expect(dot.style.getPropertyValue('--nex-dot-halo')).toBe('');
+        expect(dot.style.getPropertyValue('--kelpi-dot-halo')).toBe('');
         // …and nothing paints an inline shadow that could outlive the class.
         expect(dot.style.boxShadow).toBe('');
     });
@@ -163,10 +163,10 @@ describe('the sidebar agent dot pulses', () => {
     it('reduced motion keeps the dot at FULL opacity rather than freezing it mid-fade', () => {
         // `animation: none` alone would leave whatever opacity the frame stopped on; the state
         // is the colour, so the dot has to come back to 1.
-        const reduced = stylesheet.slice(stylesheet.indexOf('.nex-agent-dot-pulse {'));
+        const reduced = stylesheet.slice(stylesheet.indexOf('.kelpi-agent-dot-pulse {'));
         const block = reduced.slice(
             reduced.indexOf('@media (prefers-reduced-motion: reduce)'),
-            reduced.indexOf('@keyframes nex-sidebar-row-enter')
+            reduced.indexOf('@keyframes kelpi-sidebar-row-enter')
         );
         expect(block).toContain('animation: none');
         expect(block).toContain('opacity: 1');
@@ -177,7 +177,7 @@ describe('the sidebar agent dot pulses', () => {
         // Two dots: the workspace row's and the group header's aggregate.
         const dots = screen.getAllByTestId('status-dot');
         expect(dots.length).toBeGreaterThanOrEqual(2);
-        for (const dot of dots) expect((dot as HTMLElement).className).toContain('nex-agent-dot-pulse');
+        for (const dot of dots) expect((dot as HTMLElement).className).toContain('kelpi-agent-dot-pulse');
         expect((dots[0] as HTMLElement).dataset['status']).toBe('running');
     });
 

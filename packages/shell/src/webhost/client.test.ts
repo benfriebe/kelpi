@@ -12,7 +12,7 @@
 import { WebSocket } from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { WS_PROTOCOL_VERSION, type JsonObject } from '@nex/protocol';
+import { WS_PROTOCOL_VERSION, type JsonObject } from '@kelpi/protocol';
 
 import type { DaemonLocation } from '../daemon.js';
 import { setLogStreams } from '../log.js';

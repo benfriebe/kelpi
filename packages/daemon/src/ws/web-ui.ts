@@ -14,7 +14,7 @@
  * legal one (§17.9: only a shell pane has a PTY to paste into).
  */
 
-import type { JsonObject } from '@nex/protocol';
+import type { JsonObject } from '@kelpi/protocol';
 
 import { findPaneAnywhere, workspaceByID } from '../store/derived.js';
 import type { DomainStore } from '../seams.js';

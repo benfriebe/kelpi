@@ -36,7 +36,7 @@ export const DEFAULT_MARKDOWN_FONT_SIZE = 14;
 export type EpochSeconds = number;
 
 /**
- * Unix milliseconds — the JS-native clock the transient agent fields use (@nex/core/agent's
+ * Unix milliseconds — the JS-native clock the transient agent fields use (@kelpi/core/agent's
  * state machine stamps them with `Date.now()`). Named apart from `EpochSeconds` because
  * confusing the two silently renders a "0s" elapsed clock rather than failing.
  */
@@ -66,7 +66,7 @@ export interface Pane {
     agentKind: AgentKind | null;
     /** Transient: per-pane markdown font size. */
     markdownFontSize: number;
-    /** Transient: `nex open --here` parked source pane. */
+    /** Transient: `kelpi open --here` parked source pane. */
     parkedSourcePaneID: PaneID | null;
     /** Transient: set only on a non-running → running transition. Epoch MILLISECONDS. */
     agentStartedAt: EpochMilliseconds | null;

@@ -102,9 +102,9 @@ describe('createFrameSessions', () => {
         sessions.handle('Target.attachedToTarget', attachEvent('S1', 'http://b.test/frame'));
         await sessions.settled();
 
-        sessions.handle('Runtime.consoleAPICalled', CONSOLE_CALL('NEX-OOPIF-MARKER'), 'S1');
+        sessions.handle('Runtime.consoleAPICalled', CONSOLE_CALL('KELPI-OOPIF-MARKER'), 'S1');
         expect(lines).toEqual([
-            { level: 'log', message: 'NEX-OOPIF-MARKER', url: 'http://b.test/frame' }
+            { level: 'log', message: 'KELPI-OOPIF-MARKER', url: 'http://b.test/frame' }
         ]);
     });
 
@@ -121,14 +121,14 @@ describe('createFrameSessions', () => {
                     url: 'http://b.test/frame',
                     lineNumber: 4,
                     columnNumber: 8,
-                    exception: { description: 'Error: NEX-OOPIF-BOOM' }
+                    exception: { description: 'Error: KELPI-OOPIF-BOOM' }
                 }
             },
             'S1'
         );
         expect(lines).toHaveLength(1);
         expect(lines[0]?.level).toBe('error');
-        expect(lines[0]?.message).toContain('NEX-OOPIF-BOOM');
+        expect(lines[0]?.message).toContain('KELPI-OOPIF-BOOM');
         // CDP is 0-based; the wire mirrors window.onerror's 1-based numbers.
         expect(lines[0]?.line).toBe(5);
         expect(lines[0]?.column).toBe(9);

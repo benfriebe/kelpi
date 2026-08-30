@@ -27,7 +27,7 @@ import {
 const dirs: string[] = [];
 
 function tempFile(name: string, contents: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nex-shell-appearance-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kelpi-shell-appearance-'));
     dirs.push(dir);
     const file = path.join(dir, name);
     fs.writeFileSync(file, contents);
@@ -41,7 +41,7 @@ afterEach(() => {
 describe('resolveGhosttyConfigPath', () => {
     it('defaults to ~/.config/ghostty/config and honours the daemon’s override', () => {
         expect(resolveGhosttyConfigPath({}, '/Users/test')).toBe('/Users/test/.config/ghostty/config');
-        expect(resolveGhosttyConfigPath({ NEXD_GHOSTTY_CONFIG: '~/alt/gc' }, '/Users/test')).toBe(
+        expect(resolveGhosttyConfigPath({ KELPID_GHOSTTY_CONFIG: '~/alt/gc' }, '/Users/test')).toBe(
             '/Users/test/alt/gc'
         );
     });
@@ -49,33 +49,33 @@ describe('resolveGhosttyConfigPath', () => {
 
 describe('readBackgroundOpacity', () => {
     it('is 1 when there is no file, and 1 when the file sets nothing', () => {
-        expect(readBackgroundOpacity({ NEXD_GHOSTTY_CONFIG: '/nope/does/not/exist' }, '/Users/test')).toBe(1);
+        expect(readBackgroundOpacity({ KELPID_GHOSTTY_CONFIG: '/nope/does/not/exist' }, '/Users/test')).toBe(1);
         const file = tempFile('ghostty', '# nothing\nbackground = #101014\n');
-        expect(readBackgroundOpacity({ NEXD_GHOSTTY_CONFIG: file }, '/Users/test')).toBe(1);
+        expect(readBackgroundOpacity({ KELPID_GHOSTTY_CONFIG: file }, '/Users/test')).toBe(1);
     });
 
     it('reads the value, lets a later line win, and clamps to 0…1', () => {
         const file = tempFile('ghostty', 'background-opacity = 0.5\nbackground-opacity = 0.85\n');
-        expect(readBackgroundOpacity({ NEXD_GHOSTTY_CONFIG: file }, '/Users/test')).toBeCloseTo(0.85);
+        expect(readBackgroundOpacity({ KELPID_GHOSTTY_CONFIG: file }, '/Users/test')).toBeCloseTo(0.85);
         const clamped = tempFile('ghostty', 'background-opacity = 4\n');
-        expect(readBackgroundOpacity({ NEXD_GHOSTTY_CONFIG: clamped }, '/Users/test')).toBe(1);
+        expect(readBackgroundOpacity({ KELPID_GHOSTTY_CONFIG: clamped }, '/Users/test')).toBe(1);
     });
 
     it('keeps the previous value for a malformed line (ghostty’s own rule)', () => {
         const file = tempFile('ghostty', 'background-opacity = 0.7\nbackground-opacity = translucent\n');
-        expect(readBackgroundOpacity({ NEXD_GHOSTTY_CONFIG: file }, '/Users/test')).toBeCloseTo(0.7);
+        expect(readBackgroundOpacity({ KELPID_GHOSTTY_CONFIG: file }, '/Users/test')).toBeCloseTo(0.7);
     });
 });
 
 describe('windowTransparency (SET-049’s isOpaque = opacity >= 1)', () => {
     it('creates the window opaque at 1 and transparent below it', () => {
         const opaque = tempFile('ghostty', 'background-opacity = 1\n');
-        expect(windowTransparency({ NEXD_GHOSTTY_CONFIG: opaque }, '/Users/test')).toEqual({
+        expect(windowTransparency({ KELPID_GHOSTTY_CONFIG: opaque }, '/Users/test')).toEqual({
             opacity: 1,
             transparent: false
         });
         const translucent = tempFile('ghostty', 'background-opacity = 0.85\n');
-        const decision = windowTransparency({ NEXD_GHOSTTY_CONFIG: translucent }, '/Users/test');
+        const decision = windowTransparency({ KELPID_GHOSTTY_CONFIG: translucent }, '/Users/test');
         expect(decision.transparent).toBe(true);
         expect(decision.opacity).toBeCloseTo(0.85);
     });
@@ -139,17 +139,17 @@ describe('resolveWindowGround (§N31)', () => {
 
 describe('readWindowGround (§N31)', () => {
     it('is the system-bucket preset when the config names nothing', () => {
-        expect(readWindowGround(true, { NEXD_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
+        expect(readWindowGround(true, { KELPID_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
             DARK_WINDOW_GROUND
         );
-        expect(readWindowGround(false, { NEXD_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
+        expect(readWindowGround(false, { KELPID_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toBe(
             LIGHT_WINDOW_GROUND
         );
     });
 
     it('follows `chrome-appearance`, so an explicit choice beats the OS', () => {
         const file = tempFile('config', 'chrome-appearance = dark\n');
-        expect(readWindowGround(false, { NEXD_CONFIG_PATH: file }, '/Users/test')).toBe(DARK_WINDOW_GROUND);
+        expect(readWindowGround(false, { KELPID_CONFIG_PATH: file }, '/Users/test')).toBe(DARK_WINDOW_GROUND);
     });
 
     it('follows `chrome-colors`, so a recoloured chrome takes the window with it', () => {
@@ -158,13 +158,13 @@ describe('readWindowGround (§N31)', () => {
             'config',
             'chrome-appearance = dark\nchrome-colors = {"dark:windowBackground":"101014"}\n'
         );
-        expect(readWindowGround(true, { NEXD_CONFIG_PATH: file }, '/Users/test')).toBe('#101014');
+        expect(readWindowGround(true, { KELPID_CONFIG_PATH: file }, '/Users/test')).toBe('#101014');
     });
 });
 
 describe('readSearchPalette (SET-219)', () => {
     it('is the Swift NexGhosttyDefaults set when the config names none', () => {
-        expect(readSearchPalette({ NEXD_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toEqual({
+        expect(readSearchPalette({ KELPID_CONFIG_PATH: '/nope/missing' }, '/Users/test')).toEqual({
             match: '#f2d027',
             matchText: '#000000',
             current: '#ff7a00',
@@ -174,7 +174,7 @@ describe('readSearchPalette (SET-219)', () => {
 
     it('takes the user’s overrides from ~/.config/nex/config', () => {
         const file = tempFile('config', 'search-match-color = #00ff00\nsearch-match-current-color = #0000ff\n');
-        expect(readSearchPalette({ NEXD_CONFIG_PATH: file }, '/Users/test')).toEqual({
+        expect(readSearchPalette({ KELPID_CONFIG_PATH: file }, '/Users/test')).toEqual({
             match: '#00ff00',
             matchText: '#000000',
             current: '#0000ff',

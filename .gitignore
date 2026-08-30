@@ -5,3 +5,7 @@ dist/
 .vite/
 out/
 *.tsbuildinfo
+
+# The parity campaign is over: its records, contracts and audit artifacts stay on disk
+# (and in the pre-scrub mirror) but out of the repo.
+docs/

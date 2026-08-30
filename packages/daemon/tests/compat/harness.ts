@@ -9,7 +9,8 @@
  * Shape of a compat test:
  *   1. boot a daemon in-process with its own tmp HOME, tmp sqlite file and an **ephemeral**
  *      control TCP port (`tcpPort: 0`) plus a tmp unix socket path;
- *   2. drive `kelpi` as a child process with `NEX_SOCKET=tcp:127.0.0.1:<port>`;
+ *   2. drive the CLI as a child process with KELPI_SOCKET/NEX_SOCKET=tcp:127.0.0.1:<port>
+ *      (our kelpi reads the former, the shipped Swift nex the latter);
  *   3. assert the **exit code** and the **parsed JSON** — never the human table text, which
  *      is rendered CLI-side and is not part of the daemon's contract.
  *
@@ -110,6 +111,7 @@ export async function startCompatDaemon(): Promise<CompatDaemon> {
                 env: {
                     PATH: process.env['PATH'] ?? '/usr/bin:/bin',
                     HOME: home,
+                    KELPI_SOCKET: `tcp:127.0.0.1:${String(port)}`,
                     NEX_SOCKET: `tcp:127.0.0.1:${String(port)}`,
                     ...(options.paneID !== undefined ? { NEX_PANE_ID: options.paneID } : {}),
                     ...options.env

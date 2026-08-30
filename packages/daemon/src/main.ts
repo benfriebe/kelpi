@@ -20,7 +20,7 @@
  * detach and probing. This file parses arguments and prints.
  */
 
-import { realpathSync } from 'node:fs';
+import fs, { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import nodePath from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -28,13 +28,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
     createDaemon,
     HTTP_HOST_ENV,
-    migrateLegacyState,
     readPortFile,
+    resolveConfigPath,
     resolveDaemonVersion,
     type DaemonInfo
 } from './boot/index.js';
 import { resolveControlEndpoints } from './control/index.js';
-import { expandTilde, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
+import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatabasePath, resolveDatabasePath } from './db/index.js';
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
     isProcessAlive,
@@ -88,7 +88,8 @@ Usage:
 Import (one-time migration from the macOS app):
   kelpid import [--from <db>] [--to <db>] [--force] [--dry-run] [--json]
 
-    --from   legacy database (default: ~/Library/Application Support/Nex/nex.db)
+    --from   legacy database (default: the pre-rename daemon's nexd/nex.db when it exists,
+           else the Swift app's ~/Library/Application Support/Nex/nex.db)
     --to     daemon database (default: KELPID_DB_PATH, else the platform default)
     --force  replace a target that already holds workspaces; the existing database
              is copied aside as <target>.<timestamp>.bak first
@@ -111,7 +112,7 @@ Environment:
   KELPID_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
                      (default: ~/Library/Application Support/kelpid/run, or
                       $XDG_RUNTIME_DIR/nexd on Linux)
-  KELPID_SOCKET_PATH   CLI-compat control socket (default: /tmp/kelpi.sock; a /tmp/nex.sock symlink is maintained)
+  KELPID_SOCKET_PATH   CLI-compat control socket (default: /tmp/kelpi.sock)
   KELPID_TCP_PORT      Control TCP listener on 127.0.0.1 (overrides config tcp-port)
   KELPID_HTTP_PORT     HTTP/WS port (default: the run dir's port file, else ephemeral)
   KELPID_HTTP_HOST     HTTP/WS bind address (default: 127.0.0.1)
@@ -128,7 +129,7 @@ Environment:
   KELPID_BUILD         Override the reported build (packaging)
   KELPID_ENTRY         Executable/script re-spawned by \`kelpid start\` when detaching
 
-The \`kelpi\` CLI reaches the daemon over KELPI_SOCKET (NEX_SOCKET still honoured):
+The \`kelpi\` CLI reaches the daemon over KELPI_SOCKET:
   KELPI_SOCKET=tcp:127.0.0.1:19400 kelpi pane list
 `;
 
@@ -399,10 +400,6 @@ async function commandStart(io: CliIO, args: ParsedArgs): Promise<number> {
     }
 
     if (args.foreground) {
-        // The pre-rename state cutover: copy nexd/nex.db + ~/.config/nex/config into the Kelpi
-        // locations, once, before anything opens them. No-op with env overrides (sandboxes) or
-        // once the targets exist.
-        migrateLegacyState({ env, log: (line) => io.out(line) });
         const daemon = createDaemon({
             env,
             installSignalHandlers: true,
@@ -674,10 +671,42 @@ async function commandUrl(io: CliIO): Promise<number> {
  * A daemon started with a different `KELPID_RUN_DIR` is invisible here — the same blind spot every
  * other verb has, and the reason `--to` a foreign path only warns.
  */
+/**
+ * The default `--from`. Two legacy generations can hold nex data, and the PORT daemon's
+ * (`nexd/nex.db`) wins when it exists: whoever ran the pre-rename port already imported the
+ * Swift database once, so the Swift file underneath is the stale copy. A machine that only
+ * ever ran the Swift app falls through to its database; a machine with neither gets the Swift
+ * path back so the failure names the canonical location. The reader handles both generations.
+ */
+export function defaultImportSource(env: NodeJS.ProcessEnv, home: string): string {
+    const swift = legacyMacAppDatabasePath(home);
+    const candidates = [nodePath.join(legacyDataDir({ env, home }), LEGACY_DATABASE_FILENAME), swift];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? swift;
+}
+
+/**
+ * The config half of the import: copy `~/.config/nex/config` beside the data. Copy-only and
+ * never over an existing file — a Kelpi config the user already edited wins.
+ */
+function importLegacyConfig(
+    env: NodeJS.ProcessEnv,
+    home: string,
+    dryRun: boolean
+): { action: 'copied' | 'would-copy' | 'target-exists' | 'no-source'; from: string; to: string } {
+    const from = nodePath.join(home, '.config', 'nex', 'config');
+    const to = resolveConfigPath({ env, home });
+    if (!fs.existsSync(from)) return { action: 'no-source', from, to };
+    if (fs.existsSync(to)) return { action: 'target-exists', from, to };
+    if (dryRun) return { action: 'would-copy', from, to };
+    fs.mkdirSync(nodePath.dirname(to), { recursive: true, mode: 0o700 });
+    fs.copyFileSync(from, to);
+    return { action: 'copied', from, to };
+}
+
 async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
     const env = io.env ?? process.env;
     const home = env['HOME'] ?? homedir();
-    const from = args.from === undefined ? legacyMacAppDatabasePath(home) : expandTilde(args.from, home);
+    const from = args.from === undefined ? defaultImportSource(env, home) : expandTilde(args.from, home);
     const to = args.to === undefined ? resolveDatabasePath({ env, home }) : expandTilde(args.to, home);
 
     // With --json stdout carries the report alone, so the announcement goes to stderr.
@@ -719,8 +748,10 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
         );
     }
 
+    const config = importLegacyConfig(env, home, args.dryRun === true);
+
     if (args.json) {
-        io.out(JSON.stringify({ ok: true, ...report }));
+        io.out(JSON.stringify({ ok: true, ...report, config }));
         return 0;
     }
 
@@ -731,6 +762,19 @@ async function commandImport(io: CliIO, args: ParsedArgs): Promise<number> {
         io.out(`  agent session(s) to resume on the next start: ${String(report.resumable)}`);
     }
     if (report.backupPath !== null) io.out(`  backup: ${report.backupPath}`);
+    switch (config.action) {
+        case 'copied':
+            io.out(`  config: copied ${config.from} -> ${config.to}`);
+            break;
+        case 'would-copy':
+            io.out(`  config: would copy ${config.from} -> ${config.to}`);
+            break;
+        case 'target-exists':
+            io.out(`  config: ${config.to} already exists — left alone`);
+            break;
+        case 'no-source':
+            break; // nothing to bring over, nothing to say
+    }
     if (report.skipped.length > 0) {
         io.out(`  skipped ${String(report.skipped.length)} row(s):`);
         for (const row of report.skipped) {

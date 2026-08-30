@@ -164,7 +164,7 @@ describe.skipIf(!swiftCLIAvailable())('compat: kelpi event', () => {
         expect(current.agent_session_id).toBe(SESSION);
     }, 60_000);
 
-    it('exits 0 and sends nothing without NEX_PANE_ID, and exits 1 on a bad --agent', async () => {
+    it('exits 0 and sends nothing without a pane id, and exits 1 on a bad --agent', async () => {
         // Outside a Kelpi pane: `requirePaneID()` exits 0 silently (hooks must never spam).
         const orphan = await kelpi.run(['event', 'start']);
         expect(orphan.code).toBe(0);

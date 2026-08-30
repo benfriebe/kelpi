@@ -38,41 +38,38 @@ describe('resolveProfileEnv', () => {
     const profiles = parseProfiles(
         [
             'profile = work:CLAUDE_CONFIG_DIR=/home/me/.claude-work',
-            'profile = work:NEX_PROFILE=spoofed',
+            'profile = work:KELPI_PROFILE=spoofed',
             'profile = work:FOO=bar'
         ].join('\n')
     );
 
-    it('merges the canonical profile markers last, beating a spoofing config line', () => {
+    it('merges the canonical KELPI_PROFILE marker last, beating a spoofing config line', () => {
         expect(resolveProfileEnv(profiles, 'work')).toEqual({
             CLAUDE_CONFIG_DIR: '/home/me/.claude-work',
             FOO: 'bar',
-            KELPI_PROFILE: 'work',
-            NEX_PROFILE: 'work'
+            KELPI_PROFILE: 'work'
         });
     });
 
-    it('resolves an undefined profile to just the markers', () => {
-        expect(resolveProfileEnv(profiles, 'default')).toEqual({ KELPI_PROFILE: 'default', NEX_PROFILE: 'default' });
+    it('resolves an undefined profile to just the marker', () => {
+        expect(resolveProfileEnv(profiles, 'default')).toEqual({ KELPI_PROFILE: 'default' });
         expect(isDefinedProfile(profiles, 'work')).toBe(true);
         expect(isDefinedProfile(profiles, 'default')).toBe(false);
     });
 });
 
 describe('mergedEnvVars', () => {
-    it('emits KELPI_PANE_ID, NEX_PANE_ID, PATH, then profile vars sorted by key', () => {
+    it('emits KELPI_PANE_ID, PATH, then profile vars sorted by key', () => {
         const merged = mergedEnvVars({
             paneID: PANE_ID,
             path: '/Apps/Nex.app/Contents/Helpers:/usr/bin',
-            profileEnv: { ZED: '1', ALPHA: '2', NEX_PROFILE: 'work', KELPI_PROFILE: 'work' }
+            profileEnv: { ZED: '1', ALPHA: '2', KELPI_PROFILE: 'work' }
         });
         expect(merged).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/Apps/Nex.app/Contents/Helpers:/usr/bin' },
             { key: 'ALPHA', value: '2' },
             { key: 'KELPI_PROFILE', value: 'work' },
-            { key: 'NEX_PROFILE', value: 'work' },
             { key: 'ZED', value: '1' }
         ]);
     });
@@ -81,17 +78,16 @@ describe('mergedEnvVars', () => {
         const merged = mergedEnvVars({
             paneID: PANE_ID,
             path: '/helpers:/usr/bin',
-            profileEnv: { NEX_PANE_ID: 'hijacked', KELPI_PANE_ID: 'hijacked', PATH: '/evil', NEX_SOCKET: '/evil.sock', KELPI_SOCKET: '/evil.sock', OK: 'yes' }
+            profileEnv: { KELPI_PANE_ID: 'hijacked', PATH: '/evil', KELPI_SOCKET: '/evil.sock', OK: 'yes' }
         });
         expect(merged).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' },
             { key: 'OK', value: 'yes' }
         ]);
     });
 
-    it('injects both socket routes between PATH and the profile vars when a route is given', () => {
+    it('injects KELPI_SOCKET between PATH and the profile vars when a route is given', () => {
         const merged = mergedEnvVars({
             paneID: PANE_ID,
             path: '/helpers:/usr/bin',
@@ -100,10 +96,8 @@ describe('mergedEnvVars', () => {
         });
         expect(merged).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' },
             { key: 'KELPI_SOCKET', value: 'tcp:127.0.0.1:49213' },
-            { key: 'NEX_SOCKET', value: 'tcp:127.0.0.1:49213' },
             { key: 'ALPHA', value: '2' }
         ]);
     });
@@ -111,7 +105,6 @@ describe('mergedEnvVars', () => {
     it('injects nothing for a null, absent or empty route', () => {
         const expected = [
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' }
         ];
         expect(mergedEnvVars({ paneID: PANE_ID, path: '/helpers:/usr/bin', profileEnv: {} })).toEqual(expected);
@@ -123,15 +116,14 @@ describe('mergedEnvVars', () => {
         ).toEqual(expected);
     });
 
-    it('a profile line cannot spoof a socket route even when none is injected', () => {
+    it('a profile line cannot spoof KELPI_SOCKET even when no route is injected', () => {
         const merged = mergedEnvVars({
             paneID: PANE_ID,
             path: '/helpers:/usr/bin',
-            profileEnv: { NEX_SOCKET: 'tcp:evil.example:1', KELPI_SOCKET: 'tcp:evil.example:1' }
+            profileEnv: { KELPI_SOCKET: 'tcp:evil.example:1' }
         });
         expect(merged).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' }
         ]);
     });
@@ -165,11 +157,9 @@ describe('paneSpawnEnvVars', () => {
             })
         ).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' },
             { key: 'EDITOR', value: 'vim' },
-            { key: 'KELPI_PROFILE', value: 'default' },
-            { key: 'NEX_PROFILE', value: 'default' }
+            { key: 'KELPI_PROFILE', value: 'default' }
         ]);
     });
 
@@ -202,11 +192,9 @@ describe('paneSpawnEnvVars', () => {
             })
         ).toEqual([
             { key: 'KELPI_PANE_ID', value: PANE_ID },
-            { key: 'NEX_PANE_ID', value: PANE_ID },
             { key: 'PATH', value: '/helpers:/usr/bin' },
             { key: 'CLAUDE_CONFIG_DIR', value: '/w' },
-            { key: 'KELPI_PROFILE', value: 'work' },
-            { key: 'NEX_PROFILE', value: 'work' }
+            { key: 'KELPI_PROFILE', value: 'work' }
         ]);
     });
 });

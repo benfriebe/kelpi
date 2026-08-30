@@ -44,10 +44,8 @@ describe('pane-split', () => {
         expect(spawn?.cwd).toBe('/repo');
         expect(spawn?.env).toEqual([
             ['KELPI_PANE_ID', NEW],
-            ['NEX_PANE_ID', NEW],
             ['PATH', '/opt/kelpi/helpers:/usr/bin'],
             ['KELPI_PROFILE', 'default'],
-        ['NEX_PROFILE', 'default']
         ]);
         expect(h.term.attached).toEqual([{ paneID: NEW, cols: 80, rows: 24 }]);
         expect(h.pty.syncGroupCalls.at(-1)?.workspaceID).toBe(W1);

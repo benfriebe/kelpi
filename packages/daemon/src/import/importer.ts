@@ -174,7 +174,7 @@ export function runImport(options: RunImportOptions): ImportReport {
         throw new LegacyImportError(
             'same-database',
             `--from and --to are the same file (${options.to})`,
-            'Point --to at the daemon database (default: ~/Library/Application Support/nexd/nex.db); the daemon keeps its own file so the Swift app can keep using yours.'
+            'Point --to at the daemon database (default: ~/Library/Application Support/kelpid/kelpi.db); the daemon keeps its own file so the Swift app can keep using yours.'
         );
     }
 

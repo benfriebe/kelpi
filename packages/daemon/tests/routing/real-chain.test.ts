@@ -5,8 +5,8 @@
  * the daemon's socket explicitly set. These tests take the hops a Claude Code hook actually
  * takes: a real PTY shell inside a real pane runs a bare `kelpi …` resolved purely from the
  * pane's own environment — the `KELPID_HELPERS_DIR` PATH prepend finds the CLI, the injected
- * `NEX_SOCKET=tcp:…` routes it to THIS daemon — and the daemon's store must move. Nothing
- * here sets `NEX_SOCKET` on a command line, calls a dispatcher directly, or touches the
+ * `KELPI_SOCKET=tcp:…` routes it to THIS daemon — and the daemon's store must move. Nothing
+ * here sets `KELPI_SOCKET` on a command line, calls a dispatcher directly, or touches the
  * production `/tmp/nex.sock` (every daemon lives in a mkdtemp sandbox with its own compat
  * socket path and an ephemeral TCP port).
  *
@@ -129,8 +129,8 @@ describe('real-chain event routing', () => {
         expect(await until(() => firstPane(daemon).status === 'waitingForInput')).toBe(true);
 
         // Belt and braces: the pane's shell really carried the injected env (not just "some
-        // event from somewhere arrived") — NEX_PANE_ID names this pane, NEX_SOCKET this daemon.
-        daemon.input.sendText(pane.id, 'echo "route=$NEX_SOCKET pane=$NEX_PANE_ID"', { bare: false });
+        // event from somewhere arrived") — KELPI_PANE_ID names this pane, KELPI_SOCKET this daemon.
+        daemon.input.sendText(pane.id, 'echo "route=$KELPI_SOCKET pane=$KELPI_PANE_ID"', { bare: false });
         await settle(500);
         const capture = await daemon.term.captureAsync(pane.id, { scrollback: true });
         expect(capture).toContain(`pane=${pane.id}`);

@@ -295,7 +295,7 @@ describe('markdown-external-editor (CONT-081…090)', () => {
         expect(spawn?.command).toBe("/usr/bin/env PATH='/usr/bin:/bin' nvim '/tmp/work/notes.md'");
         expect(spawn?.cwd).toBe('/tmp/work');
         // CONT-089: the same env every terminal pane gets, including the pane marker.
-        expect(spawn?.env.some(([key, value]) => key === 'NEX_PANE_ID' && value === MD)).toBe(true);
+        expect(spawn?.env.some(([key, value]) => key === 'KELPI_PANE_ID' && value === MD)).toBe(true);
         expect(f.h.term.attached.some((entry) => entry.paneID === MD)).toBe(true);
     });
 

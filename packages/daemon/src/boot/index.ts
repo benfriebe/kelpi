@@ -74,9 +74,3 @@ export {
     VERSION_ENV,
     type DaemonVersion
 } from './version.js';
-export {
-    maintainLegacyCompatSocket,
-    migrateLegacyState,
-    type LegacyCompatSocketOptions,
-    type LegacyMigrationLookup
-} from './legacy-migration.js';

@@ -633,6 +633,7 @@ function makeCli(sandbox) {
                     HOME: sandbox.home,
                     // The real CLI hardcodes its transports; `tcp:` is the one the compat
                     // harness uses to reach a sandbox daemon without touching /tmp/nex.sock.
+                    KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
                     NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
                     // Screenshots and page loads are slower than a state read.
                     KELPI_REPLY_TIMEOUT: '30',

@@ -37,8 +37,6 @@ import {
 import {
     ControlSocketBusyError,
     createControlServer,
-    DEFAULT_CONTROL_SOCKET_PATH,
-    LEGACY_CONTROL_SOCKET_PATH,
     resolveControlEndpoints,
     type ControlServer,
     type ControlTcpStatus
@@ -138,7 +136,6 @@ import {
 import { configuredTcpPort, loadDaemonConfig, createProfileReader, type DaemonConfig } from './config.js';
 import { createDispatcher } from './dispatch.js';
 import { runLabelPresetMigration } from './labels.js';
-import { maintainLegacyCompatSocket } from './legacy-migration.js';
 import { readPortFile, writePortFile } from './port.js';
 import { spawnRestoredPanes, typeResumeCommands, type ResumeOutcome } from './resume.js';
 import { resolveDaemonVersion, type DaemonVersion } from './version.js';
@@ -788,16 +785,6 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         try {
             await server.start();
             compatDegraded = null;
-            // Production only: keep the pre-rename /tmp/nex.sock resolving to the socket we
-            // just bound, so pre-cutover CLIs and the shipped Swift `nex` still reach us. A
-            // live foreign owner of the legacy path is left alone.
-            if (server.socketPath === DEFAULT_CONTROL_SOCKET_PATH) {
-                void maintainLegacyCompatSocket({
-                    boundPath: server.socketPath,
-                    legacyPath: LEGACY_CONTROL_SOCKET_PATH,
-                    log
-                });
-            }
         } catch (error) {
             compatDegraded = toError(error).message;
             report(toError(error), 'compat-control');

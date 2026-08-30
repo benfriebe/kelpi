@@ -32,9 +32,8 @@ export function envValue(name: string): string | undefined {
     return current[name];
 }
 
-/** `KELPI_PANE_ID`, falling back to the pre-rename `NEX_PANE_ID` (older daemons inject only that). */
 function paneIDValue(): string | undefined {
-    return current['KELPI_PANE_ID'] ?? current['NEX_PANE_ID'];
+    return current['KELPI_PANE_ID'];
 }
 
 /** The caller pane, or a silent `exit(0)` when no pane id is set. */

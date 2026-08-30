@@ -36,7 +36,8 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model.
   the daemon as the settings authority.
 - **The `kelpi` CLI**: a single-file, dependency-free binary speaking the daemon's newline-JSON
   control protocol — panes, workspaces, groups, events, web-pane control, doctor, install-hooks,
-  and the legacy importer. The shipped Swift `nex` CLI works against the same socket unchanged.
+  and the legacy importer. The daemon still passes the shipped Swift CLI's 103-test compat
+  suite over TCP — same wire, different socket.
 - **Self-hosting tooling**: an impact-mapped verification battery, a promote flow that upgrades
   the running instance from inside itself, a second full instance for development, and a
   sub-second HMR loop.
@@ -49,21 +50,17 @@ packages are `@kelpi/*`, the socket is `/tmp/kelpi.sock`, panes carry `KELPI_PAN
 `~/Library/Application Support/kelpid/kelpi.db`, new worktrees go under `~/kelpi/worktrees/`, and
 the bundled Claude Code skill is `kelpi-agentic`.
 
-The pre-rename `nex` names survive as a **compatibility surface**, migrated automatically:
+**Nothing is shared with Nex.** The Swift app keeps `/tmp/nex.sock`, its `NEX_*` pane
+variables, `~/.config/nex` and `~/Library/Application Support/Nex`; Kelpi has its own of each,
+and the two apps run side by side without touching one another. The bridge between them is
+**`kelpid import`**: it copies the data (from the Swift app's database, or a pre-rename port
+daemon's `nexd/nex.db` — it reads both generations) and the config into Kelpi's locations, once,
+explicitly, with a printed report. See "Importing from the legacy macOS app" below.
 
-- On its first boot the daemon **copies** the pre-rename state over — `nexd/nex.db` (plus
-  `pane-geometry.json`) becomes `kelpid/kelpi.db`, and `~/.config/nex/config` becomes
-  `~/.config/kelpi/config`. Copy-only, the originals stay behind, and sandboxes (anything with
-  the env overrides set) never migrate.
-- The daemon keeps a **symlink at `/tmp/nex.sock`** pointing at `/tmp/kelpi.sock`, so the
-  shipped Swift `nex` and every pre-rename hook still connect. A live foreign socket there (the
-  Swift app running) is never touched.
-- Panes get **both** env spellings injected; the CLI reads `KELPI_*` first and falls back to
-  `NEX_*`, and its unix default falls back to `/tmp/nex.sock` when only a pre-cutover daemon is
-  running.
-- `/usr/local/bin/nex` is healed (never created) beside the primary `/usr/local/bin/kelpi`; a
-  `nex` compat launcher ships in the bundle, and `kelpi install-hooks` migrates hook entries to
-  the `kelpi` spelling when re-run.
+Two conveniences remain for our own pre-rename install base, neither shared with the Swift app:
+`/usr/local/bin/nex` links that THIS app's earlier builds installed are healed (never created,
+and a Swift-owned link is never touched), and `kelpi install-hooks` migrates hook entries to the
+`kelpi` spelling when re-run.
 
 ## Quickstart
 
@@ -212,9 +209,12 @@ the file costs one badly-wrapped first prompt per pane and nothing else.
 
 ## Importing from the legacy macOS app
 
-The pre-Kelpi Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the
-daemon owns a separate database (`~/Library/Application Support/kelpid/kelpi.db`, or `KELPID_DB_PATH`)
-so the two can run side by side. `kelpid import` copies the first into the second, once.
+The Swift app (Nex) keeps its state in `~/Library/Application Support/Nex/nex.db`; the daemon
+owns a separate database (`~/Library/Application Support/kelpid/kelpi.db`, or `KELPID_DB_PATH`)
+so the two run side by side. `kelpid import` copies the legacy state into Kelpi's, once — the
+database AND `~/.config/nex/config` (never over an existing Kelpi config). Its default source
+is the pre-rename port daemon's `nexd/nex.db` when that exists (the reader handles both
+generations), else the Swift app's.
 
 The daemon must be stopped: it holds the whole state in memory and its next save would overwrite
 whatever the import wrote. That is also the order that gets your sessions back:

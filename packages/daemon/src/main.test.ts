@@ -97,7 +97,7 @@ describe('parseKelpidArgs', () => {
             'KELPID_CLIENT_DIR',
             'KELPID_LOG_FILE',
             'KELPID_ENTRY',
-            'NEX_SOCKET'
+            'KELPI_SOCKET'
         ]) {
             expect(helpText()).toContain(key);
         }

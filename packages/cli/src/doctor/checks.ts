@@ -37,7 +37,7 @@ export interface PingFacts {
     protocol?: number | undefined;
     /** The daemon's CLI-compat socket is degraded (another Kelpi owns it); from `ping`. */
     compat?: { path: string; error: string } | undefined;
-    /** The `KELPI_SOCKET` / `NEX_SOCKET` value the daemon injects into pane environments; from `ping`. */
+    /** The `KELPI_SOCKET` value the daemon injects into pane environments; from `ping`. */
     paneRoute?: string | undefined;
 }
 
@@ -165,7 +165,7 @@ export function routingCheck(facts: PingFacts): DoctorCheck {
             detail:
                 'the answering daemon is the Swift Nex app (no `protocol` field in its ping reply), not this CLI\'s own daemon.',
             repair:
-                'Inside Kelpi panes, commands route automatically (the pane env carries KELPI_SOCKET). In plain terminals, set KELPI_SOCKET=tcp:127.0.0.1:<port> to reach the daemon, or quit the Swift app so it releases /tmp/nex.sock.'
+                'Inside Kelpi panes, commands route automatically (the pane env carries KELPI_SOCKET). In plain terminals, unset KELPI_SOCKET to use /tmp/kelpi.sock, or point it at the Kelpi daemon\'s tcp: endpoint.'
         };
     }
     if (facts.compat !== undefined) {
@@ -230,10 +230,10 @@ export interface ProcessDeps {
 }
 
 /**
- * `ps` rows whose comm ends with a Kelpi (or Nex) app executable path. The `Nex` form covers
- * both the shipped Swift app and pre-rename port bundles — the doctor keeps seeing them.
+ * `ps` rows whose comm ends with the Kelpi app's executable path. The Swift Nex app is a
+ * DIFFERENT product running side by side; its processes are none of this doctor's business.
  */
-function swiftAppPids(psOutput: string): number[] {
+function kelpiAppPids(psOutput: string): number[] {
     const pids: number[] = [];
     for (const line of psOutput.split('\n')) {
         const trimmed = line.trim();
@@ -242,9 +242,7 @@ function swiftAppPids(psOutput: string): number[] {
         const pid = Number.parseInt(trimmed.slice(0, separator), 10);
         const comm = trimmed.slice(separator + 1).trim();
         if (!Number.isInteger(pid)) continue;
-        if (comm.endsWith('Kelpi.app/Contents/MacOS/Kelpi') || comm.endsWith('Nex.app/Contents/MacOS/Nex')) {
-            pids.push(pid);
-        }
+        if (comm.endsWith('Kelpi.app/Contents/MacOS/Kelpi')) pids.push(pid);
     }
     return pids;
 }
@@ -259,19 +257,9 @@ function daemonPids(psOutput: string, selfPid: number): number[] {
         const pid = Number.parseInt(trimmed.slice(0, separator), 10);
         if (!Number.isInteger(pid) || pid === selfPid) continue;
         const command = trimmed.slice(separator + 1);
-        // `nexd` forms stay recognised: during the rename transition the running daemon may
-        // still be a pre-rename bundle, and a doctor that cannot see it would misdiagnose.
         const runsDaemon = command
             .split(/\s+/)
-            .some(
-                (token) =>
-                    token === 'kelpid' ||
-                    token.endsWith('/kelpid') ||
-                    token.endsWith('/kelpid.js') ||
-                    token === 'nexd' ||
-                    token.endsWith('/nexd') ||
-                    token.endsWith('/nexd.js')
-            );
+            .some((token) => token === 'kelpid' || token.endsWith('/kelpid') || token.endsWith('/kelpid.js'));
         if (runsDaemon) pids.push(pid);
     }
     return pids;
@@ -294,7 +282,7 @@ export async function processCheck(transport: Transport, deps: ProcessDeps, fact
     // daemon (a bundled `kelpid.js` runs under node, so `comm` is just the node binary).
     const comm = await deps.run('/bin/ps', ['-axo', 'pid=,comm=']);
     const full = await deps.run('/bin/ps', ['-axo', 'pid=,command=']);
-    const appPids = swiftAppPids(comm.stdout);
+    const appPids = kelpiAppPids(comm.stdout);
     const kelpidPids = daemonPids(full.stdout, process.pid);
 
     const known = new Set<number>(kelpidPids);

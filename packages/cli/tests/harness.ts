@@ -7,11 +7,11 @@
  * exit codes, which stream each line lands on, that stdout is not truncated on exit, and the
  * exact bytes that reach the socket.
  *
- * The fake server is TCP on an ephemeral port, reached through `NEX_SOCKET`. **Never
+ * The fake server is TCP on an ephemeral port, reached through `KELPI_SOCKET`. **Never
  * `/tmp/nex.sock`**: that path is hardcoded in the CLI and belongs to whatever Kelpi is running
  * on the developer's machine, so a test that used it would talk to the user's real app.
  * The child's environment is built from scratch for the same reason — inheriting a real
- * `NEX_PANE_ID` would silently change what several commands do.
+ * `KELPI_PANE_ID` would silently change what several commands do.
  */
 
 import { execFile, spawn } from 'node:child_process';
@@ -174,8 +174,8 @@ export async function runCLI(args: readonly string[], options: RunOptions = {}):
     const env: Record<string, string> = {
         PATH: process.env['PATH'] ?? '/usr/bin:/bin',
         HOME: home,
-        ...(options.port !== undefined ? { NEX_SOCKET: `tcp:127.0.0.1:${String(options.port)}` } : {}),
-        ...(options.paneID !== undefined ? { NEX_PANE_ID: options.paneID } : {}),
+        ...(options.port !== undefined ? { KELPI_SOCKET: `tcp:127.0.0.1:${String(options.port)}` } : {}),
+        ...(options.paneID !== undefined ? { KELPI_PANE_ID: options.paneID } : {}),
         ...options.env
     };
     const command = options.direct === true ? CLI_BUNDLE : process.execPath;

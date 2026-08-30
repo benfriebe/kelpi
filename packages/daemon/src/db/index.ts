@@ -78,6 +78,8 @@ export {
     DB_PATH_ENV,
     ensureDatabaseDir,
     expandTilde,
+    legacyDataDir,
+    LEGACY_DATABASE_FILENAME,
     legacyMacAppDatabasePath,
     MEMORY_DATABASE_PATH,
     prepareDatabaseFile,

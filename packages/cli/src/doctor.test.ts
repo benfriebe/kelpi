@@ -209,24 +209,34 @@ describe('process (daemon-aware)', () => {
         expect(check.detail).toBe('kelpid running (pids: 901)');
     });
 
-    it('still accepts the Swift app', async () => {
-        const check = await processCheck(
-            { kind: 'unix', path: '/tmp/nex.sock' },
+    it('accepts the Kelpi app, and IGNORES the side-by-side Swift Nex app', async () => {
+        const kelpi = await processCheck(
+            { kind: 'unix', path: '/tmp/kelpi.sock' },
+            processDeps({
+                run: async (_path, args) =>
+                    args.includes('pid=,comm=') ? ok(' 1234 /Applications/Kelpi.app/Contents/MacOS/Kelpi\n') : ok('')
+            }),
+            {}
+        );
+        expect(kelpi).toMatchObject({ status: 'PASS', detail: 'Kelpi.app running (pids: 1234)' });
+
+        const swiftOnly = await processCheck(
+            { kind: 'unix', path: '/tmp/kelpi.sock' },
             processDeps({
                 run: async (_path, args) =>
                     args.includes('pid=,comm=') ? ok(' 1234 /Applications/Nex.app/Contents/MacOS/Nex\n') : ok('')
             }),
             {}
         );
-        expect(check).toMatchObject({ status: 'PASS', detail: 'Kelpi.app running (pids: 1234)' });
+        expect(swiftOnly.status).toBe('FAIL');
     });
 
     it('warns when ping answered from a pid nothing else knows about', async () => {
         const check = await processCheck(
-            { kind: 'unix', path: '/tmp/nex.sock' },
+            { kind: 'unix', path: '/tmp/kelpi.sock' },
             processDeps({
                 run: async (_path, args) =>
-                    args.includes('pid=,comm=') ? ok(' 1234 /Applications/Nex.app/Contents/MacOS/Nex\n') : ok('')
+                    args.includes('pid=,comm=') ? ok(' 1234 /Applications/Kelpi.app/Contents/MacOS/Kelpi\n') : ok('')
             }),
             { pid: 999 }
         );

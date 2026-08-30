@@ -284,12 +284,12 @@ describe('createDaemon', () => {
         const byKey = Object.fromEntries(env.map((entry) => [entry.key, entry.value]));
         // The bundled CLI shadows whatever the inherited PATH resolves.
         expect(byKey['PATH']?.startsWith(`${helpers}:`)).toBe(true);
-        // The injected NEX_SOCKET is the daemon's own loopback TCP listener…
-        expect(byKey['NEX_SOCKET']).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
-        expect(daemon.ctx.controlTransport?.().paneRoute).toBe(byKey['NEX_SOCKET']);
+        // The injected KELPI_SOCKET is the daemon's own loopback TCP listener…
+        expect(byKey['KELPI_SOCKET']).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
+        expect(daemon.ctx.controlTransport?.().paneRoute).toBe(byKey['KELPI_SOCKET']);
 
         // …and it ANSWERS: a `ping` over exactly that route reaches exactly this daemon.
-        const port = Number((byKey['NEX_SOCKET'] as string).split(':').pop());
+        const port = Number((byKey['KELPI_SOCKET'] as string).split(':').pop());
         const reply = await new Promise<string>((resolve, reject) => {
             const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
                 socket.write('{"command":"ping"}\n');

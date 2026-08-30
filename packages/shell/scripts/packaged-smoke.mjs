@@ -638,6 +638,7 @@ function cli(sandbox, args, timeoutMs = 20_000) {
             env: {
                 PATH: sandbox.env.PATH,
                 HOME: sandbox.home,
+                KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
                 NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`
             },
             stdio: ['ignore', 'pipe', 'pipe']

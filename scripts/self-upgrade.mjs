@@ -99,20 +99,28 @@ if (appPath.endsWith('.app')) {
 // ps, not pgrep: macOS pgrep -f silently fails to match long argv strings (measured — the
 // running daemon's ~200-char command line matches `ps | grep` and not `pgrep -f`, even with a
 // short pattern). A matcher that can silently return nothing is exactly what this script
-// cannot be built on.
-const psMatch = (pattern, alsoRequire) => {
+// cannot be built on — which is also why a ps FAILURE aborts the promote instead of reading
+// as "nothing is running": the process table on a busy machine exceeds Node's default 1MB
+// maxBuffer (Chromium helpers carry multi-KB argvs), and the ENOBUFS that throws turned one
+// full promote into a no-op relaunch beside the still-live pair (measured, 2026-08-30).
+const psTable = (() => {
     try {
-        const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
-        return out
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.includes(pattern) && (alsoRequire === undefined || line.includes(alsoRequire)))
-            .map((line) => Number(line.split(/\s+/)[0]))
-            .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
-    } catch {
-        return [];
+        return execFileSync('ps', ['-axo', 'pid=,command='], {
+            encoding: 'utf8',
+            maxBuffer: 64 * 1024 * 1024
+        });
+    } catch (error) {
+        console.error(`[self-upgrade] ps failed — refusing to promote blind: ${String(error?.message ?? error)}`);
+        process.exit(1);
     }
-};
+})();
+const psMatch = (pattern, alsoRequire) =>
+    psTable
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.includes(pattern) && (alsoRequire === undefined || line.includes(alsoRequire)))
+        .map((line) => Number(line.split(/\s+/)[0]))
+        .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
 // Pre-rename bundles this repo may still be running: a promote has to stop the app/daemon it
 // is replacing even when that pair was launched under an old name — the Nex-branded bundle
 // (product rename), or this checkout's previous directory (`new_nex`, before it moved to

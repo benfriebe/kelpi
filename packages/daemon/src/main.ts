@@ -840,7 +840,8 @@ function commandDevices(io: CliIO, action: 'list' | 'revoke', target: string | u
             io.out(`revoked "${revoked.name}" (device ${revoked.id})`);
             io.err(
                 'File (pane-asset) access is cut on its next request; the WS is refused at its next '
-                    + 'connect, but a session already open lasts until its socket drops.'
+                    + 'connect, and any session it has open is cut within a moment (the daemon watches '
+                    + 'the registry).'
             );
             return 0;
         }

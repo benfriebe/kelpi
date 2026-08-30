@@ -426,7 +426,13 @@ export const WS_REJECTION_REASONS = [
     /** Something other than `hello` arrived first. */
     'expected-hello',
     /** The connection sat open without completing a handshake. */
-    'hello-timeout'
+    'hello-timeout',
+    /**
+     * The paired device this session authenticated as was revoked (`kelpid devices revoke`)
+     * while the session was OPEN — the daemon cuts it live rather than waiting for the socket
+     * to drop. Unlike `bad-token` this can arrive after `welcome`, mid-stream.
+     */
+    'revoked'
 ] as const;
 export type WsRejectionReason = (typeof WS_REJECTION_REASONS)[number];
 

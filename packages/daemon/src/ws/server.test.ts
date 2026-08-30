@@ -262,6 +262,45 @@ describe('upgrade auth', () => {
         expect(seen).not.toContain(TOKEN);
     });
 
+    it('cuts an OPEN device session on revalidation, and only that one', async () => {
+        const live = new Set(['kd_alice', 'kd_bob']);
+        const f = await startServer({ validateDeviceToken: (token) => live.has(token) });
+        const alice = await helloWith(f.base, '?token=kd_alice', 'kd_alice');
+        expect(alice.first).toMatchObject({ type: 'welcome' });
+        const bob = await helloWith(f.base, '?token=kd_bob', 'kd_bob');
+        expect(bob.first).toMatchObject({ type: 'welcome' });
+        const owner = await helloWith(f.base, `?token=${TOKEN}`, TOKEN);
+        expect(owner.first).toMatchObject({ type: 'welcome' });
+
+        const closed = new Promise<number>((resolve) => bob.client.socket.once('close', (code) => resolve(code)));
+        live.delete('kd_bob');
+        expect(f.server.sync.revalidateSessions()).toBe(1);
+
+        // The cut explains itself mid-stream, then closes with the code that stops retries.
+        const rejected = await bob.client.waitForJson((m) => m['type'] === 'rejected', 'revoked rejection');
+        expect(rejected).toMatchObject({ type: 'rejected', code: 'unauthorized', reason: 'revoked' });
+        expect(String(rejected['message'])).toContain('revoked');
+        expect(await closed).toBe(WS_CLOSE_CODES.unauthorized);
+
+        // The survivors really survived: a second sweep finds nothing left to cut.
+        expect(f.server.sync.revalidateSessions()).toBe(0);
+    });
+
+    it('never cuts a session that owes its auth to the upgrade (the shell bearer path)', async () => {
+        // No device is live at all — the harshest registry state a sweep can meet.
+        const f = await startServer({ validateDeviceToken: () => false });
+        const shell = await helloWith(
+            f.base,
+            '',
+            undefined,
+            { authorization: `Bearer ${TOKEN}` }
+        );
+        expect(shell.first).toMatchObject({ type: 'welcome' });
+        // Its hello carried no token, so there is no credential to re-check — the bearer was
+        // the OWNER token, which no registry change can revoke.
+        expect(f.server.sync.revalidateSessions()).toBe(0);
+    });
+
     it('refuses a hello whose token is wrong even when the upgrade was authenticated', async () => {
         const f = await startServer();
         // An authenticated upgrade must not launder a bogus hello token.

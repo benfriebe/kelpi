@@ -11,9 +11,14 @@ import path from 'node:path';
 import { leaf } from '@kelpi/core/layout';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { WS_PROTOCOL_VERSION } from '@kelpi/protocol';
+import { WebSocket } from 'ws';
+
 import { probeControlPing } from '../control/index.js';
 import { createPersistence } from '../db/index.js';
 import { spawnEnvVars } from '../handlers/pane/index.js';
+import { mintDevice, revokeDevice } from '../lifecycle/index.js';
+import { WS_CLOSE_CODES } from '../ws/sync.js';
 import type { PersistedSnapshot } from '../store/index.js';
 import { createDaemon, type Daemon } from './compose.js';
 import { readPortFile, writePortFile } from './port.js';
@@ -402,5 +407,53 @@ describe('createDaemon', () => {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
         expect(daemon.pty.pid(paneID)).toEqual(expect.any(Number));
+    }, 20_000);
+
+    it('cuts a LIVE paired-device session when the registry revokes it (the watcher path)', async () => {
+        const paths = scratch();
+        const devicesFile = path.join(paths.root, 'devices.json');
+        const daemon = daemonFor(paths, { env: { KELPID_DEVICES_PATH: devicesFile } });
+        const info = await daemon.start();
+
+        // Pair exactly as the CLI does — the daemon must notice the file, not a command.
+        const minted = mintDevice(devicesFile, 'test-tablet');
+
+        const socket = new WebSocket(`ws://127.0.0.1:${String(info.httpPort)}/ws?token=${minted.token}`);
+        cleanups.push(() => socket.close());
+        const messages: Record<string, unknown>[] = [];
+        const waitFor = (predicate: (m: Record<string, unknown>) => boolean, label: string): Promise<Record<string, unknown>> =>
+            new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 10_000);
+                const check = (): void => {
+                    const hit = messages.find(predicate);
+                    if (hit !== undefined) {
+                        clearTimeout(timer);
+                        socket.off('message', onMessage);
+                        resolve(hit);
+                    }
+                };
+                const onMessage = (): void => check();
+                socket.on('message', onMessage);
+                check();
+            });
+        socket.on('message', (data) => {
+            messages.push(JSON.parse(String(data)) as Record<string, unknown>);
+        });
+        await new Promise<void>((resolve, reject) => {
+            socket.once('open', () => resolve());
+            socket.once('error', reject);
+        });
+        socket.send(
+            JSON.stringify({ type: 'hello', protocolVersion: WS_PROTOCOL_VERSION, token: minted.token })
+        );
+        await waitFor((m) => m['type'] === 'welcome', 'welcome');
+
+        // The revoke is a plain registry write (write-then-rename); the daemon's watcher must
+        // notice on its own and cut the session mid-stream with the reason a client can act on.
+        const closed = new Promise<number>((resolve) => socket.once('close', (code) => resolve(code)));
+        expect(revokeDevice(devicesFile, minted.device.id)).not.toBeNull();
+        const rejected = await waitFor((m) => m['type'] === 'rejected', 'the revoked cut');
+        expect(rejected).toMatchObject({ code: 'unauthorized', reason: 'revoked' });
+        expect(await closed).toBe(WS_CLOSE_CODES.unauthorized);
     }, 20_000);
 });

@@ -32,6 +32,8 @@ import { createContentService, type ContentService } from '../content/index.js';
 import {
     contentAppearanceOf,
     createSettingsService,
+    watchConfigFile,
+    type ConfigWatcher,
     type SettingsService
 } from '../settings/index.js';
 import {
@@ -379,6 +381,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
     // Declared before persistence: an open failure fires `onDegraded` synchronously from
     // `createPersistence`, and a `let` in the temporal dead zone would throw there instead.
     let ws: WsServer | undefined;
+    /** Watches `devices.json` so `kelpid devices revoke` cuts OPEN sessions, not just new ones. */
+    let devicesWatcher: ConfigWatcher | undefined;
     // Every persistence failure is surfaced twice: `onError` for the log, `onDegraded` for the
     // things that must not be missed — a loud line, a client-visible event, and the flag `ping`
     // and `kelpid status` report. Silence here is the P0 this whole path exists to prevent.
@@ -1239,6 +1243,8 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             offData();
             offExit();
             offSettings();
+            devicesWatcher?.close();
+            devicesWatcher = undefined;
             if (statsGateTimer !== null) clearInterval(statsGateTimer);
             statsGateTimer = null;
             offStats();
@@ -1470,6 +1476,23 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
             runControl = undefined;
             throw error;
         }
+
+        // Live cut on revoke. The hello validator already re-reads `devices.json`, but an OPEN
+        // session never re-hellos — so every registry change re-checks every session's
+        // credential and cuts the ones the validator no longer accepts. The config-file
+        // watcher fits exactly: the registry is written write-then-rename (`devices.ts`),
+        // which is the re-attach dance it was built for, and it tolerates the file not
+        // existing yet (nobody paired).
+        devicesWatcher = watchConfigFile({
+            path: resolveDevicesPath(env),
+            onChange: () => {
+                const cut = ws?.sync.revalidateSessions() ?? 0;
+                if (cut > 0) {
+                    log(`devices: registry changed — cut ${String(cut)} revoked session${cut === 1 ? '' : 's'}`);
+                }
+            },
+            onError: (error, context) => report(error, context)
+        });
 
         const httpPort = ws.port ?? 0;
         writePortFile(paths, httpPort);

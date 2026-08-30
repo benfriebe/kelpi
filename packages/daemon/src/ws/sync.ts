@@ -119,6 +119,10 @@ export const DEFAULT_HELLO_TIMEOUT_MS = 10_000;
 /** The message a client sees when its hello carries no usable token. */
 export const BAD_TOKEN_MESSAGE = "invalid or missing daemon token — open the client via 'kelpid url'";
 
+/** The message an OPEN session sees when the paired device it authenticated as is revoked. */
+export const REVOKED_MESSAGE =
+    "this device's access was revoked — ask the daemon's owner for a new pairing ('kelpid pair')";
+
 export interface SyncTransport {
     sendJson(message: JsonObject): void;
     close(code?: number, reason?: string): void;
@@ -246,6 +250,13 @@ export interface SyncHub {
     ): SyncSession;
     /** The `HandlerContext.broadcast` seam: fan a daemon event out to attached clients. */
     broadcast(event: Record<string, unknown>): void;
+    /**
+     * Re-check every open session's credential against the hello validator and CUT the ones
+     * it no longer accepts (`kelpid devices revoke` while a session is connected — the device
+     * registry watcher in `boot/compose.ts` calls this on every registry change). Returns how
+     * many sessions were cut. A no-op on a daemon with no token gate.
+     */
+    revalidateSessions(): number;
     readonly sessions: readonly SyncSession[];
     /** Deltas emitted so far; the anchor a snapshot is taken at. */
     readonly seq: number;
@@ -1259,6 +1270,14 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
         private geometryWindowID: string | null = null;
         /** Fires when the connection has held a socket open without ever saying hello. */
         private helloTimer: ReturnType<typeof setTimeout> | null = null;
+        /**
+         * The token this session's hello authenticated with, kept so `revalidateSessions` can
+         * re-ask the validator after the device registry changes. Null when the session never
+         * presented one: an anonymous daemon, or an upgrade-authenticated hello that omitted
+         * it — which is the shell's bearer-header path, and that bearer is the OWNER token,
+         * outside the registry and never revocable through it.
+         */
+        private credential: string | null = null;
 
         constructor(
             private readonly transport: SyncTransport,
@@ -1510,6 +1529,9 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                     this.reject('unauthorized', BAD_TOKEN_MESSAGE, 'bad-token');
                     return;
                 }
+                // Remember what authenticated us: a registry change re-asks the same
+                // validator with the same token (`revalidateSessions`).
+                if (!exempt) this.credential = token;
             }
 
             this.clearHelloTimer();
@@ -1601,6 +1623,23 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                       : WS_CLOSE_CODES.serverError;
             this.transport.close(closeCode, reason ?? code);
             this.close();
+        }
+
+        /**
+         * Re-ask the validator whether this session's credential still stands. True = kept.
+         *
+         * Only an OPEN session that authenticated by token can fail: one still in its
+         * handshake window is the hello gate's problem, and a credential-less session is
+         * either anonymous (no validator) or the shell's owner-bearer path — the owner token
+         * lives in the run dir, not the registry, so no registry change can invalidate it.
+         * The cut reuses `reject`: the `rejected` frame explains itself mid-stream, and the
+         * `unauthorized` close code is what stops the client retrying a dead credential.
+         */
+        revalidate(validate: (token: string) => boolean): boolean {
+            if (this.disposed || !this.ready || this.credential === null) return true;
+            if (validate(this.credential)) return true;
+            this.reject('unauthorized', REVOKED_MESSAGE, 'revoked');
+            return false;
         }
 
         // ── reports ─────────────────────────────────────────────────────────────────
@@ -2491,6 +2530,16 @@ export function createSyncHub(options: SyncHubOptions): SyncHub {
                 if (suppressible && session.attends(workspaceID, paneID)) continue;
                 session.send(message);
             }
+        },
+        revalidateSessions() {
+            const validate = options.validateToken;
+            if (closed || validate === undefined) return 0;
+            let cut = 0;
+            // Snapshot first: a cut session deletes itself from the live set mid-iteration.
+            for (const session of [...sessions]) {
+                if (!session.revalidate(validate)) cut += 1;
+            }
+            return cut;
         },
         get sessions() {
             return [...sessions];

@@ -17,10 +17,11 @@
  * Tokens are stored HASHED (sha256). The plaintext exists exactly once, in `mintDevice`'s
  * return value, on its way into a pairing URL. A leaked registry file therefore revokes
  * nothing the WS gate would accept (the pane-assets gate accepts stored hashes by design —
- * see `createAssetCredentialValidator`). Revocation applies per surface: pane-asset fetches
- * are cut on the next REQUEST, the WS at the next hello — an already-connected session lives
- * until its socket drops (reconnects re-hello and are then refused); cutting live sessions
- * on revoke is a follow-up that needs per-session identity plumbing in `ws/sync.ts`.
+ * see `createAssetCredentialValidator`). Revocation covers every surface: pane-asset fetches
+ * are cut on the next REQUEST, the WS at the next hello, and sessions already OPEN are cut
+ * within a debounce of the registry change — `boot/compose.ts` watches this file and has the
+ * sync hub re-check each session's credential (`revalidateSessions`), which closes revoked
+ * ones with a `rejected` frame (`reason: 'revoked'`) so the client stops retrying.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';

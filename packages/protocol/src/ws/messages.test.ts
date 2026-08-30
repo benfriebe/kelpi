@@ -114,7 +114,8 @@ describe('client-sync protocol envelope', () => {
             'bad-token',
             'protocol-mismatch',
             'expected-hello',
-            'hello-timeout'
+            'hello-timeout',
+            'revoked'
         ]);
         // `bad-token` is the one a client acts on: stop retrying, and forget the stored token.
         const rejection: WsRejectedMessage = {

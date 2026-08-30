@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDaemon } from './boot/index.js';
 import { openSqliteDatabase } from './db/index.js';
+import { createDeviceValidator, loadDevices } from './lifecycle/index.js';
 import { helpText, parseKelpidArgs, resolveEntry, runKelpid, type CliIO } from './main.js';
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -70,6 +71,30 @@ describe('parseKelpidArgs', () => {
         expect(parseKelpidArgs(['--version']).command).toBe('version');
     });
 
+    it('parses `url --tailnet`, defaulting off', () => {
+        expect(parseKelpidArgs(['url'])).toMatchObject({ command: 'url', tailnet: false });
+        expect(parseKelpidArgs(['url', '--tailnet'])).toMatchObject({ command: 'url', tailnet: true });
+    });
+
+    it('parses `pair` and the `devices` positional forms', () => {
+        expect(parseKelpidArgs(['pair', '--name', 'alice-laptop', '--tailnet'])).toMatchObject({
+            command: 'pair',
+            pairName: 'alice-laptop',
+            tailnet: true
+        });
+        expect(parseKelpidArgs(['devices'])).toMatchObject({ command: 'devices', deviceAction: 'list' });
+        expect(parseKelpidArgs(['devices', 'revoke', 'abc123'])).toMatchObject({
+            command: 'devices',
+            deviceAction: 'revoke',
+            deviceTarget: 'abc123'
+        });
+        // A device named like a verb still resolves as the revoke target.
+        expect(parseKelpidArgs(['devices', 'revoke', 'start'])).toMatchObject({
+            command: 'devices',
+            deviceTarget: 'start'
+        });
+    });
+
     it('parses the flags each verb takes', () => {
         expect(parseKelpidArgs(['start', '--foreground']).foreground).toBe(true);
         expect(parseKelpidArgs(['start', '-f']).foreground).toBe(true);
@@ -105,6 +130,8 @@ describe('parseKelpidArgs', () => {
         // The URL verb is only useful if it is discoverable from --help.
         expect(helpText()).toContain('kelpid url');
         expect(helpText()).toContain('open "$(kelpid url)"');
+        expect(helpText()).toContain('--tailnet');
+        expect(helpText()).toContain('open "$(kelpid url --tailnet)"');
     });
 
     it('exits 2 on a usage error, printing the reason and the usage', async () => {
@@ -145,6 +172,35 @@ describe('with no daemon running', () => {
         expect(stop.stdout).toEqual(['kelpid is not running']);
     });
 
+    it('runs the devices registry lifecycle without a daemon', async () => {
+        const paths = scratch();
+        const devicesPath = path.join(paths.root, 'devices.json');
+        const env = { KELPID_DEVICES_PATH: devicesPath };
+
+        const empty = io(env);
+        expect(await runKelpid(['devices'], empty)).toBe(0);
+        expect(empty.stdout).toEqual([]);
+        expect(empty.text()).toContain('no paired devices');
+
+        // Pairing needs a running daemon (there is no port to print a URL for) …
+        const pair = io({ ...env, KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath });
+        expect(await runKelpid(['pair', '--name', 'alice'], pair)).toBe(1);
+        expect(pair.stdout).toEqual([]);
+        expect(pair.text()).toContain('kelpid is not running');
+        // …and a failed pair leaves no residue.
+        expect(fs.existsSync(devicesPath)).toBe(false);
+
+        // `pair` without a name is a usage error before anything is touched.
+        const nameless = io(env);
+        expect(await runKelpid(['pair'], nameless)).toBe(2);
+        expect(nameless.text()).toContain('--name');
+
+        // Revoking an unknown device says so.
+        const missing = io(env);
+        expect(await runKelpid(['devices', 'revoke', 'nobody'], missing)).toBe(1);
+        expect(missing.text()).toContain('no paired device matches');
+    });
+
     it('fails `url` with a hint on stderr and nothing on stdout', async () => {
         const paths = scratch();
         const url = io({ KELPID_RUN_DIR: paths.runDir, KELPID_SOCKET_PATH: paths.socketPath });
@@ -157,6 +213,57 @@ describe('with no daemon running', () => {
 });
 
 describe('with a daemon running', () => {
+    it('pairs a device end to end: URL on stdout, validator accepts, rollback leaves nothing', async () => {
+        const paths = scratch();
+        const devicesPath = path.join(paths.root, 'devices.json');
+        const daemon = createDaemon({
+            env: {},
+            home: paths.home,
+            runDir: paths.runDir,
+            controlSocketPath: paths.socketPath,
+            dbPath: paths.dbPath,
+            configPath: paths.configPath,
+            httpPort: 0,
+            settleMs: 0
+        });
+        cleanups.push(() => daemon.stop());
+        const info = await daemon.start();
+        const env = {
+            KELPID_RUN_DIR: paths.runDir,
+            KELPID_SOCKET_PATH: paths.socketPath,
+            KELPID_DEVICES_PATH: devicesPath
+        };
+
+        // The success path: stdout is exactly one URL carrying the DEVICE token.
+        const pair = io(env);
+        expect(await runKelpid(['pair', '--name', 'alice'], pair)).toBe(0);
+        expect(pair.stdout).toHaveLength(1);
+        const url = new URL(pair.stdout[0] as string);
+        expect(url.origin).toBe(`http://127.0.0.1:${String(info.httpPort)}`);
+        const deviceToken = url.searchParams.get('token') ?? '';
+        expect(deviceToken.startsWith('kd_')).toBe(true);
+        expect(pair.text()).toContain('kelpid devices revoke');
+
+        // …and the token the URL carries is exactly what the daemon-side validator accepts.
+        const validate = createDeviceValidator(devicesPath);
+        expect(validate(deviceToken)).toBe(true);
+
+        // The tailnet rollback: a failure after the mint deletes the fresh entry outright.
+        const rollback: CliIO & Captured = {
+            ...io(env),
+            tailscaleRunner: () => Promise.resolve({ code: -1, stdout: '', stderr: 'ENOENT' })
+        };
+        expect(await runKelpid(['pair', '--name', 'bob', '--tailnet'], rollback)).toBe(1);
+        expect(rollback.stdout).toEqual([]);
+        expect(rollback.text()).toContain('rolled back');
+        expect(loadDevices(devicesPath).map((device) => device.name)).toEqual(['alice']);
+
+        // Revoke by name; the validator sees it on its next call.
+        const revoke = io(env);
+        expect(await runKelpid(['devices', 'revoke', 'alice'], revoke)).toBe(0);
+        expect(validate(deviceToken)).toBe(false);
+    });
+
     it('reports status and refuses to start a second one', async () => {
         const paths = scratch();
         const daemon = createDaemon({

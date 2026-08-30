@@ -201,19 +201,60 @@ export function parsePaneAssetPath(pathname: string): PaneAssetRequest | null {
 }
 
 /**
- * The sibling-asset route (content-panes.md port note 4): a markdown preview is loaded with
- * `<base href="/pane-assets/<paneID>/">`, so `![](diagram.png)` next to the file resolves.
+ * The credentialed asset path: `/pane-assets/c/<credential>/<paneID>/<file>`.
  *
- * The route itself only parses and serves; `resolve` (the `ContentService`) decides what the
- * pane may expose and rejects anything that escapes the file's directory — this route can
- * therefore never reach a file the service did not hand back.
+ * The credential is a path segment (not a query/header) because the fetches come from a
+ * sandboxed `srcdoc` iframe with an OPAQUE origin — no cookies attach, and `<base href>`
+ * propagates only path segments to relative URLs. The client derives it from its own token
+ * (sha256, base64url — `content/asset-credential.ts`), so what enters the preview document
+ * is an assets-scoped credential, never the token itself.
+ */
+export function parseCredentialedPaneAssetPath(
+    pathname: string
+): (PaneAssetRequest & { credential: string }) | null {
+    const prefix = `${PANE_ASSETS_PREFIX}/c/`;
+    if (!pathname.startsWith(prefix)) return null;
+    const rest = pathname.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0 || slash === rest.length - 1) return null;
+    const credential = decodeURIComponent(rest.slice(0, slash));
+    if (credential.includes('/') || credential.includes('\\') || credential.includes('\0')) return null;
+    const inner = parsePaneAssetPath(`${PANE_ASSETS_PREFIX}/${rest.slice(slash + 1)}`);
+    if (inner === null) return null;
+    return { ...inner, credential };
+}
+
+/**
+ * The sibling-asset route (content-panes.md port note 4): a markdown preview is loaded with
+ * a `/pane-assets/…` `<base href>`, so `![](diagram.png)` next to the file resolves.
+ *
+ * The route itself only parses, GATES, and serves; `resolve` (the `ContentService`) decides
+ * what the pane may expose and rejects anything that escapes the file's directory — this
+ * route can therefore never reach a file the service did not hand back.
+ *
+ * Gating: when a `validateCredential` is configured (a daemon with an owner token), ONLY the
+ * credentialed form is served, and a bad credential is a plain 404 — indistinguishable from
+ * a missing file, so the route is not an existence oracle. Without one (dev daemon, no
+ * token), the legacy uncredentialed form keeps working. This is what makes `kelpid devices
+ * revoke` cover the file surface too, not just the WS: the validator re-reads the registry,
+ * so a revoked device's next asset fetch 404s.
  */
 export function createPaneAssetsRoute(
-    resolve: (paneID: string, relativePath: string) => string | null
+    resolve: (paneID: string, relativePath: string) => string | null,
+    options: { readonly validateCredential?: ((credential: string) => boolean) | undefined } = {}
 ): (app: Hono) => void {
+    const gate = options.validateCredential;
     return (app) => {
         app.on(['GET', 'HEAD'], `${PANE_ASSETS_PREFIX}/*`, (c) => {
-            const request = parsePaneAssetPath(new URL(c.req.url).pathname);
+            const pathname = new URL(c.req.url).pathname;
+            let request: PaneAssetRequest | null;
+            if (gate !== undefined) {
+                const credentialed = parseCredentialedPaneAssetPath(pathname);
+                if (credentialed === null || !gate(credentialed.credential)) return c.text('not found\n', 404);
+                request = credentialed;
+            } else {
+                request = parseCredentialedPaneAssetPath(pathname) ?? parsePaneAssetPath(pathname);
+            }
             if (request === null) return c.text('not found\n', 404);
             const resolved = resolve(request.paneID, request.relativePath);
             if (resolved === null) return c.text('not found\n', 404);

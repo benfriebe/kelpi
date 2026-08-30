@@ -19,6 +19,7 @@ import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
 import { resolveDaemonTarget, sanitizedSearch } from './app/config';
+import { setAssetCredentialToken } from './content/asset-credential';
 import { createKelpiRuntime } from './state';
 import { configuredTerminalEngine, loadTerminalFonts } from './terminal';
 import './styles.css';
@@ -30,6 +31,11 @@ import './styles.css';
 void loadTerminalFonts();
 
 const target = resolveDaemonTarget();
+
+// Derive the pane-assets credential from the token BEFORE anything renders: content panes
+// rewrite their `<base href>` through it (`content/asset-credential.ts`), and it must be in
+// place by the time the first mirror arrives.
+setAssetCredentialToken(target.token);
 
 // The credentials are remembered; take them out of the visible URL.
 if (target.fromQuery && typeof history !== 'undefined' && typeof location !== 'undefined') {

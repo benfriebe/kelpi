@@ -3,13 +3,17 @@ import type { IncomingMessage } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+import { Hono } from 'hono';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
     authorizeUpgrade,
     contentTypeFor,
     createHttpApp,
+    createPaneAssetsRoute,
     extractRequestToken,
+    parseCredentialedPaneAssetPath,
     resolveClientDistDir,
     resolveStaticPath,
     runDirToken,
@@ -139,6 +143,38 @@ describe('content types', () => {
         expect(contentTypeFor('/x/app.css')).toContain('text/css');
         expect(contentTypeFor('/x/font.woff2')).toBe('font/woff2');
         expect(contentTypeFor('/x/thing.bin')).toBe('application/octet-stream');
+    });
+});
+
+describe('pane-assets gating', () => {
+    const resolve = (paneID: string, rel: string): string | null =>
+        paneID === 'pane-1' && rel === 'diagram.png' ? __filename : null;
+
+    it('parses the credentialed form and rejects mangled ones', () => {
+        expect(parseCredentialedPaneAssetPath('/pane-assets/c/CRED123/pane-1/diagram.png')).toEqual({
+            credential: 'CRED123',
+            paneID: 'pane-1',
+            relativePath: 'diagram.png'
+        });
+        expect(parseCredentialedPaneAssetPath('/pane-assets/pane-1/diagram.png')).toBeNull();
+        expect(parseCredentialedPaneAssetPath('/pane-assets/c//pane-1/diagram.png')).toBeNull();
+        expect(parseCredentialedPaneAssetPath('/pane-assets/c/CRED123/')).toBeNull();
+    });
+
+    it('serves ONLY the credentialed form when a gate is configured, 404 otherwise', async () => {
+        const app = new Hono();
+        createPaneAssetsRoute(resolve, { validateCredential: (cred) => cred === 'good' })(app);
+        expect((await app.request('/pane-assets/c/good/pane-1/diagram.png')).status).toBe(200);
+        // A bad credential and a missing file are indistinguishable — no existence oracle.
+        expect((await app.request('/pane-assets/c/bad/pane-1/diagram.png')).status).toBe(404);
+        expect((await app.request('/pane-assets/pane-1/diagram.png')).status).toBe(404);
+    });
+
+    it('keeps the legacy form working when no gate is configured (dev daemon)', async () => {
+        const app = new Hono();
+        createPaneAssetsRoute(resolve)(app);
+        expect((await app.request('/pane-assets/pane-1/diagram.png')).status).toBe(200);
+        expect((await app.request('/pane-assets/c/whatever/pane-1/diagram.png')).status).toBe(200);
     });
 });
 

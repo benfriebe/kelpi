@@ -45,7 +45,12 @@ afterEach(async () => {
 });
 
 async function startServer(
-    options: { distDir?: string; token?: string; helloTimeoutMs?: number } = {}
+    options: {
+        distDir?: string;
+        token?: string;
+        helloTimeoutMs?: number;
+        validateDeviceToken?: (token: string) => boolean;
+    } = {}
 ): Promise<Fixture> {
     const store = storeHarness(seededState(W1, PANE_A));
     const pty = stubPty();
@@ -66,6 +71,7 @@ async function startServer(
         host: '127.0.0.1',
         port: 0,
         token: options.token ?? TOKEN,
+        ...(options.validateDeviceToken !== undefined ? { validateDeviceToken: options.validateDeviceToken } : {}),
         ...(options.distDir !== undefined ? { distDir: options.distDir } : {}),
         ...(options.helloTimeoutMs !== undefined ? { helloTimeoutMs: options.helloTimeoutMs } : {})
     });
@@ -234,6 +240,26 @@ describe('upgrade auth', () => {
         const f = await startServer();
         const { first } = await helloWith(f.base, `?token=${TOKEN}`, TOKEN);
         expect(first).toMatchObject({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION });
+    });
+
+    it('lets a paired-device token through the same gate, and only a live one', async () => {
+        const seen: string[] = [];
+        const f = await startServer({
+            validateDeviceToken: (token) => {
+                seen.push(token);
+                return token === 'kd_alice';
+            }
+        });
+        const accepted = await helloWith(f.base, '?token=kd_alice', 'kd_alice');
+        expect(accepted.first).toMatchObject({ type: 'welcome', protocolVersion: WS_PROTOCOL_VERSION });
+        const refused = await helloWith(f.base, '?token=kd_revoked', 'kd_revoked');
+        expect(refused.first).toMatchObject({ type: 'rejected', code: 'unauthorized', reason: 'bad-token' });
+        // The owner token never consults the device registry.
+        expect(seen).toContain('kd_alice');
+        expect(seen).toContain('kd_revoked');
+        const owner = await helloWith(f.base, `?token=${TOKEN}`, TOKEN);
+        expect(owner.first).toMatchObject({ type: 'welcome' });
+        expect(seen).not.toContain(TOKEN);
     });
 
     it('refuses a hello whose token is wrong even when the upgrade was authenticated', async () => {

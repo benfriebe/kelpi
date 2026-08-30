@@ -76,6 +76,12 @@ export interface WsServerOptions {
      * unless `allowAnonymous` is set.
      */
     readonly token?: string | undefined;
+    /**
+     * Second credential tier: paired-device tokens (`lifecycle/devices.ts`). Consulted only
+     * when the run-dir token does not match, and only while a `token` is configured — a
+     * daemon with no owner token is dev/anonymous, where devices have no meaning.
+     */
+    readonly validateDeviceToken?: ((token: string) => boolean) | undefined;
     readonly allowAnonymous?: boolean | undefined;
     /** How long a connection may hold a socket without saying hello (`ws/sync.ts` default). */
     readonly helloTimeoutMs?: number | undefined;
@@ -236,9 +242,13 @@ export function createWsServer(options: WsServerOptions): WsServer {
             term: options.term as Partial<TerminalSearchBackend>
         }),
         // THE token gate: an upgrade with a missing or wrong token still becomes a socket, and
-        // this is what turns it away — with a reason the client can show a human.
+        // this is what turns it away — with a reason the client can show a human. The owner
+        // token is checked first; a paired device's token passes the same gate.
         ...(options.token !== undefined && options.token.length > 0
-            ? { validateToken: (token: string) => tokensMatch(options.token as string, token) }
+            ? {
+                  validateToken: (token: string) =>
+                      tokensMatch(options.token as string, token) || options.validateDeviceToken?.(token) === true
+              }
             : {}),
         ...(options.helloTimeoutMs !== undefined ? { helloTimeoutMs: options.helloTimeoutMs } : {}),
         onError: options.onError

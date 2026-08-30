@@ -19,6 +19,7 @@
 import { type ReactElement } from 'react';
 
 import type { ContentApi } from './client';
+import { credentialedAssetBase } from './asset-credential';
 import { ContentFrame, ContentStatus } from './ContentFrame';
 import type { ClipboardWriter, FindPalette, LinkOpener } from './bridge';
 import type { RichClipboardWriter } from './copy';
@@ -116,7 +117,10 @@ export function MarkdownPane(props: MarkdownPaneProps): ReactElement {
             // §L46: the frame's accessible name — the document, then a short id for uniqueness.
             title={contentPaneLabel('markdown preview', paneID, state.filePath)}
             html={state.html ?? ''}
-            assetBase={state.assetBase}
+            // The daemon sends the legacy `/pane-assets/<paneID>/` shape (the mirror is
+            // shared, so it cannot carry per-device credentials); each client rewrites it
+            // with its OWN derived credential so the gated route serves its fetches.
+            assetBase={credentialedAssetBase(state.assetBase)}
             visible={props.visible}
             background={props.background}
             documentBackground={props.documentBackground}

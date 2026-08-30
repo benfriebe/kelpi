@@ -9,6 +9,7 @@
  * running AFTER the persist gate closes (a scratchpad's last keystrokes would vanish).
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -199,15 +200,23 @@ describe('content panes end to end', () => {
         expect(state.html).toContain('<h1>Hello</h1>');
         expect(state.html).toContain(`<base href="/pane-assets/${paneID}/">`);
 
-        // The asset route the <base href> points at.
-        const asset = await fetch(`${info.url}/pane-assets/${paneID}/pic.png`);
+        // The asset route the <base href> points at — through the credentialed form a real
+        // client derives from its token (`client/src/content/asset-credential.ts`), because
+        // the route is gated whenever the daemon has an owner token.
+        const credential = createHash('sha256').update(info.token, 'utf8').digest('base64url');
+        const asset = await fetch(`${info.url}/pane-assets/c/${credential}/${paneID}/pic.png`);
         expect(asset.status).toBe(200);
+
+        // The ungated legacy form (and a bogus credential) are 404 — revocation has to cover
+        // this surface, so nothing serves without a live credential.
+        expect((await fetch(`${info.url}/pane-assets/${paneID}/pic.png`)).status).toBe(404);
+        expect((await fetch(`${info.url}/pane-assets/c/bogus/${paneID}/pic.png`)).status).toBe(404);
         expect(await asset.text()).toBe('PNGDATA');
 
         // …and it refuses to leave the file's directory.
-        const escape = await fetch(`${info.url}/pane-assets/${paneID}/%2e%2e%2foutside.txt`);
+        const escape = await fetch(`${info.url}/pane-assets/c/${credential}/${paneID}/%2e%2e%2foutside.txt`);
         expect(escape.status).toBe(404);
-        const unknown = await fetch(`${info.url}/pane-assets/${paneID}/nope.png`);
+        const unknown = await fetch(`${info.url}/pane-assets/c/${credential}/${paneID}/nope.png`);
         expect(unknown.status).toBe(404);
 
         // A write on disk reaches the subscribed client as content-updated.

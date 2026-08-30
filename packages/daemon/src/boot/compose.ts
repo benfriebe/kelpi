@@ -70,8 +70,11 @@ import { createClipboardWriteSink } from '../handlers/app/clipboard.js';
 import { paneHandlers, spawnEnvVars, spawnPaneIfShell, type PaneHandlerContext, type PaneSpawnDefaults } from '../handlers/pane/index.js';
 import {
     clearRunFiles,
+    createAssetCredentialGate,
+    createDeviceValidator,
     ensureRunDir,
     ensureToken,
+    resolveDevicesPath,
     resolveRunPaths,
     writePidRecord,
     type RunPaths
@@ -1330,6 +1333,10 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 port,
                 host: httpHost,
                 token,
+                // Paired remote devices (`kelpid pair`): their tokens pass the same hello
+                // gate as the run-dir token. The validator re-reads `devices.json` on
+                // change, so pair/revoke apply on the next hello with no daemon involvement.
+                validateDeviceToken: createDeviceValidator(resolveDevicesPath(env)),
                 daemonInfo: { pid: process.pid },
                 content,
                 webPanes,
@@ -1363,10 +1370,13 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
                 }),
                 // …and its graft toggle / swap prompt / orphan banner verbs.
                 graftUi: graftCommands,
-                // `/pane-assets/<paneID>/<relpath>` — sibling files of an open markdown file, so
-                // relative `<img src>` resolves (content-panes.md port note 4).
-                routes: createPaneAssetsRoute((paneID, relativePath) =>
-                    content.assetPath(paneID, relativePath)
+                // `/pane-assets/…` — sibling files of an open markdown file, so relative
+                // `<img src>` resolves (content-panes.md port note 4). Gated by the derived
+                // asset credential (owner or live paired device), because `--tailnet` makes
+                // this HTTP surface tailnet-reachable and `devices revoke` must cover it.
+                routes: createPaneAssetsRoute(
+                    (paneID, relativePath) => content.assetPath(paneID, relativePath),
+                    { validateCredential: createAssetCredentialGate(resolveDevicesPath(env), token) }
                 ),
                 // Remember what each pane is actually rendered at, so the next spawn of it
                 // (a restart, the next daemon boot) starts there (`pty/geometry.ts`) — and, for

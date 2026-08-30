@@ -38,13 +38,20 @@ import { expandTilde, legacyDataDir, LEGACY_DATABASE_FILENAME, legacyMacAppDatab
 import { isLegacyImportError, runImport, type ImportReport } from './import/index.js';
 import {
     isProcessAlive,
+    loadDevices,
+    mintDevice,
     probeDaemon,
     readPidRecord,
     readToken,
+    resolveDevicesPath,
+    removeDevice,
     resolveRunPaths,
+    resolveTailnetURL,
+    revokeDevice,
     spawnDetached,
     type DaemonProbe,
-    type RunPaths
+    type RunPaths,
+    type TailscaleRunner
 } from './lifecycle/index.js';
 
 export const ENTRY_ENV = 'KELPID_ENTRY';
@@ -55,7 +62,7 @@ export const START_TIMEOUT_MS = 15_000;
 /** How long `kelpid stop` waits for the daemon to disappear after SIGTERM. */
 export const STOP_TIMEOUT_MS = 10_000;
 
-export type KelpidCommand = 'start' | 'stop' | 'status' | 'url' | 'import' | 'help' | 'version';
+export type KelpidCommand = 'start' | 'stop' | 'status' | 'url' | 'pair' | 'devices' | 'import' | 'help' | 'version';
 
 export interface ParsedArgs {
     readonly command: KelpidCommand;
@@ -70,6 +77,14 @@ export interface ParsedArgs {
     readonly force: boolean;
     /** `import --dry-run`: report only, write nothing. */
     readonly dryRun: boolean;
+    /** `url --tailnet`: print the tailscale-serve HTTPS URL instead of the loopback one. */
+    readonly tailnet: boolean;
+    /** `pair --name`: who the minted device token is for. */
+    readonly pairName: string | undefined;
+    /** `devices [revoke]`: list by default. */
+    readonly deviceAction: 'list' | 'revoke';
+    /** `devices revoke <id-or-name>`. */
+    readonly deviceTarget: string | undefined;
     /** Set when parsing failed; `runKelpid` prints it and exits 2. */
     readonly error: string | undefined;
 }
@@ -80,7 +95,12 @@ Usage:
   kelpid start [--foreground]   Start the daemon (detached unless --foreground)
   kelpid stop [--timeout <ms>]  Stop the running daemon (SIGTERM, then SIGKILL)
   kelpid status [--json]        Ping the daemon and report version, pid and ports
-  kelpid url                    Print the client URL (with the token) and nothing else
+  kelpid url [--tailnet]        Print the client URL (with the token) and nothing else
+  kelpid pair --name <who> [--tailnet]
+                                Mint a per-device token and print its client URL
+  kelpid devices                List paired devices
+  kelpid devices revoke <id|name>
+                                Revoke a paired device (applies at its next connect)
   kelpid import [options]       Import the Swift app's nex.db into the daemon's database
   kelpid --version              Print the daemon version
   kelpid --help                 This message
@@ -108,6 +128,20 @@ Open the web client (the token is required — a bare http://127.0.0.1:<port> ca
 authenticate and the client will say so):
   open "$(kelpid url)"
 
+Remote (another machine on the tailnet): --tailnet fronts the daemon's port with
+\`tailscale serve\` (HTTPS at https://<machine>.<tailnet>.ts.net, tailnet-only — never
+funnel) and prints that URL instead. It configures serve when nothing is being served,
+says so on stderr, and REFUSES to replace a serve config that fronts something else —
+stdout stays exactly the URL, so this works from the daemon machine:
+  open "$(kelpid url --tailnet)"
+
+Other people and devices: never share the \`url\` URL — its token is the OWNER
+credential. Mint each person/device its own with \`pair\` (the printed URL carries a
+token only that device holds, stored hashed in <data dir>/devices.json):
+  kelpid pair --name "alice-laptop" --tailnet
+  kelpid devices
+  kelpid devices revoke alice-laptop
+
 Environment:
   KELPID_RUN_DIR       Run directory holding daemon-v<N>.{sock,token,pid,port}
                      (default: ~/Library/Application Support/kelpid/run, or
@@ -123,6 +157,7 @@ Environment:
                      database is a hard startup failure — by design: a daemon
                      that silently stops persisting loses a day of work.
   KELPID_CONFIG_PATH   Config file (default: ~/.config/kelpi/config)
+  KELPID_DEVICES_PATH  Paired-devices registry (default: <data dir>/devices.json)
   KELPID_CLIENT_DIR    Directory holding the built web client
   KELPID_LOG_FILE      Append the detached daemon's stdout/stderr here
   KELPID_VERSION       Override the reported version (packaging)
@@ -161,6 +196,10 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
     let to: string | undefined;
     let force = false;
     let dryRun = false;
+    let tailnet = false;
+    let pairName: string | undefined;
+    let deviceAction: 'list' | 'revoke' = 'list';
+    let deviceTarget: string | undefined;
     let error: string | undefined;
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -172,6 +211,19 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
             case '--dry-run':
                 dryRun = true;
                 break;
+            case '--tailnet':
+                tailnet = true;
+                break;
+            case '--name': {
+                const value = parseValue(argv[index + 1]);
+                if (value === undefined) {
+                    error ??= '--name needs a value';
+                    break;
+                }
+                pairName = value;
+                index += 1;
+                break;
+            }
             case '--from': {
                 const value = parseValue(argv[index + 1]);
                 if (value === undefined) {
@@ -219,11 +271,23 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
                 break;
             }
             default:
+                // `devices` takes positional words, checked BEFORE the verb list so a device
+                // named like a verb (`kelpid devices revoke start`) still resolves.
+                if (command === 'devices' && deviceAction === 'list' && arg === 'revoke') {
+                    deviceAction = 'revoke';
+                    break;
+                }
+                if (command === 'devices' && deviceAction === 'revoke' && deviceTarget === undefined && !arg.startsWith('--')) {
+                    deviceTarget = arg;
+                    break;
+                }
                 if (
                     arg === 'start' ||
                     arg === 'stop' ||
                     arg === 'status' ||
                     arg === 'url' ||
+                    arg === 'pair' ||
+                    arg === 'devices' ||
                     arg === 'import'
                 ) {
                     if (command === undefined || command === 'version') command = arg;
@@ -243,6 +307,10 @@ export function parseKelpidArgs(argv: readonly string[]): ParsedArgs {
         to,
         force,
         dryRun,
+        tailnet,
+        pairName,
+        deviceAction,
+        deviceTarget,
         error
     };
 }
@@ -253,6 +321,8 @@ export interface CliIO {
     readonly env?: NodeJS.ProcessEnv | undefined;
     /** Injected for tests; production waits on real signals. */
     readonly waitForever?: (() => Promise<void>) | undefined;
+    /** Injected for tests; production shells out to the real `tailscale`. */
+    readonly tailscaleRunner?: TailscaleRunner | undefined;
 }
 
 function defaultIO(): CliIO {
@@ -630,10 +700,14 @@ async function commandStatus(io: CliIO, args: ParsedArgs): Promise<number> {
 }
 
 /**
- * `kelpid url` — stdout is exactly the URL and nothing else, so `open "$(kelpid url)"` works and
- * anything diagnostic goes to stderr.
+ * `kelpid url [--tailnet]` — stdout is exactly the URL and nothing else, so
+ * `open "$(kelpid url)"` works and anything diagnostic goes to stderr.
+ *
+ * `--tailnet` swaps the loopback origin for the machine's MagicDNS one, after making sure
+ * `tailscale serve` actually fronts the daemon's port (`lifecycle/tailnet.ts` — it configures
+ * an idle serve, reports that on stderr, and refuses to replace a foreign one).
  */
-async function commandUrl(io: CliIO): Promise<number> {
+async function commandUrl(io: CliIO, tailnet: boolean): Promise<number> {
     const env = io.env ?? process.env;
     const paths = runPathsFor(env);
     const probe = await probeDaemon(paths, { timeoutMs: 1000 });
@@ -644,15 +718,147 @@ async function commandUrl(io: CliIO): Promise<number> {
         return 1;
     }
 
-    const url = runDirClientURL(env, paths);
-    if (url === undefined) {
+    const record = readPidRecord(paths);
+    const port = record?.http_port ?? readPortFile(paths);
+    const token = readToken(paths);
+    if (port === undefined || token === undefined) {
         io.err(`kelpid is running but ${paths.dir} has no HTTP port or token to build a URL from`);
         io.err('Repair: restart it (`kelpid stop` then `kelpid start`) so it rewrites the run dir.');
         return 1;
     }
 
+    if (!tailnet) {
+        io.out(clientURL(env, port, token));
+        return 0;
+    }
+
+    const result = await resolveTailnetURL({ port, token, run: io.tailscaleRunner });
+    if (result.kind === 'error') {
+        io.err(result.message);
+        if (result.repair !== undefined) io.err(`Repair: ${result.repair}`);
+        return 1;
+    }
+    for (const note of result.notes) io.err(note);
+    io.out(result.url);
+    return 0;
+}
+
+/**
+ * `kelpid pair --name <who> [--tailnet]` — mint a paired-device token and print the URL that
+ * carries it. Multi-user remote access: every person/device gets its OWN token
+ * (`lifecycle/devices.ts`), so revoking one (`kelpid devices revoke`) strands nobody else and
+ * never rotates the run dir's owner token.
+ *
+ * Same stream discipline as `url`: stdout is exactly the URL. If the tailnet half fails
+ * AFTER the mint, the fresh entry is DELETED again (safe: its token never left this process)
+ * — a pairing either yields a working URL or leaves no residue in the registry.
+ */
+async function commandPair(io: CliIO, name: string | undefined, tailnet: boolean): Promise<number> {
+    const env = io.env ?? process.env;
+    if (name === undefined || name.trim().length === 0) {
+        io.err('kelpid pair needs --name <who> — the person or device this token is for.');
+        io.err('Usage: kelpid pair --name <who> [--tailnet]');
+        return 2;
+    }
+    const paths = runPathsFor(env);
+    const probe = await probeDaemon(paths, { timeoutMs: 1000 });
+    if (!probe.alive) {
+        io.err(`kelpid is not running (${probe.reason ?? 'no socket'})`);
+        io.err('Repair: start it with `kelpid start`, then run `kelpid pair` again.');
+        return 1;
+    }
+    const record = readPidRecord(paths);
+    const port = record?.http_port ?? readPortFile(paths);
+    if (port === undefined) {
+        io.err(`kelpid is running but ${paths.dir} has no HTTP port to build a URL from`);
+        io.err('Repair: restart it (`kelpid stop` then `kelpid start`) so it rewrites the run dir.');
+        return 1;
+    }
+
+    const devicesFile = resolveDevicesPath(env);
+    let minted: ReturnType<typeof mintDevice>;
+    try {
+        minted = mintDevice(devicesFile, name);
+    } catch (failure) {
+        io.err(`kelpid pair: ${failure instanceof Error ? failure.message : String(failure)}`);
+        return 1;
+    }
+
+    let url: string;
+    if (tailnet) {
+        const result = await resolveTailnetURL({ port, token: minted.token, run: io.tailscaleRunner });
+        if (result.kind === 'error') {
+            // Delete, not revoke: the token was never printed, so there is nothing to keep a
+            // record of, and a revoked ghost per failed attempt would clutter `devices`.
+            try {
+                removeDevice(devicesFile, minted.device.id);
+                io.err(`(the "${minted.device.name}" device was rolled back — nothing was paired)`);
+            } catch (rollbackFailure) {
+                io.err(
+                    `Warning: could not roll back the just-minted "${minted.device.name}" entry — ` +
+                        `remove it yourself: kelpid devices revoke ${minted.device.id} ` +
+                        `(${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)})`
+                );
+            }
+            io.err(result.message);
+            if (result.repair !== undefined) io.err(`Repair: ${result.repair}`);
+            return 1;
+        }
+        for (const note of result.notes) io.err(note);
+        url = result.url;
+    } else {
+        url = clientURL(env, port, minted.token);
+    }
+
+    io.err(`paired "${minted.device.name}" (device ${minted.device.id})`);
+    io.err(`The URL below carries this device's own token — send it to them, not to anyone else.`);
+    io.err(`Revoke any time with: kelpid devices revoke ${minted.device.id}`);
     io.out(url);
     return 0;
+}
+
+/**
+ * `kelpid devices [revoke <id-or-name>]` — the registry's management verbs. Reads and writes
+ * `devices.json` directly (same-UID trust, like every run-dir file); the daemon notices on
+ * the next hello.
+ */
+function commandDevices(io: CliIO, action: 'list' | 'revoke', target: string | undefined): number {
+    const env = io.env ?? process.env;
+    const file = resolveDevicesPath(env);
+    try {
+        if (action === 'revoke') {
+            if (target === undefined) {
+                io.err('kelpid devices revoke needs a device id or name (see `kelpid devices`).');
+                io.err('Usage: kelpid devices revoke <id|name>');
+                return 2;
+            }
+            const revoked = revokeDevice(file, target);
+            if (revoked === null) {
+                io.err(`no paired device matches "${target}" (see \`kelpid devices\`).`);
+                return 1;
+            }
+            io.out(`revoked "${revoked.name}" (device ${revoked.id})`);
+            io.err(
+                'File (pane-asset) access is cut on its next request; the WS is refused at its next '
+                    + 'connect, but a session already open lasts until its socket drops.'
+            );
+            return 0;
+        }
+        const devices = loadDevices(file);
+        if (devices.length === 0) {
+            io.err('no paired devices. Pair one with: kelpid pair --name <who>');
+            return 0;
+        }
+        for (const device of devices) {
+            const state = device.revokedAt === undefined ? 'live   ' : 'revoked';
+            const dates = `paired ${device.createdAt}${device.revokedAt !== undefined ? `, revoked ${device.revokedAt}` : ''}`;
+            io.out(`${device.id}  ${state}  ${device.name}  (${dates})`);
+        }
+        return 0;
+    } catch (failure) {
+        io.err(`kelpid devices: ${failure instanceof Error ? failure.message : String(failure)}`);
+        return 1;
+    }
 }
 
 /**
@@ -829,7 +1035,11 @@ export async function runKelpid(argv: readonly string[], io: CliIO = defaultIO()
         case 'status':
             return commandStatus(io, args);
         case 'url':
-            return commandUrl(io);
+            return commandUrl(io, args.tailnet);
+        case 'pair':
+            return commandPair(io, args.pairName, args.tailnet);
+        case 'devices':
+            return commandDevices(io, args.deviceAction, args.deviceTarget);
         case 'import':
             return commandImport(io, args);
     }

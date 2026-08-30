@@ -27,9 +27,12 @@ brand at a user:
   `nex` compat launcher ships in the bundle, so every hook installed before the rename keeps
   resolving; `kelpi install-hooks` migrates hook entries to the `kelpi` spelling when re-run
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model, [`docs/PARITY.md`](docs/PARITY.md)
-for where the port stands against the macOS app, and [`PLAN.md`](PLAN.md) for the milestone plan.
-Behavioural contracts for every subsystem live in [`docs/current/`](docs/current).
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the process model and [`PLAN.md`](PLAN.md) for the
+milestone plan. The parity campaign's records — the parity ledger, the behavioural contracts, the
+capability inventory, the audit runs — did their job and are retired from the repo: `docs/` is
+untracked (it still exists on disk beside this file, and the full pre-scrub history lives in the
+`new_nex-pre-docs-scrub-backup.git` mirror). Mentions of `docs/…` paths below refer to those
+retired local records.
 
 ## Status
 
@@ -59,7 +62,7 @@ identifies the pane a split just made by its DOM position, against a grid that s
 on purpose — a coin flip that had been winning every run until this one.
 
 A green ledger was not the same as a finished product. An item-by-item inventory of the shipped
-app — [`docs/capabilities/`](docs/capabilities/00-INDEX.md), **1490 scored items** across ten
+app — `docs/capabilities/`, **1490 scored items** across ten
 domains — found 285 behaviours with no port-side implementation at all. Eight burn-downs took that
 column to **zero** and coverage from 73.6% to **100% accounted**, while the audit grew to **108
 flows, 1042 assertions**. All ten domains now have no partials and no gaps left at all — the last
@@ -88,27 +91,15 @@ mouse-reporting
 gap that once headed it was closed by taking mouse reporting away from the engine and writing it
 into the port, byte-identically to ghostty's own encoder.
 
-- [`docs/PARITY.md`](docs/PARITY.md) — the honest ledger: what is at parity and how it was proven,
-  **what a person actually sees** (the UI audit and its severity-ordered defect list, with the
-  screenshot that settles each row), where the port deliberately differs from the macOS app, and
-  the remaining functional gaps.
-- [`docs/capabilities/`](docs/capabilities/00-INDEX.md) — the item-by-item capability inventory
-  against `kelpi 0.32.0`: 1490 scored items across ten domains, each with the Swift source that
-  defines it and the port-side file (or the grep that proves the absence), plus a ranked gap list.
-- [`docs/audit/`](docs/audit/) — the audit runs. [`run-P/`](docs/audit/run-P/index.md) is
-  **current** — 108 flows, 1042 assertions, **0 failed, 0 step errors**, one new flow
-  (`terminal-osc52`) and every pre-existing step carrying exactly the assertion count it carried in
-  `run-O`. It took six attempts, and the five that failed are recorded because the first two bought two latent
-  harness hazards nine runs had been passing by luck
-  ([`run-P-attempts/`](docs/audit/run-P-attempts/README.md));
-  [`run-O/`](docs/audit/run-O/index.md) and [`run-N/`](docs/audit/run-N/index.md)
-  precede it; the scoped runs beside them are one per feature area;
-  [`run-F/FINDINGS.md`](docs/audit/run-F/FINDINGS.md) is the crop-level verdict table that closed
-  the original ledger. Superseded runs keep their per-step prose and lose their screenshots — the
-  policy, and what is kept and why, is [`docs/audit/README.md`](docs/audit/README.md).
-- [`docs/compat-status.md`](docs/compat-status.md) — what the **real, shipped Swift CLI** can do
-  against `kelpid`, as measured.
-- [`PLAN.md`](PLAN.md) — the milestone lineage.
+The retired records, for anyone opening them on disk: `docs/PARITY.md` is the honest ledger (what
+is at parity, how it was proven, where the port deliberately differs, the remaining gaps);
+`docs/capabilities/` is the 1490-item capability inventory against `nex 0.32.0`, each item carrying
+the Swift source that defines it and the port-side file that answers it; `docs/audit/` holds the
+audit runs (`run-P` is the final one — 108 flows, 1042 assertions, 0 failed — with `run-O`,
+`run-N`, the scoped runs and the attempt post-mortems beside it, and the retention policy in its
+README); `docs/current/` is the per-subsystem behavioural contracts; `docs/compat-status.md`
+measures what the real, shipped Swift CLI can do against `kelpid`. [`PLAN.md`](PLAN.md) — still
+tracked — is the milestone lineage.
 
 Gates (2026-08-22): `pnpm check` **5008 passed**, 1 skipped; the compat suite 103/103 against
 **both** the shipped Swift CLI and the TypeScript one; four live smokes green (client 39, shell 58,
@@ -124,7 +115,7 @@ bar replaced underneath it. **Nothing is red.** The reds the two failed attempts
 harness defect with two faces — a coin-flip pane cleanup and a centre-aimed "focus" click that
 could land on a split button — both fixed, both asserted, with the diagnosis instrumentation
 (per-step state timeline, CLI invocation log, process logs) now part of every run's artefact
-([`docs/audit/run-O-attempts/`](docs/audit/run-O-attempts/README.md)).
+(`docs/audit/run-O-attempts/`).
 Capability coverage against the shipped app is **100% accounted** across 1490 inventoried items
 (1324 implemented, 39 divergent by design with the argument recorded, 127 superseded by the
 architecture), up from 73.6% before the burn-downs, with all ten domains complete and the missing
@@ -320,8 +311,8 @@ Next: `kelpid start` — panes are restored and agent sessions resume automatica
 | `--json` | one JSON report on stdout; the two paths still go to stderr |
 
 The whole flow is verified end to end — fixture database → `import` → `start` → state read back
-over the real `kelpi` CLI, including both agent kinds resuming into their PTYs — in
-[`docs/PARITY.md`](docs/PARITY.md) ▸ "Legacy import, end to end".
+over the real `kelpi` CLI, including both agent kinds resuming into their PTYs — recorded in
+`docs/PARITY.md` ▸ "Legacy import, end to end".
 
 Both paths are printed before anything is opened. The source is opened **read-only** and is never
 written, migrated or deleted, so importing twice — or importing into a scratch `--to` — is safe.

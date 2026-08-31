@@ -6,6 +6,7 @@ import {
     createKeyDispatcher,
     installKeyDispatcher,
     isEditableTarget,
+    isPaneSurface,
     isTerminalSurface,
     keyBindingsFromOverrideLines,
     modifiersFromEvent,
@@ -353,6 +354,51 @@ describe('conditional rules', () => {
         host.remove();
         filter.remove();
         rename.remove();
+    });
+
+    /**
+     * The scratchpad/markdown-editor half of the same rule. An editor pane IS a `<textarea>`
+     * (marked `data-pane-surface`, `app/pane-focus.ts` N19), and it holds the caret from the
+     * moment ⇧⌘N creates it — reading it as chrome text killed ⌘D/⇧⌘D on the very pane being
+     * typed into, while the same chords worked from every terminal.
+     */
+    it('does not read an editor pane surface as chrome text', () => {
+        const editor = document.createElement('textarea');
+        editor.setAttribute('data-pane-surface', '');
+        document.body.append(editor);
+
+        expect(isPaneSurface(editor)).toBe(true);
+        expect(isTerminalSurface(editor)).toBe(false);
+        expect(isEditableTarget(editor)).toBe(false);
+
+        // …while an unmarked textarea — a chrome field — is still editable chrome.
+        const chromeField = document.createElement('textarea');
+        document.body.append(chromeField);
+        expect(isPaneSurface(chromeField)).toBe(false);
+        expect(isEditableTarget(chromeField)).toBe(true);
+
+        editor.remove();
+        chromeField.remove();
+    });
+
+    it('dispatches pane actions while an editor pane holds focus', () => {
+        const editor = document.createElement('textarea');
+        editor.setAttribute('data-pane-surface', '');
+        document.body.append(editor);
+
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry });
+
+        // ⌘D (split_right) and ⇧⌘D (split_down): dead from a scratchpad before this fix.
+        expect(dispatch(keyEvent('KeyD', { meta: true }, editor))).toBe(true);
+        expect(dispatch(keyEvent('KeyD', { meta: true, shift: true }, editor))).toBe(true);
+        expect(fired).toEqual(['split_right', 'split_down']);
+
+        // A bare letter still falls through to the textarea: nothing binds it.
+        expect(dispatch(keyEvent('KeyD', {}, editor))).toBe(false);
+        expect(fired).toEqual(['split_right', 'split_down']);
+
+        editor.remove();
     });
 
     it('dispatches pane actions while a terminal holds focus, and still suppresses them in a field', () => {

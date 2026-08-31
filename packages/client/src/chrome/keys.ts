@@ -17,9 +17,12 @@
  * `MENU_BAR_ACTIONS`) and the pane-shortcut monitor, and the monitor deliberately refuses the
  * menu actions (§7.2 step 6) because the OS already delivered them. A web client has no menu
  * layer, so this interceptor dispatches both sets. The distinction survives in one place where
- * it still earns its keep: while a text field is focused, only menu-bar actions fire — that is
- * exactly the behavior the split produced on macOS (the OS menu still works while you type in
- * the sidebar filter; ⌘D-style pane commands do not steal your keystrokes).
+ * it still earns its keep: while a CHROME text field is focused (the sidebar filter, a rename,
+ * the palette), only menu-bar actions fire — that is exactly the behavior the split produced on
+ * macOS (the OS menu still works while you type in the sidebar filter; ⌘D-style pane commands
+ * do not steal your keystrokes). A PANE's own surface — the terminal host, a scratchpad's or
+ * markdown editor's textarea — is not chrome text: the full pane keymap stays live there, which
+ * is what lets ⌘D split the very pane being typed into.
  */
 
 import {
@@ -37,6 +40,8 @@ import {
     type KeyTrigger,
     type KelpiAction
 } from '@kelpi/core/config';
+
+import { PANE_SURFACE_ATTR } from '../app/pane-focus';
 
 // ── KeyboardEvent.code → macOS virtual key code ─────────────────────────────────────
 
@@ -204,6 +209,23 @@ const EDITABLE_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT
 export const TERMINAL_HOST_SELECTOR = '[data-terminal-host]';
 
 /**
+ * Every element whose caret belongs to a PANE rather than to chrome: the terminal host, plus
+ * anything marked {@link PANE_SURFACE_ATTR} — the scratchpad's and the markdown editor's
+ * `<textarea>` (`app/pane-focus.ts`, N19). The terminal host carries both markers in the app;
+ * it keeps its own selector because the engines' focus targets are *descendants* of the marked
+ * div, and because `isTerminalSurface` is a public answer of its own.
+ */
+const PANE_SURFACE_SELECTOR = `${TERMINAL_HOST_SELECTOR}, [${PANE_SURFACE_ATTR}]`;
+
+/** `target.closest(selector)`, asked structurally (the dispatcher's targets are `unknown`). */
+function closestMatches(target: unknown, selector: string): boolean {
+    if (target === null || typeof target !== 'object') return false;
+    const element = target as { closest?: unknown };
+    if (typeof element.closest !== 'function') return false;
+    return (element.closest as (selector: string) => unknown)(selector) !== null;
+}
+
+/**
  * Is this event target part of a terminal surface?
  *
  * It has to be asked structurally, because the *engine* decides what kind of element it uses
@@ -213,26 +235,40 @@ export const TERMINAL_HOST_SELECTOR = '[data-terminal-host]';
  * chrome's own fields (sidebar filter, inline rename, palette, editor) are all outside it.
  */
 export function isTerminalSurface(target: unknown): boolean {
-    if (target === null || typeof target !== 'object') return false;
-    const element = target as { closest?: unknown; getAttribute?: unknown };
-    if (typeof element.closest !== 'function') return false;
-    return (element.closest as (selector: string) => unknown)(TERMINAL_HOST_SELECTOR) !== null;
+    return closestMatches(target, TERMINAL_HOST_SELECTOR);
+}
+
+/**
+ * Is this event target any pane's surface — the element that holds the caret while the PANE
+ * has focus? The port of the distinction `app/pane-focus.ts` documents: a pane surface holding
+ * the caret is not a text field worth protecting, while a chrome text field is.
+ */
+export function isPaneSurface(target: unknown): boolean {
+    return closestMatches(target, PANE_SURFACE_SELECTOR);
 }
 
 /**
  * "The user is typing into chrome": the sidebar filter, an inline rename, the palette field.
  *
- * A **terminal is not chrome text**, and answering otherwise kills the entire pane keymap: the
- * terminal holds focus on boot and after every split, so `⌘D`/`⌘W`/`⌘]`/`⇧⌘Space` would never
- * fire in practice — and worse, the unconsumed chord falls through to the PTY, typing a stray
- * `d` onto the user's command line. The Swift app never had the problem (an `NSView` is not a
- * text field); this engine's `contenteditable` host is what makes the plain tag/flag test wrong,
- * so terminal surfaces are excluded before the flag is consulted. See the UI audit's
- * `split-keybinding` / `keybinding-blast-radius` steps, which exist to keep it fixed.
+ * A **pane surface is not chrome text**, and answering otherwise kills the pane keymap exactly
+ * where it is needed most:
+ *
+ *   - the terminal holds focus on boot and after every split, so `⌘D`/`⌘W`/`⌘]`/`⇧⌘Space`
+ *     would never fire in practice — and worse, the unconsumed chord falls through to the PTY,
+ *     typing a stray `d` onto the user's command line. The Swift app never had the problem (an
+ *     `NSView` is not a text field); the ghostty-web engine's `contenteditable` host is what
+ *     makes the plain tag/flag test wrong. See the UI audit's `split-keybinding` /
+ *     `keybinding-blast-radius` steps, which exist to keep it fixed.
+ *   - an editor pane (scratchpad, markdown in edit mode) IS a `<textarea>`, and it holds the
+ *     caret from the moment ⇧⌘N creates it — so reading it as chrome killed ⌘D/⇧⌘D on the very
+ *     pane the user was typing into, while the same chords worked from every terminal.
+ *
+ * Both are excluded by the pane-surface markers before the tag/flag test is consulted, so a
+ * chrome field (which no pane marks) still suppresses every non-menu-bar binding.
  */
 export function isEditableTarget(target: unknown): boolean {
     if (target === null || typeof target !== 'object') return false;
-    if (isTerminalSurface(target)) return false;
+    if (isPaneSurface(target)) return false;
     const element = target as { tagName?: unknown; isContentEditable?: unknown };
     if (element.isContentEditable === true) return true;
     return typeof element.tagName === 'string' && EDITABLE_TAGS.has(element.tagName);

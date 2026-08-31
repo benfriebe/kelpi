@@ -297,6 +297,7 @@ export {
     createKeyDispatcher,
     installKeyDispatcher,
     isEditableTarget,
+    isPaneSurface,
     isTerminalSurface,
     keyBindingsFromOverrideLines,
     modifiersFromEvent,

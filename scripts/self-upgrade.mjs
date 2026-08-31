@@ -13,9 +13,19 @@
  * agent session gets its `claude --resume <id>` typed — the machinery §N13's wave proved with
  * argv-logging shims and the N19/N15 waves proved for caret and window focus.
  *
+ *   node scripts/self-upgrade.mjs --detach       # THE way to promote from inside a pane
  *   node scripts/self-upgrade.mjs                # package the tree, verify, promote
  *   node scripts/self-upgrade.mjs --no-package   # promote the already-packaged bundle
  *   node scripts/self-upgrade.mjs --dry-run      # show the plan, touch nothing
+ *
+ * EVIDENCE RULE (learned 2026-08-31, cost two lost promotes): a promote started from inside
+ * a Kelpi pane is a child of the pane it will destroy — when the session hosting it is cut
+ * mid-battery, the process, its output, and even the conversation that launched it all die
+ * unrecorded. So nothing about a promote may live only in the pane. `--detach` re-execs this
+ * script nohup'd, all output goes to a log under the daemon's state dir, every phase
+ * transition lands in `~/Library/Application Support/kelpid/last-promote.json`, and the
+ * restarter writes the final "promoted"/"restart-failed" verdict there too. After ANY
+ * promote, read that file first.
  *
  * Test-mode flags (used by the sandbox proof; not for real use):
  *   --app <path> --run-dir <dir> --relaunch-cmd <shell line> --daemon-pattern <pgrep pattern>
@@ -52,6 +62,57 @@ const daemonPattern =
 
 const log = (line) => console.log(`[self-upgrade] ${line}`);
 
+// ── promote evidence (must outlive the pane this script kills) ──────────────────────
+
+const stateDir = path.join(os.homedir(), 'Library', 'Application Support', 'kelpid');
+const statusFile = path.join(stateDir, 'last-promote.json');
+const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+const promoteLog = process.env.KELPI_PROMOTE_LOG;
+const writeStatus = (phase, extra = {}) => {
+    if (dryRun) return;
+    try {
+        fs.mkdirSync(stateDir, { recursive: true });
+        fs.writeFileSync(
+            statusFile,
+            `${JSON.stringify(
+                {
+                    phase,
+                    pid: process.pid,
+                    log: promoteLog ?? null,
+                    updatedAt: new Date().toISOString(),
+                    ...extra
+                },
+                null,
+                2
+            )}\n`
+        );
+    } catch {
+        // Status is best-effort — it must never break the promote itself.
+    }
+};
+
+if (has('--detach')) {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const detachedLog = path.join(stateDir, `promote-${stamp}.log`);
+    const out = fs.openSync(detachedLog, 'a');
+    const worker = spawn(
+        'nohup',
+        [process.execPath, fileURLToPath(import.meta.url), ...args.filter((flag) => flag !== '--detach')],
+        {
+            cwd: repoRoot,
+            detached: true,
+            stdio: ['ignore', out, out],
+            env: { ...process.env, KELPI_PROMOTE_LOG: detachedLog }
+        }
+    );
+    worker.unref();
+    log(`detached promote pid ${worker.pid} — this survives the pane, the app, and the daemon.`);
+    log(`log:    ${detachedLog}`);
+    log(`status: ${statusFile}`);
+    log(`follow: tail -f "${detachedLog}"`);
+    process.exit(0);
+}
+
 // ── 0. the battery ──────────────────────────────────────────────────────────────────
 // A promote is the moment the owner receives the build, so it is the moment the FULL
 // battery runs — the tiered flow's whole bargain (scoped checks per change) rests on this
@@ -61,7 +122,15 @@ const log = (line) => console.log(`[self-upgrade] ${line}`);
 if (!has('--skip-verify') && !dryRun) {
     log('running the full battery first (scripts/verify.mjs --full; skip with --skip-verify');
     log('only when re-promoting a bundle the battery already passed)…');
-    execSync(`"${process.execPath}" scripts/verify.mjs --full`, { cwd: repoRoot, stdio: 'inherit' });
+    writeStatus('battery-running');
+    try {
+        execSync(`"${process.execPath}" scripts/verify.mjs --full`, { cwd: repoRoot, stdio: 'inherit' });
+    } catch (error) {
+        writeStatus('failed', { failedDuring: 'battery', error: String(error?.message ?? error) });
+        console.error('[self-upgrade] the battery FAILED — nothing was promoted; the log has the failing check.');
+        process.exit(1);
+    }
+    writeStatus('battery-passed');
 } else if (has('--skip-verify')) {
     log('SKIPPING the battery (--skip-verify) — this bundle had better have passed it already.');
 }
@@ -70,11 +139,18 @@ if (!has('--skip-verify') && !dryRun) {
 
 if (!noPackage && !dryRun) {
     log('building + packaging the tree (skip with --no-package)…');
-    execSync('pnpm --filter @kelpi/daemon build && pnpm --filter @kelpi/client build && pnpm --filter @kelpi/cli build && pnpm --filter @kelpi/shell build', {
-        cwd: repoRoot,
-        stdio: 'inherit'
-    });
-    execSync('pnpm run package', { cwd: path.join(repoRoot, 'packages', 'shell'), stdio: 'inherit' });
+    writeStatus('packaging');
+    try {
+        execSync('pnpm --filter @kelpi/daemon build && pnpm --filter @kelpi/client build && pnpm --filter @kelpi/cli build && pnpm --filter @kelpi/shell build', {
+            cwd: repoRoot,
+            stdio: 'inherit'
+        });
+        execSync('pnpm run package', { cwd: path.join(repoRoot, 'packages', 'shell'), stdio: 'inherit' });
+    } catch (error) {
+        writeStatus('failed', { failedDuring: 'packaging', error: String(error?.message ?? error) });
+        console.error('[self-upgrade] packaging FAILED — nothing was promoted.');
+        process.exit(1);
+    }
 }
 
 // ── 2. verify the bundle ────────────────────────────────────────────────────────────
@@ -165,10 +241,12 @@ if (dryRun) {
 }
 
 // ── 4. the detached restarter ───────────────────────────────────────────────────────
+// Script and log live in the state dir, not the pane and not a temp dir a cleaner may
+// sweep — they ARE the record of what the restarter did once nothing else survives.
 
-const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const logFile = path.join(os.tmpdir(), `kelpi-self-upgrade-${stamp}.log`);
-const script = path.join(os.tmpdir(), `kelpi-self-upgrade-${stamp}.sh`);
+const logFile = path.join(stateDir, `restarter-${stamp}.log`);
+const script = path.join(stateDir, `restarter-${stamp}.sh`);
+fs.mkdirSync(stateDir, { recursive: true });
 
 const waitGone = (pid) => `
 i=0; while kill -0 ${pid} 2>/dev/null && [ $i -lt 30 ]; do sleep 0.5; i=$((i+1)); done
@@ -191,11 +269,13 @@ while [ $i -lt 60 ]; do
   PORT=$(cat "${runDir}/daemon-v1.port" 2>/dev/null)
   if [ -n "$PORT" ] && curl -s -m 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
     echo "restarter: daemon healthy on port $PORT ($(date))"
+    printf '{\\n  "phase": "promoted",\\n  "port": %s,\\n  "updatedAt": "%s",\\n  "log": ${JSON.stringify(promoteLog ?? logFile)},\\n  "restarterLog": ${JSON.stringify(logFile)}\\n}\\n' "$PORT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${JSON.stringify(statusFile)}
     exit 0
   fi
   sleep 1; i=$((i+1))
 done
 echo "restarter: TIMED OUT waiting for health — check manually"
+printf '{\\n  "phase": "restart-failed",\\n  "updatedAt": "%s",\\n  "log": ${JSON.stringify(promoteLog ?? logFile)},\\n  "restarterLog": ${JSON.stringify(logFile)}\\n}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${JSON.stringify(statusFile)}
 exit 1
 `,
     { mode: 0o755 }
@@ -208,5 +288,6 @@ const child = spawn('nohup', [script], {
     stdio: 'ignore'
 });
 child.unref();
+writeStatus('restarter-detached', { restarter: script, restarterLog: logFile, appPids, daemonPids });
 log('upgrade initiated. If this session lives in a pane, see you on the other side.');
 process.exit(0);

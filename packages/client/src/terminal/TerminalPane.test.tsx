@@ -999,6 +999,34 @@ describe('TerminalPane — helpers', () => {
         expect(host.style.paddingTop).toBe('');
     });
 
+    it('honors configured window-padding over the shipped defaults (Settings ▸ Appearance)', async () => {
+        const pty = createFakePtyApi();
+        const { factory } = createFakeRendererFactory();
+        const view = render(
+            <TerminalPane
+                paneID="pane-1"
+                ptyApi={pty}
+                focused
+                visible
+                createRenderer={factory}
+                measure={box(800, 340)}
+                paddingX={8}
+                paddingY={0}
+            />
+        );
+        await settle();
+
+        const root = view.container.querySelector('[data-pane-id="pane-1"]') as HTMLElement;
+        const host = root.querySelector('[data-terminal-host]') as HTMLElement;
+        expect(root.style.paddingLeft).toBe('8px');
+        expect(root.style.paddingRight).toBe('8px');
+        // 0 is a real answer, not "use the default": the user asked for a flush top edge.
+        expect(root.style.paddingTop).toBe('0px');
+        // Still the root's inset, never the measured host's.
+        expect(host.style.paddingLeft).toBe('');
+        expect(host.style.paddingTop).toBe('');
+    });
+
     it('never steals the caret from a text field outside the pane', () => {
         const input = document.createElement('input');
         document.body.appendChild(input);

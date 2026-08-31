@@ -316,6 +316,14 @@ export interface WsAppearanceSettings {
     readonly fontFamily: string | null;
     /** Points/pixels; null = host default. */
     readonly fontSize: number | null;
+    /**
+     * ghostty `window-padding-x` / `window-padding-y`: whole pixels the terminal pane keeps
+     * clear at its edges (x = left/right, y = top; the bottom edge collects the sub-cell
+     * remainder). Null = key unset, the client's shipped 2px default applies. Additive: a
+     * daemon that predates them omits the fields and the hydrator fills null.
+     */
+    readonly windowPaddingX: number | null;
+    readonly windowPaddingY: number | null;
     /** The luminance rule against `backgroundColor`. */
     readonly isDark: boolean;
     /** ghostty's own `theme = <name>` value, passed through opaquely. Null when unset. */
@@ -381,6 +389,8 @@ export const DEFAULT_WS_SETTINGS: WsSettingsSnapshot = {
         backgroundOpacity: 1,
         fontFamily: null,
         fontSize: null,
+        windowPaddingX: null,
+        windowPaddingY: null,
         isDark: true,
         theme: null,
         terminalTheme: DEFAULT_WS_TERMINAL_THEME
@@ -488,20 +498,22 @@ export function isWsWritableGeneralKey(key: string): key is WsWritableGeneralKey
 }
 
 /**
- * The ghostty keys `set-ghostty-setting` may write — exactly the five `settings/ghostty.ts`
+ * The ghostty keys `set-ghostty-setting` may write — exactly the seven `settings/ghostty.ts`
  * READS, and not one more.
  *
  * The daemon is not a ghostty config implementation (that file's header says so): writing a
  * key it cannot parse back would let the UI claim a change it can neither show nor undo. A
  * value of `null` removes every line for the key, which is how "no explicit background, fall
- * back to the theme" is expressed.
+ * back to the theme" is expressed — and how a padding row returns to the shipped default.
  */
 export const WS_WRITABLE_GHOSTTY_KEYS = [
     'background',
     'background-opacity',
     'font-family',
     'font-size',
-    'theme'
+    'theme',
+    'window-padding-x',
+    'window-padding-y'
 ] as const;
 export type WsWritableGhosttyKey = (typeof WS_WRITABLE_GHOSTTY_KEYS)[number];
 

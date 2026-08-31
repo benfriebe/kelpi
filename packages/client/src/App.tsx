@@ -2512,9 +2512,18 @@ function Shell(props: AppProps): ReactElement {
     const terminalFont = useMemo(
         () => ({
             fontFamily: terminalFontStack(settings.appearance.fontFamily),
-            fontSize: settings.appearance.fontSize
+            fontSize: settings.appearance.fontSize,
+            // ghostty `window-padding-x`/`-y` (Settings ▸ Appearance ▸ Terminal padding);
+            // null = the pane's shipped 2px defaults.
+            paddingX: settings.appearance.windowPaddingX,
+            paddingY: settings.appearance.windowPaddingY
         }),
-        [settings.appearance.fontFamily, settings.appearance.fontSize]
+        [
+            settings.appearance.fontFamily,
+            settings.appearance.fontSize,
+            settings.appearance.windowPaddingX,
+            settings.appearance.windowPaddingY
+        ]
     );
 
     // ── pane dimensions (the grid's resize badge) ───────────────────────────────────
@@ -3679,6 +3688,8 @@ function Shell(props: AppProps): ReactElement {
                         allowTransparency={paneTransparency}
                         {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
                         {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
+                        {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
+                        {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
                         onFocusRequest={onTerminalFocus}
                         onDimensionsChange={onDimensionsChange}
                         reveal={null}
@@ -3801,6 +3812,8 @@ function Shell(props: AppProps): ReactElement {
                     allowTransparency={paneTransparency}
                     {...(terminalFont.fontFamily !== null ? { fontFamily: terminalFont.fontFamily } : {})}
                     {...(terminalFont.fontSize !== null ? { fontSize: terminalFont.fontSize } : {})}
+                    {...(terminalFont.paddingX !== null ? { paddingX: terminalFont.paddingX } : {})}
+                    {...(terminalFont.paddingY !== null ? { paddingY: terminalFont.paddingY } : {})}
                     onFocusRequest={onTerminalFocus}
                     onDimensionsChange={onDimensionsChange}
                     reveal={searchReveal?.paneID === paneID ? searchReveal : null}

@@ -731,6 +731,32 @@ export function AppearanceTab(props: AppearanceTabProps): ReactElement {
                         actions.setGhosttySetting('font-size', String(Math.round(next)));
                     }}
                 />
+                <SliderField
+                    label="Padding (horizontal)"
+                    testID="terminal-padding-x"
+                    detail="Pixels kept clear at the pane's left and right edges — ghostty's window-padding-x."
+                    value={appearance.windowPaddingX ?? 2}
+                    min={0}
+                    max={32}
+                    step={1}
+                    format={(value) => `${String(Math.round(value))}px`}
+                    onChange={(next) => {
+                        actions.setGhosttySetting('window-padding-x', String(Math.round(next)));
+                    }}
+                />
+                <SliderField
+                    label="Padding (vertical)"
+                    testID="terminal-padding-y"
+                    detail="Pixels between the pane's top edge and row 1 — ghostty's window-padding-y. The bottom edge keeps the sub-cell remainder."
+                    value={appearance.windowPaddingY ?? 2}
+                    min={0}
+                    max={32}
+                    step={1}
+                    format={(value) => `${String(Math.round(value))}px`}
+                    onChange={(next) => {
+                        actions.setGhosttySetting('window-padding-y', String(Math.round(next)));
+                    }}
+                />
 
                 <SettingsRow
                     label="Resolved appearance"

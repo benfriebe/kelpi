@@ -34,6 +34,8 @@ const SETTINGS: WsSettingsSnapshot = {
         backgroundOpacity: 0.8,
         fontFamily: 'Menlo',
         fontSize: 15,
+        windowPaddingX: 4,
+        windowPaddingY: 3,
         isDark: false,
         theme: 'Catppuccin Latte',
         // §APP-014: and what that name RESOLVED to — the palette the daemon read out of the

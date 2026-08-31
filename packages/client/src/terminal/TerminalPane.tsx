@@ -70,7 +70,9 @@ export const DEFAULT_RESIZE_DEBOUNCE_MS = 100;
 export const RESIZE_MAX_WAIT_MS = 100;
 
 /**
- * Horizontal breathing room between the pane edge and column 1, in CSS pixels.
+ * Horizontal breathing room between the pane edge and column 1, in CSS pixels — the DEFAULT,
+ * used when the ghostty config sets no `window-padding-x` (Settings ▸ Appearance ▸ Terminal
+ * padding writes that key; the `paddingX` prop carries the configured value here).
  *
  * Two jobs: it keeps the focus ring off the first and last columns (see the pane root's style),
  * and it is the same `window-padding-x = 2` ghostty applies by default, so a terminal here is
@@ -80,14 +82,16 @@ export const RESIZE_MAX_WAIT_MS = 100;
 export const TERMINAL_EDGE_PADDING = 2;
 
 /**
- * Vertical breathing room between the pane's top edge and row 1, in CSS pixels.
+ * Vertical breathing room between the pane's top edge and row 1, in CSS pixels — the DEFAULT
+ * behind ghostty's `window-padding-y` (the `paddingY` prop), same arrangement as
+ * {@link TERMINAL_EDGE_PADDING}.
  *
- * Same two jobs as {@link TERMINAL_EDGE_PADDING}, rotated 90°: it keeps the first row's ascenders
- * off the pane edge (and out from under the focus ring), and it matches the top half of ghostty's
- * `window-padding-y = 2` default. Top only — the bottom edge already collects the sub-cell
- * remainder of `floor(height / cellHeight)`, so padding there would double up. Applied to the
- * pane root, NOT to the host the geometry is measured from, so rows stay honest and the bottom
- * row is never clipped.
+ * Same two jobs, rotated 90°: it keeps the first row's ascenders off the pane edge (and out
+ * from under the focus ring), and it matches the top half of ghostty's `window-padding-y = 2`
+ * default. Top only — the bottom edge already collects the sub-cell remainder of
+ * `floor(height / cellHeight)`, so padding there would double up. Applied to the pane root,
+ * NOT to the host the geometry is measured from, so rows stay honest and the bottom row is
+ * never clipped.
  */
 export const TERMINAL_EDGE_PADDING_TOP = 2;
 
@@ -227,6 +231,16 @@ export interface TerminalPaneProps {
     readonly onFocusRequest?: ((paneID: string) => void) | undefined;
     readonly fontFamily?: string | undefined;
     readonly fontSize?: number | undefined;
+    /**
+     * Edge padding in CSS pixels, from the ghostty config's `window-padding-x` /
+     * `window-padding-y` (Settings ▸ Appearance ▸ Terminal padding). Undefined = the shipped
+     * 2px defaults. x pads left/right, y pads the top; the bottom edge stays the sub-cell
+     * remainder — see {@link TERMINAL_EDGE_PADDING_TOP}. A change re-styles the pane root, the
+     * host's ResizeObserver sees the shrunken/grown box, and the grid re-measures — live, no
+     * engine rebuild.
+     */
+    readonly paddingX?: number | undefined;
+    readonly paddingY?: number | undefined;
     /** Engine override (tests inject a fake; the app uses `VITE_TERMINAL_ENGINE`). */
     readonly createRenderer?: TerminalRendererFactory | undefined;
     readonly resizeDebounceMs?: number | undefined;
@@ -1206,9 +1220,9 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // half) so row 1 doesn't sit flush against the pane edge; the host's
                 // `clientHeight` shrinks with it, so the rows the PTY is told about stay exactly
                 // the rows the canvas can paint and the bottom row is never clipped.
-                paddingLeft: TERMINAL_EDGE_PADDING,
-                paddingRight: TERMINAL_EDGE_PADDING,
-                paddingTop: TERMINAL_EDGE_PADDING_TOP
+                paddingLeft: props.paddingX ?? TERMINAL_EDGE_PADDING,
+                paddingRight: props.paddingX ?? TERMINAL_EDGE_PADDING,
+                paddingTop: props.paddingY ?? TERMINAL_EDGE_PADDING_TOP
             }}
             onMouseDownCapture={requestFocus}
             onTouchStartCapture={requestFocus}

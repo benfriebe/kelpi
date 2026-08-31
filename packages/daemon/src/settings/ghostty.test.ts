@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { isDarkBackground } from '../content/html.js';
-import { DEFAULT_GHOSTTY_APPEARANCE, parseGhosttyAppearance, parseGhosttyColor } from './ghostty.js';
+import { DEFAULT_GHOSTTY_APPEARANCE, MAX_WINDOW_PADDING, parseGhosttyAppearance, parseGhosttyColor } from './ghostty.js';
 
 describe('parseGhosttyColor', () => {
     it('accepts the hex spellings ghostty writes, with or without the hash', () => {
@@ -22,7 +22,7 @@ describe('parseGhosttyColor', () => {
 });
 
 describe('parseGhosttyAppearance', () => {
-    it('reads the five keys and ignores everything else', () => {
+    it('reads the seven keys and ignores everything else', () => {
         const appearance = parseGhosttyAppearance(`# my ghostty config
 background = #ffffff
 background-opacity = 0.85
@@ -39,8 +39,24 @@ mouse-hide-while-typing = true
             fontFamily: '"JetBrains Mono"',
             fontSize: 15,
             theme: 'Catppuccin Latte',
+            windowPaddingX: 8,
+            windowPaddingY: null,
             hasExplicitBackground: true
         });
+    });
+
+    it('window-padding: non-negative whole pixels, clamped, later line wins, junk refused', () => {
+        const both = parseGhosttyAppearance('window-padding-x = 6\nwindow-padding-y = 0\n');
+        expect(both.windowPaddingX).toBe(6);
+        expect(both.windowPaddingY).toBe(0);
+        // Fractions round; a runaway value clamps to the ceiling instead of eating the pane.
+        expect(parseGhosttyAppearance('window-padding-y = 2.6\n').windowPaddingY).toBe(3);
+        expect(parseGhosttyAppearance(`window-padding-x = 500\n`).windowPaddingX).toBe(MAX_WINDOW_PADDING);
+        // Negative or unparseable values are not a padding: the key stays unset (client default).
+        expect(parseGhosttyAppearance('window-padding-x = -3\n').windowPaddingX).toBeNull();
+        expect(parseGhosttyAppearance('window-padding-y = lots\n').windowPaddingY).toBeNull();
+        // Ghostty's scalar rule, same as font-size: the LAST line wins.
+        expect(parseGhosttyAppearance('window-padding-x = 4\nwindow-padding-x = 9\n').windowPaddingX).toBe(9);
     });
 
     /**

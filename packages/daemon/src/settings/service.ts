@@ -303,6 +303,8 @@ export function buildSettingsSnapshot(
             backgroundOpacity: appearance.backgroundOpacity,
             fontFamily: appearance.fontFamily,
             fontSize: appearance.fontSize,
+            windowPaddingX: appearance.windowPaddingX,
+            windowPaddingY: appearance.windowPaddingY,
             // The luminance rule, computed once by the authority so the daemon's rendered
             // HTML and the client's chrome cannot disagree (content-panes.md port note 9).
             isDark: isDarkBackground(backgroundColor),

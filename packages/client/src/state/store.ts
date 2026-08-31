@@ -491,6 +491,8 @@ export function hydrateSettings(raw: unknown): WsSettingsSnapshot | null {
             ),
             fontFamily: nullableText(appearance['fontFamily']),
             fontSize: nullableNum(appearance['fontSize']),
+            windowPaddingX: nullableNum(appearance['windowPaddingX']),
+            windowPaddingY: nullableNum(appearance['windowPaddingY']),
             isDark: bool(appearance['isDark'], fallbackAppearance.isDark),
             theme: nullableText(appearance['theme']),
             // §APP-014: what that theme name RESOLVED to. Additive in the same way as every

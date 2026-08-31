@@ -520,9 +520,18 @@ describe('setGhosttySetting', () => {
 
     it('refuses a key it cannot read back, rather than writing something invisible', () => {
         const f = fixture({ ghostty: GHOSTTY });
-        expect(() => f.service.setGhosttySetting('window-padding-x', '16')).toThrow(SettingsError);
+        expect(() => f.service.setGhosttySetting('cursor-style', 'block')).toThrow(SettingsError);
         // Nothing was written.
         expect(readGhostty(f)).toBe(GHOSTTY);
+    });
+
+    it('writes window-padding and reads it back into the snapshot', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const next = f.service.setGhosttySetting('window-padding-y', '4');
+        expect(next.appearance.windowPaddingY).toBe(4);
+        // The fixture's own window-padding-x line is a READ key now, not just a preserved one.
+        expect(next.appearance.windowPaddingX).toBe(8);
+        expect(readGhostty(f)).toContain('window-padding-y = 4');
     });
 
     it('collapses accumulating font-family lines to the one that was asked for', () => {

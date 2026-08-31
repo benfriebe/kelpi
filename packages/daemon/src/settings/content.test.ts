@@ -121,7 +121,7 @@ describe('settings → content appearance', () => {
         const f = await fixture('background = #ffffff\n');
         await f.state();
         const before = f.events.length;
-        f.editGhostty('background = #ffffff\nwindow-padding-x = 12\n');
+        f.editGhostty('background = #ffffff\nmouse-hide-while-typing = true\n');
         expect(f.events).toHaveLength(before);
     });
 });

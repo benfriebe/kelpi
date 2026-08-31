@@ -420,7 +420,7 @@ describe('settings-changed broadcast', () => {
 
 /**
  * The one settings verb that writes a file Kelpi does not own. Everything below is about that
- * boundary: only the five keys the daemon can read back are writable, `null` means REMOVE, and
+ * boundary: only the seven keys the daemon can read back are writable, `null` means REMOVE, and
  * a user's own ghostty lines survive untouched.
  */
 describe('set-ghostty-setting', () => {
@@ -447,11 +447,20 @@ describe('set-ghostty-setting', () => {
     it('refuses a key the daemon cannot read back', () => {
         const f = fixture({ ghostty: GHOSTTY });
         const client = f.connect();
-        expect(client.send({ command: 'set-ghostty-setting', key: 'window-padding-x', value: '16' })).toEqual({
+        expect(client.send({ command: 'set-ghostty-setting', key: 'cursor-style', value: 'block' })).toEqual({
             ok: false,
-            error: "'window-padding-x' is not a writable ghostty setting"
+            error: "'cursor-style' is not a writable ghostty setting"
         });
         expect(f.readGhostty()).toBe(GHOSTTY);
+    });
+
+    it('writes window-padding (Settings \u25b8 Appearance \u25b8 Terminal padding) and reads it back', () => {
+        const f = fixture({ ghostty: GHOSTTY });
+        const client = f.connect();
+        const reply = client.send({ command: 'set-ghostty-setting', key: 'window-padding-x', value: '16' });
+        expect(settingsOf(reply).appearance.windowPaddingX).toBe(16);
+        expect(f.readGhostty()).toContain('window-padding-x = 16');
+        expect(f.readGhostty()).not.toContain('window-padding-x = 8');
     });
 
     it('requires a key and a value field', () => {

@@ -8,7 +8,8 @@
  *
  * Scope, stated honestly so nobody mistakes this for a ghostty config implementation:
  *
- *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`;
+ *   - keys read: `background`, `background-opacity`, `font-family`, `font-size`, `theme`,
+ *     `window-padding-x`, `window-padding-y`;
  *   - every other key is ignored (ghostty has hundreds);
  *   - `config-file = …` includes are NOT followed;
  *   - a `theme` name is reported verbatim here and RESOLVED next door in `./theme.ts`
@@ -37,6 +38,16 @@ export interface GhosttyAppearance {
     /** ghostty's `theme` value verbatim (it may be `dark:X,light:Y`); null when unset. */
     readonly theme: string | null;
     /**
+     * `window-padding-x` / `window-padding-y`: whole pixels the terminal pane keeps clear at
+     * its edges (x = left/right, y = top; the bottom edge collects the sub-cell remainder —
+     * `TerminalPane.tsx` owns that geometry). Null = the key is unset and the client's shipped
+     * default (2, ghostty's own default) applies. Parsed as a non-negative number, rounded,
+     * and clamped to 64 — a runaway value must not be able to shrink the measured host to
+     * nothing.
+     */
+    readonly windowPaddingX: number | null;
+    readonly windowPaddingY: number | null;
+    /**
      * Did the file actually carry a parseable `background = …` line?
      *
      * `backgroundColor` is always concrete (the luminance rule needs a real colour), so "the
@@ -54,8 +65,19 @@ export const DEFAULT_GHOSTTY_APPEARANCE: GhosttyAppearance = {
     fontFamily: null,
     fontSize: null,
     theme: null,
+    windowPaddingX: null,
+    windowPaddingY: null,
     hasExplicitBackground: false
 };
+
+/** See `GhosttyAppearance.windowPaddingX` — the ceiling a parsed padding is clamped to. */
+export const MAX_WINDOW_PADDING = 64;
+
+function parsePadding(raw: string): number | null {
+    const parsed = parseNumber(raw);
+    if (parsed === null || parsed < 0) return null;
+    return Math.min(MAX_WINDOW_PADDING, Math.round(parsed));
+}
 
 const HEX3 = /^[0-9a-f]{3}$/;
 const HEX6 = /^[0-9a-f]{6}$/;
@@ -104,6 +126,8 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
     let backgroundOpacity = DEFAULT_GHOSTTY_APPEARANCE.backgroundOpacity;
     let fontSize: number | null = null;
     let theme: string | null = null;
+    let windowPaddingX: number | null = null;
+    let windowPaddingY: number | null = null;
     let families: string[] = [];
     let hasExplicitBackground = false;
 
@@ -137,6 +161,16 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
             case 'theme':
                 theme = value === '' ? null : value;
                 break;
+            case 'window-padding-x': {
+                const parsed = parsePadding(value);
+                if (parsed !== null) windowPaddingX = parsed;
+                break;
+            }
+            case 'window-padding-y': {
+                const parsed = parsePadding(value);
+                if (parsed !== null) windowPaddingY = parsed;
+                break;
+            }
             default:
                 break;
         }
@@ -148,6 +182,8 @@ export function parseGhosttyAppearance(contents: string): GhosttyAppearance {
         fontFamily: families.length === 0 ? null : families.map(cssFamily).join(', '),
         fontSize,
         theme,
+        windowPaddingX,
+        windowPaddingY,
         hasExplicitBackground
     };
 }

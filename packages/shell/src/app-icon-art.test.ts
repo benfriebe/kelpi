@@ -9,7 +9,7 @@ import {
     ART_VIEWBOX,
     KELPIE_PATHS
 } from './app-icon-art-data.js';
-import { flattenSvgPath, kelpieArt } from './app-icon-art.js';
+import { flattenSvgPath, kelpieArt, segmentDistance, stampKelpie } from './app-icon-art.js';
 
 describe('the embedded art data', () => {
     /**
@@ -103,5 +103,40 @@ describe('kelpieArt', () => {
 
     it('returns the same flattened art on every call (it is cached)', () => {
         expect(kelpieArt()).toBe(kelpieArt());
+    });
+});
+
+describe('segmentDistance', () => {
+    it('measures to the round-capped capsule, caps included', () => {
+        // On the centreline of a width-2 segment: half a width inside.
+        expect(segmentDistance(5, 0, 0, 0, 10, 0, 2)).toBe(-1);
+        // Beyond the end cap: distance from the endpoint, minus the cap radius.
+        expect(segmentDistance(13, 4, 0, 0, 10, 0, 2)).toBe(4);
+        // A zero-length segment degenerates to a round dot rather than dividing by zero.
+        expect(segmentDistance(3, 0, 0, 0, 0, 0, 2)).toBe(2);
+    });
+});
+
+describe('stampKelpie', () => {
+    it('stamps 0..1 anti-aliased coverage onto a size² buffer', () => {
+        const coverage = stampKelpie(64, { span: 1, minStrokePx: 1 });
+        expect(coverage.length).toBe(64 * 64);
+        let max = 0;
+        let painted = 0;
+        for (const value of coverage) {
+            max = Math.max(max, value);
+            if (value > 0) painted += 1;
+        }
+        expect(max).toBeLessThanOrEqual(1);
+        // Somewhere a pixel centre sits on a stroke's centreline: the mark is solid, not a ghost.
+        expect(max).toBeGreaterThan(0.9);
+        expect(painted).toBeGreaterThan(200);
+    });
+
+    it('honours the stroke floor — a wider floor paints more ink', () => {
+        const area = (coverage: Float32Array): number => coverage.reduce((sum, value) => sum + value, 0);
+        const thin = area(stampKelpie(32, { span: 1, minStrokePx: 1 }));
+        const thick = area(stampKelpie(32, { span: 1, minStrokePx: 3 }));
+        expect(thick).toBeGreaterThan(thin);
     });
 });

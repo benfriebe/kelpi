@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import { stampKelpie } from './app-icon-art.js';
 import {
     DARK_TRAY_STATUS,
     DEFAULT_TRAY_STATUS,
     ICON_BASE_SIZE,
     LIGHT_TRAY_STATUS,
     STATUS_COLORS,
+    TRAY_GLYPH_SPAN,
+    TRAY_STROKE_FLOOR_PT,
     encodePng,
     parseTrayHex,
     resolveTrayStatusPalette,
@@ -58,7 +61,15 @@ describe('trayIconPixels', () => {
         expect(dotPixel('waiting')).toEqual(STATUS_COLORS.waiting);
         expect(dotPixel('running')).toEqual(STATUS_COLORS.running);
         expect(dotPixel('disconnected')).toEqual(STATUS_COLORS.disconnected);
-        expect(dotPixel('idle')[3]).toBe(0);
+        // Idle carries NO dot anywhere: the mark is black-on-alpha, so a single chromatic
+        // pixel would be a dot that crept into the template image. (The dot-centre pixel
+        // itself can hold a faint glyph edge, which is why this checks colour, not alpha.)
+        const canvas = trayIconPixels('idle', 2);
+        for (let offset = 0; offset < canvas.rgba.length; offset += 4) {
+            expect(canvas.rgba[offset]).toBe(0);
+            expect(canvas.rgba[offset + 1]).toBe(0);
+            expect(canvas.rgba[offset + 2]).toBe(0);
+        }
     });
 
     it('draws a glyph even when idle', () => {
@@ -67,21 +78,43 @@ describe('trayIconPixels', () => {
         expect(opaque.length).toBeGreaterThan(50);
     });
 
+    it('strokes the kelpie mark — the app icon’s own art, not a second drawing', () => {
+        // The idle icon has no dot, so its ALPHA CHANNEL must be exactly the SDF stamp of
+        // `app-icon-art.ts`'s flattened kelpie at the tray's own span and stroke floor. This
+        // is what makes "one kelpie in the codebase" a tested claim rather than a comment.
+        const canvas = trayIconPixels('idle', 2);
+        const coverage = stampKelpie(canvas.width, {
+            span: TRAY_GLYPH_SPAN,
+            minStrokePx: TRAY_STROKE_FLOOR_PT * 2
+        });
+        const alphas = Array.from(coverage, (value) => Math.round(value * 0xff));
+        expect([...canvas.rgba].filter((_value, index) => index % 4 === 3)).toEqual(alphas);
+    });
+
     // ── §AGNT-087: template when there is no dot to carry ───────────────────────────
 
     /**
-     * A pixel of the cursor underscore at scale 2 — bottom-left of the glyph, as far from the
-     * top-right status dot as the icon gets, so this reads the GLYPH tone and nothing else.
+     * The strongest glyph pixel in the LEFT half of the canvas — the top-right status dot
+     * cannot reach it, so this reads the GLYPH tone and nothing else. A scan rather than a
+     * fixed coordinate: the kelpie's strokes are art, not a grid this test should restate.
      */
     function glyphPixel(indicator: Parameters<typeof trayIconPixels>[0]): [number, number, number, number] {
         const canvas = trayIconPixels(indicator, 2);
-        const offset = (27 * canvas.width + 24) * 4;
-        return [
-            canvas.rgba[offset] as number,
-            canvas.rgba[offset + 1] as number,
-            canvas.rgba[offset + 2] as number,
-            canvas.rgba[offset + 3] as number
-        ];
+        let best: [number, number, number, number] = [0, 0, 0, 0];
+        for (let y = 0; y < canvas.height; y += 1) {
+            for (let x = 0; x < canvas.width / 2; x += 1) {
+                const offset = (y * canvas.width + x) * 4;
+                const alpha = canvas.rgba[offset + 3] as number;
+                if (alpha <= best[3]) continue;
+                best = [
+                    canvas.rgba[offset] as number,
+                    canvas.rgba[offset + 1] as number,
+                    canvas.rgba[offset + 2] as number,
+                    alpha
+                ];
+            }
+        }
+        return best;
     }
 
     it('is a template image exactly when there is no status dot', () => {

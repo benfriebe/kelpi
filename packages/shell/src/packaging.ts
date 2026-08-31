@@ -14,7 +14,7 @@
  * Nothing here imports Electron.
  */
 
-import { kelpieArt } from './app-icon-art.js';
+import { stampKelpie } from './app-icon-art.js';
 import { encodePng } from './icon.js';
 import { RESOURCE_NAMES } from './resources.js';
 
@@ -289,73 +289,10 @@ function roundedRectDistance(x: number, y: number, inset: number, radius: number
     return Math.hypot(outsideX, outsideY) + Math.min(Math.max(dx, dy), 0) - radius;
 }
 
-/** Signed distance to a round-capped segment of width `width`. */
-function segmentDistance(
-    x: number,
-    y: number,
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    width: number
-): number {
-    const px = x - ax;
-    const py = y - ay;
-    const vx = bx - ax;
-    const vy = by - ay;
-    const lengthSquared = vx * vx + vy * vy;
-    const t = lengthSquared === 0 ? 0 : clamp01((px * vx + py * vy) / lengthSquared);
-    return Math.hypot(px - vx * t, py - vy * t) - width / 2;
-}
-
 interface Canvas {
     readonly width: number;
     readonly height: number;
     readonly rgba: Uint8Array;
-}
-
-/**
- * Stroke the kelpie onto a `size`-px canvas: a max-blended coverage buffer, one round-capped
- * capsule per polyline segment.
- *
- * Stamping (iterate segments, touch only each segment's bounding box) rather than the tile's
- * per-pixel SDF loop, because the drawing has a few thousand segments: evaluating all of them
- * at every pixel of a 1024² canvas is billions of distance calls, while stamping is bounded by
- * stroke area. Max-blending makes overlapping caps idempotent, which is also what makes a
- * chain of capsules an *exact* round-joined stroke rather than a darkened approximation.
- */
-function stampKelpie(size: number): Float32Array {
-    const art = kelpieArt();
-    const coverage = new Float32Array(size * size);
-    const span = GLYPH_SPAN * size;
-    const inset = ((1 - GLYPH_SPAN) / 2) * size;
-    const width = Math.max(art.strokeWidth * span, MIN_STROKE_PX);
-    const reach = width / 2 + 1;
-    for (const line of art.polylines) {
-        for (let at = 0; at + 1 < line.length; at += 1) {
-            const from = line[at] as { x: number; y: number };
-            const to = line[at + 1] as { x: number; y: number };
-            const ax = inset + from.x * span;
-            const ay = inset + from.y * span;
-            const bx = inset + to.x * span;
-            const by = inset + to.y * span;
-            const minX = Math.max(0, Math.floor(Math.min(ax, bx) - reach));
-            const maxX = Math.min(size - 1, Math.ceil(Math.max(ax, bx) + reach));
-            const minY = Math.max(0, Math.floor(Math.min(ay, by) - reach));
-            const maxY = Math.min(size - 1, Math.ceil(Math.max(ay, by) + reach));
-            for (let py = minY; py <= maxY; py += 1) {
-                for (let px = minX; px <= maxX; px += 1) {
-                    // Everything here is in device pixels, so the AA ramp is one pixel wide.
-                    const distance = segmentDistance(px + 0.5, py + 0.5, ax, ay, bx, by, width);
-                    const alpha = clamp01(0.5 - distance);
-                    if (alpha <= 0) continue;
-                    const offset = py * size + px;
-                    if (alpha > (coverage[offset] as number)) coverage[offset] = alpha;
-                }
-            }
-        }
-    }
-    return coverage;
 }
 
 /**
@@ -373,7 +310,7 @@ export function appIconPixels(size: number): Canvas {
     const pixel = 1 / size;
 
     const coverage = (distance: number): number => clamp01(0.5 - distance / pixel);
-    const glyph = stampKelpie(size);
+    const glyph = stampKelpie(size, { span: GLYPH_SPAN, minStrokePx: MIN_STROKE_PX });
 
     for (let py = 0; py < size; py += 1) {
         for (let px = 0; px < size; px += 1) {

@@ -504,9 +504,18 @@ export function createStatusController(options: StatusOptions): StatusController
      * template (AppKit keeps only alpha), so `trayIconIsTemplate` decides both here and in the
      * drawing, from one rule. The dot's COLOUR is `trayPalette()`'s (§M25); the two decisions
      * stay separate, so an unresolvable colour never turns a dotted state into a template.
+     *
+     * The image is 16×16 POINTS with a real @2x representation — one PNG per scale factor on
+     * one empty image, which is how Electron spells NSImage's size-in-points + retina
+     * backings. A single 2x PNG through `createFromDataURL` would land as a 32-POINT image
+     * and leave the menu bar to squash it.
      */
     function trayImage(indicator_: IconIndicator): Electron.NativeImage {
-        const image = nativeImage.createFromDataURL(trayIconDataUrl(indicator_, 2, trayPalette()));
+        const palette = trayPalette();
+        const image = nativeImage.createEmpty();
+        for (const scale of [1, 2]) {
+            image.addRepresentation({ scaleFactor: scale, dataURL: trayIconDataUrl(indicator_, scale, palette) });
+        }
         image.setTemplateImage(trayIconIsTemplate(indicator_));
         return image;
     }

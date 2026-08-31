@@ -114,10 +114,25 @@ const electronMock = vi.hoisted(() => {
         dock,
         app: { getVersion: (): string => '0.0.0-test', dock },
         nativeImage: {
-            createFromDataURL: (url: string): { url: string; setTemplateImage: (value: boolean) => void } => ({
-                url,
-                setTemplateImage: (_value: boolean): void => {}
-            })
+            /** `status.ts` builds the tray image as an empty image plus one PNG per scale factor. */
+            createEmpty: (): {
+                representations: { scaleFactor?: number; dataURL?: string }[];
+                template: boolean | null;
+                addRepresentation: (options: { scaleFactor?: number; dataURL?: string }) => void;
+                setTemplateImage: (value: boolean) => void;
+            } => {
+                const image = {
+                    representations: [] as { scaleFactor?: number; dataURL?: string }[],
+                    template: null as boolean | null,
+                    addRepresentation(options: { scaleFactor?: number; dataURL?: string }): void {
+                        image.representations.push(options);
+                    },
+                    setTemplateImage(value: boolean): void {
+                        image.template = value;
+                    }
+                };
+                return image;
+            }
         },
         nativeTheme: {
             shouldUseDarkColors: false,
@@ -283,6 +298,35 @@ describe('the tray gesture (§AGNT-086 / §APP-088 — UI-FIDELITY U2)', () => {
         const ready = logged.find((line) => line.includes('tray ready'));
         expect(ready).toBeDefined();
         expect(ready).toContain('handlers=0');
+    });
+
+    /** What `trayImage` hands the tray: the mock's empty-image shape, filled in. */
+    function trayImageShape(): { representations: { scaleFactor?: number; dataURL?: string }[]; template: boolean | null } {
+        const tray = electronMock.trays[0];
+        expect(tray).toBeDefined();
+        return tray?.image as ReturnType<(typeof electronMock)['nativeImage']['createEmpty']>;
+    }
+
+    it('hands the tray a 16pt image with a real @2x representation', () => {
+        // One PNG per scale factor on one empty image — NSImage's points + retina backings.
+        // A bare `createFromDataURL` of the 2x PNG would be a 32-POINT image in the menu bar.
+        const image = trayImageShape();
+        expect(image.representations.map((rep) => rep.scaleFactor)).toEqual([1, 2]);
+        for (const rep of image.representations) expect(rep.dataURL).toMatch(/^data:image\/png;base64,/);
+        // …and the two backings really are different renders, not one PNG registered twice.
+        expect(image.representations[0]?.dataURL).not.toBe(image.representations[1]?.dataURL);
+        // Boot state is `disconnected` — a dotted state, which cannot be a template (§AGNT-087).
+        expect(image.template).toBe(false);
+    });
+
+    it('flips to a template image when the daemon connects with nothing running (§AGNT-087)', () => {
+        socket.emit('open');
+        socket.emit('message', WELCOME, false);
+        socket.emit('message', JSON.stringify({ type: 'snapshot', state: { workspaces: [] } }), false);
+        const image = trayImageShape();
+        // Idle carries no status dot, so the glyph tints with the menu bar.
+        expect(image.template).toBe(true);
+        expect(image.representations.map((rep) => rep.scaleFactor)).toEqual([1, 2]);
     });
 
     it('never raises the window on its own — not on boot, not on the click macOS still fires', () => {

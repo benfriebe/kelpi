@@ -1,11 +1,12 @@
 /**
  * The tray icon, drawn in code (docs/current/agent-lifecycle.md §8.2).
  *
- * The macOS app draws a terminal glyph with a 6px status dot in the top-right corner:
- * waiting colour when anything waits, else running colour, else no dot. Rather than ship
- * binary assets through an esbuild bundle (and a packaging step that does not exist yet),
- * the shell rasterizes the icon into an RGBA buffer and encodes a PNG with `node:zlib` —
- * ~80 lines, zero dependencies, and the dot colour can follow the status live.
+ * The glyph is the Kelpi mark itself — the kelpie head the app icon strokes, rendered from
+ * the same flattened vector data in `app-icon-art.ts` — with a 6px status dot in the
+ * top-right corner: waiting colour when anything waits, else running colour, else no dot.
+ * Rather than ship binary assets through an esbuild bundle, the shell rasterizes the icon
+ * into an RGBA buffer and encodes a PNG with `node:zlib` — zero dependencies, one kelpie in
+ * the codebase, and the dot colour can follow the status live.
  *
  * Template vs mid-grey, which is §AGNT-087's actual rule and not a compromise:
  *
@@ -23,6 +24,8 @@
  */
 
 import { deflateSync } from 'node:zlib';
+
+import { stampKelpie } from './app-icon-art.js';
 
 export type IconIndicator = 'idle' | 'running' | 'waiting' | 'disconnected';
 
@@ -220,8 +223,23 @@ export function encodePng(width: number, height: number, rgba: Uint8Array): Buff
 
 // ── the glyph ───────────────────────────────────────────────────────────────────────
 
-/** Menu-bar icons are 22pt tall on macOS; scale 2 renders the @2x variant. */
-export const ICON_BASE_SIZE = 22;
+/** Menu-bar template images are 16×16 points on macOS; scale 2 renders the @2x (32px) variant. */
+export const ICON_BASE_SIZE = 16;
+
+/**
+ * How the kelpie maps onto the tray canvas: full bleed. The drawing frames itself inside its
+ * own square (≈4% of headroom above and below the head), so an extra inset would only shrink
+ * an already-small mark.
+ */
+export const TRAY_GLYPH_SPAN = 1;
+
+/**
+ * The stroke's floor, in POINTS. The design stroke is ~12px on the 1024 canvas — a fifth of a
+ * point at menu-bar size — so this floor is what actually draws: a one-pixel hairline at 1x
+ * and a crisp two-pixel line at 2x, the same reasoning as `packaging.ts`'s `MIN_STROKE_PX`
+ * for the small ICNS variants.
+ */
+export const TRAY_STROKE_FLOOR_PT = 1;
 
 interface Canvas {
     readonly width: number;
@@ -240,19 +258,6 @@ function plot(canvas: Canvas, x: number, y: number, color: readonly [number, num
     canvas.rgba[offset + 1] = color[1];
     canvas.rgba[offset + 2] = color[2];
     canvas.rgba[offset + 3] = color[3];
-}
-
-function fillRect(
-    canvas: Canvas,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    color: readonly [number, number, number, number]
-): void {
-    for (let row = y; row < y + height; row += 1) {
-        for (let column = x; column < x + width; column += 1) plot(canvas, column, row, color);
-    }
 }
 
 function fillCircle(
@@ -274,7 +279,7 @@ function fillCircle(
 
 /**
  * The raw pixels, so tests can assert on the drawing without decoding a PNG.
- * `scale` multiplies the 22pt base; every coordinate below is in base points.
+ * `scale` multiplies the 16pt base; every coordinate below is in base points.
  */
 export function trayIconPixels(
     indicator: IconIndicator,
@@ -287,31 +292,23 @@ export function trayIconPixels(
     // §AGNT-087: the tinted (template) form is black-on-alpha; the dotted forms stay mid-grey.
     const GLYPH = trayIconIsTemplate(indicator) ? TEMPLATE_GLYPH : NON_TEMPLATE_GLYPH;
 
-    // Terminal outline: a 16×14 rounded-ish box (corners knocked out below).
-    const left = unit(3);
-    const top = unit(4);
-    const width = unit(16);
-    const height = unit(14);
-    const stroke = Math.max(1, unit(1.5));
-
-    fillRect(canvas, left, top, width, stroke, GLYPH);
-    fillRect(canvas, left, top + height - stroke, width, stroke, GLYPH);
-    fillRect(canvas, left, top, stroke, height, GLYPH);
-    fillRect(canvas, left + width - stroke, top, stroke, height, GLYPH);
-    // Knock the four corner pixels out so the box reads as rounded at 22pt.
-    const clear: [number, number, number, number] = [0, 0, 0, 0];
-    fillRect(canvas, left, top, stroke, stroke, clear);
-    fillRect(canvas, left + width - stroke, top, stroke, stroke, clear);
-    fillRect(canvas, left, top + height - stroke, stroke, stroke, clear);
-    fillRect(canvas, left + width - stroke, top + height - stroke, stroke, stroke, clear);
-
-    // Prompt chevron `>` …
-    for (let step = 0; step < unit(3); step += 1) {
-        fillRect(canvas, left + unit(3) + step, top + unit(4) + step, stroke, stroke, GLYPH);
-        fillRect(canvas, left + unit(3) + step, top + unit(9) - step - stroke, stroke, stroke, GLYPH);
+    // The kelpie mark — the SAME flattened art and SDF stamp the app icon strokes
+    // (`app-icon-art.ts`), laid down in the glyph tone with the stamp's anti-aliased
+    // coverage as the alpha channel. Alpha is all a template image keeps, so the AA
+    // survives macOS's tinting untouched.
+    const glyph = stampKelpie(size, {
+        span: TRAY_GLYPH_SPAN,
+        minStrokePx: Math.max(1, unit(TRAY_STROKE_FLOOR_PT))
+    });
+    for (let index = 0; index < glyph.length; index += 1) {
+        const alpha = glyph[index] as number;
+        if (alpha <= 0) continue;
+        const offset = index * 4;
+        canvas.rgba[offset] = GLYPH[0];
+        canvas.rgba[offset + 1] = GLYPH[1];
+        canvas.rgba[offset + 2] = GLYPH[2];
+        canvas.rgba[offset + 3] = Math.round(alpha * 0xff);
     }
-    // … and the cursor underscore.
-    fillRect(canvas, left + unit(8), top + unit(9), unit(5), stroke, GLYPH);
 
     /*
      * §M25: the colour comes from the resolved palette, and only the template rule

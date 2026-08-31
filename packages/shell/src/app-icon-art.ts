@@ -1,13 +1,14 @@
 /**
- * The app icon's artwork: the kelpie head from `assets/kelpi-icon.svg`, flattened into
- * stroke centrelines the SDF rasteriser in `packaging.ts` can paint.
+ * The Kelpi mark's artwork AND its rasteriser: the kelpie head from `assets/kelpi-icon.svg`,
+ * flattened into stroke centrelines, plus the SDF stamp that paints them. Both the app icon
+ * (`packaging.ts`) and the menu-bar tray glyph (`icon.ts`) render from here, so there is
+ * exactly one kelpie in the codebase.
  *
  * The drawing is unusually friendly to this treatment: every path is `fill:none` with round
  * caps and round joins at one shared width, so "render the SVG" reduces to "stroke a set of
- * polylines with round-capped segments", which is exactly the `segmentDistance` primitive the
- * icon code already has. No SVG library, no rasteriser dependency, no binary asset in git,
- * and the icon still re-renders at every ICNS size from one description; the same trade
- * `icon.ts` makes for the tray glyph.
+ * polylines with round-capped segments", which is exactly the `segmentDistance` primitive
+ * below. No SVG library, no rasteriser dependency, no binary asset in git, and the mark still
+ * re-renders at every size — 1024px Dock tile to 16pt menu bar — from one description.
  *
  * What this file implements is therefore a *subset* of SVG path data, not a path engine:
  * moveto/lineto (and the implicit linetos after a moveto), cubic curves with their smooth `s`
@@ -230,4 +231,85 @@ export function kelpieArt(): KelpieArt {
     );
     cached = { polylines, strokeWidth: (ART_STROKE_WIDTH * ART_SCALE) / ART_VIEWBOX };
     return cached;
+}
+
+// ── stroking ────────────────────────────────────────────────────────────────────────
+
+function clamp01(value: number): number {
+    return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+/** Signed distance to a round-capped segment of width `width`. */
+export function segmentDistance(
+    x: number,
+    y: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    width: number
+): number {
+    const px = x - ax;
+    const py = y - ay;
+    const vx = bx - ax;
+    const vy = by - ay;
+    const lengthSquared = vx * vx + vy * vy;
+    const t = lengthSquared === 0 ? 0 : clamp01((px * vx + py * vy) / lengthSquared);
+    return Math.hypot(px - vx * t, py - vy * t) - width / 2;
+}
+
+export interface KelpieStampOptions {
+    /** The central fraction of the canvas the unit-square drawing maps onto. */
+    readonly span: number;
+    /**
+     * The floor on the stroke's device width. The nominal stroke is ~12px at 1024 and scales
+     * down linearly, so every small render needs one: without it the lines are sub-half-pixel
+     * and dissolve into grey mush. Each caller states its own (`packaging.ts` for the ICNS
+     * variants, `icon.ts` for the menu bar).
+     */
+    readonly minStrokePx: number;
+}
+
+/**
+ * Stroke the kelpie onto a `size`-px canvas: a max-blended coverage buffer, one round-capped
+ * capsule per polyline segment.
+ *
+ * Stamping (iterate segments, touch only each segment's bounding box) rather than a per-pixel
+ * SDF loop, because the drawing has a few thousand segments: evaluating all of them at every
+ * pixel of a 1024² canvas is billions of distance calls, while stamping is bounded by stroke
+ * area. Max-blending makes overlapping caps idempotent, which is also what makes a chain of
+ * capsules an *exact* round-joined stroke rather than a darkened approximation.
+ */
+export function stampKelpie(size: number, options: KelpieStampOptions): Float32Array {
+    const art = kelpieArt();
+    const coverage = new Float32Array(size * size);
+    const span = options.span * size;
+    const inset = ((1 - options.span) / 2) * size;
+    const width = Math.max(art.strokeWidth * span, options.minStrokePx);
+    const reach = width / 2 + 1;
+    for (const line of art.polylines) {
+        for (let at = 0; at + 1 < line.length; at += 1) {
+            const from = line[at] as ArtPoint;
+            const to = line[at + 1] as ArtPoint;
+            const ax = inset + from.x * span;
+            const ay = inset + from.y * span;
+            const bx = inset + to.x * span;
+            const by = inset + to.y * span;
+            const minX = Math.max(0, Math.floor(Math.min(ax, bx) - reach));
+            const maxX = Math.min(size - 1, Math.ceil(Math.max(ax, bx) + reach));
+            const minY = Math.max(0, Math.floor(Math.min(ay, by) - reach));
+            const maxY = Math.min(size - 1, Math.ceil(Math.max(ay, by) + reach));
+            for (let py = minY; py <= maxY; py += 1) {
+                for (let px = minX; px <= maxX; px += 1) {
+                    // Everything here is in device pixels, so the AA ramp is one pixel wide.
+                    const distance = segmentDistance(px + 0.5, py + 0.5, ax, ay, bx, by, width);
+                    const alpha = clamp01(0.5 - distance);
+                    if (alpha <= 0) continue;
+                    const offset = py * size + px;
+                    if (alpha > (coverage[offset] as number)) coverage[offset] = alpha;
+                }
+            }
+        }
+    }
+    return coverage;
 }

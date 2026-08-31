@@ -1378,7 +1378,18 @@ export const loadGhosttyEngine: EngineLoader = async (options) => {
             const renderer = terminal.renderer;
             const wasmTerm = terminal.wasmTerm;
             if (renderer === undefined || wasmTerm === undefined) return;
-            renderer.render(wasmTerm, true, terminal.viewportY, terminal);
+            /*
+             * `scrollbarOpacity: 0`, EXPLICITLY. The parameter defaults to `1`, so an
+             * argument-less forced render draws a phantom full-opacity scrollbar into any pane
+             * with scrollback — and `renderScrollbar`'s backdrop clears the rightmost ~14px of
+             * every row first, cutting off the last column or two of text. The engine's own
+             * render loop then passes the terminal's real opacity (0 once the fade is done),
+             * skips the scrollbar path, and — before `0.4.0-nex.8` — repainted nothing, so a
+             * theme repaint left the right edge erased until those rows were rewritten. The
+             * scrollbar belongs to the terminal's fade state machine, not to this forced
+             * frame; if one is legitimately showing, the very next loop frame redraws it.
+             */
+            renderer.render(wasmTerm, true, terminal.viewportY, terminal, 0);
         },
         revealMatch: (match): void => {
             // ghostty-web's `scrollToLine(n)` sets `viewportY = clamp(n, 0, scrollbackLength)`,

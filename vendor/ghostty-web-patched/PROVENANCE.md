@@ -1,11 +1,12 @@
-# ghostty-web 0.4.0-nex.7 (vendored)
+# ghostty-web 0.4.0-nex.8 (vendored)
 
 A build of `ghostty-web` v0.4.0 carrying two open upstream PRs — applied after a line-by-line
-review in the orchestrating session and explicit user authorization to integrate both — plus six
+review in the orchestrating session and explicit user authorization to integrate both — plus seven
 Nex-authored adaptations on top of them (`-nex.2`: the caret-anchored IME; `-nex.3`: an
 `allowTransparency` that does something; `-nex.4`: a cursor that knows whether its surface has
 focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that can be suspended;
-`-nex.7`: default cells that follow a live theme).
+`-nex.7`: default cells that follow a live theme; `-nex.8`: the scrollbar's backdrop strip is
+repainted when the scrollbar goes away).
 
 | Version | What it added |
 |---|---|
@@ -16,6 +17,7 @@ focus; `-nex.5`: a `write()` that survives zero bytes; `-nex.6`: a paint that ca
 | `0.4.0-nex.5` | `write()` returns on ZERO bytes instead of throwing `RangeError` (N1 / N23) |
 | `0.4.0-nex.6` | `setPaintSuspended` — the render loop can be stopped and the canvas frozen (N24) |
 | `0.4.0-nex.7` | `setTerminalDefaultColors` — a DEFAULT cell is painted from the LIVE theme (N18) |
+| `0.4.0-nex.8` | the frame after the scrollbar's last one repaints the strip its backdrop erased |
 
 ## Base
 
@@ -197,6 +199,58 @@ upstream's behaviour byte for byte.
 Not addressed here: ghostty's `cursor-style-blink` and `adjust-cursor-thickness` config keys are
 not parsed anywhere in this port, so the blink is whatever the embedder passes (`cursorBlink`,
 `true` in Nex) and the outline is ghostty's default 1 px.
+
+## Nex adaptation: the scrollbar strip is repainted (`0.4.0-nex.8`, 2026-08-31)
+
+`CanvasRenderer.render()` now tracks whether the previous frame drew the scrollbar
+(`scrollbarWasPainted`), and the first frame WITHOUT one forces the full row walk. One field,
+one transition check, in `lib/renderer.ts` only.
+
+**The defect — "text is cut off on the right side of the terminal".** `renderScrollbar` opens
+with a backdrop: `paintDefaultBackground(scrollbarX - 2, 0, scrollbarWidth + 6, canvasHeight)` —
+a ~14 px strip flush against the canvas's right edge, cleared to the default background on
+**every frame the scrollbar is drawn** ("fixes ghosting when fading out", upstream's comment).
+The canvas is exactly `cols × cellWidth` wide, so at a 13 px font (8 px advance) that strip sits
+on top of the last **1.75 columns of text**.
+
+While the scrollbar is visible that is the intended paint order — backdrop, then track, then
+thumb, over the cells. The hole was the frame it stops:
+
+- `render()` only calls `renderScrollbar` at `scrollbackProvider && scrollbarOpacity > 0`, so
+  once the fade-out completes (`Terminal.fadeOutScrollbar` ends at opacity `0`) the scrollbar
+  path is skipped entirely;
+- the fade runs **after** the wheel has settled, so no row is dirty, `forceAll` is false and the
+  viewport has not moved — the row walk paints **nothing**;
+- so the strip keeps what the last fade frame left in it: cleared background with a ~2%-alpha
+  thumb over it. The rightmost columns stay **erased** until the application happens to rewrite
+  those rows. Every scroll gesture in every pane with scrollback left the terminal's right edge
+  visually cut off — the full last column and most of the one before it.
+
+The transition tracker closes it: `scrollbarPainted` is computed from exactly the condition the
+draw uses, and `scrollbarWasPainted && !scrollbarPainted` promotes the frame to `forceAll`, which
+repaints every row (the strip included) and costs one full walk per fade-out. It heals every
+route into the state, not just the fade: the embedder's forced `repaint()` (theme change, late
+font) used to pass the **default** `scrollbarOpacity = 1` and stamp a phantom full-opacity
+scrollbar the render loop then never cleaned up — the loop's own frames pass the terminal's real
+opacity (`0`), skip the path, and now force the restoring walk one frame later. (Nex's adapter
+also stops asking for the phantom: `packages/client/src/terminal/renderer.ts` passes `0`
+explicitly — but the engine no longer depends on embedders knowing that.)
+
+Upstream behaviour is otherwise untouched: the backdrop still paints under a visible scrollbar
+(the ghosting it exists for is real), and an embedder that never shows a scrollbar never takes
+the forced walk — the field starts `false` and stays there.
+
+## Verification of `0.4.0-nex.8` (2026-08-31)
+
+- **Unit-level, in the app repo**: `packages/client/src/terminal/vendor-engine.test.ts` pins the
+  bundle markers (`scrollbarWasPainted` read AND write inside `render()`) and the snapshot's
+  three source lines; `packages/client/src/terminal/renderer.test.ts` pins the adapter half —
+  `loadGhosttyEngine`'s `repaint()` hands the renderer `scrollbarOpacity 0` explicitly, against
+  a mocked module.
+- **Rebuild sanity**: `dist/ghostty-web.js` is **704.37 kB** as vite reports it (was 704.24 kB
+  at `-nex.7`), built from `source/` with the documented recipe (`pnpm install` +
+  `npx vite build`, wasm copied into dist); the build prints the four known `Bun` /
+  `fs/promises` errors from `lib/ghostty.ts` and exits 0, as documented below.
 
 ## Nex adaptation: default cells follow a LIVE theme (`0.4.0-nex.7`, 2026-08-26)
 
@@ -722,15 +776,16 @@ The wasm is the one thing `source/` does not carry (413 KB of binary, byte-ident
 above can come from there:
 `sha256 d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a`.
 
-Sanity checks on a rebuild: `dist/ghostty-web.js` is ~688 KiB (704.24 kB as vite reports it,
-+4.12 kB over `-nex.6`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
+Sanity checks on a rebuild: `dist/ghostty-web.js` is ~688 KiB (704.37 kB as vite reports it,
++0.13 kB over `-nex.7`), and it contains `data-ime-preedit`, `data-ime-caret`, `syncImeCaret`,
 `paintDefaultBackground` (`-nex.3`), `setFocused` / `renderHollowCursor` / `cursorStateDirty`
 (`-nex.4`), `if (B.length === 0)` in `write()` (`-nex.5` — the minifier keeps the guard as its
 own statement), `setPaintSuspended` / `isPaintSuspended` / `this.paintSuspended` with the
 early return as `render()`'s opening statement (`-nex.6`), `setTerminalDefaultColors` /
 `liveThemeColor` / `isTerminalDefaultBackground` / `isTerminalDefaultForeground` with **two**
-`fillStyle = this.liveThemeColor(…) ?? this.rgbToCSS(…)` sites (`-nex.7` — one per pass), and no
-`조합중` (the chip label `-nex.2` removed). Those markers are asserted in CI by
+`fillStyle = this.liveThemeColor(…) ?? this.rgbToCSS(…)` sites (`-nex.7` — one per pass),
+`this.scrollbarWasPainted` read (`&&`) and written (`=`) inside `render()` (`-nex.8` — the
+scrollbar-strip restore), and no `조합중` (the chip label `-nex.2` removed). Those markers are asserted in CI by
 `packages/client/src/terminal/vendor-engine.test.ts`, which also pins the version this file
 documents — bump both together or the guard fails. `npx tsc --noEmit` on the snapshot reports only
 the pre-existing `bun-types` / `fs/promises` errors in `lib/ghostty.ts` (the tsconfig asks for

@@ -28,7 +28,7 @@ const repoRoot = path.resolve(here, '..', '..', '..', '..');
 const vendorRoot = path.join(repoRoot, 'vendor', 'ghostty-web-patched');
 
 /** The version the audit evidence and PROVENANCE.md were written against. */
-const EXPECTED_VERSION = '0.4.0-nex.7';
+const EXPECTED_VERSION = '0.4.0-nex.8';
 
 /** Markers of the caret-anchored IME, in the built ESM bundle the client imports. */
 const CARET_MARKERS = ['data-ime-preedit', 'data-ime-caret', 'syncImeCaret'];
@@ -125,6 +125,20 @@ const LIVE_THEME_MARKERS = [
 const LIVE_THEME_PAINT_SITES = /fillStyle\s*=\s*this\.liveThemeColor\([^)]*\)\s*\?\?\s*this\.rgbToCSS\(/g;
 
 /**
+ * Marker of `-nex.8`'s scrollbar-strip restore.
+ *
+ * `renderScrollbar`'s first paint is a backdrop: it clears a ~14px strip at the canvas's right
+ * edge to the default background on every frame the scrollbar is drawn — over the last column
+ * or two of TEXT. When the scrollbar stops (the fade ends at opacity 0, or a forced repaint
+ * passes 0), `render()` skips the scrollbar path entirely and nothing marks the strip's rows
+ * dirty, so the rightmost cells stayed erased until the application rewrote them: every scroll
+ * gesture left the terminal's right edge cut off. `scrollbarWasPainted` is the transition
+ * tracker that forces one full-frame walk on the first scrollbar-less frame. Take a future npm
+ * release wholesale and the right edge starts disappearing again.
+ */
+const SCROLLBAR_RESTORE_MARKERS = ['scrollbarWasPainted'];
+
+/**
  * PR #120's corner chip, which `-nex.2` replaced. Its label must NOT come back.
  *
  * Built from code points rather than written as a literal, for the same reason the audit's
@@ -216,6 +230,17 @@ describe('vendored ghostty-web engine', () => {
         expect(bundle).toMatch(/setTerminalDefaultColors\(\s*[A-Za-z_$]/);
     });
 
+    it('ships a bundle that repaints the strip the scrollbar backdrop erases (§-nex.8)', () => {
+        const bundle = read(path.join(vendorRoot, 'dist', 'ghostty-web.js'));
+        for (const marker of SCROLLBAR_RESTORE_MARKERS) {
+            expect(bundle).toContain(marker);
+        }
+        // The transition has to both READ and WRITE the tracker inside render(), or it is a
+        // field nothing consults: the read is the forceAll trigger, the write arms it.
+        expect(bundle).toMatch(/this\.scrollbarWasPainted\s*&&/);
+        expect(bundle).toMatch(/this\.scrollbarWasPainted\s*=[^=]/);
+    });
+
     it('keeps the snapshotted source in step with the bundle', () => {
         // `dist/` is gitignored, so `source/` is the only copy of the fork that survives a
         // clean clone. A bundle rebuilt from a tree that was never snapshotted is a fork
@@ -254,5 +279,10 @@ describe('vendored ghostty-web engine', () => {
         expect(rendererSource).toContain('setTerminalDefaultColors(background: number | null');
         expect(rendererSource).toContain('if (this.isTerminalDefaultBackground(r, g, b)) return true;');
         expect(rendererSource.match(/this\.liveThemeColor\(\w+_r, \w+_g, \w+_b\) \?\?/g) ?? []).toHaveLength(2);
+        // §-nex.8's half, in the renderer: the frame after the scrollbar's last one forces the
+        // full walk that repaints the strip its backdrop erased.
+        expect(rendererSource).toContain('const scrollbarPainted = !!scrollbackProvider && scrollbarOpacity > 0;');
+        expect(rendererSource).toContain('if (this.scrollbarWasPainted && !scrollbarPainted) {');
+        expect(rendererSource).toContain('this.scrollbarWasPainted = scrollbarPainted;');
     });
 });

@@ -10,6 +10,7 @@ import {
     createRendererFromLoader,
     estimateCellSize,
     isEngineColor,
+    loadGhosttyEngine,
     resetEngineStartupGateForTests,
     resolveTerminalEngine,
     resolveTerminalTheme,
@@ -999,6 +1000,82 @@ describe('xterm engine (real, jsdom)', () => {
         } finally {
             consoleError.mockRestore();
             Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: original });
+        }
+    });
+});
+
+/**
+ * `loadGhosttyEngine` against a mocked module: the handle's glue is real, the engine is not
+ * (ghostty-web's `open()` needs a 2D context jsdom does not have).
+ *
+ * What this pins is the repaint contract that kept cutting the terminal's right edge off:
+ * ghostty-web's `Renderer.render(buffer, forceAll, viewportY, provider, scrollbarOpacity = 1)`
+ * DEFAULTS the scrollbar to fully opaque, and `renderScrollbar`'s backdrop clears a ~14px strip
+ * over the last column or two of text before drawing the thumb. A forced repaint (theme change,
+ * late font) that omits the argument therefore paints a phantom scrollbar into any pane with
+ * scrollback and erases the right edge — and the engine's own loop frames, which pass the
+ * terminal's REAL opacity (0 once no fade is running), skip the scrollbar path and repaint
+ * nothing over the strip. The adapter must say `0` explicitly: the scrollbar belongs to the
+ * terminal's fade state machine, never to a forced frame.
+ */
+describe('ghostty loader (mocked module)', () => {
+    it('repaint() forces a full frame with the scrollbar OFF — explicit opacity 0', async () => {
+        const renders: unknown[][] = [];
+        class FakeGhosttyTerminal {
+            readonly wasmTerm = { tag: 'wasm' };
+            viewportY = 7;
+            rows = 24;
+            cols = 80;
+            readonly renderer = {
+                render: (...args: unknown[]): void => {
+                    renders.push(args);
+                },
+                getMetrics: (): { width: number; height: number; baseline: number } => ({
+                    width: 8,
+                    height: 17,
+                    baseline: 13
+                }),
+                setTheme: (): void => undefined,
+                clear: (): void => undefined,
+                remeasureFont: (): void => undefined
+            };
+
+            constructor(readonly options: unknown) {}
+        }
+        vi.doMock('ghostty-web', () => ({
+            init: async (): Promise<void> => undefined,
+            Terminal: FakeGhosttyTerminal
+        }));
+        try {
+            const handle = await loadGhosttyEngine({
+                engine: 'ghostty',
+                fontFamily: DEFAULT_FONT_FAMILY,
+                fontSize: 13,
+                theme: DEFAULT_TERMINAL_THEME,
+                cols: 80,
+                rows: 24,
+                scrollbackLines: 1000,
+                scrollbackBytes: 100_000,
+                cursorBlink: true,
+                allowTransparency: false
+            });
+            const terminal = handle.terminal as unknown as FakeGhosttyTerminal;
+
+            // The measured cell comes straight from the engine's metrics (CSS px).
+            expect(handle.cellSize?.()).toEqual({ width: 8, height: 17 });
+
+            handle.repaint?.();
+            expect(renders).toHaveLength(1);
+            const args = renders[0] ?? [];
+            expect(args[0]).toBe(terminal.wasmTerm);
+            expect(args[1]).toBe(true); // forceAll — it is a repaint
+            expect(args[2]).toBe(7); // at the terminal's own viewport
+            expect(args[3]).toBe(terminal);
+            // The load-bearing argument: omitted, the engine defaults it to 1 and the phantom
+            // scrollbar's backdrop erases the rightmost columns.
+            expect(args[4]).toBe(0);
+        } finally {
+            vi.doUnmock('ghostty-web');
         }
     });
 });

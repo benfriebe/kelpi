@@ -184,6 +184,23 @@ export class CanvasRenderer {
    * 0.4.0-nex.6). See `setPaintSuspended`.
    */
   private paintSuspended: boolean = false;
+  /**
+   * The previous frame drew the scrollbar (vendor 0.4.0-nex.8).
+   *
+   * `renderScrollbar` clears a strip at the canvas's right edge to the default background on
+   * every frame it runs — its backdrop against ghosting — and that strip overlaps the last
+   * one-to-two COLUMNS of text. While the scrollbar is visible that is the intended paint
+   * order (backdrop, then thumb, over the cells). The defect was the frame the scrollbar
+   * stopped: `render()` skips `renderScrollbar` entirely at `scrollbarOpacity <= 0`, no row is
+   * dirty (the fade runs after the wheel has settled), so NOTHING repaints the strip — the
+   * rightmost cells stay erased until the application happens to rewrite those rows. Every
+   * scroll gesture left the terminal's right edge visually cut off.
+   *
+   * Tracking the transition lets `render()` force one full-frame walk on the first frame
+   * without a scrollbar, which repaints the strip's cells and costs one forced render per
+   * fade-out.
+   */
+  private scrollbarWasPainted: boolean = false;
 
   // Viewport tracking (for scrolling)
   private lastViewportY: number = 0;
@@ -485,6 +502,16 @@ export class CanvasRenderer {
       forceAll = true;
     }
 
+    // vendor 0.4.0-nex.8: the scrollbar's backdrop clears the rightmost strip of the canvas on
+    // every frame it is drawn (see `scrollbarWasPainted`). The first frame WITHOUT a scrollbar
+    // must repaint the cells that strip erased, and no dirty flag says so — the fade-out ends
+    // with the buffer idle — so the transition itself forces the full walk.
+    const scrollbarPainted = !!scrollbackProvider && scrollbarOpacity > 0;
+    if (this.scrollbarWasPainted && !scrollbarPainted) {
+      forceAll = true;
+    }
+    this.scrollbarWasPainted = scrollbarPainted;
+
     // Resize canvas if dimensions changed
     const needsResize =
       this.canvas.width !== dims.cols * this.metrics.width * this.devicePixelRatio ||
@@ -695,7 +722,9 @@ export class CanvasRenderer {
       this.renderCursor(cursor.x, cursor.y);
     }
 
-    // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect)
+    // Render scrollbar if scrolled or scrollback exists (with opacity for fade effect).
+    // vendor 0.4.0-nex.8: the same condition `scrollbarPainted` was computed from above — the
+    // two must not drift, or the strip-restoring forceAll fires on the wrong frame.
     if (scrollbackProvider && scrollbarOpacity > 0) {
       this.renderScrollbar(viewportY, scrollbackLength, dims.rows, scrollbarOpacity);
     }

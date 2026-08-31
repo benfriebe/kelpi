@@ -180,7 +180,7 @@ function messageOf(error: unknown): string {
 const WORKSPACE_COLUMNS =
     '"id","name","color","layoutJSON","focusedPaneID","createdAt","lastAccessedAt","sortOrder","slug","labelsJSON","icon","profileName"';
 const PANE_COLUMNS =
-    '"id","workspaceID","label","type","workingDirectory","createdAt","lastActivityAt","agentSessionID","status","filePath","content","webURL","webTabsJSON","webActiveTabID","webIsPrivate","agentKind"';
+    '"id","workspaceID","label","type","workingDirectory","createdAt","lastActivityAt","agentSessionID","status","filePath","content","webURL","webTabsJSON","webActiveTabID","webIsPrivate","agentKind","agentProfileName"';
 const REPO_COLUMNS = '"id","path","name","remoteURL","lastAccessedAt","isAutoDiscovered"';
 const REPO_ASSOCIATION_COLUMNS = '"id","workspaceID","repoID","worktreePath","branchName","isAutoDetected"';
 const GROUP_COLUMNS = '"id","name","color","isCollapsed","childOrderJSON","createdAt","sortOrder","icon"';
@@ -190,7 +190,7 @@ function placeholders(count: number): string {
 }
 
 const INSERT_WORKSPACE = `INSERT INTO "workspace" (${WORKSPACE_COLUMNS}) VALUES (${placeholders(12)})`;
-const INSERT_PANE = `INSERT INTO "pane" (${PANE_COLUMNS}) VALUES (${placeholders(16)})`;
+const INSERT_PANE = `INSERT INTO "pane" (${PANE_COLUMNS}) VALUES (${placeholders(17)})`;
 const INSERT_REPO = `INSERT INTO "repo" (${REPO_COLUMNS}) VALUES (${placeholders(6)})`;
 const INSERT_REPO_ASSOCIATION = `INSERT INTO "repoAssociation" (${REPO_ASSOCIATION_COLUMNS}) VALUES (${placeholders(6)})`;
 const INSERT_GROUP = `INSERT INTO "workspace_group" (${GROUP_COLUMNS}) VALUES (${placeholders(8)})`;
@@ -388,7 +388,8 @@ export function createPersistence(options: PersistenceOptions = {}): SqlitePersi
                         row.webTabsJSON,
                         row.webActiveTabID,
                         row.webIsPrivate,
-                        row.agentKind
+                        row.agentKind,
+                        row.agentProfileName
                     );
                 }
                 for (const row of rows.repoAssociations) {

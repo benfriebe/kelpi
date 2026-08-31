@@ -24,6 +24,8 @@ export interface SynthesizedSessionStart {
     readonly pane_id: string;
     readonly session_id: string;
     readonly agent: AgentKind;
+    /** `KELPI_PROFILE` riding on the source line, when the hook reported one. */
+    readonly profile?: string | undefined;
 }
 
 const DUAL_FIRE_EXCLUDED: ReadonlySet<WireCommandName> = new Set(['session-start', 'session-end']);
@@ -40,7 +42,8 @@ export function synthesizeSessionStart(decoded: WireDecodeSuccess): SynthesizedS
         source_command: command,
         pane_id: paneId,
         session_id: sessionId,
-        agent: decoded.hook.agent
+        agent: decoded.hook.agent,
+        ...(decoded.hook.profile !== undefined ? { profile: decoded.hook.profile } : {})
     };
 }
 

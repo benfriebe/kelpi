@@ -285,6 +285,48 @@ describe('kelpi event', () => {
         });
     });
 
+    it('reports KELPI_PROFILE beside a session id so a resume knows its profile', async () => {
+        const payload = JSON.stringify({ session_id: 'sid-1' });
+        await runCLI(['event', 'session-start'], {
+            port: server.port,
+            paneID: PANE,
+            stdin: payload,
+            env: { KELPI_PROFILE: 'work' }
+        });
+        expect(lastRequest()).toEqual({
+            command: 'session-start',
+            pane_id: PANE,
+            session_id: 'sid-1',
+            profile: 'work'
+        });
+
+        // The dual-fire carrier (`stop` with a session id) reports it too…
+        await runCLI(['event', 'stop'], {
+            port: server.port,
+            paneID: PANE,
+            stdin: payload,
+            env: { KELPI_PROFILE: 'work' }
+        });
+        expect(lastRequest()).toEqual({
+            command: 'stop',
+            pane_id: PANE,
+            session_id: 'sid-1',
+            profile: 'work'
+        });
+
+        // …but session-end never does (its whole point is dropping the id), and no
+        // KELPI_PROFILE means no key at all (wire-identical to the older CLI).
+        await runCLI(['event', 'session-end'], {
+            port: server.port,
+            paneID: PANE,
+            stdin: payload,
+            env: { KELPI_PROFILE: 'work' }
+        });
+        expect(lastRequest()).toEqual({ command: 'session-end', pane_id: PANE, session_id: 'sid-1' });
+        await runCLI(['event', 'session-start'], { port: server.port, paneID: PANE, stdin: payload });
+        expect(lastRequest()).toEqual({ command: 'session-start', pane_id: PANE, session_id: 'sid-1' });
+    });
+
     it('omits background_tasks entirely when nothing is in flight', async () => {
         await runCLI(['event', 'stop'], {
             port: server.port,

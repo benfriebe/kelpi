@@ -72,12 +72,25 @@ describe('state load sequence', () => {
         expect(captureResumeTuple('pane-1', persisted)).toEqual({
             paneID: 'pane-1',
             sessionID: 'sess-1',
-            kind: 'codex'
+            kind: 'codex',
+            profileName: null
         });
         expect(
             captureResumeTuple('pane-1', { ...persisted, agentKind: null })
-        ).toEqual({ paneID: 'pane-1', sessionID: 'sess-1', kind: 'claude' });
+        ).toEqual({ paneID: 'pane-1', sessionID: 'sess-1', kind: 'claude', profileName: null });
         expect(captureResumeTuple('pane-1', initialPaneAgentState)).toBeNull();
+    });
+
+    it('carries the recorded launch profile into the resume tuple', () => {
+        expect(
+            captureResumeTuple('pane-1', { ...persisted, agentProfileName: 'work' })
+        ).toEqual({ paneID: 'pane-1', sessionID: 'sess-1', kind: 'codex', profileName: 'work' });
+    });
+
+    it('preserves the recorded launch profile across the load reset, like the kind', () => {
+        expect(
+            resetPaneAgentStateOnLoad({ ...persisted, agentProfileName: 'work' }).agentProfileName
+        ).toBe('work');
     });
 
     it('clears the session id and status but never the agent kind', () => {
@@ -85,6 +98,7 @@ describe('state load sequence', () => {
             status: 'idle',
             agentSessionID: null,
             agentKind: 'codex',
+            agentProfileName: null,
             agentStartedAt: null,
             backgroundTaskCount: 0
         });

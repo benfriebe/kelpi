@@ -48,6 +48,8 @@ export interface WireHookFields {
     readonly pane_id?: string | undefined;
     readonly session_id?: string | undefined;
     readonly agent: AgentKind;
+    /** `KELPI_PROFILE` as reported by the hook; rides the dual-fire beside `session_id`. */
+    readonly profile?: string | undefined;
 }
 
 export interface WireDecodeSuccess {
@@ -113,7 +115,8 @@ export function decodeWireObject(raw: unknown): WireDecodeResult {
     const hook: WireHookFields = {
         pane_id: paneId,
         session_id: fields.rawText('session_id'),
-        agent: parseAgentKind(fields.rawText('agent'))
+        agent: parseAgentKind(fields.rawText('agent')),
+        profile: fields.nonEmpty('profile')
     };
 
     if (PANE_ID_REQUIRED_COMMANDS.has(command) && paneId === undefined) {
@@ -169,11 +172,13 @@ function decodeCommand(
         case 'session-start': {
             const sessionId = fields.nonEmpty('session_id');
             if (sessionId === undefined) return guard(command, 'session-start requires session_id', 'session_id');
+            const profile = fields.nonEmpty('profile');
             return {
                 command,
                 pane_id: paneId as string,
                 session_id: sessionId,
-                agent: parseAgentKind(fields.rawText('agent'))
+                agent: parseAgentKind(fields.rawText('agent')),
+                ...(profile !== undefined ? { profile } : {})
             };
         }
         case 'session-end': {

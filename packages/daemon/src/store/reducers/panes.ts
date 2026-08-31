@@ -165,6 +165,7 @@ function snapshotForReopen(workspace: WorkspaceState, pane: Pane): WorkspaceStat
             scratchpadContent: pane.scratchpadContent,
             agentSessionID: pane.agentSessionID,
             agentKind: pane.agentKind,
+            agentProfileName: pane.agentProfileName,
             markdownFontSize: pane.markdownFontSize,
             webState
         }
@@ -342,10 +343,13 @@ function reopenClosedPane(
         isEditing: snapshot.type === 'scratchpad'
     });
     // agentSessionID is NOT restored (it only types the resume command); agentKind is, for
-    // display continuity; markdownFontSize survives via the snapshot.
+    // display continuity, and agentProfileName as the same kind of last-known value (the
+    // reopen channel also reads it from the snapshot to spawn the PTY with the session's
+    // profile env); markdownFontSize survives via the snapshot.
     const restored: Pane = {
         ...pane,
         agentKind: snapshot.agentKind,
+        agentProfileName: snapshot.agentProfileName,
         markdownFontSize: snapshot.markdownFontSize
     };
 

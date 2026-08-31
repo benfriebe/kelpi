@@ -17,10 +17,12 @@
  * reducer deliberately does not do. `store/reducers/panes.ts` restores label / cwd / type /
  * file path / scratchpad text / font size / web tabs but **not** `agentSessionID` — the Swift
  * app does the same, because a reopened pane has no live agent, it has a *command to type*. So
- * this channel reads the snapshot's session id and kind BEFORE dispatching (the reducer pops
- * the snapshot off the undo stack), then replays the boot-time pipeline: settle, then
- * `resumeCommand`, which applies `isSafeSessionID` — an id that fails the allowlist is skipped
- * silently rather than interpolated into a shell (persisted command injection).
+ * this channel reads the snapshot's session id, kind and launch profile BEFORE dispatching
+ * (the reducer pops the snapshot off the undo stack), then replays the boot-time pipeline:
+ * spawn the PTY with the profile env the session was launched under (falling back to the
+ * workspace's assignment when unrecorded), settle, then `resumeCommand`, which applies
+ * `isSafeSessionID` — an id that fails the allowlist is skipped silently rather than
+ * interpolated into a shell (persisted command injection).
  */
 
 import { newUUID } from '@kelpi/core/codec';
@@ -109,31 +111,39 @@ export function createPaneLifecycleChannel(
             return failure('nothing is focused in that workspace, so there is no split to reopen into');
         }
 
-        spawnPaneIfShell(ctx, workspace.id, paneID);
-        refreshSyncGroup(ctx, workspace.id);
-
+        // Compute the resume BEFORE spawning: a pane about to type `claude --resume` must be
+        // spawned with the profile env the session was launched under (the snapshot carries
+        // it), not whatever the workspace's assignment is today. A null recorded profile
+        // (pre-tracking session) spawns with the workspace profile, as before.
         let resume: string | null = null;
         if (snapshot.type === 'shell' && snapshot.agentSessionID !== null) {
-            const kind = displayAgentKind(snapshot.agentKind);
-            resume = resumeCommand(kind, snapshot.agentSessionID);
-            if (resume !== null) {
-                const command = resume;
-                void sleep(REOPEN_RESUME_SETTLE_MS).then(
-                    () => {
-                        // The pane may have been closed again while the shell settled.
-                        if (!ctx.pty.has(paneID)) return;
-                        try {
-                            ctx.input.sendText(paneID, command, { bare: false });
-                        } catch (error) {
-                            options.onError?.(
-                                error instanceof Error ? error : new Error(String(error)),
-                                `reopen resume ${paneID}`
-                            );
-                        }
-                    },
-                    () => undefined
-                );
-            }
+            resume = resumeCommand(displayAgentKind(snapshot.agentKind), snapshot.agentSessionID);
+        }
+        spawnPaneIfShell(
+            ctx,
+            workspace.id,
+            paneID,
+            resume !== null ? { sessionProfileName: snapshot.agentProfileName } : undefined
+        );
+        refreshSyncGroup(ctx, workspace.id);
+
+        if (resume !== null) {
+            const command = resume;
+            void sleep(REOPEN_RESUME_SETTLE_MS).then(
+                () => {
+                    // The pane may have been closed again while the shell settled.
+                    if (!ctx.pty.has(paneID)) return;
+                    try {
+                        ctx.input.sendText(paneID, command, { bare: false });
+                    } catch (error) {
+                        options.onError?.(
+                            error instanceof Error ? error : new Error(String(error)),
+                            `reopen resume ${paneID}`
+                        );
+                    }
+                },
+                () => undefined
+            );
         }
 
         return {

@@ -29,6 +29,7 @@ describe('agentStarted', () => {
             status: 'running',
             agentSessionID: null,
             agentKind: 'codex',
+            agentProfileName: null,
             agentStartedAt: T1,
             backgroundTaskCount: 0
         });
@@ -151,6 +152,7 @@ describe('sessionStarted / sessionEnded', () => {
             status: 'running',
             agentSessionID: 'sess-1',
             agentKind: 'codex',
+            agentProfileName: null,
             agentStartedAt: T0,
             backgroundTaskCount: 0
         });
@@ -158,16 +160,60 @@ describe('sessionStarted / sessionEnded', () => {
         expect(effects.persist).toBe(true);
     });
 
+    it('records the reported launch profile, and keeps the last-known one when absent', () => {
+        const bound = run(initialPaneAgentState, {
+            type: 'sessionStarted',
+            sessionID: 'sess-1',
+            agent: 'claude',
+            profileName: 'work'
+        });
+        expect(bound.state.agentProfileName).toBe('work');
+
+        // An older CLI reports no profile: the previous value survives (same PTY, same env).
+        const rebound = run(bound.state, {
+            type: 'sessionStarted',
+            sessionID: 'sess-2',
+            agent: 'claude'
+        });
+        expect(rebound.state.agentProfileName).toBe('work');
+
+        // Blank reports are treated as absent, never stored.
+        const blank = run(bound.state, {
+            type: 'sessionStarted',
+            sessionID: 'sess-3',
+            agent: 'claude',
+            profileName: '   '
+        });
+        expect(blank.state.agentProfileName).toBe('work');
+
+        // A concrete new report replaces the old one — including the built-in default.
+        const moved = run(bound.state, {
+            type: 'sessionStarted',
+            sessionID: 'sess-4',
+            agent: 'claude',
+            profileName: 'default'
+        });
+        expect(moved.state.agentProfileName).toBe('default');
+    });
+
     it('clears only a matching session id, and persists immediately either way', () => {
-        const bound = withStatus('running', { agentSessionID: 'sess-1', agentKind: 'claude' });
+        const bound = withStatus('running', {
+            agentSessionID: 'sess-1',
+            agentKind: 'claude',
+            agentProfileName: 'work'
+        });
         const matching = run(bound, { type: 'sessionEnded', sessionID: 'sess-1' });
         expect(matching.state.agentSessionID).toBeNull();
         expect(matching.state.agentKind).toBe('claude');
+        // The profile dies with the session it described: a survivor would pin the pane to
+        // the stale profile forever if the next session never reports one (older CLI).
+        expect(matching.state.agentProfileName).toBeNull();
         expect(matching.effects.changed).toBe(true);
         expect(matching.effects.persistImmediately).toBe(true);
 
         const stale = run(bound, { type: 'sessionEnded', sessionID: 'sess-0' });
         expect(stale.state.agentSessionID).toBe('sess-1');
+        expect(stale.state.agentProfileName).toBe('work');
         expect(stale.effects.changed).toBe(false);
         expect(stale.effects.persistImmediately).toBe(true);
     });

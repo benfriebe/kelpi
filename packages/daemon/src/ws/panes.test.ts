@@ -146,6 +146,58 @@ describe('reopen-closed-pane', () => {
         expect(f.h.input.texts).toEqual([{ paneID: NEW, text: 'codex resume abc-123', bare: false }]);
     });
 
+    it('spawns the reopened pane under the profile the snapshot session recorded', async () => {
+        // The session was launched under "work"; the workspace has since moved to "personal".
+        // The reopened PTY must carry the SESSION's profile env, or the typed
+        // `claude --resume` runs against the wrong CLAUDE_CONFIG_DIR.
+        const h = harness({ minted: [NEW] });
+        seedWorkspace(h, { id: W1, name: 'dev', paneID: P0, path: '/tmp/work' });
+        const channel = createPaneLifecycleChannel({
+            ctx: {
+                ...h.ctx,
+                profiles: () => [
+                    { name: 'work', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-work' } },
+                    { name: 'personal', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-personal' } }
+                ]
+            },
+            sleep: () => new Promise<void>(() => {})
+        });
+        const SECOND = testID('E', 1);
+        h.store.dispatch({
+            type: 'split-pane',
+            workspaceID: W1,
+            paneID: SECOND,
+            direction: 'horizontal',
+            sourcePaneID: P0,
+            label: null,
+            now: 1
+        });
+        h.store.dispatch({
+            type: 'pane-agent-event',
+            paneID: SECOND,
+            workspaceID: W1,
+            now: 1,
+            event: { type: 'sessionStarted', sessionID: 'abc-123', agent: 'claude', profileName: 'work' }
+        });
+        h.store.dispatch({ type: 'close-pane', workspaceID: W1, paneID: SECOND });
+        h.store.dispatch({ type: 'set-workspace-profile', id: W1, profileName: 'personal' });
+
+        const reply = channel.run('reopen-closed-pane', { workspace_id: W1 });
+        expect(reply['resume_command']).toBe('claude --resume abc-123');
+        const spawn = h.pty.spawns.find((entry) => entry.paneID === NEW);
+        expect(spawn?.env).toEqual(
+            expect.arrayContaining([
+                ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work'],
+                ['KELPI_PROFILE', 'work']
+            ])
+        );
+        // …and the workspace's CURRENT assignment loses outright: "personal" must not appear
+        // anywhere in the env, or the typed resume runs against the wrong CLAUDE_CONFIG_DIR.
+        expect(spawn?.env).not.toEqual(
+            expect.arrayContaining([['CLAUDE_CONFIG_DIR', '/Users/test/.claude-personal']])
+        );
+    });
+
     it('skips a session id that fails the shell-safety allowlist', async () => {
         const f = fixture();
         const SECOND = testID('E', 1);

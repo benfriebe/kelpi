@@ -45,6 +45,12 @@ export interface ResumeTuple {
     readonly paneID: string;
     readonly sessionID: string;
     readonly kind: AgentKind;
+    /**
+     * The profile the session was launched under (effective `KELPI_PROFILE` name). Null =
+     * unknown (recorded before profiles were tracked); resume falls back to the owning
+     * workspace's current profile, which is the pre-tracking behavior.
+     */
+    readonly profileName: string | null;
 }
 
 /**
@@ -53,19 +59,25 @@ export interface ResumeTuple {
  */
 export function captureResumeTuple(paneID: string, state: PaneAgentState): ResumeTuple | null {
     if (state.agentSessionID === null) return null;
-    return { paneID, sessionID: state.agentSessionID, kind: displayAgentKind(state.agentKind) };
+    return {
+        paneID,
+        sessionID: state.agentSessionID,
+        kind: displayAgentKind(state.agentKind),
+        profileName: state.agentProfileName
+    };
 }
 
 /**
  * §6.1 step 2: clear the session id and reset a non-idle status (status is tied to a live
- * PTY). `agentKind` is deliberately preserved - it is the last-known display value and the
- * resume tuples already captured it.
+ * PTY). `agentKind` and `agentProfileName` are deliberately preserved - they are last-known
+ * values and the resume tuples already captured them.
  */
 export function resetPaneAgentStateOnLoad(state: PaneAgentState): PaneAgentState {
     return {
         status: 'idle',
         agentSessionID: null,
         agentKind: state.agentKind,
+        agentProfileName: state.agentProfileName,
         agentStartedAt: null,
         backgroundTaskCount: 0
     };

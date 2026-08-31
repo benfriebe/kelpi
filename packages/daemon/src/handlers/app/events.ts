@@ -126,7 +126,14 @@ export function eventHandlerEntries(deps: AppDeps): readonly (readonly [string, 
         forCommand('session-start', (msg, ctx) => {
             applyAgentEvent(
                 msg.pane_id,
-                { type: 'sessionStarted', sessionID: msg.session_id, agent: msg.agent },
+                {
+                    type: 'sessionStarted',
+                    sessionID: msg.session_id,
+                    agent: msg.agent,
+                    // The profile the hook saw in the agent's own environment — recorded so a
+                    // later resume can spawn the pane with the same profile env.
+                    ...(msg.profile !== undefined ? { profileName: msg.profile } : {})
+                },
                 ctx,
                 deps
             );

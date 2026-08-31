@@ -17,6 +17,17 @@ export interface PaneAgentState {
     readonly agentSessionID: string | null;
     /** Persisted; NEVER cleared on load - last-known display value. */
     readonly agentKind: AgentKind | null;
+    /**
+     * Persisted; the EFFECTIVE profile name (`KELPI_PROFILE`, e.g. `"default"` / `"work"`)
+     * the session was launched under, reported by the `kelpi event` hook. Null = unknown
+     * (legacy CLI / pre-upgrade row), which resume treats as "use the workspace's profile".
+     * Never cleared on load, and a session-start without profile info keeps the previous one
+     * (same PTY, same environment). Unlike `agentKind` it is NOT display state: it exists to
+     * rebuild the resume environment, so a matching session-end clears it beside the id — a
+     * profile with no session to resume must not pin the pane's next spawn
+     * (agent-lifecycle.md §6.3).
+     */
+    readonly agentProfileName: string | null;
     /** Transient wall-clock start (epoch ms) of the current run; powers the elapsed badge. */
     readonly agentStartedAt: number | null;
     /** Transient count of in-flight background shells/subagents (issues #215/#220). */
@@ -27,6 +38,7 @@ export const initialPaneAgentState: PaneAgentState = {
     status: 'idle',
     agentSessionID: null,
     agentKind: null,
+    agentProfileName: null,
     agentStartedAt: null,
     backgroundTaskCount: 0
 };
@@ -41,7 +53,16 @@ export type AgentEvent =
           readonly body: string;
           readonly backgroundTaskCount: number;
       }
-    | { readonly type: 'sessionStarted'; readonly sessionID: string; readonly agent: AgentKind }
+    | {
+          readonly type: 'sessionStarted';
+          readonly sessionID: string;
+          readonly agent: AgentKind;
+          /**
+           * The `KELPI_PROFILE` value the hook observed in the agent's own environment.
+           * Absent/empty = an older CLI that does not report it; the last-known value is kept.
+           */
+          readonly profileName?: string | undefined;
+      }
     | { readonly type: 'sessionEnded'; readonly sessionID: string }
     | { readonly type: 'setPaneStatus'; readonly status: PaneStatus }
     | { readonly type: 'clearPaneStatus' };

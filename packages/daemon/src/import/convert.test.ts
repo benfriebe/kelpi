@@ -31,6 +31,7 @@ function pane(overrides: Partial<PersistedPane> & { id: string }): PersistedPane
         lastActivityAt: 1_776_423_800,
         agentSessionID: null,
         agentKind: null,
+        agentProfileName: null,
         status: 'idle',
         filePath: null,
         scratchpadContent: null,

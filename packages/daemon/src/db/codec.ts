@@ -105,6 +105,7 @@ export interface PaneRow {
     readonly webActiveTabID: string | null;
     readonly webIsPrivate: number | null;
     readonly agentKind: string | null;
+    readonly agentProfileName: string | null;
 }
 
 export interface RepoRow {
@@ -371,7 +372,8 @@ export function encodePaneRow(pane: PersistedPane, workspaceID: string): PaneRow
         webTabsJSON: tabs.length === 0 ? null : encodeWebTabsJSON(tabs),
         webActiveTabID: active === null ? null : normalizeUUIDLoose(active.id),
         webIsPrivate: isWeb ? (isPrivate ? 1 : 0) : null,
-        agentKind: pane.agentKind
+        agentKind: pane.agentKind,
+        agentProfileName: pane.agentProfileName
     };
 }
 
@@ -604,6 +606,7 @@ export function decodePaneRow(row: SqlRow, options: DecodePaneOptions = {}): Dec
             lastActivityAt: timestampColumn(row, 'lastActivityAt'),
             agentSessionID: optionalText(row, 'agentSessionID'),
             agentKind: decodeAgentKind(textColumn(row, 'agentKind')),
+            agentProfileName: optionalText(row, 'agentProfileName'),
             status: decodePaneStatus(textColumn(row, 'status')),
             filePath: optionalText(row, 'filePath'),
             scratchpadContent: textColumn(row, 'content'),

@@ -1446,14 +1446,21 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         });
         await runControl.start();
 
-        const spawned = spawnRestoredPanes(store.getState(), {
-            pty,
-            term,
-            profiles: config.profiles,
-            spawn: spawnDefaults,
-            envFor: (paneID, workspace) => spawnEnvVars(ctx, paneID, workspace),
-            ...(onError !== undefined ? { onError } : {})
-        });
+        const spawned = spawnRestoredPanes(
+            store.getState(),
+            {
+                pty,
+                term,
+                profiles: config.profiles,
+                spawn: spawnDefaults,
+                // Same builder the pane-* handlers use; a pane about to resume a session that
+                // recorded its launch profile spawns with that profile's env.
+                envFor: (paneID, workspace, sessionProfileName) =>
+                    spawnEnvVars(ctx, paneID, workspace, sessionProfileName),
+                ...(onError !== undefined ? { onError } : {})
+            },
+            loaded.tuples
+        );
 
         if (!runOwnsCompatPath) {
             compatControl = createControlServer({

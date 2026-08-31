@@ -145,11 +145,19 @@ export function refreshSyncGroup(ctx: PaneHandlerContext, workspaceID: string): 
     );
 }
 
-/** The spawn env of a pane in this workspace (config-keybindings.md §9.1–9.3). */
+/**
+ * The spawn env of a pane in this workspace (config-keybindings.md §9.1–9.3).
+ *
+ * `sessionProfileName` overrides the workspace's assignment for THIS spawn: it is the profile
+ * a recorded agent session was launched under, so a pane about to type a resume command gets
+ * the environment the session actually knows rather than whatever the workspace points at now.
+ * Null/absent = the normal workspace resolution.
+ */
 export function spawnEnvVars(
     ctx: PaneHandlerContext,
     paneID: string,
-    workspace: WorkspaceState
+    workspace: WorkspaceState,
+    sessionProfileName?: string | null
 ): EnvVar[] {
     const profiles = ctx.profiles?.() ?? [];
     const helpersDir = ctx.spawn?.helpersDir;
@@ -160,7 +168,9 @@ export function spawnEnvVars(
         helpersDir === undefined || helpersDir === ''
             ? (inherited === null || inherited === '' ? FALLBACK_PATH : inherited)
             : buildPanePath(helpersDir, inherited);
-    const profileName = effectiveProfileName(normalizedAssignment(workspace.profileName));
+    const profileName = effectiveProfileName(
+        normalizedAssignment(sessionProfileName ?? workspace.profileName)
+    );
     /*
      * §SET-209. The marker is injected either way (that is the load-bearing half, and
      * `resolveProfileEnv` does it unconditionally), but a NON-`default` name with no `profile`
@@ -169,8 +179,12 @@ export function spawnEnvVars(
      * assignment. An empty `default` is expected and is never warned about.
      */
     if (profileName !== DEFAULT_PROFILE_NAME && !isDefinedProfile(profiles, profileName)) {
+        const subject =
+            sessionProfileName !== undefined && sessionProfileName !== null
+                ? `pane ${paneID} resumes its agent session under profile "${profileName}"`
+                : `workspace "${workspace.name}" uses profile "${profileName}"`;
         ctx.onLog?.(
-            `workspace "${workspace.name}" uses profile "${profileName}", which has no ` +
+            `${subject}, which has no ` +
                 'profile = lines in ~/.config/nex/config; only NEX_PROFILE will be set'
         );
     }
@@ -186,7 +200,11 @@ export function spawnEnvVars(
 export function spawnPaneIfShell(
     ctx: PaneHandlerContext,
     workspaceID: string,
-    paneID: string
+    paneID: string,
+    options?: {
+        /** See `spawnEnvVars` — the profile a to-be-resumed agent session was launched under. */
+        readonly sessionProfileName?: string | null | undefined;
+    }
 ): void {
     const workspace = workspaceByID(ctx.store.getState(), workspaceID);
     if (workspace === null) return;
@@ -218,7 +236,7 @@ export function spawnPaneIfShell(
         ctx.pty.spawn({
             paneID,
             cwd: target.workingDirectory,
-            env: spawnEnvVars(ctx, paneID, current).map(
+            env: spawnEnvVars(ctx, paneID, current, options?.sessionProfileName ?? null).map(
                 (entry) => [entry.key, entry.value] as const
             ),
             cols,

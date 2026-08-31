@@ -104,6 +104,7 @@ export type {
 
 export {
     appliedMigrations,
+    DAEMON_ONLY_MIGRATIONS,
     ensureMigrationsTable,
     initializeSchema,
     migrate,

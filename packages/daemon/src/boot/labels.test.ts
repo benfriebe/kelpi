@@ -73,6 +73,7 @@ function workspaceRecord(id: string, paneID: string, name: string, labels: reado
                 lastActivityAt: 1_700_000_000,
                 agentSessionID: null,
                 agentKind: null,
+                agentProfileName: null,
                 status: 'idle',
                 filePath: null,
                 scratchpadContent: null,

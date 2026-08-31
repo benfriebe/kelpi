@@ -213,6 +213,21 @@ describe('agent lifecycle events', () => {
         expect(rejected({ command: 'session-end', pane_id: PANE }).field).toBe('session_id');
     });
 
+    it('carries the optional launch profile on session-start, normalizing empty to absent', () => {
+        expect(
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', agent: 'claude', profile: 'work' })
+        ).toEqual({
+            command: 'session-start',
+            pane_id: PANE_UPPER,
+            session_id: 'abc',
+            agent: 'claude',
+            profile: 'work'
+        });
+        expect(
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', agent: 'claude', profile: '' })
+        ).not.toHaveProperty('profile');
+    });
+
     it('exposes the hook fields that feed the dual-fire', () => {
         const result = decode({ command: 'stop', pane_id: PANE, session_id: 'abc-123', agent: 'CODEX' });
         expect(result.ok).toBe(true);

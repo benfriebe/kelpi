@@ -54,6 +54,16 @@ export function rawPaneID(): string | undefined {
     return paneIDValue();
 }
 
+/**
+ * `KELPI_PROFILE` — the effective profile name the pane's PTY was spawned with (the daemon
+ * injects it unconditionally). Non-empty only; hooks attach it beside `session_id` so the
+ * daemon can resume the session under the same profile.
+ */
+export function profileName(): string | undefined {
+    const value = current['KELPI_PROFILE'];
+    return value !== undefined && value.length > 0 ? value : undefined;
+}
+
 /** `$HOME`, falling back to the passwd-database home directory (the Swift fallback). */
 export function homeDirectory(): string {
     const home = current['HOME'];

@@ -139,10 +139,17 @@ export function reduceAgentEvent(
         case 'sessionStarted': {
             // Does NOT touch status or agentStartedAt; the count reset bounds a stuck
             // running state when a final empty Stop was lost.
+            const reportedProfile = event.profileName?.trim();
             const next: PaneAgentState = {
                 ...state,
                 agentSessionID: event.sessionID,
                 agentKind: event.agent,
+                // The hook reports the KELPI_PROFILE of the environment the session actually
+                // runs in; an event without one (older CLI) keeps the last-known value.
+                agentProfileName:
+                    reportedProfile !== undefined && reportedProfile !== ''
+                        ? reportedProfile
+                        : state.agentProfileName,
                 backgroundTaskCount: 0
             };
             return { state: next, effects: effects(next, { refreshIndicators: false }) };
@@ -150,8 +157,14 @@ export function reduceAgentEvent(
         case 'sessionEnded': {
             // Match guard: /clear and compaction fire SessionEnd(old) + SessionStart(new)
             // in either order; only the matching id is cleared. Always persists now.
+            // The profile travels with the id: once the session it described is gone there is
+            // nothing left to resume under it, and a survivor would pin the pane to a stale
+            // profile after a deliberate workspace switch (an older CLI never reports a new
+            // one, so "keep last-known" would hold the stale name forever).
             const matches = state.agentSessionID === event.sessionID;
-            const next: PaneAgentState = matches ? { ...state, agentSessionID: null } : state;
+            const next: PaneAgentState = matches
+                ? { ...state, agentSessionID: null, agentProfileName: null }
+                : state;
             return {
                 state: next,
                 effects: effects(next, {

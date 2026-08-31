@@ -34,6 +34,7 @@ function stateWithClosedPane(): DaemonState {
                         scratchpadContent: 'secret notes',
                         agentSessionID: null,
                         agentKind: null,
+                        agentProfileName: null,
                         markdownFontSize: 13,
                         webState: null
                     }

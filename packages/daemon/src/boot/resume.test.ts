@@ -39,6 +39,7 @@ function pane(overrides: Partial<PersistedPane> & { id: string }): PersistedPane
         lastActivityAt: 1_700_000_000,
         agentSessionID: null,
         agentKind: null,
+        agentProfileName: null,
         status: 'idle',
         filePath: null,
         scratchpadContent: null,
@@ -186,6 +187,130 @@ describe('spawnRestoredPanes', () => {
             ['PATH', '/usr/bin:/bin'],
             ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work'],
             ['KELPI_PROFILE', 'work'],
+        ]);
+    });
+
+    it('spawns a resumable pane with the profile its SESSION recorded, not the workspace assignment', () => {
+        // The workspace moved to "personal" after the session was launched under "work": the
+        // pane about to type `claude --resume` must come up in the environment the session
+        // actually knows, or the resume lands in the wrong CLAUDE_CONFIG_DIR entirely.
+        const { state, tuples } = restored(
+            snapshotOf(
+                workspace(
+                    [
+                        pane({ id: P1, agentSessionID: 'sess-1', agentKind: 'claude', agentProfileName: 'work' }),
+                        pane({ id: P2 })
+                    ],
+                    split('horizontal', 0.5, leaf(P1), leaf(P2)),
+                    'personal'
+                )
+            )
+        );
+        expect(tuples).toEqual([
+            { paneID: P1, sessionID: 'sess-1', kind: 'claude', profileName: 'work' }
+        ]);
+        const pty = fakePty();
+
+        spawnRestoredPanes(
+            state,
+            {
+                pty,
+                term: fakeTerm(),
+                profiles: [
+                    { name: 'work', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-work' } },
+                    { name: 'personal', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-personal' } }
+                ],
+                spawn: { inheritedPath: '/usr/bin:/bin' }
+            },
+            tuples
+        );
+
+        // The resumable pane resolves the RECORDED profile…
+        expect(pty.spawns[0]?.env).toEqual([
+            ['KELPI_PANE_ID', P1],
+            ['PATH', '/usr/bin:/bin'],
+            ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work'],
+            ['KELPI_PROFILE', 'work'],
+        ]);
+        // …and its session-less sibling keeps the workspace's current assignment.
+        expect(pty.spawns[1]?.env).toEqual([
+            ['KELPI_PANE_ID', P2],
+            ['PATH', '/usr/bin:/bin'],
+            ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-personal'],
+            ['KELPI_PROFILE', 'personal'],
+        ]);
+    });
+
+    it('falls back to the workspace profile for a tuple recorded before profiles were tracked', () => {
+        const { state, tuples } = restored(
+            snapshotOf(
+                workspace(
+                    [pane({ id: P1, agentSessionID: 'sess-1', agentKind: 'claude' })],
+                    leaf(P1),
+                    'work'
+                )
+            )
+        );
+        expect(tuples[0]?.profileName).toBeNull();
+        const pty = fakePty();
+
+        spawnRestoredPanes(
+            state,
+            {
+                pty,
+                term: fakeTerm(),
+                profiles: [{ name: 'work', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-work' } }],
+                spawn: { inheritedPath: '/usr/bin:/bin' }
+            },
+            tuples
+        );
+
+        expect(pty.spawns[0]?.env).toEqual([
+            ['KELPI_PANE_ID', P1],
+            ['PATH', '/usr/bin:/bin'],
+            ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work'],
+            ['KELPI_PROFILE', 'work'],
+        ]);
+    });
+
+    it('ignores a recorded profile when the session id fails the allowlist (no resume, no override)', () => {
+        // A corrupted or hostile row whose session id `typeResumeCommands` will refuse to type
+        // must not drag its recorded profile into the spawn either: the pane gets a fresh
+        // shell, and a fresh shell belongs to the workspace's current assignment. Same guard
+        // the reopen path applies (ws/panes.ts).
+        const { state, tuples } = restored(
+            snapshotOf(
+                workspace(
+                    [pane({ id: P1, agentSessionID: 'sess-1; rm -rf /', agentKind: 'claude', agentProfileName: 'work' })],
+                    leaf(P1),
+                    'personal'
+                )
+            )
+        );
+        expect(tuples).toEqual([
+            { paneID: P1, sessionID: 'sess-1; rm -rf /', kind: 'claude', profileName: 'work' }
+        ]);
+        const pty = fakePty();
+
+        spawnRestoredPanes(
+            state,
+            {
+                pty,
+                term: fakeTerm(),
+                profiles: [
+                    { name: 'work', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-work' } },
+                    { name: 'personal', env: { CLAUDE_CONFIG_DIR: '/Users/test/.claude-personal' } }
+                ],
+                spawn: { inheritedPath: '/usr/bin:/bin' }
+            },
+            tuples
+        );
+
+        expect(pty.spawns[0]?.env).toEqual([
+            ['KELPI_PANE_ID', P1],
+            ['PATH', '/usr/bin:/bin'],
+            ['CLAUDE_CONFIG_DIR', '/Users/test/.claude-personal'],
+            ['KELPI_PROFILE', 'personal'],
         ]);
     });
 
@@ -402,8 +527,8 @@ describe('typeResumeCommands', () => {
             )
         );
         expect(tuples).toEqual([
-            { paneID: P1, sessionID: 'sess-one', kind: 'claude' },
-            { paneID: P2, sessionID: 'sess-two', kind: 'codex' }
+            { paneID: P1, sessionID: 'sess-one', kind: 'claude', profileName: null },
+            { paneID: P2, sessionID: 'sess-two', kind: 'codex', profileName: null }
         ]);
         // The clearing already happened; the ids only live in the tuples now.
         expect(state.workspaces[0]?.panes.map((p) => p.agentSessionID)).toEqual([null, null]);
@@ -457,7 +582,7 @@ describe('typeResumeCommands', () => {
 
     it('skips a tuple whose pane never got a PTY', async () => {
         const pty = fakePty();
-        const outcome = await typeResumeCommands([{ paneID: P3, sessionID: 'abc', kind: 'claude' }], {
+        const outcome = await typeResumeCommands([{ paneID: P3, sessionID: 'abc', kind: 'claude', profileName: null }], {
             pty,
             term: fakeTerm(),
             input: fakeInput(pty),

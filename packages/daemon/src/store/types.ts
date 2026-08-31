@@ -53,6 +53,8 @@ export interface ClosedPaneSnapshot {
     readonly scratchpadContent: string | null;
     readonly agentSessionID: string | null;
     readonly agentKind: AgentKind | null;
+    /** The profile the recorded agent session was launched under; reopen resumes with it. */
+    readonly agentProfileName: string | null;
     readonly markdownFontSize: number;
     /** null for private web panes — their tabs are deliberately dropped at close. */
     readonly webState: WebPaneState | null;

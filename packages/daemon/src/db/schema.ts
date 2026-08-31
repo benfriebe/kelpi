@@ -185,11 +185,24 @@ export const MIGRATIONS: readonly Migration[] = [
     {
         identifier: 'v18_pane_agent_kind',
         apply: (db) => addColumn(db, 'pane', 'agentKind', 'TEXT')
+    },
+    {
+        // Kelpi-only (no Swift counterpart): the profile the pane's agent session was
+        // launched under, so a resume can rebuild the same environment.
+        identifier: 'v19_pane_agent_profile',
+        apply: (db) => addColumn(db, 'pane', 'agentProfileName', 'TEXT')
     }
 ];
 
-/** The ledger identifiers this daemon owns, in registration order (`v1_initial` … `v18_…`). */
+/** The ledger identifiers this daemon owns, in registration order (`v1_initial` … `v19_…`). */
 export const MIGRATION_IDENTIFIERS: readonly string[] = MIGRATIONS.map((m) => m.identifier);
+
+/**
+ * Identifiers with NO Swift counterpart — added by this daemon after the ports reached
+ * parity, so a legacy `nex.db` ledger can never contain them. The legacy importer excludes
+ * them when judging whether a source database "predates" this importer.
+ */
+export const DAEMON_ONLY_MIGRATIONS: readonly string[] = ['v19_pane_agent_profile'];
 
 export function ensureMigrationsTable(db: SqlDatabase): void {
     db.exec(`CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (identifier TEXT NOT NULL PRIMARY KEY)`);

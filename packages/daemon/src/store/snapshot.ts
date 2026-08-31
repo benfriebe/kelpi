@@ -48,6 +48,8 @@ export interface PersistedPane {
     readonly lastActivityAt: number;
     readonly agentSessionID: string | null;
     readonly agentKind: AgentKind | null;
+    /** The profile the recorded agent session was launched under; null = unknown. */
+    readonly agentProfileName: string | null;
     /** Written, but reset to idle by `applyLoadReset` on the next boot. */
     readonly status: PaneStatus;
     readonly filePath: string | null;
@@ -123,6 +125,7 @@ function persistPane(pane: Pane, sidecar: WebPaneState | undefined): PersistedPa
         lastActivityAt: pane.lastActivityAt,
         agentSessionID: pane.agentSessionID,
         agentKind: pane.agentKind,
+        agentProfileName: pane.agentProfileName,
         status: pane.status,
         filePath: pane.filePath,
         scratchpadContent: pane.scratchpadContent,
@@ -188,6 +191,7 @@ function restorePane(record: PersistedPane): Pane {
         scratchpadContent: record.scratchpadContent,
         agentSessionID: record.agentSessionID,
         agentKind: record.agentKind,
+        agentProfileName: record.agentProfileName ?? null,
         markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
         parkedSourcePaneID: null,
         agentStartedAt: null,

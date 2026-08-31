@@ -64,6 +64,12 @@ export interface Pane {
     agentSessionID: string | null;
     /** Persisted; deliberately NOT cleared when agentSessionID is cleared on load. */
     agentKind: AgentKind | null;
+    /**
+     * Persisted; the effective profile name (`KELPI_PROFILE`) the agent session was launched
+     * under, so a resume can rebuild the same environment. Null = unknown → resume uses the
+     * workspace's current profile. Last-known value, like `agentKind`.
+     */
+    agentProfileName: string | null;
     /** Transient: per-pane markdown font size. */
     markdownFontSize: number;
     /** Transient: `kelpi open --here` parked source pane. */
@@ -87,6 +93,7 @@ export const PANE_PERSISTED_COLUMNS: Readonly<Record<string, string>> = {
     scratchpadContent: 'content',
     agentSessionID: 'agentSessionID',
     agentKind: 'agentKind',
+    agentProfileName: 'agentProfileName',
     createdAt: 'createdAt',
     lastActivityAt: 'lastActivityAt'
 };
@@ -101,6 +108,7 @@ export const PANE_PERSISTED_FIELDS: readonly (keyof Pane)[] = [
     'scratchpadContent',
     'agentSessionID',
     'agentKind',
+    'agentProfileName',
     'createdAt',
     'lastActivityAt'
 ];
@@ -129,6 +137,7 @@ export interface NewPaneFields {
     scratchpadContent?: string | null;
     agentSessionID?: string | null;
     agentKind?: AgentKind | null;
+    agentProfileName?: string | null;
 }
 
 /** Build a pane with spec defaults; transient fields always start empty. */
@@ -147,6 +156,7 @@ export function makePane(fields: NewPaneFields): Pane {
         scratchpadContent: fields.scratchpadContent ?? null,
         agentSessionID: fields.agentSessionID ?? null,
         agentKind: fields.agentKind ?? null,
+        agentProfileName: fields.agentProfileName ?? null,
         markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
         parkedSourcePaneID: null,
         agentStartedAt: null,

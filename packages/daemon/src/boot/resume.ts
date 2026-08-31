@@ -6,7 +6,9 @@
  * resume tuples and clears session ids + non-idle statuses BEFORE anything spawns):
  *
  *   3. spawn a PTY for every visible SHELL pane, with the owning workspace's profile env
- *      resolved from a single per-launch read of `~/.config/nex/config`;
+ *      resolved from a single per-launch read of `~/.config/nex/config` — except a pane whose
+ *      resume tuple recorded the session's launch profile AND whose session id passes the
+ *      shell-safety allowlist, which spawns under the recorded profile instead;
  *   4. if any resume tuples exist, wait ~2 s (shells need to reach a prompt), then type
  *      `claude --resume <id>` / `codex resume <id>` into each pane — session ids that fail the
  *      shell-safety allowlist are skipped silently (`resumeCommand` returns null);
@@ -44,8 +46,17 @@ export interface RestoreDeps {
     /**
      * Spawn env for one pane. Boot passes the SAME builder the `pane-*` handlers use, so a
      * restored pane and a CLI-created one get byte-identical environments.
+     * `sessionProfileName` is non-null for a pane that is about to type a resume command whose
+     * session recorded the profile it was launched under — the env must resolve THAT profile
+     * rather than the workspace's current assignment.
      */
-    readonly envFor?: ((paneID: string, workspace: WorkspaceState) => readonly EnvVar[]) | undefined;
+    readonly envFor?:
+        | ((
+              paneID: string,
+              workspace: WorkspaceState,
+              sessionProfileName: string | null
+          ) => readonly EnvVar[])
+        | undefined;
     readonly onError?: ((error: Error, context: string) => void) | undefined;
 }
 
@@ -87,7 +98,8 @@ function toError(value: unknown): Error {
 function restoreEnvVars(
     paneID: string,
     workspace: WorkspaceState,
-    deps: RestoreDeps
+    deps: RestoreDeps,
+    sessionProfileName: string | null
 ): readonly EnvVar[] {
     const helpersDir = deps.spawn?.helpersDir;
     const inherited = deps.spawn?.inheritedPath ?? process.env['PATH'] ?? null;
@@ -95,9 +107,13 @@ function restoreEnvVars(
         helpersDir === undefined || helpersDir === ''
             ? (inherited === null || inherited === '' ? FALLBACK_PATH : inherited)
             : buildPanePath(helpersDir, inherited);
+    // A pane whose resume tuple recorded the launch profile spawns with THAT profile
+    // (agent-lifecycle.md §6.1 step 3 — the resumed agent must land in the environment the
+    // session was launched under); every other pane resolves the workspace's current
+    // assignment, as always.
     const profileEnv = resolveProfileEnv(
         deps.profiles,
-        effectiveProfileName(normalizedAssignment(workspace.profileName))
+        effectiveProfileName(normalizedAssignment(sessionProfileName ?? workspace.profileName))
     );
     const socketRoute = deps.spawn?.controlRoute?.() ?? null;
     return mergedEnvVars({ paneID, path, socketRoute, profileEnv });
@@ -109,17 +125,36 @@ function restoreEnvVars(
  * Idempotent — `PtyManager.spawn` is a no-op for a pane that already has a child, so a pane
  * created by a CLI command racing this pass keeps the PTY it already got.
  */
-export function spawnRestoredPanes(state: DaemonState, deps: RestoreDeps): string[] {
+export function spawnRestoredPanes(
+    state: DaemonState,
+    deps: RestoreDeps,
+    tuples: readonly ResumeTuple[] = []
+): string[] {
     const defaultCols = deps.spawn?.cols ?? DEFAULT_COLS;
     const defaultRows = deps.spawn?.rows ?? DEFAULT_ROWS;
-    const envFor = deps.envFor ?? ((paneID, workspace) => restoreEnvVars(paneID, workspace, deps));
+    const envFor =
+        deps.envFor ??
+        ((paneID, workspace, sessionProfileName) =>
+            restoreEnvVars(paneID, workspace, deps, sessionProfileName));
+    // A pane with a captured resume tuple is about to type `claude --resume` / `codex resume`
+    // into its fresh shell; when the tuple recorded the session's launch profile, the shell
+    // must be spawned with that profile's env. Guarded on the same allowlist the typing step
+    // applies (mirroring ws/panes.ts reopen): a tuple whose session id will never produce a
+    // typed command must not drag its recorded profile into a pane that gets a fresh shell —
+    // that pane belongs to the workspace's current assignment.
+    const resumeProfiles = new Map<string, string>();
+    for (const tuple of tuples) {
+        if (tuple.profileName === null) continue;
+        if (resumeCommand(tuple.kind, tuple.sessionID) === null) continue;
+        resumeProfiles.set(tuple.paneID, tuple.profileName);
+    }
     const spawned: string[] = [];
 
     for (const workspace of state.workspaces) {
         for (const pane of workspace.panes) {
             if (pane.type !== 'shell') continue; // markdown/scratchpad/diff/web have no PTY
             if (deps.pty.has(pane.id)) continue;
-            const env = envFor(pane.id, workspace);
+            const env = envFor(pane.id, workspace, resumeProfiles.get(pane.id) ?? null);
             // Boot is the worst case for a fixed grid: the shell prints its prompt seconds
             // before a window exists, so without the pane's remembered size that prompt is
             // 80 columns wide in a 200-column pane — forever, because the headless emulator
@@ -203,7 +238,7 @@ export async function runRestorePipeline(
     tuples: readonly ResumeTuple[],
     deps: ResumeDeps
 ): Promise<ResumeOutcome> {
-    const spawned = spawnRestoredPanes(state, deps);
+    const spawned = spawnRestoredPanes(state, deps, tuples);
     const { resumed, skipped, settled } = await typeResumeCommands(tuples, deps);
     return { spawned, resumed, skipped, settled };
 }

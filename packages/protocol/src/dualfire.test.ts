@@ -24,6 +24,19 @@ describe('session_id dual-fire', () => {
         });
     });
 
+    it('carries the launch profile riding the line, and omits an absent or empty one', () => {
+        const event = synthesizeSessionStart(
+            decoded({ command: 'stop', pane_id: PANE, session_id: 'abc-123', profile: 'work' })
+        );
+        expect(event?.profile).toBe('work');
+        expect(
+            synthesizeSessionStart(decoded({ command: 'stop', pane_id: PANE, session_id: 'abc-123' }))
+        ).not.toHaveProperty('profile');
+        expect(
+            synthesizeSessionStart(decoded({ command: 'stop', pane_id: PANE, session_id: 'abc-123', profile: '' }))
+        ).not.toHaveProperty('profile');
+    });
+
     it('carries the line agent field, case-insensitively', () => {
         const event = synthesizeSessionStart(
             decoded({ command: 'notification', pane_id: PANE, session_id: 's1', agent: 'Codex' })

@@ -208,8 +208,8 @@ describe('applyLoadReset', () => {
         const loaded = reload(h.state());
         const { state, resumeTuples } = applyLoadReset(loaded);
         expect(resumeTuples).toEqual([
-            { paneID: P0, sessionID: 'claude-session', kind: 'claude' },
-            { paneID: PA, sessionID: 'codex-session', kind: 'codex' }
+            { paneID: P0, sessionID: 'claude-session', kind: 'claude', profileName: null },
+            { paneID: PA, sessionID: 'codex-session', kind: 'codex', profileName: null }
         ]);
         expect(resumeTuples.map((tuple) => resumeCommand(tuple.kind, tuple.sessionID))).toEqual([
             'claude --resume claude-session',

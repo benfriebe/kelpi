@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 
 import { parseFlag } from '../args.js';
-import { requirePaneID, verboseHooksRequested } from '../env.js';
+import { profileName, requirePaneID, verboseHooksRequested } from '../env.js';
 import { errLine, exit } from '../io.js';
 import { asString, parseJsonObject, type JsonObject, type JsonValue } from '../json.js';
 import { sendJSON, setSuppressFireAndForgetWarnings } from '../transport.js';
@@ -153,6 +153,13 @@ export async function handleEvent(args: string[]): Promise<void> {
     if (title !== null && title !== undefined) payload['title'] = title;
     if (body !== null && body !== undefined) payload['body'] = body;
     if (sessionID !== undefined) payload['session_id'] = sessionID;
+    // Whenever a session id is being bound (directly or via the dual-fire), report the
+    // profile this hook is running under, so a later resume rebuilds the same environment.
+    // `session-end` drops the id, so the profile would be dead weight there.
+    if (sessionID !== undefined && eventType !== 'session-end') {
+        const profile = profileName();
+        if (profile !== undefined) payload['profile'] = profile;
+    }
     // Absent means claude server-side, keeping the common Claude-hook path wire-identical.
     if (agent !== null) payload['agent'] = agent;
     // Only when non-zero, so the common no-background path is wire-identical to pre-#215.

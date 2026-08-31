@@ -210,6 +210,16 @@ describe('session-start / session-end', () => {
         expect(h.broadcasts).toEqual([]);
     });
 
+    it('records the reported launch profile, and keeps the last-known one when a line omits it', () => {
+        const h = harness({ initial: seeded(1) });
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'abc-123', agent: 'claude', profile: 'work' });
+        expect(paneOf(h, P1)).toMatchObject({ agentSessionID: 'abc-123', agentProfileName: 'work' });
+
+        // An older CLI's session-start carries no profile: the recorded one survives.
+        h.send({ command: 'session-start', pane_id: P1, session_id: 'def-456', agent: 'claude' });
+        expect(paneOf(h, P1)).toMatchObject({ agentSessionID: 'def-456', agentProfileName: 'work' });
+    });
+
     it('clears the id ONLY when it still matches, and persists immediately either way', () => {
         const h = harness({ initial: seeded(1) });
         h.send({ command: 'session-start', pane_id: P1, session_id: 'live' });

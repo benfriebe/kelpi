@@ -65,6 +65,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_500_800,
                         agentSessionID: 'f0e1d2c3-session',
                         agentKind: 'codex',
+                        agentProfileName: null,
                         status: 'running',
                         filePath: null,
                         scratchpadContent: null,
@@ -81,6 +82,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_500_100,
                         agentSessionID: null,
                         agentKind: null,
+                        agentProfileName: null,
                         status: 'idle',
                         filePath: '/Users/test/code/kelpi/PLAN.md',
                         scratchpadContent: null,
@@ -97,6 +99,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_500_300,
                         agentSessionID: null,
                         agentKind: 'claude',
+                        agentProfileName: null,
                         status: 'waitingForInput',
                         filePath: null,
                         scratchpadContent: '# scratch\n\nline two',
@@ -137,6 +140,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_400_500,
                         agentSessionID: null,
                         agentKind: null,
+                        agentProfileName: null,
                         status: 'idle',
                         filePath: null,
                         scratchpadContent: null,
@@ -156,6 +160,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_400_100,
                         agentSessionID: null,
                         agentKind: null,
+                        agentProfileName: null,
                         status: 'idle',
                         filePath: null,
                         scratchpadContent: null,
@@ -172,6 +177,7 @@ function richSnapshot(): PersistedSnapshot {
                         lastActivityAt: 1_755_400_200,
                         agentSessionID: null,
                         agentKind: null,
+                        agentProfileName: null,
                         status: 'idle',
                         filePath: 'packages/daemon',
                         scratchpadContent: null,
@@ -281,6 +287,7 @@ describe('save → load round trip', () => {
                             scratchpadContent: null,
                             agentSessionID: 'abc',
                             agentKind: 'claude',
+                            agentProfileName: 'work',
                             markdownFontSize: 20,
                             parkedSourcePaneID: null,
                             agentStartedAt: 1_755_500_000_000,
@@ -306,7 +313,8 @@ describe('save → load round trip', () => {
             // Persisted verbatim; `applyLoadReset` (not persistence) does the clearing.
             status: 'running',
             agentSessionID: 'abc',
-            agentKind: 'claude'
+            agentKind: 'claude',
+            agentProfileName: 'work'
         });
         // Transient fields never reach the DB (§7.2).
         expect(loaded?.workspaces[0]?.panes[0]).not.toHaveProperty('title');

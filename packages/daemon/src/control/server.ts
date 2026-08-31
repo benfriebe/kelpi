@@ -140,7 +140,8 @@ export function dualFireMessage(event: SynthesizedSessionStart): WireMessage {
         command: 'session-start',
         pane_id: event.pane_id,
         session_id: event.session_id,
-        agent: event.agent
+        agent: event.agent,
+        ...(event.profile !== undefined ? { profile: event.profile } : {})
     };
 }
 

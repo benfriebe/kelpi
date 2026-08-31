@@ -53,6 +53,12 @@ export interface SessionStartMessage {
     pane_id: string;
     session_id: string;
     agent: AgentKind;
+    /**
+     * The effective profile name (`KELPI_PROFILE`) of the environment the session runs in,
+     * reported by the hook so a later resume can rebuild the same environment. Optional —
+     * absent from older CLIs.
+     */
+    profile?: string | undefined;
 }
 
 export interface SessionEndMessage {

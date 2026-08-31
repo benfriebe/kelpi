@@ -47,6 +47,7 @@ import {
     decodeRepoAssociationRow,
     decodeRepoRow,
     decodeWorkspaceRow,
+    DAEMON_ONLY_MIGRATIONS,
     hasColumn,
     MIGRATION_IDENTIFIERS,
     MIGRATIONS_TABLE,
@@ -178,9 +179,17 @@ function isEmpty(value: string | null): boolean {
 // Ledger
 // ---------------------------------------------------------------------------
 
+/**
+ * The identifiers a legacy Swift `nex.db` CAN carry: everything this daemon owns except its
+ * own post-parity additions (`DAEMON_ONLY_MIGRATIONS`) — a source without those is not "old".
+ */
+const EXPECTED_LEGACY_IDENTIFIERS: readonly string[] = MIGRATION_IDENTIFIERS.filter(
+    (identifier) => !DAEMON_ONLY_MIGRATIONS.includes(identifier)
+);
+
 export function inspectLedger(db: SqlDatabase): LegacyLedger {
     if (!tableExists(db, MIGRATIONS_TABLE)) {
-        return { present: false, identifiers: [], missing: [...MIGRATION_IDENTIFIERS], foreign: [], unknown: [] };
+        return { present: false, identifiers: [], missing: [...EXPECTED_LEGACY_IDENTIFIERS], foreign: [], unknown: [] };
     }
     const identifiers: string[] = [];
     for (const row of db.all(`SELECT identifier FROM ${MIGRATIONS_TABLE}`)) {
@@ -191,7 +200,7 @@ export function inspectLedger(db: SqlDatabase): LegacyLedger {
     return {
         present: true,
         identifiers,
-        missing: MIGRATION_IDENTIFIERS.filter((identifier) => !present.has(identifier)),
+        missing: EXPECTED_LEGACY_IDENTIFIERS.filter((identifier) => !present.has(identifier)),
         foreign: identifiers.filter((identifier) => LEGACY_FOREIGN_MIGRATIONS.includes(identifier)),
         unknown: identifiers.filter(
             (identifier) =>

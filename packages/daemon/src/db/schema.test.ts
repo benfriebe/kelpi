@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { columnNames, openSqliteDatabase, tableNames, type SqlDatabase } from './adapter.js';
-import { appliedMigrations, migrate, MIGRATION_IDENTIFIERS, MIGRATIONS_TABLE } from './schema.js';
+import { appliedMigrations, DAEMON_ONLY_MIGRATIONS, migrate, MIGRATION_IDENTIFIERS, MIGRATIONS_TABLE } from './schema.js';
 
 /** The real GRDB ledger captured from a live `nex.db` (packages/core/fixtures/migrations.json). */
 const LEDGER_FIXTURE: readonly { identifier: string }[] = JSON.parse(
@@ -17,7 +17,7 @@ function freshDatabase(): SqlDatabase {
 }
 
 describe('migration ledger', () => {
-    it('applies v1..v18 on a fresh install, in registration order', () => {
+    it('applies v1..v19 on a fresh install, in registration order', () => {
         const db = freshDatabase();
         const result = migrate(db);
         expect(result.applied).toEqual(MIGRATION_IDENTIFIERS);
@@ -25,16 +25,25 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('matches the identifiers of a real nex.db ledger', () => {
+    it('matches the identifiers of a real nex.db ledger, plus its own post-parity tail', () => {
         // The live DB also carries `v7_scheduled_tasks` / `v9_workspace_folders` — features this
-        // daemon does not implement. Ours must be exactly the rest, in the same relative order.
-        expect(MIGRATION_IDENTIFIERS).toEqual(
+        // daemon does not implement. The SHARED identifiers must be exactly the rest, in the
+        // same relative order; anything the daemon added after parity is declared in
+        // `DAEMON_ONLY_MIGRATIONS` and never appears in a Swift ledger.
+        const shared = MIGRATION_IDENTIFIERS.filter(
+            (identifier) => !DAEMON_ONLY_MIGRATIONS.includes(identifier)
+        );
+        expect(shared).toEqual(
             LIVE_LEDGER.filter((identifier) => !identifier.endsWith('_scheduled_tasks') && !identifier.endsWith('_workspace_folders'))
         );
-        for (const identifier of MIGRATION_IDENTIFIERS) expect(LIVE_LEDGER).toContain(identifier);
+        for (const identifier of shared) expect(LIVE_LEDGER).toContain(identifier);
+        for (const identifier of DAEMON_ONLY_MIGRATIONS) {
+            expect(LIVE_LEDGER).not.toContain(identifier);
+            expect(MIGRATION_IDENTIFIERS).toContain(identifier);
+        }
         expect(MIGRATION_IDENTIFIERS[0]).toBe('v1_initial');
-        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v18_pane_agent_kind');
-        expect(MIGRATION_IDENTIFIERS).toHaveLength(18);
+        expect(MIGRATION_IDENTIFIERS.at(-1)).toBe('v19_pane_agent_profile');
+        expect(MIGRATION_IDENTIFIERS).toHaveLength(19);
     });
 
     it('is a no-op on the second run', () => {
@@ -45,7 +54,7 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('produces the post-v18 schema (§8)', () => {
+    it('produces the post-v19 schema (§8 + the daemon-only tail)', () => {
         const db = freshDatabase();
         migrate(db);
 
@@ -79,7 +88,8 @@ describe('migration ledger', () => {
             'webTabsJSON',
             'webActiveTabID',
             'webIsPrivate',
-            'agentKind'
+            'agentKind',
+            'agentProfileName'
         ]);
         expect(columnNames(db, 'workspace_group')).toEqual([
             'id',
@@ -120,9 +130,9 @@ describe('migration ledger', () => {
         db.close();
     });
 
-    it('replays the whole ledger against a v18 schema without throwing, keeping agentSessionID', () => {
+    it('replays the whole ledger against a v19 schema without throwing, keeping agentSessionID', () => {
         const db = freshDatabase();
-        // Simulate ledger loss: the schema is at v18 but no migration rows exist at all.
+        // Simulate ledger loss: the schema is at v19 but no migration rows exist at all.
         migrate(db);
         db.run(`DELETE FROM ${MIGRATIONS_TABLE}`);
         expect(() => migrate(db)).not.toThrow();

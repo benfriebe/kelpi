@@ -107,6 +107,7 @@ function seedDatabase(dbPath: string, home: string, sessionID: string): void {
                         lastActivityAt: 1_700_000_000,
                         agentSessionID: sessionID,
                         agentKind: 'claude',
+                        agentProfileName: null,
                         status: 'running',
                         filePath: null,
                         scratchpadContent: null,

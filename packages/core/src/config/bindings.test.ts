@@ -3,6 +3,7 @@ import {
     DEFAULT_KEYBINDINGS,
     actionForTrigger,
     applyKeybindOverrides,
+    canonicalKeyBindingsForPlatform,
     parseKeybindValue,
     removeAllBindings,
     resolveKeyBindings,
@@ -109,5 +110,35 @@ describe('parseKeybindValue', () => {
 
     it('rejects a value with no =', () => {
         expect(parseKeybindValue('super+e')).toBeNull();
+    });
+});
+
+describe('canonicalKeyBindingsForPlatform (§3.5)', () => {
+    it('macLike returns the very same map', () => {
+        expect(canonicalKeyBindingsForPlatform(DEFAULT_KEYBINDINGS, true)).toBe(DEFAULT_KEYBINDINGS);
+    });
+
+    it('off-mac the super defaults re-key to ctrl and the ctrl defaults stay put', () => {
+        const map = canonicalKeyBindingsForPlatform(DEFAULT_KEYBINDINGS, false);
+        // super+d=split_right now answers on Ctrl+D…
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+d')!)).toBe('split_right');
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+shift+d')!)).toBe('split_down');
+        // …the Super/Win key answers nothing…
+        expect(actionForTrigger(map, parseKeyTrigger('super+d')!)).toBeNull();
+        // …and the shipped ctrl bindings are untouched.
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+shift+left')!)).toBe('move_pane_left');
+        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size);
+    });
+
+    it('a collision created by canonicalization resolves last-in-map-order (override beats default)', () => {
+        const override = parseKeybindValue('ctrl+d=toggle_zoom');
+        expect(override).not.toBeNull();
+        const overridden = applyKeybindOverrides(DEFAULT_KEYBINDINGS, [override!]);
+        const map = canonicalKeyBindingsForPlatform(overridden, false);
+        // The user's explicit ctrl+d line was applied AFTER the defaults, so it wins over
+        // the canonicalized super+d=split_right.
+        expect(actionForTrigger(map, parseKeyTrigger('ctrl+d')!)).toBe('toggle_zoom');
+        // 41 entries (40 defaults + the added ctrl+d) collapse by exactly the one collision.
+        expect(map.size).toBe(DEFAULT_KEYBINDINGS.size);
     });
 });

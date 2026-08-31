@@ -11,12 +11,13 @@
 import {
     DEFAULT_KEYBINDINGS,
     keyTriggerConfigString,
-    keyTriggerDisplayString,
     triggersForAction,
     type KeyBindingMap,
     type KelpiAction
 } from '@kelpi/core/config';
 import type { WsProfile } from '@kelpi/protocol';
+
+import { displayKeyTrigger } from '../chrome';
 
 import { actionLabel, actionsInCategory, VISIBLE_CATEGORIES, type SettingsCategory } from './catalog';
 
@@ -46,7 +47,7 @@ export interface KeybindingSection {
 function chips(bindings: KeyBindingMap, action: KelpiAction): TriggerChip[] {
     return triggersForAction(bindings, action).map((trigger) => ({
         config: keyTriggerConfigString(trigger),
-        display: keyTriggerDisplayString(trigger)
+        display: displayKeyTrigger(trigger)
     }));
 }
 

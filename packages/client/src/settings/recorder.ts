@@ -31,14 +31,13 @@
 
 import {
     keyTriggerConfigString,
-    keyTriggerDisplayString,
     parseKeyTrigger,
     type KeyBindingMap,
     type KeyTrigger,
     type KelpiAction
 } from '@kelpi/core/config';
 
-import { actionForTrigger, modifiersFromEvent, triggerFromEvent, type KeyEventLike } from '../chrome';
+import { actionForTrigger, displayKeyTrigger, modifiersFromEvent, triggerFromEvent, type KeyEventLike } from '../chrome';
 import { actionLabel } from './catalog';
 
 /** Two triggers are the same combo when their key and their modifier SET match. */
@@ -141,7 +140,7 @@ export function recordKeyEvent(event: KeyEventLike, options: RecorderOptions): R
         kind: 'captured',
         trigger,
         config: keyTriggerConfigString(trigger),
-        display: keyTriggerDisplayString(trigger),
+        display: displayKeyTrigger(trigger),
         unchanged: owner === options.excluding && owner !== null
     };
 }

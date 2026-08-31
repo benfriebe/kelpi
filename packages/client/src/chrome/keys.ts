@@ -30,7 +30,9 @@ import {
     MENU_BAR_ACTIONS,
     actionForTrigger,
     applyKeybindOverrides,
-    keyTriggerDisplayString,
+    canonicalKeyBindingsForPlatform,
+    keyTriggerDisplayStringForPlatform,
+    macLikePlatform,
     makeKeyTrigger,
     parseKeybindValue,
     resolveKeyBindings,
@@ -100,6 +102,15 @@ export function triggerFromEvent(event: KeyEventLike): KeyTrigger | null {
 // ── binding map construction ────────────────────────────────────────────────────────
 
 /**
+ * One read of the DOM's platform (config-keybindings.md §3.5). `navigator` is absent in a
+ * bare node context; that, like the empty string a test DOM reports, counts as mac — the
+ * semantics every existing fixture was written against, and the only wrong answer it can
+ * give a real client is the one macOS Safari-family quirks already give it.
+ */
+export const CLIENT_MAC_LIKE: boolean =
+    typeof navigator === 'undefined' ? true : macLikePlatform(navigator.platform ?? '');
+
+/**
  * `keybind` *values* (`"super+d=split_right"`) → a resolved map. Unparseable lines are
  * skipped with a warning in the app; here they are simply dropped, matching
  * `KeybindingService.loadFromDisk` (zero valid lines → the untouched defaults).
@@ -115,13 +126,33 @@ export function keyBindingsFromOverrideLines(lines: readonly string[]): KeyBindi
  * The map for a client. The daemon does not sync the user's config file yet (no field on
  * `DaemonState`), so the defaults are the live answer and any override source assembly grows
  * later — a settings endpoint, a `hello` field — drops straight in here.
+ *
+ * Canonicalized for the running platform (§3.5): on Windows/Linux every `super` trigger is
+ * re-keyed to `ctrl`, so the shipped `super+d=split_right` fires on Ctrl+D there — the same
+ * `CommandOrControl` rule the shell's menu accelerators have applied all along. `macLike` is
+ * a parameter only for tests.
  */
-export function clientKeyBindings(overrideLines?: readonly string[] | undefined): KeyBindingMap {
-    if (overrideLines === undefined || overrideLines.length === 0) return DEFAULT_KEYBINDINGS;
-    return keyBindingsFromOverrideLines(overrideLines);
+export function clientKeyBindings(
+    overrideLines?: readonly string[] | undefined,
+    macLike: boolean = CLIENT_MAC_LIKE
+): KeyBindingMap {
+    const resolved =
+        overrideLines === undefined || overrideLines.length === 0
+            ? DEFAULT_KEYBINDINGS
+            : keyBindingsFromOverrideLines(overrideLines);
+    return canonicalKeyBindingsForPlatform(resolved, macLike);
 }
 
 export { DEFAULT_KEYBINDINGS, applyKeybindOverrides, actionForTrigger };
+
+/**
+ * A trigger's display string in the running platform's convention (§3.5): mac glyphs
+ * (`⌘⇧D`) on macOS, `Ctrl+Shift+D` text elsewhere. The settings recorder and rows use this
+ * so a Windows/Linux client never labels a Ctrl chord with a ⌘.
+ */
+export function displayKeyTrigger(trigger: KeyTrigger, macLike: boolean = CLIENT_MAC_LIKE): string {
+    return keyTriggerDisplayStringForPlatform(trigger, macLike);
+}
 
 /**
  * The hint a menu row or palette entry shows for an action (config-keybindings.md §3.3), or
@@ -129,9 +160,13 @@ export { DEFAULT_KEYBINDINGS, applyKeybindOverrides, actionForTrigger };
  * multiply-bound action shows the same hint on every launch rather than whichever trigger the
  * map happened to iterate first.
  */
-export function shortcutForAction(bindings: KeyBindingMap, action: KelpiAction): string | undefined {
+export function shortcutForAction(
+    bindings: KeyBindingMap,
+    action: KelpiAction,
+    macLike: boolean = CLIENT_MAC_LIKE
+): string | undefined {
     const trigger = triggersForAction(bindings, action)[0];
-    return trigger === undefined ? undefined : keyTriggerDisplayString(trigger);
+    return trigger === undefined ? undefined : keyTriggerDisplayStringForPlatform(trigger, macLike);
 }
 
 // ── dispatch ────────────────────────────────────────────────────────────────────────
@@ -313,8 +348,9 @@ export function createKeyDispatcher(options: KeyDispatcherOptions): KeyDispatche
         if (web === true) return consume(event);
         if (web === false) return false;
 
-        // 6. Normal lookup.
-        const bindings = resolve(options.bindings ?? DEFAULT_KEYBINDINGS);
+        // 6. Normal lookup. The fallback goes through `clientKeyBindings` so it carries the
+        //    platform canonicalization (§3.5) exactly like a map App.tsx passes in.
+        const bindings = resolve(options.bindings ?? clientKeyBindings());
         const action = actionForTrigger(bindings, trigger);
         if (action === null) return false;
 
@@ -342,7 +378,7 @@ function closesModalOverlay(options: KeyDispatcherOptions, event: KeyEventLike):
     if (close === undefined) return false;
     const trigger = triggerFromEvent(event);
     if (trigger === null) return false;
-    const bindings = resolve(options.bindings ?? DEFAULT_KEYBINDINGS);
+    const bindings = resolve(options.bindings ?? clientKeyBindings());
     if (actionForTrigger(bindings, trigger) !== 'close_pane') return false;
     return close() === true;
 }

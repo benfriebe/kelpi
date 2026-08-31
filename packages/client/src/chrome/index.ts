@@ -288,6 +288,7 @@ export {
 export { CHROME_TOKEN_FALLBACKS, token, tokens, type ChromeTokenName } from './tokens';
 
 export {
+    CLIENT_MAC_LIKE,
     CODE_TO_KEY_CODE,
     DEFAULT_KEYBINDINGS,
     WIRED_KEY_ACTIONS,
@@ -295,6 +296,7 @@ export {
     applyKeybindOverrides,
     clientKeyBindings,
     createKeyDispatcher,
+    displayKeyTrigger,
     installKeyDispatcher,
     isEditableTarget,
     isPaneSurface,

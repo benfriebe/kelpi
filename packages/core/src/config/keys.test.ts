@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
     KEY_NAME_TO_CODE,
+    canonicalTriggerForPlatform,
     keyTriggerConfigString,
+    keyTriggerDisplayStringForPlatform,
     keyTriggerKey,
     keyTriggersEqual,
+    macLikePlatform,
     makeKeyTrigger,
     parseKeyTrigger
 } from './keys.js';
@@ -104,5 +107,43 @@ describe('trigger identity', () => {
 
     it('does not collide for distinct unmapped key codes', () => {
         expect(keyTriggerKey(makeKeyTrigger(998, []))).not.toBe(keyTriggerKey(makeKeyTrigger(999, [])));
+    });
+});
+
+describe('platform semantics (§3.5)', () => {
+    it('macLikePlatform: only Ctrl-primary platforms answer false', () => {
+        for (const platform of ['Win32', 'Windows', 'Linux x86_64', 'Linux aarch64', 'FreeBSD amd64']) {
+            expect(macLikePlatform(platform)).toBe(false);
+        }
+        // The empty/unknown strings a test DOM reports keep mac semantics.
+        for (const platform of ['MacIntel', 'Macintosh', '', 'iPhone', 'unknown']) {
+            expect(macLikePlatform(platform)).toBe(true);
+        }
+    });
+
+    it('canonicalTriggerForPlatform rewrites super to ctrl off-mac, and nothing else', () => {
+        const trigger = parseKeyTrigger('shift+super+d');
+        expect(trigger).not.toBeNull();
+        expect(canonicalTriggerForPlatform(trigger!, true)).toBe(trigger);
+        expect(canonicalTriggerForPlatform(trigger!, false)).toEqual({
+            keyCode: 2,
+            modifiers: ['ctrl', 'shift']
+        });
+        const ctrlOnly = parseKeyTrigger('ctrl+shift+left');
+        expect(canonicalTriggerForPlatform(ctrlOnly!, false)).toBe(ctrlOnly);
+    });
+
+    it('canonicalization merges super into an existing ctrl (deduped, ordered)', () => {
+        const both = parseKeyTrigger('ctrl+super+d');
+        expect(canonicalTriggerForPlatform(both!, false)).toEqual({ keyCode: 2, modifiers: ['ctrl'] });
+    });
+
+    it('keyTriggerDisplayStringForPlatform: glyphs on mac, Ctrl-style text elsewhere', () => {
+        const trigger = parseKeyTrigger('shift+super+d')!;
+        expect(keyTriggerDisplayStringForPlatform(trigger, true)).toBe('⇧⌘D');
+        expect(keyTriggerDisplayStringForPlatform(trigger, false)).toBe('Shift+Super+D');
+        const canonical = canonicalTriggerForPlatform(trigger, false);
+        expect(keyTriggerDisplayStringForPlatform(canonical, false)).toBe('Ctrl+Shift+D');
+        expect(keyTriggerDisplayStringForPlatform(parseKeyTrigger('escape')!, false)).toBe('Esc');
     });
 });

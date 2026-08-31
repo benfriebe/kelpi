@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     CODE_TO_KEY_CODE,
+    clientKeyBindings,
     createKeyDispatcher,
     installKeyDispatcher,
     isEditableTarget,
@@ -11,6 +12,7 @@ import {
     keyBindingsFromOverrideLines,
     modifiersFromEvent,
     triggerFromEvent,
+    shortcutForAction,
     workspaceSwitchHandlers,
     workspaceSwitchIndex,
     type KeyActionRegistry,
@@ -511,5 +513,48 @@ describe('installKeyDispatcher', () => {
         globalThis.window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', metaKey: true }));
         expect(fired).toEqual(['split_right']);
         globalThis.window.removeEventListener('keydown', bubbled);
+    });
+});
+
+describe('platform semantics (§3.5) — a Ctrl-primary client', () => {
+    // Everything above runs under jsdom's empty navigator.platform, which counts as mac.
+    // These cases build the map the way a Windows/Linux client would (macLike=false) and
+    // prove the shipped defaults answer on Ctrl chords there.
+    it('the super defaults fire on Ctrl, and the Win/Super key fires nothing', () => {
+        const bindings = clientKeyBindings(undefined, false);
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, bindings });
+
+        const ctrlD = keyEvent('KeyD', { ctrl: true });
+        expect(dispatch(ctrlD)).toBe(true);
+        expect(fired).toEqual(['split_right']);
+
+        // The physical Super/Win key (metaKey) matches nothing off-mac: the OS owns it.
+        const winD = keyEvent('KeyD', { meta: true });
+        expect(dispatch(winD)).toBe(false);
+        expect(winD.prevented()).toBe(0);
+    });
+
+    it('the shipped ctrl bindings are untouched by canonicalization', () => {
+        const bindings = clientKeyBindings(undefined, false);
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, bindings });
+        expect(dispatch(keyEvent('ArrowLeft', { ctrl: true, shift: true }))).toBe(true);
+        expect(fired).toEqual(['move_pane_left']);
+    });
+
+    it('override lines canonicalize the same way the defaults do', () => {
+        const bindings = clientKeyBindings(['super+k=toggle_zoom'], false);
+        const { registry, fired } = recorder();
+        const dispatch = createKeyDispatcher({ actions: registry, bindings });
+        expect(dispatch(keyEvent('KeyK', { ctrl: true }))).toBe(true);
+        expect(fired).toEqual(['toggle_zoom']);
+    });
+
+    it('shortcut hints render Ctrl-style text off-mac and glyphs on mac', () => {
+        const mac = clientKeyBindings(undefined, true);
+        const win = clientKeyBindings(undefined, false);
+        expect(shortcutForAction(mac, 'split_down', true)).toBe('⇧⌘D');
+        expect(shortcutForAction(win, 'split_down', false)).toBe('Ctrl+Shift+D');
     });
 });

@@ -5,7 +5,12 @@
 
 import { isKelpiAction, UNBIND_ACTION } from './actions.js';
 import type { KelpiAction, UnbindAction } from './actions.js';
-import { keyTriggerConfigString, keyTriggerKey, parseKeyTrigger } from './keys.js';
+import {
+    canonicalTriggerForPlatform,
+    keyTriggerConfigString,
+    keyTriggerKey,
+    parseKeyTrigger
+} from './keys.js';
 import type { KeyTrigger } from './keys.js';
 
 export interface KeyBinding {
@@ -165,4 +170,21 @@ export function applyKeybindOverrides(
 export function resolveKeyBindings(overrides: readonly KeybindOverride[]): KeyBindingMap {
     if (overrides.length === 0) return DEFAULT_KEYBINDINGS;
     return applyKeybindOverrides(DEFAULT_KEYBINDINGS, overrides);
+}
+
+/**
+ * Re-key a resolved map for the running platform (§3.5): every trigger canonicalized through
+ * `canonicalTriggerForPlatform`, so on a Ctrl-primary platform the `super+*` lines fire on
+ * Ctrl chords. macLike returns the map untouched. When canonicalization makes two triggers
+ * identical (both `super+x` and `ctrl+x` bound), the LAST one in map order wins — overrides
+ * are applied after defaults, so a user's line beats a shipped default deterministically.
+ */
+export function canonicalKeyBindingsForPlatform(map: KeyBindingMap, macLike: boolean): KeyBindingMap {
+    if (macLike) return map;
+    const next = new Map<string, KeyBinding>();
+    for (const binding of map.values()) {
+        const trigger = canonicalTriggerForPlatform(binding.trigger, macLike);
+        next.set(keyTriggerKey(trigger), { trigger, action: binding.action });
+    }
+    return next;
 }

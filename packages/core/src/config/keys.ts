@@ -125,6 +125,56 @@ export function makeKeyTrigger(keyCode: number, modifiers: Iterable<KeyModifier>
     return { keyCode, modifiers: MODIFIER_ORDER.filter((mod) => present.has(mod)) };
 }
 
+// ── platform semantics (§3.5) ───────────────────────────────────────────────────────
+
+/**
+ * Whether a client platform string names a mac-shaped platform. Only the platforms known to
+ * chord on Ctrl (Windows, Linux, the BSDs) answer false; the empty and unknown strings a
+ * test DOM reports keep the mac semantics every existing fixture was written against.
+ */
+export function macLikePlatform(platform: string): boolean {
+    return !/^(win|linux|freebsd|openbsd|netbsd)/i.test(platform);
+}
+
+/**
+ * `super` is the PRIMARY chord modifier, not a physical key: ⌘ on macOS, Ctrl on Windows and
+ * Linux — the rule the shell's Electron accelerators have always applied
+ * (`acceleratorForTrigger` spells `super` as `CommandOrControl`). Matching gets the same rule
+ * through this canonicalization: off-mac a trigger's `super` is rewritten to `ctrl` before
+ * the map is keyed, so `super+d=split_right` fires on Ctrl+D there, one config file works on
+ * every platform, and the physical Super/Win key (which the OS largely owns) matches nothing.
+ */
+export function canonicalTriggerForPlatform(trigger: KeyTrigger, macLike: boolean): KeyTrigger {
+    if (macLike || !trigger.modifiers.includes('super')) return trigger;
+    return makeKeyTrigger(
+        trigger.keyCode,
+        trigger.modifiers.map((mod) => (mod === 'super' ? 'ctrl' : mod))
+    );
+}
+
+/** §3.5 display half: the text names Ctrl-primary platforms spell chords with. */
+export const MODIFIER_TEXT_NAMES: Readonly<Record<KeyModifier, string>> = {
+    ctrl: 'Ctrl',
+    alt: 'Alt',
+    shift: 'Shift',
+    super: 'Super'
+};
+
+/**
+ * `displayString`, per platform: the mac glyph form (`⌘⇧D`) on macLike, the text form
+ * Ctrl-primary platforms expect (`Ctrl+Shift+D`, `+`-joined in `MODIFIER_DISPLAY_ORDER`)
+ * otherwise.
+ */
+export function keyTriggerDisplayStringForPlatform(trigger: KeyTrigger, macLike: boolean): string {
+    if (macLike) return keyTriggerDisplayString(trigger);
+    const present = new Set(trigger.modifiers);
+    const parts = MODIFIER_DISPLAY_ORDER.filter((mod) => present.has(mod)).map(
+        (mod) => MODIFIER_TEXT_NAMES[mod]
+    );
+    parts.push(KEY_CODE_TO_DISPLAY_NAME.get(trigger.keyCode) ?? UNKNOWN_KEY_DISPLAY);
+    return parts.join('+');
+}
+
 /**
  * `KeyTrigger.parse` (§3.2): lowercase, split on `+` dropping empty parts, last part is
  * the key, the rest are modifiers. Unknown key or modifier → null. Zero-modifier

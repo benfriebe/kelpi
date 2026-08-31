@@ -4,7 +4,10 @@
  * Transport selection is `KELPI_SOCKET`: absent (or anything not starting with `tcp:`) is the
  * Unix socket `/tmp/kelpi.sock`; `tcp:<host>:<port>` is TCP to a 127.0.0.1-bound listener. A
  * malformed `tcp:` value falls back to the Unix path SILENTLY — that is the shipped behavior
- * and scripts depend on it not being an error. `/tmp/nex.sock` is the Swift app's and is never
+ * and scripts depend on it not being an error. The one exception is `KELPI_REQUIRE_SOCKET`
+ * (cli.md §4): when it is set, that fallback becomes a refusal to dial at all, so a sandboxed
+ * harness whose route env is missing or misspelled can never reach the live daemon's socket.
+ * `/tmp/nex.sock` is the Swift app's and is never
  * dialed: the two apps run side by side, and `kelpid import` is the bridge between them.
  *
  * Failures are classified into `TransportFailure` and stashed in a module global that
@@ -25,7 +28,7 @@ import net from 'node:net';
 import os from 'node:os';
 import util from 'node:util';
 
-import { replyTimeoutSeconds, silentRequested } from './env.js';
+import { env, replyTimeoutSeconds, requireSocketRequested, silentRequested } from './env.js';
 import { errLine, exit } from './io.js';
 import type { JsonObject } from './json.js';
 
@@ -63,6 +66,7 @@ export function currentTransport(): Transport {
 // ── failure classification ──────────────────────────────────────────────────────────
 
 export type TransportFailure =
+    | { readonly kind: 'requiredSocketUnmet'; readonly raw: string | undefined }
     | { readonly kind: 'unixSocketMissing'; readonly path: string }
     | { readonly kind: 'unixConnectRefused'; readonly path: string }
     | { readonly kind: 'unixConnectFailed'; readonly path: string; readonly errno: number; readonly message: string }
@@ -97,6 +101,11 @@ function errnoMessage(code: string | undefined): string {
 /** (error line, repair line) for a failure, attributed to `command`. */
 export function describeTransportFailure(failure: TransportFailure, command: string): readonly [string, string] {
     switch (failure.kind) {
+        case 'requiredSocketUnmet':
+            return [
+                `${command}: KELPI_REQUIRE_SOCKET is set but KELPI_SOCKET names no tcp route (value: ${failure.raw === undefined ? '(unset)' : JSON.stringify(failure.raw)}) — refusing to dial the default socket ${UNIX_SOCKET_PATH}.`,
+                'This guard keeps sandboxed harnesses off the live daemon. Point KELPI_SOCKET=tcp:127.0.0.1:<port> at the sandbox daemon, or unset KELPI_REQUIRE_SOCKET for a command aimed at the real instance.'
+            ];
         case 'unixSocketMissing':
             return [
                 `${command}: cannot reach Kelpi — socket ${failure.path} does not exist.`,
@@ -194,6 +203,13 @@ function classifyConnectError(error: NodeJS.ErrnoException): TransportFailure {
 }
 
 async function connect(): Promise<ConnectOutcome> {
+    // The harness guard, enforced at the single choke point every command dials through:
+    // under `KELPI_REQUIRE_SOCKET` a unix transport is always the silent fallback having
+    // fired (KELPI_SOCKET cannot name a unix path), and dialing it would address whatever
+    // live daemon owns /tmp/kelpi.sock — the one thing a sandboxed run must never do.
+    if (transport.kind === 'unix' && requireSocketRequested()) {
+        return { failure: { kind: 'requiredSocketUnmet', raw: env()['KELPI_SOCKET'] } };
+    }
     return new Promise<ConnectOutcome>((resolve) => {
         const socket =
             transport.kind === 'unix'

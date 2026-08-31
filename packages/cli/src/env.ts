@@ -2,7 +2,7 @@
  * Environment reads (cli.md §4). One module so the table in the spec has exactly one
  * implementation, and so tests can drive a synthetic environment.
  *
- * `NEX_PANE_ID` has two distinct readings and both are load-bearing:
+ * `KELPI_PANE_ID` has two distinct readings and both are load-bearing:
  *   - `requirePaneID()` — the caller-pane subject. **Unset ⇒ silent exit 0** so hooks and
  *     scripts run outside Kelpi do nothing rather than fail. A value that is set-but-empty is
  *     used verbatim (the Swift `guard let` has no `isEmpty` check).
@@ -74,6 +74,18 @@ export function homeDirectory(): string {
 /** `KELPI_SILENT` — any value suppresses fire-and-forget transport warnings. */
 export function silentRequested(): boolean {
     return current['KELPI_SILENT'] !== undefined;
+}
+
+/**
+ * `KELPI_REQUIRE_SOCKET` — the sandbox-harness guard (cli.md §4): any value refuses the
+ * default Unix socket, so a missing or malformed `KELPI_SOCKET` fails THAT run loudly
+ * instead of silently addressing the live daemon at `/tmp/kelpi.sock`. Exists because the
+ * 2026-08-31 promote's UI audit did exactly that — its sandbox still exported the
+ * pre-rename `NEX_SOCKET`, every CLI call fell back to the real daemon, and the audit's
+ * delete-every-workspace step wiped the live instance.
+ */
+export function requireSocketRequested(): boolean {
+    return current['KELPI_REQUIRE_SOCKET'] !== undefined;
 }
 
 /** `KELPI_VERBOSE_HOOKS` — any value re-enables warnings for `kelpi event …`. */

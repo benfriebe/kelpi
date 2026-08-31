@@ -69,6 +69,7 @@ const isClientWindow = (target) => String(target?.url ?? '').includes('shellWind
 import { createReport } from './lib/report.mjs';
 import {
     assertPackagedSignature,
+    assertSandboxDaemon,
     buildAll,
     clearBackgroundTaskPolicy,
     freePort,
@@ -1649,6 +1650,11 @@ async function main() {
         sandbox.env.EDITOR = path.join(work, 'audit-editor.sh');
         runtime.daemon = startDaemon(sandbox, { repoRoot, verbose: options.verbose, packaged: options.packaged });
         await waitForHealthz(sandbox.base);
+        // No step runs until the process answering the sandbox control port proves it is the
+        // daemon spawned two lines up. The 2026-08-31 promote is why: a stale route env sent
+        // every CLI call to the LIVE daemon, and mac-chrome's delete-every-workspace clause
+        // wiped the running instance's state.
+        await assertSandboxDaemon(sandbox, runtime.daemon.child.pid);
 
         const launchShell = () =>
             startShell(sandbox, {
@@ -3545,7 +3551,7 @@ function buildFlows(ctx) {
                  * may have left an even-horizontal grid, which has no crossing at all).
                  *
                  * `kelpi layout` is caller-pane scoped (`requirePaneID()`), so it is run AS a
-                 * pane — without `NEX_PANE_ID` the CLI exits 0 having done nothing, which is
+                 * pane — without `KELPI_PANE_ID` the CLI exits 0 having done nothing, which is
                  * how this check silently found no junction to test.
                  */
                 const anchorPane = (await domPaneIDs(page))[0];
@@ -5267,7 +5273,7 @@ function buildFlows(ctx) {
                     await sleep(400);
                 }
                 // `kelpi layout` is one of the `requirePaneID()` verbs (§CLI-017): with no
-                // `NEX_PANE_ID` it exits 0 SILENTLY and does nothing, so the pane id has to ride
+                // `KELPI_PANE_ID` it exits 0 SILENTLY and does nothing, so the pane id has to ride
                 // along or this is a no-op that looks like a success.
                 await cli.run(['layout', 'select', 'even-horizontal'], { paneID: String(web?.id) });
                 await sleep(1800);
@@ -10180,16 +10186,16 @@ function buildFlows(ctx) {
         {
             /**
              * The REAL hook chain (routing fix 7a7875d). Every other agent step injects events
-             * through the harness CLI with NEX_SOCKET set — this one types the event commands
+             * through the harness CLI with KELPI_SOCKET set — this one types the event commands
              * INTO the pane's shell, so the `kelpi` binary is resolved from the pane's own PATH
              * (the sandbox's KELPID_HELPERS_DIR shim, exactly what the packaged app stages) and
-             * the routing is carried by the pane's own injected NEX_SOCKET. The harness CLI is
+             * the routing is carried by the pane's own injected KELPI_SOCKET. The harness CLI is
              * used only as the keyboard (`pane send`) and the reader (`pane list`/`capture`);
              * the events themselves never touch a harness-privileged transport.
              */
             id: 'agent-hook-routing',
             expect:
-                'A bare `kelpi event …` typed inside a pane — resolved from the pane PATH, routed by the injected NEX_SOCKET — binds a session id and moves the pane status through running → awaiting input on the header, sidebar and footer, with no harness socket override anywhere.',
+                'A bare `kelpi event …` typed inside a pane — resolved from the pane PATH, routed by the injected KELPI_SOCKET — binds a session id and moves the pane status through running → awaiting input on the header, sidebar and footer, with no harness socket override anywhere.',
             async run(recorder) {
                 const shellPane = await widestShellPane(page, cli);
                 if (shellPane === null) {
@@ -10218,13 +10224,13 @@ function buildFlows(ctx) {
                     await sleep(300);
                 }
 
-                // 1. The pane's environment really carries the route: NEX_PANE_ID names this
-                //    pane, NEX_SOCKET a tcp loopback listener, and PATH starts with the shim.
-                await cli.ok(['pane', 'send', '--target', paneID, 'printf "route=%s pane=%s nexbin=%s\\n" "$NEX_SOCKET" "$NEX_PANE_ID" "$(command -v kelpi)"']);
+                // 1. The pane's environment really carries the route: KELPI_PANE_ID names this
+                //    pane, KELPI_SOCKET a tcp loopback listener, and PATH starts with the shim.
+                await cli.ok(['pane', 'send', '--target', paneID, 'printf "route=%s pane=%s nexbin=%s\\n" "$KELPI_SOCKET" "$KELPI_PANE_ID" "$(command -v kelpi)"']);
                 await sleep(900);
                 const probe = await cli.ok(['pane', 'capture', '--target', paneID, '--scrollback']);
                 recorder.check('the pane env names this pane', probe.includes(`pane=${paneID}`), probe.slice(-300));
-                recorder.check('the pane env carries a tcp NEX_SOCKET route', /route=tcp:127\.0\.0\.1:\d+/.test(probe), String(probe.match(/route=tcp:\S*/)?.[0]));
+                recorder.check('the pane env carries a tcp KELPI_SOCKET route', /route=tcp:127\.0\.0\.1:\d+/.test(probe), String(probe.match(/route=tcp:\S*/)?.[0]));
                 recorder.check(
                     'a bare `kelpi` resolves the sandbox helpers shim (packaged-app PATH shape)',
                     probe.includes(`nexbin=${sandbox.helpersDir}/kelpi`),
@@ -10308,13 +10314,13 @@ function buildFlows(ctx) {
             /**
              * Coexistence (routing fix 7a7875d): another Kelpi owning the CLI-compat socket must
              * degrade that one listener, not the daemon — and panes must still route via their
-             * injected NEX_SOCKET. This boots its OWN daemon-only sandbox with a decoy
+             * injected KELPI_SOCKET. This boots its OWN daemon-only sandbox with a decoy
              * ping-answering server pre-bound at the sandbox's compat path (never the real
              * `/tmp/nex.sock`), so the shared audit stack is untouched.
              */
             id: 'agent-coexistence',
             expect:
-                'With a live decoy owning the sandbox compat socket, the daemon boots degraded (loud log line), the decoy is left untouched and still answers afterwards, and an in-pane `kelpi event start` still reaches the daemon via the injected NEX_SOCKET.',
+                'With a live decoy owning the sandbox compat socket, the daemon boots degraded (loud log line), the decoy is left untouched and still answers afterwards, and an in-pane `kelpi event start` still reaches the daemon via the injected KELPI_SOCKET.',
             async run(recorder) {
                 const box = await makeSandbox(repoRoot, { label: 'coexist' });
                 let decoy;
@@ -10334,6 +10340,7 @@ function buildFlows(ctx) {
 
                     daemon2 = startDaemon(box, { repoRoot });
                     await waitForHealthz(box.base);
+                    await assertSandboxDaemon(box, daemon2.child.pid);
                     recorder.check(
                         'the daemon boots degraded instead of dying',
                         daemon2.exited === false && daemon2.text().includes('CLI-compat socket disabled'),
@@ -10341,7 +10348,7 @@ function buildFlows(ctx) {
                     );
 
                     // In-pane events still land: type a bare `kelpi event start` into the default
-                    // pane's shell (helpers-shim PATH + injected NEX_SOCKET, nothing else).
+                    // pane's shell (helpers-shim PATH + injected KELPI_SOCKET, nothing else).
                     const cli2 = makeCli(box, { repoRoot });
                     const panes = await cli2.json(['pane', 'list', '--json']);
                     const paneID = panes.find((item) => item.type === 'shell')?.id;
@@ -11187,7 +11194,7 @@ function buildFlows(ctx) {
             async run(recorder) {
                 /*
                  * `kelpi pane create` is being called from OUTSIDE a Kelpi pane (the harness has no
-                 * `NEX_PANE_ID`), so it needs an explicit destination or the CLI refuses with
+                 * `KELPI_PANE_ID`), so it needs an explicit destination or the CLI refuses with
                  * "requires --workspace <name-or-id> or --target". Without it this whole step
                  * errored out — which is exactly how it errored in run-J1/J2/J3, taking the only
                  * evidence for §APP-071 with it. Address the ACTIVE workspace, which is the one

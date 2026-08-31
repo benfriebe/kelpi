@@ -233,7 +233,7 @@ export async function makeSandbox(repoRoot, { label = 'audit', clientDir, auditW
     // What the packaged app stages at Resources/cli and hands over as KELPID_HELPERS_DIR: a
     // `kelpi` the daemon prepends to every pane's PATH. With it, a bare `kelpi event …` typed (or
     // hook-fired) INSIDE a sandbox pane resolves this repo's CLI and routes via the pane's
-    // injected NEX_SOCKET — the same chain a real install's Claude Code hooks take. Without
+    // injected KELPI_SOCKET — the same chain a real install's Claude Code hooks take. Without
     // it, in-pane `kelpi` resolution falls to the audit machine's own PATH (often the Swift
     // app's helper), which is exactly the ambiguity the routing fix exists to remove.
     const helpersDir = path.join(root, 'helpers');
@@ -348,6 +348,52 @@ export function startDaemon(sandbox, { repoRoot, verbose = false, packaged = fal
             releaseChild(child);
         }
     };
+}
+
+/**
+ * Identity pre-flight: prove the process answering the sandbox control port IS the daemon
+ * this harness just spawned, before any step mutates anything. `ping` replies with the
+ * daemon's own `pid` (socket-handlers.md §10); comparing it against the spawned child's pid
+ * catches every wrong-process shape at once — a stale route env, a dead sandbox daemon with
+ * a squatter on its port, or a future rename that severs the harness from the CLI again.
+ * Throws (aborting the whole run) on any mismatch; a wipe of the live instance is what this
+ * refusal is cheaper than (2026-08-31).
+ */
+export async function assertSandboxDaemon(sandbox, expectedPid, timeoutMs = 10_000) {
+    const reply = await new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: '127.0.0.1', port: sandbox.controlPort, family: 4 });
+        let data = '';
+        const timer = setTimeout(() => {
+            socket.destroy();
+            reject(new Error(`identity ping to 127.0.0.1:${String(sandbox.controlPort)} timed out`));
+        }, timeoutMs);
+        timer.unref();
+        socket.on('error', (error) => {
+            clearTimeout(timer);
+            reject(new Error(`identity ping failed: ${String(error.message ?? error)}`));
+        });
+        socket.on('connect', () => socket.write('{"command":"ping"}\n'));
+        socket.on('data', (chunk) => (data += String(chunk)));
+        socket.on('close', () => {
+            clearTimeout(timer);
+            resolve(data);
+        });
+        socket.setEncoding('utf8');
+    });
+    let parsed;
+    try {
+        parsed = JSON.parse(reply.split('\n').find((line) => line.trim().length > 0) ?? '');
+    } catch {
+        throw new Error(`identity ping got a non-JSON reply from 127.0.0.1:${String(sandbox.controlPort)}: ${reply.slice(0, 200)}`);
+    }
+    const answeringPid = parsed?.pid;
+    if (answeringPid !== expectedPid) {
+        throw new Error(
+            `WRONG DAEMON on 127.0.0.1:${String(sandbox.controlPort)}: ping answered by pid ${String(answeringPid)}, ` +
+                `but this harness spawned pid ${String(expectedPid)}. Refusing to run a single step — ` +
+                'a mutating audit against the wrong daemon wipes real state.'
+        );
+    }
 }
 
 export async function waitForHealthz(base, timeoutMs = 30_000) {
@@ -519,9 +565,13 @@ export function startShell(sandbox, { repoRoot, packaged = false, verbose = fals
 /**
  * The ported TypeScript CLI (`packages/cli/dist/kelpi.js`) over TCP.
  *
- * TCP rather than the unix socket because `NEX_SOCKET` only overrides the *TCP* transport —
- * the unix path is hardcoded to `/tmp/nex.sock`, which is exactly the file the audit must not
- * touch.
+ * TCP rather than the unix socket because `KELPI_SOCKET` only overrides the *TCP* transport —
+ * the unix path is hardcoded to `/tmp/kelpi.sock`, which is the LIVE daemon's socket and
+ * exactly the file the audit must never touch. `KELPI_REQUIRE_SOCKET` turns that "must never"
+ * into a hard refusal inside the CLI itself: if the route below ever goes stale (2026-08-31,
+ * this function still exported the pre-rename `NEX_SOCKET`; the resolver saw nothing, silently
+ * fell back to the live socket, and the mac-chrome step's delete-every-workspace clause wiped
+ * the running instance), every call fails loudly instead of addressing the wrong daemon.
  */
 export function makeCli(sandbox, { repoRoot }) {
     const entry = path.join(repoRoot, 'packages', 'cli', 'dist', 'kelpi.js');
@@ -532,9 +582,10 @@ export function makeCli(sandbox, { repoRoot }) {
                 env: {
                     PATH: sandbox.env.PATH,
                     HOME: sandbox.home,
-                    NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
+                    KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
+                    KELPI_REQUIRE_SOCKET: '1',
                     KELPI_REPLY_TIMEOUT: '30',
-                    ...(opts.paneID === undefined ? {} : { NEX_PANE_ID: opts.paneID }),
+                    ...(opts.paneID === undefined ? {} : { KELPI_PANE_ID: opts.paneID }),
                     ...opts.env
                 },
                 stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']

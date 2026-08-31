@@ -9,12 +9,24 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { setEnv } from './env.js';
 import { resetIO, setIO } from './io.js';
-import { describeTransportFailure, printTransportFailure, resolveTransport, setLastTransportFailure, UNIX_SOCKET_PATH } from './transport.js';
+import {
+    describeTransportFailure,
+    printTransportFailure,
+    resolveTransport,
+    sendJSONAndReadReply,
+    setLastTransportFailure,
+    setTransport,
+    takeLastTransportFailure,
+    UNIX_SOCKET_PATH
+} from './transport.js';
 
 afterEach(() => {
     resetIO();
     setLastTransportFailure(null);
+    setEnv(process.env);
+    setTransport(resolveTransport(process.env));
 });
 
 describe('resolveTransport', () => {
@@ -53,7 +65,56 @@ describe('resolveTransport', () => {
     });
 });
 
+describe('KELPI_REQUIRE_SOCKET (the sandbox-harness guard)', () => {
+    it('refuses to dial the default unix socket when set and KELPI_SOCKET is absent', async () => {
+        setEnv({ KELPI_REQUIRE_SOCKET: '1' });
+        setTransport({ kind: 'unix', path: UNIX_SOCKET_PATH });
+        const reply = await sendJSONAndReadReply({ command: 'ping' });
+        expect(reply).toBeNull();
+        expect(takeLastTransportFailure()).toEqual({ kind: 'requiredSocketUnmet', raw: undefined });
+    });
+
+    it('refuses when the silent tcp fallback fired (the stale-NEX_SOCKET shape), quoting the value', async () => {
+        // The 2026-08-31 wipe: the harness exported a route under the pre-rename name, the
+        // resolver saw nothing, and every call silently addressed the live daemon. Under the
+        // guard the same environment must refuse instead.
+        const stale = { KELPI_REQUIRE_SOCKET: '1', KELPI_SOCKET: 'tcp:host:notaport' };
+        setEnv(stale);
+        setTransport(resolveTransport(stale));
+        const reply = await sendJSONAndReadReply({ command: 'ping' });
+        expect(reply).toBeNull();
+        expect(takeLastTransportFailure()).toEqual({ kind: 'requiredSocketUnmet', raw: 'tcp:host:notaport' });
+    });
+
+    it('leaves a well-formed tcp route alone — the guard gates the fallback, not the dial', async () => {
+        // Port 1 on loopback: nothing listens, so a REAL dial happens and fails as a tcp
+        // connect error — proof the guard did not intercept a valid route.
+        const routed = { KELPI_REQUIRE_SOCKET: '1', KELPI_SOCKET: 'tcp:127.0.0.1:1' };
+        setEnv(routed);
+        setTransport(resolveTransport(routed));
+        const reply = await sendJSONAndReadReply({ command: 'ping' });
+        expect(reply).toBeNull();
+        expect(takeLastTransportFailure()?.kind).toBe('tcpConnectFailed');
+    });
+});
+
 describe('describeTransportFailure', () => {
+    it('explains the harness guard and names both env vars', () => {
+        const [line, repair] = describeTransportFailure(
+            { kind: 'requiredSocketUnmet', raw: undefined },
+            'kelpi workspace delete'
+        );
+        expect(line).toBe(
+            `kelpi workspace delete: KELPI_REQUIRE_SOCKET is set but KELPI_SOCKET names no tcp route (value: (unset)) — refusing to dial the default socket ${UNIX_SOCKET_PATH}.`
+        );
+        expect(repair).toContain('sandbox');
+        const [quoted] = describeTransportFailure(
+            { kind: 'requiredSocketUnmet', raw: 'tcp:host:notaport' },
+            'kelpi pane list'
+        );
+        expect(quoted).toContain('"tcp:host:notaport"');
+    });
+
     it('names the missing socket and points at the app', () => {
         const [line, repair] = describeTransportFailure(
             { kind: 'unixSocketMissing', path: '/tmp/nex.sock' },

@@ -6,7 +6,7 @@
  * candidate build needs somewhere to run that is not the ground under your feet. This gives it
  * one: its own run dir, its own control socket, its own DB, ephemeral ports, its own Electron
  * user-data-dir. The coexistence machinery (the compat-socket degrade, the injected pane
- * NEX_SOCKET routes) means the two instances cannot fight over endpoints by construction —
+ * KELPI_SOCKET routes) means the two instances cannot fight over endpoints by construction —
  * the second instance's panes route to the second daemon, always.
  *
  *   node scripts/dev-instance.mjs                 # throwaway state, dev shell, builds first
@@ -17,7 +17,7 @@
  * Ctrl-C stops the instance. A throwaway state dir is deleted on exit; a --state dir is kept
  * (config and DB survive, so a candidate can be tested against accumulated state).
  *
- * The printed `NEX_SOCKET=tcp:…` line is how a plain terminal talks to THIS instance's daemon
+ * The printed `KELPI_SOCKET=tcp:…` line is how a plain terminal talks to THIS instance's daemon
  * rather than the main one.
  */
 
@@ -66,7 +66,7 @@ if (!fs.existsSync(ghosttyConfigPath)) {
 }
 
 // The helpers dir: the same shape the packaged app stages, so this instance's panes resolve
-// THIS tree's CLI and their injected NEX_SOCKET routes here (the N13 discipline).
+// THIS tree's CLI and their injected KELPI_SOCKET routes here (the N13 discipline).
 const helpersDir = path.join(root, 'helpers');
 fs.mkdirSync(helpersDir, { recursive: true });
 fs.writeFileSync(

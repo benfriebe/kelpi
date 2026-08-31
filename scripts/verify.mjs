@@ -211,10 +211,18 @@ if (has('--plan')) process.exit(0);
 
 const run = (label, command, options = {}) => {
     log(`▶ ${label}`);
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', ...options.env };
+    // A battery launched from inside a Kelpi pane inherits that pane's injected route to the
+    // LIVE daemon (KELPI_SOCKET, and NEX_SOCKET under the old name). No battery child may
+    // carry it: anything that legitimately talks to a daemon pins its own sandbox route, and
+    // an inherited pane route would satisfy KELPI_REQUIRE_SOCKET while addressing the real
+    // instance — the one hole the guard cannot see.
+    delete env.KELPI_SOCKET;
+    delete env.NEX_SOCKET;
     const result = spawnSync('sh', ['-c', command], {
         cwd: options.cwd ?? repoRoot,
         stdio: 'inherit',
-        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' }
+        env
     });
     if (result.status !== 0) {
         log(`✗ ${label} FAILED`);
@@ -222,23 +230,34 @@ const run = (label, command, options = {}) => {
     }
 };
 
+/**
+ * For every battery component that drives a daemon (the audit and the smokes): any `kelpi`
+ * invocation whose sandbox route env is missing or stale must FAIL, never fall back to the
+ * live daemon's /tmp/kelpi.sock. The 2026-08-31 promote wiped the running instance's
+ * workspaces exactly that way — the audit's CLI still exported the pre-rename NEX_SOCKET,
+ * the resolver saw nothing, and the mac-chrome step's delete-every-workspace clause ran
+ * against the real daemon. Unit tests do not get this (they must control their own env).
+ */
+const SANDBOX_GUARD = { KELPI_REQUIRE_SOCKET: '1' };
+
 const started = Date.now();
 run('typecheck', 'pnpm typecheck');
 
 if (full) {
     run('root tests', 'npx vitest run');
     run('shell tests', 'pnpm --filter @kelpi/shell test');
-    run('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest');
+    run('full audit', 'node scripts/ui-audit/audit.mjs --out docs/audit/verify-latest', { env: SANDBOX_GUARD });
     run('packaged smoke (repackages + 61 checks)', 'pnpm run smoke:packaged', {
-        cwd: path.join(repoRoot, 'packages', 'shell')
+        cwd: path.join(repoRoot, 'packages', 'shell'),
+        env: SANDBOX_GUARD
     });
 } else {
     if (plan.tests.size > 0) run('scoped tests', `npx vitest run ${[...plan.tests].join(' ')}`);
     if (plan.steps.size > 0) {
-        run('scoped audit', `node scripts/ui-audit/audit.mjs --only ${[...plan.steps].join(',')} --out docs/audit/verify-latest`);
+        run('scoped audit', `node scripts/ui-audit/audit.mjs --only ${[...plan.steps].join(',')} --out docs/audit/verify-latest`, { env: SANDBOX_GUARD });
     }
     for (const smoke of plan.smokes) {
-        run(smoke, `pnpm run ${smoke}`, { cwd: path.join(repoRoot, 'packages', 'shell') });
+        run(smoke, `pnpm run ${smoke}`, { cwd: path.join(repoRoot, 'packages', 'shell'), env: SANDBOX_GUARD });
     }
 }
 

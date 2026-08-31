@@ -639,7 +639,10 @@ function cli(sandbox, args, timeoutMs = 20_000) {
                 PATH: sandbox.env.PATH,
                 HOME: sandbox.home,
                 KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
-                NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`
+                // The Swift compat CLI reads the pre-rename name; the TS CLI ignores it.
+                NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
+                // Refuse the /tmp/kelpi.sock fallback outright if the route above goes stale.
+                KELPI_REQUIRE_SOCKET: '1'
             },
             stdio: ['ignore', 'pipe', 'pipe']
         });

@@ -404,7 +404,7 @@ const PANE_PROBE = `(() => {
 
 function cli(sandbox, args) {
     const result = spawnSync(process.execPath, [cliEntry, ...args], {
-        env: { ...sandbox.env, NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}` },
+        env: { ...sandbox.env, KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`, KELPI_REQUIRE_SOCKET: '1' },
         encoding: 'utf8',
         timeout: 20_000
     });

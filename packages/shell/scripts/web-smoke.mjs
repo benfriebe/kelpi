@@ -36,7 +36,7 @@
  * Isolation rules (non-negotiable — the production Swift app owns the real socket on a dev
  * machine): every path lives in a fresh `mkdtemp` dir, the control socket is `<tmp>/kelpid.sock`
  * and NEVER `/tmp/nex.sock`, the CLI is pointed at the sandbox daemon with
- * `NEX_SOCKET=tcp:127.0.0.1:<ephemeral>` (the same transport the compat harness uses), and
+ * `KELPI_SOCKET=tcp:127.0.0.1:<ephemeral>` (plus the pre-rename `NEX_SOCKET` for the Swift compat CLI), and
  * Electron gets its own `--user-data-dir`.
  *
  *   node packages/shell/scripts/web-smoke.mjs [--no-build] [--verbose] [--keep-logs]
@@ -634,7 +634,10 @@ function makeCli(sandbox) {
                     // The real CLI hardcodes its transports; `tcp:` is the one the compat
                     // harness uses to reach a sandbox daemon without touching /tmp/nex.sock.
                     KELPI_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
+                    // The Swift compat CLI reads the pre-rename name; the TS CLI ignores it.
                     NEX_SOCKET: `tcp:127.0.0.1:${String(sandbox.controlPort)}`,
+                    // Refuse the /tmp/kelpi.sock fallback outright if the route above goes stale.
+                    KELPI_REQUIRE_SOCKET: '1',
                     // Screenshots and page loads are slower than a state read.
                     KELPI_REPLY_TIMEOUT: '30',
                     ...opts.env

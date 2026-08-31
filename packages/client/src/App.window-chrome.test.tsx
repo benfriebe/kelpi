@@ -317,6 +317,23 @@ describe('the active-agents delete gate (§H18)', () => {
         ).toBe(false);
     });
 
+    it('both answers take a hover response under the pointer, and drop it on leave (H11)', () => {
+        mount({ agent: true });
+        raiseGate();
+        for (const id of ['agent-delete-cancel', 'agent-delete-confirm']) {
+            const button = screen.getByTestId(id);
+            const before = button.style.background;
+            act(() => {
+                fireEvent.mouseEnter(button);
+            });
+            expect(button.style.background).not.toBe(before);
+            act(() => {
+                fireEvent.mouseLeave(button);
+            });
+            expect(button.style.background).toBe(before);
+        }
+    });
+
     it('Delete still deletes — the keyboard is the only thing that changed', () => {
         const h = mount({ agent: true });
         raiseGate();

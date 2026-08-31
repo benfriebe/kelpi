@@ -126,6 +126,23 @@ describe('workspace delete gate', () => {
         expect(onDeleteWorkspace).toHaveBeenCalledWith(W1);
     });
 
+    it('every answer takes the hover fill under the pointer, and drops it on leave (H11)', () => {
+        render(<Sidebar {...baseProps()} onDeleteWorkspace={vi.fn()} activeAgentCount={() => 0} />);
+        openDelete();
+        const dialog = screen.getByTestId('confirm-dialog');
+        for (const id of ['confirm-cancel', 'confirm-delete']) {
+            const button = within(dialog).getByTestId(id);
+            const before = { background: button.style.background, border: button.style.border };
+            fireEvent.mouseEnter(button);
+            expect(button.style.background).not.toBe(before.background);
+            expect(button.style.border).not.toBe(before.border);
+            // The label colour is untouched — the red is what marks Delete destructive.
+            fireEvent.mouseLeave(button);
+            expect(button.style.background).toBe(before.background);
+            expect(button.style.border).toBe(before.border);
+        }
+    });
+
     it('honours "Don’t ask again" on Cancel too, and deletes nothing', () => {
         const onDeleteWorkspace = vi.fn();
         const onSuppressDeleteConfirm = vi.fn();

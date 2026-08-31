@@ -40,6 +40,7 @@ import {
 import { createPortal } from 'react-dom';
 
 import { ContextMenu, menuAnchorFromEvent, type MenuItemSpec } from './ContextMenu';
+import { hoverFill, useHoverKey } from './hover';
 import { useModalPresence } from './modal-presence';
 import { NewEntrySheet } from './NewWorkspaceSheet';
 import {
@@ -5063,6 +5064,15 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
     // the hook order depend on the DOM being present.
     const [suppress, setSuppress] = useState(false);
     /*
+     * H11's fill tone for the three answers. The global reset strips the user-agent hover
+     * response and nothing here painted one back, so `Delete "<name>"?`'s buttons were the only
+     * boxed controls in the chrome that did not answer the pointer. One slot for the surface
+     * (`useHoverKey`), the `selectionFill` wash, and the border lifted to the selection stroke —
+     * the same recipe `SettingsButton` draws; the label colour is untouched so a destructive
+     * button keeps the red that marks it destructive.
+     */
+    const [hoveredAction, bindHover] = useHoverKey();
+    /*
      * §N26 — the surface the owner photographed. This is the destructive confirmation the
      * workspace/group row menu raises, and it is the one modal H1's registry never enrolled:
      * `docs/audit/n26-popup-layering` caught it painted UNDER a live page, sliced at the pane's
@@ -5180,7 +5190,12 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     type="button"
                     data-testid="confirm-cancel"
                     className={CONFIRM_ACTION_CLASS}
-                    style={{ color: tokens.textSecondary, border: '1px solid transparent' }}
+                    {...bindHover('cancel')}
+                    style={{
+                        color: tokens.textSecondary,
+                        border: `1px solid ${hoveredAction === 'cancel' ? tokens.selectionStroke : 'transparent'}`,
+                        background: hoverFill(hoveredAction === 'cancel')
+                    }}
                     onClick={() => props.onCancel(suppress)}
                 >
                     Cancel
@@ -5196,7 +5211,12 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                         type="button"
                         data-testid="confirm-delete-cascade"
                         className={CONFIRM_ACTION_CLASS}
-                        style={{ color: '#E0655C', border: `1px solid ${tokens.divider}` }}
+                        {...bindHover('cascade')}
+                        style={{
+                            color: '#E0655C',
+                            border: `1px solid ${hoveredAction === 'cascade' ? tokens.selectionStroke : tokens.divider}`,
+                            background: hoverFill(hoveredAction === 'cascade')
+                        }}
                         onClick={() => {
                             props.onConfirm(true, suppress);
                         }}
@@ -5208,7 +5228,12 @@ function ConfirmDialog(props: ConfirmDialogProps): ReactElement | null {
                     type="button"
                     data-testid="confirm-delete"
                     className={CONFIRM_ACTION_CLASS}
-                    style={{ color: '#E0655C', border: `1px solid ${tokens.divider}` }}
+                    {...bindHover('delete')}
+                    style={{
+                        color: '#E0655C',
+                        border: `1px solid ${hoveredAction === 'delete' ? tokens.selectionStroke : tokens.divider}`,
+                        background: hoverFill(hoveredAction === 'delete')
+                    }}
                     onClick={() => {
                         props.onConfirm(false, suppress);
                     }}

@@ -85,6 +85,7 @@ import {
     createKeyDispatcher,
     defaultGroupName,
     flattenOver,
+    hoverFill,
     isSidebarMounted,
     normalizeHexColor,
     presetChromeTheme,
@@ -99,6 +100,7 @@ import {
     tokens as chromeTokens,
     useAnyModalOpen,
     useChromeTheme,
+    useHoverKey,
     useModalPresence,
     withAlpha,
     workspaceSwitchHandlers,
@@ -4446,6 +4448,15 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
     const noun = props.activeAgents === 1 ? 'agent' : 'agents';
     const them = props.activeAgents === 1 ? 'it' : 'them';
     useModalPresence();
+    /*
+     * H11's fill tone, the same recipe the sidebar's `ConfirmDialog` draws: the global reset
+     * strips the user-agent hover response, so without this neither button answered the pointer.
+     * Delete takes the `selectionFill` wash with the border lifted to the selection stroke (its
+     * red is untouched — the colour is what marks it destructive); Cancel already wears the
+     * default button's accent ring and wash, so its wash deepens instead of being repainted in
+     * the selection grey, which would read as losing the default state.
+     */
+    const [hoveredAction, bindHover] = useHoverKey();
 
     const { onCancel, onSuppressOnly } = props;
     const cancel = useCallback((): void => {
@@ -4517,10 +4528,12 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
                         data-default="true"
                         autoFocus
                         className="rounded px-2 py-1"
+                        {...bindHover('cancel')}
                         style={{
                             color: chromeTokens.textPrimary,
                             border: `1px solid ${chromeTokens.accent}`,
-                            background: 'rgba(111,155,216,0.16)'
+                            background:
+                                hoveredAction === 'cancel' ? 'rgba(111,155,216,0.28)' : 'rgba(111,155,216,0.16)'
                         }}
                         onClick={cancel}
                     >
@@ -4531,7 +4544,14 @@ function AgentDeleteGate(props: AgentDeleteGateProps): ReactElement {
                         data-testid="agent-delete-confirm"
                         data-destructive="true"
                         className="rounded px-2 py-1"
-                        style={{ color: '#E0655C', border: '1px solid transparent' }}
+                        {...bindHover('delete')}
+                        style={{
+                            color: '#E0655C',
+                            border: `1px solid ${
+                                hoveredAction === 'delete' ? chromeTokens.selectionStroke : 'transparent'
+                            }`,
+                            background: hoverFill(hoveredAction === 'delete')
+                        }}
                         onClick={() => props.onConfirm(suppress)}
                     >
                         Delete

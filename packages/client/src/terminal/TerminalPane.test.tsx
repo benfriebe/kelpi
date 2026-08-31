@@ -6,6 +6,7 @@ import {
     DEFAULT_RESIZE_DEBOUNCE_MS,
     RESIZE_MAX_WAIT_MS,
     TERMINAL_EDGE_PADDING,
+    TERMINAL_EDGE_PADDING_TOP,
     TERMINAL_START_ATTEMPTS,
     TERMINAL_START_RETRY_MS,
     TerminalPane,
@@ -991,8 +992,11 @@ describe('TerminalPane — helpers', () => {
         const host = root.querySelector('[data-terminal-host]') as HTMLElement;
         expect(root.style.paddingLeft).toBe(`${String(TERMINAL_EDGE_PADDING)}px`);
         expect(root.style.paddingRight).toBe(`${String(TERMINAL_EDGE_PADDING)}px`);
+        // Row 1 gets the same breathing room from the top edge (ghostty's `window-padding-y`).
+        expect(root.style.paddingTop).toBe(`${String(TERMINAL_EDGE_PADDING_TOP)}px`);
         // The inset belongs to the root, never to the element the geometry is measured from.
         expect(host.style.paddingLeft).toBe('');
+        expect(host.style.paddingTop).toBe('');
     });
 
     it('never steals the caret from a text field outside the pane', () => {

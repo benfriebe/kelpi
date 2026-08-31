@@ -80,6 +80,18 @@ export const RESIZE_MAX_WAIT_MS = 100;
 export const TERMINAL_EDGE_PADDING = 2;
 
 /**
+ * Vertical breathing room between the pane's top edge and row 1, in CSS pixels.
+ *
+ * Same two jobs as {@link TERMINAL_EDGE_PADDING}, rotated 90°: it keeps the first row's ascenders
+ * off the pane edge (and out from under the focus ring), and it matches the top half of ghostty's
+ * `window-padding-y = 2` default. Top only — the bottom edge already collects the sub-cell
+ * remainder of `floor(height / cellHeight)`, so padding there would double up. Applied to the
+ * pane root, NOT to the host the geometry is measured from, so rows stay honest and the bottom
+ * row is never clipped.
+ */
+export const TERMINAL_EDGE_PADDING_TOP = 2;
+
+/**
  * How many times a pane will build an engine before it gives up and shows the placeholder
  * (run-F N1).
  *
@@ -1190,9 +1202,13 @@ function TerminalPaneImpl(props: TerminalPaneProps): ReactElement {
                 // `clientWidth` IS the column arithmetic) shrinks the measured box first, so the
                 // cols the PTY is told about stay exactly the cols the canvas can paint. It also
                 // restores ghostty's own `window-padding-x = 2` default, which is the spacing
-                // the Swift app had.
+                // the Swift app had. The top gets the same treatment (`window-padding-y`'s top
+                // half) so row 1 doesn't sit flush against the pane edge; the host's
+                // `clientHeight` shrinks with it, so the rows the PTY is told about stay exactly
+                // the rows the canvas can paint and the bottom row is never clipped.
                 paddingLeft: TERMINAL_EDGE_PADDING,
-                paddingRight: TERMINAL_EDGE_PADDING
+                paddingRight: TERMINAL_EDGE_PADDING,
+                paddingTop: TERMINAL_EDGE_PADDING_TOP
             }}
             onMouseDownCapture={requestFocus}
             onTouchStartCapture={requestFocus}

@@ -95,6 +95,17 @@ if (has('--detach')) {
     fs.mkdirSync(stateDir, { recursive: true });
     const detachedLog = path.join(stateDir, `promote-${stamp}.log`);
     const out = fs.openSync(detachedLog, 'a');
+    // A promote is usually launched from INSIDE a Claude Code session, and macOS `open`
+    // propagates the caller's env — so without this scrub the relaunched app, its daemon and
+    // every restored pane inherit the promoting session's markers (CLAUDE_CODE_CHILD_SESSION,
+    // a stale CLAUDE_CODE_SESSION_ID, its messaging socket, its CLAUDE_CONFIG_DIR), and the
+    // post-promote `claude --resume` loses the very conversation it is resuming (measured,
+    // 2026-09-01; the daemon's pane spawn filters the same class as a second layer).
+    const cleanEnv = Object.fromEntries(
+        Object.entries(process.env).filter(
+            ([key]) => !(key.startsWith('CLAUDE_') || key === 'CLAUDECODE' || key === 'AI_AGENT')
+        )
+    );
     const worker = spawn(
         'nohup',
         [process.execPath, fileURLToPath(import.meta.url), ...args.filter((flag) => flag !== '--detach')],
@@ -102,7 +113,7 @@ if (has('--detach')) {
             cwd: repoRoot,
             detached: true,
             stdio: ['ignore', out, out],
-            env: { ...process.env, KELPI_PROMOTE_LOG: detachedLog }
+            env: { ...cleanEnv, KELPI_PROMOTE_LOG: detachedLog }
         }
     );
     worker.unref();

@@ -87,6 +87,16 @@ function isDirectoryOnDisk(path: string): boolean {
  * no longer exists makes the child die instantly (posix_spawn's chdir fails), so a missing
  * or non-directory cwd falls back to `$HOME`, then to `/` if even that is gone.
  */
+/**
+ * Which inherited daemon-env keys a pane may see — see `buildEnv`'s note. The class, not a
+ * fixed list: every `CLAUDE_*` marker (session id, child flag, messaging socket, config dir,
+ * pid, effort), the bare `CLAUDECODE` flag, and the `AI_AGENT` tag are all descriptions of
+ * whatever Claude session happened to launch the daemon, and none of them describes a pane.
+ */
+export function inheritableEnvKey(key: string): boolean {
+    return !(key.startsWith('CLAUDE_') || key === 'CLAUDECODE' || key === 'AI_AGENT');
+}
+
 export function resolveSpawnCwd(
     requested: string | undefined,
     options: { home?: string | undefined; isDirectory?: ((path: string) => boolean) | undefined } = {}
@@ -362,6 +372,16 @@ class PtyManagerImpl implements KelpiPtyManager {
      * `TERM` is deliberately NOT inherited: the daemon's own `$TERM` describes whatever
      * terminal happened to launch it, while the pane's terminal is the client renderer.
      * Only an explicit caller override wins over the configured default.
+     *
+     * Claude-session markers are not inherited either (`inheritableEnvKey`): a daemon that
+     * was launched from inside a Claude Code session — a self-upgrade restarter descends
+     * from the promoting session's shell, and macOS `open` propagates the caller's env —
+     * carries that session's `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ID`,
+     * messaging socket and config dir. A pane is a fresh terminal; leaking those into it
+     * made every post-promote `claude --resume` think it was a CHILD of a session that no
+     * longer exists and lose the conversation it was resuming (measured, 2026-09-01). A
+     * profile that deliberately sets `CLAUDE_CONFIG_DIR` still lands: profile vars ride the
+     * caller's overlay pairs, which apply after this filter.
      */
     private buildEnv(pairs: ReadonlyArray<readonly [string, string]>): {
         env: Record<string, string>;
@@ -369,7 +389,7 @@ class PtyManagerImpl implements KelpiPtyManager {
     } {
         const env: Record<string, string> = {};
         for (const [key, value] of Object.entries(process.env)) {
-            if (value !== undefined) env[key] = value;
+            if (value !== undefined && inheritableEnvKey(key)) env[key] = value;
         }
         let term = this.term;
         for (const [key, value] of pairs) {

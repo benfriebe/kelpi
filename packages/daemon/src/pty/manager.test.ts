@@ -188,6 +188,44 @@ describe('PtyManager registry (§1.2)', () => {
         delete process.env['KELPI_TEST_INHERITED'];
     });
 
+    it('never inherits Claude-session markers — a pane is a fresh terminal, not a child session', () => {
+        const { spawner, spawned } = stubSpawner();
+        const manager = createPtyManager({ spawner });
+        // The shape a post-promote daemon had (2026-09-01): launched from inside a Claude
+        // session via `open`, which propagates the caller's env. The test worker may be
+        // running inside a real session too, so originals are saved and restored, not deleted.
+        const keys = ['CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CONFIG_DIR', 'CLAUDECODE', 'AI_AGENT'] as const;
+        const saved = new Map(keys.map((key) => [key, process.env[key]] as const));
+        process.env['CLAUDE_CODE_CHILD_SESSION'] = '1';
+        process.env['CLAUDE_CODE_SESSION_ID'] = 'stale-session';
+        process.env['CLAUDE_CONFIG_DIR'] = '/Users/test/.claude_2';
+        process.env['CLAUDECODE'] = '1';
+        process.env['AI_AGENT'] = 'claude-code_x_agent';
+        try {
+            manager.spawn({
+                paneID: 'pane-a',
+                cwd: '/tmp',
+                // A profile that deliberately sets a config dir still lands: overlay beats filter.
+                env: [['CLAUDE_CONFIG_DIR', '/Users/test/.claude-work']],
+                cols: 80,
+                rows: 24,
+                shell: FALLBACK_SHELL
+            });
+
+            const env = spawned[0]?.request.env ?? {};
+            expect(env['CLAUDE_CODE_CHILD_SESSION']).toBeUndefined();
+            expect(env['CLAUDE_CODE_SESSION_ID']).toBeUndefined();
+            expect(env['CLAUDECODE']).toBeUndefined();
+            expect(env['AI_AGENT']).toBeUndefined();
+            expect(env['CLAUDE_CONFIG_DIR']).toBe('/Users/test/.claude-work');
+        } finally {
+            for (const [key, value] of saved) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+    });
+
     it('lets a caller-supplied TERM win over the default', () => {
         const { spawner, spawned } = stubSpawner();
         const manager = createPtyManager({ spawner });
